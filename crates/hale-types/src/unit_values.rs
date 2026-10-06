@@ -17,9 +17,9 @@
 //! - a cast `T(x)` is total, a widening, or a narrowing a policy has to
 //!   discharge ([`ScalarTypes::cast`]).
 //!
-//! Quantities and points are not typed here: their names resolve to
-//! `Unknown` and every use of one is the not-yet boundary's
-//! (`units::value_not_yet`) until U3.
+//! Quantities and points (U3) are typed by the same struct, in
+//! [`crate::unit_quantities`]: the algebra, the literals and the
+//! conversions between denominations.
 
 use std::collections::BTreeMap;
 
@@ -34,8 +34,11 @@ use crate::units::{Base, ScalarKindRow, ScalarRow, UnitRows};
 /// The identities and ranges of a program, by name, as the checker asks
 /// about them.
 pub struct ScalarTypes<'r> {
-    rows: &'r UnitRows,
+    pub(crate) rows: &'r UnitRows,
+    /// The identities and ranges.
     by_name: BTreeMap<&'r str, usize>,
+    /// The quantities and points (U3), by their declared names.
+    pub(crate) quantities: BTreeMap<&'r str, usize>,
 }
 
 /// One step up a scalar's chain.
@@ -92,26 +95,36 @@ pub fn int_literal(e: &Expr) -> Option<i128> {
 }
 
 impl<'r> ScalarTypes<'r> {
-    /// The rows of the scalars `top` registered as identities or ranges.
+    /// The rows of the scalars `top` registered as scalar types: the
+    /// identities and ranges, and the quantities and points.
     pub fn new(rows: &'r UnitRows, top: &TopScope) -> Self {
         let mut by_name = BTreeMap::new();
+        let mut quantities = BTreeMap::new();
         for (i, s) in rows.scalars.iter().enumerate() {
             let typed = matches!(
                 top.lookup(&s.name),
                 Some(TopSymbol::Type(info)) if matches!(info.kind, TypeKind::Scalar(_))
             );
             if typed {
-                by_name.entry(s.name.as_str()).or_insert(i);
+                let map = match s.kind {
+                    ScalarKindRow::Quantity | ScalarKindRow::Point => &mut quantities,
+                    ScalarKindRow::Identity | ScalarKindRow::Range => &mut by_name,
+                };
+                map.entry(s.name.as_str()).or_insert(i);
             }
         }
-        ScalarTypes { rows, by_name }
+        ScalarTypes { rows, by_name, quantities }
     }
 
-    /// Whether the program has an identity or a range at all.
+    /// Whether the program has no scalar type of any kind.
     pub fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
+        self.by_name.is_empty() && self.quantities.is_empty()
     }
 
+    /// Whether the program has a quantity or a point (U3).
+    pub fn has_quantities(&self) -> bool {
+        !self.quantities.is_empty()
+    }
     /// The row of `ty` when it is an identity or a range.
     pub fn index(&self, ty: &Ty) -> Option<usize> {
         match ty {
@@ -171,12 +184,13 @@ impl<'r> ScalarTypes<'r> {
         None
     }
 
-    /// `ty` as it is laid out: an identity or a range is its `Int`, every
-    /// other type itself.
+    /// `ty` as it is laid out: an identity, a range, a quantity or a
+    /// point is its `Int`, every other type itself.
     pub fn representation(&self, ty: &Ty) -> Ty {
-        match self.index(ty) {
-            Some(_) => crate::symbol::TypeKind::scalar_representation(),
-            None => ty.clone(),
+        if self.index(ty).is_some() || self.quantity(ty).is_some() {
+            crate::symbol::TypeKind::scalar_representation()
+        } else {
+            ty.clone()
         }
     }
 

@@ -1497,6 +1497,7 @@ pub fn build_resolved(
         current_call: None,
         default_invocations: Vec::new(),
         default_evaluation: Vec::new(),
+        current_body: None,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3342,14 +3343,28 @@ pub(crate) struct Cx<'ctx, 'p> {
     default_invocations: Vec<u32>,
     /// While a default is lowered where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
-    /// or a call that leaves a parameter, the key under which the checker
-    /// recorded its casts' conversions (`ConversionSite::DefaultCast`).
+    /// or a call that leaves a parameter, the path under which the checker
+    /// recorded every conversion there (`ConversionSite::path`).
     /// It is the checker's stack (`default_evaluation` in `hale-types`'
     /// `check.rs`) rebuilt: both push at the same two events, a literal
     /// leaving a field (`populate_user_type_fields`) and a call leaving a
     /// parameter (`lower_default_in_caller`), around exactly the defaults
     /// left, so the path lowering looks up is the one the checker wrote.
     pub(crate) default_evaluation: Vec<u32>,
+    /// The declaration whose body is being lowered: the id the checker
+    /// recorded that body's rows under (`TypedBodies::body`), a fn's, a
+    /// locus member's (a lifecycle method, a mode, an `on_failure`, a
+    /// closure, a method), or the locus's own for the text the checker
+    /// walks as the locus's (its params' defaults, its birth checks); a
+    /// `const`'s at each use of its initializer. Set where that body
+    /// begins to lower and restored after ([`Self::in_body`]), not per
+    /// LLVM function: a closure or a generic specialization lowered as a
+    /// function of its own is its declaration's body still, as the
+    /// checker keyed it, and a default evaluated in a caller is the
+    /// caller's. Conversion rows are read from this body alone
+    /// (`conversion.rs`), so a stdlib body, whose spans start at 0 like
+    /// the first user file's, never reads a user body's row.
+    pub(crate) current_body: Option<NodeId>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -3494,8 +3509,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// context applies (e.g. a struct const referenced from a fn
     /// body materializes into the caller's arena, same as if the
     /// user had written the struct literal inline). Checked after
-    /// `user_consts` (scalar-literal fast path).
-    user_const_exprs: BTreeMap<String, (Expr, TypeExpr)>,
+    /// `user_consts` (scalar-literal fast path). With the declaration,
+    /// whose body the checker typed the initializer in (`current_body`).
+    user_const_exprs: BTreeMap<String, (Expr, TypeExpr, NodeId)>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
     /// imports. Same shape as `hale_stdlib::PATH_RENAMES` but populated
     /// per build from the user's `import "lib/X" as foo;`
@@ -8982,7 +8998,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // `DefaultInit::Expr` defaults.
                     self.user_const_exprs.insert(
                         c.name.name.clone(),
-                        (c.value.clone(), c.ty.clone()),
+                        (c.value.clone(), c.ty.clone(), c.id),
                     );
                 }
             }
@@ -9599,7 +9615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let mut scope = Scope::default();
-        let end = self.lower_block(&main_decl.body, &mut scope)?;
+        let end = self.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))?;
 
         // Only emit `ret 0` if the body fell through. If it ended
         // in a terminator (e.g. an unreachable `if` whose branches
@@ -13795,6 +13811,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to a unified `fn.exit` epilogue block to avoid duplicating
     /// the destroy + copy at every return site.
     fn lower_user_fn_body(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        // A specialization is its template's declaration (it keeps the
+        // template's id), whose rows the checker recorded.
+        self.in_body(f.id, |cx| cx.lower_user_fn_body_at(f))
+    }
+
+    fn lower_user_fn_body_at(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         if !f.generics.is_empty() {
             // m62: generic templates have no body to lower until
             // call sites pin the type args. lower_call_expr
@@ -19014,6 +19036,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
+        let res = self.with_printed_unit(&args[0], res)?;
         Ok((res, Self::builtin_result(sig, &ty)))
     }
 
@@ -19893,6 +19916,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let close = self.global_string("]");
         self.str_concat(acc, close.into())
+    }
+
+    /// GH #1076 (U3): the text `s` of the value `e`, followed by the unit
+    /// its printed row writes (a quantity's), when it has one.
+    fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match self.printed_unit(e) {
+            Some(unit) => {
+                let unit = self.global_string(&unit);
+                self.str_concat(s, unit.into())
+            }
+            None => Ok(s),
+        }
     }
 
     /// Inline lotus_str_concat call. Caller's arena owns the
@@ -22783,7 +22818,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let result = self.lower_expr_at(e, scope);
         self.current_call = previous;
-        result
+        // GH #1076 (U3): a value the checker converted where it stands.
+        self.convert_value(e, result?)
     }
 
     fn lower_expr_at(
@@ -23031,9 +23067,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))?;
                 Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
             }
-            Expr::Literal(Literal::Quantity { value, unit }, span) => Err(
-                unit_dialect_unsupported(&format!("quantity literal `{value}{unit}`"), *span),
-            ),
+            Expr::Literal(Literal::Quantity { value, unit }, span) => self.lower_quantity_literal(*value, unit, *span),
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
                 // `EnumName::Variant`. For pure no-payload enums
@@ -23108,10 +23142,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (val, ty) = self.const_param(&pv);
                         return Ok((val, ty));
                     }
-                    if let Some((expr, _ty)) =
+                    if let Some((expr, _ty, decl)) =
                         self.user_const_exprs.get(&mangled).cloned()
                     {
-                        return self.lower_expr(&expr, scope);
+                        return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                     }
                     // GH #1082: an imported seed's fn used as a VALUE
                     // (`apply(lib::add3)`). A call through the path is
@@ -23172,10 +23206,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the stored initializer expression in the current
                 // scope. Each use site allocates fresh, matching the
                 // semantics of writing the literal inline.
-                if let Some((expr, _ty)) =
+                if let Some((expr, _ty, decl)) =
                     self.user_const_exprs.get(&id.name).cloned()
                 {
-                    return self.lower_expr(&expr, scope);
+                    return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.
@@ -23517,6 +23551,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             {
                 self.lower_short_circuit(*op, left, right, scope)
             }
+            // GH #1076 (U3): a quantity divided by a literal, from its row:
+            // the dividend converted, rounded by its type's `round:` here,
+            // or checked under its `or`.
+            Expr::Binary { op: BinOp::Div, span, .. } if self.conversion_operand(e).is_some() => {
+                let (row, operand) = self.conversion_operand(e).expect("guard checked");
+                let arg = operand.expect("a division's dividend");
+                match self.lower_conversion(&row, arg, scope)? {
+                    crate::conversion::Converted::Value(v, t) => Ok((v, t)),
+                    crate::conversion::Converted::Checked(_) => Err(CodegenError::UnsupportedAt(
+                        format!("the division of `{}` is lowered only under its `or`", row.target),
+                        *span,
+                    )),
+                }
+            }
             Expr::Binary { op, left, right, span: _ } => {
                 let (lv, lt) = self.lower_expr(left, scope)?;
                 let (rv, rt) = self.lower_expr(right, scope)?;
@@ -23529,10 +23577,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if *op == BinOp::Add && lt != rt {
                     if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
                         let coerced = self.value_to_string(rv, &rt)?;
+                        let coerced = self.with_printed_unit(right, coerced)?;
                         return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
                     }
                     if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
                         let coerced = self.value_to_string(lv, &lt)?;
+                        let coerced = self.with_printed_unit(left, coerced)?;
                         return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
                     }
                 }
@@ -23602,12 +23652,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_unop(*op, v, &t)
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => match callee.as_ref() {
-                // GH #1076 (U2): a conversion `T(x)` is lowered from its
-                // typed-body row. Outside an `or` it is total or a
-                // widening; a narrowing is lowered under its `or`.
-                Expr::Ident(_) if self.conversion_row(e).is_some() => {
-                    let row = self.conversion_row(e).expect("guard checked");
-                    let [arg] = args.as_slice() else {
+                // GH #1076 (U2, U3): a conversion `T(x)`, `x.in(u)`,
+                // `x.split(u)` is lowered from its typed-body row. Outside
+                // an `or` it is total, a widening, or rounded by its
+                // target's `round:`; any other narrowing is lowered under
+                // its `or`.
+                Expr::Ident(_) | Expr::Field { .. } if self.conversion_operand(e).is_some() => {
+                    let (row, operand) = self.conversion_operand(e).expect("guard checked");
+                    let Some(arg) = operand else {
                         return Err(CodegenError::UnsupportedAt(
                             format!("`{}(…)` converts one value", row.target),
                             *call_span,
@@ -25177,6 +25229,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int => {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
+                    // GH #1076 (U3): a quantity's count, then its unit.
+                    if let Some(unit) = self.printed_unit(a) {
+                        format.push_str(&escape_format(&unit));
+                    }
                 }
                 CodegenTy::Float => {
                     format.push_str("%g");
@@ -33625,8 +33681,13 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Decimal(m))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
-        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(unit_dialect_unsupported(
-            &format!("quantity literal `{value}{unit}`"),
+        // GH #1076 (U3): a quantity literal's count is its row's, which a
+        // `params` initializer, read without the typed bodies, cannot see.
+        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(CodegenError::UnsupportedAt(
+            format!(
+                "quantity literal `{value}{unit}` as a `params` initializer: a quantity parameter's initial value is \
+                 set in `birth` (`self.p = {value}{unit};`)"
+            ),
             *span,
         )),
         _ => Err(CodegenError::Unsupported(

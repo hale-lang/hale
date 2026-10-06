@@ -6,8 +6,9 @@ declaration-layer arithmetic core for GH #1076 / #1212. A program's
 `unit` declarations are closed into one through it, and its scalar
 declarations are judged against it (§ Declarations). Expression typing
 types the values of identities and ranges (§ Identities and ranges) and
-does not consume the catalogue yet; the existing `Time` and `Duration`
-primitive behavior is unchanged.
+of quantities and points, reading the catalogue's factors (§
+Quantities and points); the existing `Time` and `Duration` primitive
+behavior is unchanged.
 
 ## Declarations
 
@@ -231,26 +232,20 @@ located error whose related notes are its witness.
     unit pct = 1/100;   // one component with `bp`: one `pct` is 100 `bp`
     ```
 
-### Quantity and point values arrive with the next step
+### Where values are typed
 
-An identity's and a range's values are typed (§ Identities and
-ranges). A quantity's and a point's are not yet: the name of one where
-a value would live (a parameter, a field, a `let` annotation, a return
-type, a topic's payload, a generic argument, an alias's target, a cast
-`Money(5)`) and a quantity literal in an expression are one located
-error each ("values of the unit dialect's types are not typed yet
-(GH #1076)"), so a program that passes the check holds no value of a
-quantity or a point, and their declarations lower to no code. A
-declaration the laws refuse has no values either: its name resolves to
-nothing, so a use of it is no second error. A cast's name means what it means
-at the call: a local, a parameter or a fn of the name is the callee,
-and no cast. A struct field's default is evaluated at each literal that
-leaves the field, in that literal's scope, so a cast in it is judged
-there (once, at the default, however many literals leave it), with the
-scopes the default opens, the parameter defaults its calls leave and
-the field defaults its own literals leave; a quantity literal in it is
-refused at the declaration. Quantity values, literals of declared units
-and the conversions between denominations arrive with the next step.
+Every scalar's values are typed: an identity's and a range's (§
+Identities and ranges), a quantity's and a point's (§ Quantities and
+points). The declarations themselves lower to no code. A declaration
+the laws refuse has no values: its name resolves to nothing, so a use
+of it is no second error. A cast's name means what it means at the
+call: a local, a parameter or a fn of the name is the callee, and no
+cast. A struct field's default is evaluated at each literal that
+leaves the field, in that literal's scope, so it is typed there (with
+the scopes it opens, the parameter defaults its calls leave and the
+field defaults its own literals leave), and a parameter's default at
+each call that leaves it; a quantity rule's error found there is
+reported once, at its place.
 
 ## Identities and ranges
 
@@ -382,13 +377,19 @@ callee of `Money(1)`. A default is evaluated, and typed, at each place
 that leaves it (a struct literal that leaves a field, a call that
 leaves a parameter), in that place's scope, so a default's conversion
 is classified per evaluation, along the chain of defaults that reaches
-it: its casts' rows are recorded in the typed body of the declaration
-that evaluates it, by the evaluation path (every place on the way in,
-from the outermost: the literal or call that leaves a default, then the
-literal or call in that default that leaves the next) and the cast, and
-lowering reads the row of the path it lowers. One default can be a
-conversion in one scope and a call of a local in another, at the top or
-inside another default:
+it: every conversion row in it is recorded in the typed body of the
+declaration that evaluates it, by the evaluation path (every place on
+the way in, from the outermost: the literal or call that leaves a
+default, then the literal or call in that default that leaves the next)
+and the site, and lowering reads the row of the path it lowers. That
+holds for a cast (a quantity's `.in(u)` and `.split(u)` included), and
+equally for a quantity literal's count, a value converted where it
+stands, a division by a literal and a printed value: what a value flows
+into is that scope's too, so `Bucket(2000msec)` hands its literal to the
+cast as 2 `sec` in one scope and to a local `fn(d: Span)` shadowing
+`Bucket` as 2000 `msec` in another. One default can be a conversion in
+one scope and a call of a local in another, at the top or inside
+another default:
 
 ```hale,fragment
 type S { n: ItemId = ItemId(1); }
@@ -410,6 +411,267 @@ argument whose monomorph lays it out as an `Int` (`Box<OrderId>`) and
 an array element, and a topic's
 shape string tags its field `i`, as an `Int` field's (decision 9), so
 declaring one moves no shape hash.
+
+## Quantities and points
+
+A **quantity** (`type Money = quantity Int in cent;`, and a boundary
+denomination of one, `type Ledger = Money { round: half_even; }`) and a
+**point** (`type Price = point Tick;`, `type Celsius = point TempDelta
+{ origin: 273_150 mK; }`, and a refinement of one, `type WireStamp =
+Instant in usec { round: floor; }`) are nominal types, each represented
+as the `Int` it counts. The checker knows one by its scope entry
+(`TypeKind::Scalar`) and its scalar row (kind, component,
+denomination, quantity, origin, policy), and applies the rules below
+(`hale_types::unit_quantities`). The examples use this catalogue (the
+time units are spelled `nsec` … `sec` until the duration suffixes are
+the time catalogue's, decision 4 and law 10):
+
+```hale
+unit nsec;
+unit usec = 1_000 nsec;
+unit msec = 1_000 usec;
+unit sec = 1_000 msec;
+unit cent;
+unit USD = 100 cent;
+unit pct = 1/100;
+unit bp = 1/100 pct;
+unit tick;
+unit mK;
+unit K = 1_000 mK;
+type Span      = quantity Int in nsec;
+type Instant   = point Span;
+type WireStamp = Instant in usec { round: floor; }
+type Bucket    = Span in 100 msec { round: floor; }
+type Seconds   = Span in sec;
+type Money     = quantity Int in cent;
+type Rate      = quantity Int in bp;
+type Ledger    = Money { round: half_even; }
+type Tick      = quantity Int in tick;
+type Price     = point Tick;
+type TempDelta = quantity Int in mK;
+type Kelvin    = point TempDelta;
+type Celsius   = point TempDelta { origin: 273_150 mK; }
+```
+
+### A type and its denomination
+
+An expression's quantity or point type carries its denomination, and
+the denomination need not be one a declaration pinned. A declared type
+is at its row's denomination. Any other is **synthesized**: the same
+kind, keyed by its quantity (a point's: its frame, the nearest point
+on its chain stating an origin, else the point declared with the word)
+and the denomination, displayed and named `Span in sec`, `Money in
+1/100 cent`, `Span in 100 msec`. The spelling is the first unit of the
+component the denomination is one of, else the unit it is the
+smallest whole multiple of, else a fraction of its quantity's unit. A
+synthesized type has no policy and no range, and is an ordinary type
+for a `let`, an argument or a return; at its own quantity's
+denomination it is that quantity. Two types of one quantity convert by
+a factor alone (below), whatever their names.
+
+### Literals
+
+A **quantity literal** (`3bp`, `1_250_000USD`, `500msec`: an integer
+adjacent to a unit name, decision 3) names its unit in the units'
+namespace, which is its own: a local named `sec` neither shadows the
+unit `sec` nor is shadowed by it. The literal is its unit's
+component's quantity at the literal's own unit: `3sec` is a `Span in
+sec`, `5nsec` a `Span`, `3bp` a `Rate`. A literal of a unit no `unit`
+declares, or of a unit whose component has no quantity, is refused at
+the literal.
+
+Where a literal flows (a binding, an argument, a return, an operand,
+a field or a default), it is **converted at compile time**: its row
+holds its count in the denomination it flows into, which lowering
+emits as a constant. A whole number of that denomination is exact; one
+that is not is a narrowing like any other (§ Conversions), which the
+target's `round:` discharges or the check refuses. Literal arithmetic
+is not folded: `3sec + 500msec` is two converted constants, `3000` and
+`500` milliseconds, and an addition. The duration suffixes (`ns us ms
+s m h d`) are still `Duration` literals.
+
+```hale,fragment
+let d: Span = 3sec;        // the constant 3000000000
+let b: Bucket = 150msec;   // 1: Bucket rounds down
+let s: Seconds = 2_000msec; // 2, exact
+let t: Seconds = 1_500msec; // error: `Seconds` from `Span in msec` divides by 1,000: say what happens
+                            // to the remainder: convert explicitly (…), or give `Seconds` a `round:` policy
+let q = 3xyz;              // error: `3xyz`: no `unit` declares `xyz`
+```
+
+### The algebra
+
+| operands | result |
+|---|---|
+| quantity `±` quantity, one component | the quantity, at the finer of the two denominations (the meet), each operand widened exactly |
+| quantity `*` `Int`, `Int` `*` quantity | the quantity, its denomination |
+| quantity `*` dimensionless quantity, either order | the quantity at the product of the two denominations, exactly: nothing is rounded at the product |
+| quantity `/` `Int` | the quantity; a runtime divisor is integer division, an integer literal other than one a narrowing the site discharges (`spread / 2 or floor`) |
+| quantity `/` quantity, one component | `Int`, the quotient of the two counts at their meet |
+| point `-` point, one origin | the quantity, at the meet |
+| point `±` quantity, quantity `+` point | the point, at the meet |
+| comparison, one quantity or two points of one origin | `Bool`, exact at the meet |
+| point `+` point; a quantity `/` a dimensionless one; any other product of two quantities; anything across components, across a quantity and a point, with an `Int`, an identity or a range; `%` and the bitwise operators | refused, naming both declarations |
+
+A quantity negates; a point does not. An integer literal `0` is a
+value of every quantity (zero counts the same in every denomination);
+any other `Int` reaches a quantity by a unit (`n * 1cent`), and a
+quantity's count in a unit is a quotient (`q / 1cent`).
+
+```hale,fragment
+let d = 3sec + 500msec;           // Span in msec: 3500
+let n: Int = d / 1msec;           // 3500
+let fee = 1_250_000USD * 3bp;     // Money in 1/100 cent: 3750000, exact
+let spread = ask - bid;           // Tick
+let mid = bid + (spread / 2 or floor);
+let bad = 5msec + 4KiB;           // error: `Span in msec` + `ByteCount in KiB`: different
+                                  // quantities, `Span` and `ByteCount`; `+` holds within one
+let no = bid + ask;               // error: `Price` + `Price`: two points do not add; …
+```
+
+### Conversions
+
+Wherever a value of one denomination meets another (a binding, an
+argument, a return, an operand, a struct field or a default, a
+compound assignment, `.in(u)`, `.split(u)`, a cast `T(x)`, a division
+by a literal), the checker classifies the site and records it in the
+typed bodies' `conversions` column (spec/registry.md,
+`expression_typing`): the exact **factor** `p/q` from the source's
+denomination to the target's, a point's **shift** across two origins,
+and how the site is **discharged**.
+
+- **Widening**: `q = 1`. Exact and implicit; lowering multiplies by
+  `p`.
+- **Narrowing**: `q > 1`. The remainder of a division by `q` has to
+  become something, and the program says what: at the site, with the
+  `or` after `.in(u)`, a cast or a division by a literal; or by the
+  **target type's `round:`** (a boundary type), which needs no `or`.
+  An implicit conversion has no `or` of its own: into a type with no
+  policy it is refused, pointing at the explicit conversion or the
+  policy. A narrowing nothing discharges is the `bare_fallible` law's
+  error: "`Bucket` from `Span` divides by 100,000,000: say what happens
+  to the remainder: `or floor`, `or <value>`, `or raise`, or give
+  `Bucket` a `round:` policy".
+
+| discharge | result |
+|---|---|
+| `or floor`, `or ceil`, `or trunc` | rounded toward minus infinity, plus infinity, zero |
+| `or half_up`, `or half_even` | to the nearest, a half away from zero, or to the even quotient |
+| a type's `{ round: … }` | its policy, the same five |
+| `or <value>` | exact, or the value (a value of the target) |
+| `or handler(err)` | exact, or the handler's result, given the `InexactError` |
+| `or raise` | exact, or the enclosing fallible fn fails with the `InexactError` |
+
+A division that leaves a remainder fails with an `InexactError { kind:
+String; value: Int; divisor: Int }` (the target's name, the count
+divided, the divisor), a builtin type injected where a type is a
+quantity or a point. After a conversion that divides, the five
+rounding words are policies, as `clamp` and `wrap` are after a range's
+narrowing; a policy belongs to its narrowing's family, so `or clamp`
+there, or `or floor` on a range's narrowing, is refused.
+
+- **`x.in(u)`** is `x` at `u`'s denomination (`u` a unit, `.in(sec)`,
+  or a multiple of one, `.in(100msec)`): a conversion like any other.
+- **`x.split(u)`** is `(whole: Int, rest)`: the floored quotient by
+  `u`, and the remainder, never negative, at the finer of `x`'s and
+  `u`'s denominations. It is total.
+- **`T(x)`**, `T` a quantity or a point: `x` of `T`'s component
+  converted into `T`. A quantity into a point is the point that far
+  from the point's origin (`Instant(d)`); a point into a point of
+  another origin shifts by the two origins' difference (`Kelvin(c)`);
+  across components, a point into a quantity, or an `Int` into either,
+  is refused.
+
+```hale,fragment
+let whole = d.in(sec) or 0;           // 3500 msec is no whole number of seconds: 0
+let secs  = d.in(sec) or floor;       // 3sec
+let (sec_count, rest) = d.split(sec); // 3 and 500msec
+let odd   = 1_234_567USD * 3bp;       // Money in 1/100 cent: 3703701, exact
+let paid: Ledger = odd;               // 37037 cent: Ledger's half_even
+let bad: Money = odd;                 // error: `Money` from `Money in 1/100 cent` divides by 100: …
+let k = Kelvin(Celsius(100_000mK));   // 373150 mK
+```
+
+An **array literal** holding a quantity or a point is typed element by
+element. Where the array's type is known (an annotated binding, an
+argument, a return, a struct field, a default), each element flows into
+the element type from its own type, with its own row: `[3cent, 2USD]`
+into `[Money; 2]` holds 3 and 200 cents, `[3USD, 2cent]` 300 and 2. An
+element that narrows is refused at that element, or discharged by the
+element type's `round:`, as a binding's value is. Where nothing types
+the array (`let a = [1sec, 1_500msec];`), its elements meet as a sum's
+operands do: it is an array of the quantity at the finer of their
+denominations, `[Span in msec; 2]`, each coarser element widened
+exactly (1000 and 1500 milliseconds). Elements of two quantities, a
+quantity beside a point or an `Int`, and two points of different
+origins have no meet, and are refused at the array, naming both. A
+nested array literal meets at each level. An array with no quantity or
+point among its elements is its first element's type.
+
+```hale,fragment
+let a: [Money; 2] = [3cent, 2USD];       // 3 and 200 cents
+let b: [Money; 2] = [3USD, 2cent];       // 300 and 2 cents
+let s: [Seconds; 2] = [1sec, 1_500msec]; // error at `1_500msec`: `Seconds` from `Span in msec` divides by 1,000: …
+let m = [1sec, 1_500msec];               // [Span in msec; 2]: 1000 and 1500
+let x = [1sec, 3cent];                   // error: `[…]`: elements of different quantities, `Span` and `Money`;
+                                         // an array holds one
+```
+
+A default flows into its field's or parameter's type as a binding's
+value flows into its annotation, whatever the type's shape: each
+element of an array literal into the element type, so `p: [Money; 2] =
+[3USD, 2USD]` holds 300 and 200 cents and an element that narrows is
+the law's as the binding's would be; a default holding a quantity that
+does not flow (a tuple's part at another denomination, as for a
+binding) is refused at the default: "field `t`: declared `(Money,
+Int)`, default is `(Money in USD, Int)`".
+
+A position the checker does not classify refuses a value counted in a
+denomination no declaration names, with a located error, and never
+stores it as the wrong count: a generic literal's field whose type is
+known only where the literal flows, a generic fn's argument (a
+monomorph is named by declared types), two arms of an `if` or a
+`match` at different denominations.
+
+### Printing, layout, overflow
+
+A quantity **prints** as its count and its denomination: the unit
+when the denomination is one of a unit (`1500msec`), else its type
+(`3 Bucket`, `3703701 Money in 1/100 cent`); a point prints as its
+count. Printing in another unit is `.in(u)` first. A quantity inside a
+record or a sequence prints as its count.
+
+Wherever a type reaches a representation, a quantity or a point is its
+`Int`: a hashmap key and a routing key, a flat payload's field, an FFI
+`Int`. On the wire (decision 9) a quantity's or a point's field is its
+integer, tagged by its denomination in the topic's shape string: `q(`
+the denomination as its nearest declaration writes it `)` (`q(cent)`,
+`q(100 msec)`), a point's adding `point` and its origin when one is
+written (`q(mK point 273150 mK)`), so two processes whose fields count
+in different denominations disagree in the shape hash. A program with
+no quantity renders every shape as before.
+
+Overflow follows `Int`'s arithmetic (decision 7): a widening's
+multiplication is the `Int` multiplication. A factor no `Int` holds is
+an error at the conversion when the program is built, never a wrap; a
+literal's converted count that overflows is refused by the check.
+
+**Lowering** reads each row and decides nothing: a widening is one
+multiplication by `p` (and a point's shift, one addition); a narrowing
+one division by `q`, then for a rounding the one correction its policy
+is (none for `trunc`; down on a negative remainder for `floor`, up on
+a positive one for `ceil`; away from zero at half or more for
+`half_up`; past half, or at half to an even quotient, for
+`half_even`), or for a checked discharge the remainder's test, the
+quotient on one path and the `InexactError` on the other, joined by
+the `or`. A literal is its row's count. A value converted where it
+stands has its row at its span. A row is read from the body being
+emitted, the declaration the checker recorded it in, and never from
+another (a stdlib body's spans overlap the first file's). A constant's
+initializer, lowered again at each use, is its own evaluation: its rows
+are the constant's, on no evaluation path, wherever it is read, a
+default's included. A literal with no row is a missing required row,
+refused where it is written.
 
 ## Identities and equations
 

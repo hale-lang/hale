@@ -965,8 +965,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             // A default is evaluated here, in the literal's scope: the
             // literal is one step of the evaluation path, as the
-            // checker's `type_omitted_defaults` pushes it, and its casts
-            // are that path's rows (`conversion_row`).
+            // checker's `type_omitted_defaults` pushes it, and every
+            // conversion in it is that path's row (`ConversionSite::path`).
             if defaulted {
                 self.default_evaluation.push(literal.0);
             }

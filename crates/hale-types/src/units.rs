@@ -188,8 +188,23 @@ impl RoundPolicy {
         }
     }
 
-    fn of(name: &str) -> Option<RoundPolicy> {
+    pub fn of(name: &str) -> Option<RoundPolicy> {
         RoundPolicy::ALL.into_iter().find(|p| p.name() == name)
+    }
+}
+
+impl UnitRows {
+    /// The number a dimensionless denomination is (`bp` is 1/10000): its
+    /// factor to the number one; `None` for a denomination of a component
+    /// with a dimension, or with no closed catalogue.
+    pub fn pure_value(&self, denom: &Denom) -> Option<Ratio> {
+        self.catalogue.as_ref()?.factor(denom, &Denom { unit: PURE_NUMBER, multiple: Ratio::one() })
+    }
+
+    /// The unit row named `name` (the first, when law 1 refuses a
+    /// second).
+    pub fn unit_named(&self, name: &str) -> Option<usize> {
+        self.units.iter().position(|u| u.name == name)
     }
 }
 
@@ -711,29 +726,35 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
     laws.iter().flat_map(|law| law.diags(rows)).collect()
 }
 
-/// The scalar declarations whose values are typed (U2): an identity or a
-/// range counted in `Int`, by name, from the declarations as written (the
-/// resolver's input; the rows' [`kind`] reads the same words and bases).
-/// A quantity, a point, a declaration over neither `Int` nor one of these,
-/// and a refinement cycle are not: the resolver registers their names as
-/// `Unknown`, so a use of one is the not-yet boundary's error or no second
-/// error beside the laws'.
+/// The scalar declarations whose values are typed, by name, from the
+/// declarations as written (the resolver's input; the rows' [`kind`]
+/// reads the same words and bases): an identity or a range counted in
+/// `Int` (U2), a quantity counting an `Int` in a denomination and a point
+/// over one, and a refinement of any of these (U3). Each is represented
+/// as an `Int`. A declaration over neither `Int` nor one of these and a
+/// refinement cycle are not: the resolver registers their names as
+/// `Unknown`, so a use of one is no second error beside the laws'.
 pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std::collections::BTreeSet<&'a str> {
     let typed = |name: &'a str| -> bool {
         let mut at = name;
         for _ in 0..=decls.len() {
             let Some(s) = decls.get(at) else { return false };
+            let named = |te: &'a TypeExpr| match te {
+                TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                    Some(path.segments[0].name.as_str())
+                }
+                _ => None,
+            };
             match (s.kind, &s.base, &s.denom) {
-                (Some(ScalarKind::Quantity | ScalarKind::Point), _, _) | (_, _, Some(_)) => return false,
+                (Some(ScalarKind::Quantity), TypeExpr::Primitive(PrimType::Int, _), Some(_)) => return true,
+                (Some(ScalarKind::Quantity), _, _) => return false,
                 (Some(ScalarKind::Distinct), TypeExpr::Primitive(PrimType::Int, _), None) => return true,
                 (Some(ScalarKind::Distinct), _, _) => return false,
                 (None, TypeExpr::Primitive(PrimType::Int, _), None) => return true,
-                (None, TypeExpr::Named { path, generic_args, .. }, None)
-                    if path.segments.len() == 1 && generic_args.is_empty() =>
-                {
-                    at = path.segments[0].name.as_str()
-                }
-                _ => return false,
+                (Some(ScalarKind::Point), base, _) | (None, base, _) => match named(base) {
+                    Some(next) => at = next,
+                    None => return false,
+                },
             }
         }
         false
@@ -741,23 +762,53 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
     decls.keys().copied().filter(|n| typed(n)).collect()
 }
 
-/// The one error a value of the unit dialect gets until values are typed
-/// (U3 deletes this function and its callers in the check): a quantity's
-/// or a point's name where a value would live, or a quantity literal.
-/// `what` names it (``type `Money` ``, ``quantity literal `3bp` ``).
-pub(crate) fn value_not_yet(span: Span, what: &str) -> Diag {
-    Diag::ty(span, format!("{what}{NOT_YET}"))
-}
-
-/// What every one of the boundary's errors says after naming its place.
-const NOT_YET: &str = ": values of the unit dialect's types are not typed yet (GH #1076): declarations are \
-                       checked, and values arrive with the next step; until then, count in `Int`";
-
-/// Whether `d` is the not-yet boundary's error: the check reports each
-/// place once where it assembles the declarations' results, which each
-/// carry the boundary's errors their walk reached.
-pub(crate) fn is_boundary_refusal(d: &Diag) -> bool {
-    d.kind == hale_syntax::DiagKind::Type && d.message.ends_with(NOT_YET)
+/// A quantity's or a point's wire tag (decision 9, U3), by name, from the
+/// declarations as written: `q(` its denomination `)`, as the nearest
+/// declaration on its chain writes it (`q(cent)`, `q(100 msec)`); a
+/// point's adds `point` and its origin when one is written (`q(mK point
+/// 273150 mK)`). Two processes whose fields count in different
+/// denominations disagree in the tag, so in the shape hash. A name that
+/// is no quantity or point, or whose chain names no denomination, has
+/// none.
+pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<&'a str, String> {
+    let tag = |name: &'a str| -> Option<String> {
+        let mut at = name;
+        let mut denom: Option<String> = None;
+        let mut origin: Option<String> = None;
+        let mut point = false;
+        for _ in 0..=decls.len() {
+            let s = decls.get(at)?;
+            if denom.is_none() {
+                denom = s.denom.as_ref().map(|d| match d.multiple {
+                    1 => d.unit.name.clone(),
+                    m => format!("{m} {}", d.unit.name),
+                });
+            }
+            for c in &s.clauses {
+                if let (ScalarClause::Origin { value, unit, .. }, None) = (c, &origin) {
+                    origin = Some(format!("{value} {}", unit.name));
+                }
+            }
+            match (s.kind, &s.base) {
+                (Some(ScalarKind::Quantity), _) => {
+                    let denom = denom?;
+                    return Some(match (point, origin) {
+                        (false, _) => format!("q({denom})"),
+                        (true, None) => format!("q({denom} point)"),
+                        (true, Some(o)) => format!("q({denom} point {o})"),
+                    });
+                }
+                (Some(ScalarKind::Distinct), _) => return None,
+                (kind, TypeExpr::Named { path, .. }) if path.segments.len() == 1 => {
+                    point |= kind == Some(ScalarKind::Point);
+                    at = path.segments[0].name.as_str();
+                }
+                _ => return None,
+            }
+        }
+        None
+    };
+    decls.keys().filter_map(|n| Some((*n, tag(n)?))).collect()
 }
 
 /// Law 1: a unit is declared once. At the second declaration's name; the

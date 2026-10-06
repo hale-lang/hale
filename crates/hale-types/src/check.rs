@@ -35,6 +35,7 @@ use crate::law::{Law, RuleId, Violation};
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
+use crate::typed_bodies::SiteKind;
 
 fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     Ty::Function {
@@ -878,42 +879,34 @@ pub fn check_bundle_by_declaration(
         specializing: None,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
-        unit_types: inputs
-            .units
-            .scalars
-            .iter()
-            .filter(|s| matches!(s.kind, crate::units::ScalarKindRow::Quantity | crate::units::ScalarKindRow::Point))
-            .map(|s| (s.name.as_str(), s.display.as_str()))
-            .collect(),
         scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
-        unit_values_refused: BTreeMap::new(),
-        casts_judged_at_literals: false,
+        unit_findings: std::collections::BTreeSet::new(),
+        defaults_judged_at_literals: false,
+        decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
         default_evaluation: Vec::new(),
+        array_elements: std::collections::HashMap::new(),
     };
-    // GH #1076: the not-yet boundary's errors belong to every declaration
-    // whose walk reaches them (a parameter's default, reached by each
-    // caller that leaves it; a struct default's cast, by each literal that
-    // leaves the field), so each declaration's result is its own and a
-    // reused one still carries them. Each place is reported once, here,
-    // where the results are assembled.
-    let mut boundary: BTreeMap<(usize, usize), String> = BTreeMap::new();
+    let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
             let typing = match &reused[key.as_str()][i] {
                 Some(done) => done.typing.clone(),
                 None => {
-                    cx.unit_values_refused.clear();
                     let start = cx.diags.len();
+                    cx.decl_diags_start = start;
                     cx.check_top_decl(item);
                     cx.settle_param_accesses();
                     cx.diags.split_off(start)
                 }
             };
+            // GH #1076 (U3): a quantity rule's error a default's walk found
+            // is in the result of each declaration that leaves the default,
+            // and is reported once.
             for d in &typing {
-                let place = (d.span.start.as_usize(), d.span.end.as_usize());
-                if !crate::units::is_boundary_refusal(d) || boundary.insert(place, d.message.clone()).is_none() {
+                let key = (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone());
+                if !cx.unit_findings.contains(&key) || reported.insert(key) {
                     cx.diags.push(d.clone());
                 }
             }
@@ -921,8 +914,6 @@ pub fn check_bundle_by_declaration(
         }
         by_decl.insert(key.clone(), per);
     }
-    // The walks per monomorph report a place no declaration reported.
-    cx.unit_values_refused = boundary;
     cx.specialize_generic_bodies();
     // The walks per monomorph keep nothing: there is nothing to settle.
     debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
@@ -6139,41 +6130,60 @@ struct Checker<'a> {
     /// addresses types as its success type (the `bare_fallible` law
     /// reports the call).
     handling: crate::typed_bodies::Handling,
-    /// GH #1076: the unit dialect's quantity and point names (as
-    /// declared, mangled for an import), each with its author's spelling,
-    /// read from the unit rows: the not-yet boundary refuses each where a
-    /// value would live (`refuse_unit_types`) until U3.
-    unit_types: BTreeMap<&'a str, &'a str>,
-    /// GH #1076 (U2): the identities and ranges, whose values the rules
-    /// of `unit_values` type.
+    /// GH #1076: the unit dialect's scalar types, whose values the rules
+    /// of `unit_values` (identities and ranges, U2) and `unit_quantities`
+    /// (quantities and points, U3) type.
     scalars: crate::unit_values::ScalarTypes<'a>,
-    /// The places the boundary refused in the declaration being walked,
-    /// by span, each with its error's message: a place walked twice is
-    /// refused once, and a walk whose findings are discarded keeps the
-    /// boundary's (`discard_since`). Across declarations each place is
-    /// reported once where their results are assembled
-    /// (`check_bundle_by_declaration`).
-    unit_values_refused: BTreeMap<(usize, usize), String>,
+    /// GH #1076 (U3): the quantity rules' errors (`unit_error`), by place
+    /// and message: a struct default's walk, whose findings are otherwise
+    /// discarded, keeps them, since no other walk types the default.
+    unit_findings: std::collections::BTreeSet<(usize, usize, String)>,
     /// While a type declaration's field defaults are walked for the
-    /// defaults their calls leave: a cast's name there means what each
-    /// literal's scope says, so the cast is judged at the literal
-    /// (`type_omitted_defaults`), not here.
-    casts_judged_at_literals: bool,
+    /// defaults their calls leave: a name there means what each literal's
+    /// scope says, so the quantity rules' errors are found at the literal
+    /// (`type_omitted_defaults`), not kept here.
+    defaults_judged_at_literals: bool,
+    /// Where the declaration being walked starts in `diags`: a kept
+    /// error is once per declaration, which owns its result.
+    decl_diags_start: usize,
     /// The struct field defaults being typed at a literal that leaves
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
     /// While a default is typed where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
-    /// or a call that leaves a parameter. A cast typed there is that
-    /// path's row (`ConversionSite::DefaultCast`), so one default
-    /// evaluated in two scopes has two answers, nested or not. Lowering
+    /// or a call that leaves a parameter. A conversion typed there (a
+    /// cast's, a literal's, a value's) is that path's row
+    /// (`ConversionSite::path`), so one default evaluated in two scopes
+    /// has two answers, nested or not. Lowering
     /// keeps the same stack (`Cx::default_evaluation`): both push at the
     /// same two events, a literal leaving a field
     /// (`type_omitted_defaults`) and a call leaving a parameter
     /// (`record_omitted_defaults`), for exactly the walk of the defaults
     /// left, so the two stacks agree.
     default_evaluation: Vec<u32>,
+    /// GH #1076: each array literal's elements as the walk last typed
+    /// them, by node: a place of an array type flows each element into
+    /// its element type from the element's own type (`flows_into`).
+    array_elements: std::collections::HashMap<*const Expr, ArrayElements>,
+}
+
+/// An array literal's elements as the walk typed them (GH #1076).
+#[derive(Clone)]
+struct ArrayElements {
+    tys: Vec<Ty>,
+    /// With a quantity among them: what their meet did, which a place of
+    /// an array type of its own withdraws.
+    meet: Option<ArrayMeet>,
+}
+
+/// What the meet of an array literal's elements did (U3): the rows its
+/// conversions replaced, at each element's site (a nested literal's
+/// elements' included), and the errors it reported.
+#[derive(Clone)]
+struct ArrayMeet {
+    saved: Vec<(crate::typed_bodies::ConversionSite, Option<(u32, crate::typed_bodies::ConversionRow)>)>,
+    reported: Vec<(Span, String)>,
 }
 
 #[derive(Default)]
@@ -6347,36 +6357,25 @@ impl<'a> Checker<'a> {
                         // leave are expanded there: the `omitted_args`
                         // column records them (C3 rest, the review of
                         // #1351).
-                        // GH #1076: so is a quantity literal, whose value is
-                        // not typed yet in any scope, so the not-yet
-                        // boundary refuses it here. A cast's name means
-                        // what the literal's scope says, also in a default
-                        // a call here leaves; it is judged there
-                        // (`type_omitted_defaults`).
+                        // GH #1076: a default's casts and quantity
+                        // literals are typed there too, in the literal's
+                        // scope (`type_omitted_defaults`).
                         let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
-                        let mut unit_values: Vec<(Span, String)> = Vec::new();
-                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
-                            Expr::Call { callee, args, id, .. } => {
+                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
+                            if let Expr::Call { callee, args, id, .. } = e {
                                 calls.push((*id, callee.as_ref(), args.len()));
                             }
-                            Expr::Literal(Literal::Quantity { value, unit }, span) => {
-                                unit_values.push((*span, format!("quantity literal `{value}{unit}`")));
-                            }
-                            _ => {}
                         });
                         for f in fields {
                             if let Some(d) = &f.default {
                                 walk.expr(d);
                             }
                         }
-                        for (span, what) in unit_values {
-                            self.refuse_unit_value(span, what);
-                        }
-                        let judged = std::mem::replace(&mut self.casts_judged_at_literals, true);
+                        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
                         for (id, callee, supplied) in calls {
                             self.record_omitted_defaults(id, callee, supplied);
                         }
-                        self.casts_judged_at_literals = judged;
+                        self.defaults_judged_at_literals = judged;
                     }
                     TypeDeclBody::Enum(variants) => {
                         for v in variants {
@@ -6438,9 +6437,6 @@ impl<'a> Checker<'a> {
                 //     check_phase3_fallback_subscribers (bundle
                 //     pass).
                 let _ = t.on_unmatched;
-                // GH #1076: a payload is a value, and a unit-dialect
-                // type's values are not typed yet.
-                self.refuse_unit_types(&t.payload);
 
                 // (1) keyed_by field must exist on the payload
                 // type and resolve to an int-shaped scalar
@@ -10525,7 +10521,37 @@ impl<'a> Checker<'a> {
                 // identity, and a range's sum is an `Int` storing it
                 // back narrows.
                 let mut stored: Option<Expr> = None;
-                if let Some(bin) = assign_binop(*op) {
+                // GH #1076 (U3): `x += v` of a quantity converts `v` into
+                // `x`'s denomination (a point's, its quantity's); `x *= n`
+                // and `x /= n` scale it by an `Int`, a literal divisor
+                // other than one being a narrowing `x = x / n or …` says.
+                let mut want = want;
+                if let (Some(bin), Some(w)) = (assign_binop(*op), self.scalars.quantity(&want)) {
+                    use crate::unit_quantities::QKind;
+                    let int = matches!(got, Ty::Prim(PrimType::Int));
+                    let literal = crate::unit_values::int_literal(value);
+                    match bin {
+                        BinOp::Add | BinOp::Sub if w.kind == QKind::Point => want = self.scalars.point_delta(&w),
+                        BinOp::Add | BinOp::Sub => {}
+                        BinOp::Mul if int && w.kind == QKind::Quantity => got = want.clone(),
+                        BinOp::Div if int && w.kind == QKind::Quantity && matches!(literal, None | Some(1)) => {
+                            got = want.clone()
+                        }
+                        _ => {
+                            let target = self.scalars.type_display(&want);
+                            self.unit_error(Diag::ty(
+                                *span,
+                                format!(
+                                    "`{target} {}= {}`: a quantity adds and subtracts its own kind, and scales by an \
+                                     `Int`; a literal divisor is a narrowing, written `x = x / n or …`",
+                                    crate::unit_quantities::op_symbol(bin),
+                                    self.scalars.type_display(&got)
+                                ),
+                            ));
+                            got = want.clone();
+                        }
+                    }
+                } else if let Some(bin) = assign_binop(*op) {
                     if self.scalars.index(&want).is_some() || self.scalars.index(&got).is_some() {
                         let place = Expr::Ident(target.head.clone());
                         got = self.binop_ty(bin, &want, &got, *span, (&place, value));
@@ -11961,14 +11987,9 @@ impl<'a> Checker<'a> {
     }
 
     /// Discard what the walk since `mark` found: its diagnostics and the
-    /// param accesses it reached. The not-yet boundary's errors stay
-    /// (GH #1076): each is refused once, so a place first reached by a
-    /// discarded walk (a default typed at its invocation, a receiver
-    /// typed ahead) is never refused again, and lowering would get it.
+    /// param accesses it reached.
     fn discard_since(&mut self, mark: WalkMark) {
-        let found = self.diags.split_off(mark.diags);
-        let kept: Vec<Diag> = found.into_iter().filter(|d| self.is_unit_value_refusal(d)).collect();
-        self.diags.extend(kept);
+        self.diags.truncate(mark.diags);
         self.access_visits.truncate(mark.visits);
     }
 
@@ -12380,42 +12401,6 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
-    /// GH #1076: a unit-dialect type named where a value would live (an
-    /// annotation, at any depth: `Vec<Money>`), one error per name. A
-    /// type parameter of that name shadows the declaration.
-    fn refuse_unit_types(&mut self, te: &TypeExpr) {
-        match te {
-            TypeExpr::Named { path, generic_args, span } => {
-                for arg in generic_args {
-                    self.refuse_unit_types(arg);
-                }
-                if let [name] = path.segments.as_slice() {
-                    if !self.generic_params.contains(&name.name) {
-                        if let Some(display) = self.unit_types.get(name.name.as_str()) {
-                            self.refuse_unit_value(*span, format!("type `{display}`"));
-                        }
-                    }
-                }
-            }
-            TypeExpr::Projection { inner, .. } => self.refuse_unit_types(inner),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.refuse_unit_types(elem),
-            TypeExpr::Tuple(parts, _) => {
-                for p in parts {
-                    self.refuse_unit_types(p);
-                }
-            }
-            TypeExpr::Function { params, ret, .. } => {
-                for p in params {
-                    self.refuse_unit_types(p);
-                }
-                if let Some(r) = ret {
-                    self.refuse_unit_types(r);
-                }
-            }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
-        }
-    }
-
     /// GH #1076 (U2): whether a value of `got`, the expression `value`,
     /// flows into a place of type `want`: assignability, and the
     /// identities' and ranges' rules (`unit_values`). An integer literal
@@ -12427,20 +12412,72 @@ impl<'a> Checker<'a> {
     /// `true` so the caller adds no second error; `false` is the caller's
     /// own mismatch to report.
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        // GH #1076 (U3): a value counted in a denomination no declaration
+        // names, meeting a place the checker has no type for (a generic
+        // field of a literal, a parameter it cannot see), has nothing to
+        // be converted into: refused, never stored as the wrong count.
+        if matches!(want, Ty::Unknown) && self.scalars.has_quantities() {
+            if let Some(q) = self.scalars.quantity(got).filter(|q| q.synthesized) {
+                let shown = self.scalars.quantity_display(&q);
+                let base = self.scalars.base_display(&q);
+                self.unit_error(Diag::ty(
+                    value.span(),
+                    format!(
+                        "a value of `{shown}` meets a place whose type is not known here, so it has nothing to be \
+                         converted into: convert it first (`{base}(…)`)"
+                    ),
+                ));
+                return true;
+            }
+        }
+        // GH #1076 (U3): an array literal holding a quantity, into an
+        // array type. Its elements met where the literal was typed
+        // (`array_element`); where the meet is the place's element type,
+        // the meet's rows are the conversion. Anywhere else the meet is
+        // withdrawn, and each element flows into the element type from its
+        // own type: a row, or a refusal, at each.
+        if let (Ty::Array(we, wn), Expr::Array(elems, _)) = (want, value) {
+            let entry = self.array_elements.get(&(value as *const Expr)).cloned();
+            if let Some(ArrayElements { tys, meet: Some(meet) }) = entry {
+                if meet.reported.is_empty() && want.assignable_from(got) {
+                    return true;
+                }
+                if *wn == Some(elems.len() as u64) && tys.len() == elems.len() {
+                    self.withdraw_meet(&meet);
+                    for (e, t) in elems.iter().zip(&tys) {
+                        if !self.flows_into(we, t, e) {
+                            let (w, g) = (self.scalars.type_display(we), self.scalars.type_display(t));
+                            self.unit_error(Diag::ty(e.span(), format!("`[…]`: an element of `{g}` where `{w}` is expected")));
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
         }
         // An array literal into an array of identities or ranges: each
-        // element flows into the element type (`[1, 2]` into `[OrderId;
-        // 2]`, each literal held to the range).
+        // element flows into the element type from its own type (`[1, 2]`
+        // into `[OrderId; 2]`, each literal held to the range).
         if let (Ty::Array(we, wn), Ty::Array(ge, gn), Expr::Array(elems, _)) = (want, got, value) {
             if wn == gn {
+                let own = self
+                    .array_elements
+                    .get(&(value as *const Expr))
+                    .map(|a| a.tys.clone())
+                    .filter(|tys| tys.len() == elems.len());
                 let mut all = true;
-                for e in elems {
-                    all &= self.flows_into(we, ge, e);
+                for (i, e) in elems.iter().enumerate() {
+                    let t = own.as_ref().map_or(&**ge, |tys| &tys[i]);
+                    all &= self.flows_into(we, t, e);
                 }
                 return all;
             }
+        }
+        // GH #1076 (U3): a quantity or a point on either side.
+        if let Some(handled) = self.quantity_flow(want, got, value) {
+            return handled;
         }
         if let Some(v) = crate::unit_values::int_literal(value) {
             if matches!(got, Ty::Prim(PrimType::Int)) {
@@ -12458,16 +12495,15 @@ impl<'a> Checker<'a> {
             // A row, so every place a value changes type is one; lowering
             // emits nothing for it.
             if self.specializing.is_none() {
-                let row = crate::typed_bodies::ConversionRow {
-                    span: value.span(),
-                    from: got.clone(),
-                    to: want.clone(),
-                    kind: crate::typed_bodies::ConversionKind::Widening,
-                    range: None,
-                    policy: None,
-                    target: want.display(),
-                };
-                self.typed.conversion(self.body, crate::typed_bodies::ConversionSite::value(value.span()), row);
+                let row = crate::typed_bodies::ConversionRow::new(
+                    value.span(),
+                    got.clone(),
+                    want.clone(),
+                    crate::typed_bodies::ConversionKind::Widening,
+                    want.display(),
+                );
+                let site = self.site(SiteKind::value(value.span()));
+                self.typed.conversion(self.body, site, row);
             }
             return true;
         }
@@ -12478,6 +12514,457 @@ impl<'a> Checker<'a> {
             }
             None => false,
         }
+    }
+
+    /// GH #1076 (U3): a default's value into the type of its `place` (a
+    /// field or a parameter) where the default is evaluated, as a
+    /// binding's initializer flows into its annotation ([`Self::flows_into`]),
+    /// whatever the type's shape: an array literal's elements each into the
+    /// element type, each a row on the evaluation's path. The walk keeps
+    /// only the quantity rules' errors, so the mismatch a binding would
+    /// report is one of them where a quantity is involved: a tuple holding
+    /// a quantity at another denomination is refused, never stored at the
+    /// wrong count.
+    fn default_flows_into(&mut self, place: &str, want: &Ty, got: &Ty, default: &Expr) {
+        if !self.flows_into(want, got, default) && (self.holds_quantity(want) || self.holds_quantity(got)) {
+            let message = format!("{place}: declared `{}`, default is `{}`", want.display(), got.display());
+            self.unit_error(Diag::ty(default.span(), message));
+        }
+    }
+
+    /// GH #1076 (U3): whether a value of `ty` is a quantity or a point, or
+    /// holds one as an array's element or a tuple's part.
+    fn holds_quantity(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Array(e, _) | Ty::Bounded(e, _) => self.holds_quantity(e),
+            Ty::Tuple(parts) => parts.iter().any(|p| self.holds_quantity(p)),
+            _ => self.scalars.quantity(ty).is_some(),
+        }
+    }
+
+    /// GH #1076 (U3): the element type of the array literal `array`, its
+    /// `parts` typed `tys`. With no quantity among them, the first
+    /// element's. With one, the elements meet as a sum's operands do: the
+    /// quantity at the finer of their denominations, each element converted
+    /// there exactly (a row where it changes denomination); elements of two
+    /// quantities, a quantity beside a point or an `Int`, are refused
+    /// naming both. A place of an array type of its own withdraws the meet
+    /// (`flows_into`).
+    fn array_element(&mut self, array: &Expr, parts: &[Expr], tys: Vec<Ty>) -> Ty {
+        let first = tys.first().cloned().unwrap_or(Ty::Unknown);
+        if self.scalars.is_empty() {
+            return first;
+        }
+        let key = array as *const Expr;
+        if !self.scalars.has_quantities() || !tys.iter().any(|t| self.holds_quantity(t)) {
+            self.array_elements.insert(key, ArrayElements { tys, meet: None });
+            return first;
+        }
+        let mut sites = Vec::new();
+        self.element_sites(parts, &mut sites);
+        let saved = sites
+            .into_iter()
+            .map(|site| {
+                let row = self.typed.saved_conversion(&site);
+                (site, row)
+            })
+            .collect();
+        let mark = self.diags.len();
+        let mut met = Ok(first.clone());
+        for t in &tys[1..] {
+            met = met.and_then(|m| self.element_meet(&m, t));
+        }
+        let elem = match met {
+            Ok(meet) => {
+                for (e, t) in parts.iter().zip(&tys) {
+                    if !meet.assignable_from(t) && !self.flows_into(&meet, t, e) {
+                        let (m, g) = (self.scalars.type_display(&meet), self.scalars.type_display(t));
+                        self.unit_error(Diag::ty(
+                            e.span(),
+                            format!("`[…]`: elements of `{m}` and `{g}`; an array holds one type"),
+                        ));
+                    }
+                }
+                meet
+            }
+            Err((message, sides)) => {
+                let mut d = Diag::ty(array.span(), format!("`[…]`: {message}"));
+                for (at, label) in self.scalars.notes(&[sides.0.as_ref(), sides.1.as_ref()]) {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                first
+            }
+        };
+        let reported = self.diags[mark..].iter().map(|d| (d.span, d.message.clone())).collect();
+        self.array_elements.insert(key, ArrayElements { tys, meet: Some(ArrayMeet { saved, reported }) });
+        elem
+    }
+
+    /// GH #1076 (U3): the meet of two element types of one array literal,
+    /// or why they have none (with the quantity of each side, for the
+    /// notes).
+    #[allow(clippy::type_complexity)]
+    fn element_meet(
+        &self,
+        a: &Ty,
+        b: &Ty,
+    ) -> Result<Ty, (String, (Option<crate::unit_quantities::QType>, Option<crate::unit_quantities::QType>))> {
+        use crate::unit_quantities::QKind;
+        if a == b || matches!(b, Ty::Unknown) {
+            return Ok(a.clone());
+        }
+        if matches!(a, Ty::Unknown) {
+            return Ok(b.clone());
+        }
+        let (an, bn) = (self.scalars.type_display(a), self.scalars.type_display(b));
+        let (aq, bq) = (self.scalars.quantity(a), self.scalars.quantity(b));
+        let kind = |q: &crate::unit_quantities::QType| match q.kind {
+            QKind::Quantity => "a quantity",
+            QKind::Point => "a point",
+        };
+        let why = match (&aq, &bq) {
+            (Some(x), Some(y)) if x.component != y.component => format!(
+                "elements of different quantities, `{}` and `{}`; an array holds one",
+                self.scalars.base_display(x),
+                self.scalars.base_display(y)
+            ),
+            (Some(x), Some(y)) if x.kind != y.kind => {
+                format!("`{an}` is {} and `{bn}` {}; an array holds one or the other", kind(x), kind(y))
+            }
+            (Some(x), Some(y)) if x.kind == QKind::Point && x.base != y.base => format!(
+                "elements of points of different origins, `{an}` and `{bn}`; an array holds one: convert explicitly, `{}(…)`",
+                self.scalars.base_display(x)
+            ),
+            (Some(x), Some(y)) => match self.scalars.meet(&x.denom, &y.denom) {
+                Some(at) => return Ok(self.scalars.at_denomination(x.base, &at)),
+                None => format!("elements of `{an}` and `{bn}`; an array holds one type"),
+            },
+            (Some(q), None) | (None, Some(q)) if matches!(a, Ty::Prim(PrimType::Int)) || matches!(b, Ty::Prim(PrimType::Int)) => {
+                format!(
+                    "elements of `{an}` and `{bn}`: an `Int` is no quantity; a count becomes one by a unit (`n * 1{}`)",
+                    self.scalars.unit_hint(q)
+                )
+            }
+            _ => match (a, b) {
+                (Ty::Array(x, n), Ty::Array(y, m)) if n == m => return Ok(Ty::Array(Box::new(self.element_meet(x, y)?), *n)),
+                _ if !self.holds_quantity(a) && !self.holds_quantity(b) => return Ok(a.clone()),
+                _ => format!("elements of `{an}` and `{bn}`; an array holds one type"),
+            },
+        };
+        Err((why, (aq, bq)))
+    }
+
+    /// The sites of an array literal's elements, a nested literal's
+    /// elements' in its place: where the meet records its rows.
+    fn element_sites(&self, parts: &[Expr], out: &mut Vec<crate::typed_bodies::ConversionSite>) {
+        for e in parts {
+            match e {
+                Expr::Array(inner, _) => self.element_sites(inner, out),
+                _ => out.push(self.site(SiteKind::value(e.span()))),
+            }
+        }
+    }
+
+    /// GH #1076 (U3): undo what an array literal's meet did: its elements'
+    /// rows put back as they were before it, its errors withdrawn.
+    fn withdraw_meet(&mut self, meet: &ArrayMeet) {
+        for (site, row) in &meet.saved {
+            self.typed.restore_conversion(site, row.clone());
+        }
+        for (span, message) in &meet.reported {
+            if let Some(i) = self.diags.iter().rposition(|d| d.span == *span && &d.message == message) {
+                self.diags.remove(i);
+            }
+            self.unit_findings.remove(&(span.start.as_usize(), span.end.as_usize(), message.clone()));
+        }
+    }
+
+    /// GH #1076 (U3): an error of the quantity rules, remembered by place
+    /// and message so a struct default's discarded walk keeps it.
+    fn unit_error(&mut self, d: Diag) {
+        self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+        self.diags.push(d);
+    }
+
+    /// GH #1076 (U3): a value of `got` (the expression `value`) into a
+    /// place of `want`, either of them a quantity or a point. Two types of
+    /// one component and kind (two points of one origin) convert by the
+    /// row recorded at the value: a widening, or a narrowing the target's
+    /// `round:` discharges (with none, the `bare_fallible` law refuses
+    /// it). A literal zero is a value of every quantity. Anything else is
+    /// refused here, naming both. `None` when neither is a quantity or a
+    /// point.
+    fn quantity_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
+        use crate::unit_quantities::QKind;
+        let (wq, gq) = (self.scalars.quantity(want), self.scalars.quantity(got));
+        if wq.is_none() && gq.is_none() {
+            return None;
+        }
+        let (w_name, g_name) = (self.scalars.type_display(want), self.scalars.type_display(got));
+        let refusal = match (&wq, &gq) {
+            (Some(w), Some(g)) if w.component != g.component => Some(format!(
+                "`{g_name}` is not `{w_name}`: different quantities, `{}` and `{}`; no conversion holds between them",
+                self.scalars.base_display(g),
+                self.scalars.base_display(w)
+            )),
+            (Some(w), Some(_)) if w.kind == QKind::Point && gq.as_ref().is_some_and(|g| g.kind == QKind::Quantity) => {
+                Some(format!(
+                    "`{g_name}` is a quantity and `{w_name}` a point: `{}(…)` is the point that far from its origin",
+                    self.scalars.base_display(w)
+                ))
+            }
+            (Some(_), Some(g)) if g.kind == QKind::Point && wq.as_ref().is_some_and(|w| w.kind == QKind::Quantity) => {
+                Some(format!(
+                    "`{g_name}` is a point and `{w_name}` a quantity: the quantity between two points is their \
+                     difference (`p - q`)"
+                ))
+            }
+            (Some(w), Some(g)) if w.kind == QKind::Point && w.base != g.base => Some(format!(
+                "`{g_name}` and `{w_name}` are points of different origins: convert explicitly, `{}(…)`",
+                self.scalars.base_display(w)
+            )),
+            (Some(_), Some(_)) => None,
+            (Some(w), None) => {
+                if w.kind == QKind::Quantity && crate::unit_values::int_literal(value) == Some(0) {
+                    return Some(true);
+                }
+                Some(match got {
+                    Ty::Prim(PrimType::Int) => format!(
+                        "`Int` is not `{w_name}`: a count becomes a quantity by a unit (`n * 1{}`)",
+                        self.scalars.unit_hint(w)
+                    ),
+                    _ => return None,
+                })
+            }
+            (None, Some(g)) => Some(match want {
+                Ty::Prim(PrimType::Int) => format!(
+                    "`{g_name}` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1{}`)",
+                    self.scalars.unit_hint(g)
+                ),
+                _ => return None,
+            }),
+            (None, None) => None,
+        };
+        if let Some(message) = refusal {
+            let mut d = Diag::ty(value.span(), message);
+            for (span, label) in self.scalars.notes(&[wq.as_ref(), gq.as_ref()]) {
+                d = d.with_related(span, label);
+            }
+            self.unit_error(d);
+            return Some(true);
+        }
+        let (w, g) = (wq?, gq?);
+        match self.scalars.scale(&g, &w) {
+            Ok(scale) => self.record_scale(value, got, want, scale, w.policy),
+            Err(why) => self.unit_error(Diag::ty(value.span(), why)),
+        }
+        Some(true)
+    }
+
+    /// GH #1076 (U3): the conversion of `value`, of `from`, into `to` by
+    /// `scale`, recorded as the row at the value: a widening, or a
+    /// narrowing `policy` (the target's `round:`) discharges or nothing
+    /// does. A quantity literal's row is its own: its count, converted
+    /// here, is the constant lowering emits.
+    fn record_scale(
+        &mut self,
+        value: &Expr,
+        from: &Ty,
+        to: &Ty,
+        scale: crate::typed_bodies::Scale,
+        policy: Option<crate::units::RoundPolicy>,
+    ) {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge};
+        if self.specializing.is_some() {
+            return;
+        }
+        let narrows = !scale.factor.is_integral();
+        let kind = if narrows { ConversionKind::Narrowing } else { ConversionKind::Widening };
+        let mut row = ConversionRow::new(value.span(), from.clone(), to.clone(), kind, self.scalars.type_display(to));
+        if narrows {
+            row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
+        }
+        let site = self.site(SiteKind::value(value.span()));
+        if let Expr::Literal(Literal::Quantity { value: n, unit }, span) = value {
+            // A literal's conversion is computed here: a whole number of
+            // the target is exact, whatever the factor.
+            if narrows && crate::unit_quantities::convert_count(*n, &scale, None).is_some() {
+                row.kind = ConversionKind::Widening;
+                row.policy = None;
+            }
+            match crate::unit_quantities::convert_count(*n, &scale, policy) {
+                Some(Ok(count)) => row.count = Some(count),
+                Some(Err(())) => self.unit_error(Diag::ty(
+                    *span,
+                    format!("`{n}{unit}` as a count of `{}` overflows an `Int`", row.target),
+                )),
+                None => {}
+            }
+            row.scale = Some(scale);
+            self.typed.reconversion(self.body, site, row);
+            return;
+        }
+        row.scale = Some(scale);
+        self.typed.conversion(self.body, site, row);
+    }
+
+    /// GH #1076 (U3): a quantity literal: its component's quantity at its
+    /// own unit, with its own row (its count, before it flows anywhere).
+    fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
+        match self.scalars.literal_type(n, unit) {
+            Err(why) => {
+                self.unit_error(Diag::ty(span, why));
+                Ty::Unknown
+            }
+            Ok(Ty::Unknown) => Ty::Unknown,
+            Ok(t) => {
+                if self.specializing.is_none() {
+                    let mut row = ConversionRow::new(span, t.clone(), t.clone(), ConversionKind::Widening, self.scalars.type_display(&t));
+                    row.scale = Some(Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 });
+                    row.count = Some(n);
+                    let site = self.site(SiteKind::value(span));
+                    self.typed.conversion(self.body, site, row);
+                }
+                t
+            }
+        }
+    }
+
+    /// GH #1076 (U3): a value of `t`, the expression `e`, printed: a
+    /// quantity's row says the unit lowering writes after its count.
+    fn record_printed(&mut self, e: &Expr, t: &Ty) {
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
+        if self.specializing.is_some() || !self.scalars.has_quantities() {
+            return;
+        }
+        let Some(q) = self.scalars.quantity(t) else { return };
+        let Some(unit) = self.scalars.printed_unit(&q) else { return };
+        let mut row = ConversionRow::new(e.span(), t.clone(), Ty::Prim(PrimType::String), ConversionKind::Total, "String".into());
+        row.printed = Some(unit);
+        let site = self.site(SiteKind::printed(e.span()));
+        self.typed.conversion(self.body, site, row);
+    }
+
+    /// GH #1076 (U3): `T(x)`, `T` a quantity or a point: the conversion of
+    /// `x` into `T`, its row at the call (a narrowing `T`'s `round:`
+    /// discharges, or the `or` after the call), or refused.
+    fn quantity_cast(&mut self, call: NodeId, span: Span, to: Ty, q: crate::unit_quantities::QType, arg: &Expr) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge};
+        let from = self.check_expr(arg);
+        if matches!(from, Ty::Unknown) {
+            return to;
+        }
+        match self.scalars.quantity_cast(&q, &from) {
+            Err(why) => {
+                let mut d = Diag::ty(span, why);
+                let fq = self.scalars.quantity(&from);
+                for (at, label) in self.scalars.notes(&[Some(&q), fq.as_ref()]) {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                // A refused cast's value has no type to hold elsewhere.
+                return Ty::Unknown;
+            }
+            Ok(scale) => {
+                // A literal's cast is the literal flowing into `T`, at
+                // compile time, when its count is a whole number of `T` or
+                // `T` rounds it: the cast itself then changes nothing.
+                if let Expr::Literal(Literal::Quantity { value: n, .. }, _) = arg {
+                    if crate::unit_quantities::convert_count(*n, &scale, q.policy).is_some() {
+                        self.record_scale(arg, &from, &to, scale, q.policy);
+                        let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
+                        if self.specializing.is_none() {
+                            let mut row =
+                                ConversionRow::new(span, to.clone(), to.clone(), ConversionKind::Widening, self.scalars.type_display(&to));
+                            row.scale = Some(one);
+                            let site = self.site(SiteKind::Cast(call.0));
+                            self.typed.conversion(self.body, site, row);
+                        }
+                        return to;
+                    }
+                }
+                if self.specializing.is_none() {
+                    let narrows = !scale.factor.is_integral();
+                    let kind = if narrows { ConversionKind::Narrowing } else { ConversionKind::Widening };
+                    let mut row = ConversionRow::new(span, from, to.clone(), kind, self.scalars.type_display(&to));
+                    if narrows {
+                        row.policy = q.policy.map(|policy| Discharge::Round { policy, from_type: true });
+                    }
+                    row.scale = Some(scale);
+                    let site = self.site(SiteKind::Cast(call.0));
+                    self.typed.conversion(self.body, site, row);
+                }
+            }
+        }
+        to
+    }
+
+    /// GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or a point
+    /// `x` of type `t`: the conversion into `u`'s denomination, its row at
+    /// the call (a narrowing the `or` after the call discharges); and the
+    /// whole count of `u` with the rest, at the finer of the two
+    /// denominations, total.
+    fn quantity_method(
+        &mut self,
+        call: NodeId,
+        span: Span,
+        method: &str,
+        t: Ty,
+        q: crate::unit_quantities::QType,
+        arg: &Expr,
+    ) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
+        let denom = match self.scalars.named_denomination(&q, arg) {
+            Ok(d) => d,
+            Err(why) => {
+                self.unit_error(Diag::ty(arg.span(), format!("`.{method}(…)`: {why}")));
+                return Ty::Unknown;
+            }
+        };
+        if method == "in" {
+            let to = self.scalars.at_denomination(q.base, &denom);
+            let target = crate::unit_quantities::QType { denom, policy: None, range: None, synthesized: true, ..q.clone() };
+            match self.scalars.scale(&q, &target) {
+                Ok(scale) if self.specializing.is_none() => {
+                    let kind =
+                        if scale.factor.is_integral() { ConversionKind::Widening } else { ConversionKind::Narrowing };
+                    let mut row = ConversionRow::new(span, t, to.clone(), kind, self.scalars.type_display(&to));
+                    row.scale = Some(scale);
+                    let site = self.site(SiteKind::Cast(call.0));
+                    self.typed.conversion(self.body, site, row);
+                }
+                Ok(_) => {}
+                Err(why) => self.unit_error(Diag::ty(span, why)),
+            }
+            return to;
+        }
+        if q.kind == crate::unit_quantities::QKind::Point {
+            self.unit_error(Diag::ty(
+                span,
+                format!(
+                    "`.split(…)` of the point `{}`: a point is split as the quantity from an origin (`(p - o).split(u)`)",
+                    self.scalars.type_display(&t)
+                ),
+            ));
+            return Ty::Unknown;
+        }
+        let Some((rest, scale, divisor)) = self.scalars.split(&t, &q, &denom) else {
+            return Ty::Unknown;
+        };
+        let Ok(divisor) = i64::try_from(divisor) else {
+            self.unit_error(Diag::ty(span, "`.split(…)`: the unit's count overflows an `Int`".to_string()));
+            return Ty::Unknown;
+        };
+        if self.specializing.is_none() {
+            let mut row = ConversionRow::new(span, t, rest.clone(), ConversionKind::Widening, self.scalars.type_display(&rest));
+            row.scale = Some(scale);
+            row.split = Some(divisor);
+            let site = self.site(SiteKind::Cast(call.0));
+            self.typed.conversion(self.body, site, row);
+        }
+        Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
     }
 
     /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
@@ -12499,6 +12986,19 @@ impl<'a> Checker<'a> {
             }
             let mark = self.walk_mark();
             let from = self.check_expr(&args[0]);
+            // GH #1076 (U3): a quantity's count is a quotient by a unit.
+            if let Some(q) = self.scalars.quantity(&from) {
+                self.unit_error(Diag::ty(
+                    span,
+                    format!(
+                        "`Int(…)` of `{}`: a quantity's count in a unit is a quotient (`q / 1{}`), a point's the \
+                         quantity from an origin's",
+                        self.scalars.quantity_display(&q),
+                        self.scalars.unit_hint(&q)
+                    ),
+                ));
+                return Some(Ty::Prim(PrimType::Int));
+            }
             if self.scalars.index(&from).is_none() {
                 self.discard_since(mark);
                 return None;
@@ -12506,6 +13006,21 @@ impl<'a> Checker<'a> {
             return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
         } else {
             let t = Ty::Named(callee.name.clone());
+            // GH #1076 (U3): a quantity's or a point's cast.
+            if let Some(q) = self.scalars.quantity(&t).filter(|q| !q.synthesized) {
+                if args.len() != 1 {
+                    for a in args {
+                        let _ = self.check_expr(a);
+                    }
+                    let name = self.scalars.quantity_display(&q);
+                    self.unit_error(Diag::ty(
+                        span,
+                        format!("`{name}(…)` converts one value into `{name}`; it is given {}", args.len()),
+                    ));
+                    return Some(t);
+                }
+                return Some(self.quantity_cast(call, span, t, q, &args[0]));
+            }
             let i = self.scalars.index(&t)?;
             if args.len() != 1 {
                 for a in args {
@@ -12542,9 +13057,9 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 if self.specializing.is_none() {
-                    let row =
-                        ConversionRow { span, from, to: to.clone(), kind, range, policy: None, target: target.to_string() };
-                    let site = self.cast_site(call);
+                    let mut row = ConversionRow::new(span, from, to.clone(), kind, target.to_string());
+                    row.range = range;
+                    let site = self.site(SiteKind::Cast(call.0));
                     self.typed.conversion(self.body, site, row);
                 }
             }
@@ -12552,55 +13067,27 @@ impl<'a> Checker<'a> {
         to
     }
 
-    /// The key of the cast at `call`: its call, or inside a default the
-    /// evaluation path being typed and its call.
-    fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
-        use crate::typed_bodies::ConversionSite;
-        if self.default_evaluation.is_empty() {
-            ConversionSite::Cast(call.0)
-        } else {
-            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: call.0 }
-        }
+    /// The key of a conversion of `kind` (a cast's, a quantity's `.in(u)`
+    /// and `.split(u)`, by the call; a value's, a literal's, a division's,
+    /// a printed value's, by the span): inside a default, on the
+    /// evaluation path being typed, since what the default's names mean
+    /// and what its values flow into are that scope's. Every row the
+    /// checker records is keyed here.
+    fn site(&self, kind: SiteKind) -> crate::typed_bodies::ConversionSite {
+        crate::typed_bodies::ConversionSite::new(kind, self.default_evaluation.clone())
     }
 
-    /// The narrowing `inner` is, when it is a cast the conversions column
-    /// holds as one: its site.
+    /// The narrowing `inner` is, when the conversions column holds it as
+    /// one: a cast's, a quantity's `.in(u)`, by the call; a quantity
+    /// divided by a literal (U3), by the division.
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
-        let Expr::Call { id, .. } = inner else { return None };
-        let site = self.cast_site(*id);
+        let site = match inner {
+            Expr::Call { id, .. } => self.site(SiteKind::Cast(id.0)),
+            Expr::Binary { op: BinOp::Div, span, .. } => self.site(SiteKind::divide(*span)),
+            _ => return None,
+        };
         let row = self.typed.conversion_at(&site)?;
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
-    }
-
-    /// GH #1076: the not-yet boundary's error, once per place however
-    /// often a declaration's walk reaches it (a generic body is walked
-    /// again per specialization; an annotation's arguments by both walks).
-    fn refuse_unit_value(&mut self, span: Span, what: String) {
-        if let std::collections::btree_map::Entry::Vacant(at) =
-            self.unit_values_refused.entry((span.start.as_usize(), span.end.as_usize()))
-        {
-            let diag = crate::units::value_not_yet(span, &what);
-            at.insert(diag.message.clone());
-            self.diags.push(diag);
-        }
-    }
-
-    /// Whether `d` is the not-yet boundary's error at its place.
-    fn is_unit_value_refusal(&self, d: &Diag) -> bool {
-        self.unit_values_refused.get(&(d.span.start.as_usize(), d.span.end.as_usize())) == Some(&d.message)
-    }
-
-    /// GH #1076: a call through `name` is a cast to a unit-dialect type
-    /// only when the name means the declaration: a local, a parameter or
-    /// a fn of the name is what the name means, as for any other name.
-    fn refuse_unit_cast(&mut self, name: &Ident) {
-        let Some(display) = self.unit_types.get(name.name.as_str()).copied() else { return };
-        if self.casts_judged_at_literals {
-            return;
-        }
-        if self.locals.lookup(&name.name).is_none() && !self.fn_decls.contains_key(&name.name) {
-            self.refuse_unit_value(name.span, format!("type `{display}`"));
-        }
     }
 
     /// GH #1076: a struct field's default is evaluated at each literal
@@ -12609,27 +13096,50 @@ impl<'a> Checker<'a> {
     /// call that leaves it (`record_omitted_defaults`): the scopes it
     /// opens, the parameter defaults its calls leave and the field
     /// defaults its own literals leave are all walked where they are
-    /// evaluated. The walk is discarded but for two things: the not-yet
-    /// boundary's errors (`discard_since`), and the conversion rows of
-    /// its casts, which lowering reads where it evaluates the default and
-    /// which are kept in the constructing declaration's body, one per
-    /// cast per evaluation (the path of evaluations ending at `literal`:
-    /// `default_evaluation`), since the cast's name means what that
-    /// scope says. A default no literal leaves is never
-    /// evaluated. Its quantity literals are refused at the declaration
-    /// too, which they are in any scope.
+    /// evaluated. The walk is discarded but for the conversion rows it
+    /// records (its casts', its quantity literals', the default's own
+    /// into the field's type, U3), which lowering reads where it evaluates
+    /// the default and which are kept in the constructing declaration's
+    /// body, and for the errors a quantity's conversion into the field's
+    /// type finds, which no other walk would. Every row is kept one per
+    /// site per evaluation (the path of evaluations ending at `literal`:
+    /// `default_evaluation`), a cast's, a quantity literal's, a
+    /// conversion's where a value stands: the default's names mean what
+    /// that scope says, and its values flow into what that scope makes of
+    /// them. A default no literal leaves is never evaluated.
     fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Without a scalar type of any kind the boundary refuses nothing
-        // here a declaration did not, and no cast has a row to keep.
-        if self.unit_types.is_empty() && self.scalars.is_empty() {
+        // Without a scalar type of any kind no cast has a row to keep, and
+        // without a quantity literal no literal has an error to find.
+        let quantity_literal = || {
+            let mut found = false;
+            let mut walk = crate::lowering_laws::literals(|e: &Expr, _| {
+                found |= matches!(e, Expr::Literal(Literal::Quantity { .. }, _));
+            });
+            for f in fields {
+                if let Some(d) = &f.default {
+                    walk.expr(d);
+                }
+            }
+            drop(walk);
+            found
+        };
+        if self.scalars.is_empty() && !quantity_literal() {
             return;
         }
-        let omitted: Vec<&'a Expr> = fields
+        let field_tys: BTreeMap<String, Ty> = match self.top.lookup(&decl.name.name) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
+                infos.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+            }
+            _ => BTreeMap::new(),
+        };
+        let omitted: Vec<(&'a Expr, &'a str, Option<Ty>)> = fields
             .iter()
             .filter(|f| !inits.iter().any(|i| i.name.name == f.name.name))
-            .filter_map(|f| f.default.as_ref())
-            .filter(|d| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
+            .filter_map(|f| {
+                Some((f.default.as_ref()?, f.name.name.as_str(), field_tys.get(f.name.name.as_str()).cloned()))
+            })
+            .filter(|(d, _, _)| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
             .collect();
         if omitted.is_empty() {
             return;
@@ -12649,14 +13159,17 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`populate_user_type_fields`).
         self.default_evaluation.push(literal.0);
-        for default in omitted {
+        for (default, field, want) in omitted {
             self.struct_defaults_typing.push(default);
-            let _ = self.check_expr(default);
+            let got = self.check_expr(default);
+            if let Some(want) = want {
+                self.default_flows_into(&format!("field `{field}`"), &want, &got, default);
+            }
             self.struct_defaults_typing.pop();
         }
         self.default_evaluation.pop();
         self.generic_params.truncate(generics);
-        self.discard_since(mark);
+        self.discard_keeping_unit_errors(mark);
         if let Some((typed, closed, seen)) = saved {
             // The conversions the walk recorded that the record did not
             // hold yet (an evaluation walked again keeps its first row):
@@ -12708,7 +13221,6 @@ impl<'a> Checker<'a> {
         if self.specializing.is_some() {
             self.record_specialized_type(te);
         }
-        self.refuse_unit_types(te);
         // GH #911 B3 (#907): the generic-argument vocabulary is a
         // property of the type expression, not of how much of the
         // program this bundle holds, so it is decided before the
@@ -13299,8 +13811,8 @@ impl<'a> Checker<'a> {
         if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
             self.typed.omitted_args(invocation, decl.id, supplied);
         }
-        let defaults: Vec<&Expr> = decl.params.iter().skip(supplied)
-            .filter_map(|p| p.default.as_ref()).collect();
+        let defaults: Vec<(&Expr, &str, &TypeExpr)> = decl.params.iter().skip(supplied)
+            .filter_map(|p| Some((p.default.as_ref()?, p.name.name.as_str(), &p.ty))).collect();
         if defaults.is_empty() {
             return;
         }
@@ -13310,14 +13822,40 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`lower_default_in_caller`).
         self.default_evaluation.push(invocation.0);
-        for default in defaults {
-            let _ = self.check_expr(default);
+        for (default, param, te) in defaults {
+            let got = self.check_expr(default);
+            let want = crate::resolve::resolve_type_expr(te, self.known);
+            self.default_flows_into(&format!("param `{param}`"), &want, &got, default);
         }
         self.default_evaluation.pop();
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
-        // holes remain facts and are refused by the row consumer.
+        // holes remain facts and are refused by the row consumer. The
+        // quantity rules' errors stay: no other walk types a default.
+        self.discard_keeping_unit_errors(mark);
+    }
+
+    /// GH #1076 (U3): [`Self::discard_since`], keeping the quantity rules'
+    /// errors the walk found (`unit_error`), each once.
+    fn discard_keeping_unit_errors(&mut self, mark: WalkMark) {
+        if self.defaults_judged_at_literals {
+            self.discard_since(mark);
+            return;
+        }
+        let kept: Vec<Diag> = self.diags[mark.diags..]
+            .iter()
+            .filter(|d| {
+                self.unit_findings.contains(&(d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()))
+            })
+            .cloned()
+            .collect();
         self.discard_since(mark);
+        for d in kept {
+            let start = self.decl_diags_start.min(self.diags.len());
+            if !self.diags[start..].iter().any(|seen| seen.span == d.span && seen.message == d.message) {
+                self.diags.push(d);
+            }
+        }
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -13376,8 +13914,10 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                // GH #1076 (U3): a quantity literal is its component's
+                // quantity at its own unit.
                 if let Literal::Quantity { value, unit } = lit {
-                    self.refuse_unit_value(*span, format!("quantity literal `{value}{unit}`"));
+                    return self.quantity_literal(*value, unit, *span);
                 }
                 lit_ty(lit)
             }
@@ -13443,6 +13983,15 @@ impl<'a> Checker<'a> {
             }
             Expr::Unary { op, operand, span } => {
                 let t = self.check_expr(operand);
+                // GH #1076 (U3): a quantity negates; a point does not.
+                match self.scalars.quantity_unary(*op, &t) {
+                    Some(Ok(t)) => return t,
+                    Some(Err(why)) => {
+                        self.diags.push(Diag::ty(*span, why));
+                        return Ty::Unknown;
+                    }
+                    None => {}
+                }
                 // GH #1076 (U2): no arithmetic on an identity; a range's
                 // is its `Int`'s.
                 match self.scalars.unary(*op, &t) {
@@ -13460,14 +14009,24 @@ impl<'a> Checker<'a> {
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
-                // GH #1076: `Money(5)` makes a value of a quantity or a
-                // point, which is not typed yet.
                 if let Expr::Ident(id) = callee.as_ref() {
-                    self.refuse_unit_cast(id);
-                    // GH #1076 (U2): `Session(n)`, `OrderId(n)`, `Int(id)`:
-                    // a conversion, classified and recorded.
+                    // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
+                    // `Int(id)`, `Bucket(d)`: a conversion, classified and
+                    // recorded.
                     if let Some(t) = self.scalar_cast(*call_id, *call_span, id, args) {
                         return t;
+                    }
+                }
+                // GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or
+                // a point.
+                if let (Expr::Field { receiver, name, .. }, [arg]) = (callee.as_ref(), args.as_slice()) {
+                    if matches!(name.name.as_str(), "in" | "split") && self.scalars.has_quantities() {
+                        let mark = self.walk_mark();
+                        let t = self.check_expr(receiver);
+                        if let Some(q) = self.scalars.quantity(&t) {
+                            return self.quantity_method(*call_id, *call_span, &name.name, t, q, arg);
+                        }
+                        self.discard_since(mark);
                     }
                 }
                 // (Stdlib target-gating is the capability admission's:
@@ -13665,6 +14224,7 @@ impl<'a> Checker<'a> {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr(a);
+                                    self.record_printed(a, &at);
                                     if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
@@ -14057,6 +14617,24 @@ impl<'a> Checker<'a> {
                                 Typed::Known(GenericCall { template: template.id, type_args, params })
                             }
                         };
+                        // GH #1076 (U3): a monomorph is named by its type
+                        // arguments, and a synthesized denomination has no
+                        // declaration to name it by.
+                        if let crate::typed_bodies::Typed::Known(call) = &row {
+                            let synthesized =
+                                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
+                            if let Some(t) = synthesized {
+                                let shown = self.scalars.type_display(t);
+                                self.unit_error(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
+                                         argument is a declared type: bind the value to one first (`let x: T = …`)",
+                                        id.name
+                                    ),
+                                ));
+                            }
+                        }
                         if let crate::typed_bodies::Typed::Known(call) = &row {
                             let tokens: Option<Vec<String>> =
                                 call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
@@ -14759,14 +15337,8 @@ impl<'a> Checker<'a> {
                 Ty::Tuple(parts.iter().map(|e| self.check_expr_local(e)).collect())
             }
             Expr::Array(parts, _) => {
-                let elem = if let Some(first) = parts.first() {
-                    self.check_expr_local(first)
-                } else {
-                    Ty::Unknown
-                };
-                for e in parts.iter().skip(1) {
-                    let _ = self.check_expr(e);
-                }
+                let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
+                let elem = self.array_element(expr, parts, tys);
                 Ty::Array(Box::new(elem), Some(parts.len() as u64))
             }
             Expr::ArrayRepeat { val, count, .. } => {
@@ -14869,6 +15441,10 @@ impl<'a> Checker<'a> {
                 // success is `T`, its failure a `RangeError`, and what
                 // discharges it is its row's policy.
                 let narrowing = self.narrowing_at(inner);
+                // GH #1076 (U3): a change of denomination's narrowing fails
+                // with an `InexactError`, a range's with a `RangeError`.
+                let ratio =
+                    narrowing.as_ref().and_then(|site| self.typed.conversion_at(site)).is_some_and(|row| row.scale.is_some());
                 if let Some(site) = &narrowing {
                     use crate::typed_bodies::Discharge;
                     let policy = match disposition {
@@ -14881,21 +15457,51 @@ impl<'a> Checker<'a> {
                             // that name is written in parentheses.
                             Expr::Ident(w) if w.span.end == span.end && w.name == "clamp" => Discharge::Clamp,
                             Expr::Ident(w) if w.span.end == span.end && w.name == "wrap" => Discharge::Wrap,
+                            Expr::Ident(w) if w.span.end == span.end && crate::units::RoundPolicy::of(&w.name).is_some() => {
+                                Discharge::Round {
+                                    policy: crate::units::RoundPolicy::of(&w.name).expect("guard checked"),
+                                    from_type: false,
+                                }
+                            }
                             Expr::Call { .. } => Discharge::Handler,
                             _ => Discharge::Substitute,
                         }),
                     };
                     if let Some(p) = policy {
+                        // A policy belongs to the family its narrowing admits.
+                        let family = match (p, ratio) {
+                            (Discharge::Clamp | Discharge::Wrap, true) => Some(format!(
+                                "`{}` is a range's policy, and this conversion divides: say what becomes of the \
+                                 remainder (`or floor`, `or ceil`, `or trunc`, `or half_even`, `or half_up`), or \
+                                 `or <value>`",
+                                p.spelled()
+                            )),
+                            (Discharge::Round { .. }, false) => Some(format!(
+                                "`{}` rounds a conversion that divides, and this one narrows into a range: `or \
+                                 clamp`, `or wrap`, or `or <value>`",
+                                p.spelled()
+                            )),
+                            _ => None,
+                        };
+                        if let Some(why) = family {
+                            self.unit_error(Diag::ty(*span, why));
+                            // Said once: the narrowing is not also bare.
+                            if self.specializing.is_none() {
+                                self.typed.discharge(site, p);
+                            }
+                            return inner_ty;
+                        }
                         if self.specializing.is_none() {
                             self.typed.discharge(site, p);
                         }
-                        if matches!(p, Discharge::Clamp | Discharge::Wrap) {
+                        if matches!(p, Discharge::Clamp | Discharge::Wrap | Discharge::Round { .. }) {
                             return inner_ty;
                         }
                     }
                 }
                 let (success, payload) = match (stdlib_or, inner_ty) {
                     (Some((s, p)), _) => (s, p),
+                    (None, success) if ratio => (success, Ty::Named("InexactError".to_string())),
                     (None, success) if narrowing.is_some() => (success, Ty::Named("RangeError".to_string())),
                     (None, Ty::Fallible { success, payload }) => {
                         (*success, *payload)
@@ -15608,8 +16214,16 @@ impl<'a> Checker<'a> {
             if (l_str && self.ty_is_printable(rt))
                 || (r_str && self.ty_is_printable(lt))
             {
+                // GH #1076 (U3): a quantity side prints with its unit.
+                self.record_printed(operands.0, lt);
+                self.record_printed(operands.1, rt);
                 return Ty::Prim(PrimType::String);
             }
+        }
+        // GH #1076 (U3): a quantity or a point on either side: the
+        // algebra's answer, each operand's conversion a row at it.
+        if let Some(rule) = self.scalars.quantity_binop(op, lt, rt, operands.0, operands.1) {
+            return self.apply_quantity_binop(rule, op, lt, span, operands);
         }
         // GH #1076 (U2): an identity or a range on either side. A range's
         // arithmetic is its `Int`'s; an identity has none; a comparison
@@ -15738,6 +16352,60 @@ impl<'a> Checker<'a> {
                 Ty::Prim(PrimType::Bool)
             }
             And | Or => Ty::Prim(PrimType::Bool),
+        }
+    }
+
+    /// GH #1076 (U3): what the algebra decided for a binary operator over
+    /// a quantity or a point: each operand's conversion recorded at it,
+    /// a division by a literal recorded at the division (a narrowing its
+    /// `or`, or the quantity type's `round:`, discharges), a refusal
+    /// reported with a note at each declaration.
+    fn apply_quantity_binop(
+        &mut self,
+        rule: crate::unit_quantities::QBinop,
+        op: BinOp,
+        lt: &Ty,
+        span: Span,
+        operands: (&Expr, &Expr),
+    ) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge, Scale};
+        use crate::unit_quantities::QBinop;
+        match rule {
+            QBinop::Typed { ty, left, right } => {
+                for (operand, e) in [(left, operands.0), (right, operands.1)] {
+                    if let Some(o) = operand {
+                        self.record_scale(e, &o.from, &o.to, o.scale, None);
+                    }
+                }
+                ty
+            }
+            QBinop::DividedByLiteral { ty, divisor } => {
+                if self.specializing.is_none() {
+                    let factor = crate::unit_graph::Ratio::new(1.into(), divisor.into()).expect("a positive divisor");
+                    let mut row = ConversionRow::new(span, lt.clone(), ty.clone(), ConversionKind::Narrowing, self.scalars.type_display(&ty));
+                    row.scale = Some(Scale { factor, offset: 0 });
+                    row.policy = self
+                        .scalars
+                        .quantity(lt)
+                        .and_then(|q| q.policy)
+                        .map(|policy| Discharge::Round { policy, from_type: true });
+                    let site = self.site(SiteKind::divide(span));
+                    self.typed.conversion(self.body, site, row);
+                }
+                ty
+            }
+            QBinop::Refused { message, notes } => {
+                let mut d = Diag::ty(span, message);
+                for (at, label) in notes {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+                    Ty::Prim(PrimType::Bool)
+                } else {
+                    Ty::Unknown
+                }
+            }
         }
     }
 

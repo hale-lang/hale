@@ -253,46 +253,99 @@ A literal outside the range is an error where you wrote it (`let b:
 Byte = 300;`), and a narrowing with no `or` is too. `spec/units.md §
 Identities and ranges` has every rule.
 
-## Your own units: declared today, values next
+## Your own units
 
 `Duration` is not the only number with a unit. Money is counted in
-cents, sizes in bytes, rates in basis points, and a program can
-declare those units and the integer types counted in them:
+cents, sizes in bytes, rates in basis points, and a program declares
+those units and the integer types counted in them:
 
 ```hale
 unit cent;
 unit USD = 100 cent;
-unit bp = 1/10000;
+unit pct = 1/100;
+unit bp = 1/100 pct;
 
-type Money   = quantity Int in cent;
-type Ledger  = quantity Int in cent { round: half_even; }
-type Rate    = quantity Int in bp;
-type Session = distinct Int { range: 0..64; }
+type Money  = quantity Int in cent;
+type Ledger = Money { round: half_even; }
+type Rate   = quantity Int in bp;
+
+fn main() {
+    let fee = 1_250_000USD * 3bp;     // exactly 375 USD
+    let odd = 1_234_567USD * 3bp;     // 370.3701 USD: still exact here
+    let paid: Ledger = odd;           // rounded where the policy is
+    let cents = odd.in(cent) or ceil; // or name the rounding yourself
+    println(fee, " ", odd, " ", paid, " ", cents);
+}
 ```
 
 A `unit` is a name and, optionally, what it equals: one `USD` is
-100 `cent`, and `bp` is a ten-thousandth of the number one. A
-`quantity` counts an `Int` in one of them; a type with a
-`{ round: … }` policy is another denomination of the same quantity,
-the one a narrowing into it rounds by; a `distinct Int` is an
-identity, an integer that is not interchangeable with other
-integers, here limited to `0..64`.
+100 `cent`, and `bp` is a hundredth of a percent, itself a hundredth
+of the number one. A `quantity` counts an `Int` in one of them. A
+literal names its unit with no space, `3bp`, `1_250_000USD`.
 
-**What works today:** the declarations are checked. The compiler
-closes the catalogue (every chain of equations has to agree, and it
-tells you which two paths don't), allows one quantity per family of
-units, and checks every clause: an undeclared unit, a `round:` that
-names no policy, a range outside its parent's, each gets an error at
-the place, saying what to write instead.
+Arithmetic keeps every value **exact**. `fee` is not rounded to
+cents: multiplying money by a rate gives money counted in the product
+of the two units, here a hundredth of a cent, and it prints that way
+(`3750000 Money in 1/100 cent`). Rounding happens only where you
+say so, and you have to say so wherever a value goes somewhere
+coarser:
 
-**What does not, yet:** quantity values. A `Money` parameter, field
-or `let`, or a literal like `3cent`, is an error that says values of
-these types are not typed yet (the identity `Session` above already
-works; see the previous section). Count in `Int` for now; quantity
-values, with exact conversions between their units, come in a later
-version (`spec/units.md` holds the contract as it ships). One restriction until `Duration` itself becomes one
-of these declarations: a unit may not be named `ns`, `us`, `ms`, `s`,
-`m`, `h` or `d`, because `5ms` is already a duration literal.
+- a type with `{ round: … }` (here `Ledger`, `half_even`) rounds what
+  is stored into it, with no more ceremony;
+- `.in(cent) or floor` (or `ceil`, `trunc`, `half_up`, `half_even`)
+  rounds at the site;
+- `.in(cent) or 0` keeps the value only when it is a whole number of
+  cents.
+
+`let bad: Money = odd;` is an error: `Money` has no policy, and the
+message says the division by 100 has a remainder to decide about.
+
+Time works the same way. Until `Duration` itself becomes one of these
+declarations, its suffixes are taken (`5ms` is a `Duration`), so
+spell the units yourself:
+
+```hale
+unit nsec;
+unit usec = 1_000 nsec;
+unit msec = 1_000 usec;
+unit sec = 1_000 msec;
+
+type Span    = quantity Int in nsec;
+type Instant = point Span;
+type Bucket  = Span in 100 msec { round: floor; }
+
+fn main() {
+    let d = 3sec + 500msec;           // 3500msec: the finer unit wins
+    let whole = d.in(sec) or floor;   // 3sec
+    let (s, rest) = d.split(sec);     // 3 and 500msec, nothing lost
+    let n: Int = d / 1msec;           // 3500
+    let b: Bucket = d;                // 35 buckets of 100ms
+    let start = Instant(1_000sec);
+    let later = start + d;            // a point moves by a quantity
+    let took = later - start;         // and two points differ by one
+    println(d, " ", whole, " ", s, " ", rest, " ", n, " ", b, " ", took);
+}
+```
+
+A **point** (`Instant`) is a position, a **quantity** (`Span`) a
+distance: two points subtract to a quantity, a point plus a quantity
+is a point, and two points do not add. A point may declare where its
+zero is (`type Celsius = point TempDelta { origin: 273_150 mK; }`),
+and `Kelvin(c)` converts across the two zeros.
+
+An array literal may mix units of one quantity. Each element is
+converted from its own unit: `let a: [Money; 2] = [3cent, 2USD];` holds
+3 and 200 cents. With no type to fit, `[1sec, 1_500msec]` is counted
+in the finer unit, as a sum is: 1000 and 1500 milliseconds.
+
+Mixing kinds is an error at the operator, naming both declarations:
+`5msec + 4KiB` adds time to bytes, `bid + ask` adds two prices,
+`d > 0` compares a span with a bare number (write `d > 0msec`). An
+`Int` becomes a quantity by a unit (`n * 1cent`), and a quantity's
+count is a quotient (`q / 1cent`). `spec/units.md § Quantities and
+points` has every rule. One restriction until `Duration` is one of
+these declarations: a unit may not be named `ns`, `us`, `ms`, `s`,
+`m`, `h` or `d`.
 
 ## Why these are in the language
 

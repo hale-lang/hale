@@ -53,7 +53,12 @@
 //!    widening, narrowing), the range a narrowing checks against and what
 //!    discharges it. Lowering reads a cast's row (`lower_conversion`) and
 //!    decides nothing; the `bare_fallible` law refuses a narrowing nothing
-//!    discharges.
+//!    discharges. U3 adds a quantity's and a point's: every place a value
+//!    of one denomination meets another (an argument, a binding, a return,
+//!    an operand, `.in(u)`, `.split(u)`, a cast, a division by a literal)
+//!    with its exact factor ([`Scale`]) and its policy, each quantity
+//!    literal with its count converted at compile time, and each printed
+//!    quantity with its unit.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -265,6 +270,10 @@ pub enum Discharge {
     Fail,
     /// `or discard`, which the check refuses on a value.
     Discard,
+    /// GH #1076 (U3): a rounding of a ratio narrowing (`or floor`, …),
+    /// total: written after the `or` at the site, or the target type's
+    /// `round:` policy (`from_type`), which needs no `or`.
+    Round { policy: crate::units::RoundPolicy, from_type: bool },
 }
 
 impl Discharge {
@@ -278,34 +287,80 @@ impl Discharge {
             Discharge::Raise => "or raise",
             Discharge::Fail => "or fail",
             Discharge::Discard => "or discard",
+            Discharge::Round { policy, .. } => match policy {
+                crate::units::RoundPolicy::Floor => "or floor",
+                crate::units::RoundPolicy::Ceil => "or ceil",
+                crate::units::RoundPolicy::Trunc => "or trunc",
+                crate::units::RoundPolicy::HalfEven => "or half_even",
+                crate::units::RoundPolicy::HalfUp => "or half_up",
+            },
         }
     }
 }
 
-/// Where a conversion is: a cast `T(x)` by its call site, the site
-/// lowering reads it at; an implicit widening by the span of the value
-/// that widens.
+/// Where a conversion is: what it is at ([`SiteKind`]) and the evaluation
+/// path it was typed on. `path` is empty outside a default. In a default
+/// it is every evaluation from the outermost inward: the struct literal
+/// that leaves a field or the call that leaves a parameter, then the
+/// literal or call in that default that leaves the next default, and so
+/// on. A default is an expression of each scope that leaves it, so its
+/// names mean what that scope says (a local can shadow a type there and
+/// not elsewhere) and what its values flow into is that scope's: two
+/// evaluations of one default, each in its own scope, are two keys for
+/// every conversion in it, a cast's, a literal's, a value's. Lowering
+/// reads the row by the path it is lowering.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConversionSite {
+pub struct ConversionSite {
+    pub kind: SiteKind,
+    pub path: Vec<u32>,
+}
+
+/// What a conversion is at: a cast `T(x)` (and a quantity's `.in(u)` and
+/// `.split(u)`) by its call site; an implicit conversion by the span of
+/// the value that converts (a quantity literal's own row is there too);
+/// a quantity divided by a literal by the division's span (U3); a printed
+/// quantity by the span of the value printed (U3).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SiteKind {
     Cast(u32),
     Value { start: u32, end: u32 },
-    /// A cast in a default, by the evaluation path it was typed on and
-    /// its call: a default is an expression of each scope that leaves
-    /// it, so its name means what that scope says (a local can shadow
-    /// the type there and not elsewhere). `path` is every evaluation
-    /// from the outermost inward: the struct literal that leaves a field
-    /// or the call that leaves a parameter, then the literal or call in
-    /// that default that leaves the next default, and so on, so two
-    /// evaluations of one default under one outer construction, each in
-    /// its own scope, are two keys. Lowering reads the row by the path
-    /// it is lowering.
-    DefaultCast { path: Vec<u32>, call: u32 },
+    Divide { start: u32, end: u32 },
+    Printed { start: u32, end: u32 },
+}
+
+impl SiteKind {
+    pub fn value(span: Span) -> SiteKind {
+        SiteKind::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
+    pub fn divide(span: Span) -> SiteKind {
+        SiteKind::Divide { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
+    pub fn printed(span: Span) -> SiteKind {
+        SiteKind::Printed { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
 }
 
 impl ConversionSite {
-    pub fn value(span: Span) -> ConversionSite {
-        ConversionSite::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    /// The site of `kind` on the evaluation path `path` (empty outside a
+    /// default).
+    pub fn new(kind: SiteKind, path: Vec<u32>) -> ConversionSite {
+        ConversionSite { kind, path }
     }
+}
+
+/// GH #1076 (U3): a change of denomination, exact: a count of the
+/// source becomes `(count × factor.numerator + offset) /
+/// factor.denominator` of the target. The denominator is one for a
+/// widening; above one, the row's policy says what becomes of the
+/// remainder. `offset` is a point's: the two origins' difference, in
+/// the numerator's terms (zero for a quantity and for two points of one
+/// origin).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scale {
+    pub factor: crate::unit_graph::Ratio,
+    pub offset: i64,
 }
 
 /// One conversion the checker classified: the `conversions` column.
@@ -325,6 +380,40 @@ pub struct ConversionRow {
     pub policy: Option<Discharge>,
     /// The target as the program spells it (`Session`, `Int`).
     pub target: String,
+    /// GH #1076 (U3): a quantity's or a point's change of denomination;
+    /// `None` for an identity's or a range's conversion, which changes
+    /// no count.
+    pub scale: Option<Scale>,
+    /// A quantity literal's count in the denomination it flows into,
+    /// converted (and, under the target's `round:`, rounded) by the
+    /// checker: lowering emits it as a constant.
+    pub count: Option<i64>,
+    /// `.split(u)`: the count of `u` in the widened denomination, the
+    /// divisor of the whole part.
+    pub split: Option<i64>,
+    /// A printed quantity's or point's unit, written after its count
+    /// (`ms`, ` Money in 1/10000 cent`).
+    pub printed: Option<String>,
+}
+
+impl ConversionRow {
+    /// A row of `kind` from `from` to `to`, at `span`, with nothing else
+    /// said.
+    pub fn new(span: Span, from: Ty, to: Ty, kind: ConversionKind, target: String) -> ConversionRow {
+        ConversionRow {
+            span,
+            from,
+            to,
+            kind,
+            range: None,
+            policy: None,
+            target,
+            scale: None,
+            count: None,
+            split: None,
+            printed: None,
+        }
+    }
 }
 
 /// A call that leaves trailing arguments to their defaults: the
@@ -617,18 +706,44 @@ impl TypingRecord {
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
-        let unminted = match &site {
-            ConversionSite::Cast(id) => NodeId(*id).is_none(),
-            ConversionSite::DefaultCast { path, call } => {
-                NodeId(*call).is_none() || path.iter().any(|at| NodeId(*at).is_none())
-            }
-            ConversionSite::Value { .. } => false,
+        let unminted = match &site.kind {
+            SiteKind::Cast(id) => NodeId(*id).is_none(),
+            SiteKind::Value { .. } | SiteKind::Divide { .. } | SiteKind::Printed { .. } => false,
         };
-        if unminted {
+        if unminted || site.path.iter().any(|at| NodeId(*at).is_none()) {
             return;
         }
         self.conversion_sites.insert(site.clone(), body.0);
         self.body(body).conversions.entry(site).or_insert(row);
+    }
+
+    /// Record the conversion at `site` in place of what it held: a
+    /// quantity literal's row once the checker knows where the literal
+    /// flows (U3).
+    pub fn reconversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
+        self.conversion_sites.insert(site.clone(), body.0);
+        self.body(body).conversions.insert(site, row);
+    }
+
+    /// What `site` holds, with the body it is held under: what
+    /// [`Self::restore_conversion`] puts back.
+    pub fn saved_conversion(&self, site: &ConversionSite) -> Option<(u32, ConversionRow)> {
+        let body = *self.conversion_sites.get(site)?;
+        Some((body, self.bodies.get(&body)?.conversions.get(site)?.clone()))
+    }
+
+    /// Put `site` back as [`Self::saved_conversion`] read it: an array
+    /// literal's elements, converted into the elements' meet, convert into
+    /// the element type of the place the array flows into instead (U3).
+    pub fn restore_conversion(&mut self, site: &ConversionSite, saved: Option<(u32, ConversionRow)>) {
+        if let Some(body) = self.conversion_sites.remove(site) {
+            if let Some(b) = self.bodies.get_mut(&body) {
+                b.conversions.remove(site);
+            }
+        }
+        if let Some((body, row)) = saved {
+            self.reconversion(NodeId(body), site.clone(), row);
+        }
     }
 
     /// Record what discharges the narrowing at `site` (its `or`).
@@ -725,21 +840,44 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
+    /// Whether a row changes a denomination or prints a unit (U3): a
+    /// program with neither has no value row for lowering to look up.
+    scaled: bool,
 }
 
 impl TypedBodies {
+    /// Whether lowering has a value's row to look up at all (U3): a
+    /// quantity's or a point's conversion, or a printed unit.
+    pub fn has_quantity_rows(&self) -> bool {
+        self.scaled
+    }
+
     /// The `conversions` column's row at `site`: lowering reads a cast's
-    /// by its call (`ConversionSite::Cast`), and a cast's in a default by
-    /// the evaluation path it lowers and its call (`DefaultCast`); `None`
-    /// for a call that is no conversion there.
+    /// by its call (`SiteKind::Cast`), a value's by its span, each in a
+    /// default by the evaluation path it lowers too; `None` for a call
+    /// that is no conversion there.
     pub fn conversion(&self, site: &ConversionSite) -> Option<&ConversionRow> {
         let body = self.conversion_sites.get(site)?;
         self.bodies.get(body)?.conversions.get(site)
     }
 
+    /// The row at `site` in the body declared at `body`, and in no other:
+    /// lowering reads a row from the body it is emitting. A site is
+    /// unique within a body but not across bodies (the stdlib's spans
+    /// start at 0, like the first user file's), so [`Self::conversion`]'s
+    /// one index over every body can answer with another body's row.
+    pub fn conversion_in(&self, body: NodeId, site: &ConversionSite) -> Option<&ConversionRow> {
+        self.bodies.get(&body.0)?.conversions.get(site)
+    }
+
     /// Every conversion's row, body by body.
     pub fn conversions(&self) -> impl Iterator<Item = &ConversionRow> {
         self.bodies.values().flat_map(|b| b.conversions.values())
+    }
+
+    /// Every conversion's row with its site, body by body.
+    pub fn conversion_sites(&self) -> impl Iterator<Item = (ConversionSite, &ConversionRow)> {
+        self.bodies.values().flat_map(|b| b.conversions.iter().map(|(s, r)| (s.clone(), r)))
     }
 
     /// The `omitted_args` column: what each call leaves to its defaults.
@@ -930,6 +1068,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
         conversion_sites: record.conversion_sites.clone(),
+        scaled: record.bodies.values().any(|b| b.conversions.values().any(|r| r.scale.is_some() || r.printed.is_some())),
     };
     let mut decls = Declared::default();
     for p in bundle.programs.values() {
@@ -1285,5 +1424,39 @@ fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
             }
         }
         Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GH #1076 (U3 polish B): a span is a site within one body only. Two
+    /// bodies record a row at one equal `Value` span (a user fn's
+    /// expression and a stdlib body's, whose spans start at 0 like the
+    /// first user file's): each body's read finds its own row and not the
+    /// other's, a body that recorded none finds none, and the one index
+    /// over every body answers with whichever body recorded last.
+    #[test]
+    fn a_body_reads_its_own_row_at_a_span_another_body_shares() {
+        let span = Span::new(10, 14);
+        let row = |target: &str| {
+            ConversionRow::new(span, Ty::Named("A".into()), Ty::Named(target.into()), ConversionKind::Widening, target.into())
+        };
+        let (user, stdlib, neither) = (NodeId(3), NodeId(900), NodeId(7));
+        let site = ConversionSite::new(SiteKind::value(span), Vec::new());
+        let mut record = TypingRecord::default();
+        record.conversion(user, site.clone(), row("User"));
+        record.conversion(stdlib, site.clone(), row("Stdlib"));
+        let table = TypedBodies {
+            bodies: record.bodies.clone(),
+            conversion_sites: record.conversion_sites.clone(),
+            ..TypedBodies::default()
+        };
+        let target = |r: Option<&ConversionRow>| r.map(|r| r.target.clone());
+        assert_eq!(target(table.conversion_in(user, &site)), Some("User".to_string()));
+        assert_eq!(target(table.conversion_in(stdlib, &site)), Some("Stdlib".to_string()));
+        assert_eq!(target(table.conversion_in(neither, &site)), None);
+        assert_eq!(target(table.conversion(&site)), Some("Stdlib".to_string()), "the one index: the last body's");
     }
 }

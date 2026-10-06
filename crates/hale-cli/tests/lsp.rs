@@ -1511,8 +1511,8 @@ fn main() {\n    println(price(5));\n}\n",
 /// The unit-law parity seed
 /// (`lsp_and_check_agree_over_a_seed_with_unit_laws`, GH #1076): a unit
 /// declared in both files (law 1, its witness in the other file), a
-/// denomination naming no unit (law 2), and a value of a unit-dialect
-/// type inside a body (the not-yet boundary).
+/// denomination naming no unit (law 2), and an `Int` where a quantity is
+/// expected inside a body (the quantity rules, U3).
 const UNITS: Files = &[
     ("a_units.hl", "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n"),
     (
@@ -1534,8 +1534,8 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("units", UNITS, &[]),
 ];
 
-/// The unit-law parity fixture (GH #1076): the unit laws and the not-yet
-/// boundary are check diagnostics like any other, so `hale check <dir>`,
+/// The unit-law parity fixture (GH #1076): the unit laws and the quantity
+/// rules are check diagnostics like any other, so `hale check <dir>`,
 /// the editor on disk and the editor's buffers give one answer, each
 /// finding at its file and place.
 #[test]
@@ -1544,7 +1544,9 @@ fn lsp_and_check_agree_over_a_seed_with_unit_laws() {
     for (line, col, want) in [
         (1, 6, "unit `cent` is declared twice"),
         (2, 31, "type `Wallet`: its denomination names `cnt`, which no `unit` declares"),
-        (4, 12, "type `Money`: values of the unit dialect's types are not typed yet"),
+        // Law 1 leaves the catalogue unclosed, so `Money` has no
+        // denomination to convert by: an ordinary mismatch.
+        (4, 20, "let `m`: expected `Money`, got `Int`"),
     ] {
         let found: Vec<&Finding> = check.iter().filter(|(.., m)| m.contains(want)).collect();
         assert_eq!(found.len(), 1, "one `{want}` finding: {check:?}");
@@ -1916,9 +1918,10 @@ fn first() {\n    take();\n}\n\
 fn second() {\n    take();\n}\n\
 fn main() {\n    first();\n    second();\n}\n";
 
-/// The not-yet boundary's error at a parameter default belongs to each
-/// caller that leaves the default, not to the first one walked (GH #1076,
-/// U1, review 2): with `first` edited to pass the argument, the editor
+/// A quantity rule's error at a parameter default (here, a literal of a
+/// unit with no quantity, U3) belongs to each caller that leaves the
+/// default, not to the first one walked (GH #1076, U1, review 2), and is
+/// reported once: with `first` edited to pass the argument, the editor
 /// reuses `second`'s result, which must still carry the refusal, since
 /// `second` still leaves `3cent`; with both edited, neither reports it.
 /// Each step typed reusing the one before equals the fresh typing.
@@ -1936,7 +1939,8 @@ fn a_default_refused_for_two_callers_stays_refused_while_one_leaves_it() {
         std::collections::BTreeMap::from([(entry.clone(), both_pass)]),
     ];
     let reuses = incremental_equals_full("default-callers", &entry, &steps);
-    let refused = |keys: &[String]| keys.iter().filter(|k| k.contains("quantity literal `3cent`: values")).count();
+    let refused =
+        |keys: &[String]| keys.iter().filter(|k| k.contains("`3cent`: the units of `cent` have no quantity")).count();
     let (mut prev, before) = typed_snapshot(&entry, &std::collections::BTreeMap::new(), None);
     assert_eq!(refused(&before), 1, "the default is refused once: {before:#?}");
     for (n, (overlays, want)) in steps.iter().zip([1, 0]).enumerate() {

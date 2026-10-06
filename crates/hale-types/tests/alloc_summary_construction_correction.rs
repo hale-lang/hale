@@ -369,7 +369,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The six targets pinned below are the only ones whose own fns or leak
+/// The seven targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -390,6 +390,7 @@ fn reached_no_other_target_changes() {
             "dna/oidc",
             "tests/hale/is_route_test.hl",
             "tests/hale/perspective_ctor_override_test.hl",
+            "tests/hale/unit_quantities_test.hl",
         ]
     );
 }
@@ -547,6 +548,20 @@ fn reached_is_route_test() {
     );
 }
 
+/// unit_quantities_test reads `later` as a function value (a local that
+/// shadows a type in a default's scope); the indirect calls of the loops
+/// the program never starts resolve to it.
+#[test]
+fn reached_unit_quantities_test() {
+    pinned_unreached(
+        "tests/hale/unit_quantities_test.hl",
+        (117, 0),
+        &["later"],
+        &[],
+        &["- fn later   [invoked-unboundedly]", "+ fn later"],
+    );
+}
+
 /// What the run-to-exit correction removes in one target, as the leak
 /// sites of the copy's fns (counted) and of the program's own (listed);
 /// `None` when it moves nothing. Panics if it adds a site, or moves one
@@ -600,8 +615,9 @@ fn own_entries_run_to_exit_programs() {
     }
     // 81: GH #1076's `tests/hale/unit_declarations_test.hl` is one more,
     // losing the copy's 21 like the rest; 82: U2's
-    // `tests/hale/identities_and_ranges_test.hl` is one more again.
-    assert_eq!(moved, 82, "the run-to-exit programs among the targets");
+    // `tests/hale/identities_and_ranges_test.hl` is one more again; 83:
+    // U3's `tests/hale/unit_quantities_test.hl`.
+    assert_eq!(moved, 83, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [

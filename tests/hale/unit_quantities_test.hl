@@ -1,0 +1,223 @@
+// GH #1076, step U3: quantities and points, end to end (spec/units.md
+// § Quantities and points). The quantity and point lines of the
+// committed form, each stated result asserted; each line it marks as a
+// type error is refused with pinned wording in
+// crates/hale-types/tests/unit_quantities.rs.
+//
+// The time units are renamed (`nsec`, `usec`, `msec`, `sec`): a duration
+// suffix names no unit until `Time` and `Duration` are declarations
+// (U4), and until then the two are the primitives they are, so the
+// quantity here is `Span` and its point `Instant`. `Bytes` is the buffer
+// type, so the byte quantity is `ByteCount`. `bp` is defined against the
+// number (decision 2).
+
+unit nsec;
+unit usec = 1_000 nsec;
+unit msec = 1_000 usec;
+unit sec = 1_000 msec;
+unit min = 60 sec;
+
+unit B;
+unit KiB = 1024 B;
+
+unit cent;
+unit USD = 100 cent;
+unit pct = 1 / 100;
+unit bp = 1 / 100 pct;
+unit tick;
+unit mK;
+unit K = 1_000 mK;
+
+type Span = quantity Int in nsec;
+type Instant = point Span;
+type ByteCount = quantity Int in B;
+type Money = quantity Int in cent;
+type Ratio = quantity Int in bp;
+type Tick = quantity Int in tick;
+type Price = point Tick;
+
+type TempDelta = quantity Int in mK;
+type Kelvin = point TempDelta;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+
+type WireStamp = Instant in usec { round: floor; }
+type Bucket = Span in 100 msec { round: floor; }
+type Ledger = Money { round: half_even; }
+type Seconds = Span in sec;
+
+type Header { send_ns: Int; send_us: Int; }
+
+type Quote { bid: Price; ask: Price; }
+
+// Runtime operands: a count made a quantity by a unit.
+fn amount(n: Int) -> Money {
+    return n * 1USD;
+}
+
+fn rate(n: Int) -> Ratio {
+    return n * 1bp;
+}
+
+// A conversion that divides fails with an `InexactError` under its `or`.
+fn rounded_up(e: InexactError) -> Seconds {
+    std::test::assert_eq_str(e.kind, "Seconds", "the InexactError names the target type");
+    std::test::assert_eq_int(e.value, 3500, "the count converted, in milliseconds");
+    std::test::assert_eq_int(e.divisor, 1000, "what it was divided by");
+    return 4sec;
+}
+
+fn exact_seconds(d: Span) -> Seconds fallible(InexactError) {
+    let s = Seconds(d) or raise;
+    return s;
+}
+
+fn caught(e: InexactError) -> Seconds {
+    return 0sec;
+}
+
+// A default is evaluated in the scope of each literal that leaves it.
+// Where a local shadows `Bucket`, `Bucket(…)` there calls the local, and
+// the literal and the value in it flow into the local's `Span`.
+type Window { lit: Bucket = Bucket(2000msec); val: Bucket = Bucket(two_sec()); }
+
+fn two_sec() -> Seconds {
+    return 2sec;
+}
+
+fn later(d: Span) -> Bucket {
+    return Bucket(d + 5sec);
+}
+
+// A default flows into its field's type as a binding's value does: each
+// element of an array literal into the element type, from its own.
+type Fees { pair: [Money; 2] = [3USD, 2USD]; mixed: [Money; 2] = [3cent, 2USD]; }
+
+// A constant's initializer is its own evaluation, wherever it is read.
+const FEE: Money = Money(3USD);
+
+type Charge { amount: Money = FEE; }
+
+fn main() {
+    // Time: a sum at the finer denomination, converted at compile time.
+    let d = 3sec + 500msec;
+    std::test::assert(d == 3500msec, "3s + 500ms is 3500ms");
+    std::test::assert_eq_str(to_string(d), "3500msec", "a quantity prints its count and its unit");
+    let whole = d.in(sec) or 0;
+    std::test::assert(whole == 0sec, "3500ms is no whole number of seconds: the substitute");
+    let secs = d.in(sec) or floor;
+    std::test::assert(secs == 3sec, "the policy says what becomes of the remainder");
+    let (sec_count, rem) = d.split(sec);
+    std::test::assert_eq_int(sec_count, 3, "the whole seconds");
+    std::test::assert(rem == 500msec, "and the rest, exact");
+    let n: Int = d / 1msec;
+    std::test::assert_eq_int(n, 3500, "a quantity over a quantity is a count");
+    let bucket: Bucket = d;
+    std::test::assert(bucket == 3500msec, "35 buckets of 100ms: the type's policy");
+    std::test::assert_eq_str(to_string(bucket), "35 Bucket", "a multiple prints its type");
+    let up = Seconds(d) or rounded_up(err);
+    std::test::assert(up == 4sec, "the handler's value");
+    let raised = exact_seconds(d) or caught(err);
+    std::test::assert(raised == 0sec, "a raise reaches the caller");
+    let fine = exact_seconds(2sec) or caught(err);
+    std::test::assert(fine == 2sec, "an exact conversion raises nothing");
+
+    // Points: an instant and the quantity between two.
+    let hdr = Header { send_ns: 1_700_000_000_123_456_789, send_us: 1_700_000_000_123_400 };
+    let a = Instant(hdr.send_ns * 1nsec);
+    let b = Instant(hdr.send_us * 1usec);
+    let hop = a - b;
+    std::test::assert(hop == 56_789nsec, "the difference of two points is a quantity, exact");
+    let ok = hop < 50usec;
+    std::test::assert(!ok, "a comparison is exact at the finer denomination");
+    let out: WireStamp = a;
+    std::test::assert(out == Instant(1_700_000_000_123_456usec), "ns -> us narrows; the type says how");
+    std::test::assert(a + 1min > a, "a point moves by a quantity");
+
+    // Ticks and prices.
+    let q = Quote { bid: Price(100tick), ask: Price(103tick) };
+    let spread = q.ask - q.bid;
+    std::test::assert(spread == 3tick, "the spread is a quantity of ticks");
+    let mid = q.bid + (spread / 2 or floor);
+    std::test::assert(mid == Price(101tick), "half a tick does not exist: floor");
+    // let mid = (bid + ask) / 2;        // type error: Price + Price
+
+    // Money and ratios: the product is exact at the product of the two
+    // denominations (decision 2), and narrows where a policy is.
+    let fee = 1_250_000USD * 3bp;
+    std::test::assert(fee == 375USD, "375 USD, q = 1, exact");
+    std::test::assert_eq_str(to_string(fee), "3750000 Money in 1/100 cent", "the product's denomination");
+    let odd = 1_234_567USD * 3bp;
+    std::test::assert(odd > 37_037cent && odd < 37_038cent, "370.3701 USD, exact here");
+    let paid: Ledger = odd;
+    std::test::assert(paid == 37_037cent, "policy from the type: half_even");
+    // let bad: Money = odd;             // type error: divides by 100 with no policy
+    let cents = odd.in(cent) or half_even;
+    std::test::assert(cents == 37_037cent, "the policy named at the site");
+    let ceiling = odd.in(cent) or ceil;
+    std::test::assert(ceiling == 37_038cent, "another policy, another rounding");
+    let exact = odd.in(cent) or 0cent;
+    std::test::assert(exact == 0cent, "not a whole number of cents: the substitute");
+
+    // The same lines with runtime operands: `Money` counts cents and
+    // `Ratio` basis points, so the product counts 1/10000 cent.
+    let runtime = amount(1_234_567) * rate(3);
+    std::test::assert(runtime == odd, "the same amount, exact either way");
+    std::test::assert_eq_str(to_string(runtime), "370370100 Money in 1/10000 cent", "its denomination");
+    let paid_runtime: Ledger = runtime;
+    std::test::assert(paid_runtime == paid, "the same rounding at the boundary");
+    // let bad = 5msec + 4KiB;           // type error: different quantities
+    std::test::assert(4KiB == 4096B, "a quantity of bytes");
+
+    // Temperature: two origins over one quantity.
+    let boil = Celsius(100_000mK);
+    let k = Kelvin(boil);
+    std::test::assert(k == Kelvin(373_150mK), "100 C is 373.15 K");
+    let back = Celsius(k);
+    std::test::assert(back == boil, "and back");
+    let warm = Kelvin(300K);
+    std::test::assert(Celsius(warm) == Celsius(26_850mK), "300 K is 26.85 C");
+    let cooled = boil - Celsius(25_000mK);
+    std::test::assert(cooled == 75K, "two points of one origin differ by a quantity");
+
+    // Negative counts: each policy, and the split's rest never negative.
+    let late = 0msec - 1500msec;
+    std::test::assert((late.in(sec) or floor) == 0sec - 2sec, "floor rounds down");
+    std::test::assert((late.in(sec) or ceil) == 0sec - 1sec, "ceil rounds up");
+    std::test::assert((late.in(sec) or trunc) == 0sec - 1sec, "trunc rounds toward zero");
+    std::test::assert((late.in(sec) or half_up) == 0sec - 2sec, "half_up rounds a half away from zero");
+    std::test::assert((late.in(sec) or half_even) == 0sec - 2sec, "half_even rounds a half to even");
+    std::test::assert(((2500msec).in(sec) or half_even) == 2sec, "half_even: 2.5 to 2");
+    std::test::assert(((2500msec).in(sec) or half_up) == 3sec, "half_up: 2.5 to 3");
+    let (w, r) = late.split(sec);
+    std::test::assert_eq_int(w, -2, "the whole part is floored");
+    std::test::assert(r == 500msec, "so the rest is never negative");
+    let mut total = 0cent;
+    total += 5USD;
+    total -= 1cent;
+    total *= 2;
+    std::test::assert(total == 998cent, "compound assignment converts its value");
+
+    // A default's literal and value convert per evaluation, into what
+    // that scope flows them into.
+    let plain = Window { };
+    std::test::assert(plain.lit == 2sec, "the cast's evaluation: 20 buckets");
+    std::test::assert(plain.val == 2sec, "the value cast once, not twice");
+    {
+        let Bucket = later;
+        let shadowed = Window { };
+        std::test::assert(shadowed.lit == 7sec, "the literal reaches the local as a `Span`");
+        std::test::assert(shadowed.val == 7sec, "and so does the value");
+    }
+    let fees = Fees { };
+    std::test::assert(fees.pair[0] == 300cent, "each element converted into cents");
+    std::test::assert(fees.pair[1] == 200cent, "the second as well");
+    std::test::assert(fees.mixed[0] == 3cent, "an element in cents stays as it is");
+    std::test::assert(fees.mixed[1] == 200cent, "an element in dollars converts from dollars");
+    // With no element type to flow into, the elements meet as a sum's
+    // operands do: at the finer denomination.
+    let spans = [1sec, 1_500msec];
+    std::test::assert_eq_str(to_string(spans[0]), "1000msec", "the coarser element widened");
+    std::test::assert_eq_str(to_string(spans[1]), "1500msec", "the finer as it is");
+    let charge = Charge { };
+    std::test::assert(charge.amount == 300cent, "a constant read in a default: its own cast");
+}

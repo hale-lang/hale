@@ -2653,7 +2653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
-                        let _ = self.lower_expr(&rep_expr, scope)?;
+                        let _ = self.in_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
                         self.in_params_default = saved_ipd;
                         self.anchor_record_slot = None;
                     }
@@ -2918,7 +2918,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // GH #921 A3, commit 4: the same one
                             // question at the default site.
                             let owned = self.owner_table.field_owns(e);
-                            let r = self.lower_expr(e, scope)?;
+                            // The locus's own text: typed in its body.
+                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?;
                             self.in_params_default = saved_ipd;
                             let from_lit = matches!(
                                 e,
@@ -5664,7 +5665,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("param has a default entry")
                 {
                     DefaultInit::Const(pv) => self.const_param(pv),
-                    DefaultInit::Expr(e) => self.lower_expr(e, scope)?,
+                    DefaultInit::Expr(e) => self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?,
                     DefaultInit::Required => {
                         return Err(CodegenError::Unsupported(format!(
                             "cross-pool spawn `{}`: param `{}` is required — \

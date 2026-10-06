@@ -392,7 +392,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
 
-        let end = self.lower_block(&fd.body, &mut scope)?;
+        let end = self.in_body(fd.id, |cx| cx.lower_block(&fd.body, &mut scope))?;
         if end == BlockEnd::Open {
             // Fall-through. For Unit success (`() fallible(E)`)
             // this is the natural shape: the body fires `fail`
@@ -723,13 +723,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.owner_table.temp_verdict(self.owner_table.entry_of(inner)),
             crate::ownership::TempVerdict::SiteOwned
         );
-        // GH #1076 (U2): a narrowing `T(x) or …`, from its row: a clamp or
-        // a wrap is the value itself; any other discharge is the checked
-        // value this `or`'s join takes, as a fallible call's result.
-        let narrowing = match (self.conversion_row(inner), inner) {
-            (Some(row), Expr::Call { args, span, .. }) => {
-                let [arg] = args.as_slice() else {
-                    return Err(CodegenError::UnsupportedAt(format!("`{}(…)` converts one value", row.target), *span));
+        // GH #1076 (U2, U3): a narrowing `T(x) or …`, `x.in(u) or …`, `q / n
+        // or …`, from its row: a clamp, a wrap or a rounding is the value
+        // itself; any other discharge is the checked value this `or`'s join
+        // takes, as a fallible call's result.
+        let narrowing = match self.conversion_operand(inner) {
+            Some((row, operand)) => {
+                let Some(arg) = operand else {
+                    return Err(CodegenError::UnsupportedAt(
+                        format!("`{}(…)` converts one value", row.target),
+                        inner.span(),
+                    ));
                 };
                 match self.lower_conversion(&row, arg, scope)? {
                     crate::conversion::Converted::Value(v, t) => return Ok((Some(v), Some(t))),

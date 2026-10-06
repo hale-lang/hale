@@ -1,0 +1,90 @@
+q + q: Span
+q - q: Span
+q * q: refused at `q * q`: `Span` * `Span`: a product of two quantities is a quantity only when one is dimensionless (a ratio); neither is
+q / q: Int
+q % q: refused at `q % q`: `Span` % `Span`: `%` has no meaning for a quantity or a point
+q < q: Bool
+q + s: Span
+q - s: Span
+q * s: refused at `q * s`: `Span` * `Span in sec`: a product of two quantities is a quantity only when one is dimensionless (a ratio); neither is
+q / s: Int
+q % s: refused at `q % s`: `Span` % `Span in sec`: `%` has no meaning for a quantity or a point
+q < s: Bool
+s + q: Span
+s - q: Span
+s * q: refused at `s * q`: `Span in sec` * `Span`: a product of two quantities is a quantity only when one is dimensionless (a ratio); neither is
+s / q: Int
+s % q: refused at `s % q`: `Span in sec` % `Span`: `%` has no meaning for a quantity or a point
+s < q: Bool
+q + b: refused at `q + b`: `Span` + `ByteCount in KiB`: different quantities, `Span` and `ByteCount`; `+` holds within one
+q - b: refused at `q - b`: `Span` - `ByteCount in KiB`: different quantities, `Span` and `ByteCount`; `-` holds within one
+q * b: refused at `q * b`: `Span` * `ByteCount in KiB`: a product of two quantities is a quantity only when one is dimensionless (a ratio); neither is
+q / b: refused at `q / b`: `Span` / `ByteCount in KiB`: a quotient of two quantities is a count only within one quantity (`q / 1nsec`); these are `Span` and `ByteCount`
+q % b: refused at `q % b`: `Span` % `ByteCount in KiB`: `%` has no meaning for a quantity or a point
+q < b: refused at `q < b`: `Span` < `ByteCount in KiB`: different quantities; a comparison holds within one quantity, or between two points of one origin
+q + r: refused at `q + r`: `Span` + `Rate`: different quantities, `Span` and `Rate`; `+` holds within one
+q - r: refused at `q - r`: `Span` - `Rate`: different quantities, `Span` and `Rate`; `-` holds within one
+q * r: Span in 1/10000 nsec
+q / r: refused at `q / r`: `Span` / `Rate`: a quotient of two quantities is a count only within one quantity (`q / 1nsec`); these are `Span` and `Rate`
+q % r: refused at `q % r`: `Span` % `Rate`: `%` has no meaning for a quantity or a point
+q < r: refused at `q < r`: `Span` < `Rate`: different quantities; a comparison holds within one quantity, or between two points of one origin
+r + q: refused at `r + q`: `Rate` + `Span`: different quantities, `Rate` and `Span`; `+` holds within one
+r - q: refused at `r - q`: `Rate` - `Span`: different quantities, `Rate` and `Span`; `-` holds within one
+r * q: Span in 1/10000 nsec
+r / q: refused at `r / q`: `Rate` / `Span`: a quotient of two quantities is a count only within one quantity (`q / 1bp`); these are `Rate` and `Span`
+r % q: refused at `r % q`: `Rate` % `Span`: `%` has no meaning for a quantity or a point
+r < q: refused at `r < q`: `Rate` < `Span`: different quantities; a comparison holds within one quantity, or between two points of one origin
+r + r: Rate
+r - r: Rate
+r * r: Rate in 1/10000 bp
+r / r: Int
+r % r: refused at `r % r`: `Rate` % `Rate`: `%` has no meaning for a quantity or a point
+r < r: Bool
+q + i: refused at `q + i`: `Span` + `Int`: an `Int` is no quantity; a count becomes one by a unit (`n * 1nsec`)
+q - i: refused at `q - i`: `Span` - `Int`: an `Int` is no quantity; a count becomes one by a unit (`n * 1nsec`)
+q * i: Span
+q / i: Span
+q % i: refused at `q % i`: `Span` % `Int`: `%` has no meaning for a quantity or a point
+q < i: refused at `q < i`: `Span` < `Int`: a quantity or a point compares with its own kind, never an `Int`; compare with a quantity (`0nsec`)
+i + q: refused at `i + q`: `Int` + `Span`: an `Int` is no quantity; a count becomes one by a unit (`n * 1nsec`)
+i - q: refused at `i - q`: `Int` - `Span`: an `Int` is no quantity; a count becomes one by a unit (`n * 1nsec`)
+i * q: Span
+i / q: refused at `i / q`: `Int` / `Span`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+i % q: refused at `i % q`: `Int` % `Span`: `%` has no meaning for a quantity or a point
+i < q: refused at `i < q`: `Int` < `Span`: a quantity or a point compares with its own kind, never an `Int`; compare with a quantity (`0nsec`)
+p + q: Instant
+p - q: Instant
+p * q: refused at `p * q`: `Instant` * `Span`: a point has no product; scale the quantity it is from (`(p - origin) * n`)
+p / q: refused at `p / q`: `Instant` / `Span`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+p % q: refused at `p % q`: `Instant` % `Span`: `%` has no meaning for a quantity or a point
+p < q: refused at `p < q`: `Instant` < `Span`: a quantity and a point; a comparison holds within one quantity, or between two points of one origin
+q + p: Instant
+q - p: refused at `q - p`: `Span` - `Instant`: a quantity minus a point has no meaning; a point minus a quantity is a point
+q * p: refused at `q * p`: `Span` * `Instant`: a quantity is scaled by an `Int` or by a dimensionless quantity
+q / p: refused at `q / p`: `Span` / `Instant`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+q % p: refused at `q % p`: `Span` % `Instant`: `%` has no meaning for a quantity or a point
+q < p: refused at `q < p`: `Span` < `Instant`: a quantity and a point; a comparison holds within one quantity, or between two points of one origin
+p + p: refused at `p + p`: `Instant` + `Instant`: two points do not add; their difference is a quantity (`b - a`), and a point moves by a quantity (`a + d`)
+p - p: Span
+p * p: refused at `p * p`: `Instant` * `Instant`: a point has no product; scale the quantity it is from (`(p - origin) * n`)
+p / p: refused at `p / p`: `Instant` / `Instant`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+p % p: refused at `p % p`: `Instant` % `Instant`: `%` has no meaning for a quantity or a point
+p < p: Bool
+p + s: Instant
+p - s: Instant
+p * s: refused at `p * s`: `Instant` * `Span in sec`: a point has no product; scale the quantity it is from (`(p - origin) * n`)
+p / s: refused at `p / s`: `Instant` / `Span in sec`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+p % s: refused at `p % s`: `Instant` % `Span in sec`: `%` has no meaning for a quantity or a point
+p < s: refused at `p < s`: `Instant` < `Span in sec`: a quantity and a point; a comparison holds within one quantity, or between two points of one origin
+k + c: refused at `k + c`: `Kelvin` + `Celsius`: two points do not add; their difference is a quantity (`b - a`), and a point moves by a quantity (`a + d`)
+k - c: refused at `k - c`: `Kelvin` - `Celsius`: two points of different origins; convert one to the other's first (`Kelvin(…)`)
+k * c: refused at `k * c`: `Kelvin` * `Celsius`: a point has no product; scale the quantity it is from (`(p - origin) * n`)
+k / c: refused at `k / c`: `Kelvin` / `Celsius`: a quantity is divided by an `Int` or by a quantity of its own; a point is not divided
+k % c: refused at `k % c`: `Kelvin` % `Celsius`: `%` has no meaning for a quantity or a point
+k < c: refused at `k < c`: `Kelvin` < `Celsius`: two points of different origins; a comparison holds within one quantity, or between two points of one origin
+q + o: refused at `q + o`: `Span` + `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them
+q - o: refused at `q - o`: `Span` - `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them
+q * o: refused at `q * o`: `Span` * `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them
+q / o: refused at `q / o`: `Span` / `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them
+q % o: refused at `q % o`: `Span` % `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them
+q < o: refused at `q < o`: `Span` < `OrderId`: `Span` is a quantity and `OrderId` is an identity or a range; nothing holds between them

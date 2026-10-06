@@ -53,12 +53,15 @@ primitive, and each is represented as an `Int`:
 |---|---|---|
 | Identity | `type OrderId = distinct Int;`, optionally `{ range: a..b; }` | Typed (spec/units.md § Identities and ranges): no arithmetic, equality and ordering within one, widens to nothing, `Int(id)` and `OrderId(n)` convert |
 | Range | `type Byte = Int { range: 0..256; }`, or over an identity or a range | Typed: a refinement of `Int` (or of its parent), widens to it for free; narrowing into it is `Byte(n) or …` |
-| Quantity | `type Money = quantity Int in cent;` | Declared and judged; values not typed yet |
-| Point | `type Price = point Tick;` | Declared and judged; values not typed yet |
+| Quantity | `type Money = quantity Int in cent;`, or a boundary denomination of one, `Money { round: half_even; }`, `Span in 100 msec` | Typed (spec/units.md § Quantities and points): one algebra (a sum at the finer denomination, a ratio product at the product of the two), every change of denomination a classified conversion, a narrowing discharged at the site or by the target's `round:`; literals `3bp`, `1_250_000USD` |
+| Point | `type Price = point Tick;`, optionally `{ origin: N UNIT; }` | Typed: two of one origin differ by their quantity, a point moves by one; `Kelvin(c)` converts across origins |
 
-Wherever a type reaches a representation (codegen, the wire, the FFI,
-a hashmap key, printing, a flat payload) an identity or a range is its
-`Int`.
+An expression's quantity type carries its denomination; one no
+declaration names is synthesized and displayed `Money in 1/100 cent`.
+Wherever a type reaches a representation (codegen, the FFI, a hashmap
+key, a flat payload) an identity, a range, a quantity or a point is
+its `Int`. A quantity prints with its unit (`1500msec`), and on the
+wire its field is tagged by its denomination.
 
 ## Compound types
 

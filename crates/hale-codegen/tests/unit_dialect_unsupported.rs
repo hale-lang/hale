@@ -1,11 +1,13 @@
-//! GH #1076, step U1: lowering and the unit dialect.
+//! GH #1076: lowering and the unit dialect's declarations and literals.
 //!
 //! A `unit` declaration and a scalar `type` lower to no code: the
-//! checker judges them, and a program that passes the check holds no
-//! value of a new type. A value of one (a quantity literal) is not
-//! lowered yet; a build that skips the check (as this harness does) is
-//! refused with an error naming it and where it is, never a panic and
-//! never a silent skip.
+//! checker judges them. A quantity literal (U3) is the constant its row
+//! in the typed bodies' `conversions` column says, the count the checker
+//! converted into the denomination the literal flows into; a literal with
+//! no row (a build that skips the check, as this harness does, of a
+//! literal the check refuses) is a missing required row, refused with an
+//! error naming it and where it is, never a panic and never a silent
+//! count in the wrong denomination.
 
 use hale_codegen::CodegenError;
 
@@ -27,10 +29,11 @@ fn declarations_lower_to_no_code() {
 }
 
 #[test]
-fn a_quantity_literal_is_refused_by_name() {
+fn a_quantity_literal_with_no_row_is_refused_where_it_is_written() {
+    // No `unit bp`: the check refuses the literal and records no row.
     let src = "fn main() {\n    let fee = 3bp;\n    println(1);\n}\n";
     let bin = harness::unique_bin(&format!("hale_test_unit_dialect_literal_{}", std::process::id()));
-    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("a quantity value is not lowered");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("a literal with no row");
     let _ = std::fs::remove_file(&bin);
     let got = match err {
         CodegenError::UnsupportedAt(msg, span) => format!("{msg} @ {}", span.slice(src)),
@@ -38,6 +41,7 @@ fn a_quantity_literal_is_refused_by_name() {
     };
     assert_eq!(
         got,
-        "quantity literal `3bp`: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it @ 3bp"
+        "quantity literal `3bp` has no required `expression_typing` row: the checker converts a quantity literal \
+         into the denomination it flows into, and lowering emits that count @ 3bp"
     );
 }

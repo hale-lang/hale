@@ -489,7 +489,8 @@ fn an_entry_point_less_program_is_built() {
 /// invocation in a walk whose findings the check discards, which took
 /// the not-yet boundary's error with them; a field's default was not
 /// typed at all. The check refuses each now, at the literal, so the
-/// build is never reached.
+/// build is never reached. U3: the literal's unit has no quantity here,
+/// and the quantity rules' errors survive the discarded walk.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -506,7 +507,7 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
             entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
         assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
         assert_eq!(errors[0].span.slice(src), "3cent", "located at the literal:\n{}", src);
-        assert!(errors[0].message.starts_with("quantity literal `3cent`: "), "{}", errors[0].message);
+        assert!(errors[0].message.starts_with("`3cent`: the units of `cent` have no quantity"), "{}", errors[0].message);
         assert_eq!(
             sweep_verdict(src, "hale_cb_unit_default"),
             Verdict::Skipped("the checker rejects it"),
@@ -520,9 +521,10 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
 /// cast to the scalar type `Money` before the callee was resolved, so a
 /// local of that name holding a fn was refused too. The local is the
 /// callee: the program checks, builds and runs it, as it does when
-/// `Money` is an alias. With no local, a quantity's cast is the
-/// boundary's, and the check refuses it before the build; an identity's
-/// is a conversion (U2), which builds and prints 1.
+/// `Money` is an alias. With no local, a quantity's cast of an `Int` is
+/// refused by the check before the build (U3: a count becomes a quantity
+/// by a unit); an identity's is a conversion (U2), which builds and
+/// prints 1.
 ///
 /// U2 (fix): lowering decided a conversion by the callee's name, so the
 /// shadowing local of an identity's or a range's name, which the checker
@@ -552,7 +554,7 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
     let identity = cast.replace("quantity Int in cent", "distinct Int");
     assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
@@ -581,8 +583,26 @@ fn a_struct_default_cast_is_judged_in_the_literals_scope() {
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_default_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
+}
+
+/// GH #1076 (U3): a quantity in a default converts into its field's or
+/// its parameter's type where the default is evaluated, as a value does
+/// wherever it flows: `3USD` into a `Money` counted in cents is 300, and
+/// a build that lowered the literal at its own unit would print 3.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_default_converts_into_its_fields_and_parameters_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    let field = format!("{decls}type S {{ m: Money = 3USD; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
+    let param = format!("{decls}fn take(m: Money = 3USD) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
+    for (src, tag) in [(field, "unit_quantity_field_default"), (param, "unit_quantity_param_default")] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n".to_string()), "{}", src);
+    }
 }
 
 /// GH #1076 (U1, review 3): an omitted struct default is typed where it
@@ -627,11 +647,11 @@ fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
         entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
     assert_eq!(errors[0].span.start.as_usize(), cast.find("Money(1)").expect("the cast"), "at `Inner`'s default");
-    assert!(errors[0].message.starts_with("type `Money`: "), "{}", errors[0].message);
+    assert!(errors[0].message.starts_with("`Money(…)` of an `Int`: "), "{}", errors[0].message);
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_nested_default_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
 }
 
@@ -789,6 +809,175 @@ fn a_nested_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
     ] {
         assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
     }
+}
+
+/// GH #1076 (U3 polish A): every conversion in a default is the
+/// evaluation's, not only a cast's. Where a local shadows `Bucket`, the
+/// default's `Bucket(2000msec)` is a call of `fake`, and its literal flows
+/// into `fake`'s `Span` (2000); elsewhere it is the cast, and its literal
+/// flows into `sec` (2). Keyed by its span alone, the literal had one row,
+/// the cast's count, and the shadowed evaluation printed `5sec`. The
+/// same for a value converted where it stands: `milli()` flows into
+/// `fake`'s `Span` in `usec` (widened by 1,000) in the shadowed scope
+/// only, and the cast's evaluation, reading that row too, converted it
+/// twice and printed `2000sec`. The literal in both orders of the two
+/// evaluations.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
+    let literal = |shadowed_first: bool| {
+        let (first, second) = if shadowed_first {
+            ("{ let Bucket = fake; let m = L {}; println(m.b); }\n", "let l = L {};\nprintln(l.b);\n")
+        } else {
+            ("let l = L {};\n", "{ let Bucket = fake; let m = L {}; println(m.b); }\nprintln(l.b);\n")
+        };
+        format!(
+            "unit msec;\n\
+             unit sec = 1_000 msec;\n\
+             type Span = quantity Int in msec;\n\
+             type Bucket = Span in sec {{ round: floor; }}\n\
+             fn fake(d: Span) -> Bucket {{ return Bucket(d + 5000msec); }}\n\
+             type L {{ b: Bucket = Bucket(2000msec); }}\n\
+             fn main() {{\n{first}{second}}}\n"
+        )
+    };
+    let value = "unit usec;\n\
+                 unit msec = 1_000 usec;\n\
+                 unit sec = 1_000 msec;\n\
+                 type Span = quantity Int in usec;\n\
+                 type Milli = Span in msec;\n\
+                 type Bucket = Span in sec { round: floor; }\n\
+                 fn milli() -> Milli { return 2000msec; }\n\
+                 fn fake(d: Span) -> Bucket { return Bucket(d + 5sec); }\n\
+                 type L { b: Bucket = Bucket(milli()); }\n\
+                 fn main() {\n\
+                 let l = L {};\n\
+                 { let Bucket = fake; let m = L {}; println(m.b); }\n\
+                 println(l.b);\n\
+                 }\n";
+    for (src, tag) in [
+        (literal(false), "default_literal_second"),
+        (literal(true), "default_literal_first"),
+        (value.to_string(), "default_value"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("7sec\n2sec\n".to_string()), "{}", src);
+    }
+}
+
+/// GH #1076 (U3, review 1): a default's value flows into its declared type
+/// as a binding's initializer does, whatever the type's shape. The default
+/// walks converted a default only when the field's or parameter's type, or
+/// the default, was itself a quantity, so `[3USD, 2USD]` into `[Money; 2]`
+/// kept its literals' counts in `USD` and each program below printed
+/// `3cent` and `2cent`. Each element now has its row on the evaluation's
+/// path: the reviewer's field and parameter defaults, and the field's
+/// default reached through a nested one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_in_an_array_default_converts_into_the_element_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    let field = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         fn main() {{ let s = S {{}}; println(s.p[0]); println(s.p[1]); }}\n"
+    );
+    let param = format!(
+        "{decls}fn take(p: [Money; 2] = [3USD, 2USD]) -> [Money; 2] {{ return p; }}\n\
+         fn main() {{ let p = take(); println(p[0]); println(p[1]); }}\n"
+    );
+    let nested = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         type Outer {{ s: S = S {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.s.p[0]); println(o.s.p[1]); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_array_field_default"),
+        (param, "unit_array_param_default"),
+        (nested, "unit_array_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n200cent\n".to_string()), "{}", src);
+    }
+}
+
+/// GH #1076 (U3, review 1): a constant's initializer is its own
+/// evaluation. It is lowered again at each use, and a use inside a default
+/// looked its rows up on the default's evaluation path, where the checker,
+/// which types the constant once in its own body with no path, recorded
+/// none: `Money(3USD)` was lowered as a call and the build refused each
+/// program below ("call to `Money`: no free fn …") after the check
+/// accepted it. A struct field's default, a parameter's, and a nested
+/// struct default reading the constant each print `300cent`.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_constant_read_in_a_default_is_lowered_from_its_own_rows() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n\
+                 const AMOUNT: Money = Money(3USD);\n";
+    let field = format!("{decls}type S {{ m: Money = AMOUNT; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
+    let param = format!("{decls}fn take(m: Money = AMOUNT) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
+    let nested = format!(
+        "{decls}type Inner {{ m: Money = AMOUNT; }}\n\
+         type Outer {{ i: Inner = Inner {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.i.m); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_const_field_default"),
+        (param, "unit_const_param_default"),
+        (nested, "unit_const_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n".to_string()), "{}", src);
+    }
+}
+
+/// GH #1076 (U3, review 2): each element of an array literal converts from
+/// its own type. The literal was typed by its first element, so in
+/// `[3cent, 2USD]` into `[Money; 2]` the whole array was already a `Money`
+/// array and `2USD` stored `2`; in `[3USD, 2cent]` every element converted
+/// as a `USD` and `2cent` stored `200`. Each order as a field's default, a
+/// parameter's and an annotated binding; a constant beside a literal in
+/// each of the three; and an array nothing types, whose elements meet at
+/// the finer denomination.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_array_literals_elements_each_convert_from_their_own_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    for (array, want, order) in [("[3cent, 2USD]", "3cent\n200cent\n", "cent_usd"), ("[3USD, 2cent]", "300cent\n2cent\n", "usd_cent")] {
+        let field =
+            format!("{decls}type S {{ a: [Money; 2] = {array}; }}\nfn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); }}\n");
+        let param = format!(
+            "{decls}fn take(a: [Money; 2] = {array}) -> [Money; 2] {{ return a; }}\n\
+             fn main() {{ let a = take(); println(a[0]); println(a[1]); }}\n"
+        );
+        let binding = format!("{decls}fn main() {{ let a: [Money; 2] = {array}; println(a[0]); println(a[1]); }}\n");
+        for (src, shape) in [(field, "field"), (param, "param"), (binding, "binding")] {
+            let tag = format!("unit_mixed_array_{shape}_{order}");
+            assert_eq!(build_and_run_probe(&src, &tag), Ok(want.to_string()), "{}", src);
+        }
+    }
+    let constant = format!(
+        "{decls}const AMOUNT: Money = Money(3USD);\n\
+         type S {{ a: [Money; 2] = [AMOUNT, 2USD]; }}\n\
+         fn take(a: [Money; 2] = [AMOUNT, 2USD]) -> [Money; 2] {{ return a; }}\n\
+         fn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); let t = take(); println(t[0]); println(t[1]); \
+         let b: [Money; 2] = [AMOUNT, 2USD]; println(b[0]); println(b[1]); }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&constant, "unit_mixed_array_constant"),
+        Ok("300cent\n200cent\n300cent\n200cent\n300cent\n200cent\n".to_string()),
+        "{}",
+        constant
+    );
+    let meet = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
+                fn main() { let a = [1sec, 1_500msec]; println(a[0]); println(a[1]); }\n";
+    assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
 }
 
 /// The check with the whole-program rules OFF — what a caller holding
