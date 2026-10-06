@@ -598,6 +598,32 @@ fn a_unit_named_like_a_literal_suffix_is_refused_at_its_name() {
     assert_eq!(at(src, d.span), "m");
 }
 
+// Law 12: no scalar declaration and no unit takes a builtin type's name. A
+// type position reads the builtin before any declaration, so a quantity
+// named `Bytes` could never be named: `let n: Bytes = 4B;` is the buffer.
+
+#[test]
+fn a_scalar_or_a_unit_named_like_a_builtin_type_is_refused_at_its_name() {
+    let src = "unit B;\ntype Bytes = quantity Int in B;\ntype Int = distinct Int;\nunit String;\nfn main() { }\n";
+    let all = diags(src);
+    let d = the_error(&all, "type `Bytes`");
+    assert_eq!(d.message, "type `Bytes`: `Bytes` is the builtin buffer type; a quantity cannot take a builtin type's name");
+    assert_eq!(at(src, d.span), "Bytes");
+    assert_eq!(d.span.start.as_usize(), src.find("Bytes").unwrap());
+    let d = the_error(&all, "type `Int`");
+    assert_eq!(d.message, "type `Int`: `Int` is the builtin integer type; an identity cannot take a builtin type's name");
+    assert_eq!(d.span.start.as_usize(), src.find("Int =").unwrap());
+    let d = the_error(&all, "unit `String`");
+    assert_eq!(d.message, "unit `String`: `String` is the builtin string type; a unit cannot take a builtin type's name");
+    assert_eq!(d.span.start.as_usize(), src.find("String").unwrap());
+    assert_eq!(all.iter().filter(|d| d.is_error()).count(), 3, "{all:#?}");
+    assert!(rows(src).catalogue.is_some(), "law 12 is no catalogue law");
+
+    // `ByteCount` is no builtin's name.
+    let src = "unit B;\ntype ByteCount = quantity Int in B;\nfn main() { }\n";
+    assert_eq!(diags(src).iter().filter(|d| d.is_error()).count(), 0, "{:#?}", diags(src));
+}
+
 // Law 10: every unit written against a number is in one dimensionless
 // component.
 

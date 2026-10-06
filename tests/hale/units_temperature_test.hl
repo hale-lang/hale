@@ -1,0 +1,34 @@
+// GH #1076, step U5: the committed form's example (hale-lang/hale#1212,
+// "The unit dialect, concretely") is the dialect's acceptance. This
+// program is its temperature: two origins over one quantity, no affine
+// edges needed. `Kelvin` and `Celsius` are two points over `TempDelta`,
+// the second with its zero 273.15 K above the first's; a conversion
+// across them shifts by the two origins' difference, and two points of
+// one origin differ by a `TempDelta`.
+//
+// `mK` is declared (the committed form names it and declares it
+// nowhere).
+
+unit mK;
+
+type TempDelta = quantity Int in mK;
+type Kelvin = point TempDelta;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+
+fn main() {
+    let boil = Celsius(100_000mK);
+    let k = Kelvin(boil);
+    std::test::assert_eq_str(to_string(k), "373150", "100 C is 373.15 K: a point prints its count");
+    std::test::assert(k == Kelvin(373_150mK), "the shift is the origin");
+    std::test::assert(Celsius(k) == boil, "and back");
+
+    let freeze = Celsius(0mK);
+    std::test::assert(Kelvin(freeze) == Kelvin(273_150mK), "0 C is the origin");
+    let cold = Kelvin(0mK);
+    std::test::assert(Celsius(cold) == Celsius(0mK - 273_150mK), "0 K is below the Celsius origin");
+
+    let rise = boil - freeze;
+    std::test::assert_eq_str(to_string(rise), "100000mK", "two points of one origin differ by a quantity");
+    std::test::assert(Kelvin(boil) - Kelvin(freeze) == rise, "the same difference at the other origin");
+    std::test::assert(freeze + rise == boil, "a point moves by a quantity");
+}

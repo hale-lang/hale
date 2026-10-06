@@ -5000,8 +5000,8 @@ for stdlib calls was staged (a warning, then `--strict-fallible`, then
 this) and the flag is removed. For any other callee the bare call was
 always refused, by the build if not by the check.
 
-A narrowing into a range (`Session(n)`, spec/units.md § Identities and
-ranges) is fallible the same way, with a `RangeError`, and is bare in
+A narrowing into a range (`Session(n)`, spec/units.md § Conversions)
+is fallible the same way, with a `RangeError`, and is bare in
 the same positions; its error lists the narrowing's own discharges
 (`or <fallback>`, `or clamp`, `or wrap`, `or handler(err)`, `or
 raise`).

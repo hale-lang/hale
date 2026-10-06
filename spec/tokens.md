@@ -289,7 +289,9 @@ namespace names that would otherwise occur.
 
 Shadowing a predefined type name with a user-defined type
 (`type Int = ...`) is permitted by the grammar but produces a
-compiler warning.
+compiler warning. A scalar declaration (a quantity, a point, an
+identity, a range) or a `unit` of such a name is an error
+(spec/units.md § The laws, law 12).
 
 ### Reserved for future use (not yet legal)
 
@@ -535,7 +537,7 @@ annotations are not in v1.
   quantity's denomination when it is a whole count of it (`1000mg`
   of a quantity in grams is 1) and else at its unit (`5mg`),
   converted at compile time into the denomination it
-  flows into (spec/units.md § Quantities and points, Literals). A
+  flows into (spec/units.md § Literals). A
   unit no `unit` declares is refused at the literal.
 
 ### Decimal literals

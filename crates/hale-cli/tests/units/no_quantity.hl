@@ -1,0 +1,7 @@
+// A program that declares no scalar type and converts nothing: `hale
+// check --units` says so in one line (check_units.rs).
+
+fn main() {
+    let d = 1500ms;
+    println(f"{d}");
+}

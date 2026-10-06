@@ -616,8 +616,9 @@ fn own_entries_run_to_exit_programs() {
     // 81: GH #1076's `tests/hale/unit_declarations_test.hl` is one more,
     // losing the copy's 21 like the rest; 82: U2's
     // `tests/hale/identities_and_ranges_test.hl` is one more again; 83:
-    // U3's `tests/hale/unit_quantities_test.hl`.
-    assert_eq!(moved, 83, "the run-to-exit programs among the targets");
+    // U3's `tests/hale/unit_quantities_test.hl`; 88: U5's five acceptance
+    // programs, `tests/hale/units_{identities,money,temperature,ticks,time}_test.hl`.
+    assert_eq!(moved, 88, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [

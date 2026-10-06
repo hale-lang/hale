@@ -10,6 +10,7 @@
 - [The language](./parts/language.md)
 - [Values & variables](./basics/values.md)
 - [Math, money & time](./basics/math.md)
+- [Units, end to end](./units.md)
 - [Functions](./basics/functions.md)
 - [Control flow](./basics/control-flow.md)
 - [Strings & text](./basics/strings.md)

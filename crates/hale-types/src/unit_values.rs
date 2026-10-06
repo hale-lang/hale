@@ -119,6 +119,22 @@ impl<'r> ScalarTypes<'r> {
         ScalarTypes { rows, by_name, quantities }
     }
 
+    /// The rows of every scalar the rows hold, read without a scope: what
+    /// `hale check --units` reads a checked program's conversions by (U5),
+    /// where every declaration the laws accept is a scalar type.
+    pub fn of_rows(rows: &'r UnitRows) -> Self {
+        let mut by_name = BTreeMap::new();
+        let mut quantities = BTreeMap::new();
+        for (i, s) in rows.scalars.iter().enumerate() {
+            let map = match s.kind {
+                ScalarKindRow::Quantity | ScalarKindRow::Point => &mut quantities,
+                ScalarKindRow::Identity | ScalarKindRow::Range => &mut by_name,
+            };
+            map.entry(s.name.as_str()).or_insert(i);
+        }
+        ScalarTypes { rows, by_name, quantities }
+    }
+
     /// Whether the program has no scalar type of any kind.
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty() && self.quantities.is_empty()

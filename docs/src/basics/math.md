@@ -285,7 +285,7 @@ says what becomes of a value outside it, with `or`:
 
 A literal outside the range is an error where you wrote it (`let b:
 Byte = 300;`), and a narrowing with no `or` is too. `spec/units.md §
-Identities and ranges` has every rule.
+Conversions` has every rule.
 
 ## Your own units
 
@@ -356,7 +356,7 @@ fn main() {
 }
 ```
 
-A **point** (`Instant`) is a position, a **quantity** (`Span`) a
+A **point** (`Time`) is a position, a **quantity** (`Duration`) a
 distance: two points subtract to a quantity, a point plus a quantity
 is a point, and two points do not add. A point may declare where its
 zero is (`type Celsius = point TempDelta { origin: 273_150 mK; }`),
@@ -369,13 +369,16 @@ unit is converted from its own: with no type to fit, `[whole, 500ms]`
 is counted in the finer unit, as a sum is: both in nanoseconds.
 
 Mixing kinds is an error at the operator, naming both declarations:
-`5msec + 4KiB` adds time to bytes, `bid + ask` adds two prices,
-`d > 0` compares a span with a bare number (write `d > 0msec`). An
+`5ms + 4KiB` adds time to bytes, `bid + ask` adds two prices,
+`d > 0` compares a span with a bare number (write `d > 0ms`). An
 `Int` becomes a quantity by a unit (`n * 1cent`), and a quantity's
-count is a quotient (`q / 1cent`). `spec/units.md § Quantities and
-points` has every rule. The standard library declares the time units
-(`ns` … `day`), so a program's own unit takes another name, or joins
-them by what it equals (`unit tick = 10 ms;`).
+count is a quotient (`q / 1cent`). The standard library declares the
+time units (`ns` … `day`), so a program's own unit takes another name,
+or joins them by what it equals (`unit tick = 10 ms;`).
+
+[Units, end to end](../units.md) walks through a whole program in the
+dialect, the mistakes the compiler catches, and `hale check --units`;
+`spec/units.md` has every rule.
 
 ## Why these are in the language
 
@@ -388,4 +391,4 @@ in time) are *so common* and *so costly* that making them
 first-class is worth it. You get the safety without importing
 anything or remembering a convention.
 
-Next: [Functions](./functions.md).
+Next: [Units, end to end](../units.md).

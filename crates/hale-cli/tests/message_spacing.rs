@@ -32,6 +32,18 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-types/src/unit_report.rs",
+        "render",
+        "`hale check --units`: the `kind         : …` field column of \
+         a declaration's block, read down one column and diffed",
+    ),
+    (
+        "crates/hale-types/src/unit_report.rs",
+        "render_narrowing",
+        "`hale check --units`: the `policy       : …` field column of \
+         a narrowing's block, the same column as a declaration's",
+    ),
+    (
         "crates/hale-syntax/src/shift.rs",
         "first_difference",
         "the `parsed at base: …` / `shifted:        …` windows align so a \

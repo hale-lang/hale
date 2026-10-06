@@ -455,6 +455,10 @@ __api_refusal  does={alloc}
 __api_refusal_role  does={alloc}
 __api_reply_line  does={alloc}
 main  does={alloc}
+### 93-units
+Book::on_fill  does={syscall,alloc}
+Desk::birth  does={publish,alloc}
+main  does={syscall,alloc}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}

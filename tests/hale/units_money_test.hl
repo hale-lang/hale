@@ -1,0 +1,72 @@
+// GH #1076, step U5: the committed form's example (hale-lang/hale#1212,
+// "The unit dialect, concretely") is the dialect's acceptance. This
+// program is its money and ratios: the `bp` product, exact at the
+// product of the two denominations (decision 2), and the narrowing
+// where the policy is. Every stated result is asserted; the refusal of
+// the same value into a type with no policy is pinned, with its
+// wording, in crates/hale-types/tests/unit_acceptance.rs.
+//
+// `bp` is defined against the number (decision 2), so `pct = 100 bp`
+// is the committed line as written. A literal's magnitude and its unit
+// are adjacent (`1_250_000USD`, decision 3: the committed text's
+// `1_250_000 USD` is two tokens, and unit_acceptance.rs pins the parse
+// error). The example's comment on `odd` ("narrowing") is from before
+// decision 2: `odd` is exact, and the narrowing is at `paid`.
+
+unit cent;
+unit USD = 100 cent;
+unit bp = 1 / 10000;
+unit pct = 100 bp;
+
+type Money = quantity Int in cent;
+type Ratio = quantity Int in bp;
+
+// a boundary type carries its narrowing policy
+type Ledger = quantity Int in cent { round: half_even; }
+
+// The same amounts read at run time: a count made a quantity by a unit.
+fn amount(n: Int) -> Money {
+    return n * 1USD;
+}
+
+fn rate(n: Int) -> Ratio {
+    return n * 1bp;
+}
+
+fn main() {
+    let fee = 1_250_000USD * 3bp; // 375 USD, q = 1, exact
+    std::test::assert(fee == 375USD, "375 USD");
+    std::test::assert_eq_str(to_string(fee), "375000000 Money in 1/10000 cent", "exact, at the product of cent and bp");
+    let odd = 1_234_567USD * 3bp; // 370.3701 USD: narrowing
+    std::test::assert_eq_str(to_string(odd), "370370100 Money in 1/10000 cent", "370.3701 USD, exact here");
+    std::test::assert(odd > 37_037cent && odd < 37_038cent, "between two whole cents");
+    let paid: Ledger = odd; // policy from the type
+    std::test::assert_eq_str(to_string(paid), "37037cent", "Ledger's half_even: 37037.01 cents to 37037");
+    std::test::assert_eq_int(paid / 1cent, 37_037, "a count of cents");
+
+    // What `let bad: Money = odd;` means instead, said at the site.
+    let cents = odd.in(cent) or half_even;
+    std::test::assert(cents == 37_037cent, "the policy named at the site");
+    let exact = odd.in(cent) or 0cent;
+    std::test::assert(exact == 0cent, "no whole number of cents: the substitute");
+
+    // half_even at a tie: to the even cent.
+    let up: Ledger = 50USD * 3bp;
+    std::test::assert(up == 2cent, "1.5 cents to 2");
+    let down: Ledger = 150USD * 3bp;
+    std::test::assert(down == 4cent, "4.5 cents to 4");
+
+    // The same lines with runtime operands: the same denomination, the
+    // same values, the same rounding at the boundary.
+    let runtime_fee = amount(1_250_000) * rate(3);
+    std::test::assert(runtime_fee == fee, "375 USD either way");
+    let runtime = amount(1_234_567) * rate(3);
+    std::test::assert_eq_str(to_string(runtime), "370370100 Money in 1/10000 cent", "the product's denomination");
+    std::test::assert(runtime == odd, "exact either way");
+    let paid_runtime: Ledger = runtime;
+    std::test::assert(paid_runtime == paid, "rounded where the policy is");
+
+    // The ratio's own catalogue.
+    std::test::assert(1pct == 100bp, "a pct is 100 bp");
+    std::test::assert_eq_int(1USD / 1cent, 100, "a USD is 100 cents");
+}

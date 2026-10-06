@@ -77,6 +77,7 @@ pub mod unit_graph;
 pub mod units;
 pub mod unit_values;
 pub mod unit_quantities;
+pub mod unit_report;
 mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;

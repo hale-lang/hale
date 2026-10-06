@@ -1,0 +1,82 @@
+// 93-units — the unit dialect (GH #1076): a catalogue, quantities
+// counted in it, a boundary type, a ratio product, an identity and a
+// point, on a topic.
+//
+// A fee desk. Each fill's notional is `Money`, counted in cents; the
+// fee rate is a `Rate`, counted in basis points, a unit defined against
+// the number, so a `Money` times a `Rate` is a `Money` at the product
+// of the two denominations (1/10000 cent), exact. The fee is stored as
+// a `Ledger`, the boundary type that says how a remainder is rounded
+// (`half_even`), so the rounding happens there and nowhere else. An
+// order's id is an identity: it compares, it has no arithmetic. The
+// account's balance is a point on the money line: a fill moves it by
+// a quantity, and two balances differ by one.
+//
+// On the bus a quantity field is its integer, tagged with its
+// denomination in the topic's shape (`q(cent)`), so a subscriber that
+// counted fees in another unit would disagree in the shape hash
+// instead of reading the wrong number.
+
+unit cent;
+unit USD = 100 cent;
+unit bp = 1 / 10000;
+
+type Money = quantity Int in cent;
+type Rate = quantity Int in bp;
+type Ledger = Money { round: half_even; }
+type OrderId = distinct Int;
+type Balance = point Money;
+
+type Fill {
+    order: OrderId;
+    notional: Money;
+    fee: Ledger;
+}
+
+topic Fills {
+    payload: Fill;
+    subject: "desk.fills";
+}
+
+fn fee_of(notional: Money, rate: Rate) -> Ledger {
+    // Exact at 1/10000 cent; rounded once, by `Ledger`'s policy.
+    return notional * rate;
+}
+
+locus Book {
+    params { open: Balance = Balance(0cent); paid: Money = 0cent; fills: Int = 0; }
+    bus {
+        subscribe Fills as on_fill;
+    }
+    fn on_fill(f: Fill) {
+        self.fills = self.fills + 1;
+        self.paid = self.paid + f.fee;
+        let after = self.open - f.notional - f.fee;
+        println(f"order {Int(f.order)}: {f.notional} at a fee of {f.fee}; balance moves {after - self.open}");
+        self.open = after;
+    }
+}
+
+locus Desk {
+    bus {
+        publish Fills;
+    }
+    birth() {
+        let rate = 3bp;
+        Fills <- Fill { order: OrderId(1), notional: 1_250_000USD, fee: fee_of(1_250_000USD, rate) };
+        Fills <- Fill { order: OrderId(2), notional: 1_234_567USD, fee: fee_of(1_234_567USD, rate) };
+    }
+}
+
+fn main() {
+    let odd = 1_234_567USD * 3bp;
+    println(f"exact: {odd}");
+    let paid: Ledger = odd;
+    println(f"stored: {paid}");
+    let start = Balance(100_000_000USD);
+    let end = start - 1_234_567USD - paid;
+    println(f"moved: {end - start}");
+    println(f"one order: {OrderId(1) == OrderId(1)}, two orders: {OrderId(1) == OrderId(2)}");
+    Book { };
+    Desk { };
+}

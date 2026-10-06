@@ -1679,6 +1679,7 @@ state), and zeroization.
 | **Identity and range bases** | an identity that is not `distinct Int` or has a denomination; a range type over a primitive other than `Int` or with a denomination, and a refinement of `Int` with no `range:` | error | `identity_and_range_bases` (units) |
 | **Refinement of a scalar** | a scalar declaration over a name nothing declares; a refinement (no kind word) of a struct, an enum, an alias of one, a locus or another non-scalar; a refinement chain that comes back to itself | error | `refinement_bases` (units) |
 | **Unit named like a literal suffix** | a `unit` named `d`, the Decimal literal's suffix (`3d` is the Decimal `3`), or `e` / `E` and a digit, a Float's exponent (`3e5`): the lexer reads either before a unit, so no literal could write the unit. Reported at the name | error | `literal_suffix_names` (units) |
+| **Named like a builtin type** | a quantity, a point, an identity, a range or a `unit` of a program named like a builtin type: a primitive (`Bytes`, `Int`, `String`, …; a type position reads it before any declaration, so the declaration could never be named) or a builtin error type (`IoError`, `RangeError`, …). Reported at the name: "type \`Bytes\`: \`Bytes\` is the builtin buffer type; a quantity cannot take a builtin type's name" | error | `builtin_type_names` (units) |
 
 CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the

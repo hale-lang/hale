@@ -481,6 +481,9 @@ pub(crate) fn check_usage(verify: bool) {
     println!("  --sealable                      report which loci could be `@sealed`");
     println!("  --flows                         report which locus types are flows, and the");
     println!("                                 `release(c: T)` clause(s) that make each one");
+    println!("  --units                         report every quantity's denomination, each");
+    println!("                                 narrowing and the policy that discharges it");
+    println!("                                 (stdout; one object with --json)");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
