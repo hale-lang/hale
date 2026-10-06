@@ -1,0 +1,51 @@
+// Decision line 11, a let-bound subscriber reclaimed idle at its scope's
+// exit (Reclaim, inventory row R33): its reclaim deregisters it although
+// nothing is queued, held or deferred for it.
+//
+// `born_and_gone` let-binds a `Kid` that subscribes to `Gos` and
+// returns: the reclaim at its exit is idle, with no run ticket and no
+// owner domain live, so the queued-run cancel beside the deregistration
+// takes its idle edge (`emit_unless_idle` over `lotus_run_tickets_live`
+// and `lotus_owner_domain_count`). The deregistration
+// (`lotus_bus_quarantine_self`) is not guarded by those words, and must
+// not be: a subscription is neither a ticket nor a domain, so an idle
+// reclaim with bus state still has a registry entry naming it. A
+// quarantine skipped on the idle edge would leave that entry its subject
+// while the storage is released, and the next `Kid` at the reused
+// address would receive the dead one's delivery (F.40 phase 4's
+// hangovers measured it: `heard kid-2-name 7`, then a SEGV in
+// `lotus_arena_create_subregion` from the handler under ASan). App's
+// run() calls it, publishes, calls it again and publishes again.
+//
+// Expected terminal outcome: each Kid is born and gone, and nobody hears
+// either publish, judged by the harness from the whole output:
+// `born kid-1-name / born kid-2-name / end`, clean under ASan.
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "lifecycle.l11.idle.go"; }
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) { println("heard " + self.name + " " + to_string(g.k)); }
+}
+
+fn born_and_gone(t: Int) {
+    let k = Kid { tag: t };
+    println("born " + k.name);
+}
+
+main locus App {
+    params { n: Int = 0; }
+    bus { publish Gos; }
+    run() {
+        born_and_gone(1);
+        Gos <- Go { k: 7 };
+        born_and_gone(2);
+        Gos <- Go { k: 8 };
+        println("end");
+    }
+}
+
+fn main() { App { }; }

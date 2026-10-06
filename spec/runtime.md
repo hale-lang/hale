@@ -2199,6 +2199,13 @@ its `KNOWN_OPEN` table, which is empty today.
 - **Line 11, a let-bound literal.** `birth()` and `run()` happen at
   the construction site; `drain()` and `dissolve()` happen together
   at the enclosing scope's exit. Shipped (`l11_let_bound_drain.hl`).
+  Its reclaim deregisters a subscriber even when nothing is queued,
+  held or deferred for it: a subscription is neither a run ticket nor
+  an owner's domain, so the idle words that let the reclaim skip its
+  other steps cannot say it has none, and a subscriber reclaimed
+  without its deregistration would leave its registry entry to the
+  next instance at its address (`l11_idle_reclaim_deregisters.hl`,
+  clean under ASan).
 - **Line 12, owned fields drain before their parent.** A locus's
   owned locus fields drain before it does, each in its own domain:
   a pinned locus's fields drain on its thread before its own
@@ -2504,10 +2511,18 @@ its `KNOWN_OPEN` table, which is empty today.
   while its worker runs a handler. The main queue's handlers and a
   pinned thread's take no hold: their subscribers are reclaimed on
   the thread that runs them, between handlers, or after the pinned
-  thread's join. A cell still queued for a subscriber whose reclaim
+  thread's join. A yield inside a pinned thread's handler departs
+  from this today: it drains the thread's mailbox, so an owner's
+  handler it runs can replace the suspended handler's subscriber,
+  which is reclaimed under it (`l19_pinned_yield_replaces_child.hl`,
+  known open, R52). A cell still queued for a subscriber whose reclaim
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
-  drops the cell or the reclaim waits for its handler. Before the
+  drops the cell or the reclaim waits for its handler. A subscriber
+  registered later at the same address departs from this today: its
+  registration takes the address out of the dead set, and the cell
+  runs on it (`l19_reused_address_queued_cell.hl`, known open, R33).
+  Before the
   hold, replacing the child while its handler ran freed the storage
   under it, a heap-use-after-free under AddressSanitizer in both
   dispatch modes (`fd_handler_cell_no_hold.hl`, under

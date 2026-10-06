@@ -1,0 +1,84 @@
+// Decision line 19, a cell still queued for a subscriber its reclaim
+// quarantined (Reclaim, inventory row R33, known open): the cell ends
+// unrun, and never reaches a later subscriber at the same address.
+//
+// Host, pinned, handles `Start` by calling `visit(1)` and then
+// `visit(2)`. Each call let-binds a `Kid` that subscribes to `Gos`, in
+// the one slot of the one frame, so the second Kid is built at the
+// first one's address. The first publishes `Gos` and returns: its cell
+// waits in main's queue (a let-bound literal in a method registers on
+// main's queue), and main is blocked in `usleep`, which drains nothing,
+// until the second Kid says through a gate file that it is born. The
+// first Kid's reclaim quarantines it: its registry entry loses its
+// subject and its address joins the dead set
+// (`lotus_bus_quarantine_self`). The second Kid's registration removes
+// that address from the dead set (`lotus_bus_register_entry`,
+// `bus_dead_remove`), so when main drains, the first Kid's cell passes
+// the dead-self check (`lotus_bus_cell_materialize`) and its handler
+// runs on the second Kid, which was born after the publish. The second
+// Kid waits for main's drain to finish (a second gate) before it
+// returns, so the drain always finds it registered.
+//
+// Expected terminal outcome: no Kid hears the cell, judged by the
+// harness from the `tag` the handler reads: `dropped`. Today the second
+// Kid hears it: `heard-by-new`. Under ASan the run is the same and
+// clean, since the second Kid is live when its handler runs.
+
+@ffi("c") fn usleep(us: Int) -> Int;
+
+type Go { k: Int; }
+topic Gos { payload: Go; subject: "lifecycle.l19.reused.go"; }
+topic Start { payload: Go; subject: "lifecycle.l19.reused.start"; }
+
+fn gate(what: String) -> String {
+    return "/tmp/hale-l19-reused-" + what + "-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    bus { subscribe Gos as on_go; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    fn on_go(g: Go) { println("ev heard tag " + to_string(self.tag) + " k " + to_string(g.k)); }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+locus Host {
+    params { n: Int = 0; }
+    bus { subscribe Start as on_start; publish Gos; }
+    fn visit(t: Int) {
+        let k = Kid { tag: t };
+        if t == 1 {
+            Gos <- Go { k: 1 };
+        } else {
+            std::io::fs::write_file(gate("born"), "born") or discard;
+            let until = std::time::monotonic_ns() + 5000000000;
+            while !std::io::fs::file_exists(gate("drained")) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        }
+    }
+    fn on_start(s: Go) {
+        self.visit(1);
+        self.visit(2);
+        println("ev host-done");
+    }
+}
+
+main locus App {
+    params { h: Host = Host { }; }
+    placement { h: pinned; }
+    bus { publish Start; }
+    run() {
+        Start <- Go { k: 0 };
+        let until = std::time::monotonic_ns() + 5000000000;
+        while !std::io::fs::file_exists(gate("born")) && std::time::monotonic_ns() < until { usleep(1000); }
+        std::time::sleep(50ms);
+        std::io::fs::write_file(gate("drained"), "drained") or discard;
+        std::time::sleep(100ms);
+        println("ev finished");
+    }
+    dissolve() {
+        std::io::fs::unlink(gate("born")) or discard;
+        std::io::fs::unlink(gate("drained")) or discard;
+    }
+}
+
+fn main() { App { }; }
