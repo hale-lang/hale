@@ -1496,6 +1496,7 @@ pub fn build_resolved(
         current_specialization: None,
         current_call: None,
         default_invocations: Vec::new(),
+        default_evaluation: None,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3339,6 +3340,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Source invocation whose omitted defaults are being lowered.
     current_call: Option<NodeId>,
     default_invocations: Vec<u32>,
+    /// While a default is lowered where it is evaluated: the outermost
+    /// evaluation's site (the struct literal that leaves a field, the
+    /// call that leaves a parameter), the key under which the checker
+    /// recorded its casts' conversions (`ConversionSite::DefaultCast`).
+    pub(crate) default_evaluation: Option<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -14618,6 +14624,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_method_caller = self.current_method_caller_arena.take();
             let saved_fallible = self.current_user_fn_fallible.take();
             let saved_defaults = std::mem::take(&mut self.default_invocations);
+            let saved_evaluation = self.default_evaluation.take();
             let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
@@ -14663,6 +14670,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_method_caller_arena = saved_method_caller;
             self.current_user_fn_fallible = saved_fallible;
             self.default_invocations = saved_defaults;
+            self.default_evaluation = saved_evaluation;
             self.current_call = saved_call;
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
@@ -16584,7 +16592,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         match stmt {
-            Stmt::Expr(Expr::Struct { path, inits, .. }) => {
+            Stmt::Expr(Expr::Struct { path, inits, id: literal, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
                 // mangled stdlib locus name declared in
                 // hale_stdlib::AP_SOURCE. Unknown qualified paths still
@@ -16701,7 +16709,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-
                     // free expressions like `Foo {};` (rare but legal).
-                    let _ = self.lower_user_type_instantiation(name, inits, scope)?;
+                    let _ = self.lower_user_type_instantiation(*literal, name, inits, scope)?;
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "struct literal `{}`: no locus or type by that name",
@@ -22750,7 +22758,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
         }
         self.default_invocations.push(call.0);
+        let outer = self.default_evaluation;
+        self.default_evaluation = outer.or(Some(call.0));
         let result = self.lower_expr(default, scope);
+        self.default_evaluation = outer;
         self.default_invocations.pop();
         result
     }
@@ -23867,7 +23878,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // resolves to a `type` (record) → TypeRef. The mangled-
             // name lookup is shared; the dispatch (locus vs type)
             // follows whichever map the mangled name lives in.
-            Expr::Struct { path, inits, .. }
+            Expr::Struct { path, inits, id: literal, .. }
                 if path.segments.len() > 1 => {
                 let segs: Vec<&str> = path
                     .segments
@@ -23894,7 +23905,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
                 } else if self.user_types.contains_key(mangled) {
-                    let ptr = self.lower_user_type_instantiation(mangled, inits, scope)?;
+                    let ptr = self.lower_user_type_instantiation(*literal, mangled, inits, scope)?;
                     Ok((ptr.into(), CodegenTy::TypeRef(mangled.to_string())))
                 } else {
                     Err(CodegenError::Unsupported(format!(
@@ -23905,12 +23916,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))
                 }
             }
-            Expr::Struct { path, inits, .. }
+            Expr::Struct { path, inits, id: literal, .. }
                 if path.segments.len() == 1
                     && self.user_types.contains_key(&path.segments[0].name) =>
             {
                 let name = path.segments[0].name.clone();
-                let ptr = self.lower_user_type_instantiation(&name, inits, scope)?;
+                let ptr = self.lower_user_type_instantiation(*literal, &name, inits, scope)?;
                 Ok((ptr.into(), CodegenTy::TypeRef(name)))
             }
             Expr::Array(parts, _) => {
@@ -31323,6 +31334,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// in m12 once `<-` dispatch lands.
     fn lower_user_type_instantiation(
         &mut self,
+        literal: NodeId,
         type_name: &str,
         inits: &[StructInit],
         scope: &Scope<'ctx>,
@@ -31357,7 +31369,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .size_of()
             .expect("user struct has known size");
         let self_ptr = self.arena_alloc(size, &format!("{}.alloc", type_name))?;
-        self.populate_user_type_fields(type_name, &info, inits, self_ptr, scope)?;
+        self.populate_user_type_fields(literal, type_name, &info, inits, self_ptr, scope)?;
         Ok(self_ptr)
     }
 

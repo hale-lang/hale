@@ -889,6 +889,7 @@ pub fn check_bundle_by_declaration(
         unit_values_refused: BTreeMap::new(),
         casts_judged_at_literals: false,
         struct_defaults_typing: Vec::new(),
+        default_evaluation: None,
     };
     // GH #1076: the not-yet boundary's errors belong to every declaration
     // whose walk reaches them (a parameter's default, reached by each
@@ -6162,6 +6163,12 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
+    /// While a default is typed where it is evaluated: the outermost
+    /// evaluation's site, the struct literal that leaves a field or the
+    /// call that leaves a parameter. A cast typed there is that
+    /// evaluation's row (`ConversionSite::DefaultCast`), so one default
+    /// evaluated in two scopes has two answers.
+    default_evaluation: Option<u32>,
 }
 
 #[derive(Default)]
@@ -12516,7 +12523,7 @@ impl<'a> Checker<'a> {
     /// The cast `to(x)` of a value of `from`, classified by the scalar
     /// rules: refused at `span` with their message, or recorded as a row.
     fn check_cast(&mut self, call: NodeId, span: Span, to: Ty, from: Ty, target: &str) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
         match self.scalars.cast(&to, &from) {
             Err(why) => self.diags.push(Diag::ty(span, why)),
             Ok(kind) => {
@@ -12532,18 +12539,29 @@ impl<'a> Checker<'a> {
                 if self.specializing.is_none() {
                     let row =
                         ConversionRow { span, from, to: to.clone(), kind, range, policy: None, target: target.to_string() };
-                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                    let site = self.cast_site(call);
+                    self.typed.conversion(self.body, site, row);
                 }
             }
         }
         to
     }
 
+    /// The key of the cast at `call`: its call, or inside a default the
+    /// evaluation being typed and its call.
+    fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
+        use crate::typed_bodies::ConversionSite;
+        match self.default_evaluation {
+            Some(at) => ConversionSite::DefaultCast { at, call: call.0 },
+            None => ConversionSite::Cast(call.0),
+        }
+    }
+
     /// The narrowing `inner` is, when it is a cast the conversions column
     /// holds as one: its site.
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
         let Expr::Call { id, .. } = inner else { return None };
-        let site = crate::typed_bodies::ConversionSite::Cast(id.0);
+        let site = self.cast_site(*id);
         let row = self.typed.conversion_at(site)?;
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
@@ -12589,11 +12607,12 @@ impl<'a> Checker<'a> {
     /// boundary's errors (`discard_since`), and the conversion rows of
     /// its casts, which lowering reads where it evaluates the default and
     /// which are kept in the constructing declaration's body, one per
-    /// cast however many literals leave the field (the first's). A
-    /// default no literal leaves is never evaluated. Its quantity
-    /// literals are refused at the declaration too, which they are in any
-    /// scope.
-    fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
+    /// cast per evaluation (`literal`, or the outermost evaluation this
+    /// one is part of: `default_evaluation`), since the cast's name means
+    /// what that scope says. A default no literal leaves is never
+    /// evaluated. Its quantity literals are refused at the declaration
+    /// too, which they are in any scope.
+    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
         // Without a scalar type of any kind the boundary refuses nothing
         // here a declaration did not, and no cast has a row to keep.
@@ -12620,18 +12639,21 @@ impl<'a> Checker<'a> {
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
         self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        let outer = self.default_evaluation;
+        self.default_evaluation = outer.or(Some(literal.0));
         for default in omitted {
             self.struct_defaults_typing.push(default);
             let _ = self.check_expr(default);
             self.struct_defaults_typing.pop();
         }
+        self.default_evaluation = outer;
         self.generic_params.truncate(generics);
         self.discard_since(mark);
         if let Some((typed, closed, seen)) = saved {
             // The conversions the walk recorded that the record did not
-            // hold yet (a cast an earlier literal's walk recorded keeps
-            // that row): lowering reads them where it evaluates the
-            // default, so they are the constructing declaration's.
+            // hold yet (an evaluation walked again keeps its first row):
+            // lowering reads them where it evaluates the default, so they
+            // are the constructing declaration's.
             let converted: Vec<_> = self
                 .typed
                 .conversion_sites
@@ -13226,7 +13248,9 @@ impl<'a> Checker<'a> {
 
     /// Defaults are expressions at the invocation, with the caller's
     /// locals and self. Record their generic calls under the invocation
-    /// path and caller monomorph, retaining each default's source site.
+    /// path and caller monomorph, retaining each default's source site,
+    /// and their casts' conversions under the outermost evaluation
+    /// (`default_evaluation`).
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -13274,9 +13298,12 @@ impl<'a> Checker<'a> {
         }
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
+        let outer = self.default_evaluation;
+        self.default_evaluation = outer.or(Some(invocation.0));
         for default in defaults {
             let _ = self.check_expr(default);
         }
+        self.default_evaluation = outer;
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer.
@@ -14739,7 +14766,7 @@ impl<'a> Checker<'a> {
                 let elem = self.check_expr_local(val);
                 Ty::Array(Box::new(elem), Some(*count))
             }
-            Expr::Struct { path, inits, span, .. } => self.check_struct_literal(path, inits, *span),
+            Expr::Struct { path, inits, span, id } => self.check_struct_literal(*id, path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
             // Gap C (2026-07-17): match in expression position types
@@ -15883,6 +15910,7 @@ impl<'a> Checker<'a> {
 
     fn check_struct_literal(
         &mut self,
+        literal: NodeId,
         path: &QualifiedName,
         inits: &[StructInit],
         span: Span,
@@ -16032,7 +16060,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.type_omitted_defaults(td, inits);
+                            self.type_omitted_defaults(literal, td, inits);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -16145,7 +16173,7 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.type_omitted_defaults(decl, inits);
+                self.type_omitted_defaults(literal, decl, inits);
             }
         }
 

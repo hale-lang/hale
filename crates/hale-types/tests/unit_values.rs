@@ -16,7 +16,7 @@ use hale_syntax::{parse_source, Diag};
 use hale_types::capability::{FfiTypeClass, TargetClass};
 use hale_types::resolve::build_top_scope;
 use hale_types::ty::{is_flat_shapeable, is_key_eligible, Ty};
-use hale_types::typed_bodies::{ConversionKind, ConversionRow, Discharge};
+use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
 use hale_types::unit_values::ScalarTypes;
 
 #[path = "support/entries.rs"]
@@ -380,14 +380,26 @@ fn a_bare_narrowing_is_refused_like_a_bare_fallible_call() {
     one("    let n = 70;\n    let s = Session(n) or 64;\n", "64", "`64` is outside `Session`'s range `0..64`");
 }
 
+/// The sites of `kind` in `program`, in the walk's order, each with the
+/// source text at its span.
+fn sites_of(program: &hale_syntax::ast::Program, src: &str, kind: hale_syntax::sites::SiteKind) -> Vec<(u32, String)> {
+    let mut found = Vec::new();
+    hale_syntax::sites::for_each_site(program, &mut |k, span, id| {
+        if k == kind {
+            found.push((id.0, span.slice(src).to_string()));
+        }
+    });
+    found
+}
+
 /// U2 (fix): an omitted struct field default is typed at each literal
-/// that leaves the field, and its casts' rows are kept there, in the
-/// typed body of the declaration that constructs the value (lowering
-/// evaluates the default there and reads the row by the cast's call).
-/// One row per cast however many literals leave the field: the first
-/// literal's. A literal that writes the field evaluates no default.
+/// that leaves the field, and its casts' rows are that evaluation's:
+/// kept in the typed body of the declaration that constructs the value,
+/// by the literal and the cast's call (`ConversionSite::DefaultCast`),
+/// where lowering evaluates the default and reads them. A literal that
+/// writes the field evaluates no default.
 #[test]
-fn an_omitted_defaults_casts_are_rows_of_the_constructing_declaration() {
+fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
     let src = format!(
         "{DECLS}type S {{ o: OrderId = OrderId(1); s: Session = Session(70) or clamp; }}\n\
          fn first() -> Int {{ let s = S {{}}; return Int(s.o); }}\n\
@@ -401,6 +413,10 @@ fn an_omitted_defaults_casts_are_rows_of_the_constructing_declaration() {
         Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
     let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
     let program = snapshot.program().expect("the program");
+    let literals: BTreeMap<u32, String> =
+        sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().collect();
+    // Each row as (the evaluation's literal, or nothing for a cast the
+    // body writes itself; the cast; its discharge).
     let rows_of = |name: &str| {
         let id = program
             .items
@@ -410,25 +426,112 @@ fn an_omitted_defaults_casts_are_rows_of_the_constructing_declaration() {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("`{name}` is declared"));
-        let mut rows: Vec<(String, Option<Discharge>)> = table
+        let mut rows: Vec<(String, String, Option<Discharge>)> = table
             .body(id)
-            .map(|b| b.conversions.values().map(|r| (r.span.slice(&src).to_string(), r.policy)).collect())
+            .map(|b| {
+                b.conversions
+                    .iter()
+                    .map(|(site, r)| {
+                        let at = match site {
+                            ConversionSite::DefaultCast { at, .. } => literals[at].clone(),
+                            _ => String::new(),
+                        };
+                        (at, r.span.slice(&src).to_string(), r.policy)
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows.sort_by(|x, y| (&x.0, &x.1).cmp(&(&y.0, &y.1)));
         rows
     };
-    let row = |at: &str, policy| (at.to_string(), policy);
+    let row = |at: &str, cast: &str, policy| (at.to_string(), cast.to_string(), policy);
     assert_eq!(
         rows_of("first"),
-        [row("Int(s.o)", None), row("OrderId(1)", None), row("Session(70)", Some(Discharge::Clamp))],
-        "the first literal's walk records the defaults' casts"
+        [row("", "Int(s.o)", None), row("S {}", "OrderId(1)", None), row("S {}", "Session(70)", Some(Discharge::Clamp))],
+        "the literal's evaluation records the defaults' casts"
     );
     assert_eq!(
         rows_of("main"),
-        [row("Int(s.s)", None), row("Int(t.o)", None), row("OrderId(2)", None)],
-        "a second literal leaving the same fields records no second row"
+        [
+            row("", "Int(s.s)", None),
+            row("", "Int(t.o)", None),
+            row("", "OrderId(2)", None),
+            row("S { o: OrderId(2) }", "Session(70)", Some(Discharge::Clamp)),
+            row("S {}", "OrderId(1)", None),
+            row("S {}", "Session(70)", Some(Discharge::Clamp)),
+        ],
+        "each literal leaving a field has the row of its own evaluation; one writing the field has none"
     );
-    assert_eq!(table.conversions().filter(|r| r.span.slice(&src) == "OrderId(1)").count(), 1);
+    let default_cast = sites_of(program, &src, hale_syntax::sites::SiteKind::Call)
+        .into_iter()
+        .find(|(_, at)| at == "OrderId(1)")
+        .expect("the default's cast")
+        .0;
+    assert!(table.conversion(ConversionSite::Cast(default_cast)).is_none(), "a default's cast has no evaluation-less row");
+}
+
+/// U2 (review 2): a default has a row per evaluation, and what
+/// discharges its narrowing is written in the default, the same in each:
+/// a bare one is refused once, at the cast, however often it is
+/// evaluated.
+#[test]
+fn a_bare_narrowing_in_a_default_evaluated_twice_is_refused_once() {
+    let src = format!(
+        "{DECLS}type S {{ s: Session = Session(70); }}\n\
+         fn take(s: Session = Session(71)) -> Int {{ return Int(s); }}\n\
+         fn main() {{\n    let a = S {{}};\n    let b = S {{}};\n    println(take() + take() + Int(a.s) + Int(b.s));\n}}\n"
+    );
+    let program = parse_source(&src).expect("parses");
+    let found: Vec<String> =
+        check_program(&program).iter().filter(|d| d.is_error()).map(|d| d.span.slice(&src).to_string()).collect();
+    assert_eq!(found, ["Session(70)", "Session(71)"]);
+    // The law itself, before the check's findings are finished.
+    let snapshot =
+        Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let mut judged: Vec<String> = hale_types::bare_fallible::bare_fallible_calls(table)
+        .iter()
+        .map(|d| d.span.slice(&src).to_string())
+        .collect();
+    judged.sort();
+    assert_eq!(judged, ["Session(70)", "Session(71)"]);
+}
+
+/// U2 (review 2): a default's name means what each evaluation's scope
+/// says. Where a local shadows the type, the cast is a call of the
+/// local, and that evaluation has no row: lowering, reading the row by
+/// the evaluation it lowers, lowers the call. The other evaluation of
+/// the same default keeps its conversion.
+#[test]
+fn a_defaults_evaluation_where_a_local_shadows_the_type_has_no_row() {
+    let src = format!(
+        "{DECLS}type S {{ o: OrderId = OrderId(1); }}\n\
+         fn bump(n: Int) -> OrderId {{ return OrderId(n + 10); }}\n\
+         fn main() {{\n    let a = S {{}};\n    {{\n        let OrderId = bump;\n        let b = S {{}};\n        println(Int(b.o));\n    }}\n    println(Int(a.o));\n}}\n"
+    );
+    let program = parse_source(&src).expect("parses");
+    let errors: Vec<String> =
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot =
+        Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let program = snapshot.program().expect("the program");
+    let literals: Vec<u32> =
+        sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().map(|(id, _)| id).collect();
+    let [a, b] = literals[..] else { panic!("two literals: {literals:?}") };
+    let call = sites_of(program, &src, hale_syntax::sites::SiteKind::Call)
+        .into_iter()
+        .find(|(_, at)| at == "OrderId(1)")
+        .expect("the default's cast")
+        .0;
+    let row = table.conversion(ConversionSite::DefaultCast { at: a, call }).expect("`a`'s evaluation is a conversion");
+    assert_eq!((row.kind, row.target.as_str()), (ConversionKind::Total, "OrderId"));
+    assert!(
+        table.conversion(ConversionSite::DefaultCast { at: b, call }).is_none(),
+        "`b`'s evaluation calls the local `OrderId`"
+    );
+    assert!(table.conversion(ConversionSite::Cast(call)).is_none());
 }
 
 #[test]

@@ -377,11 +377,23 @@ remainder lifted when negative (`wrap`), or the value and the
 name: a call is a conversion when the checker recorded a row for it,
 and a call with no row is the ordinary call the checker resolved, so a
 local or a parameter named like the type (`let Money = id;`) is the
-callee of `Money(1)`. A struct field's default is typed at each
-literal that leaves the field, as a quantity's cast in it is judged
-there, so its casts' rows are recorded in the typed body of the
-declaration that constructs the value, one per cast however many
-literals leave the field.
+callee of `Money(1)`. A default is evaluated, and typed, at each place
+that leaves it (a struct literal that leaves a field, a call that
+leaves a parameter), in that place's scope, so a default's conversion
+is classified per evaluation: its casts' rows are recorded in the typed
+body of the declaration that evaluates it, by the evaluation and the
+cast, and lowering reads the row of the evaluation it lowers. One
+default can be a conversion in one scope and a call of a local in
+another:
+
+```hale,fragment
+type S { n: ItemId = ItemId(1); }
+let a = S {};              // `ItemId(1)`: the conversion
+{
+    let ItemId = bump;
+    let b = S {};          // `ItemId(1)`: the call `bump(1)`
+}
+```
 
 **Layout.** Wherever a type reaches a representation, an identity or a
 range is its `Int`: it prints as its `Int`, it is a legal hashmap key

@@ -25,7 +25,12 @@ const DECLS: &str = "type OrderId = distinct Int;\ntype Session = distinct Int {
 
 /// The IR of `conv`, a fn whose body is `body`, before optimization.
 fn conv_ir(signature: &str, body: &str) -> String {
-    let src = format!("{DECLS}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
+    conv_ir_after("", signature, body)
+}
+
+/// The same, with `decls` declared beside the common ones.
+fn conv_ir_after(decls: &str, signature: &str, body: &str) -> String {
+    let src = format!("{DECLS}{decls}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
     let bin = harness::unique_bin("unit_conversion_lowering");
     let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}\n{src}"));
     let _ = std::fs::remove_file(&bin);
@@ -111,6 +116,27 @@ fn a_raise_takes_the_enclosing_error_path() {
     assert!(fun.contains("br i1 %narrow.outside, label %narrow.err, label %narrow.ok"), "{fun}");
     assert!(fun.contains("or.raise.payload.load"), "the RangeError is the fn's error: {fun}");
     assert_eq!(count(&fun, "lotus_root_panic"), 0, "{fun}");
+}
+
+/// U2 (review 2): a default's cast is lowered by the row of the
+/// evaluation being lowered. `S`'s default `OrderId(1)` is evaluated
+/// twice in `conv`: at `a`, where it is the total conversion and emits
+/// nothing, and at `b`, where a local `OrderId` holding `bump` shadows
+/// the type, so it is the call of the local, the one call `conv` makes.
+#[test]
+fn a_defaults_cast_is_lowered_by_its_evaluations_row() {
+    let fun = conv_ir_after(
+        "type S { o: OrderId = OrderId(1); }\nfn bump(n: Int) -> OrderId { return OrderId(n + 10); }\n",
+        "() -> Int",
+        "    let a = S {};\n    {\n        let OrderId = bump;\n        let b = S {};\n        println(Int(b.o));\n    }\n    return Int(a.o);\n",
+    );
+    // `a`'s field is the `Int` itself.
+    assert!(fun.contains("store i64 1, ptr %S.o.ptr,"), "{fun}");
+    // `b`'s is what the local's fn returns, given the default's `1`.
+    let calls: Vec<&str> = program_calls(&fun).into_iter().filter(|l| !l.contains("@printf(")).collect();
+    assert_eq!(calls.len(), 1, "one call, the local's: {fun}");
+    assert!(calls[0].contains("%fnptr.call = call i64 %OrderId") && calls[0].ends_with(", i64 1)"), "{fun}");
+    assert!(fun.contains("store i64 %fnptr.call, ptr %S.o.ptr"), "{fun}");
 }
 
 /// A call is a conversion when its row says so, and no row is the total

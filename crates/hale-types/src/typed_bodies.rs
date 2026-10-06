@@ -289,6 +289,14 @@ impl Discharge {
 pub enum ConversionSite {
     Cast(u32),
     Value { start: u32, end: u32 },
+    /// A cast in a default, by the evaluation it was typed in and its
+    /// call: a default is an expression of each scope that leaves it,
+    /// so its name means what that scope says (a local can shadow the
+    /// type there and not elsewhere). `at` is the outermost evaluation:
+    /// the struct literal that leaves a field, or the call that leaves
+    /// a parameter; a default it evaluates in turn shares its `at`.
+    /// Lowering reads the row by the evaluation it is lowering.
+    DefaultCast { at: u32, call: u32 },
 }
 
 impl ConversionSite {
@@ -606,7 +614,12 @@ impl TypingRecord {
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
-        if matches!(site, ConversionSite::Cast(id) if NodeId(id).is_none()) {
+        let unminted = match site {
+            ConversionSite::Cast(id) => NodeId(id).is_none(),
+            ConversionSite::DefaultCast { at, call } => NodeId(at).is_none() || NodeId(call).is_none(),
+            ConversionSite::Value { .. } => false,
+        };
+        if unminted {
             return;
         }
         self.conversion_sites.insert(site, body.0);
@@ -711,8 +724,9 @@ pub struct TypedBodies {
 
 impl TypedBodies {
     /// The `conversions` column's row at `site`: lowering reads a cast's
-    /// by its call (`ConversionSite::Cast`); `None` for a call that is no
-    /// conversion.
+    /// by its call (`ConversionSite::Cast`), and a cast's in a default by
+    /// the evaluation it lowers and its call (`DefaultCast`); `None` for
+    /// a call that is no conversion there.
     pub fn conversion(&self, site: ConversionSite) -> Option<&ConversionRow> {
         let body = self.conversion_sites.get(&site)?;
         self.bodies.get(body)?.conversions.get(&site)
