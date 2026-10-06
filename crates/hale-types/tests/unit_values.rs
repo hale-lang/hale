@@ -380,6 +380,57 @@ fn a_bare_narrowing_is_refused_like_a_bare_fallible_call() {
     one("    let n = 70;\n    let s = Session(n) or 64;\n", "64", "`64` is outside `Session`'s range `0..64`");
 }
 
+/// U2 (fix): an omitted struct field default is typed at each literal
+/// that leaves the field, and its casts' rows are kept there, in the
+/// typed body of the declaration that constructs the value (lowering
+/// evaluates the default there and reads the row by the cast's call).
+/// One row per cast however many literals leave the field: the first
+/// literal's. A literal that writes the field evaluates no default.
+#[test]
+fn an_omitted_defaults_casts_are_rows_of_the_constructing_declaration() {
+    let src = format!(
+        "{DECLS}type S {{ o: OrderId = OrderId(1); s: Session = Session(70) or clamp; }}\n\
+         fn first() -> Int {{ let s = S {{}}; return Int(s.o); }}\n\
+         fn main() {{\n    let s = S {{}};\n    let t = S {{ o: OrderId(2) }};\n    println(first() + Int(s.s) + Int(t.o));\n}}\n"
+    );
+    let program = parse_source(&src).expect("parses");
+    let errors: Vec<String> =
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot =
+        Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let program = snapshot.program().expect("the program");
+    let rows_of = |name: &str| {
+        let id = program
+            .items
+            .iter()
+            .find_map(|i| match i {
+                hale_syntax::ast::TopDecl::Fn(f) if f.name.name == name => Some(f.id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("`{name}` is declared"));
+        let mut rows: Vec<(String, Option<Discharge>)> = table
+            .body(id)
+            .map(|b| b.conversions.values().map(|r| (r.span.slice(&src).to_string(), r.policy)).collect())
+            .unwrap_or_default();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    };
+    let row = |at: &str, policy| (at.to_string(), policy);
+    assert_eq!(
+        rows_of("first"),
+        [row("Int(s.o)", None), row("OrderId(1)", None), row("Session(70)", Some(Discharge::Clamp))],
+        "the first literal's walk records the defaults' casts"
+    );
+    assert_eq!(
+        rows_of("main"),
+        [row("Int(s.s)", None), row("Int(t.o)", None), row("OrderId(2)", None)],
+        "a second literal leaving the same fields records no second row"
+    );
+    assert_eq!(table.conversions().filter(|r| r.span.slice(&src) == "OrderId(1)").count(), 1);
+}
+
 #[test]
 fn a_policy_word_is_read_as_a_policy_and_a_parenthesized_one_as_a_value() {
     // `clamp` is a local here: in parentheses it is the substitute, an

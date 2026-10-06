@@ -12585,15 +12585,19 @@ impl<'a> Checker<'a> {
     /// call that leaves it (`record_omitted_defaults`): the scopes it
     /// opens, the parameter defaults its calls leave and the field
     /// defaults its own literals leave are all walked where they are
-    /// evaluated. The walk is discarded; what survives is the not-yet
-    /// boundary's errors (`discard_since`). A default no literal leaves
-    /// is never evaluated. Its quantity literals are refused at the
-    /// declaration too, which they are in any scope.
+    /// evaluated. The walk is discarded but for two things: the not-yet
+    /// boundary's errors (`discard_since`), and the conversion rows of
+    /// its casts, which lowering reads where it evaluates the default and
+    /// which are kept in the constructing declaration's body, one per
+    /// cast however many literals leave the field (the first's). A
+    /// default no literal leaves is never evaluated. Its quantity
+    /// literals are refused at the declaration too, which they are in any
+    /// scope.
     fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Only the boundary's errors survive, and without a unit type
-        // the boundary refuses nothing here a declaration did not.
-        if self.unit_types.is_empty() {
+        // Without a scalar type of any kind the boundary refuses nothing
+        // here a declaration did not, and no cast has a row to keep.
+        if self.unit_types.is_empty() && self.scalars.is_empty() {
             return;
         }
         let omitted: Vec<&'a Expr> = fields
@@ -12608,7 +12612,8 @@ impl<'a> Checker<'a> {
         // The rows this walk would record (a default's calls typed in the
         // caller's body) are not the caller's: the outermost walk puts
         // the record back as it found it, with the scope stack's closed
-        // names and the closure walk's expression types.
+        // names and the closure walk's expression types, and then keeps
+        // the walk's conversions, which are.
         let saved = self.struct_defaults_typing.is_empty().then(|| {
             (self.typed.clone(), self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len))
         });
@@ -12623,7 +12628,21 @@ impl<'a> Checker<'a> {
         self.generic_params.truncate(generics);
         self.discard_since(mark);
         if let Some((typed, closed, seen)) = saved {
+            // The conversions the walk recorded that the record did not
+            // hold yet (a cast an earlier literal's walk recorded keeps
+            // that row): lowering reads them where it evaluates the
+            // default, so they are the constructing declaration's.
+            let converted: Vec<_> = self
+                .typed
+                .conversion_sites
+                .keys()
+                .filter(|site| !typed.conversion_sites.contains_key(site))
+                .filter_map(|site| Some((*site, self.typed.conversion_at(*site)?.clone())))
+                .collect();
             *self.typed = typed;
+            for (site, row) in converted {
+                self.typed.conversion(self.body, site, row);
+            }
             self.locals.closed = closed;
             if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {
                 seen.truncate(at);

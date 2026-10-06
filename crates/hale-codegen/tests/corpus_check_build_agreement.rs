@@ -635,6 +635,52 @@ fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
     );
 }
 
+/// U2 (fix): an identity's or a range's cast in an omitted struct
+/// default checked clean and the build refused it as a cast with no row.
+/// Two causes: the walk that types an omitted default at the literal ran
+/// only when the program declared a quantity or a point, and it put the
+/// typed-body record back as it found it, conversion rows included. The
+/// default is typed at the literal whenever the program declares any
+/// scalar type, and its casts' rows are kept in the constructing
+/// declaration's body, so each program below checks, builds and prints
+/// 1: an identity's default, a range's narrowing under its `or`, the
+/// nested `Outer {}` → `Inner {}`, two literals leaving the field, and
+/// the identity beside a declared quantity (the walk ran there before
+/// the fix; only its rows were lost).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_scalars_cast_in_an_omitted_struct_default_is_lowered_from_its_row() {
+    let identity = "type Money = distinct Int;\n\
+                    type S { n: Money = Money(1); }\n\
+                    fn main() { let s = S {}; println(s.n); }\n";
+    let range = "type Money = Int { range: 0..64; }\n\
+                 type S { n: Money = Money(1) or clamp; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    let nested = "type Money = distinct Int;\n\
+                  type Inner { n: Money = Money(1); }\n\
+                  type Outer { inner: Inner = Inner {}; }\n\
+                  fn main() { let o = Outer {}; println(o.inner.n); }\n";
+    let two_literals = "type Money = distinct Int;\n\
+                        type S { n: Money = Money(1); }\n\
+                        fn one() -> Money { let s = S {}; return s.n; }\n\
+                        fn main() { let s = S {}; println(Int(s.n) * Int(one())); }\n";
+    let beside_a_quantity = "unit cent;\n\
+                             type Cents = quantity Int in cent;\n\
+                             type Money = distinct Int;\n\
+                             type S { n: Money = Money(1); }\n\
+                             fn main() { let s = S {}; println(s.n); }\n";
+    for (src, tag) in [
+        (identity, "scalar_default_identity"),
+        (range, "scalar_default_range"),
+        (nested, "scalar_default_nested"),
+        (two_literals, "scalar_default_two"),
+        (beside_a_quantity, "scalar_default_quantity"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///
