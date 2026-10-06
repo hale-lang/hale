@@ -524,10 +524,11 @@ annotations are not in v1.
   that is not a duration suffix: `3bp`, `5kg`, `2min`,
   `1_250_000USD`, `2EUR`. One token, carrying the magnitude and the
   unit's name as written. Integer magnitudes only.
-- Values of the unit dialect are not typed yet: a program that
-  writes a quantity literal is refused by `hale check` with one
-  error per literal (spec/units.md § Values arrive with the next
-  step).
+- The unit is named in the units' own namespace, never a local's:
+  a quantity literal is its unit's component's quantity at that
+  unit, converted at compile time into the denomination it flows
+  into (spec/units.md § Quantities and points, Literals). A unit no
+  `unit` declares is refused at the literal.
 - The duration suffixes are not unit names: no `unit` may take one
   (spec/units.md § The laws, law 10).
 
