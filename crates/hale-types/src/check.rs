@@ -553,6 +553,11 @@ pub struct CheckInputs<'a> {
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
     pub uses: &'a crate::capability::uses::CapabilityUses,
+    /// The unit declarations (the snapshot's `unit_declarations` cell,
+    /// GH #1076): the unit laws judge them, and the not-yet boundary
+    /// reads which type names are the dialect's. They read declarations
+    /// only, so they are total over a program that does not typecheck.
+    pub units: &'a crate::units::UnitRows,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -600,6 +605,7 @@ fn check_numbered_bundle(
     let laws = crate::bundle_law_selection(bundle);
     let roles = crate::roles::role_rows(bundle, &entry);
     let api_surface = crate::bundle_api_surface(bundle, &entry);
+    let units = crate::units::derive_unit_rows(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -618,6 +624,7 @@ fn check_numbered_bundle(
         laws: &laws,
         roles: &roles,
         api_surface: api_surface.as_ref(),
+        units: &units,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -866,6 +873,8 @@ pub fn check_bundle_by_declaration(
         specializing: None,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
+        unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
+        unit_values_refused: BTreeSet::new(),
     };
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
@@ -933,6 +942,8 @@ pub fn check_bundle_by_declaration(
     // F.40 phase 4, W3: the recovery events a closure's
     // `persists_through(...)` / `resets_on(...)` clauses name.
     diags.extend(crate::closure_events::closure_event_laws(bundle, inputs.handlers, inputs.entry));
+    // GH #1076: the unit dialect's declarations, judged over their rows.
+    diags.extend(crate::units::unit_laws(inputs.units));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
@@ -5571,7 +5582,7 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 
 /// A canonical, comparable rendering of a `TypeExpr` — equal strings
 /// mean the same type at this layer. Also used in the diagnostic.
-fn type_expr_text(t: &TypeExpr) -> String {
+pub(crate) fn type_expr_text(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
         TypeExpr::Perspective { name, .. } => {
@@ -6093,6 +6104,14 @@ struct Checker<'a> {
     /// addresses types as its success type (the `bare_fallible` law
     /// reports the call).
     handling: crate::typed_bodies::Handling,
+    /// GH #1076: the unit dialect's type names (as declared, mangled
+    /// for an import), each with its author's spelling, read from the
+    /// unit rows: the not-yet boundary refuses each where a value would
+    /// live (`refuse_unit_types`).
+    unit_types: BTreeMap<&'a str, &'a str>,
+    /// The places the boundary refused, by span, so a place walked twice
+    /// is refused once.
+    unit_values_refused: BTreeSet<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -6291,12 +6310,10 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Alias(te) => {
                         self.check_type_annotation(te);
                     }
-                    TypeDeclBody::Scalar(_) => {
-                        self.diags.push(crate::units::not_yet_checked(
-                            t.span,
-                            &format!("type `{}`", t.name.name),
-                        ));
-                    }
+                    // GH #1076: judged by the unit laws over its row
+                    // (`units::unit_laws`); its base names a scalar or
+                    // `Int`, never a value.
+                    TypeDeclBody::Scalar(_) => {}
                 }
                 self.generic_params = prev_generics;
             }
@@ -6343,6 +6360,9 @@ impl<'a> Checker<'a> {
                 //     check_phase3_fallback_subscribers (bundle
                 //     pass).
                 let _ = t.on_unmatched;
+                // GH #1076: a payload is a value, and a unit-dialect
+                // type's values are not typed yet.
+                self.refuse_unit_types(&t.payload);
 
                 // (1) keyed_by field must exist on the payload
                 // type and resolve to an int-shaped scalar
@@ -6441,11 +6461,9 @@ impl<'a> Checker<'a> {
                 // this checker is per-decl, and both are law over the
                 // assembled whole.
             }
-            TopDecl::Unit(u) => {
-                self.diags.push(crate::units::not_yet_checked(
-                    u.span,
-                    &format!("unit `{}`", u.name.name),
-                ));
+            TopDecl::Unit(_) => {
+                // GH #1076: a row of the unit declarations, judged by
+                // the unit laws (`units::unit_laws`).
             }
         }
     }
@@ -12228,6 +12246,51 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
+    /// GH #1076: a unit-dialect type named where a value would live (an
+    /// annotation, at any depth: `Vec<Money>`), one error per name. A
+    /// type parameter of that name shadows the declaration.
+    fn refuse_unit_types(&mut self, te: &TypeExpr) {
+        match te {
+            TypeExpr::Named { path, generic_args, span } => {
+                for arg in generic_args {
+                    self.refuse_unit_types(arg);
+                }
+                if let [name] = path.segments.as_slice() {
+                    if !self.generic_params.contains(&name.name) {
+                        if let Some(display) = self.unit_types.get(name.name.as_str()) {
+                            self.refuse_unit_value(*span, format!("type `{display}`"));
+                        }
+                    }
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.refuse_unit_types(inner),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.refuse_unit_types(elem),
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.refuse_unit_types(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.refuse_unit_types(p);
+                }
+                if let Some(r) = ret {
+                    self.refuse_unit_types(r);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// GH #1076: the not-yet boundary's error, once per place however
+    /// often the walk reaches it (a generic body is walked again per
+    /// specialization; an annotation's arguments by both walks).
+    fn refuse_unit_value(&mut self, span: Span, what: String) {
+        if self.unit_values_refused.insert((span.start.as_usize(), span.end.as_usize())) {
+            self.diags.push(crate::units::value_not_yet(span, &what));
+        }
+    }
+
     /// GH #877: a BARE type name in an annotation that names no
     /// declaration.
     ///
@@ -12256,6 +12319,7 @@ impl<'a> Checker<'a> {
         if self.specializing.is_some() {
             self.record_specialized_type(te);
         }
+        self.refuse_unit_types(te);
         // GH #911 B3 (#907): the generic-argument vocabulary is a
         // property of the type expression, not of how much of the
         // program this bundle holds, so it is decided before the
@@ -12917,10 +12981,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if let Literal::Quantity { value, unit } = lit {
-                    self.diags.push(crate::units::not_yet_checked(
-                        *span,
-                        &format!("quantity literal `{value}{unit}`"),
-                    ));
+                    self.refuse_unit_value(*span, format!("quantity literal `{value}{unit}`"));
                 }
                 lit_ty(lit)
             }
@@ -12993,6 +13054,13 @@ impl<'a> Checker<'a> {
             }
             Expr::Call { callee, args, id: call_id, .. } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
+                // GH #1076: `Money(5)` makes a value of a unit-dialect
+                // type, which is not typed yet.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if let Some(display) = self.unit_types.get(id.name.as_str()).copied() {
+                        self.refuse_unit_value(id.span, format!("type `{display}`"));
+                    }
+                }
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
                 // every way a program reaches a namespace, not only a
@@ -15863,7 +15931,7 @@ fn lit_ty(lit: &Literal) -> Ty {
         Literal::Duration(_) => Ty::Prim(PrimType::Duration),
         Literal::Time(_) => Ty::Prim(PrimType::Time),
         Literal::Bytes(_) => Ty::Prim(PrimType::Bytes),
-        // GH #1076: refused where it is checked (`units::not_yet_checked`).
+        // GH #1076: refused where it is checked (`units::value_not_yet`).
         Literal::Quantity { .. } => Ty::Unknown,
     }
 }

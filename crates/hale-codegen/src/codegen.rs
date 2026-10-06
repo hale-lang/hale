@@ -524,10 +524,11 @@ fn bce_call_safe(
     bce_expr_safe(callee, vkey, var)
 }
 
-/// GH #1076: a unit-dialect declaration reached lowering. The checker
-/// refuses every one until the dialect's rows and laws land, so only a
-/// program that skipped the check gets here; it is refused, named and
-/// located, never skipped.
+/// GH #1076: a unit-dialect value reached lowering (a quantity literal,
+/// a generic template that is a scalar). A declaration lowers to no
+/// code; the checker refuses every value of the dialect's types until
+/// they are typed, so only a program that skipped the check gets here;
+/// it is refused, named and located, never skipped.
 pub(crate) fn unit_dialect_unsupported(what: &str, span: hale_syntax::Span) -> CodegenError {
     CodegenError::UnsupportedAt(
         format!("{what}: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it"),
@@ -12378,12 +12379,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 requests,
                             )?;
                         }
-                        TypeDeclBody::Scalar(_) => {
-                            return Err(unit_dialect_unsupported(
-                                &format!("type `{}`", t.name.name),
-                                t.span,
-                            ));
-                        }
+                        // GH #1076: a unit-dialect scalar names `Int` or
+                        // another scalar, never a generic instantiation.
+                        TypeDeclBody::Scalar(_) => {}
                     }
                 }
                 TopDecl::Type(_) => {
@@ -12488,11 +12486,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // #392 / #409: claims and constitutions lower to
                     // no code and carry no type-bearing positions.
                 }
-                TopDecl::Unit(u) => {
-                    return Err(unit_dialect_unsupported(
-                        &format!("unit `{}`", u.name.name),
-                        u.span,
-                    ));
+                TopDecl::Unit(_) => {
+                    // GH #1076: a unit is a node of the catalogue the
+                    // checker closes; it lowers to no code.
                 }
             }
         }
@@ -12635,12 +12631,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             requests,
                         )?;
                     }
-                    TypeDeclBody::Scalar(_) => {
-                        return Err(unit_dialect_unsupported(
-                            &format!("type `{}`", t.name.name),
-                            t.span,
-                        ));
-                    }
+                    // GH #1076: see the top-level arm.
+                    TypeDeclBody::Scalar(_) => {}
                 }
             }
             LocusMember::Failure(fd) => {

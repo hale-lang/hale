@@ -179,10 +179,14 @@ fn resolve_alias_targets(
     fn collect(
         items: &[TopDecl],
         out: &mut BTreeMap<String, (TypeExpr, Span)>,
+        scalars: &mut Vec<String>,
     ) {
         for item in items {
             match item {
                 TopDecl::Type(t) => {
+                    if let TypeDeclBody::Scalar(_) = &t.body {
+                        scalars.push(t.name.name.clone());
+                    }
                     if let TypeDeclBody::Alias(te) = &t.body {
                         // A generic alias template (`type A<T> = ...`)
                         // has no single target — leave it nominal.
@@ -197,18 +201,26 @@ fn resolve_alias_targets(
                         }
                     }
                 }
-                TopDecl::Module(m) => collect(&m.items, out),
+                TopDecl::Module(m) => collect(&m.items, out, scalars),
                 _ => {}
             }
         }
     }
 
     let mut raw: BTreeMap<String, (TypeExpr, Span)> = BTreeMap::new();
+    let mut scalars: Vec<String> = Vec::new();
     for program in bundle.programs.values() {
-        collect(&program.items, &mut raw);
+        collect(&program.items, &mut raw, &mut scalars);
     }
     for it in stdlib_top_decls() {
-        collect(std::slice::from_ref(&it), &mut raw);
+        collect(std::slice::from_ref(&it), &mut raw, &mut scalars);
+    }
+    // GH #1076: a unit-dialect type's values are not typed yet, so its
+    // name resolves to `Unknown` everywhere, as `register_type` registers
+    // it: a use of it is the checker's one not-yet error, never a
+    // mismatch beside it.
+    for name in scalars {
+        known.set_alias(name, Ty::Unknown);
     }
     if raw.is_empty() {
         return;
@@ -1239,8 +1251,9 @@ fn register_type(
     let kind = match &decl.body {
         TypeDeclBody::Alias(te) => TypeKind::Alias(resolve_type_expr(te, known)),
         // GH #1076: registered so a use of the name is no second error;
-        // `Unknown` because nothing types it yet, and the checker
-        // refuses the declaration itself (`units::not_yet_checked`).
+        // `Unknown` because nothing types its values yet: the unit laws
+        // judge the declaration, and the checker refuses a use of the
+        // name where a value would live (`units::value_not_yet`).
         TypeDeclBody::Scalar(_) => TypeKind::Alias(Ty::Unknown),
         TypeDeclBody::Struct(fields) => {
             let infos: Vec<FieldInfo> = fields

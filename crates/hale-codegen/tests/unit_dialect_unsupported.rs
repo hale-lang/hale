@@ -1,10 +1,11 @@
-//! GH #1076, step U1: lowering refuses the unit dialect.
+//! GH #1076, step U1: lowering and the unit dialect.
 //!
-//! The checker refuses a `unit` declaration, a scalar `type` and a
-//! quantity literal until the dialect's rows land, so a checked program
-//! never brings one to lowering. A build that skips the check (as this
-//! harness does) is refused with an error naming the declaration and
-//! where it is, never a panic and never a silent skip.
+//! A `unit` declaration and a scalar `type` lower to no code: the
+//! checker judges them, and a program that passes the check holds no
+//! value of a new type. A value of one (a quantity literal) is not
+//! lowered yet; a build that skips the check (as this harness does) is
+//! refused with an error naming it and where it is, never a panic and
+//! never a silent skip.
 
 use hale_codegen::CodegenError;
 
@@ -13,41 +14,30 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn refusal(name: &str, src: &str) -> String {
-    let bin = harness::unique_bin(&format!("hale_test_unit_dialect_{}_{}", name, std::process::id()));
-    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("the unit dialect is not lowered");
+#[test]
+fn declarations_lower_to_no_code() {
+    let src = "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n\
+               type Session = distinct Int { range: 0..64; }\nfn main() { println(1); }\n";
+    let bin = harness::unique_bin(&format!("hale_test_unit_dialect_decls_{}", std::process::id()));
+    let built = build_opts::build_source(src, &bin, &build_opts::options());
     let _ = std::fs::remove_file(&bin);
-    match err {
-        CodegenError::UnsupportedAt(msg, span) => format!("{msg} @ {}", span.slice(src)),
-        other => panic!("{name}: expected a located refusal, got {other}"),
+    if let Err(e) = built {
+        panic!("a program that only declares units and scalars builds: {e}");
     }
 }
 
 #[test]
-fn each_form_is_refused_by_name() {
-    let cases = [
-        ("unit", "unit tick;\nfn main() { println(1); }\n", "unit `tick`", "unit tick;"),
-        (
-            "scalar",
-            "type Money = quantity Int in cent;\nfn main() { println(1); }\n",
-            "type `Money`",
-            "type Money = quantity Int in cent;",
-        ),
-        (
-            "literal",
-            "fn main() {\n    let fee = 3bp;\n    println(1);\n}\n",
-            "quantity literal `3bp`",
-            "3bp",
-        ),
-    ];
-    for (name, src, what, at) in cases {
-        let got = refusal(name, src);
-        assert_eq!(
-            got,
-            format!(
-                "{what}: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it @ {at}"
-            ),
-            "{name}"
-        );
-    }
+fn a_quantity_literal_is_refused_by_name() {
+    let src = "fn main() {\n    let fee = 3bp;\n    println(1);\n}\n";
+    let bin = harness::unique_bin(&format!("hale_test_unit_dialect_literal_{}", std::process::id()));
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("a quantity value is not lowered");
+    let _ = std::fs::remove_file(&bin);
+    let got = match err {
+        CodegenError::UnsupportedAt(msg, span) => format!("{msg} @ {}", span.slice(src)),
+        other => panic!("expected a located refusal, got {other}"),
+    };
+    assert_eq!(
+        got,
+        "quantity literal `3bp`: the unit dialect is not lowered yet (GH #1076); `hale check` refuses it @ 3bp"
+    );
 }

@@ -1533,8 +1533,14 @@ fn is_duration_unit_start(lx: &Lexer) -> bool {
         end += 1;
     }
     let unit = &lx.source[lx.pos..end];
-    matches!(unit, "ns" | "us" | "ms" | "s" | "m" | "h" | "d")
+    DURATION_SUFFIXES.contains(&unit)
 }
+
+/// The suffixes a duration literal takes (`500ms`), fixed in the lexer
+/// until `Time` and `Duration` are declarations of the time catalogue
+/// (GH #1076): the unit dialect's checker refuses a `unit` of one of
+/// these names, which no literal could ever reach.
+pub const DURATION_SUFFIXES: [&str; 7] = ["ns", "us", "ms", "s", "m", "h", "d"];
 
 fn take_alpha_run(lx: &mut Lexer) -> String {
     let start = lx.pos;

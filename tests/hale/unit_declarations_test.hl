@@ -1,0 +1,35 @@
+// GH #1076, step U1: a program may declare a unit catalogue and the
+// scalar types counted in it, and the checker judges them (the unit
+// laws, `spec/units.md` § Declarations). Values of those types are not
+// typed yet, so nothing below holds one: the declarations are checked
+// and lower to no code, and the program runs as if they were absent.
+
+unit nsec;
+unit usec = 1_000 nsec;
+unit msec = 1_000 usec;
+
+unit cent;
+unit USD = 100 cent;
+unit bp = 1 / 10000;
+unit pct = 100 bp;
+
+unit tick;
+
+type Elapsed = quantity Int in nsec;
+type Instant = point Elapsed;
+type WireStamp = Instant in usec { round: floor; }
+type Bucket = quantity Int in 100 msec { round: floor; }
+
+type Money = quantity Int in cent;
+type Ledger = quantity Int in cent { round: half_even; }
+type Rate = quantity Int in bp;
+
+type Tick = quantity Int in tick;
+type Price = point Tick;
+
+type Session = distinct Int { range: 0..64; }
+type Byte = Int { range: 0..256; }
+
+fn main() {
+    std::test::assert_eq_int(100 * 1_000, 100_000, "declarations cost nothing at run time");
+}

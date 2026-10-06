@@ -516,6 +516,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let uses = hale_types::capability::uses::derive_capability_uses(&bundle, &alloc_summary);
     let laws = hale_types::bundle_law_selection(&bundle);
     let roles = hale_types::roles::role_rows(&bundle, &entry);
+    let units = hale_types::units::derive_unit_rows(&bundle);
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
@@ -534,6 +535,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         laws: &laws,
         roles: &roles,
         api_surface: None,
+        units: &units,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags

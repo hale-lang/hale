@@ -770,6 +770,7 @@ const GATE: &[GateRow] = &[
     row("entrypoint", 1, 1, |s| { let _ = s.demand_entry(); }),
     row("target_capability", 1, 1, |s| { let _ = s.demand_target(); }),
     row("top_scope", 1, 1, |s| { let _ = s.demand_scope(); }),
+    row("unit_declarations", 1, 1, |s| { let _ = s.demand_units(); }),
     row("bindings", 1, 1, |s| { let _ = s.demand_bindings(); }),
     row("sync_inference", 1, 1, |s| { let _ = s.demand_forms(); }),
     row("expression_typing", 1, 1, |s| { let _ = s.demand_effect_certificates(); }),

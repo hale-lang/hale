@@ -27,6 +27,8 @@
 //! - [`Snapshot::demand_role_rows`]: the role declarations, `@gated`
 //!   sites and role source over the programs after the sequence, which
 //!   the check's role rules read.
+//! - [`Snapshot::demand_units`]: the unit-dialect declarations and the
+//!   catalogue closed from them, which the check's unit laws read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
 //!   over the checked programs and the stdlib's analysis copy, which
 //!   the check's effects certificate engine and the effect rows read.
@@ -106,6 +108,7 @@ use hale_types::resolved::{IntraLocusStage, LoweringView};
 use hale_types::roles::RoleRows;
 use hale_types::symbol::SourceFile;
 use hale_types::typed_bodies::{TypedBodies, TypingRecord};
+use hale_types::units::UnitRows;
 use hale_types::Bundle;
 
 use crate::frontend::{
@@ -142,14 +145,17 @@ use crate::source::SourceProvider;
 /// counts the form rows ([`Snapshot::demand_forms`]); `typed_bodies` the
 /// table the typing's record is packaged into
 /// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
-/// carried to lowering.
-pub const FAMILIES: [&str; 26] = [
+/// carried to lowering; `unit_declarations` the unit-dialect rows and
+/// the catalogue closed from them ([`Snapshot::demand_units`]), which
+/// the check reads.
+pub const FAMILIES: [&str; 27] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
     "entrypoint",
     "target_capability",
     "top_scope",
+    "unit_declarations",
     "bindings",
     "sync_inference",
     "expression_typing",
@@ -484,6 +490,7 @@ pub struct Snapshot {
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     law_selection: OnceCell<Result<LawSelection, Blocked>>,
     role_rows: OnceCell<Result<RoleRows, Blocked>>,
+    units: OnceCell<Result<UnitRows, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     arrangement: OnceCell<Result<Arrangement, Blocked>>,
@@ -665,6 +672,7 @@ impl Snapshot {
             alloc_summary: OnceCell::new(),
             law_selection: OnceCell::new(),
             role_rows: OnceCell::new(),
+            units: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
             arrangement: OnceCell::new(),
@@ -1179,6 +1187,7 @@ impl Snapshot {
             laws: self.demand_law_selection().map_err(Clone::clone)?,
             roles: self.demand_role_rows().map_err(Clone::clone)?,
             api_surface: self.api_surface(),
+            units: self.demand_units().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1436,6 +1445,25 @@ impl Snapshot {
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("api_surface");
                 Ok(hale_types::roles::role_rows(&self.bundle(), entry))
+            })
+            .as_ref()
+    }
+
+    /// The unit declarations ([`hale_types::units::derive_unit_rows`],
+    /// GH #1076): every `unit` and scalar `type` declaration over the
+    /// programs after the sequence, resolved, and the program's
+    /// catalogue closed from them. The check's unit laws and its not-yet
+    /// boundary read them (`CheckInputs::units`). Not gated on the
+    /// typing: they read declarations only. A seed with a hole is not a
+    /// program, and its rows are blocked with its scope.
+    pub fn demand_units(&self) -> Result<&UnitRows, &Blocked> {
+        self.units
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "unit_declarations", ..self.hole_blocked() });
+                }
+                self.count("unit_declarations");
+                Ok(hale_types::units::derive_unit_rows(&self.bundle()))
             })
             .as_ref()
     }
