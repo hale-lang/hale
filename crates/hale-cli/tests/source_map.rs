@@ -311,7 +311,8 @@ fn an_import_above_the_manifest_root_is_named_relatively() {
 
 /// F.40 phase 4, I3: one tree checked out at two places is one artifact,
 /// byte for byte, whether or not a file sits outside its `hale.toml`
-/// root.
+/// root. The uncovered change that keeps `artifact_digest`: the
+/// absolute root, which no section names.
 #[test]
 fn one_tree_checked_out_at_two_roots_has_one_artifact() {
     let scratch = root("two_roots");
@@ -331,6 +332,7 @@ fn one_tree_checked_out_at_two_roots_has_one_artifact() {
     let (da, db) = (dumps(&a), dumps(&b));
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(da.0.contains("\"sources\""), "an artifact: {}", da.0);
+    assert!(da.0.contains("\"artifact_digest\""), "a digested artifact: {}", da.0);
     assert_eq!(
         da.0, db.0,
         "an import above the manifest root: one artifact at two roots"
@@ -360,28 +362,41 @@ fn a_program_under_its_root_keeps_its_paths() {
 
 /// A content digest lets a consumer tell whether two artifacts were
 /// built from the same text, and catches a stale artifact paired with
-/// edited source — without shipping the source.
+/// edited source — without shipping the source. `source_digest` moves
+/// with its file's text and keeps its value when the same text is
+/// named by another path.
 #[test]
 fn a_source_digest_tracks_its_contents() {
     let r = workspace("digest");
     let before = dump_from(&r, "apps/api");
     write(&r, "lib/lib.hl", &format!("{}\n// a comment\n", LIB));
     let after = dump_from(&r, "apps/api");
+    std::fs::rename(r.join("apps/api"), r.join("apps/web")).expect("move the app");
+    let moved = dump_from(&r, "apps/web");
     let _ = std::fs::remove_dir_all(&r);
 
-    let dig = |s: &str| -> Vec<String> {
+    let dig = |s: &str| -> std::collections::BTreeMap<String, String> {
         let v: serde_json::Value = serde_json::from_str(s).expect("parses");
         v["sources"]
             .as_array()
             .expect("sources")
             .iter()
-            .map(|x| x["digest"].as_str().unwrap_or("").to_string())
+            .map(|x| {
+                (
+                    x["path"].as_str().unwrap_or("").to_string(),
+                    x["digest"].as_str().unwrap_or("").to_string(),
+                )
+            })
             .collect()
     };
+    let (before, after, moved) = (dig(&before), dig(&after), dig(&moved));
     assert_ne!(
-        dig(&before),
-        dig(&after),
+        before["lib/lib.hl"], after["lib/lib.hl"],
         "editing a source must change its digest"
+    );
+    assert_eq!(
+        before["apps/api/main.hl"], moved["apps/web/main.hl"],
+        "the same text under another path keeps its digest"
     );
 }
 

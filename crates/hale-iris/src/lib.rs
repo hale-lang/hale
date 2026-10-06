@@ -274,6 +274,9 @@ mod tests {
     /// phase 4, I5): a knob that moves the fingerprint moves the key, so
     /// a host built under a sanitizer or `HALE_DEV` is not served to a
     /// build without it; the same fingerprint gives the key it gave.
+    /// The covered change that moves `toolchain_hash`; what the
+    /// fingerprint leaves out keeps it (`hale-cli`'s `build_env.rs`,
+    /// `the_host_caches_options_are_the_inherited_builds_fingerprint`).
     #[test]
     fn a_build_knob_moves_the_key_and_the_same_options_keep_it() {
         let plain = toolchain_hash(DEFAULT_OPTIONS);

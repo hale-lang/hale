@@ -73,10 +73,10 @@ Claim [358..361] claim `iso` cannot be certified: `Src::go` (reachable from `src
 Claim [245..248] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `quiet`
 Claim [124..132] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [18..23] claim `iso`: the forbidden destination `quiet` is declared here
---- crates/hale-types/tests/artifact_law_projection.rs#5 ---
+--- crates/hale-types/tests/artifact_law_projection.rs#6 ---
 Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [81..91] counts against `hot`'s alloc budget: a `P` instantiation
---- crates/hale-types/tests/artifact_law_projection.rs#15 ---
+--- crates/hale-types/tests/artifact_law_projection.rs#16 ---
 Claim [411..415] claim `iso`: phase `boot` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
 --- crates/hale-types/tests/budget_contract.rs#3 ---
 Claim [52..56] hot-path budget exceeded: `make` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.

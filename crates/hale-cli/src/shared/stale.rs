@@ -217,7 +217,8 @@ mod tests {
     /// `hale-types` source: it folded `codegen.rs`, `lotus_arena.c` and
     /// the stdlib seeds) is a stale binary; an edit to a file no
     /// identity covers is not: outside the covered directories it costs
-    /// no read, and beside covered sources it costs a fold.
+    /// no read, and beside covered sources it costs a fold. The two
+    /// halves of `stale_src_hash`.
     #[test]
     fn an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not() {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);

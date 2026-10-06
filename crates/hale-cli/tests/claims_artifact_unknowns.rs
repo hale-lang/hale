@@ -83,7 +83,9 @@ fn the_artifact_records_the_untyped_receiver_unknown() {
 }
 
 /// Introducing the untyped edge changes `shape_hash` — the unknown
-/// lives inside the hashed model half.
+/// lives inside the hashed model half. What it leaves out keeps it: the
+/// text around the model (a comment that moves every span), the file's
+/// path (each dump writes its own) and a law row (a claim renamed).
 #[test]
 fn an_untyped_receiver_edge_changes_shape_hash() {
     let typed = dump(TYPED, "hash_typed");
@@ -92,6 +94,12 @@ fn an_untyped_receiver_edge_changes_shape_hash() {
         shape_hash(&typed),
         shape_hash(&untyped),
         "the unknown class must be part of the shape identity"
+    );
+    let rewritten = format!("// a comment that moves every span\n{}", TYPED.replace("iso:", "apart:"));
+    assert_eq!(
+        shape_hash(&typed),
+        shape_hash(&dump(&rewritten, "hash_rewritten")),
+        "a comment, another path and a renamed claim are no part of the shape identity"
     );
 }
 

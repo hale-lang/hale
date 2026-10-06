@@ -121,7 +121,9 @@ fn every_covered_directory_exists_and_every_covered_crate_contributes() {
 /// selection should cover must move the fold. The cached host is
 /// built by the CLI's `build` verb and links the dependencies the
 /// lock file and the ts-shim manifest pin, so those move it as much
-/// as a graph-core change does.
+/// as a graph-core change does. The fold is `hale-iris/build.rs`'s
+/// whole body, so these are `compiler_src_hash`'s two halves: what the
+/// selection holds moves it, what it leaves out keeps it.
 #[test]
 fn a_change_to_any_hashed_input_moves_the_cache_key() {
     use hale_graph::identity::{fold_files, identity_files, COVERED_CRATES, MANIFEST_FILES};
@@ -175,6 +177,19 @@ fn a_change_to_any_hashed_input_moves_the_cache_key() {
         key(),
         "a CLI source added leaves the cache key where it was"
     );
+    // What the selection leaves out keeps the key: a crate no identity
+    // covers, a covered crate's tests, a file of no source extension.
+    let before = key();
+    for (input, text) in [
+        ("crates/hale-lsp/src/lib.rs", "// an uncovered crate\n"),
+        ("crates/hale-types/tests/probe.rs", "// a covered crate's tests\n"),
+        ("crates/hale-types/src/NOTES.md", "not a source\n"),
+    ] {
+        let p = scratch.join(input);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+        assert_eq!(before, key(), "{input} moved the cache key");
+    }
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
@@ -207,6 +222,216 @@ fn the_inventory_names_each_identity_once_and_fills_every_column() {
         }
         if let Some(f) = i.frozen {
             assert!(!f.trim().is_empty(), "`{}` is frozen by nothing it names", i.name);
+        }
+    }
+}
+
+/// Each identity's two halves (the F.40 exit audit's bar): a test that
+/// shows a covered change MOVES the value and one that shows an
+/// uncovered change KEEPS it, as `(identity, moves, keeps)`, each a
+/// `file::fn` whose name or doc names the identity. One test may show
+/// both. "Covered" is the identity's own `covers` in `IDENTITIES`.
+const BOTH_HALVES: &[(&str, &str, &str)] = &[
+    (
+        "shape_hash",
+        "crates/hale-cli/tests/claims_artifact_unknowns.rs::an_untyped_receiver_edge_changes_shape_hash",
+        "crates/hale-cli/tests/claims_artifact_unknowns.rs::an_untyped_receiver_edge_changes_shape_hash",
+    ),
+    (
+        "model_hash",
+        "crates/hale-cli/tests/obs_model_hash.rs::model_identity_is_stamped_and_tracks_the_model",
+        "crates/hale-cli/tests/obs_model_hash.rs::model_identity_is_stamped_and_tracks_the_model",
+    ),
+    (
+        "artifact_digest",
+        "crates/hale-types/tests/artifact_integrity.rs::a_different_program_produces_a_different_digest",
+        "crates/hale-cli/tests/source_map.rs::one_tree_checked_out_at_two_roots_has_one_artifact",
+    ),
+    (
+        "law_digest",
+        "crates/hale-types/tests/artifact_law_projection.rs::law_digest_moves_with_a_row_and_keeps_without_one",
+        "crates/hale-types/tests/artifact_law_projection.rs::law_digest_moves_with_a_row_and_keeps_without_one",
+    ),
+    (
+        "claim_table_digest",
+        "crates/hale-types/tests/judgment_certificates.rs::relowered_table_from_edited_source_is_refused",
+        "crates/hale-types/tests/judgment_certificates.rs::relowered_table_from_edited_source_is_refused",
+    ),
+    (
+        "analysis_coverage_digest",
+        "crates/hale-types/tests/judgment_certificates.rs::coverage_change_invalidates_evidence_identity",
+        "crates/hale-types/tests/judgment_certificates.rs::coverage_change_invalidates_evidence_identity",
+    ),
+    (
+        "dispatch_plan_digest",
+        "crates/hale-types/tests/dispatch_plan.rs::the_digest_tracks_the_plan",
+        "crates/hale-types/tests/dispatch_plan.rs::the_digest_tracks_the_plan",
+    ),
+    (
+        "exec_digest",
+        "crates/hale-cli/tests/replay_cli.rs::same_named_imports_with_their_contents_swapped_are_two_identities",
+        "crates/hale-cli/tests/replay_cli.rs::one_program_at_two_roots_has_one_identity",
+    ),
+    (
+        "stale_src_hash",
+        "crates/hale-cli/src/shared/stale.rs::an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not",
+        "crates/hale-cli/src/shared/stale.rs::an_edit_to_any_covered_source_is_stale_and_an_uncovered_one_is_not",
+    ),
+    (
+        "compiler_src_hash",
+        "crates/hale-graph/tests/identity_coverage.rs::a_change_to_any_hashed_input_moves_the_cache_key",
+        "crates/hale-graph/tests/identity_coverage.rs::a_change_to_any_hashed_input_moves_the_cache_key",
+    ),
+    (
+        "toolchain_hash",
+        "crates/hale-iris/src/lib.rs::a_build_knob_moves_the_key_and_the_same_options_keep_it",
+        "crates/hale-cli/src/build_env.rs::the_host_caches_options_are_the_inherited_builds_fingerprint",
+    ),
+    (
+        "embedded_dna_digest",
+        "crates/hale-cli/tests/stale_dna_warning.rs::a_tree_the_binary_embeds_raises_nothing_and_an_edited_one_warns",
+        "crates/hale-cli/tests/stale_dna_warning.rs::a_tree_the_binary_embeds_raises_nothing_and_an_edited_one_warns",
+    ),
+    (
+        "source_digest",
+        "crates/hale-cli/tests/source_map.rs::a_source_digest_tracks_its_contents",
+        "crates/hale-cli/tests/source_map.rs::a_source_digest_tracks_its_contents",
+    ),
+    (
+        "obs_entity_id_digest",
+        "crates/hale-cli/tests/obs_entity_ids.rs::the_entity_id_table_publishes_its_own_identity",
+        "crates/hale-cli/tests/obs_entity_ids.rs::the_entity_id_table_publishes_its_own_identity",
+    ),
+    (
+        "snapshot_key",
+        "crates/hale-types/tests/demand_gate.rs::a_snapshot_key_tells_different_loads_apart",
+        "crates/hale-types/tests/demand_gate.rs::a_snapshot_key_tells_different_loads_apart",
+    ),
+    (
+        "snapshot_config_digest",
+        "crates/hale-frontend/src/snapshot.rs::a_changed_input_is_a_distinct_snapshot_and_shares_no_result",
+        "crates/hale-frontend/src/snapshot.rs::a_changed_input_is_a_distinct_snapshot_and_shares_no_result",
+    ),
+    (
+        "snapshot_overlay_digest",
+        "crates/hale-frontend/src/snapshot.rs::a_changed_input_is_a_distinct_snapshot_and_shares_no_result",
+        "crates/hale-frontend/src/snapshot.rs::a_changed_input_is_a_distinct_snapshot_and_shares_no_result",
+    ),
+    (
+        "snapshot_sources_digest",
+        "crates/hale-types/tests/demand_gate.rs::a_snapshot_key_tells_different_loads_apart",
+        "crates/hale-types/tests/demand_gate.rs::a_snapshot_key_tells_different_loads_apart",
+    ),
+    (
+        "constitution_digest",
+        "crates/hale-types/tests/constitutions.rs::constitution_identity_follows_the_closure_not_the_name",
+        "crates/hale-types/tests/constitutions.rs::constitution_identity_follows_the_closure_not_the_name",
+    ),
+    (
+        "fleet_shape_hash",
+        "crates/hale-cli/tests/fleet_compose.rs::the_fleet_shape_hash_tracks_the_arrangement_not_provenance",
+        "crates/hale-cli/tests/fleet_compose.rs::the_fleet_shape_hash_tracks_the_arrangement_not_provenance",
+    ),
+    (
+        "runtime_object_key",
+        "crates/hale-codegen/src/codegen.rs::runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang",
+        "crates/hale-codegen/src/codegen.rs::runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang",
+    ),
+];
+
+/// The identities no test shows both halves of, each with the seam its
+/// computation lacks. A gap, not a justification: an entry leaves when
+/// the computation takes its inputs as arguments.
+const NO_SEAM: &[(&str, &str)] = &[
+    (
+        "toolchain_digest",
+        "a gap: the framing lives in `hale-cli/build.rs`, which prints the value rather than returning it and reads the rustc version and the commit from subprocesses; no test can call it, so neither half is shown (the selection it frames is `compiler_src_hash`'s, shown above)",
+    ),
+    (
+        "analysis_inputs_digest",
+        "a gap: `analysis_inputs_digest()` takes no argument and folds only compile-time constants (the semantics version, the stdlib source, the package version, the renames, the surface registry), so no test can make a covered change",
+    ),
+];
+
+/// A doc names `name` as a whole identifier (`fleet_shape_hash` does not
+/// name `shape_hash`).
+fn doc_names(doc: &str, name: &str) -> bool {
+    doc.match_indices(name).any(|(at, _)| {
+        let ident = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        !ident(doc[..at].chars().next_back()) && !ident(doc[at + name.len()..].chars().next())
+    })
+}
+
+/// A test's fn name names `name` as `_`-separated words of its own.
+fn fn_names(func: &str, name: &str) -> bool {
+    format!("_{func}_").contains(&format!("_{name}_"))
+}
+
+/// The doc lines and attributes directly above `fn NAME(` in `text`, and
+/// whether it is there at all.
+fn test_fn_header(text: &str, name: &str) -> Option<(String, bool)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.trim_start().strip_prefix("fn ").is_some_and(|r| r.starts_with(&format!("{name}("))))?;
+    let mut doc = String::new();
+    let mut is_test = false;
+    for l in lines[..at].iter().rev() {
+        let t = l.trim_start();
+        if let Some(d) = t.strip_prefix("///") {
+            doc.insert_str(0, &format!("{d}\n"));
+        } else if t.starts_with("#[") {
+            is_test |= t == "#[test]";
+        } else {
+            break;
+        }
+    }
+    Some((doc, is_test))
+}
+
+#[test]
+fn the_identity_name_scan_needs_whole_words() {
+    assert!(doc_names(" moves `shape_hash` and", "shape_hash"));
+    assert!(!doc_names(" the `fleet_shape_hash` moves", "shape_hash"));
+    assert!(!doc_names(" project_shape_hashes", "shape_hash"));
+    assert!(fn_names("an_untyped_receiver_edge_changes_shape_hash", "shape_hash"));
+    assert!(fn_names("law_digest_moves_with_a_row", "law_digest"));
+    assert!(!fn_names("toolchain_hashing_moves", "toolchain_hash"));
+}
+
+/// Every identity names a test of each half, or is listed with the seam
+/// it lacks; each named test exists, is a `#[test]`, and names the
+/// identity in its fn name or its doc.
+#[test]
+fn every_identity_names_a_test_of_each_half() {
+    use std::collections::BTreeSet;
+    let names: BTreeSet<&str> = hale_graph::identity::IDENTITIES.iter().map(|i| i.name).collect();
+    let paired: Vec<&str> = BOTH_HALVES.iter().map(|(n, _, _)| *n).collect();
+    let gapped: Vec<&str> = NO_SEAM.iter().map(|(n, _)| *n).collect();
+    let listed: BTreeSet<&str> = paired.iter().chain(gapped.iter()).copied().collect();
+    assert_eq!(listed.len(), paired.len() + gapped.len(), "an identity is listed twice");
+    let missing: Vec<&&str> = names.difference(&listed).collect();
+    assert!(
+        missing.is_empty(),
+        "identities with no test of either half: {missing:?}. Name a `file::fn` that shows a covered \
+         change moving the value and one that shows an uncovered change keeping it in BOTH_HALVES, \
+         or list the identity in NO_SEAM with the seam its computation lacks."
+    );
+    let stray: Vec<&&str> = listed.difference(&names).collect();
+    assert!(stray.is_empty(), "listed but not inventoried in IDENTITIES: {stray:?}");
+    for (name, why) in NO_SEAM {
+        assert!(why.starts_with("a gap: "), "`{name}`: a NO_SEAM entry is a gap, and says so");
+    }
+    for (name, moves, keeps) in BOTH_HALVES {
+        for (half, at) in [("moves", moves), ("keeps", keeps)] {
+            let (file, func) = at.split_once("::").unwrap_or_else(|| panic!("`{name}`: {at} is not file::fn"));
+            let (doc, is_test) = test_fn_header(&read(file), func)
+                .unwrap_or_else(|| panic!("`{name}` ({half}): no `fn {func}` in {file}"));
+            assert!(is_test, "`{name}` ({half}): {file}::{func} is not a #[test]");
+            assert!(
+                fn_names(func, name) || doc_names(&doc, name),
+                "`{name}` ({half}): {file}::{func} names the identity in neither its fn name nor its doc"
+            );
         }
     }
 }

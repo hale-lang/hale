@@ -287,7 +287,8 @@ fn manifest_rows_carry_canonical_model_entity_ids() {
 /// model_hash") the same `aux_b` would then designate different
 /// entities under one advertised identity, with nothing for a
 /// consumer to check. The header now publishes the id table's own
-/// digest, and it moves when the table moves.
+/// digest (`obs_entity_id_digest`), and it moves when the table moves
+/// and keeps its value when only where an entity is declared does.
 #[test]
 fn the_entity_id_table_publishes_its_own_identity() {
     let dir = workdir("identity");
@@ -347,6 +348,17 @@ fn main() { App { }; }
         "the header digest is not the one the model produces"
     );
     assert_eq!(d_bound, recompute(&with_binding));
+    // The keeping half: the table is keyed by (kind, name), so where an
+    // entity is declared is no part of it.
+    let moved = format!(
+        "// a comment that moves every site\n{}",
+        BOUND.replace(
+            "type Beat { n: Int = 0; }\ntopic Heartbeat { payload: Beat; subject: \"obs.beat\"; }",
+            "topic Heartbeat { payload: Beat; subject: \"obs.beat\"; }\ntype Beat { n: Int = 0; }",
+        )
+    );
+    assert_ne!(moved, format!("// a comment that moves every site\n{BOUND}"), "the declarations swapped");
+    assert_eq!(d_plain, recompute(&moved), "moved declarations keep obs_entity_id_digest");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
