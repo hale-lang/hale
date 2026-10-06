@@ -274,6 +274,47 @@ fn a_point_across_origins_is_a_shift() {
     assert_eq!(count(&fun, "mul"), 0, "one denomination, no factor: {fun}");
 }
 
+/// U4 (review 2): a `Duration`'s negation is the `Int` negation of its
+/// count and stays a `Duration`. A literal's is its count, negated at
+/// compile time (`-2000tick` is -2 ns, no arithmetic and no call), a
+/// value's one subtraction from zero; the result prints as a `Duration`,
+/// its count then `ns`.
+#[test]
+fn a_durations_negation_is_its_counts() {
+    let lit = conv_ir_after("unit tick = 1/1000 ns;\n", "() -> Duration", "    return -2000tick;\n");
+    assert!(lit.contains("store i64 -2, ptr %fn.ret.slot"), "{lit}");
+    assert_eq!(count(&lit, " call "), 0, "{lit}");
+    assert_eq!(count(&lit, "unit."), 0, "{lit}");
+    let value = conv_ir("(d: Duration) -> Duration", "    return -d;\n");
+    assert!(value.contains("%neg = sub i64 0, %d1"), "{value}");
+    assert_eq!(count(&value, " call "), 0, "{value}");
+    let src = "unit tick = 1/1000 ns;\nfn main() { println(-2000tick); }\n";
+    let bin = harness::unique_bin("unit_quantity_negation");
+    let ir = harness::build_source_ir_text(src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}\n{src}"));
+    let _ = std::fs::remove_file(&bin);
+    let main = function_ir(&ir, "main").expect("`main` is defined");
+    assert!(main.contains("i64 -2)"), "{main}");
+    assert!(ir.contains("c\"%lldns\\0A\\00\""), "printed as a `Duration`: {ir}");
+}
+
+/// A `Time` is a point, which has no negation: the check refuses `-t`
+/// (`time_declarations.rs`), and lowering, reached without it, refuses
+/// it where it is in the same words.
+#[test]
+fn a_times_negation_is_a_located_error() {
+    let src = "fn main() {\n    let t = std::time::current();\n    println(-t);\n}\n";
+    let bin = harness::unique_bin("unit_quantity_time_negation");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("a point has no negation");
+    let _ = std::fs::remove_file(&bin);
+    match err {
+        CodegenError::UnsupportedAt(msg, span) => {
+            assert_eq!(span.slice(src), "-t");
+            assert_eq!(msg, "`-` of the point `Time`: a point has no negation");
+        }
+        other => panic!("expected a located refusal, got {other}"),
+    }
+}
+
 /// A factor no `Int` holds (10^24 here) is refused where the conversion
 /// is, never wrapped. The value is a parameter's: a literal of `c` is
 /// itself a whole count of `A` no `Int` holds, which the check refuses

@@ -1001,6 +1001,32 @@ fn a_whole_count_literal_of_a_finer_unit_is_its_quantity() {
     assert_eq!(build_and_run_probe(tick, "unit_whole_count_tick"), Ok("1ns\n".to_string()), "{}", tick);
 }
 
+/// GH #1076 (U4, review 2): a quantity's negation is the quantity, and
+/// lowering negated only an `Int`, a `Float` and a `Decimal`. The rule
+/// above made `-2000tick` the stdlib's `Duration`, so it checked and the
+/// build refused it ("unop Neg on Duration"), where before it printed
+/// `-2000tick`. A `Duration`'s negation is its count's, still a
+/// `Duration`, a literal's and a value's alike; a program's own quantity,
+/// an `Int` underneath, negated before and still does.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_negated_quantity_checks_builds_and_keeps_its_unit() {
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { println(-2000tick); println(-5tick); println(-(1s)); let d = 3s; println(-d); }\n";
+    assert_eq!(
+        build_and_run_probe(tick, "unit_negated_tick"),
+        Ok("-2ns\n-5tick\n-1000000000ns\n-3000000000ns\n".to_string()),
+        "{}",
+        tick
+    );
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { println(-2000mg); let m = 2000mg; println(-m); let n = 5mg; println(-n); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_negated_mass"), Ok("-2g\n-2g\n-5mg\n".to_string()), "{}", mass);
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

@@ -29,6 +29,7 @@ unit bp = 1 / 100 pct;
 unit tick;
 unit mK;
 unit K = 1_000 mK;
+unit psec = 1 / 1000 ns;
 
 type Span = quantity Int in nsec;
 type Instant = point Span;
@@ -240,4 +241,5 @@ fn main() {
     let durations = [half, 1s];
     std::test::assert_eq_str(to_string(durations[0]), "1500000000ns", "a `Duration in ms` meets `Duration`");
     std::test::assert_eq_str(to_string(durations[1]), "1000000000ns", "and the `Duration` is as it is");
+    std::test::assert_eq_str(to_string(-2000psec), "-2ns", "a negated whole count of a finer unit is a `Duration`");
 }

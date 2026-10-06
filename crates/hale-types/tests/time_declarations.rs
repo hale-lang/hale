@@ -231,4 +231,18 @@ fn a_duration_over_a_duration_is_an_int_and_a_literal_divisor_narrows() {
     );
 }
 
+/// U4 (review 2): a `Duration`, a quantity, negates to a `Duration`, a
+/// finer unit's whole count too; a `Time`, a point, has no negation.
+#[test]
+fn a_duration_negates_and_a_time_does_not() {
+    assert_eq!(
+        errors_in_main("    let d = 3s;\n    let a: Duration = -d;\n    let b: Duration = -(1s);\n    let c: Duration = -1000ns;\n"),
+        []
+    );
+    assert_eq!(
+        errors_in_main("    let t = std::time::current();\n    let n = -t;\n"),
+        [("-t".to_string(), "`-` of the point `Time`: a point has no negation".to_string())]
+    );
+}
+
 const BARE_HALF: &str = "`Duration` divided by 2 leaves a remainder: say what happens to the remainder: `or floor`, `or <value>`, `or raise`";
