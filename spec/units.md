@@ -642,8 +642,11 @@ quotient on one path and the `InexactError` on the other, joined by
 the `or`. A literal is its row's count. A value converted where it
 stands has its row at its span. A row is read from the body being
 emitted, the declaration the checker recorded it in, and never from
-another (a stdlib body's spans overlap the first file's). A literal with
-no row is a missing required row, refused where it is written.
+another (a stdlib body's spans overlap the first file's). A constant's
+initializer, lowered again at each use, is its own evaluation: its rows
+are the constant's, on no evaluation path, wherever it is read, a
+default's included. A literal with no row is a missing required row,
+refused where it is written.
 
 ## Identities and equations
 

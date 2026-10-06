@@ -902,6 +902,38 @@ fn a_quantity_in_an_array_default_converts_into_the_element_type() {
     }
 }
 
+/// GH #1076 (U3, review 1): a constant's initializer is its own
+/// evaluation. It is lowered again at each use, and a use inside a default
+/// looked its rows up on the default's evaluation path, where the checker,
+/// which types the constant once in its own body with no path, recorded
+/// none: `Money(3USD)` was lowered as a call and the build refused each
+/// program below ("call to `Money`: no free fn …") after the check
+/// accepted it. A struct field's default, a parameter's, and a nested
+/// struct default reading the constant each print `300cent`.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_constant_read_in_a_default_is_lowered_from_its_own_rows() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n\
+                 const AMOUNT: Money = Money(3USD);\n";
+    let field = format!("{decls}type S {{ m: Money = AMOUNT; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
+    let param = format!("{decls}fn take(m: Money = AMOUNT) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
+    let nested = format!(
+        "{decls}type Inner {{ m: Money = AMOUNT; }}\n\
+         type Outer {{ i: Inner = Inner {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.i.m); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_const_field_default"),
+        (param, "unit_const_param_default"),
+        (nested, "unit_const_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n".to_string()), "{}", src);
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

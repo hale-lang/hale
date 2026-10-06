@@ -134,6 +134,29 @@ fn a_literal_in_a_default_is_each_evaluations_count() {
     assert!(calls[0].ends_with(", i64 2000000000)"), "the local is handed the count in `nsec`: {fun}");
 }
 
+/// U3 review 1: a constant's initializer is its own evaluation. `AMOUNT`
+/// is lowered again at each use, here inside `S`'s field default and
+/// `take`'s parameter default, and its `Money(3USD)` is read from the
+/// constant's rows on no evaluation path, as the checker typed it: the
+/// cast, its literal folded to the count in `cent`, stored into the field
+/// and handed to `take`. Read on the default's path it had no row and was
+/// lowered as a call of `Money`, which the build refused.
+#[test]
+fn a_constants_cast_is_its_conversion_inside_a_default() {
+    let fun = conv_ir_after(
+        "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n\
+         const AMOUNT: Money = Money(3USD);\n\
+         type S { m: Money = AMOUNT; }\nfn take(m: Money = AMOUNT) -> Money { return m; }\n",
+        "() -> Int",
+        "    let s = S {};\n    let t = take();\n    return (s.m + t) / 1cent;\n",
+    );
+    assert!(fun.contains("store i64 300, ptr %S.m.ptr,"), "the field default stores the count in `cent`: {fun}");
+    let calls: Vec<&str> = fun.lines().filter(|l| l.contains("call i64 @take(")).collect();
+    assert_eq!(calls.len(), 1, "{fun}");
+    assert!(calls[0].ends_with(", i64 300)"), "the parameter default hands `take` the count in `cent`: {fun}");
+    assert!(!fun.contains("@Money"), "no call of `Money`: {fun}");
+}
+
 /// The text of the function `@name` in `ir`, from its `define` to its
 /// closing brace.
 fn function_ir<'a>(ir: &'a str, name: &str) -> Option<String> {

@@ -92,6 +92,11 @@ fn later(d: Span) -> Bucket {
 // element of an array literal into the element type.
 type Fees { pair: [Money; 2] = [3USD, 2USD]; }
 
+// A constant's initializer is its own evaluation, wherever it is read.
+const FEE: Money = Money(3USD);
+
+type Charge { amount: Money = FEE; }
+
 fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
     let d = 3sec + 500msec;
@@ -206,4 +211,6 @@ fn main() {
     let fees = Fees { };
     std::test::assert(fees.pair[0] == 300cent, "each element converted into cents");
     std::test::assert(fees.pair[1] == 200cent, "the second as well");
+    let charge = Charge { };
+    std::test::assert(charge.amount == 300cent, "a constant read in a default: its own cast");
 }

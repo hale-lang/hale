@@ -23145,7 +23145,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if let Some((expr, _ty, decl)) =
                         self.user_const_exprs.get(&mangled).cloned()
                     {
-                        return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
+                        return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                     }
                     // GH #1082: an imported seed's fn used as a VALUE
                     // (`apply(lib::add3)`). A call through the path is
@@ -23209,7 +23209,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some((expr, _ty, decl)) =
                     self.user_const_exprs.get(&id.name).cloned()
                 {
-                    return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
+                    return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.
