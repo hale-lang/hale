@@ -890,6 +890,168 @@ fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
     }
 }
 
+/// GH #1076 (U3, review 1): a default's value flows into its declared type
+/// as a binding's initializer does, whatever the type's shape. The default
+/// walks converted a default only when the field's or parameter's type, or
+/// the default, was itself a quantity, so `[3USD, 2USD]` into `[Money; 2]`
+/// kept its literals' counts in `USD` and each program below printed
+/// `3cent` and `2cent`. Each element now has its row on the evaluation's
+/// path: the reviewer's field and parameter defaults, and the field's
+/// default reached through a nested one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_in_an_array_default_converts_into_the_element_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    let field = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         fn main() {{ let s = S {{}}; println(s.p[0]); println(s.p[1]); }}\n"
+    );
+    let param = format!(
+        "{decls}fn take(p: [Money; 2] = [3USD, 2USD]) -> [Money; 2] {{ return p; }}\n\
+         fn main() {{ let p = take(); println(p[0]); println(p[1]); }}\n"
+    );
+    let nested = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         type Outer {{ s: S = S {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.s.p[0]); println(o.s.p[1]); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_array_field_default"),
+        (param, "unit_array_param_default"),
+        (nested, "unit_array_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n200cent\n".to_string()), "{}", src);
+    }
+}
+
+/// GH #1076 (U3, review 1): a constant's initializer is its own
+/// evaluation. It is lowered again at each use, and a use inside a default
+/// looked its rows up on the default's evaluation path, where the checker,
+/// which types the constant once in its own body with no path, recorded
+/// none: `Money(3USD)` was lowered as a call and the build refused each
+/// program below ("call to `Money`: no free fn …") after the check
+/// accepted it. A struct field's default, a parameter's, and a nested
+/// struct default reading the constant each print `300cent`.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_constant_read_in_a_default_is_lowered_from_its_own_rows() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n\
+                 const AMOUNT: Money = Money(3USD);\n";
+    let field = format!("{decls}type S {{ m: Money = AMOUNT; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
+    let param = format!("{decls}fn take(m: Money = AMOUNT) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
+    let nested = format!(
+        "{decls}type Inner {{ m: Money = AMOUNT; }}\n\
+         type Outer {{ i: Inner = Inner {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.i.m); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_const_field_default"),
+        (param, "unit_const_param_default"),
+        (nested, "unit_const_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n".to_string()), "{}", src);
+    }
+}
+
+/// GH #1076 (U3, review 2): each element of an array literal converts from
+/// its own type. The literal was typed by its first element, so in
+/// `[3cent, 2USD]` into `[Money; 2]` the whole array was already a `Money`
+/// array and `2USD` stored `2`; in `[3USD, 2cent]` every element converted
+/// as a `USD` and `2cent` stored `200`. Each order as a field's default, a
+/// parameter's and an annotated binding; a constant beside a literal in
+/// each of the three; and an array nothing types, whose elements meet at
+/// the finer denomination.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_array_literals_elements_each_convert_from_their_own_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    for (array, want, order) in [("[3cent, 2USD]", "3cent\n200cent\n", "cent_usd"), ("[3USD, 2cent]", "300cent\n2cent\n", "usd_cent")] {
+        let field =
+            format!("{decls}type S {{ a: [Money; 2] = {array}; }}\nfn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); }}\n");
+        let param = format!(
+            "{decls}fn take(a: [Money; 2] = {array}) -> [Money; 2] {{ return a; }}\n\
+             fn main() {{ let a = take(); println(a[0]); println(a[1]); }}\n"
+        );
+        let binding = format!("{decls}fn main() {{ let a: [Money; 2] = {array}; println(a[0]); println(a[1]); }}\n");
+        for (src, shape) in [(field, "field"), (param, "param"), (binding, "binding")] {
+            let tag = format!("unit_mixed_array_{shape}_{order}");
+            assert_eq!(build_and_run_probe(&src, &tag), Ok(want.to_string()), "{}", src);
+        }
+    }
+    let constant = format!(
+        "{decls}const AMOUNT: Money = Money(3USD);\n\
+         type S {{ a: [Money; 2] = [AMOUNT, 2USD]; }}\n\
+         fn take(a: [Money; 2] = [AMOUNT, 2USD]) -> [Money; 2] {{ return a; }}\n\
+         fn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); let t = take(); println(t[0]); println(t[1]); \
+         let b: [Money; 2] = [AMOUNT, 2USD]; println(b[0]); println(b[1]); }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&constant, "unit_mixed_array_constant"),
+        Ok("300cent\n200cent\n300cent\n200cent\n300cent\n200cent\n".to_string()),
+        "{}",
+        constant
+    );
+    let meet = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
+                fn main() { let a = [1sec, 1_500msec]; println(a[0]); println(a[1]); }\n";
+    assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
+}
+
+/// GH #1076 (U4, review 1): a literal is its quantity at the quantity's
+/// denomination when its count there is whole, whatever its unit's factor
+/// alone is. The rule tested the factor, so `1000mg` of a `Mass` counted
+/// in grams stayed a `Mass in mg`, and `1000tick` of a unit a thousandth
+/// of a nanosecond a `Duration in tick`: both arms below were refused as
+/// two types by the check and the build alike. Each checks, builds and
+/// prints its one whole count.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_whole_count_literal_of_a_finer_unit_is_its_quantity() {
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { let x = if true { 1000mg } else { 1g }; println(x); println(5mg); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_whole_count_mass"), Ok("1g\n5mg\n".to_string()), "{}", mass);
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { let x = if true { 1000tick } else { 1ns }; println(x); }\n";
+    assert_eq!(build_and_run_probe(tick, "unit_whole_count_tick"), Ok("1ns\n".to_string()), "{}", tick);
+}
+
+/// GH #1076 (U4, review 2): a quantity's negation is the quantity, and
+/// lowering negated only an `Int`, a `Float` and a `Decimal`. The rule
+/// above made `-2000tick` the stdlib's `Duration`, so it checked and the
+/// build refused it ("unop Neg on Duration"), where before it printed
+/// `-2000tick`. A `Duration`'s negation is its count's, still a
+/// `Duration`, a literal's and a value's alike; a program's own quantity,
+/// an `Int` underneath, negated before and still does.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_negated_quantity_checks_builds_and_keeps_its_unit() {
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { println(-2000tick); println(-5tick); println(-(1s)); let d = 3s; println(-d); }\n";
+    assert_eq!(
+        build_and_run_probe(tick, "unit_negated_tick"),
+        Ok("-2ns\n-5tick\n-1000000000ns\n-3000000000ns\n".to_string()),
+        "{}",
+        tick
+    );
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { println(-2000mg); let m = 2000mg; println(-m); let n = 5mg; println(-n); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_negated_mass"), Ok("-2g\n-2g\n-5mg\n".to_string()), "{}", mass);
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

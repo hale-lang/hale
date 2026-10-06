@@ -362,6 +362,12 @@ is a point, and two points do not add. A point may declare where its
 zero is (`type Celsius = point TempDelta { origin: 273_150 mK; }`),
 and `Kelvin(c)` converts across the two zeros.
 
+An array literal may mix units of one quantity. Each literal counts in
+its quantity's unit, so `let a: [Money; 2] = [3cent, 2USD];` holds 3
+and 200 cents and `[1s, 500ms]` is two `Duration`s. A value at another
+unit is converted from its own: with no type to fit, `[whole, 500ms]`
+is counted in the finer unit, as a sum is: both in nanoseconds.
+
 Mixing kinds is an error at the operator, naming both declarations:
 `5ms + 4KiB` adds time to bytes, `bid + ask` adds two prices,
 `d > 0` compares a span with a bare number (write `d > 0ms`). An

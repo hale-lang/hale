@@ -309,16 +309,25 @@ impl<'r> ScalarTypes<'r> {
     /// The type a quantity literal of `unit` is, and its count there: its
     /// component's quantity at the quantity's denomination when the
     /// literal is a whole count of it (`500ms` is 500,000,000 of
-    /// `Duration`, `3USD` 300 of `Money` in cent), else at the literal's
-    /// own unit (`5mK` of a quantity in `K` is `TempDelta in mK`, 5); or
-    /// why there is none.
-    pub fn quantity_literal(&self, value: i64, unit: &str) -> Result<(Ty, i64), String> {
-        let ty = self.literal_type(value, unit)?;
+    /// `Duration`, `3USD` 300 of `Money` in cent, `1000mK` one of a
+    /// quantity in `K`), else at the literal's own unit (`5mK` is
+    /// `TempDelta in mK`, 5); or why there is none, with the type the
+    /// refused literal still is: a whole count no `Int` holds is its
+    /// quantity's, so what it flows into is checked as written, and a
+    /// literal with no unit or no quantity is `Unknown`.
+    pub fn quantity_literal(&self, value: i64, unit: &str) -> Result<(Ty, i64), (String, Ty)> {
+        let ty = self.literal_type(value, unit).map_err(|why| (why, Ty::Unknown))?;
         let at_quantity = self.rows.unit_named(unit).and_then(|u| self.rows.literal_at_quantity(value, u));
-        Ok(match at_quantity {
-            Some((p, count)) if !matches!(ty, Ty::Unknown) => (self.rows.scalars[p].ty(), count),
-            _ => (ty, value),
-        })
+        match at_quantity {
+            Some((p, count)) if !matches!(ty, Ty::Unknown) => {
+                let row = &self.rows.scalars[p];
+                match count {
+                    Ok(count) => Ok((row.ty(), count)),
+                    Err(()) => Err((format!("`{value}{unit}` as a count of `{}` overflows an `Int`", row.display), row.ty())),
+                }
+            }
+            _ => Ok((ty, value)),
+        }
     }
 
     /// The type a quantity literal of `unit` is at its own unit (its

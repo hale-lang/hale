@@ -23138,7 +23138,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if let Some((expr, _ty, decl)) =
                         self.user_const_exprs.get(&mangled).cloned()
                     {
-                        return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
+                        return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                     }
                     // GH #1082: an imported seed's fn used as a VALUE
                     // (`apply(lib::add3)`). A call through the path is
@@ -23202,7 +23202,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some((expr, _ty, decl)) =
                     self.user_const_exprs.get(&id.name).cloned()
                 {
-                    return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
+                    return self.in_const_body(decl, |cx| cx.lower_expr(&expr, scope));
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.
@@ -23610,8 +23610,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 self.lower_binop(*op, lv, rv, &lt)
             }
-            Expr::Unary { op, operand, .. } => {
+            Expr::Unary { op, operand, span } => {
                 let (v, t) = self.lower_expr(operand, scope)?;
+                // GH #1076 (U4): the checker's refusal, where it is.
+                if *op == UnaryOp::Neg && t == CodegenTy::Time {
+                    return Err(CodegenError::UnsupportedAt(
+                        "`-` of the point `Time`: a point has no negation".into(),
+                        *span,
+                    ));
+                }
                 self.lower_unop(*op, v, &t)
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => match callee.as_ref() {
@@ -25074,13 +25081,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let ty_owned = ty.clone();
         match (op, ty_owned) {
-            (UnaryOp::Neg, CodegenTy::Int) => {
+            // GH #1076 (U4): a quantity's negation is the quantity
+            // (`quantity_unary`), so a `Duration`'s is the `Int`
+            // negation of its nanosecond count, still a `Duration`.
+            (UnaryOp::Neg, t @ (CodegenTy::Int | CodegenTy::Duration)) => {
                 let zero = self.context.i64_type().const_int(0, true);
                 let r = self
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "neg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), CodegenTy::Int))
+                Ok((r.into(), t))
             }
             (UnaryOp::Neg, CodegenTy::Float) => {
                 let r = self

@@ -262,19 +262,22 @@ impl UnitRows {
     }
 
     /// A literal `value` of the unit row `unit` at its quantity's
-    /// denomination (`500ms` is 500,000,000 of `Duration`): the
-    /// quantity's row and the count, when the literal is a whole count
-    /// of that denomination and the count is an `Int`; `None` otherwise,
-    /// when the literal is counted in its own unit.
-    pub fn literal_at_quantity(&self, value: i64, unit: usize) -> Option<(usize, i64)> {
+    /// denomination (`500ms` is 500,000,000 of `Duration`, `1000mg` one
+    /// of a `Mass` in g): the quantity's row and the count, when the
+    /// literal is a whole count of that denomination, whatever the unit's
+    /// factor (`5mg` is not one); `None` otherwise, when the literal is
+    /// counted in its own unit. The count is `Err` when it is whole and
+    /// no `Int` holds it, which is refused, never wrapped.
+    pub fn literal_at_quantity(&self, value: i64, unit: usize) -> Option<(usize, Result<i64, ()>)> {
         let p = self.principal(self.units[unit].component)?;
         let to = self.scalars[p].denomination.as_ref()?;
         let one = Denom { unit: self.units[unit].site, multiple: Ratio::one() };
         let f = self.catalogue.as_ref()?.factor(&one, to)?;
-        if !f.is_integral() {
+        let count = BigRational::new(BigInt::from(value) * f.numerator(), f.denominator().clone());
+        if !count.is_integer() {
             return None;
         }
-        Some((p, i64::try_from(BigInt::from(value) * f.numerator()).ok()?))
+        Some((p, i64::try_from(count.to_integer()).map_err(|_| ())))
     }
 }
 
@@ -293,11 +296,11 @@ pub fn stdlib_rows() -> &'static UnitRows {
 /// quantity and that quantity's type (500,000,000 of `Duration`), the
 /// literal's own row in any program, which no program's declarations
 /// change (a program's unit is never the stdlib's: law 1). `None` for a
-/// unit the stdlib does not declare.
+/// unit the stdlib does not declare, or a count no `Int` holds.
 pub fn stdlib_literal(value: i64, unit: &str) -> Option<(i64, crate::ty::Ty)> {
     let rows = stdlib_rows();
     let (p, count) = rows.literal_at_quantity(value, rows.unit_named(unit)?)?;
-    Some((count, rows.scalars[p].ty()))
+    Some((count.ok()?, rows.scalars[p].ty()))
 }
 
 impl ScalarRow {

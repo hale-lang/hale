@@ -389,10 +389,16 @@ its own: a local named `s` neither shadows the unit `s` nor is shadowed
 by it. The literal is its unit's component's quantity, **at the
 quantity's denomination when it is a whole count of it**, else at its
 own unit: `3s` is 3,000,000,000 of `Duration`, `1_250_000USD`
-125,000,000 of `Money`, `3bp` 3 of `Ratio`; in a `Mass` counted in
-grams, `5mg` is a `Mass in mg`. A literal of a unit no `unit` declares,
-or of a unit whose component has no quantity, is refused at the
-literal ("\`3xyz\`: no \`unit\` declares \`xyz\`"); so is a literal of
+125,000,000 of `Money`, `3bp` 3 of `Ratio`. What must be whole is the
+literal's count there, its value times its unit's factor, not the
+factor alone: in a `Mass` counted in grams, `1000mg` is 1 of `Mass`,
+and with `unit psec = 1/1000 ns;`, `1000psec` is 1 of `Duration`; `5mg`
+and `1500mg` are each a `Mass in mg`. A whole count no `Int` holds
+(`10000000000s` is 10^19 nanoseconds) is refused at the literal, never
+wrapped and never kept at its own unit ("\`10000000000s\` as a count of
+\`Duration\` overflows an \`Int\`"). A literal of a unit no `unit`
+declares, or of a unit whose component has no quantity, is refused at
+the literal ("\`3xyz\`: no \`unit\` declares \`xyz\`"); so is a literal of
 several units ("\`1h30m\`: a quantity literal has one unit; write \`1h +
 30min\`").
 
@@ -545,6 +551,45 @@ converted into what each scope flows it into (`Bucket(2000ms)` is 20
 buckets in one scope and 2,000,000,000 ns handed to a local `fn(d:
 Duration)` shadowing `Bucket` in another).
 
+An **array literal** holding a quantity or a point is typed element by
+element. Where the array's type is known (an annotated binding, an
+argument, a return, a struct field, a default), each element flows into
+the element type from its own type, with its own row: `[3cent, 2USD]`
+into `[Money; 2]` holds 3 and 200 cents, `[3USD, 2cent]` 300 and 2
+(each literal a count of `Money` already), and a value at another
+denomination beside them converts from its own. An element that
+narrows is refused at that element, or discharged by the element
+type's `round:`, as a binding's value is. Where nothing types the
+array (`let a = [3g, 1_500mg];`, a `Mass` counted in grams), its
+elements meet as a sum's operands do: it is an array of the quantity
+at the finer of their denominations, `[Mass in mg; 2]`, each coarser
+element widened exactly (3000 and 1500 milligrams). Elements all of
+one type meet at it and convert none: `[1s, 1_500ms]` is two literals
+of `Duration`. Elements of two quantities, a quantity beside a point
+or an `Int`, and two points of different origins have no meet, and are
+refused at the array, naming both. A nested array literal meets at
+each level. An array with no quantity or point among its elements is
+its first element's type.
+
+```hale,fragment
+let a: [Money; 2] = [3cent, 2USD];    // 3 and 200 cents
+let b: [Money; 2] = [3USD, 2cent];    // 300 and 2 cents
+let s: [Seconds; 2] = [1s, 1_500ms];  // error at `1_500ms`: `Seconds` from `Duration` divides by 1,000,000,000: …
+let m = [3g, 1_500mg];                // [Mass in mg; 2]: 3000 and 1500
+let t = [1s, 1_500ms];                // [Duration; 2]: no element converts
+let x = [1s, 3cent];                  // error: `[…]`: elements of different quantities, `Duration` and `Money`;
+                                      // an array holds one
+```
+
+A default flows into its field's or parameter's type as a binding's
+value flows into its annotation, whatever the type's shape: each
+element of an array literal into the element type, so `p: [Money; 2] =
+[3USD, 2USD]` holds 300 and 200 cents and an element that narrows is
+the law's as the binding's would be; a default holding a quantity that
+does not flow (a tuple's part at another denomination, as for a
+binding) is refused at the default: `t: (Mass, Int) = (1_500mg, 1)`,
+"field \`t\`: declared \`(Mass, Int)\`, default is \`(Mass in mg, Int)\`".
+
 A **position the checker does not classify** refuses a value counted in
 a denomination no declaration names, with a located error, and never
 stores it as the wrong count: a generic literal's field whose type is
@@ -569,7 +614,9 @@ named. An arithmetic operator over a quantity or a point has its row,
 its result's type, which says the representation the operation is
 emitted in (`Int * Duration` a `Duration`). A row is never read from
 another body (a stdlib body's spans overlap the first file's). A
-literal with no row is a missing required row, refused where it is
+constant's initializer, lowered again at each use, is its own
+evaluation: its rows are the constant's, on no evaluation path,
+wherever it is read, a default's included. A literal with no row is a missing required row, refused where it is
 written, save in a body the checker types no row in (the stdlib's own),
 where a time literal is its count from the stdlib's catalogue.
 
@@ -664,8 +711,8 @@ topic Fills { payload: Fill; subject: "desk.fills"; }
 multiplication is the `Int` multiplication. A factor no `Int` holds is
 an error at the conversion when the program is built ("…by the factor
 1000000000000000000000000, which no \`Int\` holds"), never a wrap; a
-literal's converted count that overflows is refused by the check. A
-quantity's `range:` is a row the witness report reads (what it fits
+literal's count that overflows is refused by the check, at the
+literal (§ Literals). A quantity's `range:` is a row the witness report reads (what it fits
 in); no conversion checks it at v1.
 
 ## The stdlib's time catalogue

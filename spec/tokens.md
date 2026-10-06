@@ -534,8 +534,9 @@ annotations are not in v1.
   is the catalogue's to say where the literal is checked (U4).
 - The unit is named in the units' own namespace, never a local's:
   a quantity literal is its unit's component's quantity, at the
-  quantity's denomination when it is a whole count of it and else
-  at its unit, converted at compile time into the denomination it
+  quantity's denomination when it is a whole count of it (`1000mg`
+  of a quantity in grams is 1) and else at its unit (`5mg`),
+  converted at compile time into the denomination it
   flows into (spec/units.md § Literals). A
   unit no `unit` declares is refused at the literal.
 

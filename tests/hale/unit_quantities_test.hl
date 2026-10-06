@@ -29,6 +29,7 @@ unit bp = 1 / 100 pct;
 unit tick;
 unit mK;
 unit K = 1_000 mK;
+unit psec = 1 / 1000 ns;
 
 type Span = quantity Int in nsec;
 type Instant = point Span;
@@ -89,6 +90,21 @@ fn two_sec() -> Seconds {
 fn later(d: Span) -> Bucket {
     return Bucket(d + 5sec);
 }
+
+// A default flows into its field's type as a binding's value does: each
+// element of an array literal into the element type, from its own.
+type Fees { pair: [Money; 2] = [3USD, 2USD]; mixed: [Money; 2] = [3cent, 2USD]; }
+
+// A constant's initializer is its own evaluation, wherever it is read.
+const FEE: Money = Money(3USD);
+
+type Charge { amount: Money = FEE; }
+
+// The stdlib's `Duration` is a quantity like these: its array default,
+// its constant read in a default and its mixed array convert as theirs.
+const PAUSE: Duration = Duration(2s);
+
+type Waits { pair: [Duration; 2] = [1s, 500ms]; pause: Duration = PAUSE; }
 
 fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
@@ -201,4 +217,29 @@ fn main() {
         std::test::assert(shadowed.lit == 7sec, "the literal reaches the local as a `Span`");
         std::test::assert(shadowed.val == 7sec, "and so does the value");
     }
+    let fees = Fees { };
+    std::test::assert(fees.pair[0] == 300cent, "each element converted into cents");
+    std::test::assert(fees.pair[1] == 200cent, "the second as well");
+    std::test::assert(fees.mixed[0] == 3cent, "an element in cents stays as it is");
+    std::test::assert(fees.mixed[1] == 200cent, "an element in dollars converts from dollars");
+    // With no element type to flow into, the elements meet as a sum's
+    // operands do: at the finer denomination. Two literals are already
+    // counts of `Span`, so their meet is `Span` and converts neither.
+    let spans = [two_sec(), 1_500msec];
+    std::test::assert_eq_str(to_string(spans[0]), "2000000000nsec", "the coarser element widened");
+    std::test::assert_eq_str(to_string(spans[1]), "1500000000nsec", "the finer as it is");
+    let literals = [1sec, 1_500msec];
+    std::test::assert_eq_str(to_string(literals[0]), "1000000000nsec", "a literal counts in nanoseconds");
+    std::test::assert_eq_str(to_string(literals[1]), "1500000000nsec", "and so does the other");
+    let charge = Charge { };
+    std::test::assert(charge.amount == 300cent, "a constant read in a default: its own cast");
+    let waits = Waits { };
+    std::test::assert(waits.pair[0] == 1s, "a `Duration` array default");
+    std::test::assert(waits.pair[1] == 500ms, "its second element");
+    std::test::assert(waits.pause == 2s, "a `Duration` constant read in a default");
+    let half = 1500ms.in(ms) or floor;
+    let durations = [half, 1s];
+    std::test::assert_eq_str(to_string(durations[0]), "1500000000ns", "a `Duration in ms` meets `Duration`");
+    std::test::assert_eq_str(to_string(durations[1]), "1000000000ns", "and the `Duration` is as it is");
+    std::test::assert_eq_str(to_string(-2000psec), "-2ns", "a negated whole count of a finer unit is a `Duration`");
 }

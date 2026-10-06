@@ -68,20 +68,28 @@ fn fallible_substitute_checked_against_success_type() {
     );
 }
 
+/// GH #1076 (U4): `Duration` is a quantity, so an `Int` where a stdlib
+/// fn takes one is refused by the quantity rule, at the argument, with
+/// the unit that makes a count one.
 #[test]
 fn duration_param_rejects_int() {
-    let m = msgs(
-        r#"
+    let src = r#"
         fn main() {
             std::time::sleep(100);
         }
-    "#,
-    );
-    assert!(
-        m.iter().any(|s| s.contains("std::time::sleep")
-            && s.contains("expected `Duration`")),
-        "got: {:?}",
-        m
+    "#;
+    let prog = parse_source(src).expect("parse");
+    let found: Vec<(String, String)> = check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.span.slice(src).to_string(), d.message))
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            "100".to_string(),
+            "`Int` is not `Duration`: a count becomes a quantity by a unit (`n * 1ns`)".to_string()
+        )]
     );
 }
 

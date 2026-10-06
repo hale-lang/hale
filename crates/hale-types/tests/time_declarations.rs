@@ -87,6 +87,30 @@ fn a_time_literal_is_its_count_of_nanoseconds() {
     assert_eq!(stdlib_literal(5, "m"), None);
     assert_eq!(stdlib_literal(3, "d"), None);
     assert_eq!(stdlib_literal(3, "cent"), None);
+    // 10,000,000,000 s is no `Int` of nanoseconds.
+    assert_eq!(stdlib_literal(10_000_000_000, "s"), None);
+}
+
+/// A program's unit finer than `ns` (`unit tick = 1/1000 ns;`): a literal
+/// of it that is a whole count of nanoseconds is a `Duration` (`1000tick`
+/// is 1ns, whatever `tick`'s factor), one that is not is `Duration in
+/// tick`. A whole count no `Int` holds is refused at the literal, once:
+/// the refused literal is still a `Duration` where it flows.
+#[test]
+fn a_whole_count_of_nanoseconds_is_a_duration_whatever_the_units_factor() {
+    let errors = |body: &str| errors_in_main(body).into_iter().map(|(at, m)| format!("{at}: {m}")).collect::<Vec<_>>();
+    let tick = |body: &str| {
+        let src = format!("unit tick = 1/1000 ns;\nfn main() {{\n{body}}}\n");
+        let program = parse_source(&src).expect("parses");
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect::<Vec<_>>()
+    };
+    assert_eq!(tick("    let x = if true { 1000tick } else { 1ns };\n    let d: Duration = 2_000tick;\n"), Vec::<String>::new());
+    assert_eq!(tick("    let b: Bool = 5tick;\n"), ["let `b`: expected `Bool`, got `Duration in tick`"]);
+    assert_eq!(tick("    let b: Bool = 1000tick;\n"), ["let `b`: expected `Bool`, got `Duration`"]);
+    assert_eq!(
+        errors("    let d: Duration = 10_000_000_000s * 2;\n"),
+        ["10_000_000_000s: `10000000000s` as a count of `Duration` overflows an `Int`"]
+    );
 }
 
 /// The universe key: a program's units are rows of the program's
@@ -204,6 +228,20 @@ fn a_duration_over_a_duration_is_an_int_and_a_literal_divisor_narrows() {
     assert_eq!(
         errors_in_main(&format!("{setup}    let r = d % e;\n    let t = std::time::current() / 2;\n")).len(),
         2
+    );
+}
+
+/// U4 (review 2): a `Duration`, a quantity, negates to a `Duration`, a
+/// finer unit's whole count too; a `Time`, a point, has no negation.
+#[test]
+fn a_duration_negates_and_a_time_does_not() {
+    assert_eq!(
+        errors_in_main("    let d = 3s;\n    let a: Duration = -d;\n    let b: Duration = -(1s);\n    let c: Duration = -1000ns;\n"),
+        []
+    );
+    assert_eq!(
+        errors_in_main("    let t = std::time::current();\n    let n = -t;\n"),
+        [("-t".to_string(), "`-` of the point `Time`: a point has no negation".to_string())]
     );
 }
 
