@@ -486,8 +486,8 @@ impl PartialEq for LocusRef {
 /// inside the locus's own members is a row whose reader is the
 /// receiver. Only `params` are rows: a capacity slot or a method named
 /// on a locus is no state access. A receiver typed as a generic locus's
-/// monomorph (`Box_Int`) is no row: the scope declares no locus by that
-/// name, as the conformance column says of it.
+/// monomorph (`Box_Int`), which the scope declares no locus by, reaches
+/// its template's params: the row names the template.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamAccess {
     /// The locus whose member the access is written in (its method, hook,

@@ -388,7 +388,8 @@ touch the key is visible on the call graph.
 The rule follows the read wherever it is evaluated. A parameter's
 default is read by each caller that leaves it, so a default that
 reaches `key` is refused, at the default, unless every such call is
-inside `Signer`.
+inside `Signer`. A sealed generic locus is sealed in every
+specialization: `b.v` on a `b: Box<Int>` is refused from outside `Box`.
 
 Now the law is two ordinary claims:
 

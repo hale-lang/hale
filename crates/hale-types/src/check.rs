@@ -11983,8 +11983,17 @@ impl<'a> Checker<'a> {
         span: Span,
         kind: crate::typed_bodies::AccessKind,
     ) {
-        let Ty::Named(locus_name) = rt else { return };
-        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name) else {
+        let Ty::Named(named) = rt else { return };
+        // A receiver typed as a generic locus's monomorph (`Box_Int`) is
+        // the template's params reached: the row names the template.
+        let locus_name = match self.top.symbols.get(named) {
+            Some(_) => named.clone(),
+            None => match self.typed.monomorphs.named(named).and_then(|m| self.templates.get(m.template)) {
+                Some(GenericTemplate::Locus(l)) => l.name.name.clone(),
+                _ => return,
+            },
+        };
+        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(&locus_name) else {
             return;
         };
         if !li.params.iter().any(|p| p.name == name.name) {

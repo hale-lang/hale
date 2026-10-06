@@ -359,6 +359,48 @@ fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
 }
 
 #[test]
+fn a_monomorph_receiver_reaches_its_templates_params() {
+    // `b: Box<Int>` is typed as the monomorph `Box_Int`, which the scope
+    // declares no locus by: the row names the template, whose params
+    // `b.v` reaches, and the template is sealed.
+    let src = "
+        @sealed locus Box<T> {
+            params { v: Int = 0; }
+            fn get() -> Int { return self.v; }
+            fn same(o: Box<Int>) -> Int { return o.v; }
+        }
+        locus Gateway {
+            fn read() -> Int { let b: Box<Int> = Box { }; return b.v; }
+            fn write() { let b: Box<Int> = Box { }; b.v = 3; }
+        }
+        main locus App { params { g: Gateway = Gateway { }; } }
+        fn main() { App { }; }
+    ";
+    let read = "`Box` is `@sealed`: its `params` are readable only from inside its own methods, \
+         and `Box.v` reads one from outside — call one of its methods instead (get, same)";
+    let write = "`Box` is `@sealed`: its `params` are writable only from inside its own methods, \
+         and `Box.v` writes one from outside — call one of its methods instead (get, same)";
+    let found = error_sites(src);
+    assert_eq!(found, vec![("b.v".to_string(), read.to_string()), ("v".to_string(), write.to_string())]);
+    // The write's span is its param segment, in `write`.
+    let program = parse_source(src).expect("parse");
+    let at = entries::check_program(&program).into_iter().filter(|d| d.is_error()).nth(1).unwrap().span;
+    assert_eq!(at.start.0 as usize, src.find("b.v = 3").unwrap() + 2);
+    // From inside the template (`same` reads another `Box_Int`), and
+    // with the template unsealed, it is clean.
+    let inside = src.replace("fn read() -> Int { let b: Box<Int> = Box { }; return b.v; }", "").replace(
+        "fn write() { let b: Box<Int> = Box { }; b.v = 3; }",
+        "fn call() -> Int { let b: Box<Int> = Box { }; return b.same(b); }",
+    );
+    assert!(error_sites(&inside).is_empty(), "{:?}", error_sites(&inside));
+    // `same`'s read, written outside the template, is refused: the
+    // clean read inside is a row, judged from inside.
+    let outside = inside.replace("fn call()", "fn peer(o: Box<Int>) -> Int { return o.v; }\n            fn call()");
+    assert_eq!(error_sites(&outside), vec![("o.v".to_string(), read.to_string())]);
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
 fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
     let src = "
         @sealed locus Signer {
