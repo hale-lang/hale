@@ -404,6 +404,10 @@ row	~.principals	Tokens	pool:__api_io	inherited
 row	~.roles	__StdApiStaticRoles	pool:__api_io	inherited
 shared	dynamic	sites in the seed #cfda2e24
 
+== crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#c12c5daf
+row	Book@main1	Book	main	default
+row	Desk@main2	Desk	main	default
+
 == crates/hale-codegen/tests/fixtures/examples/claim-forms.hl#47051c37
 root	App	the entry
 row	App@literal1	App	main	default
