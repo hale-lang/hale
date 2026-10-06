@@ -1908,6 +1908,50 @@ fn the_incremental_typing_stage_is_the_full_one() {
     assert!(whole >= PARITY.len(), "an added declaration checks the seed whole: {whole} steps");
 }
 
+/// A parameter default holding a quantity literal, left by two callers
+/// (GH #1076, U1, review 2).
+const DEFAULT_TWO_CALLERS: &str = "unit cent;\n\
+fn take(n: Int = 3cent) {\n    println(n);\n}\n\
+fn first() {\n    take();\n}\n\
+fn second() {\n    take();\n}\n\
+fn main() {\n    first();\n    second();\n}\n";
+
+/// The not-yet boundary's error at a parameter default belongs to each
+/// caller that leaves the default, not to the first one walked (GH #1076,
+/// U1, review 2): with `first` edited to pass the argument, the editor
+/// reuses `second`'s result, which must still carry the refusal, since
+/// `second` still leaves `3cent`; with both edited, neither reports it.
+/// Each step typed reusing the one before equals the fresh typing.
+#[test]
+fn a_default_refused_for_two_callers_stays_refused_while_one_leaves_it() {
+    use hale_frontend::typing_reuse::TypingReuse;
+    let root = scratch_root("incremental-default-callers");
+    let dir = root.canonicalize().expect("canonical dir");
+    let entry = dir.join("main.hl");
+    std::fs::write(&entry, DEFAULT_TWO_CALLERS).expect("write app");
+    let first_passes = DEFAULT_TWO_CALLERS.replacen("    take();", "    take(1);", 1);
+    let both_pass = first_passes.replacen("    take();", "    take(1);", 1);
+    let steps = [
+        std::collections::BTreeMap::from([(entry.clone(), first_passes)]),
+        std::collections::BTreeMap::from([(entry.clone(), both_pass)]),
+    ];
+    let reuses = incremental_equals_full("default-callers", &entry, &steps);
+    let refused = |keys: &[String]| keys.iter().filter(|k| k.contains("quantity literal `3cent`: values")).count();
+    let (mut prev, before) = typed_snapshot(&entry, &std::collections::BTreeMap::new(), None);
+    assert_eq!(refused(&before), 1, "the default is refused once: {before:#?}");
+    for (n, (overlays, want)) in steps.iter().zip([1, 0]).enumerate() {
+        let (snap, incremental) = typed_snapshot(&entry, overlays, Some(prev));
+        assert_eq!(refused(&incremental), want, "step {n}: {incremental:#?}");
+        prev = snap;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        matches!(reuses[0], TypingReuse::Reused { reused, .. } if reused > 0),
+        "the edit to `first` reuses the rest: {:?}",
+        reuses[0]
+    );
+}
+
 /// The same equality over `dna/host` (X2): one declaration's body
 /// edited, the edit undone, two edited at once; each step reuses the
 /// rest of the seed and types exactly as a fresh check does.

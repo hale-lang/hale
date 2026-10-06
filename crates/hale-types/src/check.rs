@@ -881,24 +881,38 @@ pub fn check_bundle_by_declaration(
         unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
         unit_values_refused: BTreeMap::new(),
     };
+    // GH #1076: the not-yet boundary's errors belong to every declaration
+    // whose walk reaches them (a parameter's default, reached by each
+    // caller that leaves it; a struct default's cast, by each literal that
+    // leaves the field), so each declaration's result is its own and a
+    // reused one still carries them. Each place is reported once, here,
+    // where the results are assembled.
+    let mut boundary: BTreeMap<(usize, usize), String> = BTreeMap::new();
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
-            match &reused[key.as_str()][i] {
-                Some(done) => {
-                    cx.diags.extend(done.typing.iter().cloned());
-                    per.push(DeclChecked { typing: done.typing.clone(), reveal: Vec::new() });
-                }
+            let typing = match &reused[key.as_str()][i] {
+                Some(done) => done.typing.clone(),
                 None => {
+                    cx.unit_values_refused.clear();
                     let start = cx.diags.len();
                     cx.check_top_decl(item);
                     cx.settle_param_accesses();
-                    per.push(DeclChecked { typing: cx.diags[start..].to_vec(), reveal: Vec::new() });
+                    cx.diags.split_off(start)
+                }
+            };
+            for d in &typing {
+                let place = (d.span.start.as_usize(), d.span.end.as_usize());
+                if !crate::units::is_boundary_refusal(d) || boundary.insert(place, d.message.clone()).is_none() {
+                    cx.diags.push(d.clone());
                 }
             }
+            per.push(DeclChecked { typing, reveal: Vec::new() });
         }
         by_decl.insert(key.clone(), per);
     }
+    // The walks per monomorph report a place no declaration reported.
+    cx.unit_values_refused = boundary;
     cx.specialize_generic_bodies();
     // The walks per monomorph keep nothing: there is nothing to settle.
     debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
@@ -6117,9 +6131,12 @@ struct Checker<'a> {
     /// unit rows: the not-yet boundary refuses each where a value would
     /// live (`refuse_unit_types`).
     unit_types: BTreeMap<&'a str, &'a str>,
-    /// The places the boundary refused, by span, each with its error's
-    /// message: a place walked twice is refused once, and a walk whose
-    /// findings are discarded keeps the boundary's (`discard_since`).
+    /// The places the boundary refused in the declaration being walked,
+    /// by span, each with its error's message: a place walked twice is
+    /// refused once, and a walk whose findings are discarded keeps the
+    /// boundary's (`discard_since`). Across declarations each place is
+    /// reported once where their results are assembled
+    /// (`check_bundle_by_declaration`).
     unit_values_refused: BTreeMap<(usize, usize), String>,
 }
 
@@ -12310,8 +12327,8 @@ impl<'a> Checker<'a> {
     }
 
     /// GH #1076: the not-yet boundary's error, once per place however
-    /// often the walk reaches it (a generic body is walked again per
-    /// specialization; an annotation's arguments by both walks).
+    /// often a declaration's walk reaches it (a generic body is walked
+    /// again per specialization; an annotation's arguments by both walks).
     fn refuse_unit_value(&mut self, span: Span, what: String) {
         if let std::collections::btree_map::Entry::Vacant(at) =
             self.unit_values_refused.entry((span.start.as_usize(), span.end.as_usize()))
