@@ -298,3 +298,76 @@ fn a_sealed_locus_without_a_contract_is_unaffected() {
     ";
     assert!(errors(src).is_empty(), "{:?}", errors(src));
 }
+
+// ---------------------------------------------------------------
+// The positions the rows reach that a walk's discard used to drop
+// (F.40 phase 4's leftovers): a parameter's default, typed at each
+// call that leaves it.
+// ---------------------------------------------------------------
+
+/// Each error with the source text it is reported at.
+fn error_sites(src: &str) -> Vec<(String, String)> {
+    let program = parse_source(src).expect("parse");
+    entries::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (src[d.span.start.0 as usize..d.span.end.0 as usize].to_string(), d.message))
+        .collect()
+}
+
+const SEALED_KEY_READ: &str = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+     methods, and `Signer.key` reads one from outside — call one of its methods instead (sign)";
+
+#[test]
+fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
+    // The default is typed at each call that leaves it, in the caller's
+    // scope, and that walk's findings are discarded; its accesses are
+    // kept, a row per evaluation, and refused once at the default.
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Gateway {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn peek(k: Int = self.s.key) -> Int {{ return k; }}
+            fn a() -> Int {{ return self.peek(); }}
+            fn b() -> Int {{ return self.peek() + self.peek(); }}
+        }}
+        main locus App {{ params {{ g: Gateway = Gateway {{ }}; }} }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&src), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    // Two declarations evaluating one default: still once.
+    let shared = format!(
+        "{SEALED_SIGNER}
+        fn peek(k: Int = self.s.key) -> Int {{ return k; }}
+        locus Gateway {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn a() -> Int {{ return peek(); }}
+        }}
+        locus Other {{
+            params {{ s: Signer = Signer {{ }}; }}
+            fn a() -> Int {{ return peek() + peek(); }}
+        }}
+        main locus App {{ params {{ g: Gateway = Gateway {{ }}; o: Other = Other {{ }}; }} }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&shared), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    // Unsealed, both read freely.
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty());
+    assert!(error_sites(&shared.replace("@sealed ", "")).is_empty());
+}
+
+#[test]
+fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
+    let src = "
+        @sealed locus Signer {
+            params { key: Int = 7; }
+            fn sign(m: Int = self.key) -> Int { return m; }
+            fn twice() -> Int { return self.sign() + self.sign(); }
+        }
+        main locus App { params { s: Signer = Signer { }; } }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+}

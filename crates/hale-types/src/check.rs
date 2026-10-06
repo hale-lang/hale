@@ -881,6 +881,7 @@ pub fn check_bundle_by_declaration(
         handling: crate::typed_bodies::Handling::Bare,
         scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
         unit_findings: std::collections::BTreeSet::new(),
+        default_findings: std::collections::BTreeSet::new(),
         defaults_judged_at_literals: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
@@ -903,10 +904,11 @@ pub fn check_bundle_by_declaration(
             };
             // GH #1076 (U3): a quantity rule's error a default's walk found
             // is in the result of each declaration that leaves the default,
-            // and is reported once.
+            // and is reported once; so is the sealed rule's (GH #436).
             for d in &typing {
                 let key = (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone());
-                if !cx.unit_findings.contains(&key) || reported.insert(key) {
+                let once = cx.unit_findings.contains(&key) || cx.default_findings.contains(&key);
+                if !once || reported.insert(key) {
                     cx.diags.push(d.clone());
                 }
             }
@@ -6138,6 +6140,10 @@ struct Checker<'a> {
     /// and message: a struct default's walk, whose findings are otherwise
     /// discarded, keeps them, since no other walk types the default.
     unit_findings: std::collections::BTreeSet<(usize, usize, String)>,
+    /// GH #436: the sealed rule's findings over a parameter default's
+    /// rows, by place and message: each declaration that evaluates the
+    /// default holds the finding in its result, and it is reported once.
+    default_findings: std::collections::BTreeSet<(usize, usize, String)>,
     /// While a type declaration's field defaults are walked for the
     /// defaults their calls leave: a name there means what each literal's
     /// scope says, so the quantity rules' errors are found at the literal
@@ -11966,8 +11972,10 @@ impl<'a> Checker<'a> {
     /// not the locus is sealed, as a visit the declaration's walk settles
     /// when it ends; a walk whose findings the check discards (a
     /// receiver typed ahead of the call path that types it again, a
-    /// default typed at an invocation, a generic body walked per
-    /// monomorph) discards its visits with them.
+    /// generic body walked per monomorph) discards its visits with them.
+    /// A parameter's default typed at an invocation is the exception:
+    /// no other walk types it, so its visits are kept, one row per
+    /// evaluation path (`record_omitted_defaults`).
     fn record_param_access(
         &mut self,
         rt: &Ty,
@@ -11991,8 +11999,18 @@ impl<'a> Checker<'a> {
             param: name.name.clone(),
             kind,
             span,
+            evaluation: self.default_evaluation.clone(),
         };
         self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
+    }
+
+    /// Keep `reached`, the accesses a walk reached before the walk was
+    /// discarded (a default's, typed where it is evaluated), as visits
+    /// of the walk that discarded it, each placed where the discard
+    /// left the diagnostics.
+    fn keep_visits(&mut self, reached: Vec<AccessVisit>) {
+        let at = self.diags.len();
+        self.access_visits.extend(reached.into_iter().map(|v| AccessVisit { at, ..v }));
     }
 
     /// The start of a walk whose findings may be discarded.
@@ -12024,6 +12042,19 @@ impl<'a> Checker<'a> {
         }
         let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
         let found = crate::sealed_access::sealed_access_law(self.top, &rows);
+        // A default evaluated on several paths reaches one access as a
+        // row per path: it is refused once, where the walk first reached
+        // it, and once per check however many declarations evaluate it.
+        let mut seen: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
+        let found: Vec<(usize, Diag)> = found
+            .into_iter()
+            .filter(|(_, d)| seen.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone())))
+            .collect();
+        for (i, d) in &found {
+            if !rows[*i].evaluation.is_empty() {
+                self.default_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+            }
+        }
         // From the last, so each insertion leaves the earlier places
         // where they were; two at one place keep their order.
         for (i, diag) in found.into_iter().rev() {
@@ -13855,10 +13886,21 @@ impl<'a> Checker<'a> {
         }
         self.default_evaluation.pop();
         self.default_invocations.pop();
+        // The param accesses the defaults reached stay, as the
+        // conversions their casts recorded do: no other walk types a
+        // default, so the sealed rule judges them here, a row per
+        // evaluation path. Not on a type declaration's walk of its
+        // fields' calls, which is no evaluation: it types the defaults
+        // in no caller's scope.
+        let reached = self.access_visits.split_off(mark.visits);
+        let judged_here = !self.defaults_judged_at_literals;
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer. The
         // quantity rules' errors stay: no other walk types a default.
         self.discard_keeping_unit_errors(mark);
+        if judged_here {
+            self.keep_visits(reached);
+        }
     }
 
     /// GH #1076 (U3): [`Self::discard_since`], keeping the quantity rules'

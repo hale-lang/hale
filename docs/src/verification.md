@@ -385,6 +385,11 @@ from anywhere holding one. `@sealed` makes the only way in a method
 call — and that method carries an effect class, so every path that can
 touch the key is visible on the call graph.
 
+The rule follows the read wherever it is evaluated. A parameter's
+default is read by each caller that leaves it, so a default that
+reaches `key` is refused, at the default, unless every such call is
+inside `Signer`.
+
 Now the law is two ordinary claims:
 
 ```hale,fragment

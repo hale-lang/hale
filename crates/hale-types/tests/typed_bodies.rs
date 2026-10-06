@@ -585,12 +585,16 @@ fn main() { App { }; }
             // params; a method named on them is no row.
             row(Some("Gateway"), "Gateway", "s", Read, true),
             row(Some("Gateway"), "Gateway", "p", Read, true),
+            // `self.helper()` leaves `k`: its default, `self.p.n`, is
+            // typed there, in the caller, and its accesses are the
+            // caller's rows on that evaluation path.
+            row(Some("Gateway"), "Gateway", "p", Read, true),
+            row(Some("Gateway"), "Plain", "n", Read, false),
         ]
     );
     assert_eq!(rows(id_of(decl(p, "free"))), [row(None, "Plain", "n", Read, false)]);
-    // A fn param default is typed only at each invocation, in the
-    // caller, and that walk's findings are discarded: `self.p.n` in
-    // `helper`'s default is no row, in `helper` or at `self.helper()`.
+    // The default is typed only at each invocation: `helper` itself
+    // holds no row of it.
     assert_eq!(rows(method("Gateway", "helper")), []);
     // `self.inner` is `Holder`'s own; the template's `inner` is a `T`,
     // and the walk for `Holder_Plain` records nothing.
@@ -600,4 +604,12 @@ fn main() { App { }; }
     let text = |sp: hale_syntax::Span| src[sp.start.as_usize()..sp.end.as_usize()].to_string();
     assert_eq!(text(look.param_accesses[1].span), "n");
     assert_eq!(text(look.param_accesses[3].span), "self.p.n");
+    // The default's rows are at the default, on the call's evaluation
+    // path; the body's own are on none.
+    let at_default = src.find("k: Int = self.p.n").unwrap() + "k: Int = ".len();
+    assert_eq!(look.param_accesses[7].span.start.as_usize(), at_default);
+    assert_eq!(text(look.param_accesses[7].span), "self.p.n");
+    assert_eq!(look.param_accesses[6].evaluation, look.param_accesses[7].evaluation);
+    assert_eq!(look.param_accesses[7].evaluation.len(), 1);
+    assert!(look.param_accesses[..6].iter().all(|a| a.evaluation.is_empty()));
 }

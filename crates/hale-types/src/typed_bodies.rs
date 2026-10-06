@@ -45,8 +45,9 @@
 //!    `params` field through a receiver the checker typed as that locus
 //!    (`self.k`, `self.child.k`, `x.k = v`), with the locus it is read
 //!    from inside and the receiver's declaration, recorded before any
-//!    rule judges it. The sealed rule and the `--sealable` survey read
-//!    it (F.40 phase 4, W4).
+//!    rule judges it, on the evaluation path it was typed on (a
+//!    parameter's default has a row per call that leaves it). The sealed
+//!    rule and the `--sealable` survey read it (F.40 phase 4, W4).
 //! 8. `conversions`, per body (GH #1076, U2): every conversion between
 //!    an identity or a range and its family, by site (a cast by its call,
 //!    an implicit widening by the value's span), with its kind (total,
@@ -504,6 +505,12 @@ pub struct ParamAccess {
     /// The read's whole `receiver.param` expression; a write's param
     /// segment.
     pub span: Span,
+    /// The evaluation path the access was typed on, as a conversion's
+    /// (`ConversionSite::path`): empty outside a default; inside a
+    /// parameter's default, typed at each call that leaves it, every
+    /// evaluation from the outermost inward. One access in a default is
+    /// a row per evaluation, each with that scope's reader.
+    pub evaluation: Vec<u32>,
 }
 
 impl ParamAccess {
