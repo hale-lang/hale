@@ -516,6 +516,37 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
     }
 }
 
+/// GH #1076 (U1, review): the not-yet boundary refused `ItemId(1)` as a
+/// cast to the scalar type `ItemId` before the callee was resolved, so a
+/// local of that name holding a fn was refused too. The local is the
+/// callee: the program checks, builds and runs it, as it does when
+/// `ItemId` is an alias. With no local, the cast is the boundary's, and
+/// the check refuses it before the build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_local_that_shadows_a_unit_type_is_the_callee() {
+    let shadows = |ty: &str| {
+        format!(
+            "type ItemId = {};\n\
+             fn id(n: Int) -> Int {{ return n; }}\n\
+             fn main() {{ let ItemId = id; println(ItemId(1)); }}\n",
+            ty
+        )
+    };
+    for ty in ["distinct Int", "Int"] {
+        let src = shadows(ty);
+        assert_eq!(build_and_run_probe(&src, "unit_shadow"), Ok("1\n".to_string()), "{}", src);
+    }
+    let cast = "type ItemId = distinct Int;\n\
+                fn main() { println(ItemId(1)); }\n";
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

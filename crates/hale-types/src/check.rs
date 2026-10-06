@@ -13090,10 +13090,16 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args, id: call_id, .. } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 // GH #1076: `Money(5)` makes a value of a unit-dialect
-                // type, which is not typed yet.
+                // type, which is not typed yet. Only when the callee is
+                // the declaration: a local, a parameter or a fn of the
+                // name is what the name means, as for any other name.
                 if let Expr::Ident(id) = callee.as_ref() {
                     if let Some(display) = self.unit_types.get(id.name.as_str()).copied() {
-                        self.refuse_unit_value(id.span, format!("type `{display}`"));
+                        let shadowed =
+                            self.locals.lookup(&id.name).is_some() || self.fn_decls.contains_key(&id.name);
+                        if !shadowed {
+                            self.refuse_unit_value(id.span, format!("type `{display}`"));
+                        }
                     }
                 }
                 // (Stdlib target-gating is the capability admission's:
