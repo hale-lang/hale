@@ -116,7 +116,10 @@ fn main() {
 const LET_BOUND_IDLE: &[(&str, usize)] = &[("lotus_arena_destroy", 1), ("lotus_child_struct_release", 1)];
 /// `Outer` has an arena of its own: its destroy, and its bus
 /// deregistration (`lotus_bus_quarantine_self`, emitted for a locus
-/// with an arena in a program with a bus, and not guarded). The field
+/// with an arena in a program with a bus). Not guarded: a subscription
+/// is not a ticket, so the idle words cannot tell a subscriber with
+/// nothing queued from a locus with no subscription; see
+/// `fixtures/lifecycle/l11_idle_reclaim_deregisters.hl`. The field
 /// `k` is released under its owner through `lotus_reclaim_request`,
 /// which calls the child's release (walked: its guards hold too); each
 /// struct is released; the helper's frame arena is destroyed.

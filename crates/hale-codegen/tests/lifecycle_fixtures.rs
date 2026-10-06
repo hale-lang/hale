@@ -258,6 +258,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l09_delivery_at_epoch.hl", line: "9", adopted: Some("delivered-at-epoch"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l10_dissolve_closures_first.hl", line: "10", adopted: Some("closures-before-dissolve"), run: RunMode::Plain, judge: closures_before_dissolve },
     Fixture { file: "l11_let_bound_drain.hl", line: "11", adopted: Some("drain-at-scope-exit"), run: RunMode::Plain, judge: drain_at_scope_exit },
+    Fixture { file: "l11_idle_reclaim_deregisters.hl", line: "11", adopted: Some(IDLE_RECLAIM_OUTPUT), run: RunMode::Plain, judge: whole_output },
     Fixture { file: "l12_pinned_fields_drain.hl", line: "12", adopted: Some("fields-drained-first"), run: RunMode::Plain, judge: fields_drained_first },
     Fixture { file: "l12_returned_root_pinned_anchor.hl", line: "12", adopted: Some("delivered"), run: RunMode::Plain, judge: returned_anchor_delivery },
     Fixture { file: "l12_returned_root_pinned_replicas.hl", line: "12", adopted: Some("every-replica-joined-by-owner"), run: RunMode::Plain, judge: two_replicas_joined_by_owner },
@@ -477,6 +478,10 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             &["10"]
         }
         "l11_let_bound_drain.hl" => &["11"],
+        "l11_idle_reclaim_deregisters.hl" => {
+            p.occurrences = count(&[("Kid", 2)]);
+            &["11"]
+        }
         "l12_pinned_fields_drain.hl" => &["12"],
         "l12_returned_root_pinned_anchor.hl" => &["12"],
         "l12_returned_root_pinned_replicas.hl" | "l12_kept_root_pinned_replicas.hl" | "l12_returned_root_pinned_single.hl" => &["12"],
@@ -1156,6 +1161,20 @@ fn handled_once(r: &Ran) -> String {
         n => format!("handler {n}, {}", exit_word(r)),
     }
 }
+
+/// What the program printed, in order, or how it ended early and after
+/// what.
+fn whole_output(r: &Ran) -> String {
+    let printed = r.stdout.lines().collect::<Vec<_>>().join(" / ");
+    if r.timed_out || r.code != Some(0) {
+        return format!("{} after: {printed}", exit_word(r));
+    }
+    printed
+}
+
+/// `l11_idle_reclaim_deregisters.hl`: both Kids born and gone, neither
+/// publish heard (no `heard` line).
+const IDLE_RECLAIM_OUTPUT: &str = "born kid-1-name / born kid-2-name / end";
 
 fn pos(r: &Ran, line: &str) -> Option<usize> {
     r.stdout.lines().position(|l| l == line)
@@ -2121,6 +2140,7 @@ fixture_tests! {
     l09_delivery_at_epoch => "l09_delivery_at_epoch.hl",
     l10_dissolve_closures_first => "l10_dissolve_closures_first.hl",
     l11_let_bound_drain => "l11_let_bound_drain.hl",
+    l11_idle_reclaim_deregisters => "l11_idle_reclaim_deregisters.hl",
     l12_pinned_fields_drain => "l12_pinned_fields_drain.hl",
     l12_returned_root_pinned_anchor => "l12_returned_root_pinned_anchor.hl",
     l12_returned_root_pinned_replicas => "l12_returned_root_pinned_replicas.hl",
@@ -2249,6 +2269,16 @@ fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
     assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
     assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+/// R33 on the idle path: each let-bound Kid's reclaim deregisters it with
+/// nothing queued, so the second Kid, at the first one's address, never
+/// receives a delivery meant for the first, and no handler touches a
+/// released arena. Moving the quarantine under the reclaim's idle guard
+/// printed `heard kid-2-name 7` here and then a SEGV in the handler.
+#[test]
+fn l11_idle_reclaim_deregisters_under_asan() {
+    assert_clean_under_asan("l11_idle_reclaim_deregisters.hl", "l11_idle", |r| whole_output(r) == IDLE_RECLAIM_OUTPUT);
 }
 
 /// C52: the returned root's pinned field is joined and reclaimed by its

@@ -2199,6 +2199,13 @@ its `KNOWN_OPEN` table, which is empty today.
 - **Line 11, a let-bound literal.** `birth()` and `run()` happen at
   the construction site; `drain()` and `dissolve()` happen together
   at the enclosing scope's exit. Shipped (`l11_let_bound_drain.hl`).
+  Its reclaim deregisters a subscriber even when nothing is queued,
+  held or deferred for it: a subscription is neither a run ticket nor
+  an owner's domain, so the idle words that let the reclaim skip its
+  other steps cannot say it has none, and a subscriber reclaimed
+  without its deregistration would leave its registry entry to the
+  next instance at its address (`l11_idle_reclaim_deregisters.hl`,
+  clean under ASan).
 - **Line 12, owned fields drain before their parent.** A locus's
   owned locus fields drain before it does, each in its own domain:
   a pinned locus's fields drain on its thread before its own
