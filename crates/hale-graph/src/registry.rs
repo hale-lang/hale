@@ -192,6 +192,12 @@ pub struct Rule {
     pub gist: &'static str,
     pub family: &'static str,
     pub evaluator: Option<Site>,
+    /// `Canonical`: the evaluator is the rule's final form (a law over
+    /// family rows whose finding is a `law::Violation`, or a
+    /// well-formedness check over the declaration alone). `Migrating`:
+    /// the evaluator is expected to move onto rows once the fact it
+    /// reads off the declaration is a column (F.40 phase 4, W5 names
+    /// each). `Reserved`: no evaluator yet.
     pub state: State,
 }
 
@@ -2096,7 +2102,7 @@ pub const RULES: &[Rule] = &[
         gist: "dead bus receiver on a cooperative pool is an error",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
-        state: State::Migrating,
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/8",
@@ -2106,7 +2112,7 @@ pub const RULES: &[Rule] = &[
         gist: "a blocking syscall on a cooperative pool is a warning",
         family: "blocking",
         evaluator: Some(site(CHECK, "check_cooperative_pool_blocking")),
-        state: State::Migrating,
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/9",
@@ -2116,7 +2122,7 @@ pub const RULES: &[Rule] = &[
         gist: "orphan bus topic (closed world)",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_graph")),
-        state: State::Migrating,
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/10",
@@ -2126,7 +2132,7 @@ pub const RULES: &[Rule] = &[
         gist: "bus cycles: a queued cycle warns, an unconditional intra-locus cycle of direct calls is an error",
         family: "bus_graph",
         evaluator: Some(site(CHECK, "check_bus_cycles")),
-        state: State::Migrating,
+        state: State::Canonical,
     },
     Rule {
         id: "semantics/placement/11",

@@ -25,9 +25,14 @@ The Hale stdlib is two physically distinct things:
 
 ## When to use each shape
 
-- **Need to call out to C / Rust / libc?** Path-call dispatch.
-  Add a route in the relevant `lower_std_*` block in
-  `crates/hale-codegen/src/codegen.rs`. If you're composing
+- **Need to call out to C / Rust / libc?** A row and an arm.
+  Add the function's row to `SURFACES` in
+  `crates/hale-types/src/stdlib_surface.rs` (signature, effects,
+  fallibility, `Intrinsic(<Id>)`), the `IntrinsicId` variant, and
+  its arm in `lower_std_intrinsic` (and `lower_std_intrinsic_fallible`
+  if it can fail) in `crates/hale-codegen/src/codegen.rs`; the
+  compiler refuses a row without an arm and a path literal in
+  codegen (`spec/stdlib.md` lists every place). If you're composing
   Hale helpers around the extern, declare a thin extern
   signature in `core.hl` (or an existing namespace lotus) and
   build the higher-level surface in Hale.
