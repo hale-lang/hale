@@ -543,6 +543,80 @@ fn an_unclassified_position_refuses_a_synthesized_denomination() {
     );
 }
 
+// The wire (decision 9).
+
+/// The program the layout pins read: quantity and point fields of a
+/// hashmap record keyed by a quantity, and a topic's payload and routing
+/// key. A raw literal, so the corpus harvests it and the topology
+/// baseline holds its shape hash.
+const WIRE: &str = r#"unit nsec;
+unit usec = 1_000 nsec;
+unit msec = 1_000 usec;
+unit cent;
+unit USD = 100 cent;
+unit mK;
+type Span = quantity Int in nsec;
+type Instant = point Span;
+type Bucket = Span in 100 msec { round: floor; }
+type Money = quantity Int in cent;
+type TempDelta = quantity Int in mK;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+type Fill { id: Int; price: Money; at: Instant; wait: Bucket; temp: Celsius; }
+@form(hashmap)
+locus Fills { capacity { pool rows of Fill indexed_by price; } }
+topic Filled { payload: Fill; subject: "t.fills"; keyed_by price; }
+fn main() {
+    let f = Fill { id: 1, price: 5cent, at: Instant(1nsec), wait: 300msec, temp: Celsius(0mK) };
+    println(f.price);
+    let book = Fills { };
+    book.set(f);
+    let got = book.get(5cent) or Fill { id: 0, price: 0cent, at: Instant(0nsec), wait: 0msec, temp: Celsius(0mK) };
+    println(got.id);
+}
+"#;
+
+/// A quantity or a point field is the `Int` it counts wherever it is laid
+/// out (a hashmap key, a routing key, a flat payload), and on the wire
+/// its tag names its denomination: the one tag kind U3 adds, `q(…)`, so
+/// two processes whose fields count in different denominations disagree
+/// in the shape hash the observer protocol compares.
+#[test]
+fn a_quantity_field_is_its_int_tagged_by_its_denomination() {
+    let program = parse_source(WIRE).expect("parses");
+    let errors: Vec<String> = check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    assert_eq!(
+        hale_types::topic_identity::canonical_type_shape(&program.items, "Fill"),
+        "id:i;price:q(cent);at:q(nsec point);wait:q(100 msec);temp:q(mK point 273150 mK)"
+    );
+    let hash = |src: &str| {
+        let program = parse_source(src).expect("parses");
+        let topic = program
+            .items
+            .iter()
+            .find_map(|i| match i {
+                hale_syntax::ast::TopDecl::Topic(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("a topic");
+        let shape = hale_types::topic_identity::canonical_topic_shape(&program.items, &topic);
+        hale_types::topic_identity::topic_shape_hash("t.fills", &shape)
+    };
+    let in_dollars = WIRE.replace("type Money = quantity Int in cent;", "type Money = quantity Int in USD;");
+    assert_ne!(hash(WIRE), hash(&in_dollars), "another denomination, another hash");
+    let as_int = WIRE.replace("type Fill { id: Int; price: Money;", "type Fill { id: Int; price: Int;");
+    assert_ne!(hash(WIRE), hash(&as_int), "a quantity is not tagged as a bare `Int`");
+    let bundle = hale_types::Bundle::new(std::collections::BTreeMap::from([(String::new(), &program)]));
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let int = hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Int);
+    for name in ["Money", "Instant", "Bucket", "Celsius"] {
+        let t = hale_types::ty::Ty::Named(name.to_string());
+        assert_eq!(hale_types::ty::is_key_eligible(&t, &top), hale_types::ty::is_key_eligible(&int, &top), "{name}");
+        assert_eq!(hale_types::ty::is_flat_shapeable(&t, &top), hale_types::ty::is_flat_shapeable(&int, &top), "{name}");
+    }
+    assert!(hale_types::ty::is_flat_shapeable(&hale_types::ty::Ty::Named("Fill".into()), &top), "a flat payload");
+}
+
 /// `InexactError`, which a conversion that divides fails with under its
 /// `or`, is a builtin type in a program with a quantity, and in no other.
 #[test]

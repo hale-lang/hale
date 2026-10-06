@@ -268,11 +268,30 @@ pub fn canonical_type_shape(items: &[TopDecl], type_name: &str) -> String {
         })
         .collect();
     let ints = crate::units::typed_scalar_names(&scalars);
+    // GH #1076 (U3, decision 9): a quantity or a point is tagged by its
+    // denomination, so two processes whose fields count in different
+    // denominations disagree in the shape hash; a program with neither
+    // renders exactly what it did.
+    let quantities = crate::units::quantity_tags(&scalars);
     fields
         .iter()
-        .map(|f| format!("{}:{}", f.name.name, field_tag(&f.ty, &ints)))
+        .map(|f| match quantity_tag(&f.ty, &quantities) {
+            Some(tag) => format!("{}:{tag}", f.name.name),
+            None => format!("{}:{}", f.name.name, field_tag(&f.ty, &ints)),
+        })
         .collect::<Vec<_>>()
         .join(";")
+}
+
+/// A quantity's or a point's field tag (`q(cent)`, `q(100 msec)`,
+/// `q(mK point 273150 mK)`): the one tag kind U3 adds.
+fn quantity_tag<'q>(ty: &TypeExpr, quantities: &'q BTreeMap<&str, String>) -> Option<&'q str> {
+    match ty {
+        TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+            quantities.get(path.segments[0].name.as_str()).map(String::as_str)
+        }
+        _ => None,
+    }
 }
 
 /// One field's coarse tag. Deliberately name-free for anything

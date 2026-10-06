@@ -762,6 +762,55 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
     decls.keys().copied().filter(|n| typed(n)).collect()
 }
 
+/// A quantity's or a point's wire tag (decision 9, U3), by name, from the
+/// declarations as written: `q(` its denomination `)`, as the nearest
+/// declaration on its chain writes it (`q(cent)`, `q(100 msec)`); a
+/// point's adds `point` and its origin when one is written (`q(mK point
+/// 273150 mK)`). Two processes whose fields count in different
+/// denominations disagree in the tag, so in the shape hash. A name that
+/// is no quantity or point, or whose chain names no denomination, has
+/// none.
+pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<&'a str, String> {
+    let tag = |name: &'a str| -> Option<String> {
+        let mut at = name;
+        let mut denom: Option<String> = None;
+        let mut origin: Option<String> = None;
+        let mut point = false;
+        for _ in 0..=decls.len() {
+            let s = decls.get(at)?;
+            if denom.is_none() {
+                denom = s.denom.as_ref().map(|d| match d.multiple {
+                    1 => d.unit.name.clone(),
+                    m => format!("{m} {}", d.unit.name),
+                });
+            }
+            for c in &s.clauses {
+                if let (ScalarClause::Origin { value, unit, .. }, None) = (c, &origin) {
+                    origin = Some(format!("{value} {}", unit.name));
+                }
+            }
+            match (s.kind, &s.base) {
+                (Some(ScalarKind::Quantity), _) => {
+                    let denom = denom?;
+                    return Some(match (point, origin) {
+                        (false, _) => format!("q({denom})"),
+                        (true, None) => format!("q({denom} point)"),
+                        (true, Some(o)) => format!("q({denom} point {o})"),
+                    });
+                }
+                (Some(ScalarKind::Distinct), _) => return None,
+                (kind, TypeExpr::Named { path, .. }) if path.segments.len() == 1 => {
+                    point |= kind == Some(ScalarKind::Point);
+                    at = path.segments[0].name.as_str();
+                }
+                _ => return None,
+            }
+        }
+        None
+    };
+    decls.keys().filter_map(|n| Some((*n, tag(n)?))).collect()
+}
+
 /// Law 1: a unit is declared once. At the second declaration's name; the
 /// witness is the first.
 fn declared_twice(rows: &UnitRows, out: &mut Vec<Violation>) {
