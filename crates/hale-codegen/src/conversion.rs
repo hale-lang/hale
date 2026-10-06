@@ -8,7 +8,8 @@
 //! identity or a range is an `Int` here (`user_type_aliases`), so a total
 //! conversion and a widening emit nothing; a narrowing emits the two
 //! comparisons and, from the row's policy, the clamp (two selects), the
-//! wrap (a remainder, corrected for a negative one), or the checked value
+//! wrap (an unsigned remainder of the distance from the low bound, on
+//! whichever side of it the value is), or the checked value
 //! the `or`'s join takes (the substitute, the handler, the raise).
 
 use hale_syntax::ast::Expr;
@@ -99,8 +100,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// `or wrap`: `lo + ((v - lo) mod (hi - lo))`, the remainder taken
-    /// non-negative.
+    /// `or wrap`: `lo + ((v - lo) mod w)`, `w = hi - lo`, the remainder
+    /// taken non-negative, for every `Int` `v` and without overflow. The
+    /// distance between `v` and `lo` is exact as an unsigned `Int` (the
+    /// wrapping subtraction of the smaller from the larger), so each side
+    /// takes an unsigned remainder: at or above `lo`, `t = (v - lo) urem
+    /// w`; below it, `m = (lo - v) urem w` and `t = w - m`, or `0` when
+    /// `m` is. `t < w`, so `lo + t` is at most `hi - 1`. Both sides are
+    /// computed and one selected: neither can trap.
     fn lower_wrap(&mut self, row: &ConversionRow, v: IntValue<'ctx>, lo: i64, hi: i128) -> Result<IntValue<'ctx>, CodegenError> {
         let width = hi - i128::from(lo);
         let Ok(width) = i64::try_from(width) else {
@@ -111,12 +118,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let i64_t = self.context.i64_type();
         let (lo_c, width_c) = (i64_t.const_int(lo as u64, true), i64_t.const_int(width as u64, true));
-        let off = emit(self.builder.build_int_sub(v, lo_c, "narrow.wrap.off"))?;
-        let rem = emit(self.builder.build_int_signed_rem(off, width_c, "narrow.wrap.rem"))?;
-        let negative = emit(self.builder.build_int_compare(IntPredicate::SLT, rem, i64_t.const_zero(), "narrow.wrap.neg"))?;
-        let lifted = emit(self.builder.build_int_add(rem, width_c, "narrow.wrap.lift"))?;
-        let rem = emit(self.builder.build_select(negative, lifted, rem, "narrow.wrap.mod"))?.into_int_value();
-        emit(self.builder.build_int_add(rem, lo_c, "narrow.wrap"))
+        let zero = i64_t.const_zero();
+        let at_or_above = emit(self.builder.build_int_compare(IntPredicate::SGE, v, lo_c, "narrow.wrap.up"))?;
+        let above = emit(self.builder.build_int_sub(v, lo_c, "narrow.wrap.above"))?;
+        let above = emit(self.builder.build_int_unsigned_rem(above, width_c, "narrow.wrap.above.rem"))?;
+        let below = emit(self.builder.build_int_sub(lo_c, v, "narrow.wrap.below"))?;
+        let below = emit(self.builder.build_int_unsigned_rem(below, width_c, "narrow.wrap.below.rem"))?;
+        let on_lo = emit(self.builder.build_int_compare(IntPredicate::EQ, below, zero, "narrow.wrap.below.zero"))?;
+        let back = emit(self.builder.build_int_sub(width_c, below, "narrow.wrap.below.back"))?;
+        let below = emit(self.builder.build_select(on_lo, zero, back, "narrow.wrap.below.off"))?.into_int_value();
+        let off = emit(self.builder.build_select(at_or_above, above, below, "narrow.wrap.off"))?.into_int_value();
+        emit(self.builder.build_int_add(lo_c, off, "narrow.wrap"))
     }
 
     /// A narrowing its `or` discharges: the value in the success slot,

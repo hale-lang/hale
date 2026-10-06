@@ -6,8 +6,8 @@
 //! emitted shape per policy, as the IR text of one function before the
 //! optimizer runs: a total conversion and a widening emit nothing (no
 //! call, no compare); a narrowing emits its two comparisons and, from the
-//! row's policy, two selects (`clamp`), a remainder corrected for a
-//! negative one (`wrap`), or the checked value the `or`'s join takes
+//! row's policy, two selects (`clamp`), an unsigned remainder of the
+//! distance from the low bound (`wrap`), or the checked value the `or`'s join takes
 //! (a substitute's phi, a handler's call, a raise's store into the
 //! enclosing error). A view without the row lowers the cast as the
 //! ordinary call it then is.
@@ -90,15 +90,41 @@ fn a_clamp_is_two_selects() {
     assert_eq!(count(&fun, "br i1"), 0, "a clamp does not branch: {fun}");
 }
 
+/// U2 (review 2): `v - lo` overflowed for a nonzero low bound (an `Int`
+/// near its maximum into `-5..5`). The distance from `lo` is taken on
+/// whichever side `v` is, where the wrapping subtraction is exact as an
+/// unsigned `Int`, and its remainder is unsigned: no signed subtraction
+/// can overflow and no remainder is signed. `Byte`'s `0..256` and a
+/// range with a negative low bound lower to the same shape.
 #[test]
-fn a_wrap_is_a_remainder_corrected_for_negatives() {
-    let fun = conv_ir("(n: Int) -> Int", "    let b = Byte(n) or wrap;\n    return b;\n");
-    assert!(fun.contains("%narrow.wrap.off = sub i64"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.rem = srem i64 %narrow.wrap.off, 256"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.neg = icmp slt i64 %narrow.wrap.rem, 0"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.lift = add i64 %narrow.wrap.rem, 256"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.mod = select i1 %narrow.wrap.neg"), "{fun}");
-    assert_eq!(count(&fun, "narrow.err"), 0, "a wrap cannot fail: {fun}");
+fn a_wrap_is_an_unsigned_remainder_on_either_side_of_the_low_bound() {
+    let byte = conv_ir("(n: Int) -> Int", "    let b = Byte(n) or wrap;\n    return b;\n");
+    let digit = conv_ir_after(
+        "type Digit = Int { range: -5..5; }\n",
+        "(n: Int) -> Int",
+        "    let d = Digit(n) or wrap;\n    return d;\n",
+    );
+    for (fun, lo, width) in [(&byte, "0", "256"), (&digit, "-5", "10")] {
+        for line in [
+            format!("%narrow.wrap.up = icmp sge i64 %n1, {lo}"),
+            format!("%narrow.wrap.above = sub i64 %n1, {lo}"),
+            format!("%narrow.wrap.above.rem = urem i64 %narrow.wrap.above, {width}"),
+            format!("%narrow.wrap.below = sub i64 {lo}, %n1"),
+            format!("%narrow.wrap.below.rem = urem i64 %narrow.wrap.below, {width}"),
+            "%narrow.wrap.below.zero = icmp eq i64 %narrow.wrap.below.rem, 0".to_string(),
+            format!("%narrow.wrap.below.back = sub i64 {width}, %narrow.wrap.below.rem"),
+            "%narrow.wrap.below.off = select i1 %narrow.wrap.below.zero, i64 0, i64 %narrow.wrap.below.back".to_string(),
+            "%narrow.wrap.off = select i1 %narrow.wrap.up, i64 %narrow.wrap.above.rem, i64 %narrow.wrap.below.off"
+                .to_string(),
+            format!("%narrow.wrap = add i64 {lo}, %narrow.wrap.off"),
+        ] {
+            assert!(fun.contains(&line), "{line}\n{fun}");
+        }
+        assert_eq!(count(fun, "srem"), 0, "no signed remainder: {fun}");
+        assert_eq!(count(fun, " nsw "), 0, "no arithmetic that assumes no overflow: {fun}");
+        assert_eq!(count(fun, "narrow.err"), 0, "a wrap cannot fail: {fun}");
+        assert_eq!(count(fun, "br i1"), 0, "a wrap does not branch: {fun}");
+    }
 }
 
 #[test]

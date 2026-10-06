@@ -350,7 +350,7 @@ range.
 |---|---|
 | `or <value>` | the value, a value of the target held to its range |
 | `or clamp` | the nearest bound |
-| `or wrap` | `low + ((v - low) mod (high - low))`, the remainder taken non-negative |
+| `or wrap` | `low + ((v - low) mod w)`, `w = high - low`, the remainder taken non-negative, for every `Int` `v` (its extremes included), computed without overflow |
 | `or handler(err)` | the handler's result, given the `RangeError` |
 | `or raise` | the enclosing fallible fn fails with the `RangeError` |
 | `or fail <payload>` | the enclosing fallible fn fails with its own payload |
@@ -371,8 +371,9 @@ let s = Session(n);        // error: `Session(…)` narrows `Int` into `Session`
 
 **Lowering** reads each cast's row and decides nothing: a total
 conversion and a widening emit nothing; a narrowing emits its two
-comparisons and, from the row's policy, two selects (`clamp`), a
-remainder lifted when negative (`wrap`), or the value and the
+comparisons and, from the row's policy, two selects (`clamp`), an
+unsigned remainder of the distance from `low` on whichever side of it
+the value is, exact in an `Int`'s 64 bits (`wrap`), or the value and the
 `RangeError` the `or`'s join takes. Lowering decides nothing by a
 name: a call is a conversion when the checker recorded a row for it,
 and a call with no row is the ordinary call the checker resolved, so a
