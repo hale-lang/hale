@@ -2507,7 +2507,11 @@ its `KNOWN_OPEN` table, which is empty today.
   thread's join. A cell still queued for a subscriber whose reclaim
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
-  drops the cell or the reclaim waits for its handler. Before the
+  drops the cell or the reclaim waits for its handler. A subscriber
+  registered later at the same address departs from this today: its
+  registration takes the address out of the dead set, and the cell
+  runs on it (`l19_reused_address_queued_cell.hl`, known open, R33).
+  Before the
   hold, replacing the child while its handler ran freed the storage
   under it, a heap-use-after-free under AddressSanitizer in both
   dispatch modes (`fd_handler_cell_no_hold.hl`, under

@@ -285,6 +285,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
+    Fixture { file: "l19_reused_address_queued_cell.hl", line: "19", adopted: Some("dropped"), run: RunMode::Plain, judge: reused_address },
     Fixture { file: "rd_restart_during_teardown.hl", line: "RD", adopted: Some("restart-not-performed"), run: RunMode::Plain, judge: restart_during_teardown },
     Fixture { file: "jp_late_failure_pinned_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "jp_late_failure_pool_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
@@ -298,6 +299,11 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
+    // A registration at a reused address takes the address out of the
+    // dead set, so a cell queued for the quarantined subscriber that
+    // lived there runs on the new one. Deferred: a queued cell has to
+    // name the registration it was posted for, not only its address.
+    ("l19_reused_address_queued_cell.hl", "R33", "heard-by-new"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -512,6 +518,12 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // admitted after the worker's last check and canceled on main.
         "l19_empty_ring_last_check.hl" => {
             p.canceled = count(&[("Kid", 1)]);
+            &["19"]
+        }
+        // Two let-bound Kids at one address, each reclaimed at its
+        // frame's end (R33).
+        "l19_reused_address_queued_cell.hl" => {
+            p.occurrences = count(&[("Kid", 2)]);
             &["19"]
         }
         "l19_resumed_run_at_shutdown.hl" => {
@@ -1477,6 +1489,21 @@ fn empty_ring(r: &Ran) -> String {
     }
 }
 
+/// Which Kid heard the cell published to the first: none, the first, or
+/// the second, built at the first one's address after the publish (R33).
+/// The handler names its subscriber by `tag`, set before it registers.
+fn reused_address(r: &Ran) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    match (count(r, "ev heard tag 1 k 1"), count(r, "ev heard tag 2 k 1"), count(r, "ev finished")) {
+        (0, 0, 1) => "dropped".to_string(),
+        (1, 0, 1) => "heard-by-own".to_string(),
+        (0, 1, 1) => "heard-by-new".to_string(),
+        (own, new, finished) => format!("heard by own {own}, by new {new}, finished {finished}"),
+    }
+}
+
 fn completed_or_named(r: &Ran) -> String {
     let dissolved_once = count(r, "ev kid-dissolve") == 1;
     let ended = count(r, "ev kid-run-end") == 1 || r.stderr.contains("not-started");
@@ -2084,6 +2111,7 @@ fixture_tests! {
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
+    l19_reused_address_queued_cell => "l19_reused_address_queued_cell.hl",
     rd_restart_during_teardown => "rd_restart_during_teardown.hl",
     jp_late_failure_pinned_join => "jp_late_failure_pinned_join.hl",
     jp_late_failure_pool_join => "jp_late_failure_pool_join.hl",
