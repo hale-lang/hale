@@ -492,11 +492,16 @@ shadows the unit `sec` nor is shadowed by it. The literal is its
 unit's component's quantity, at the quantity's denomination when the
 literal is a whole count of it (U4): `3sec` is 3,000,000,000 of
 `Span`, `1_250_000USD` 125,000,000 of `Money`, `3bp` 3 of `Rate`, and
-`500ms` 500,000,000 of `Duration`. A literal that is no whole count
-of its quantity's denomination is at its own unit: in a `Mass`
-counted in grams, `5mg` is a `Mass in mg`. A literal of a unit no
-`unit` declares, or of a unit whose component has no quantity, is
-refused at the literal.
+`500ms` 500,000,000 of `Duration`. What must be whole is the
+literal's count there, its value times its unit's factor, not the
+factor alone: in a `Mass` counted in grams, `1000mg` is 1 of `Mass`,
+and with `unit tick = 1/1000 ns;`, `1000tick` is 1 of `Duration`. A
+literal that is no whole count of its quantity's denomination is at
+its own unit: `5mg` and `1500mg` are each a `Mass in mg`. A whole
+count no `Int` holds (`10000000000s` is 10^19 nanoseconds) is
+refused at the literal, never wrapped and never kept at its own
+unit. A literal of a unit no `unit` declares, or of a unit whose
+component has no quantity, is refused at the literal.
 
 Where a literal flows (a binding, an argument, a return, an operand,
 a field or a default), it is **converted at compile time**: its row

@@ -275,17 +275,19 @@ fn a_point_across_origins_is_a_shift() {
 }
 
 /// A factor no `Int` holds (10^24 here) is refused where the conversion
-/// is, never wrapped.
+/// is, never wrapped. The value is a parameter's: a literal of `c` is
+/// itself a whole count of `A` no `Int` holds, which the check refuses
+/// at the literal (`unit_quantities.rs`).
 #[test]
 fn a_factor_no_int_holds_is_a_located_error() {
     let src = "unit a;\nunit b = 1_000_000_000_000 a;\nunit c = 1_000_000_000_000 b;\ntype A = quantity Int in a;\n\
-               fn conv(n: Int) -> A { return n * 1c; }\nfn main() { println(conv(1)); }\n";
+               type C = A in c;\nfn conv(x: C) -> A { return x; }\nfn main() { println(1); }\n";
     let bin = harness::unique_bin("unit_quantity_overflow");
     let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("no `Int` holds the factor");
     let _ = std::fs::remove_file(&bin);
     match err {
         CodegenError::UnsupportedAt(msg, span) => {
-            assert_eq!(span.slice(src), "n * 1c");
+            assert_eq!(span.slice(src), "x");
             assert_eq!(msg, "the conversion into `A` is by the factor 1000000000000000000000000, which no `Int` holds");
         }
         other => panic!("expected a located refusal, got {other}"),

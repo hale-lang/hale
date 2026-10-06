@@ -241,8 +241,9 @@ fn a_literal_converts_where_it_flows_at_compile_time() {
             literal("150msec", "Bucket", Narrowing, "1/100000000", 1, round(RoundPolicy::Floor, true)),
             // 2000 msec is 2 sec, exactly: no narrowing.
             literal("2_000msec", "Seconds", Widening, "1/1000000000", 2, None),
-            // A literal at its own unit converts where it flows.
-            literal("2_000mg", "Mass", Widening, "1/1000", 2, None),
+            // 2000 mg is 2 g: a count of `Mass` already, whatever `mg`'s
+            // factor.
+            literal("2_000mg", "Mass", Widening, "1", 2, None),
         ]
     );
     assert_eq!(
@@ -412,12 +413,13 @@ fn every_site_a_denomination_changes_is_a_row() {
 
 /// A return, a struct field's default and a parameter's default convert
 /// into their declared types like any value: each a row, the literal's
-/// count converted.
+/// count converted (`3_000msec` is a count of `Span`, 3,000,000,000,
+/// and 3 of `Seconds`).
 #[test]
 fn a_return_and_a_default_convert_into_their_types() {
     use ConversionKind::*;
     let src = format!(
-        "{DECLS}type Dose {{ m: Mass = 3_000mg; }}\nfn dose(m: Mass = 2_000mg) -> Mass {{ return m; }}\n\
+        "{DECLS}type Dose {{ m: Seconds = 3_000msec; }}\nfn dose(m: Seconds = 2_000msec) -> Seconds {{ return m; }}\n\
          fn bytes(b: KiBs) -> ByteCount {{ return b.in(KiB); }}\n\
          fn main() {{\n    let f = Dose {{}};\n    println(f.m + dose());\n    println(bytes(kib(1KiB)));\n}}\n"
     );
@@ -428,8 +430,61 @@ fn a_return_and_a_default_convert_into_their_types() {
         [&row("b.in(KiB)", "ByteCount in KiB", Widening, "1"), &row("b.in(KiB)", "ByteCount", Widening, "1024")],
         "a return, of the value `.in(KiB)` made"
     );
-    assert_eq!(at("3_000mg"), [&Row { count: Some(3), ..row("3_000mg", "Mass", Widening, "1/1000") }], "a field's default");
-    assert_eq!(at("2_000mg"), [&Row { count: Some(2), ..row("2_000mg", "Mass", Widening, "1/1000") }], "a parameter's default");
+    let seconds = |at: &str, count| Row { count: Some(count), ..row(at, "Seconds", Widening, "1/1000000000") };
+    assert_eq!(at("3_000msec"), [&seconds("3_000msec", 3)], "a field's default");
+    assert_eq!(at("2_000msec"), [&seconds("2_000msec", 2)], "a parameter's default");
+}
+
+/// A literal is a whole count of its quantity's denomination when its
+/// value times its unit's factor is a whole number, whatever the factor
+/// alone is: `1000mg` of a `Mass` counted in grams is 1 of `Mass`, as
+/// `-2_000mg` is -2, while `5mg` and `1_500mg` are counted at their own
+/// unit, `Mass in mg`. A whole count no `Int` holds is refused at the
+/// literal, never wrapped and never kept at its own unit; the refused
+/// literal is still its quantity, so what it flows into says nothing
+/// more (`n * 1c` below is one error, not a second `Int is not A`).
+#[test]
+fn a_whole_count_is_its_quantity_whatever_the_units_factor() {
+    use ConversionKind::*;
+    assert_eq!(ty_of("", "1000mg"), "Mass");
+    assert_eq!(ty_of("", "1_500mg"), "Mass in mg");
+    let literal = |at: &str, to: &str, count| Row { count: Some(count), ..row(at, to, Widening, "1") };
+    assert_eq!(
+        rows("    let a = 1000mg;\n    let b = 5mg;\n    let c = 1_500mg;\n    let d = -2_000mg;\n"),
+        [
+            literal("1000mg", "Mass", 1),
+            literal("5mg", "Mass in mg", 5),
+            literal("1_500mg", "Mass in mg", 1_500),
+            literal("2_000mg", "Mass", 2),
+        ]
+    );
+    clean("    let x = if true { 1000mg } else { 1g };\n");
+    one(
+        "    let q = 100_000_000_000_000_000USD;\n",
+        "100_000_000_000_000_000USD",
+        "`100000000000000000USD` as a count of `Money` overflows an `Int`",
+    );
+    // Flowing into an operand, and into a narrowing, adds nothing.
+    assert_eq!(
+        errors("    let k: TempDelta = 10_000_000_000_000_000K + 1K;\n    let s: Seconds = 10_000_000_000sec;\n"),
+        [
+            (
+                "10_000_000_000_000_000K".to_string(),
+                "`10000000000000000K` as a count of `TempDelta` overflows an `Int`".to_string()
+            ),
+            ("10_000_000_000sec".to_string(), "`10000000000sec` as a count of `Span` overflows an `Int`".to_string()),
+        ]
+    );
+    let errors_of = |src: &str| -> Vec<(String, String)> {
+        check_program(&parse_source(src).expect("parses"))
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| (d.span.slice(src).to_string(), d.message))
+            .collect()
+    };
+    let src = "unit a;\nunit b = 1_000_000_000_000 a;\nunit c = 1_000_000_000_000 b;\ntype A = quantity Int in a;\n\
+               fn conv(n: Int) -> A { return n * 1c; }\nfn main() { println(conv(1)); }\n";
+    assert_eq!(errors_of(src), [("1c".to_string(), "`1c` as a count of `A` overflows an `Int`".to_string())]);
 }
 
 /// A literal in a default is converted once per evaluation, into what

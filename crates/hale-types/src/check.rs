@@ -12804,7 +12804,9 @@ impl<'a> Checker<'a> {
             // A literal's conversion is computed here, from its count of
             // its own type: a whole number of the target is exact,
             // whatever the factor.
-            let n = self.scalars.quantity_literal(*written, unit).map_or(*written, |(_, count)| count);
+            // A literal refused where it is written (a count no `Int`
+            // holds) has no count to convert, and no second error.
+            let Ok((_, n)) = self.scalars.quantity_literal(*written, unit) else { return };
             if narrows && crate::unit_quantities::convert_count(n, &scale, None).is_some() {
                 row.kind = ConversionKind::Widening;
                 row.policy = None;
@@ -12832,9 +12834,9 @@ impl<'a> Checker<'a> {
     fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
         use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
         match self.scalars.quantity_literal(n, unit) {
-            Err(why) => {
+            Err((why, ty)) => {
                 self.unit_error(Diag::ty(span, why));
-                Ty::Unknown
+                ty
             }
             Ok((Ty::Unknown, _)) => Ty::Unknown,
             Ok((t, count)) => {
@@ -12890,7 +12892,7 @@ impl<'a> Checker<'a> {
                 // compile time, when its count is a whole number of `T` or
                 // `T` rounds it: the cast itself then changes nothing.
                 if let Expr::Literal(Literal::Quantity { value: n, unit }, _) = arg {
-                    let n = self.scalars.quantity_literal(*n, unit).map_or(*n, |(_, count)| count);
+                    let Ok((_, n)) = self.scalars.quantity_literal(*n, unit) else { return to };
                     if crate::unit_quantities::convert_count(n, &scale, q.policy).is_some() {
                         self.record_scale(arg, &from, &to, scale, q.policy);
                         let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };

@@ -980,6 +980,27 @@ fn an_array_literals_elements_each_convert_from_their_own_type() {
     assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
 }
 
+/// GH #1076 (U4, review 1): a literal is its quantity at the quantity's
+/// denomination when its count there is whole, whatever its unit's factor
+/// alone is. The rule tested the factor, so `1000mg` of a `Mass` counted
+/// in grams stayed a `Mass in mg`, and `1000tick` of a unit a thousandth
+/// of a nanosecond a `Duration in tick`: both arms below were refused as
+/// two types by the check and the build alike. Each checks, builds and
+/// prints its one whole count.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_whole_count_literal_of_a_finer_unit_is_its_quantity() {
+    let mass = "unit g;\n\
+                unit mg = 1/1000 g;\n\
+                type Mass = quantity Int in g;\n\
+                fn main() { let x = if true { 1000mg } else { 1g }; println(x); println(5mg); }\n";
+    assert_eq!(build_and_run_probe(mass, "unit_whole_count_mass"), Ok("1g\n5mg\n".to_string()), "{}", mass);
+    let tick = "unit tick = 1/1000 ns;\n\
+                fn main() { let x = if true { 1000tick } else { 1ns }; println(x); }\n";
+    assert_eq!(build_and_run_probe(tick, "unit_whole_count_tick"), Ok("1ns\n".to_string()), "{}", tick);
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///
