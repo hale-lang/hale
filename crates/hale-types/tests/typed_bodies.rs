@@ -596,9 +596,15 @@ fn main() { App { }; }
     // The default is typed only at each invocation: `helper` itself
     // holds no row of it.
     assert_eq!(rows(method("Gateway", "helper")), []);
-    // `self.inner` is `Holder`'s own; the template's `inner` is a `T`,
-    // and the walk for `Holder_Plain` records nothing.
-    assert_eq!(rows(method("Holder", "read")), [row(Some("Holder"), "Holder", "inner", Read, true)]);
+    // `self.inner` is `Holder`'s own, on the template's walk and again on
+    // the walk for `Holder_Plain`, whose row carries its arguments.
+    assert_eq!(
+        rows(method("Holder", "read")),
+        [row(Some("Holder"), "Holder", "inner", Read, true), row(Some("Holder"), "Holder", "inner", Read, true)]
+    );
+    let read = table.body(method("Holder", "read")).unwrap();
+    assert!(read.param_accesses[0].specialization.is_empty());
+    assert_eq!(read.param_accesses[1].specialization, [Ty::Named("Plain".to_string())]);
     // The read's span is the whole `receiver.param`; a write's the param.
     let look = table.body(method("Gateway", "look")).unwrap();
     let text = |sp: hale_syntax::Span| src[sp.start.as_usize()..sp.end.as_usize()].to_string();

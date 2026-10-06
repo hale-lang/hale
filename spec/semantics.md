@@ -1075,7 +1075,10 @@ reads them as the caller that leaves it does, since that is where it is
 evaluated: a default that reaches a sealed field is refused unless every
 call that leaves it is inside the sealed locus. A value of a sealed
 generic locus's specialization (`Box<Int>`) is that locus: its `params`
-are confined the same. `std::secret::Credential`
+are confined the same. A generic body reads a field of a parameter type
+as each specialization binds it: `self.inner.key` with `inner: T` is
+refused when a specialization binds `T` to a sealed locus.
+`std::secret::Credential`
 is sealed, and its `reveal()` / `reveal_text()` are the one named way
 its material leaves as a `Bytes` or `String` — a raw token or password
 has to leave as text to be put on a wire at all. The checker holds every

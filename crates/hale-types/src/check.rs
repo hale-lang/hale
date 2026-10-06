@@ -898,7 +898,7 @@ pub fn check_bundle_by_declaration(
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
-                    cx.settle_param_accesses();
+                    cx.settle_param_accesses(start);
                     cx.diags.split_off(start)
                 }
             };
@@ -917,8 +917,11 @@ pub fn check_bundle_by_declaration(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
-    // The walks per monomorph keep nothing: there is nothing to settle.
-    debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
+    // The walks per monomorph keep their param accesses alone: an access
+    // through a value of a parameter type is judged there, against every
+    // diagnostic the check has, a template's own included.
+    cx.settle_param_accesses(0);
+    debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -11841,7 +11844,9 @@ impl<'a> Checker<'a> {
     /// generic call rows are recorded under the monomorph's arguments;
     /// a specialization a walk instantiates is walked in turn. The walk
     /// reports nothing: its diagnostics are the template's, reported by
-    /// the ordinary walk, and are dropped.
+    /// the ordinary walk, and are dropped. Its param accesses are kept,
+    /// each row carrying the monomorph's arguments: what an access
+    /// through a value of a parameter type reaches is known only here.
     fn specialize_generic_bodies(&mut self) {
         const LIMIT: usize = 1024;
         let mut next = 0;
@@ -11889,7 +11894,9 @@ impl<'a> Checker<'a> {
             self.current_locus = prev_locus;
             self.specializing = prev_specializing;
             self.generic_bindings = prev_bindings;
+            let reached = self.access_visits.split_off(mark.visits);
             self.discard_since(mark);
+            self.keep_visits(reached);
         }
     }
 
@@ -11971,11 +11978,13 @@ impl<'a> Checker<'a> {
     /// locus, both by declaration, and the access. Recorded whether or
     /// not the locus is sealed, as a visit the declaration's walk settles
     /// when it ends; a walk whose findings the check discards (a
-    /// receiver typed ahead of the call path that types it again, a
-    /// generic body walked per monomorph) discards its visits with them.
-    /// A parameter's default typed at an invocation is the exception:
-    /// no other walk types it, so its visits are kept, one row per
-    /// evaluation path (`record_omitted_defaults`).
+    /// receiver typed ahead of the call path that types it again)
+    /// discards its visits with them. Two are the exception, since no
+    /// other walk types what they reach: a parameter's default typed at
+    /// an invocation keeps its visits, one row per evaluation path
+    /// (`record_omitted_defaults`), and a generic body walked per
+    /// monomorph keeps its own, one row per specialization
+    /// (`specialize_generic_bodies`).
     fn record_param_access(
         &mut self,
         rt: &Ty,
@@ -12009,12 +12018,14 @@ impl<'a> Checker<'a> {
             kind,
             span,
             evaluation: self.default_evaluation.clone(),
+            specialization: self.specializing.clone().unwrap_or_default(),
         };
         self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
     }
 
     /// Keep `reached`, the accesses a walk reached before the walk was
-    /// discarded (a default's, typed where it is evaluated), as visits
+    /// discarded (a default's, typed where it is evaluated; a generic
+    /// body's, walked for one of its monomorphs), as visits
     /// of the walk that discarded it, each placed where the discard
     /// left the diagnostics.
     fn keep_visits(&mut self, reached: Vec<AccessVisit>) {
@@ -12039,8 +12050,10 @@ impl<'a> Checker<'a> {
     /// reached twice, a method call's receiver, is one row), and the
     /// sealed rule judges the rows ([`crate::sealed_access`]), each
     /// finding placed among the declaration's diagnostics where the walk
-    /// first reached the access.
-    fn settle_param_accesses(&mut self) {
+    /// first reached the access. Once more after the walks per monomorph,
+    /// for theirs. A finding `diags` holds from `since` on is not
+    /// reported again.
+    fn settle_param_accesses(&mut self, since: usize) {
         let mut fresh: Vec<(usize, crate::typed_bodies::ParamAccess)> = Vec::new();
         for visit in std::mem::take(&mut self.access_visits) {
             let rows = &mut self.typed.body(visit.body).param_accesses;
@@ -12052,9 +12065,14 @@ impl<'a> Checker<'a> {
         let rows: Vec<crate::typed_bodies::ParamAccess> = fresh.iter().map(|(_, r)| r.clone()).collect();
         let found = crate::sealed_access::sealed_access_law(self.top, &rows);
         // A default evaluated on several paths reaches one access as a
-        // row per path: it is refused once, where the walk first reached
-        // it, and once per check however many declarations evaluate it.
-        let mut seen: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
+        // row per path, and a generic body walked per monomorph as a row
+        // per specialization (its template's walk may have reached it
+        // too): it is refused once, where the walk first reached it, and
+        // once per check however many declarations evaluate a default.
+        let mut seen: std::collections::BTreeSet<(usize, usize, String)> = self.diags[since.min(self.diags.len())..]
+            .iter()
+            .map(|d| (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()))
+            .collect();
         let found: Vec<(usize, Diag)> = found
             .into_iter()
             .filter(|(_, d)| seen.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone())))

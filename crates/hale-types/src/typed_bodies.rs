@@ -511,6 +511,12 @@ pub struct ParamAccess {
     /// evaluation from the outermost inward. One access in a default is
     /// a row per evaluation, each with that scope's reader.
     pub evaluation: Vec<u32>,
+    /// The specialization the access was typed in, by its monomorph's
+    /// type arguments: empty on the ordinary walk; a generic fn's or
+    /// locus's body walked per monomorph, its parameters bound, has a
+    /// row per monomorph for an access through a value of a parameter
+    /// type (`self.inner.key` where `inner: T`).
+    pub specialization: Vec<Ty>,
 }
 
 impl ParamAccess {
@@ -542,8 +548,9 @@ pub struct TypedBody {
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
     /// In walk order. A generic fn's or locus's body has the template
-    /// walk's rows only: the walk per monomorph reports nothing and
-    /// records none, as for `accumulators`.
+    /// walk's rows, then each walk per monomorph's, by its
+    /// specialization (`ParamAccess::specialization`): what an access
+    /// through a parameter type reaches is known only there.
     pub param_accesses: Vec<ParamAccess>,
     /// GH #1076 (U2): by site, every conversion between an identity or a
     /// range and its family (a cast, an implicit widening).

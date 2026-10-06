@@ -401,6 +401,58 @@ fn a_monomorph_receiver_reaches_its_templates_params() {
 }
 
 #[test]
+fn a_generic_body_reaching_a_sealed_param_is_refused_in_its_specializations() {
+    // `self.s.key` with `s: T` reaches nothing the template's walk can
+    // name; the walk per monomorph binds `T` to `Signer`, and its rows
+    // are judged. Two monomorphs binding `A` to `Signer` refuse it once.
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Holder<A, B> {{
+            params {{ s: A; n: B; }}
+            fn read() -> Int {{ return self.s.key; }}
+            fn write() {{ self.s.key = 2; }}
+        }}
+        fn grab<T>(x: T) -> Int {{ return x.key; }}
+        main locus App {{
+            fn go() -> Int {{
+                let h: Holder<Signer, Int> = Holder {{ s: Signer {{ }}, n: 1 }};
+                let g: Holder<Signer, Bool> = Holder {{ s: Signer {{ }}, n: true }};
+                return grab(Signer {{ }});
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    let written = SEALED_KEY_READ.replace("readable", "writable").replace("reads one", "writes one");
+    assert_eq!(
+        error_sites(&src),
+        vec![
+            ("self.s.key".to_string(), SEALED_KEY_READ.to_string()),
+            ("key".to_string(), written),
+            ("x.key".to_string(), SEALED_KEY_READ.to_string()),
+        ]
+    );
+    // Unsealed, the same specializations are clean.
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
+fn a_sealed_generic_locus_reads_its_own_params_in_every_specialization() {
+    let src = "
+        @sealed locus Vault<T> {
+            params { inner: T; key: Int = 7; }
+            fn get() -> Int { return self.key; }
+            fn set(k: Int) { self.key = k; }
+        }
+        main locus App {
+            fn go() -> Int { let v: Vault<Int> = Vault { inner: 1 }; return 0; }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+}
+
+#[test]
 fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
     let src = "
         @sealed locus Signer {
