@@ -16,9 +16,12 @@
 // Expected terminal outcome: the handler reads the old Kid's name, the
 // old Kid is reclaimed after its handler returns, and each Kid is torn
 // down once, judged by the harness: `read-whole reclaimed-after-handler
-// dissolved-once-each`. Today: `read-torn reclaimed-under-handler
+// dissolved-once-each`. Today: `reclaimed-under-handler
 // dissolved-once-each`, and under ASan a heap-use-after-free in the
-// handler.
+// handler. The harness names the read only when the reclaim came after
+// it: under the handler the read is of a released arena, and what it
+// prints depends on whether the chunk pool reused the bytes, so that
+// read is judged by the ASan run alone.
 
 type Go { k: Int; }
 topic Gos { payload: Go; subject: "lifecycle.l19.pinned_yield.go"; }

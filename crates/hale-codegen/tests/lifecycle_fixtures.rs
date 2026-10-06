@@ -315,8 +315,9 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     // A yield inside a handler on a pinned thread runs the owner's
     // handler that reclaims the suspended one's subscriber, which no hold
     // keeps. Deferred: a pinned handler holds its subscriber (or the
-    // reclaim waits for it to return) as a pool worker's does.
-    ("l19_pinned_yield_replaces_child.hl", "R52", "read-torn reclaimed-under-handler dissolved-once-each"),
+    // reclaim waits for it to return) as a pool worker's does. No read
+    // word: the read is of freed memory, judged under ASan.
+    ("l19_pinned_yield_replaces_child.hl", "R52", "reclaimed-under-handler dissolved-once-each"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -1536,26 +1537,33 @@ fn reused_address(r: &Ran) -> String {
     }
 }
 
-/// Whether the old Kid's suspended handler read its own name, whether its
-/// reclaim came after that read or under it, and each Kid's teardown
-/// (R52 on a pinned thread).
+/// Whether the old Kid's reclaim came after its suspended handler's read
+/// or under it, and each Kid's teardown (R52 on a pinned thread). Both
+/// are facts of order and count. What the read printed is judged only
+/// when the reclaim came after it, the one order in which the read is
+/// defined: under the handler it reads a released arena, and what that
+/// prints depends on whether the chunk pool handed the bytes out again
+/// (`2` by default, `kid-1-name` under `LOTUS_NO_CHUNK_POOL=1`, GH #816).
+/// That read is judged by `l19_pinned_yield_replaces_child_under_asan`,
+/// which asserts the heap-use-after-free, not what it printed.
 fn pinned_yield(r: &Ran) -> String {
     if r.timed_out || r.code != Some(0) {
         return exit_word(r);
     }
     let starts = |prefix: &str| r.stdout.lines().position(|l| l.starts_with(prefix));
-    let read = if count(r, "ev kid-handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" };
-    let order = match (starts("ev kid-handler-read "), pos(r, "ev kid-dissolve 1")) {
-        (Some(h), Some(d)) if h < d => "reclaimed-after-handler",
-        (Some(_), Some(_)) => "reclaimed-under-handler",
-        _ => "unread-or-undissolved",
-    };
     let once = if count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1 {
         "dissolved-once-each"
     } else {
         "dissolved-other"
     };
-    format!("{read} {order} {once}")
+    match (starts("ev kid-handler-read "), pos(r, "ev kid-dissolve 1")) {
+        (Some(h), Some(d)) if h < d => {
+            let read = if count(r, "ev kid-handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" };
+            format!("{read} reclaimed-after-handler {once}")
+        }
+        (Some(_), Some(_)) => format!("reclaimed-under-handler {once}"),
+        _ => format!("unread-or-undissolved {once}"),
+    }
 }
 
 fn completed_or_named(r: &Ran) -> String {
