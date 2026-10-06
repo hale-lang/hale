@@ -2443,20 +2443,8 @@ fn a_manifest_ffi_surface_is_in_every_verbs_identity() {
 #[test]
 fn a_manifest_csrc_is_built_by_run_and_replay() {
     let dir = workdir("ffi_csrc");
-    std::fs::write(dir.join("hale.toml"), "").unwrap();
-    let lib = dir.join("vendor/shim");
-    std::fs::create_dir_all(&lib).unwrap();
-    std::fs::write(lib.join("glue.c"), "long long shim_add(long long a, long long b) { return a + b; }\n").unwrap();
-    std::fs::write(lib.join("hale.toml"), "[ffi]\ncsrc = [\"glue.c\"]\n").unwrap();
-    std::fs::write(
-        lib.join("shim.hl"),
-        "@ffi(\"c\") fn shim_add(a: Int, b: Int) -> Int;\nfn add(a: Int, b: Int) -> Int { return shim_add(a, b); }\n",
-    )
-    .unwrap();
+    let prog = shim_package(&dir);
     let app = dir.join("app");
-    std::fs::create_dir_all(&app).unwrap();
-    let prog = app.join("main.hl");
-    std::fs::write(&prog, "import \"vendor/shim\" as shim;\nfn main() { println(shim::add(40, 2)); }\n").unwrap();
 
     let ran = record(&dir, &prog);
     build(&prog);
@@ -2483,6 +2471,102 @@ fn a_manifest_csrc_is_built_by_run_and_replay() {
         stderr
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("42"), "the replayed program called the C function");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `vendor/shim`, a package whose `[ffi] csrc` compiles `glue.c`, and
+/// `app/main.hl` printing `42` through it, under an empty root manifest.
+fn shim_package(dir: &Path) -> PathBuf {
+    std::fs::write(dir.join("hale.toml"), "").unwrap();
+    let lib = dir.join("vendor/shim");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("glue.c"), "long long shim_add(long long a, long long b) { return a + b; }\n").unwrap();
+    std::fs::write(lib.join("hale.toml"), "[ffi]\ncsrc = [\"glue.c\"]\n").unwrap();
+    std::fs::write(
+        lib.join("shim.hl"),
+        "@ffi(\"c\") fn shim_add(a: Int, b: Int) -> Int;\nfn add(a: Int, b: Int) -> Int { return shim_add(a, b); }\n",
+    )
+    .unwrap();
+    let app = dir.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let prog = app.join("main.hl");
+    std::fs::write(&prog, "import \"vendor/shim\" as shim;\nfn main() { println(shim::add(40, 2)); }\n").unwrap();
+    prog
+}
+
+/// A `--csrc` naming the C file an imported package's `[ffi] csrc`
+/// already names is a no-op. `identity_options` appended the manifest's
+/// file after the flag's, so `hale run --csrc vendor/shim/glue.c` (the
+/// documented way to run an `@ffi` program) handed clang the file twice
+/// and failed at link on a duplicate `shim_add`; `build` had always done
+/// so. The flag's copy is dropped for the manifest's, so `run`, `replay`
+/// and `build` link once and stamp the flagless run's identity.
+#[test]
+fn a_csrc_flag_naming_the_manifests_file_is_a_no_op() {
+    let dir = workdir("ffi_csrc_flag");
+    let prog = shim_package(&dir);
+    let flagless = record(&dir, &prog);
+    let flagless = recorded_exec_digest(&flagless);
+
+    // Relative to the working directory, as a user types it: the
+    // comparison is by canonical path.
+    let rec = dir.join("flagged.halerec");
+    let out = hale()
+        .current_dir(&dir)
+        .args(["run", "--csrc", "vendor/shim/glue.c", "app/main.hl"])
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("hale run");
+    assert!(out.status.success(), "`run --csrc` links once: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("42"), "`run --csrc` called the C function");
+    assert_eq!(recorded_exec_digest(&rec), flagless, "`run --csrc` stamps the flagless run's identity");
+
+    let out = hale()
+        .current_dir(&dir)
+        .args(["replay", "--allow-live-effects", "--csrc", "vendor/shim/glue.c"])
+        .arg(&rec)
+        .arg("app/main.hl")
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "`replay --csrc` links once and admits the recording: {}",
+        stderr
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("42"), "`replay --csrc` called the C function");
+
+    let out = hale()
+        .current_dir(&dir)
+        .args(["build", "--csrc", "vendor/shim/glue.c", "app/main.hl"])
+        .output()
+        .expect("hale build");
+    assert!(out.status.success(), "`build --csrc` links once: {}", String::from_utf8_lossy(&out.stderr));
+    let built = dir.join("built.halerec");
+    record_built(&dir.join("app/main"), &built);
+    assert_eq!(recorded_exec_digest(&built), flagless, "`build --csrc` stamps the flagless run's identity");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `--csrc` naming a file no manifest names is still added: the
+/// program links the package's `glue.c` and the flag's `extra.c` both.
+#[test]
+fn a_csrc_flag_naming_another_file_is_still_added() {
+    let dir = workdir("ffi_csrc_extra");
+    shim_package(&dir);
+    std::fs::write(dir.join("extra.c"), "long long extra_two(void) { return 2; }\n").unwrap();
+    std::fs::write(
+        dir.join("app/two.hl"),
+        "import \"vendor/shim\" as shim;\n@ffi(\"c\") fn extra_two() -> Int;\nfn main() { println(shim::add(40, extra_two())); }\n",
+    )
+    .unwrap();
+    let out = hale()
+        .current_dir(&dir)
+        .args(["run", "--csrc", "extra.c", "app/two.hl"])
+        .output()
+        .expect("hale run");
+    assert!(out.status.success(), "`run --csrc extra.c` links: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("42"), "both C files were linked");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

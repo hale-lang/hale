@@ -77,7 +77,9 @@ link = ["raylib"]
 
 A downstream project then just `import`s the binding and builds
 normally; the FFI flags thread through automatically, under `hale
-build`, `hale run`, `hale replay` and `hale test` alike. Only the
+build`, `hale run`, `hale replay` and `hale test` alike. Passing
+`--csrc glue.c` for a file the binding's `hale.toml` already names
+is harmless: the flag is dropped and the file compiled once. Only the
 entry's own imports are read: if a library imports a binding in
 turn, the entry has to repeat that binding's `[ffi]` (or pass
 `--link` / `--csrc`).
