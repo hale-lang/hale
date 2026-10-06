@@ -1237,6 +1237,99 @@ impl<'a> GenericTemplates<'a> {
         }
         None
     }
+
+    /// The specializations the table's rows from `from` on instantiate
+    /// through their own fields, to a fixpoint: a field whose declared
+    /// type applies a template to the row's parameters (`h: Holder<T>`
+    /// in `Outer<T>`) names, in `Outer_Signer`, `Holder_Signer`, which
+    /// the source never spells and lowering synthesizes for the field.
+    /// With its row in the table, `field_ty` types the field as it, so a
+    /// chain of fields (`self.h.s`) reaches a parameter's binding at any
+    /// depth.
+    fn close_over_fields(&self, known: &KnownNames, table: &mut crate::typed_bodies::Monomorphs, from: usize) {
+        const LIMIT: usize = 1024;
+        let mut next = from;
+        while next < table.rows().len() && table.rows().len() < LIMIT {
+            let m = table.rows()[next].clone();
+            next += 1;
+            if m.kind == crate::typed_bodies::TemplateKind::Fn || m.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                continue;
+            }
+            let Some(template) = self.get(m.template) else { continue };
+            let bindings: BTreeMap<String, Ty> =
+                template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+            let mut names = std::collections::BTreeSet::new();
+            match template {
+                GenericTemplate::Type(td) => {
+                    if let TypeDeclBody::Struct(fields) = &td.body {
+                        for f in fields {
+                            spelled_monomorphs(&f.ty, known, &bindings, &mut names);
+                        }
+                    }
+                }
+                GenericTemplate::Locus(ld) => {
+                    for member in &ld.members {
+                        if let LocusMember::Params(pb) = member {
+                            for te in pb.params.iter().filter_map(|p| p.ty.as_ref()) {
+                                spelled_monomorphs(te, known, &bindings, &mut names);
+                            }
+                        }
+                    }
+                }
+            }
+            for name in names {
+                if let Some((template, kind, args)) = self.parse(&name, known) {
+                    if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                        table.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The names a type expression spells that may name a monomorph, each
+/// generic instantiation resolved under `bindings` (`Box<Int>` as
+/// `Box_Int`); a name `bindings` holds is a parameter, not a type.
+fn spelled_monomorphs(
+    te: &TypeExpr,
+    known: &KnownNames,
+    bindings: &BTreeMap<String, Ty>,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            for a in generic_args {
+                spelled_monomorphs(a, known, bindings, names);
+            }
+            if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
+                return;
+            }
+            if generic_args.is_empty() {
+                names.insert(path.segments[0].name.clone());
+            } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
+                names.insert(n);
+            }
+        }
+        TypeExpr::Projection { inner, .. } => spelled_monomorphs(inner, known, bindings, names),
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+            spelled_monomorphs(elem, known, bindings, names)
+        }
+        TypeExpr::Tuple(parts, _) => {
+            for p in parts {
+                spelled_monomorphs(p, known, bindings, names);
+            }
+        }
+        TypeExpr::Function { params, ret, .. } => {
+            for p in params {
+                spelled_monomorphs(p, known, bindings, names);
+            }
+            if let Some(r) = ret {
+                spelled_monomorphs(r, known, bindings, names);
+            }
+        }
+        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+    }
 }
 
 /// The monomorph table's type and locus rows (F.40 phase 3, E4), one
@@ -1244,8 +1337,10 @@ impl<'a> GenericTemplates<'a> {
 /// names a monomorph — each generic instantiation a type expression
 /// writes (`Box<Int>`, named as the checker resolves it, `Box_Int`),
 /// each name an annotation or a struct literal spells (`Box_Int { }`) —
-/// keyed by its template's site and its type arguments. The mangled
-/// name is parsed here, once per name; every lookup reads the row.
+/// keyed by its template's site and its type arguments, and every
+/// specialization those rows instantiate through their fields
+/// ([`GenericTemplates::close_over_fields`]). The mangled name is parsed
+/// here, once per name; every lookup reads the row.
 fn monomorph_table(
     bundle: &Bundle<'_>,
     known: &KnownNames,
@@ -1256,45 +1351,12 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    fn spelled(te: &TypeExpr, known: &KnownNames, bindings: &BTreeMap<String, Ty>, names: &mut std::collections::BTreeSet<String>) {
-        match te {
-            TypeExpr::Named { path, generic_args, .. } => {
-                for a in generic_args {
-                    spelled(a, known, bindings, names);
-                }
-                if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
-                    return;
-                }
-                if generic_args.is_empty() {
-                    names.insert(path.segments[0].name.clone());
-                } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
-                    names.insert(n);
-                }
-            }
-            TypeExpr::Projection { inner, .. } => spelled(inner, known, bindings, names),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, bindings, names),
-            TypeExpr::Tuple(parts, _) => {
-                for p in parts {
-                    spelled(p, known, bindings, names);
-                }
-            }
-            TypeExpr::Function { params, ret, .. } => {
-                for p in params {
-                    spelled(p, known, bindings, names);
-                }
-                if let Some(r) = ret {
-                    spelled(r, known, bindings, names);
-                }
-            }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
-        }
-    }
     let mut names = std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
         crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
             let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
             match s {
-                TypeSpelling::Annotation(te) => spelled(te, known, &bindings, &mut names),
+                TypeSpelling::Annotation(te) => spelled_monomorphs(te, known, &bindings, &mut names),
                 TypeSpelling::Literal(path) => {
                     if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
                         names.insert(path.segments[0].name.clone());
@@ -1308,6 +1370,7 @@ fn monomorph_table(
             out.insert(Monomorph { template, kind, args, name });
         }
     }
+    templates.close_over_fields(known, out, 0);
 }
 
 use crate::typed_bodies::Unsatisfied;
@@ -11964,7 +12027,7 @@ impl<'a> Checker<'a> {
                             }
                             _ => None,
                         });
-                        let elem = match declared.map(|te| substitute_generic_ty(te, &bindings, self.known)) {
+                        let elem = match declared.map(|te| self.monomorph_field_ty(te, &bindings)) {
                             Some(Ty::Unknown) | None => row.elem.clone(),
                             Some(t) => Some(Typed::Known(t)),
                         };
@@ -12157,6 +12220,27 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A template field's declared type in one of its monomorphs: the
+    /// template's parameters substituted, and an application of them
+    /// (`Holder<T>`) the row it names (`Holder_Signer`), which the table
+    /// holds for each field of each of its rows
+    /// ([`GenericTemplates::close_over_fields`]). The substitution alone
+    /// keeps a nested application's unbound view, `Unknown`, so a chain
+    /// of fields stopped at the first: `self.h.s` in `Outer_Signer` read
+    /// no `Signer`, and a sealed param behind it was read unjudged.
+    fn monomorph_field_ty(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Ty {
+        if let TypeExpr::Named { generic_args, .. } = te {
+            if !generic_args.is_empty() {
+                if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, self.known, bindings) {
+                    if self.typed.monomorphs.named(&n).is_some() {
+                        return Ty::Named(n);
+                    }
+                }
+            }
+        }
+        substitute_generic_ty(te, bindings, self.known)
+    }
+
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
             // Numeric tuple field access: `t.0`, `t.1`. Parser
@@ -12184,13 +12268,7 @@ impl<'a> Checker<'a> {
                                 return tfields
                                     .iter()
                                     .find(|f| f.name.name == name)
-                                    .map(|f| {
-                                        substitute_generic_ty(
-                                            &f.ty,
-                                            &bindings,
-                                            self.known,
-                                        )
-                                    });
+                                    .map(|f| self.monomorph_field_ty(&f.ty, &bindings));
                             }
                             return None;
                         }
@@ -12220,11 +12298,7 @@ impl<'a> Checker<'a> {
                                     // here — stay permissive rather
                                     // than invent one.
                                     return Some(match &p.ty {
-                                        Some(te) => substitute_generic_ty(
-                                            te,
-                                            &bindings,
-                                            self.known,
-                                        ),
+                                        Some(te) => self.monomorph_field_ty(te, &bindings),
                                         None => Ty::Unknown,
                                     });
                                 }
@@ -13432,7 +13506,9 @@ impl<'a> Checker<'a> {
         if let Ty::Named(name) = self.resolve_te(te) {
             if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
                 if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    let from = self.typed.monomorphs.rows().len();
                     self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
+                    self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
                 }
             }
         }

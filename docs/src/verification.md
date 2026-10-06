@@ -394,7 +394,8 @@ reaches `key` is refused, at the default, unless every such call is
 inside `Signer`. A sealed generic locus is sealed in every
 specialization: `b.v` on a `b: Box<Int>` is refused from outside `Box`.
 And a generic body is judged in each specialization: `self.inner.key`
-with `inner: T` is refused once some use binds `T` to `Signer`.
+with `inner: T` is refused once some use binds `T` to `Signer`, and so
+is `self.h.s.key` with `h: Holder<T>`, however many fields deep.
 
 Now the law is two ordinary claims:
 

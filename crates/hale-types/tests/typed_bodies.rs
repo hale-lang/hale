@@ -512,9 +512,10 @@ fn main() {
 /// or not, by body, in walk order, with the reader and the receiver by
 /// declaration. An access through `self` is a row from inside; a free
 /// fn's has no reader; a method named on a locus is no row; a generic
-/// body has the template walk's rows only, and a receiver typed as a
-/// type parameter is none; a fn param default, typed only where it is
-/// invoked and its findings discarded, has none.
+/// body has the template walk's rows and each specialization's, where a
+/// receiver typed as a type parameter is its binding, through any chain
+/// of fields; a fn param default, typed only where it is invoked and its
+/// findings discarded, has none.
 #[test]
 fn the_param_access_column_records_each_access_through_a_locus() {
     use hale_types::placement::SiteUniverse;
@@ -529,13 +530,23 @@ locus Holder<T> {
     params { inner: T; }
     fn read() -> Int { let x = self.inner; return 0; }
 }
+locus Outer<T> {
+    params { h: Holder<T>; }
+    fn deep() -> Int { return self.h.inner.n; }
+}
 locus Gateway {
     params { s: Signer = Signer { }; p: Plain = Plain { }; }
     fn look() -> Int { self.p.n = 2; return self.p.n + self.s.sign(1) + self.p.get() + self.helper(); }
     fn helper(k: Int = self.p.n) -> Int { return k; }
 }
 fn free(p: Plain) -> Int { return p.n; }
-main locus App { params { g: Gateway = Gateway { }; h: Holder<Plain> = Holder { inner: Plain { } }; } }
+main locus App {
+    params {
+        g: Gateway = Gateway { };
+        h: Holder<Plain> = Holder { inner: Plain { } };
+        o: Outer<Plain> = Outer { h: Holder { inner: Plain { } } };
+    }
+}
 fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parses");
@@ -544,7 +555,7 @@ fn main() { App { }; }
     let p = s.program().unwrap();
     let name_of = |r: &hale_types::typed_bodies::LocusRef| {
         assert_eq!(r.universe, SiteUniverse::User);
-        ["Signer", "Plain", "Holder", "Gateway", "App"]
+        ["Signer", "Plain", "Holder", "Outer", "Gateway", "App"]
             .into_iter()
             .find(|n| id_of(decl(p, n)).0 == r.decl.0)
             .unwrap_or_else(|| panic!("{r:?} is a declared locus"))
@@ -605,6 +616,23 @@ fn main() { App { }; }
     let read = table.body(method("Holder", "read")).unwrap();
     assert!(read.param_accesses[0].specialization.is_empty());
     assert_eq!(read.param_accesses[1].specialization, [Ty::Named("Plain".to_string())]);
+    // `self.h.inner.n` in the walk for `Outer_Plain`: `self.h` is
+    // `Holder_Plain`, its `inner` a `Plain`, each hop a row; the
+    // template's walk types `self.h` as no locus and stops at it.
+    assert_eq!(
+        rows(method("Outer", "deep")),
+        [
+            row(Some("Outer"), "Outer", "h", Read, true),
+            row(Some("Outer"), "Outer", "h", Read, true),
+            row(Some("Outer"), "Holder", "inner", Read, false),
+            row(Some("Outer"), "Plain", "n", Read, false),
+        ]
+    );
+    let deep = table.body(method("Outer", "deep")).unwrap();
+    assert!(deep.param_accesses[0].specialization.is_empty());
+    assert!(deep.param_accesses[1..].iter().all(|a| a.specialization == [Ty::Named("Plain".to_string())]));
+    let n = deep.param_accesses[3].span;
+    assert_eq!(&src[n.start.as_usize()..n.end.as_usize()], "self.h.inner.n");
     // The read's span is the whole `receiver.param`; a write's the param.
     let look = table.body(method("Gateway", "look")).unwrap();
     let text = |sp: hale_syntax::Span| src[sp.start.as_usize()..sp.end.as_usize()].to_string();

@@ -437,6 +437,122 @@ fn a_generic_body_reaching_a_sealed_param_is_refused_in_its_specializations() {
 }
 
 #[test]
+fn a_generic_body_reaching_a_sealed_param_through_a_field_of_a_field_is_refused() {
+    // `self.h` with `h: Holder<T>` is a nested application of the
+    // parameter: the walk for `Outer_Signer` typed it `Unknown`, so
+    // `self.h.s` reached no `Signer` and `.key` was read unjudged. The
+    // field is `Holder_Signer` there, and its `s` is `Signer`.
+    let src = "
+        @sealed locus Signer { params { key: Int = 7; } fn sign() -> Int { return self.key; } }
+        locus Plain { params { key: Int = 7; } }
+        locus Holder<A> { params { s: A; } fn noop() -> Int { return 0; } }
+        locus Outer<T> {
+            params { h: Holder<T>; }
+            fn r() -> Int { return self.h.s.key; }
+            fn through_let() -> Int { let x = self.h.s; return x.key; }
+            fn write() { self.h.s.key = 2; }
+        }
+        main locus App {
+            run() { let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }; println(o.r()); }
+        }
+        fn main() { App { }; }
+    ";
+    let read = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+         methods, and `Signer.key` reads one from outside — call one of its methods instead (sign)";
+    let written = read.replace("readable", "writable").replace("reads one", "writes one");
+    assert_eq!(
+        error_sites(src),
+        vec![
+            ("self.h.s.key".to_string(), read.to_string()),
+            ("x.key".to_string(), read.to_string()),
+            ("key".to_string(), written),
+        ]
+    );
+    // Bound to an unsealed locus, the same body is clean.
+    let plain = src.replace(
+        "let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }",
+        "let o: Outer<Plain> = Outer { h: Holder { s: Plain { } } }",
+    );
+    assert!(error_sites(&plain).is_empty(), "{:?}", error_sites(&plain));
+}
+
+#[test]
+fn a_field_chain_into_a_sealed_param_is_clean_inside_the_sealed_locus() {
+    // `o.h` is `Holder_Signer` in a body nothing specializes too: the
+    // chain reaches `Signer.key`, read from inside `Signer`.
+    let src = "
+        @sealed locus Signer {
+            params { key: Int = 7; }
+            fn sign() -> Int { return self.key; }
+            fn peek(o: Outer<Signer>) -> Int { return o.h.s.key; }
+        }
+        locus Holder<A> { params { s: A; } }
+        locus Outer<T> { params { h: Holder<T>; } fn noop() -> Int { return 0; } }
+        main locus App {
+            run() { let o: Outer<Signer> = Outer { h: Holder { s: Signer { } } }; println(o.noop()); }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+    // Written outside `Signer`, the same read is refused.
+    let read = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
+         methods, and `Signer.key` reads one from outside — call one of its methods instead (sign, peek)";
+    let outside = src.replace("run() {", "fn peer(o: Outer<Signer>) -> Int { return o.h.s.key; }\n            run() {");
+    assert_eq!(error_sites(&outside), vec![("o.h.s.key".to_string(), read.to_string())]);
+}
+
+#[test]
+fn a_sealed_param_three_fields_deep_in_a_generic_body_is_refused() {
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Mid<B> {{ params {{ s: B; }} }}
+        locus Holder<A> {{ params {{ m: Mid<A>; }} }}
+        locus Outer<T> {{
+            params {{ h: Holder<T>; }}
+            fn r() -> Int {{ return self.h.m.s.key; }}
+        }}
+        main locus App {{
+            fn go() -> Int {{
+                let o: Outer<Signer> = Outer {{ h: Holder {{ m: Mid {{ s: Signer {{ }} }} }} }};
+                return o.r();
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(error_sites(&src), vec![("self.h.m.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    assert!(error_sites(&src.replace("@sealed ", "")).is_empty(), "{:?}", error_sites(&src.replace("@sealed ", "")));
+}
+
+#[test]
+fn a_sealed_param_through_non_generic_fields_is_refused() {
+    // No parameter in the chain: each field's declared type names the
+    // next locus, and the read is refused wherever it is written outside
+    // `Signer` (as it was before the generic chain was).
+    let src = format!(
+        "{SEALED_SIGNER}
+        locus Holder {{ params {{ s: Signer = Signer {{ }}; }} }}
+        locus Outer {{
+            params {{ h: Holder = Holder {{ }}; }}
+            fn r() -> Int {{ return self.h.s.key; }}
+        }}
+        main locus App {{
+            params {{ o: Outer = Outer {{ }}; }}
+            fn go() -> Int {{ return self.o.h.s.key; }}
+        }}
+        fn main() {{ App {{ }}; }}
+        "
+    );
+    assert_eq!(
+        error_sites(&src),
+        vec![
+            ("self.h.s.key".to_string(), SEALED_KEY_READ.to_string()),
+            ("self.o.h.s.key".to_string(), SEALED_KEY_READ.to_string()),
+        ]
+    );
+}
+
+#[test]
 fn a_sealed_generic_locus_reads_its_own_params_in_every_specialization() {
     let src = "
         @sealed locus Vault<T> {

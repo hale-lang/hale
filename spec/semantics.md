@@ -1077,7 +1077,10 @@ call that leaves it is inside the sealed locus. A value of a sealed
 generic locus's specialization (`Box<Int>`) is that locus: its `params`
 are confined the same. A generic body reads a field of a parameter type
 as each specialization binds it: `self.inner.key` with `inner: T` is
-refused when a specialization binds `T` to a sealed locus.
+refused when a specialization binds `T` to a sealed locus, and so is a
+chain of fields of any depth reaching one, a field typed as another
+generic applied to the parameters included (`self.h.s.key` with
+`h: Holder<T>` and `Holder<A>`'s `s: A`).
 `std::secret::Credential`
 is sealed, and its `reveal()` / `reveal_text()` are the one named way
 its material leaves as a `Bytes` or `String` — a raw token or password
