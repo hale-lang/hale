@@ -120,9 +120,13 @@ fn build(src: &str, tag: &str) -> (bool, String) {
 /// lowering — spanless, from another layer, about a program the
 /// author had just been told was fine. One of the ten (`Float`) was
 /// a real builtin missing its arm; the other nine were never
-/// builtins at all and are dropped. Eight of the nine are below;
-/// `prod` is not, because the parser gives it its own AST node and
-/// it can never be written as a bare call.
+/// builtins at all and are dropped. Seven of the nine are in the
+/// loop below; `prod` is not, because the parser gives it its own
+/// AST node and it can never be written as a bare call; and
+/// `Duration`, a bare name when this was written, is since GH #1076
+/// (U4) the stdlib's `quantity Int in ns`, so `Duration(x)` is the
+/// cast form and is refused by the quantity rule instead (after the
+/// loop).
 #[test]
 fn a_bare_name_the_build_cannot_lower_is_refused_by_check() {
     // Each of these had NO codegen dispatch anywhere:
@@ -140,8 +144,8 @@ fn a_bare_name_the_build_cannot_lower_is_refused_by_check() {
     //                `Float(x)` are the two numeric CASTS
     //                (`spec/types.md` § "Explicit numeric
     //                conversions"); `String` / `Bool` / `Bytes` /
-    //                `Decimal` / `Duration` are types, and there is
-    //                no conversion behind them. `to_string(x)`
+    //                `Decimal` are types, and there is no
+    //                conversion behind them. `to_string(x)`
     //                renders, `std::str::parse_*` reads back.
     for (name, program) in [
         ("hex", "fn main() { let s = hex(255); println(s); }\n"),
@@ -151,7 +155,6 @@ fn a_bare_name_the_build_cannot_lower_is_refused_by_check() {
         ("Bool", "fn main() { let b = Bool(1); println(b); }\n"),
         ("Bytes", "fn main() { let b = Bytes(\"ab\"); println(b); }\n"),
         ("Decimal", "fn main() { let d = Decimal(1); println(d); }\n"),
-        ("Duration", "fn main() { let d = Duration(1); println(d); }\n"),
     ] {
         let (ok, out) = check(program, &format!("800_{}", name));
         assert!(
@@ -164,6 +167,17 @@ fn a_bare_name_the_build_cannot_lower_is_refused_by_check() {
         let (built, berr) = build(program, &format!("800b_{}", name));
         assert!(!built, "`{}` unexpectedly builds now: {berr}", name);
     }
+    // `Duration(1)`: a cast of an `Int` into the stdlib's quantity,
+    // refused by the checker at the call's own span with the quantity
+    // rule's wording; the build still refuses the program.
+    let program = "fn main() { let d = Duration(1); println(d); }\n";
+    let (ok, out) = check(program, "800_Duration");
+    assert!(
+        !ok && out.contains("`Duration(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1ns`)"),
+        "`Duration(1)` must be refused by the check as a cast of an `Int`: {out}"
+    );
+    let (built, berr) = build(program, "800b_Duration");
+    assert!(!built, "`Duration(1)` unexpectedly builds now: {berr}");
 }
 
 /// The other half of the same decision: `Float(x)` IS a builtin —
