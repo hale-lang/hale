@@ -885,6 +885,7 @@ pub fn check_bundle_by_declaration(
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
         default_evaluation: Vec::new(),
+        array_elements: std::collections::HashMap::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -6161,6 +6162,28 @@ struct Checker<'a> {
     /// (`record_omitted_defaults`), for exactly the walk of the defaults
     /// left, so the two stacks agree.
     default_evaluation: Vec<u32>,
+    /// GH #1076: each array literal's elements as the walk last typed
+    /// them, by node: a place of an array type flows each element into
+    /// its element type from the element's own type (`flows_into`).
+    array_elements: std::collections::HashMap<*const Expr, ArrayElements>,
+}
+
+/// An array literal's elements as the walk typed them (GH #1076).
+#[derive(Clone)]
+struct ArrayElements {
+    tys: Vec<Ty>,
+    /// With a quantity among them: what their meet did, which a place of
+    /// an array type of its own withdraws.
+    meet: Option<ArrayMeet>,
+}
+
+/// What the meet of an array literal's elements did (U3): the rows its
+/// conversions replaced, at each element's site (a nested literal's
+/// elements' included), and the errors it reported.
+#[derive(Clone)]
+struct ArrayMeet {
+    saved: Vec<(crate::typed_bodies::ConversionSite, Option<(u32, crate::typed_bodies::ConversionRow)>)>,
+    reported: Vec<(Span, String)>,
 }
 
 #[derive(Default)]
@@ -12407,17 +12430,47 @@ impl<'a> Checker<'a> {
                 return true;
             }
         }
+        // GH #1076 (U3): an array literal holding a quantity, into an
+        // array type. Its elements met where the literal was typed
+        // (`array_element`); where the meet is the place's element type,
+        // the meet's rows are the conversion. Anywhere else the meet is
+        // withdrawn, and each element flows into the element type from its
+        // own type: a row, or a refusal, at each.
+        if let (Ty::Array(we, wn), Expr::Array(elems, _)) = (want, value) {
+            let entry = self.array_elements.get(&(value as *const Expr)).cloned();
+            if let Some(ArrayElements { tys, meet: Some(meet) }) = entry {
+                if meet.reported.is_empty() && want.assignable_from(got) {
+                    return true;
+                }
+                if *wn == Some(elems.len() as u64) && tys.len() == elems.len() {
+                    self.withdraw_meet(&meet);
+                    for (e, t) in elems.iter().zip(&tys) {
+                        if !self.flows_into(we, t, e) {
+                            let (w, g) = (self.scalars.type_display(we), self.scalars.type_display(t));
+                            self.unit_error(Diag::ty(e.span(), format!("`[…]`: an element of `{g}` where `{w}` is expected")));
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
         }
         // An array literal into an array of identities or ranges: each
-        // element flows into the element type (`[1, 2]` into `[OrderId;
-        // 2]`, each literal held to the range).
+        // element flows into the element type from its own type (`[1, 2]`
+        // into `[OrderId; 2]`, each literal held to the range).
         if let (Ty::Array(we, wn), Ty::Array(ge, gn), Expr::Array(elems, _)) = (want, got, value) {
             if wn == gn {
+                let own = self
+                    .array_elements
+                    .get(&(value as *const Expr))
+                    .map(|a| a.tys.clone())
+                    .filter(|tys| tys.len() == elems.len());
                 let mut all = true;
-                for e in elems {
-                    all &= self.flows_into(we, ge, e);
+                for (i, e) in elems.iter().enumerate() {
+                    let t = own.as_ref().map_or(&**ge, |tys| &tys[i]);
+                    all &= self.flows_into(we, t, e);
                 }
                 return all;
             }
@@ -12486,6 +12539,144 @@ impl<'a> Checker<'a> {
             Ty::Array(e, _) | Ty::Bounded(e, _) => self.holds_quantity(e),
             Ty::Tuple(parts) => parts.iter().any(|p| self.holds_quantity(p)),
             _ => self.scalars.quantity(ty).is_some(),
+        }
+    }
+
+    /// GH #1076 (U3): the element type of the array literal `array`, its
+    /// `parts` typed `tys`. With no quantity among them, the first
+    /// element's. With one, the elements meet as a sum's operands do: the
+    /// quantity at the finer of their denominations, each element converted
+    /// there exactly (a row where it changes denomination); elements of two
+    /// quantities, a quantity beside a point or an `Int`, are refused
+    /// naming both. A place of an array type of its own withdraws the meet
+    /// (`flows_into`).
+    fn array_element(&mut self, array: &Expr, parts: &[Expr], tys: Vec<Ty>) -> Ty {
+        let first = tys.first().cloned().unwrap_or(Ty::Unknown);
+        if self.scalars.is_empty() {
+            return first;
+        }
+        let key = array as *const Expr;
+        if !self.scalars.has_quantities() || !tys.iter().any(|t| self.holds_quantity(t)) {
+            self.array_elements.insert(key, ArrayElements { tys, meet: None });
+            return first;
+        }
+        let mut sites = Vec::new();
+        self.element_sites(parts, &mut sites);
+        let saved = sites
+            .into_iter()
+            .map(|site| {
+                let row = self.typed.saved_conversion(&site);
+                (site, row)
+            })
+            .collect();
+        let mark = self.diags.len();
+        let mut met = Ok(first.clone());
+        for t in &tys[1..] {
+            met = met.and_then(|m| self.element_meet(&m, t));
+        }
+        let elem = match met {
+            Ok(meet) => {
+                for (e, t) in parts.iter().zip(&tys) {
+                    if !meet.assignable_from(t) && !self.flows_into(&meet, t, e) {
+                        let (m, g) = (self.scalars.type_display(&meet), self.scalars.type_display(t));
+                        self.unit_error(Diag::ty(
+                            e.span(),
+                            format!("`[…]`: elements of `{m}` and `{g}`; an array holds one type"),
+                        ));
+                    }
+                }
+                meet
+            }
+            Err((message, sides)) => {
+                let mut d = Diag::ty(array.span(), format!("`[…]`: {message}"));
+                for (at, label) in self.scalars.notes(&[sides.0.as_ref(), sides.1.as_ref()]) {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                first
+            }
+        };
+        let reported = self.diags[mark..].iter().map(|d| (d.span, d.message.clone())).collect();
+        self.array_elements.insert(key, ArrayElements { tys, meet: Some(ArrayMeet { saved, reported }) });
+        elem
+    }
+
+    /// GH #1076 (U3): the meet of two element types of one array literal,
+    /// or why they have none (with the quantity of each side, for the
+    /// notes).
+    #[allow(clippy::type_complexity)]
+    fn element_meet(
+        &self,
+        a: &Ty,
+        b: &Ty,
+    ) -> Result<Ty, (String, (Option<crate::unit_quantities::QType>, Option<crate::unit_quantities::QType>))> {
+        use crate::unit_quantities::QKind;
+        if a == b || matches!(b, Ty::Unknown) {
+            return Ok(a.clone());
+        }
+        if matches!(a, Ty::Unknown) {
+            return Ok(b.clone());
+        }
+        let (an, bn) = (self.scalars.type_display(a), self.scalars.type_display(b));
+        let (aq, bq) = (self.scalars.quantity(a), self.scalars.quantity(b));
+        let kind = |q: &crate::unit_quantities::QType| match q.kind {
+            QKind::Quantity => "a quantity",
+            QKind::Point => "a point",
+        };
+        let why = match (&aq, &bq) {
+            (Some(x), Some(y)) if x.component != y.component => format!(
+                "elements of different quantities, `{}` and `{}`; an array holds one",
+                self.scalars.base_display(x),
+                self.scalars.base_display(y)
+            ),
+            (Some(x), Some(y)) if x.kind != y.kind => {
+                format!("`{an}` is {} and `{bn}` {}; an array holds one or the other", kind(x), kind(y))
+            }
+            (Some(x), Some(y)) if x.kind == QKind::Point && x.base != y.base => format!(
+                "elements of points of different origins, `{an}` and `{bn}`; an array holds one: convert explicitly, `{}(…)`",
+                self.scalars.base_display(x)
+            ),
+            (Some(x), Some(y)) => match self.scalars.meet(&x.denom, &y.denom) {
+                Some(at) => return Ok(self.scalars.at_denomination(x.base, &at)),
+                None => format!("elements of `{an}` and `{bn}`; an array holds one type"),
+            },
+            (Some(q), None) | (None, Some(q)) if matches!(a, Ty::Prim(PrimType::Int)) || matches!(b, Ty::Prim(PrimType::Int)) => {
+                format!(
+                    "elements of `{an}` and `{bn}`: an `Int` is no quantity; a count becomes one by a unit (`n * 1{}`)",
+                    self.scalars.unit_hint(q)
+                )
+            }
+            _ => match (a, b) {
+                (Ty::Array(x, n), Ty::Array(y, m)) if n == m => return Ok(Ty::Array(Box::new(self.element_meet(x, y)?), *n)),
+                _ if !self.holds_quantity(a) && !self.holds_quantity(b) => return Ok(a.clone()),
+                _ => format!("elements of `{an}` and `{bn}`; an array holds one type"),
+            },
+        };
+        Err((why, (aq, bq)))
+    }
+
+    /// The sites of an array literal's elements, a nested literal's
+    /// elements' in its place: where the meet records its rows.
+    fn element_sites(&self, parts: &[Expr], out: &mut Vec<crate::typed_bodies::ConversionSite>) {
+        for e in parts {
+            match e {
+                Expr::Array(inner, _) => self.element_sites(inner, out),
+                _ => out.push(self.site(SiteKind::value(e.span()))),
+            }
+        }
+    }
+
+    /// GH #1076 (U3): undo what an array literal's meet did: its elements'
+    /// rows put back as they were before it, its errors withdrawn.
+    fn withdraw_meet(&mut self, meet: &ArrayMeet) {
+        for (site, row) in &meet.saved {
+            self.typed.restore_conversion(site, row.clone());
+        }
+        for (span, message) in &meet.reported {
+            if let Some(i) = self.diags.iter().rposition(|d| d.span == *span && &d.message == message) {
+                self.diags.remove(i);
+            }
+            self.unit_findings.remove(&(span.start.as_usize(), span.end.as_usize(), message.clone()));
         }
     }
 
@@ -15146,14 +15337,8 @@ impl<'a> Checker<'a> {
                 Ty::Tuple(parts.iter().map(|e| self.check_expr_local(e)).collect())
             }
             Expr::Array(parts, _) => {
-                let elem = if let Some(first) = parts.first() {
-                    self.check_expr_local(first)
-                } else {
-                    Ty::Unknown
-                };
-                for e in parts.iter().skip(1) {
-                    let _ = self.check_expr(e);
-                }
+                let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
+                let elem = self.array_element(expr, parts, tys);
                 Ty::Array(Box::new(elem), Some(parts.len() as u64))
             }
             Expr::ArrayRepeat { val, count, .. } => {

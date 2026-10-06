@@ -934,6 +934,52 @@ fn a_constant_read_in_a_default_is_lowered_from_its_own_rows() {
     }
 }
 
+/// GH #1076 (U3, review 2): each element of an array literal converts from
+/// its own type. The literal was typed by its first element, so in
+/// `[3cent, 2USD]` into `[Money; 2]` the whole array was already a `Money`
+/// array and `2USD` stored `2`; in `[3USD, 2cent]` every element converted
+/// as a `USD` and `2cent` stored `200`. Each order as a field's default, a
+/// parameter's and an annotated binding; a constant beside a literal in
+/// each of the three; and an array nothing types, whose elements meet at
+/// the finer denomination.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_array_literals_elements_each_convert_from_their_own_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    for (array, want, order) in [("[3cent, 2USD]", "3cent\n200cent\n", "cent_usd"), ("[3USD, 2cent]", "300cent\n2cent\n", "usd_cent")] {
+        let field =
+            format!("{decls}type S {{ a: [Money; 2] = {array}; }}\nfn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); }}\n");
+        let param = format!(
+            "{decls}fn take(a: [Money; 2] = {array}) -> [Money; 2] {{ return a; }}\n\
+             fn main() {{ let a = take(); println(a[0]); println(a[1]); }}\n"
+        );
+        let binding = format!("{decls}fn main() {{ let a: [Money; 2] = {array}; println(a[0]); println(a[1]); }}\n");
+        for (src, shape) in [(field, "field"), (param, "param"), (binding, "binding")] {
+            let tag = format!("unit_mixed_array_{shape}_{order}");
+            assert_eq!(build_and_run_probe(&src, &tag), Ok(want.to_string()), "{}", src);
+        }
+    }
+    let constant = format!(
+        "{decls}const AMOUNT: Money = Money(3USD);\n\
+         type S {{ a: [Money; 2] = [AMOUNT, 2USD]; }}\n\
+         fn take(a: [Money; 2] = [AMOUNT, 2USD]) -> [Money; 2] {{ return a; }}\n\
+         fn main() {{ let s = S {{}}; println(s.a[0]); println(s.a[1]); let t = take(); println(t[0]); println(t[1]); \
+         let b: [Money; 2] = [AMOUNT, 2USD]; println(b[0]); println(b[1]); }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&constant, "unit_mixed_array_constant"),
+        Ok("300cent\n200cent\n300cent\n200cent\n300cent\n200cent\n".to_string()),
+        "{}",
+        constant
+    );
+    let meet = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
+                fn main() { let a = [1sec, 1_500msec]; println(a[0]); println(a[1]); }\n";
+    assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

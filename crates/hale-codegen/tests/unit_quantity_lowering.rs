@@ -157,6 +157,24 @@ fn a_constants_cast_is_its_conversion_inside_a_default() {
     assert!(!fun.contains("@Money"), "no call of `Money`: {fun}");
 }
 
+/// U3 review 2: each element of an array literal converts from its own
+/// type. In `[3cent, 2USD]` into `[Money; 2]` the two slots store the two
+/// counts in `cent`, `3` and `200`, with no arithmetic; typed by its first
+/// element, the array was a `Money` array already and `2USD` stored `2`.
+#[test]
+fn a_mixed_array_literal_stores_each_elements_count() {
+    let fun = conv_ir_after(
+        "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n",
+        "() -> Int",
+        "    let a: [Money; 2] = [3cent, 2USD];\n    return (a[0] + a[1]) / 1cent;\n",
+    );
+    let stores: Vec<&str> = fun.lines().filter(|l| l.contains("ptr %array.coerced.slot")).map(str::trim).collect();
+    assert_eq!(stores.len(), 2, "{fun}");
+    assert!(stores[0].starts_with("store i64 3, ptr %array.coerced.slot0,"), "`3cent` stores 3: {fun}");
+    assert!(stores[1].starts_with("store i64 200, ptr %array.coerced.slot1,"), "`2USD` stores 200: {fun}");
+    assert_eq!(count(&fun, "%unit.scale"), 0, "no conversion is computed: {fun}");
+}
+
 /// The text of the function `@name` in `ir`, from its `define` to its
 /// closing brace.
 fn function_ir<'a>(ir: &'a str, name: &str) -> Option<String> {

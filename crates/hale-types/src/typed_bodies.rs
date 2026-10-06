@@ -725,6 +725,27 @@ impl TypingRecord {
         self.body(body).conversions.insert(site, row);
     }
 
+    /// What `site` holds, with the body it is held under: what
+    /// [`Self::restore_conversion`] puts back.
+    pub fn saved_conversion(&self, site: &ConversionSite) -> Option<(u32, ConversionRow)> {
+        let body = *self.conversion_sites.get(site)?;
+        Some((body, self.bodies.get(&body)?.conversions.get(site)?.clone()))
+    }
+
+    /// Put `site` back as [`Self::saved_conversion`] read it: an array
+    /// literal's elements, converted into the elements' meet, convert into
+    /// the element type of the place the array flows into instead (U3).
+    pub fn restore_conversion(&mut self, site: &ConversionSite, saved: Option<(u32, ConversionRow)>) {
+        if let Some(body) = self.conversion_sites.remove(site) {
+            if let Some(b) = self.bodies.get_mut(&body) {
+                b.conversions.remove(site);
+            }
+        }
+        if let Some((body, row)) = saved {
+            self.reconversion(NodeId(body), site.clone(), row);
+        }
+    }
+
     /// Record what discharges the narrowing at `site` (its `or`).
     pub fn discharge(&mut self, site: &ConversionSite, policy: Discharge) {
         let Some(body) = self.conversion_sites.get(site).copied() else { return };

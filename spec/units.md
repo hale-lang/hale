@@ -592,6 +592,31 @@ let bad: Money = odd;                 // error: `Money` from `Money in 1/100 cen
 let k = Kelvin(Celsius(100_000mK));   // 373150 mK
 ```
 
+An **array literal** holding a quantity or a point is typed element by
+element. Where the array's type is known (an annotated binding, an
+argument, a return, a struct field, a default), each element flows into
+the element type from its own type, with its own row: `[3cent, 2USD]`
+into `[Money; 2]` holds 3 and 200 cents, `[3USD, 2cent]` 300 and 2. An
+element that narrows is refused at that element, or discharged by the
+element type's `round:`, as a binding's value is. Where nothing types
+the array (`let a = [1sec, 1_500msec];`), its elements meet as a sum's
+operands do: it is an array of the quantity at the finer of their
+denominations, `[Span in msec; 2]`, each coarser element widened
+exactly (1000 and 1500 milliseconds). Elements of two quantities, a
+quantity beside a point or an `Int`, and two points of different
+origins have no meet, and are refused at the array, naming both. A
+nested array literal meets at each level. An array with no quantity or
+point among its elements is its first element's type.
+
+```hale,fragment
+let a: [Money; 2] = [3cent, 2USD];       // 3 and 200 cents
+let b: [Money; 2] = [3USD, 2cent];       // 300 and 2 cents
+let s: [Seconds; 2] = [1sec, 1_500msec]; // error at `1_500msec`: `Seconds` from `Span in msec` divides by 1,000: …
+let m = [1sec, 1_500msec];               // [Span in msec; 2]: 1000 and 1500
+let x = [1sec, 3cent];                   // error: `[…]`: elements of different quantities, `Span` and `Money`;
+                                         // an array holds one
+```
+
 A default flows into its field's or parameter's type as a binding's
 value flows into its annotation, whatever the type's shape: each
 element of an array literal into the element type, so `p: [Money; 2] =
