@@ -760,6 +760,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[
             consumer_at("effects", EFFECTS, "effects_for"),
             consumer_at("frontier", FRONTIER, "effects_for"),
+            consumer_at("resolve (the stdlib error-type shadow rule: which builtin error a path-call fails with is its row's error column)", RESOLVE, "stdlib_call_error"),
             consumer_at("purity (a stdlib call is impure when its public row carries `syscall`, `block` or `publish`: the effect rows' purity column reads the table and keeps no list of its own)", PURITY, "is_impure_stdlib"),
             consumer("codegen"),
             consumer_at("codegen (the printable rule: `value_to_string_supports` maps a `CodegenTy` into the rule's shape before rendering)", CG, "value_to_string_supports"),
@@ -2298,9 +2299,9 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/stdlib-error-type-shadow",
         title: "Stdlib error-type shadow",
-        // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations.
-        reads: Reads::Rows(&["top_scope"]),
-        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type (error)",
+        // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations: which error a path-call fails with is its stdlib_surface row's error column, or the registered Hale-source fn's `fallible(E)` a path renames to (`stdlib_call_error`, the check's own order). Migrating: the usage is still a walk of the bodies, not the typed bodies' fallible-call rows, and the finding is a `Diag`, not a `law::Violation`.
+        reads: Reads::Rows(&["top_scope", "stdlib_surface"]),
+        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type, read from the call's stdlib surface row (error)",
         family: "stdlib_surface",
         evaluator: Some(site(RESOLVE, "check_stdlib_error_shadowing")),
         state: State::Migrating,
