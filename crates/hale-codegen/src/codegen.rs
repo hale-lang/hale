@@ -1497,6 +1497,7 @@ pub fn build_resolved(
         current_call: None,
         default_invocations: Vec::new(),
         default_evaluation: Vec::new(),
+        current_body: None,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3350,6 +3351,20 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// parameter (`lower_default_in_caller`), around exactly the defaults
     /// left, so the path lowering looks up is the one the checker wrote.
     pub(crate) default_evaluation: Vec<u32>,
+    /// The declaration whose body is being lowered: the id the checker
+    /// recorded that body's rows under (`TypedBodies::body`), a fn's, a
+    /// locus member's (a lifecycle method, a mode, an `on_failure`, a
+    /// closure, a method), or the locus's own for the text the checker
+    /// walks as the locus's (its params' defaults, its birth checks); a
+    /// `const`'s at each use of its initializer. Set where that body
+    /// begins to lower and restored after ([`Self::in_body`]), not per
+    /// LLVM function: a closure or a generic specialization lowered as a
+    /// function of its own is its declaration's body still, as the
+    /// checker keyed it, and a default evaluated in a caller is the
+    /// caller's. Conversion rows are read from this body alone
+    /// (`conversion.rs`), so a stdlib body, whose spans start at 0 like
+    /// the first user file's, never reads a user body's row.
+    pub(crate) current_body: Option<NodeId>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -3494,8 +3509,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// context applies (e.g. a struct const referenced from a fn
     /// body materializes into the caller's arena, same as if the
     /// user had written the struct literal inline). Checked after
-    /// `user_consts` (scalar-literal fast path).
-    user_const_exprs: BTreeMap<String, (Expr, TypeExpr)>,
+    /// `user_consts` (scalar-literal fast path). With the declaration,
+    /// whose body the checker typed the initializer in (`current_body`).
+    user_const_exprs: BTreeMap<String, (Expr, TypeExpr, NodeId)>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
     /// imports. Same shape as `hale_stdlib::PATH_RENAMES` but populated
     /// per build from the user's `import "lib/X" as foo;`
@@ -8982,7 +8998,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // `DefaultInit::Expr` defaults.
                     self.user_const_exprs.insert(
                         c.name.name.clone(),
-                        (c.value.clone(), c.ty.clone()),
+                        (c.value.clone(), c.ty.clone(), c.id),
                     );
                 }
             }
@@ -9599,7 +9615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let mut scope = Scope::default();
-        let end = self.lower_block(&main_decl.body, &mut scope)?;
+        let end = self.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))?;
 
         // Only emit `ret 0` if the body fell through. If it ended
         // in a terminator (e.g. an unreachable `if` whose branches
@@ -13795,6 +13811,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to a unified `fn.exit` epilogue block to avoid duplicating
     /// the destroy + copy at every return site.
     fn lower_user_fn_body(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        // A specialization is its template's declaration (it keeps the
+        // template's id), whose rows the checker recorded.
+        self.in_body(f.id, |cx| cx.lower_user_fn_body_at(f))
+    }
+
+    fn lower_user_fn_body_at(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         if !f.generics.is_empty() {
             // m62: generic templates have no body to lower until
             // call sites pin the type args. lower_call_expr
@@ -23120,10 +23142,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (val, ty) = self.const_param(&pv);
                         return Ok((val, ty));
                     }
-                    if let Some((expr, _ty)) =
+                    if let Some((expr, _ty, decl)) =
                         self.user_const_exprs.get(&mangled).cloned()
                     {
-                        return self.lower_expr(&expr, scope);
+                        return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
                     }
                     // GH #1082: an imported seed's fn used as a VALUE
                     // (`apply(lib::add3)`). A call through the path is
@@ -23184,10 +23206,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the stored initializer expression in the current
                 // scope. Each use site allocates fresh, matching the
                 // semantics of writing the literal inline.
-                if let Some((expr, _ty)) =
+                if let Some((expr, _ty, decl)) =
                     self.user_const_exprs.get(&id.name).cloned()
                 {
-                    return self.lower_expr(&expr, scope);
+                    return self.in_body(decl, |cx| cx.lower_expr(&expr, scope));
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.

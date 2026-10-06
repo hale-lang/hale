@@ -840,6 +840,15 @@ impl TypedBodies {
         self.bodies.get(body)?.conversions.get(site)
     }
 
+    /// The row at `site` in the body declared at `body`, and in no other:
+    /// lowering reads a row from the body it is emitting. A site is
+    /// unique within a body but not across bodies (the stdlib's spans
+    /// start at 0, like the first user file's), so [`Self::conversion`]'s
+    /// one index over every body can answer with another body's row.
+    pub fn conversion_in(&self, body: NodeId, site: &ConversionSite) -> Option<&ConversionRow> {
+        self.bodies.get(&body.0)?.conversions.get(site)
+    }
+
     /// Every conversion's row, body by body.
     pub fn conversions(&self) -> impl Iterator<Item = &ConversionRow> {
         self.bodies.values().flat_map(|b| b.conversions.values())
@@ -1394,5 +1403,39 @@ fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
             }
         }
         Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GH #1076 (U3 polish B): a span is a site within one body only. Two
+    /// bodies record a row at one equal `Value` span (a user fn's
+    /// expression and a stdlib body's, whose spans start at 0 like the
+    /// first user file's): each body's read finds its own row and not the
+    /// other's, a body that recorded none finds none, and the one index
+    /// over every body answers with whichever body recorded last.
+    #[test]
+    fn a_body_reads_its_own_row_at_a_span_another_body_shares() {
+        let span = Span::new(10, 14);
+        let row = |target: &str| {
+            ConversionRow::new(span, Ty::Named("A".into()), Ty::Named(target.into()), ConversionKind::Widening, target.into())
+        };
+        let (user, stdlib, neither) = (NodeId(3), NodeId(900), NodeId(7));
+        let site = ConversionSite::new(SiteKind::value(span), Vec::new());
+        let mut record = TypingRecord::default();
+        record.conversion(user, site.clone(), row("User"));
+        record.conversion(stdlib, site.clone(), row("Stdlib"));
+        let table = TypedBodies {
+            bodies: record.bodies.clone(),
+            conversion_sites: record.conversion_sites.clone(),
+            ..TypedBodies::default()
+        };
+        let target = |r: Option<&ConversionRow>| r.map(|r| r.target.clone());
+        assert_eq!(target(table.conversion_in(user, &site)), Some("User".to_string()));
+        assert_eq!(target(table.conversion_in(stdlib, &site)), Some("Stdlib".to_string()));
+        assert_eq!(target(table.conversion_in(neither, &site)), None);
+        assert_eq!(target(table.conversion(&site)), Some("Stdlib".to_string()), "the one index: the last body's");
     }
 }

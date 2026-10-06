@@ -392,7 +392,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
 
-        let end = self.lower_block(&fd.body, &mut scope)?;
+        let end = self.in_body(fd.id, |cx| cx.lower_block(&fd.body, &mut scope))?;
         if end == BlockEnd::Open {
             // Fall-through. For Unit success (`() fallible(E)`)
             // this is the natural shape: the body fires `fail`

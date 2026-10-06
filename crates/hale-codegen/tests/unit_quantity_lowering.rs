@@ -134,6 +134,98 @@ fn a_literal_in_a_default_is_each_evaluations_count() {
     assert!(calls[0].ends_with(", i64 2000000000)"), "the local is handed the count in `nsec`: {fun}");
 }
 
+/// The text of the function `@name` in `ir`, from its `define` to its
+/// closing brace.
+fn function_ir<'a>(ir: &'a str, name: &str) -> Option<String> {
+    let head = format!("@{name}(");
+    let start = ir.lines().position(|l| l.starts_with("define") && l.contains(&head))?;
+    Some(ir.lines().skip(start).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n"))
+}
+
+const SECONDS: &str = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\ntype Seconds = Span in sec;\n";
+
+/// U3 polish (B): lowering reads a row from the body it is emitting. The
+/// stdlib parses at base 0, so a stdlib expression can stand at the very
+/// span of a user expression the checker converted; a read through the
+/// one index over every body found the user's row there. Here `conv`'s
+/// returned name, which widens `sec` into `msec`, is placed at the span
+/// of a name a stdlib fn the module defines reads as a value (today
+/// `__replace_all`'s `needle`, a `String`, which that read refused to
+/// build): `conv` multiplies, and the stdlib fn carries no conversion at
+/// all.
+#[test]
+fn a_users_row_never_reaches_a_stdlib_expression_at_its_span() {
+    let bin = harness::unique_bin("unit_quantity_stdlib_span");
+    let ir = harness::build_source_ir_text(&format!("{SECONDS}fn main() {{ println(1sec); }}\n"), &bin)
+        .unwrap_or_else(|e| panic!("lowers: {e:?}"));
+    let _ = std::fs::remove_file(&bin);
+    let lead = |name: &str| format!("{SECONDS}fn conv({name}: Seconds) -> Span {{\n    return ");
+    // The first plain name a stdlib fn the module defines reads, far
+    // enough in for `conv`'s `return` to reach it.
+    let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let mut in_fn: Option<String> = None;
+    let mut found: Option<(String, String, usize)> = None;
+    hale_syntax::sites::for_each_named_site(stdlib, &mut |kind, span, name, _| {
+        if found.is_some() {
+            return;
+        }
+        match (kind, name) {
+            (hale_syntax::sites::SiteKind::Fn, Some(f)) => {
+                in_fn = function_ir(&ir, f).is_some().then(|| f.to_string());
+            }
+            (hale_syntax::sites::SiteKind::Use, Some(n)) => {
+                // A name read as a value: not a callee, a receiver or a
+                // field's.
+                let source = hale_stdlib::AP_SOURCE.as_bytes();
+                let read = !matches!(source.get(span.end.as_usize()), Some(b'(' | b'.' | b':'))
+                    && source.get(span.start.as_usize().wrapping_sub(1)) != Some(&b'.');
+                let plain = read
+                    && n.len() <= 8
+                    && n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                    && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                    && !["conv", "main", "sec", "msec"].contains(&n);
+                if let Some(f) = in_fn.as_ref().filter(|_| plain && span.start.as_usize() >= lead(n).len()) {
+                    found = Some((f.clone(), n.to_string(), span.start.as_usize()));
+                }
+            }
+            _ => {}
+        }
+    });
+    let (stdlib_fn, name, at) = found.expect("a name a defined stdlib fn reads");
+    let pad = " ".repeat(at - lead(&name).len());
+    let src = format!("{}{pad}{name};\n}}\nfn main() {{ println(conv(2sec)); }}\n", lead(&name));
+    assert_eq!(&src[at..at + name.len()], name, "`conv`'s returned name stands at the stdlib's span");
+    let bin = harness::unique_bin("unit_quantity_stdlib_span");
+    let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}"));
+    let _ = std::fs::remove_file(&bin);
+    let conv = function_ir(&ir, "conv").expect("`conv` is defined");
+    assert!(conv.contains("%unit.scale = mul i64") && conv.contains(", 1000"), "the user's row: {conv}");
+    let theirs = function_ir(&ir, &stdlib_fn).expect("the stdlib fn is defined");
+    assert_eq!(theirs.matches("unit.").count(), 0, "`{stdlib_fn}` reads `{name}` at {at}, and no row of `conv`'s: {theirs}");
+}
+
+/// U3 polish (B): a user fn whose name starts with `__` and contains a
+/// stdlib declaration's name converts what it converts. The rule this
+/// replaces skipped every row inside a function so named, taking it for
+/// the stdlib's.
+#[test]
+fn a_user_fn_named_like_the_stdlib_converts() {
+    let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let taken = hale_syntax::ast::flat_decls(&stdlib.items)
+        .find_map(|item| match item {
+            hale_syntax::ast::TopDecl::Fn(f) if f.name.name.starts_with("__") => Some(f.name.name.clone()),
+            _ => None,
+        })
+        .expect("a stdlib fn");
+    let name = format!("{taken}_seconds");
+    let src = format!("{SECONDS}fn {name}(s: Seconds) -> Span {{\n    return s;\n}}\nfn main() {{ println({name}(2sec)); }}\n");
+    let bin = harness::unique_bin("unit_quantity_stdlib_name");
+    let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}\n{src}"));
+    let _ = std::fs::remove_file(&bin);
+    let fun = function_ir(&ir, &name).unwrap_or_else(|| panic!("`{name}` is defined"));
+    assert!(fun.contains("%unit.scale = mul i64 %s1, 1000"), "{fun}");
+}
+
 #[test]
 fn a_point_across_origins_is_a_shift() {
     let fun = conv_ir("(c: Celsius) -> Kelvin", "    return Kelvin(c);\n");

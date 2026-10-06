@@ -245,13 +245,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fields: info.fields.clone(),
         });
         let mut scope = Scope::default();
-        let mut out = Ok(());
-        for bc in checks {
-            out = self.emit_birth_check(bc, self_ptr, info, locus_name, &mut scope);
-            if out.is_err() {
-                break;
+        // The checks are the locus's own text, typed in its body.
+        let out = self.in_body(info.decl, |cx| {
+            for bc in checks {
+                cx.emit_birth_check(bc, self_ptr, info, locus_name, &mut scope)?;
             }
-        }
+            Ok(())
+        });
         self.in_params_default = prev_ipd_bc;
         self.current_self = prev_self;
         out

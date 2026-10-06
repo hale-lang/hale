@@ -631,9 +631,10 @@ a positive one for `ceil`; away from zero at half or more for
 `half_even`), or for a checked discharge the remainder's test, the
 quotient on one path and the `InexactError` on the other, joined by
 the `or`. A literal is its row's count. A value converted where it
-stands has its row at its span, never applied inside a stdlib body
-(whose spans overlap the first file's). A literal with no row is a
-missing required row, refused where it is written.
+stands has its row at its span. A row is read from the body being
+emitted, the declaration the checker recorded it in, and never from
+another (a stdlib body's spans overlap the first file's). A literal with
+no row is a missing required row, refused where it is written.
 
 ## Identities and equations
 

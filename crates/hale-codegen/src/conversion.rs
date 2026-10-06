@@ -28,6 +28,11 @@
 //!   binding, an operand) has its row at its span, applied as it is
 //!   lowered ([`Cx::convert_value`]); a printed quantity's row is the
 //!   unit written after its count.
+//!
+//! Every row is read from the body being emitted (`Cx::current_body`),
+//! the declaration the checker recorded it under, and from no other: a
+//! span is a key within one body, and the stdlib's bodies, whose spans
+//! start at 0 like the first user file's, find none of a user body's.
 
 use hale_syntax::ast::{BinOp, Expr};
 use hale_syntax::Span;
@@ -79,14 +84,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     _ => return None,
                 };
-                let row = self.typed.conversion(&self.site(SiteKind::Cast(id.0)))?;
+                let row = self.row(SiteKind::Cast(id.0))?;
                 Some((row.clone(), operand))
             }
             Expr::Binary { op: BinOp::Div, left, span, .. } if self.typed.has_quantity_rows() => {
-                let row = self.typed.conversion(&self.site(SiteKind::divide(*span)))?;
-                if self.lowering_stdlib_body() {
-                    return None;
-                }
+                let row = self.row(SiteKind::divide(*span))?;
                 Some((row.clone(), Some(left.as_ref())))
             }
             _ => None,
@@ -107,11 +109,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return Ok(lowered);
         }
-        let Some(row) = self.typed.conversion(&self.site(SiteKind::value(e.span()))) else { return Ok(lowered) };
+        let Some(row) = self.row(SiteKind::value(e.span())) else { return Ok(lowered) };
         if row.count.is_some() || row.scale.is_none() || matches!(e, hale_syntax::ast::Expr::Literal(..)) {
-            return Ok(lowered);
-        }
-        if self.lowering_stdlib_body() {
             return Ok(lowered);
         }
         let row = row.clone();
@@ -141,7 +140,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         unit: &str,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let count = self.typed.conversion(&self.site(SiteKind::value(span))).and_then(|row| row.count).ok_or_else(|| {
+        let count = self.row(SiteKind::value(span)).and_then(|row| row.count).ok_or_else(|| {
             CodegenError::UnsupportedAt(
                 format!(
                     "quantity literal `{value}{unit}` has no required `expression_typing` row: the checker converts a \
@@ -159,11 +158,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return None;
         }
-        let unit = self.typed.conversion(&self.site(SiteKind::printed(e.span())))?.printed.clone();
-        if self.lowering_stdlib_body() {
-            return None;
-        }
-        unit
+        self.row(SiteKind::printed(e.span()))?.printed.clone()
     }
 
     /// The key of the conversion of `kind` here: inside a default, on the
@@ -173,16 +168,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ConversionSite::new(kind, self.default_evaluation.clone())
     }
 
-    /// Whether the function being emitted is a stdlib declaration's
-    /// body (or a helper of one). The stdlib parses at base 0, so its
-    /// spans overlap the first user file's: a row keyed by a user
-    /// expression's span must never reach a stdlib expression at the same
-    /// span. Every stdlib declaration is `__`-prefixed and the functions
-    /// lowered for it carry its name.
-    fn lowering_stdlib_body(&self) -> bool {
-        let Some(f) = self.current_fn else { return false };
-        let name = f.get_name().to_string_lossy();
-        name.starts_with("__") && stdlib_names().iter().any(|n| name.contains(n.as_str()))
+    /// The row of the conversion of `kind` here, read from the body being
+    /// emitted (`current_body`) and from no other: a span is a key within
+    /// one body only, and a stdlib body's spans start at 0 like the first
+    /// user file's, so the stdlib's bodies, which the checker records no
+    /// row for, find none. Outside every declaration's body, no row.
+    fn row(&self, kind: SiteKind) -> Option<&'p ConversionRow> {
+        self.typed.conversion_in(self.current_body?, &self.site(kind))
+    }
+
+    /// Lower `f` as the body of the declaration `decl`: conversion rows
+    /// are read from it until `f` returns, then from the body before.
+    pub(crate) fn in_body<T>(
+        &mut self,
+        decl: hale_syntax::ast::NodeId,
+        f: impl FnOnce(&mut Self) -> Result<T, CodegenError>,
+    ) -> Result<T, CodegenError> {
+        let prev = self.current_body.replace(decl);
+        let out = f(self);
+        self.current_body = prev;
+        out
     }
 
     /// Lower the conversion `row` of the value `arg`.
@@ -514,26 +519,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         Ok(Converted::Value(tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
     }
-}
-
-/// The bundled stdlib's declaration names (every one `__`-prefixed).
-fn stdlib_names() -> &'static Vec<String> {
-    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| {
-        use hale_syntax::ast::TopDecl;
-        let Some(program) = hale_types::stdlib_bodies::program() else { return Vec::new() };
-        hale_syntax::ast::flat_decls(&program.items)
-            .filter_map(|item| match item {
-                TopDecl::Fn(f) => Some(f.name.name.clone()),
-                TopDecl::Locus(l) => Some(l.name.name.clone()),
-                TopDecl::Type(t) => Some(t.name.name.clone()),
-                TopDecl::Interface(i) => Some(i.name.name.clone()),
-                TopDecl::Perspective(p) => Some(p.name.name.clone()),
-                _ => None,
-            })
-            .filter(|n| n.starts_with("__"))
-            .collect()
-    })
 }
 
 /// A row's bound as a machine `Int`: a bound past an `Int`'s is the

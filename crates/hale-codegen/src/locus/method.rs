@@ -28,6 +28,30 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         &mut self,
         l: &LocusDecl,
     ) -> Result<(), CodegenError> {
+        // The locus's own text is its body; each member that has a body
+        // of its own (a lifecycle method, an `on_failure`, a closure, a
+        // method, a mode) is that member's.
+        self.in_body(l.id, |cx| cx.lower_locus_method_bodies_at(l))
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The declaration id of `l`'s closure `name`: the body its
+    /// assertion and its duration were typed in.
+    fn closure_body(l: &LocusDecl, name: &str) -> hale_syntax::ast::NodeId {
+        l.members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Closure(cd) if cd.name.name == name => Some(cd.id),
+                _ => None,
+            })
+            .unwrap_or(l.id)
+    }
+
+    fn lower_locus_method_bodies_at(
+        &mut self,
+        l: &LocusDecl,
+    ) -> Result<(), CodegenError> {
         if !l.generics.is_empty() {
             // m63: generic templates have no method bodies to
             // lower until pinned by an instantiation site.
@@ -138,7 +162,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     );
                 }
 
-                let end = self.lower_block(&lc.body, &mut scope)?;
+                let end = self.in_body(lc.id, |cx| cx.lower_block(&lc.body, &mut scope))?;
                 if end == BlockEnd::Open {
                     self.flush_dissolve_frame()?;
                     self.close_method_scratch()?;
@@ -257,7 +281,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 (err_slot, CodegenTy::TypeRef("ClosureViolation".into())),
             );
 
-            let end = self.lower_block(&failure_decl.body, &mut scope)?;
+            let end = self.in_body(failure_decl.id, |cx| cx.lower_block(&failure_decl.body, &mut scope))?;
             if end == BlockEnd::Open {
                 // m46-vocab follow-up: on_failure runs
                 // synchronously inside an outer substrate cell
@@ -337,14 +361,16 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 if c_epoch != epoch {
                     continue;
                 }
-                self.lower_closure_check(
-                    &l.name.name,
-                    cname,
-                    assertion,
-                    parent_self_arg,
-                    parent_handler_arg,
-                    c_epoch.clone(),
-                )?;
+                self.in_body(Self::closure_body(l, cname), |cx| {
+                    cx.lower_closure_check(
+                        &l.name.name,
+                        cname,
+                        assertion,
+                        parent_self_arg,
+                        parent_handler_arg,
+                        c_epoch.clone(),
+                    )
+                })?;
             }
 
             // m42 + m44: tick AND explicit fire inside / from
@@ -449,8 +475,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // can reference self.X (e.g.
                 // `duration(self.poll_interval)`).
                 let scope = Scope::default();
-                let (dur_v, _) =
-                    self.lower_expr(&duration_expr, &scope)?;
+                let (dur_v, _) = self.in_body(Self::closure_body(l, cname), |cx| cx.lower_expr(&duration_expr, &scope))?;
                 let dur_n = dur_v.into_int_value();
                 let elapsed = self
                     .builder
@@ -490,14 +515,16 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 self.builder
                     .build_store(last_slot, now)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.lower_closure_check(
-                    &l.name.name,
-                    cname,
-                    assertion,
-                    parent_self_arg,
-                    parent_handler_arg,
-                    c_epoch.clone(),
-                )?;
+                self.in_body(Self::closure_body(l, cname), |cx| {
+                    cx.lower_closure_check(
+                        &l.name.name,
+                        cname,
+                        assertion,
+                        parent_self_arg,
+                        parent_handler_arg,
+                        c_epoch.clone(),
+                    )
+                })?;
                 if let Some(reset_fields) =
                     info.resets_per_epoch_per_closure.get(cname).cloned()
                 {
@@ -829,25 +856,26 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // Downstream handoff: an implicit block-tail return
                 // typechecks as a real return — lower it as one
                 // (same treatment as free-fn bodies in codegen.rs).
-                let end = if ret_ty.is_some() && fd.body.tail.is_some() {
-                    let mut stmts_end = BlockEnd::Open;
-                    for stmt in &fd.body.stmts {
-                        match self.lower_stmt(stmt, &mut scope)? {
-                            BlockEnd::Open => continue,
-                            BlockEnd::Terminated => {
-                                stmts_end = BlockEnd::Terminated;
-                                break;
+                let end = self.in_body(fd.id, |cx| {
+                    Ok(if ret_ty.is_some() && fd.body.tail.is_some() {
+                        let mut stmts_end = BlockEnd::Open;
+                        for stmt in &fd.body.stmts {
+                            match cx.lower_stmt(stmt, &mut scope)? {
+                                BlockEnd::Open => continue,
+                                BlockEnd::Terminated => {
+                                    stmts_end = BlockEnd::Terminated;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    match stmts_end {
-                        BlockEnd::Open => self
-                            .lower_return(fd.body.tail.as_deref(), &scope)?,
-                        BlockEnd::Terminated => BlockEnd::Terminated,
-                    }
-                } else {
-                    self.lower_block(&fd.body, &mut scope)?
-                };
+                        match stmts_end {
+                            BlockEnd::Open => cx.lower_return(fd.body.tail.as_deref(), &scope)?,
+                            BlockEnd::Terminated => BlockEnd::Terminated,
+                        }
+                    } else {
+                        cx.lower_block(&fd.body, &mut scope)?
+                    })
+                })?;
                 if end == BlockEnd::Open {
                     // m42: if this user fn is a registered bus
                     // handler AND the locus has tick closures,
@@ -1062,25 +1090,26 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
 
                 // Downstream handoff: implicit block-tail return —
                 // same treatment as fn members above.
-                let end = if ret_ty.is_some() && md.body.tail.is_some() {
-                    let mut stmts_end = BlockEnd::Open;
-                    for stmt in &md.body.stmts {
-                        match self.lower_stmt(stmt, &mut scope)? {
-                            BlockEnd::Open => continue,
-                            BlockEnd::Terminated => {
-                                stmts_end = BlockEnd::Terminated;
-                                break;
+                let end = self.in_body(md.id, |cx| {
+                    Ok(if ret_ty.is_some() && md.body.tail.is_some() {
+                        let mut stmts_end = BlockEnd::Open;
+                        for stmt in &md.body.stmts {
+                            match cx.lower_stmt(stmt, &mut scope)? {
+                                BlockEnd::Open => continue,
+                                BlockEnd::Terminated => {
+                                    stmts_end = BlockEnd::Terminated;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    match stmts_end {
-                        BlockEnd::Open => self
-                            .lower_return(md.body.tail.as_deref(), &scope)?,
-                        BlockEnd::Terminated => BlockEnd::Terminated,
-                    }
-                } else {
-                    self.lower_block(&md.body, &mut scope)?
-                };
+                        match stmts_end {
+                            BlockEnd::Open => cx.lower_return(md.body.tail.as_deref(), &scope)?,
+                            BlockEnd::Terminated => BlockEnd::Terminated,
+                        }
+                    } else {
+                        cx.lower_block(&md.body, &mut scope)?
+                    })
+                })?;
                 if end == BlockEnd::Open {
                     self.flush_dissolve_frame()?;
                     match ret_ty {
