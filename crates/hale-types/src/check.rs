@@ -13346,11 +13346,13 @@ impl<'a> Checker<'a> {
         }
         // The rows this walk would record (a default's calls typed in the
         // caller's body) are not the caller's: the outermost walk puts
-        // the record back as it found it, with the scope stack's closed
-        // names and the closure walk's expression types, and then keeps
-        // the walk's conversions, which are.
+        // the record back as it found it (undoing what the walk wrote,
+        // not copying the whole record at every literal), with the scope
+        // stack's closed names and the closure walk's expression types,
+        // and then keeps the walk's conversions, which are.
         let saved = self.struct_defaults_typing.is_empty().then(|| {
-            (self.typed.clone(), self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len))
+            self.typed.open_walk();
+            (self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len))
         });
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
@@ -13370,20 +13372,12 @@ impl<'a> Checker<'a> {
         self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_keeping_unit_errors(mark);
-        if let Some((typed, closed, seen)) = saved {
+        if let Some((closed, seen)) = saved {
             // The conversions the walk recorded that the record did not
             // hold yet (an evaluation walked again keeps its first row):
             // lowering reads them where it evaluates the default, so they
             // are the constructing declaration's.
-            let converted: Vec<_> = self
-                .typed
-                .conversion_sites
-                .keys()
-                .filter(|site| !typed.conversion_sites.contains_key(site))
-                .filter_map(|site| Some((site.clone(), self.typed.conversion_at(site)?.clone())))
-                .collect();
-            *self.typed = typed;
-            for (site, row) in converted {
+            for (site, row) in self.typed.close_walk() {
                 self.typed.conversion(self.body, site, row);
             }
             self.locals.closed = closed;
