@@ -1,0 +1,85 @@
+// GH #1076, step U5: the committed form's example (hale-lang/hale#1212,
+// "The unit dialect, concretely") is the dialect's acceptance. This
+// program is its time lines, with its `Bucket` boundary type and its
+// bytes: every stated result is asserted. The line it writes as an
+// error is commented out here and pinned, with its wording, in
+// crates/hale-types/tests/unit_acceptance.rs.
+//
+// The time catalogue (`ns us ms s min h day`) and `Duration` and `Time`
+// are the stdlib's declarations (std::time), so the committed form's
+// lines declaring them are not written here: a program that writes
+// them declares them twice (unit_acceptance.rs pins what it is told).
+//
+// Two comments of the example describe an earlier rule, and the
+// assertions say what holds instead: `d` is a `Duration`, counted in
+// nanoseconds, so `d.in(s)` divides by 1,000,000,000 (not 1000); and
+// `3s + 500ms` is two constants and an addition, not one folded
+// constant (spec/units.md § Literals). The value is the same.
+
+unit B;
+unit KiB = 1024 B;
+unit MiB = 1024 KiB;
+
+type ByteCount = quantity Int in B;
+
+// a boundary type carries its narrowing policy
+type WireStamp = Time in us { round: floor; }
+type Bucket = quantity Int in 100ms { round: floor; }
+
+type Header { send_ns: Int; send_us: Int; }
+
+// A name for `Duration in s`, so a handler can return one.
+type Seconds = Duration in s;
+
+// The `InexactError` of a conversion that divides says by how much.
+fn divisor(e: InexactError) -> Seconds {
+    std::test::assert_eq_str(e.kind, "Duration in s", "the target of `d.in(s)`");
+    std::test::assert_eq_int(e.value, 3_500_000_000, "the count divided: `d` in nanoseconds");
+    std::test::assert_eq_int(e.divisor, 1_000_000_000, "q: a second is 1,000,000,000 ns");
+    return 0s;
+}
+
+fn main() {
+    let hdr = Header { send_ns: 1_700_000_000_123_456_789, send_us: 1_700_000_000_123_400 };
+
+    let d = 3s + 500ms; // Duration, folded at compile time
+    std::test::assert_eq_str(to_string(d), "3500000000ns", "a Duration, printed in nanoseconds");
+    std::test::assert(d == 3500ms, "3s + 500ms is 3500ms");
+    let whole = d.in(s) or 0; // q = 1000: narrowing, fallible, substitute
+    std::test::assert_eq_str(to_string(whole), "0s", "3.5 seconds is no whole number of them: the substitute");
+    let named = d.in(s) or divisor(err);
+    std::test::assert(named == 0s, "the handler's value");
+    let secs = d.in(s) or floor; // policy: total, loss named
+    std::test::assert_eq_str(to_string(secs), "3s", "the policy says what becomes of the remainder");
+    let (sec, rem) = d.split(s); // exact quotient and residue, no policy
+    std::test::assert_eq_int(sec, 3, "the whole seconds");
+    std::test::assert_eq_int(rem / 1ms, 500, "and the rest, exact");
+    let n: Int = d / 1ms; // quantity / quantity is dimensionless
+    std::test::assert_eq_int(n, 3500, "a quantity over a quantity is an Int");
+
+    let a = Time(hdr.send_ns * 1ns);
+    let b = Time(hdr.send_us * 1us);
+    let hop = a - b; // Duration, exact
+    std::test::assert_eq_str(to_string(hop), "56789ns", "the difference of two instants, exact");
+    let ok = hop < 50us; // literal folded, no cast
+    std::test::assert(!ok, "56.789us is not under 50us: compared exactly, at nanoseconds");
+    let out: WireStamp = a; // ns -> us narrows; the type says how
+    std::test::assert_eq_str(to_string(out), "1700000000123456", "the instant in whole microseconds, floored");
+    std::test::assert(out == Time(1_700_000_000_123_456us), "WireStamp's floor");
+
+    // The boundary type: a `Duration` stored into a `Bucket` is counted in
+    // 100ms, rounded down by the type's own policy.
+    let bucket: Bucket = d;
+    std::test::assert_eq_str(to_string(bucket), "35 Bucket", "35 buckets of 100ms");
+    std::test::assert(bucket == 3500ms, "3500ms is 35 buckets exactly");
+    let early: Bucket = 150ms;
+    std::test::assert(early == 100ms, "150ms is one bucket: floor, at compile time");
+    let late = 0ms - 150ms;
+    let before: Bucket = late;
+    std::test::assert(before == 0ms - 200ms, "floor rounds a negative count down");
+
+    // Bytes are a quantity of their own.
+    std::test::assert(4KiB == 4096B, "a KiB is 1024 B");
+    std::test::assert(1MiB == 1024KiB, "a MiB is 1024 KiB");
+    // let bad  = 5ms + 4KiB;                // type error: different quantities
+}

@@ -1,0 +1,48 @@
+// GH #1076, step U5: the committed form's example (hale-lang/hale#1212,
+// "The unit dialect, concretely") is the dialect's acceptance. This
+// program is its identities and ranges: identities and ranges share the
+// one rule, and a width is a range. Every stated result is asserted;
+// the line the example writes as a type error is commented out here and
+// pinned, with its wording, in crates/hale-types/tests/unit_acceptance.rs.
+//
+// `SeqNo` has a range here. The committed form declares it `distinct
+// Int` and writes `SeqNo(n) or wrap`; with no range nothing narrows, the
+// conversion is total and the check refuses its `or` (U2), which
+// unit_acceptance.rs pins.
+
+type OrderId = distinct Int;
+type SeqNo = distinct Int { range: 0..65536; }
+type Session = distinct Int { range: 0..64; }
+type Byte = Int { range: 0..256; }
+
+type Header { session: Int; }
+
+fn main() {
+    let id = OrderId(7);
+    std::test::assert(id == OrderId(7) && id != OrderId(8), "an identity compares with its own kind");
+    std::test::assert_eq_int(Int(id), 7, "and has its Int by a conversion");
+    // let nope = id + id;                   // type error: identity has no arithmetic
+
+    let hdr = Header { session: 12 };
+    let sess = Session(hdr.session) or 0; // range narrowing, substitute
+    std::test::assert_eq_int(Int(sess), 12, "inside the range: the value");
+    let far = Header { session: 70 };
+    let other = Session(far.session) or 0;
+    std::test::assert_eq_int(Int(other), 0, "outside 0..64: the substitute");
+
+    let n: Int = (3s + 500ms) / 1ms;
+    let seq = SeqNo(n) or wrap; // range narrowing, its own vocabulary
+    std::test::assert_eq_int(Int(seq), 3500, "inside the range: the value");
+    std::test::assert_eq_int(Int(SeqNo(70_000) or wrap), 4464, "around the range: 70000 - 65536");
+    std::test::assert_eq_int(Int(SeqNo(0 - 1) or wrap), 65_535, "below it: -1 is the top");
+
+    // A width is a range: a Byte is an Int wherever an Int is expected,
+    // and a narrowing into it says what becomes of a value outside it.
+    let b: Byte = 200;
+    let wide: Int = b + 100;
+    std::test::assert_eq_int(wide, 300, "a range widens for free");
+    let top = Byte(wide) or clamp;
+    std::test::assert_eq_int(top, 255, "clamp: the nearest bound");
+    let low = Byte(wide) or wrap;
+    std::test::assert_eq_int(low, 44, "wrap: 300 - 256");
+}

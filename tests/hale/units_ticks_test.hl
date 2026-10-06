@@ -1,0 +1,37 @@
+// GH #1076, step U5: the committed form's example (hale-lang/hale#1212,
+// "The unit dialect, concretely") is the dialect's acceptance. This
+// program is its ticks and prices: a tick is a unit with no edges, a
+// price is a point over the tick quantity, and half a tick does not
+// exist. Every stated result is asserted; the line the example writes
+// as a type error is commented out here and pinned, with its wording,
+// in crates/hale-types/tests/unit_acceptance.rs.
+
+unit tick; // a unit with no edges is its own component
+
+type Tick = quantity Int in tick;
+type Price = point Tick;
+
+// A price read at run time.
+fn price(n: Int) -> Price {
+    return Price(n * 1tick);
+}
+
+fn main() {
+    let bid = price(100);
+    let ask = price(103);
+
+    let spread = ask - bid; // Tick
+    std::test::assert_eq_str(to_string(spread), "3tick", "two prices differ by a quantity of ticks");
+    std::test::assert_eq_int(spread / 1tick, 3, "three of them");
+    let mid = bid + (spread / 2 or floor); // half a tick does not exist
+    std::test::assert_eq_str(to_string(mid), "101", "1.5 ticks floored: a price prints its count");
+    std::test::assert(mid == Price(101tick), "101 ticks");
+    // let mid = (bid + ask) / 2;            // type error: Price + Price
+
+    // The other ways to say what becomes of the half.
+    std::test::assert(bid + (spread / 2 or ceil) == Price(102tick), "ceil");
+    std::test::assert(bid + (spread / 2 or 0tick) == bid, "not a whole tick: the substitute");
+    let even = price(104) - bid;
+    std::test::assert(bid + (even / 2 or floor) == Price(102tick), "an even spread halves exactly");
+    std::test::assert(bid < mid && mid < ask, "a point orders");
+}
