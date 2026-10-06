@@ -175,12 +175,20 @@ number of units arrives at runtime (a computed retry count, a
 millisecond value from an FFI boundary):
 
 ```hale,fragment
-let backoff = tries * 100ms;    // Int * Duration → Duration
-let half    = timeout / 2;      // Duration / Int → Duration
+let backoff = tries * 100ms;            // Int * Duration → Duration
+let slice   = timeout / workers;        // Duration / Int → Duration
+let half    = timeout / 2 or floor;     // a literal divisor: say how to round
+let frames  = timeout / frame;          // Duration / Duration → Int
 fn sleep_ms(ms: Int) { std::time::sleep(ms * 1ms); }
 ```
 
-(`Duration * Duration` is rejected — ns² isn't a thing.)
+Dividing by a number you wrote down is a question with a remainder
+(5s / 3 is not a whole number of nanoseconds), so the program says
+what happens to it: `or floor`, `or ceil`, `or trunc`, `or half_up`,
+`or half_even`, or `or <value>` for a duration to use when it does
+not divide evenly. A divisor known only at run time divides as
+integers do. Two durations divide to a plain count. (`Duration *
+Duration` is rejected — ns² isn't a thing.)
 
 This is also what the runtime's sleep takes:
 
@@ -334,11 +342,12 @@ fn main() {
     let d = 3s + 500ms;               // 3500000000ns: a Duration counts nanoseconds
     let whole = d.in(s) or floor;     // 3s: the policy says what becomes of the rest
     let (secs, rest) = d.split(s);    // 3 and 500000000ns, nothing lost
+    let n: Int = d / 1ms;             // 3500: two durations divide to a count
     let b: Bucket = d;                // 35 buckets of 100ms
     let start = Time(1_000s);
     let later = start + d;            // a point moves by a quantity
     let took = later - start;         // and two points differ by one
-    println(d, " ", whole, " ", secs, " ", rest, " ", b, " ", took);
+    println(d, " ", whole, " ", secs, " ", rest, " ", n, " ", b, " ", took);
 }
 ```
 

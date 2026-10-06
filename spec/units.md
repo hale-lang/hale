@@ -692,9 +692,13 @@ dialect's conversions (`d.in(ms) or floor` is a `Duration in ms`,
 printed `1500ms`). The names are `ns us ms s min h day` (decision 4):
 `m` and `d` are no time units. A program's unit may join the
 component by an equation against one of these (`unit tick = 10
-ms;`), and never take one's name (law 1). Until U4's second
-correction a `Duration` divided by an `Int` is the integer division
-whatever the divisor, and by another `Duration` is refused.
+ms;`), and never take one's name (law 1). Two quotients changed with
+the declarations (U4's second correction, decision 5): `Duration /
+Duration` is the `Int` every quantity's quotient by itself is (`1h /
+1min` is 60), and a `Duration` divided by an integer literal other
+than one is a narrowing like any quantity's, its `or` saying what
+becomes of the remainder (`timeout / 2 or floor`); a runtime divisor
+is the integer division it always was.
 
 ## Identities and equations
 

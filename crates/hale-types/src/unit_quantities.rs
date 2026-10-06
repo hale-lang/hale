@@ -523,24 +523,6 @@ impl<'r> ScalarTypes<'r> {
                 }
             ))),
             // Quotients.
-            // U4, until its second correction: a `Duration`'s quotient
-            // by an `Int` is the integer division it was.
-            (Div, Some(q), None) if q.kind == QKind::Quantity && is_int(rt) && self.rows.scalars[q.base].primitive.is_some() => {
-                Some(QBinop::Typed { ty: lt.clone(), left: None, right: None })
-            }
-            (Div, Some(a), Some(b))
-                if a.kind == QKind::Quantity
-                    && b.kind == QKind::Quantity
-                    && a.component == b.component
-                    && self.rows.scalars[a.base].primitive.is_some() =>
-            {
-                Some(both(format!(
-                    "`{}` / `{}`: `Duration` cannot be divided by another `Duration` — scale with an Int instead \
-                     (`n * 1ms`, `d / 2`)",
-                    name(lt),
-                    name(rt)
-                )))
-            }
             (Div, Some(q), None) if q.kind == QKind::Quantity && is_int(rt) => {
                 match crate::unit_values::int_literal(r) {
                     Some(1) | None => Some(QBinop::Typed { ty: lt.clone(), left: None, right: None }),

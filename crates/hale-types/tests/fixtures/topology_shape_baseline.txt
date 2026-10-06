@@ -467,6 +467,7 @@ crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
 crates/hale-codegen/tests/dump_pool_residency.rs#1 7d5cf57defcf548e
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 1da3ae7aef880cc6
 crates/hale-codegen/tests/duration_scalar_arith.rs#2 f2c1228edb650960
+crates/hale-codegen/tests/duration_scalar_arith.rs#3 865d341109268295
 crates/hale-codegen/tests/ecdsa_p256.rs#4 81e4f70f0a0aa575
 crates/hale-codegen/tests/effects_conformance.rs#0 d3700f11332caa2b
 crates/hale-codegen/tests/effects_conformance.rs#1 e62d4fd40364b9e3

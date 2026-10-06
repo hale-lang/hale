@@ -167,3 +167,44 @@ fn the_two_keep_their_representation_class() {
 }
 
 const TICK_SHAPE_HASH: u64 = 4251888922411353198;
+
+/// Every error of `body` in a `main`, as (the text at its span, its
+/// message).
+fn errors_in_main(body: &str) -> Vec<(String, String)> {
+    let src = format!("fn main() {{\n{body}}}\n");
+    let program = parse_source(&src).expect("parses");
+    check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| (d.span.slice(&src).to_string(), d.message)).collect()
+}
+
+/// D2 (U4's second correction, decision 5): `Duration ÷ Duration` is an
+/// `Int`, the quotient of the two counts, as for every quantity; a
+/// literal divisor other than one is a narrowing the site discharges
+/// (`timeout / 2 or floor`), and a runtime divisor stays the integer
+/// division it was.
+#[test]
+fn a_duration_over_a_duration_is_an_int_and_a_literal_divisor_narrows() {
+    let setup = "    let d = 1500ms;\n    let e = 1ms;\n    let timeout = 5s;\n    let n = 3;\n";
+    assert_eq!(
+        errors_in_main(&format!("{setup}    let i: Int = d / e;\n    let b: Bool = d / e;\n")),
+        [("d / e".to_string(), "let `b`: expected `Bool`, got `Int`".to_string())]
+    );
+    assert_eq!(
+        errors_in_main(&format!("{setup}    let half = timeout / 2;\n")),
+        [("timeout / 2".to_string(), BARE_HALF.to_string())]
+    );
+    assert_eq!(
+        errors_in_main(&format!(
+            "{setup}    let half: Duration = timeout / 2 or floor;\n    let up: Duration = timeout / 3 or ceil;\n    \
+             let third: Duration = timeout / n;\n    let one: Duration = timeout / 1;\n"
+        )),
+        []
+    );
+    // The two quotients the hand-written rows refused or allowed: `%` is
+    // still no quantity's, and a `Time` is still not divided.
+    assert_eq!(
+        errors_in_main(&format!("{setup}    let r = d % e;\n    let t = std::time::current() / 2;\n")).len(),
+        2
+    );
+}
+
+const BARE_HALF: &str = "`Duration` divided by 2 leaves a remainder: say what happens to the remainder: `or floor`, `or <value>`, `or raise`";

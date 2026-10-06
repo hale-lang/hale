@@ -30,9 +30,10 @@ fn int_times_duration_scales_the_interval() {
         fn main() {
             let t0 = std::time::monotonic();
             sleep_ms(50);
-            // reversed operand order + scalar divide
+            // reversed operand order + scalar divide; a literal divisor
+            // is a narrowing whose `or` says what becomes of the rest (D2)
             std::time::sleep(1ms * 10);
-            std::time::sleep(100ms / 10);
+            std::time::sleep(100ms / 10 or floor);
             let dt = std::time::monotonic() - t0;
             // 50 + 10 + 10 = 70ms of computed sleeps; scheduling
             // jitter only ever adds. An order-of-magnitude bound
@@ -94,7 +95,7 @@ fn the_time_types_print_and_compute_as_they_always_did() {
             println(t + 90s);
             println((t + 2min) - t);
             println(3 * 1h);
-            println(1day / 4);
+            println(1day / 4 or floor);
             println(to_string(250us) + " " + 7ns);
             let n = 4;
             println(n * 1ms + 1s);
@@ -116,5 +117,36 @@ fn the_time_types_print_and_compute_as_they_always_did() {
         "1004000000ns",
         "true",
     ];
+    assert_eq!(String::from_utf8_lossy(&out.stdout), lines.map(|l| format!("{l}\n")).concat());
+}
+
+/// U4's second correction (D2, decision 5): `Duration ÷ Duration` is
+/// the `Int` quotient of the two counts; a literal divisor is a
+/// narrowing its `or` rounds (`floor` toward minus infinity, `ceil`
+/// toward plus); a runtime divisor is the integer division it always
+/// was.
+#[test]
+fn a_duration_quotient_is_an_int_and_a_literal_divisor_rounds() {
+    let src = r#"
+        fn main() {
+            let d = 1500ms;
+            let e = 1ms;
+            let n: Int = d / e;
+            println(n);
+            println(1h / 1min);
+            let timeout = 7ns;
+            println(timeout / 2 or floor);
+            println(timeout / 2 or ceil);
+            println((0ns - timeout) / 2 or floor);
+            let k = 2;
+            println(timeout / k);
+        }
+    "#;
+    let bin = harness::unique_bin(&format!("hale_dur_quot_{}", std::process::id()));
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success());
+    let lines = ["1500", "60", "3ns", "4ns", "-4ns", "3ns"];
     assert_eq!(String::from_utf8_lossy(&out.stdout), lines.map(|l| format!("{l}\n")).concat());
 }
