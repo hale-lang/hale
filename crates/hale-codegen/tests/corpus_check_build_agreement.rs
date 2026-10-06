@@ -572,6 +572,52 @@ fn a_struct_default_cast_is_judged_in_the_literals_scope() {
     );
 }
 
+/// GH #1076 (U1, review 3): an omitted struct default is typed where it
+/// is evaluated, so the check follows the scopes it opens (a block binding
+/// `ItemId` itself), the parameter defaults its calls leave and the field
+/// defaults its own literals leave, each in the constructing fn's scope.
+/// Each shadowing program checks, builds and prints 1. With nothing
+/// shadowing the nested literal's cast, the check refuses it once, at
+/// `Inner`'s default, before the build (`Outer {}` evaluates `Inner {}`,
+/// whose omitted `n` the build would otherwise reach).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
+    let block = "type ItemId = distinct Int;\n\
+                 fn id(n: Int) -> Int { return n; }\n\
+                 type S { n: Int = { let ItemId = id; ItemId(1) }; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    let through_fn = "type ItemId = distinct Int;\n\
+                      fn id(n: Int) -> Int { return n; }\n\
+                      fn take(n: Int = ItemId(1)) -> Int { return n; }\n\
+                      type S { n: Int = take(); }\n\
+                      fn main() { let ItemId = id; let s = S {}; println(s.n); }\n";
+    let nested = "type ItemId = distinct Int;\n\
+                  fn id(n: Int) -> Int { return n; }\n\
+                  type Inner { n: Int = ItemId(1); }\n\
+                  type Outer { inner: Inner = Inner {}; }\n\
+                  fn main() { let ItemId = id; let o = Outer {}; println(o.inner.n); }\n";
+    for (src, tag) in [(block, "unit_block_default"), (through_fn, "unit_fn_default"), (nested, "unit_nested_default")] {
+        assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
+    }
+    let cast = "type ItemId = distinct Int;\n\
+                type Inner { n: Int = ItemId(1); }\n\
+                type Outer { inner: Inner = Inner {}; }\n\
+                fn main() { let o = Outer {}; println(o.inner.n); }\n";
+    let program = hale_syntax::parse_source(cast).expect("parses");
+    let errors: Vec<hale_syntax::Diag> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
+    assert_eq!(errors[0].span.start.as_usize(), cast.find("ItemId(1)").expect("the cast"), "at `Inner`'s default");
+    assert!(errors[0].message.starts_with("type `ItemId`: "), "{}", errors[0].message);
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_nested_default_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

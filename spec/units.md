@@ -243,7 +243,9 @@ what it means at the call: a local, a parameter or a fn of the name is
 the callee, and no cast. A struct field's default is evaluated at each
 literal that leaves the field, in that literal's scope, so a cast in it
 is judged there (once, at the default, however many literals leave
-it); a quantity literal in it is refused at the declaration. Values,
+it), with the scopes the default opens, the parameter defaults its
+calls leave and the field defaults its own literals leave; a quantity
+literal in it is refused at the declaration. Values,
 literals of declared units and the conversions between denominations
 arrive with the next step.
 

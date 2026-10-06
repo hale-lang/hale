@@ -880,6 +880,8 @@ pub fn check_bundle_by_declaration(
         handling: crate::typed_bodies::Handling::Bare,
         unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
         unit_values_refused: BTreeMap::new(),
+        casts_judged_at_literals: false,
+        struct_defaults_typing: Vec::new(),
     };
     // GH #1076: the not-yet boundary's errors belong to every declaration
     // whose walk reaches them (a parameter's default, reached by each
@@ -6138,6 +6140,15 @@ struct Checker<'a> {
     /// reported once where their results are assembled
     /// (`check_bundle_by_declaration`).
     unit_values_refused: BTreeMap<(usize, usize), String>,
+    /// While a type declaration's field defaults are walked for the
+    /// defaults their calls leave: a cast's name there means what each
+    /// literal's scope says, so the cast is judged at the literal
+    /// (`type_omitted_defaults`), not here.
+    casts_judged_at_literals: bool,
+    /// The struct field defaults being typed at a literal that leaves
+    /// them, innermost last: a default whose own literal leaves the same
+    /// field is not entered again.
+    struct_defaults_typing: Vec<*const Expr>,
 }
 
 #[derive(Default)]
@@ -6314,8 +6325,9 @@ impl<'a> Checker<'a> {
                         // GH #1076: so is a quantity literal, whose value is
                         // not typed yet in any scope, so the not-yet
                         // boundary refuses it here. A cast's name means
-                        // what the literal's scope says; it is judged there
-                        // (`refuse_unit_casts_in_omitted_defaults`).
+                        // what the literal's scope says, also in a default
+                        // a call here leaves; it is judged there
+                        // (`type_omitted_defaults`).
                         let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
                         let mut unit_values: Vec<(Span, String)> = Vec::new();
                         let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
@@ -6335,9 +6347,11 @@ impl<'a> Checker<'a> {
                         for (span, what) in unit_values {
                             self.refuse_unit_value(span, what);
                         }
+                        let judged = std::mem::replace(&mut self.casts_judged_at_literals, true);
                         for (id, callee, supplied) in calls {
                             self.record_omitted_defaults(id, callee, supplied);
                         }
+                        self.casts_judged_at_literals = judged;
                     }
                     TypeDeclBody::Enum(variants) => {
                         for v in variants {
@@ -12349,6 +12363,9 @@ impl<'a> Checker<'a> {
     /// a fn of the name is what the name means, as for any other name.
     fn refuse_unit_cast(&mut self, name: &Ident) {
         let Some(display) = self.unit_types.get(name.name.as_str()).copied() else { return };
+        if self.casts_judged_at_literals {
+            return;
+        }
         if self.locals.lookup(&name.name).is_none() && !self.fn_decls.contains_key(&name.name) {
             self.refuse_unit_value(name.span, format!("type `{display}`"));
         }
@@ -12356,32 +12373,53 @@ impl<'a> Checker<'a> {
 
     /// GH #1076: a struct field's default is evaluated at each literal
     /// that leaves the field, in the literal's scope (lowering emits it
-    /// there), so a cast it makes is judged there: what the cast's name
-    /// means is the literal's caller's. A default no literal leaves is
-    /// never evaluated. Its quantity literals are refused at the
-    /// declaration, which they are in any scope.
-    fn refuse_unit_casts_in_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
+    /// there), so it is typed there, as a parameter's default is at each
+    /// call that leaves it (`record_omitted_defaults`): the scopes it
+    /// opens, the parameter defaults its calls leave and the field
+    /// defaults its own literals leave are all walked where they are
+    /// evaluated. The walk is discarded; what survives is the not-yet
+    /// boundary's errors (`discard_since`). A default no literal leaves
+    /// is never evaluated. Its quantity literals are refused at the
+    /// declaration too, which they are in any scope.
+    fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
+        // Only the boundary's errors survive, and without a unit type
+        // the boundary refuses nothing here a declaration did not.
         if self.unit_types.is_empty() {
             return;
         }
-        let mut callees: Vec<&'a Ident> = Vec::new();
-        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
-            if let Expr::Call { callee, .. } = e {
-                if let Expr::Ident(name) = callee.as_ref() {
-                    callees.push(name);
-                }
-            }
-        });
-        for f in fields {
-            if let Some(d) = &f.default {
-                if !inits.iter().any(|i| i.name.name == f.name.name) {
-                    walk.expr(d);
-                }
-            }
+        let omitted: Vec<&'a Expr> = fields
+            .iter()
+            .filter(|f| !inits.iter().any(|i| i.name.name == f.name.name))
+            .filter_map(|f| f.default.as_ref())
+            .filter(|d| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
+            .collect();
+        if omitted.is_empty() {
+            return;
         }
-        for name in callees {
-            self.refuse_unit_cast(name);
+        // The rows this walk would record (a default's calls typed in the
+        // caller's body) are not the caller's: the outermost walk puts
+        // the record back as it found it, with the scope stack's closed
+        // names and the closure walk's expression types.
+        let saved = self.struct_defaults_typing.is_empty().then(|| {
+            (self.typed.clone(), self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len))
+        });
+        let mark = self.walk_mark();
+        let generics = self.generic_params.len();
+        self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        for default in omitted {
+            self.struct_defaults_typing.push(default);
+            let _ = self.check_expr(default);
+            self.struct_defaults_typing.pop();
+        }
+        self.generic_params.truncate(generics);
+        self.discard_since(mark);
+        if let Some((typed, closed, seen)) = saved {
+            *self.typed = typed;
+            self.locals.closed = closed;
+            if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {
+                seen.truncate(at);
+            }
         }
     }
 
@@ -15700,7 +15738,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.refuse_unit_casts_in_omitted_defaults(td, inits);
+                            self.type_omitted_defaults(td, inits);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -15813,7 +15851,7 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.refuse_unit_casts_in_omitted_defaults(decl, inits);
+                self.type_omitted_defaults(decl, inits);
             }
         }
 

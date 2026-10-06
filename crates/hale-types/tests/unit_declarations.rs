@@ -683,6 +683,71 @@ fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
     assert!(boundary.is_empty(), "an alias is no unit-dialect type: {boundary:#?}");
 }
 
+/// The boundary's errors among `src`'s, with the source text at each, and
+/// every other error.
+fn boundary_and_rest(src: &str) -> (Vec<(usize, String)>, Vec<String>) {
+    let all = diags(src);
+    let (boundary, rest): (Vec<&Diag>, Vec<&Diag>) = all
+        .iter()
+        .filter(|d| d.is_error())
+        .partition(|d| d.message.contains(": values of the unit dialect's types are not typed yet (GH #1076)"));
+    (
+        boundary.iter().map(|d| (d.span.start.as_usize(), at(src, d.span).to_string())).collect(),
+        rest.iter().map(|d| d.message.clone()).collect(),
+    )
+}
+
+/// An omitted struct default is typed where it is evaluated, at the
+/// literal that leaves it, with every scope it opens, the parameter
+/// defaults its calls leave and the field defaults its own literals
+/// leave: a name it binds itself, or its caller binds, is the callee; a
+/// cast with nothing shadowing it is one error at its place, wherever the
+/// nesting reaches it; and a default whose literal leaves the same field
+/// is not entered again.
+#[test]
+fn an_omitted_struct_default_is_typed_where_it_is_evaluated() {
+    let prelude = "type ItemId = distinct Int;\nfn id(n: Int) -> Int {\n    return n;\n}\n";
+    let clean = [
+        // The default's own block binds the name.
+        "type S { n: Int = {\n    let ItemId = id;\n    ItemId(1)\n}; }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n",
+        // A parameter default the field's default leaves, in the caller's scope.
+        "fn take(n: Int = ItemId(1)) -> Int {\n    return n;\n}\ntype S { n: Int = take(); }\n\
+         fn main() {\n    let ItemId = id;\n    let s = S {};\n    println(s.n);\n}\n",
+        // A nested literal's omitted field, in the caller's scope.
+        "type Inner { n: Int = ItemId(1); }\ntype Outer { inner: Inner = Inner {}; }\n\
+         fn main() {\n    let ItemId = id;\n    let o = Outer {};\n    println(o.inner.n);\n}\n",
+    ];
+    for body in clean {
+        let src = format!("{prelude}{body}");
+        let (boundary, rest) = boundary_and_rest(&src);
+        assert!(boundary.is_empty() && rest.is_empty(), "checks clean: {boundary:?} {rest:#?}\n{src}");
+    }
+    let refused = [
+        "fn take(n: Int = ItemId(1)) -> Int {\n    return n;\n}\ntype S { n: Int = take(); }\n\
+         fn main() {\n    let s = S {};\n    println(s.n);\n}\n",
+        "type Inner { n: Int = ItemId(1); }\ntype Outer { inner: Inner = Inner {}; }\n\
+         fn main() {\n    let o = Outer {};\n    println(o.inner.n);\n}\n",
+    ];
+    for body in refused {
+        let src = format!("{prelude}{body}");
+        let (boundary, rest) = boundary_and_rest(&src);
+        let place = src.find("ItemId(1)").expect("the cast");
+        assert_eq!(boundary, [(place, "ItemId".to_string())], "one error, at the cast\n{src}");
+        assert!(rest.is_empty(), "the boundary is the only error: {rest:#?}\n{src}");
+    }
+}
+
+/// A default whose own literal leaves the same field stops at that field:
+/// one error, and the walk ends.
+#[test]
+fn a_self_referential_default_chain_is_entered_once() {
+    let src = "type ItemId = distinct Int;\ntype T { n: Int = ItemId(1); t: T = T {}; }\n\
+               fn main() {\n    let x = T {};\n    println(x.n);\n}\n";
+    let (boundary, _) = boundary_and_rest(src);
+    let place = src.find("ItemId(1)").expect("the cast");
+    assert_eq!(boundary, [(place, "ItemId".to_string())]);
+}
+
 /// The rows are one cell of the snapshot, derived once however often the
 /// check and its consumers read them.
 #[test]
