@@ -1,0 +1,89 @@
+// The committed form's example (hale-lang/hale#1212, "The unit dialect,
+// concretely"), as one program `hale check --units` reports on; its
+// report is pinned in check_units.rs. Its stated results are asserted by
+// the acceptance programs (tests/hale/units_*_test.hl), and its commented
+// errors are pinned in crates/hale-types/tests/unit_acceptance.rs.
+//
+// Where it departs from the text as committed, an earlier step decided:
+// - the time catalogue (`ns` … `min`) and `Duration` and `Time` are the
+//   stdlib's declarations (std::time, U4), so the program declares none
+//   of them;
+// - `B`, `cent`, `bp` and `mK` are declared, `bp` against the number
+//   (decision 2), and the byte quantity is `ByteCount` (`Bytes` is the
+//   buffer type, decision 10);
+// - a literal's magnitude and unit are adjacent, `1_250_000USD`
+//   (decision 3);
+// - `SeqNo` has a range, without which `SeqNo(n)` narrows nothing and
+//   `or wrap` is refused (U2);
+// - `hdr`, `bid`, `ask` and `id` are given values, and the line the
+//   example writes as an error (`bad`) is commented out like the others.
+
+unit B;
+unit KiB = 1024 B;
+unit MiB = 1024 KiB;
+
+unit cent;
+unit USD = 100 cent;
+unit bp = 1 / 10000;
+unit pct = 100 bp;
+unit tick; // a unit with no edges is its own component
+unit mK;
+
+// a quantity names its node; the built-ins are the stdlib's declarations
+type ByteCount = quantity Int in B;
+type Money = quantity Int in cent;
+type Ratio = quantity Int in bp;
+type Tick = quantity Int in tick;
+type Price = point Tick;
+
+// two origins over one quantity, no affine edges needed
+type TempDelta = quantity Int in mK;
+type Kelvin = point TempDelta;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+
+// identities and ranges share the one rule; a width is a range
+type OrderId = distinct Int;
+type SeqNo = distinct Int { range: 0..65536; }
+type Session = distinct Int { range: 0..64; }
+type Byte = Int { range: 0..256; }
+
+// a boundary type carries its narrowing policy
+type WireStamp = Time in us { round: floor; }
+type Bucket = quantity Int in 100ms { round: floor; }
+type Ledger = quantity Int in cent { round: half_even; }
+
+type Header { send_ns: Int; send_us: Int; session: Int; }
+
+fn main() {
+    let hdr = Header { send_ns: 1_700_000_000_123_456_789, send_us: 1_700_000_000_123_400, session: 70 };
+    let bid = Price(100tick);
+    let ask = Price(103tick);
+    let id = OrderId(7);
+
+    let d = 3s + 500ms; // Duration, folded at compile time
+    let whole = d.in(s) or 0; // q = 1000: narrowing, fallible, substitute
+    let secs = d.in(s) or floor; // policy: total, loss named
+    let (sec, rem) = d.split(s); // exact quotient and residue, no policy
+    let n: Int = d / 1ms; // quantity / quantity is dimensionless
+
+    let a = Time(hdr.send_ns * 1ns);
+    let b = Time(hdr.send_us * 1us);
+    let hop = a - b; // Duration, exact
+    let ok = hop < 50us; // literal folded, no cast
+    let out: WireStamp = a; // ns -> us narrows; the type says how
+
+    let spread = ask - bid; // Tick
+    let mid = bid + (spread / 2 or floor); // half a tick does not exist
+    // let mid = (bid + ask) / 2;            // type error: Price + Price
+
+    let fee = 1_250_000USD * 3bp; // 375 USD, q = 1, exact
+    let odd = 1_234_567USD * 3bp; // 370.3701 USD: narrowing
+    let paid: Ledger = odd; // policy from the type
+
+    let sess = Session(hdr.session) or 0; // range narrowing, substitute
+    let seq = SeqNo(n) or wrap; // range narrowing, its own vocabulary
+    // let bad  = 5ms + 4KiB;                // type error: different quantities
+    // let nope = id + id;                   // type error: identity has no arithmetic
+
+    println(f"{whole} {secs} {sec} {rem} {n} {hop} {ok} {out} {spread} {mid} {fee} {odd} {paid} {sess} {seq} {id}");
+}

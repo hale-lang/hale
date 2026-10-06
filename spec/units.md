@@ -716,6 +716,27 @@ than one is a narrowing like any quantity's, its `or` saying what
 becomes of the remainder (`timeout / 2 or floor`); a runtime divisor
 is the integer division it always was.
 
+## The witness report
+
+`hale check --units` (spec/projects.md) prints, on stdout, what the
+rows and the conversions column say about a program, and re-checks
+nothing (`hale_types::unit_report`): per scalar declaration of the
+program, in program order, its kind, its denomination and the
+declaration whose `in` fixed it, its policy and the declaration that
+writes it, a point's origin, the headroom of an `Int` at its
+denomination (in the unit it is written against, and in the coarsest
+unit of its component that still counts one), and the narrowest of
+`u8`, `u16`, `u32`, `u64` that holds a declared range (`i64` for a
+range with a negative bound); then per narrowing the check recorded,
+by site, its source and target types, its factor or its range, a
+literal's count converted at compile time, the policy that discharged
+it and where the policy came from (`at the site`, or the `round:` of a
+named declaration), and the headroom of a source whose denomination no
+declaration names. A default evaluated in several places is one line.
+It is outside the hashed model half; `--json` prints the same fields
+as one object (a count as a string). With nothing to report it is the
+one line `units: no quantity is declared`.
+
 ## Identities and equations
 
 A node is a unit declaration's identity, a `SiteRef`: the universe

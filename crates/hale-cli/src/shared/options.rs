@@ -49,6 +49,7 @@ pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-resource-budget",
     "--check-resource-budget",
     "--dump-alloc-summary",
+    "--units",
 ];
 
 pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
@@ -84,6 +85,8 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--sealable", false),
     // GH #736
     ("--flows", false),
+    // GH #1076 (U5)
+    ("--units", false),
     ("--workspace", false),
     // GH #409
     ("--env", true),

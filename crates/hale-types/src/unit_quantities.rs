@@ -269,6 +269,12 @@ impl<'r> ScalarTypes<'r> {
         Ty::Named(format!("{} in {}", row.name, self.spelling(base, component, denom)))
     }
 
+    /// `q`'s denomination as a type's name spells it (`cent`, `100 ms`,
+    /// `1/10000 cent`).
+    pub fn denomination_display(&self, q: &QType) -> String {
+        self.spelling(q.base, q.component, &q.denom)
+    }
+
     /// A quantity's or a point's type as a message writes it.
     pub fn quantity_display(&self, q: &QType) -> String {
         let row = &self.rows.scalars[q.row];

@@ -75,6 +75,29 @@ fn refuse_without_model(target: &Path, doing: &str, b: &hale_frontend::snapshot:
     1
 }
 
+/// Where `span` is for `hale check --units`: its file relative to the
+/// directory checked (so a recorded report does not name the machine it
+/// was made on), its line and column, and its text on one line.
+fn unit_report_place(
+    span: hale_syntax::Span,
+    file_bases: &[(u32, std::path::PathBuf, u32)],
+    sources: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    root: &Path,
+) -> Option<hale_types::unit_report::Place> {
+    let off = span.start.as_usize() as u32;
+    let (base, path, _) = file_bases.iter().find(|(base, _, len)| hale_syntax::file_owns_offset(*base, *len, off))?;
+    let src = sources.get(path)?;
+    let local = span.shifted(base.wrapping_neg());
+    let (line, col) = local.line_col(src);
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let file = canonical(path);
+    let shown = file.strip_prefix(canonical(root)).unwrap_or(&file).display().to_string();
+    Some(hale_types::unit_report::Place {
+        at: format!("{shown}:{line}:{col}"),
+        text: hale_types::unit_report::collapsed(local.slice(src)),
+    })
+}
+
 pub(crate) fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     run_check_impl_env(target, gate_warnings, &[])
 }
@@ -746,6 +769,31 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
                 eprint!("{}", hale_types::sealability::render(&rows));
             }
             Err(_) => eprintln!("sealability: not surveyed: the program does not resolve, so no access was typed"),
+        }
+    }
+    // GH #1076 (U5): the unit dialect's witness report, a query over the
+    // snapshot's unit rows and the conversions its check recorded: every
+    // scalar declaration's denomination, policy, headroom and width, and
+    // every narrowing with its factor and the policy that discharged it.
+    // On stdout, so it can be recorded and diffed; `--json` makes it one
+    // object. It changes nothing the check reports or its exit code.
+    if std::env::args().any(|a| a == "--units") {
+        match (snap.demand_units(), snap.demand_typed_bodies()) {
+            (Ok(units), Ok(typed)) => {
+                let root = match target.parent() {
+                    _ if target.is_dir() => target,
+                    Some(dir) if !dir.as_os_str().is_empty() => dir,
+                    _ => Path::new("."),
+                };
+                let place = |span: hale_syntax::Span| unit_report_place(span, file_bases, sources, root);
+                let report = hale_types::unit_report::report(units, typed, &place);
+                if std::env::args().any(|a| a == "--json") {
+                    println!("{}", hale_types::unit_report::render_json(&report));
+                } else {
+                    print!("{}", hale_types::unit_report::render(&report));
+                }
+            }
+            _ => eprintln!("units: not reported: the program does not resolve, so no conversion was typed"),
         }
     }
     // GH #736: which `release` clause makes a locus type a flow. Whether
