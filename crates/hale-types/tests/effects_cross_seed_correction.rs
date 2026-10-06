@@ -281,13 +281,13 @@ fn host() {
     );
 }
 
-/// operations: 23 of 451 rows.
+/// operations: 23 of 452 rows.
 #[test]
 fn operations() {
     pinned(
         "operations",
-        451,
-        468,
+        452,
+        469,
         "
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}
