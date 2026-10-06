@@ -817,11 +817,15 @@ pub fn check_bundle_by_declaration(
     // And the loci: a `param_accesses` row names its loci by the store
     // that minted them.
     let mut user_loci: BTreeSet<*const LocusDecl> = BTreeSet::new();
+    let mut type_decls: BTreeMap<String, &TypeDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
         for decl in hale_syntax::ast::flat_decls(&program.items) {
             match decl {
                 TopDecl::Fn(f) => {
                     user_fns.insert(f as *const FnDecl);
+                }
+                TopDecl::Type(t) => {
+                    type_decls.entry(t.name.name.clone()).or_insert(t);
                 }
                 TopDecl::Locus(l) => {
                     user_loci.insert(l as *const LocusDecl);
@@ -854,6 +858,7 @@ pub fn check_bundle_by_declaration(
         generic_fns,
         fn_decls,
         locus_decls,
+        type_decls,
         user_fns,
         user_loci,
         access_visits: Vec::new(),
@@ -6012,6 +6017,9 @@ struct Checker<'a> {
     /// Declarations whose omitted defaults are evaluated in the caller.
     fn_decls: BTreeMap<String, &'a FnDecl>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
+    /// The bundle's types, whose field defaults are evaluated at each
+    /// literal that leaves the field (GH #1076).
+    type_decls: BTreeMap<String, &'a TypeDecl>,
     /// The fns and locus methods the bundle's programs declare (not the
     /// bundled stdlib's): the callees the `omitted_args` column records.
     user_fns: BTreeSet<*const FnDecl>,
@@ -6286,23 +6294,16 @@ impl<'a> Checker<'a> {
                         // leave are expanded there: the `omitted_args`
                         // column records them (C3 rest, the review of
                         // #1351).
-                        // GH #1076: so is a quantity literal or a cast to a
-                        // unit-dialect type, whose value is not typed yet,
-                        // so the not-yet boundary refuses it here.
+                        // GH #1076: so is a quantity literal, whose value is
+                        // not typed yet in any scope, so the not-yet
+                        // boundary refuses it here. A cast's name means
+                        // what the literal's scope says; it is judged there
+                        // (`refuse_unit_casts_in_omitted_defaults`).
                         let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
                         let mut unit_values: Vec<(Span, String)> = Vec::new();
-                        let unit_types = &self.unit_types;
-                        let fn_decls = &self.fn_decls;
                         let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
                             Expr::Call { callee, args, id, .. } => {
                                 calls.push((*id, callee.as_ref(), args.len()));
-                                if let Expr::Ident(name) = callee.as_ref() {
-                                    if let Some(display) = unit_types.get(name.name.as_str()) {
-                                        if !fn_decls.contains_key(&name.name) {
-                                            unit_values.push((name.span, format!("type `{display}`")));
-                                        }
-                                    }
-                                }
                             }
                             Expr::Literal(Literal::Quantity { value, unit }, span) => {
                                 unit_values.push((*span, format!("quantity literal `{value}{unit}`")));
@@ -12326,6 +12327,47 @@ impl<'a> Checker<'a> {
         self.unit_values_refused.get(&(d.span.start.as_usize(), d.span.end.as_usize())) == Some(&d.message)
     }
 
+    /// GH #1076: a call through `name` is a cast to a unit-dialect type
+    /// only when the name means the declaration: a local, a parameter or
+    /// a fn of the name is what the name means, as for any other name.
+    fn refuse_unit_cast(&mut self, name: &Ident) {
+        let Some(display) = self.unit_types.get(name.name.as_str()).copied() else { return };
+        if self.locals.lookup(&name.name).is_none() && !self.fn_decls.contains_key(&name.name) {
+            self.refuse_unit_value(name.span, format!("type `{display}`"));
+        }
+    }
+
+    /// GH #1076: a struct field's default is evaluated at each literal
+    /// that leaves the field, in the literal's scope (lowering emits it
+    /// there), so a cast it makes is judged there: what the cast's name
+    /// means is the literal's caller's. A default no literal leaves is
+    /// never evaluated. Its quantity literals are refused at the
+    /// declaration, which they are in any scope.
+    fn refuse_unit_casts_in_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
+        let TypeDeclBody::Struct(fields) = &decl.body else { return };
+        if self.unit_types.is_empty() {
+            return;
+        }
+        let mut callees: Vec<&'a Ident> = Vec::new();
+        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Ident(name) = callee.as_ref() {
+                    callees.push(name);
+                }
+            }
+        });
+        for f in fields {
+            if let Some(d) = &f.default {
+                if !inits.iter().any(|i| i.name.name == f.name.name) {
+                    walk.expr(d);
+                }
+            }
+        }
+        for name in callees {
+            self.refuse_unit_cast(name);
+        }
+    }
+
     /// GH #877: a BARE type name in an annotation that names no
     /// declaration.
     ///
@@ -13090,17 +13132,9 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args, id: call_id, .. } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 // GH #1076: `Money(5)` makes a value of a unit-dialect
-                // type, which is not typed yet. Only when the callee is
-                // the declaration: a local, a parameter or a fn of the
-                // name is what the name means, as for any other name.
+                // type, which is not typed yet.
                 if let Expr::Ident(id) = callee.as_ref() {
-                    if let Some(display) = self.unit_types.get(id.name.as_str()).copied() {
-                        let shadowed =
-                            self.locals.lookup(&id.name).is_some() || self.fn_decls.contains_key(&id.name);
-                        if !shadowed {
-                            self.refuse_unit_value(id.span, format!("type `{display}`"));
-                        }
-                    }
+                    self.refuse_unit_cast(id);
                 }
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
@@ -15649,6 +15683,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
+                            self.refuse_unit_casts_in_omitted_defaults(td, inits);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -15759,6 +15794,11 @@ impl<'a> Checker<'a> {
                 return Ty::Unknown;
             }
         };
+        if let Some(decl) = self.type_decls.get(name).copied() {
+            if kind_label == "type" {
+                self.refuse_unit_casts_in_omitted_defaults(decl, inits);
+            }
+        }
 
         self.check_literal_fields(
             name, &fields, kind_label, requires_all, inits, span,

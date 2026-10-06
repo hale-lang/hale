@@ -238,9 +238,14 @@ a topic's payload, a generic argument, an alias's target, a cast
 `Money(5)`) and a quantity literal in an expression are one located
 error each ("values of the unit dialect's types are not typed yet
 (GH #1076)"), so a program that passes the check holds no value of a
-new type, and its declarations lower to no code. Values, literals of
-declared units and the conversions between denominations arrive with
-the next step.
+new type, and its declarations lower to no code. A cast's name means
+what it means at the call: a local, a parameter or a fn of the name is
+the callee, and no cast. A struct field's default is evaluated at each
+literal that leaves the field, in that literal's scope, so a cast in it
+is judged there (once, at the default, however many literals leave
+it); a quantity literal in it is refused at the declaration. Values,
+literals of declared units and the conversions between denominations
+arrive with the next step.
 
 ## Identities and equations
 

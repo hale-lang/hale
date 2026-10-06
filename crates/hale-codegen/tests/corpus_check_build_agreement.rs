@@ -547,6 +547,31 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     );
 }
 
+/// GH #1076 (U1, review 2): a struct field's default is evaluated in the
+/// scope of the literal that leaves the field, so `ItemId(1)` in it calls
+/// the constructing fn's local `ItemId` (a fn), not the scalar type the
+/// declaration's scope would name. The check judges the cast there, and
+/// the program checks, builds and prints 1; with no local, the check
+/// refuses the cast before the build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_struct_default_cast_is_judged_in_the_literals_scope() {
+    let shadows = "type ItemId = distinct Int;\n\
+                   type S { n: Int = ItemId(1); }\n\
+                   fn id(n: Int) -> Int { return n; }\n\
+                   fn main() { let ItemId = id; let s = S {}; println(s.n); }\n";
+    assert_eq!(build_and_run_probe(shadows, "unit_default_shadow"), Ok("1\n".to_string()), "{}", shadows);
+    let cast = "type ItemId = distinct Int;\n\
+                type S { n: Int = ItemId(1); }\n\
+                fn main() { let s = S {}; println(s.n); }\n";
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_default_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

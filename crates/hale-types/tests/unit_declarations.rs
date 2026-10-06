@@ -646,6 +646,43 @@ fn a_call_through_a_name_that_shadows_a_unit_type_is_no_cast() {
     assert!(boundary.is_empty(), "an alias is no unit-dialect type: {boundary:#?}");
 }
 
+/// A struct field's default is evaluated at each literal that leaves the
+/// field, in the literal's scope, so what a cast's name in it means is
+/// that scope's: a local or a parameter of the constructing fn is the
+/// callee. With nothing shadowing it, the cast is the boundary's one
+/// error at the default, however many literals leave the field; a default
+/// no literal leaves is never evaluated.
+#[test]
+fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
+    let prelude = "type ItemId = distinct Int;\ntype S { n: Int = ItemId(1); }\nfn id(n: Int) -> Int {\n    return n;\n}\n";
+    let shadowed = [
+        "fn main() {\n    let ItemId = id;\n    let s = S {};\n    println(s.n);\n}\n",
+        "fn make(ItemId: fn(Int) -> Int) -> Int {\n    let s = S {};\n    return s.n;\n}\nfn main() {\n    println(make(id));\n}\n",
+    ];
+    for body in shadowed {
+        let src = format!("{prelude}{body}");
+        let errors: Vec<String> = diags(&src).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+        assert!(errors.is_empty(), "the caller's name is the callee: {errors:#?}\n{src}");
+    }
+    let unshadowed = format!(
+        "{prelude}fn other() -> Int {{\n    let s = S {{}};\n    return s.n;\n}}\nfn main() {{\n    let s = S {{}};\n    println(s.n + other());\n}}\n"
+    );
+    let all = diags(&unshadowed);
+    let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "one error: {:#?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let default = unshadowed.find("ItemId(1)").expect("the default");
+    assert_eq!(errors[0].span.start.as_usize(), default, "at the default's `ItemId`");
+    assert_eq!(at(&unshadowed, errors[0].span), "ItemId");
+    assert!(errors[0].message.starts_with("type `ItemId`: values of the unit dialect's types are not typed yet"));
+    let written = format!("{prelude}fn main() {{\n    let s = S {{ n: 2 }};\n    println(s.n);\n}}\n");
+    let errors: Vec<String> = diags(&written).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "a default no literal leaves is never evaluated: {errors:#?}");
+    let alias = unshadowed.replace("distinct Int", "Int");
+    let boundary: Vec<String> =
+        diags(&alias).into_iter().filter(|d| d.message.contains("not typed yet")).map(|d| d.message).collect();
+    assert!(boundary.is_empty(), "an alias is no unit-dialect type: {boundary:#?}");
+}
+
 /// The rows are one cell of the snapshot, derived once however often the
 /// check and its consumers read them.
 #[test]
