@@ -381,11 +381,14 @@ local or a parameter named like the type (`let Money = id;`) is the
 callee of `Money(1)`. A default is evaluated, and typed, at each place
 that leaves it (a struct literal that leaves a field, a call that
 leaves a parameter), in that place's scope, so a default's conversion
-is classified per evaluation: its casts' rows are recorded in the typed
-body of the declaration that evaluates it, by the evaluation and the
-cast, and lowering reads the row of the evaluation it lowers. One
-default can be a conversion in one scope and a call of a local in
-another:
+is classified per evaluation, along the chain of defaults that reaches
+it: its casts' rows are recorded in the typed body of the declaration
+that evaluates it, by the evaluation path (every place on the way in,
+from the outermost: the literal or call that leaves a default, then the
+literal or call in that default that leaves the next) and the cast, and
+lowering reads the row of the path it lowers. One default can be a
+conversion in one scope and a call of a local in another, at the top or
+inside another default:
 
 ```hale,fragment
 type S { n: ItemId = ItemId(1); }
@@ -393,6 +396,10 @@ let a = S {};              // `ItemId(1)`: the conversion
 {
     let ItemId = bump;
     let b = S {};          // `ItemId(1)`: the call `bump(1)`
+}
+type Pair {
+    a: S = S {};                           // the conversion
+    b: S = { let ItemId = bump; S {} };    // the call `bump(1)`
 }
 ```
 

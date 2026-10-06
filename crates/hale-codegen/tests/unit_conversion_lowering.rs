@@ -165,6 +165,29 @@ fn a_defaults_cast_is_lowered_by_its_evaluations_row() {
     assert!(fun.contains("store i64 %fnptr.call, ptr %S.o.ptr"), "{fun}");
 }
 
+/// U2 (review 3): the same inside another default. One `Outer {}`
+/// evaluates `Inner`'s default twice, in `a`'s default and in `b`'s,
+/// where a local shadows the type: each evaluation's path (`Outer {}`,
+/// then its own `Inner {}`) is its key, so `a`'s stores the constant and
+/// `b`'s is the call of the local, the one call `conv` makes.
+#[test]
+fn a_nested_defaults_cast_is_lowered_by_its_paths_row() {
+    let fun = conv_ir_after(
+        "type Inner { o: OrderId = OrderId(1); }\n\
+         type Outer {\n    a: Inner = Inner {};\n    b: Inner = { let OrderId = bump; Inner {} };\n}\n\
+         fn bump(n: Int) -> OrderId { return OrderId(n + 10); }\n",
+        "() -> Int",
+        "    let o = Outer {};\n    return Int(o.a.o) + Int(o.b.o);\n",
+    );
+    // `a`'s `Inner` field is the `Int` itself.
+    assert!(fun.contains("store i64 1, ptr %Inner.o.ptr,"), "{fun}");
+    // `b`'s is what the local's fn returns, given the default's `1`.
+    let calls: Vec<&str> = program_calls(&fun).into_iter().filter(|l| !l.contains("@printf(")).collect();
+    assert_eq!(calls.len(), 1, "one call, the local's: {fun}");
+    assert!(calls[0].contains("%fnptr.call = call i64 %OrderId") && calls[0].ends_with(", i64 1)"), "{fun}");
+    assert!(fun.contains("store i64 %fnptr.call, ptr %Inner.o.ptr"), "{fun}");
+}
+
 /// A call is a conversion when its row says so, and no row is the total
 /// answer: the call is no conversion, whatever its callee is named. A
 /// view without the typed bodies' `conversions` column lowers each cast

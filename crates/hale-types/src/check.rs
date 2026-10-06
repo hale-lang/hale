@@ -889,7 +889,7 @@ pub fn check_bundle_by_declaration(
         unit_values_refused: BTreeMap::new(),
         casts_judged_at_literals: false,
         struct_defaults_typing: Vec::new(),
-        default_evaluation: None,
+        default_evaluation: Vec::new(),
     };
     // GH #1076: the not-yet boundary's errors belong to every declaration
     // whose walk reaches them (a parameter's default, reached by each
@@ -6163,12 +6163,17 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
-    /// While a default is typed where it is evaluated: the outermost
-    /// evaluation's site, the struct literal that leaves a field or the
-    /// call that leaves a parameter. A cast typed there is that
-    /// evaluation's row (`ConversionSite::DefaultCast`), so one default
-    /// evaluated in two scopes has two answers.
-    default_evaluation: Option<u32>,
+    /// While a default is typed where it is evaluated: the evaluation
+    /// path, outermost first, each a struct literal that leaves a field
+    /// or a call that leaves a parameter. A cast typed there is that
+    /// path's row (`ConversionSite::DefaultCast`), so one default
+    /// evaluated in two scopes has two answers, nested or not. Lowering
+    /// keeps the same stack (`Cx::default_evaluation`): both push at the
+    /// same two events, a literal leaving a field
+    /// (`type_omitted_defaults`) and a call leaving a parameter
+    /// (`record_omitted_defaults`), for exactly the walk of the defaults
+    /// left, so the two stacks agree.
+    default_evaluation: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -12548,12 +12553,13 @@ impl<'a> Checker<'a> {
     }
 
     /// The key of the cast at `call`: its call, or inside a default the
-    /// evaluation being typed and its call.
+    /// evaluation path being typed and its call.
     fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
         use crate::typed_bodies::ConversionSite;
-        match self.default_evaluation {
-            Some(at) => ConversionSite::DefaultCast { at, call: call.0 },
-            None => ConversionSite::Cast(call.0),
+        if self.default_evaluation.is_empty() {
+            ConversionSite::Cast(call.0)
+        } else {
+            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: call.0 }
         }
     }
 
@@ -12562,7 +12568,7 @@ impl<'a> Checker<'a> {
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
         let Expr::Call { id, .. } = inner else { return None };
         let site = self.cast_site(*id);
-        let row = self.typed.conversion_at(site)?;
+        let row = self.typed.conversion_at(&site)?;
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
 
@@ -12607,9 +12613,9 @@ impl<'a> Checker<'a> {
     /// boundary's errors (`discard_since`), and the conversion rows of
     /// its casts, which lowering reads where it evaluates the default and
     /// which are kept in the constructing declaration's body, one per
-    /// cast per evaluation (`literal`, or the outermost evaluation this
-    /// one is part of: `default_evaluation`), since the cast's name means
-    /// what that scope says. A default no literal leaves is never
+    /// cast per evaluation (the path of evaluations ending at `literal`:
+    /// `default_evaluation`), since the cast's name means what that
+    /// scope says. A default no literal leaves is never
     /// evaluated. Its quantity literals are refused at the declaration
     /// too, which they are in any scope.
     fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
@@ -12639,14 +12645,16 @@ impl<'a> Checker<'a> {
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
         self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
-        let outer = self.default_evaluation;
-        self.default_evaluation = outer.or(Some(literal.0));
+        // The literal leaves these fields: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`populate_user_type_fields`).
+        self.default_evaluation.push(literal.0);
         for default in omitted {
             self.struct_defaults_typing.push(default);
             let _ = self.check_expr(default);
             self.struct_defaults_typing.pop();
         }
-        self.default_evaluation = outer;
+        self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_since(mark);
         if let Some((typed, closed, seen)) = saved {
@@ -12659,7 +12667,7 @@ impl<'a> Checker<'a> {
                 .conversion_sites
                 .keys()
                 .filter(|site| !typed.conversion_sites.contains_key(site))
-                .filter_map(|site| Some((*site, self.typed.conversion_at(*site)?.clone())))
+                .filter_map(|site| Some((site.clone(), self.typed.conversion_at(site)?.clone())))
                 .collect();
             *self.typed = typed;
             for (site, row) in converted {
@@ -13249,8 +13257,8 @@ impl<'a> Checker<'a> {
     /// Defaults are expressions at the invocation, with the caller's
     /// locals and self. Record their generic calls under the invocation
     /// path and caller monomorph, retaining each default's source site,
-    /// and their casts' conversions under the outermost evaluation
-    /// (`default_evaluation`).
+    /// and their casts' conversions under the evaluation path that ends
+    /// at the invocation (`default_evaluation`).
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -13298,12 +13306,14 @@ impl<'a> Checker<'a> {
         }
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
-        let outer = self.default_evaluation;
-        self.default_evaluation = outer.or(Some(invocation.0));
+        // The call leaves these parameters: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`lower_default_in_caller`).
+        self.default_evaluation.push(invocation.0);
         for default in defaults {
             let _ = self.check_expr(default);
         }
-        self.default_evaluation = outer;
+        self.default_evaluation.pop();
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer.
@@ -14859,7 +14869,7 @@ impl<'a> Checker<'a> {
                 // success is `T`, its failure a `RangeError`, and what
                 // discharges it is its row's policy.
                 let narrowing = self.narrowing_at(inner);
-                if let Some(site) = narrowing {
+                if let Some(site) = &narrowing {
                     use crate::typed_bodies::Discharge;
                     let policy = match disposition {
                         OrDisposition::Raise(_) => Some(Discharge::Raise),

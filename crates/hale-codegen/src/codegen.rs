@@ -1496,7 +1496,7 @@ pub fn build_resolved(
         current_specialization: None,
         current_call: None,
         default_invocations: Vec::new(),
-        default_evaluation: None,
+        default_evaluation: Vec::new(),
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3340,11 +3340,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Source invocation whose omitted defaults are being lowered.
     current_call: Option<NodeId>,
     default_invocations: Vec<u32>,
-    /// While a default is lowered where it is evaluated: the outermost
-    /// evaluation's site (the struct literal that leaves a field, the
-    /// call that leaves a parameter), the key under which the checker
+    /// While a default is lowered where it is evaluated: the evaluation
+    /// path, outermost first, each a struct literal that leaves a field
+    /// or a call that leaves a parameter, the key under which the checker
     /// recorded its casts' conversions (`ConversionSite::DefaultCast`).
-    pub(crate) default_evaluation: Option<u32>,
+    /// It is the checker's stack (`default_evaluation` in `hale-types`'
+    /// `check.rs`) rebuilt: both push at the same two events, a literal
+    /// leaving a field (`populate_user_type_fields`) and a call leaving a
+    /// parameter (`lower_default_in_caller`), around exactly the defaults
+    /// left, so the path lowering looks up is the one the checker wrote.
+    pub(crate) default_evaluation: Vec<u32>,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -14624,7 +14629,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_method_caller = self.current_method_caller_arena.take();
             let saved_fallible = self.current_user_fn_fallible.take();
             let saved_defaults = std::mem::take(&mut self.default_invocations);
-            let saved_evaluation = self.default_evaluation.take();
+            let saved_evaluation = std::mem::take(&mut self.default_evaluation);
             let saved_call = self.current_call.take();
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
@@ -22758,10 +22763,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Err(CodegenError::UnsupportedAt("recursive function default evaluation".into(), default.span()));
         }
         self.default_invocations.push(call.0);
-        let outer = self.default_evaluation;
-        self.default_evaluation = outer.or(Some(call.0));
+        // The call leaves this parameter: one step of the evaluation
+        // path, as the checker's `record_omitted_defaults` pushes it.
+        self.default_evaluation.push(call.0);
         let result = self.lower_expr(default, scope);
-        self.default_evaluation = outer;
+        self.default_evaluation.pop();
         self.default_invocations.pop();
         result
     }

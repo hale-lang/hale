@@ -39,17 +39,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// conversion, whatever its callee is named (a local, a parameter or
     /// a fn the checker resolved the name to, or `Int(x)`, the numeric
     /// builtin), and is lowered as the call it is. Inside a default the
-    /// row is the evaluation's being lowered (`default_evaluation`): the
-    /// default's name means what that scope says, a cast in one and a
-    /// local's call in another.
+    /// row is the evaluation path's being lowered (`default_evaluation`):
+    /// the default's name means what that scope says, a cast in one and
+    /// a local's call in another.
     pub(crate) fn conversion_row(&self, e: &Expr) -> Option<ConversionRow> {
         let Expr::Call { callee, id, .. } = e else { return None };
         let Expr::Ident(_) = callee.as_ref() else { return None };
-        let site = match self.default_evaluation {
-            Some(at) => ConversionSite::DefaultCast { at, call: id.0 },
-            None => ConversionSite::Cast(id.0),
+        let site = if self.default_evaluation.is_empty() {
+            ConversionSite::Cast(id.0)
+        } else {
+            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: id.0 }
         };
-        self.typed.conversion(site).cloned()
+        self.typed.conversion(&site).cloned()
     }
 
     /// Lower the conversion `row` of the value `arg`.

@@ -963,14 +963,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 _ => expr,
             };
-            // A default is evaluated here, in the literal's scope: its
-            // casts are this evaluation's rows (`conversion_row`).
-            let outer = self.default_evaluation;
+            // A default is evaluated here, in the literal's scope: the
+            // literal is one step of the evaluation path, as the
+            // checker's `type_omitted_defaults` pushes it, and its casts
+            // are that path's rows (`conversion_row`).
             if defaulted {
-                self.default_evaluation = outer.or(Some(literal.0));
+                self.default_evaluation.push(literal.0);
             }
             let lowered = self.lower_expr(expr_to_lower, scope);
-            self.default_evaluation = outer;
+            if defaulted {
+                self.default_evaluation.pop();
+            }
             let (val, val_ty) = lowered?;
             // B13 / G30: F.23 Int → Float widening in user-type
             // field-init position. Matches the call-site Int→Float

@@ -392,12 +392,55 @@ fn sites_of(program: &hale_syntax::ast::Program, src: &str, kind: hale_syntax::s
     found
 }
 
+/// The conversion rows of the fn `name`'s body, each as (its evaluation
+/// path, every step's source text from the outermost in, joined by ` / `,
+/// or nothing for a cast the body writes itself; the cast; its
+/// discharge), sorted.
+fn rows_of(
+    table: &hale_types::typed_bodies::TypedBodies,
+    program: &hale_syntax::ast::Program,
+    src: &str,
+    name: &str,
+) -> Vec<(String, String, Option<Discharge>)> {
+    let steps: BTreeMap<u32, String> = sites_of(program, src, hale_syntax::sites::SiteKind::StructLiteral)
+        .into_iter()
+        .chain(sites_of(program, src, hale_syntax::sites::SiteKind::Call))
+        .collect();
+    let id = program
+        .items
+        .iter()
+        .find_map(|i| match i {
+            hale_syntax::ast::TopDecl::Fn(f) if f.name.name == name => Some(f.id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{name}` is declared"));
+    let mut rows: Vec<(String, String, Option<Discharge>)> = table
+        .body(id)
+        .map(|b| {
+            b.conversions
+                .iter()
+                .map(|(site, r)| {
+                    let path = match site {
+                        ConversionSite::DefaultCast { path, .. } => {
+                            path.iter().map(|at| steps[at].as_str()).collect::<Vec<_>>().join(" / ")
+                        }
+                        _ => String::new(),
+                    };
+                    (path, r.span.slice(src).to_string(), r.policy)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.sort_by(|x, y| (&x.0, &x.1).cmp(&(&y.0, &y.1)));
+    rows
+}
+
 /// U2 (fix): an omitted struct field default is typed at each literal
 /// that leaves the field, and its casts' rows are that evaluation's:
 /// kept in the typed body of the declaration that constructs the value,
-/// by the literal and the cast's call (`ConversionSite::DefaultCast`),
-/// where lowering evaluates the default and reads them. A literal that
-/// writes the field evaluates no default.
+/// by the evaluation path and the cast's call
+/// (`ConversionSite::DefaultCast`), where lowering evaluates the default
+/// and reads them. A literal that writes the field evaluates no default.
 #[test]
 fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
     let src = format!(
@@ -413,37 +456,7 @@ fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
         Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
     let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
     let program = snapshot.program().expect("the program");
-    let literals: BTreeMap<u32, String> =
-        sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().collect();
-    // Each row as (the evaluation's literal, or nothing for a cast the
-    // body writes itself; the cast; its discharge).
-    let rows_of = |name: &str| {
-        let id = program
-            .items
-            .iter()
-            .find_map(|i| match i {
-                hale_syntax::ast::TopDecl::Fn(f) if f.name.name == name => Some(f.id),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("`{name}` is declared"));
-        let mut rows: Vec<(String, String, Option<Discharge>)> = table
-            .body(id)
-            .map(|b| {
-                b.conversions
-                    .iter()
-                    .map(|(site, r)| {
-                        let at = match site {
-                            ConversionSite::DefaultCast { at, .. } => literals[at].clone(),
-                            _ => String::new(),
-                        };
-                        (at, r.span.slice(&src).to_string(), r.policy)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        rows.sort_by(|x, y| (&x.0, &x.1).cmp(&(&y.0, &y.1)));
-        rows
-    };
+    let rows_of = |name: &str| rows_of(table, program, &src, name);
     let row = |at: &str, cast: &str, policy| (at.to_string(), cast.to_string(), policy);
     assert_eq!(
         rows_of("first"),
@@ -467,7 +480,7 @@ fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
         .find(|(_, at)| at == "OrderId(1)")
         .expect("the default's cast")
         .0;
-    assert!(table.conversion(ConversionSite::Cast(default_cast)).is_none(), "a default's cast has no evaluation-less row");
+    assert!(table.conversion(&ConversionSite::Cast(default_cast)).is_none(), "a default's cast has no evaluation-less row");
 }
 
 /// U2 (review 2): a default has a row per evaluation, and what
@@ -525,13 +538,71 @@ fn a_defaults_evaluation_where_a_local_shadows_the_type_has_no_row() {
         .find(|(_, at)| at == "OrderId(1)")
         .expect("the default's cast")
         .0;
-    let row = table.conversion(ConversionSite::DefaultCast { at: a, call }).expect("`a`'s evaluation is a conversion");
+    let row = table
+        .conversion(&ConversionSite::DefaultCast { path: vec![a], call })
+        .expect("`a`'s evaluation is a conversion");
     assert_eq!((row.kind, row.target.as_str()), (ConversionKind::Total, "OrderId"));
     assert!(
-        table.conversion(ConversionSite::DefaultCast { at: b, call }).is_none(),
+        table.conversion(&ConversionSite::DefaultCast { path: vec![b], call }).is_none(),
         "`b`'s evaluation calls the local `OrderId`"
     );
-    assert!(table.conversion(ConversionSite::Cast(call)).is_none());
+    assert!(table.conversion(&ConversionSite::Cast(call)).is_none());
+}
+
+/// U2 (review 3): a default evaluated inside another default is keyed by
+/// the whole evaluation path, not the outermost evaluation alone. One
+/// `Outer {}` evaluates `Inner`'s default twice, once in each of its
+/// fields' defaults; `b`'s scope shadows the type, so its path has no
+/// row, while `a`'s keeps the conversion. A parameter default left by a
+/// call in a field default is keyed the same way, the call one step of
+/// the path.
+#[test]
+fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
+    let src = format!(
+        "{DECLS}fn bump(n: Int) -> OrderId {{ return OrderId(n + 10); }}\n\
+         type Inner {{ n: OrderId = OrderId(1); }}\n\
+         fn take(n: OrderId = OrderId(1)) -> OrderId {{ return n; }}\n\
+         type Outer {{\n    a: Inner = Inner {{}};\n    b: Inner = {{ let OrderId = bump; Inner {{}} }};\n    \
+         c: OrderId = take();\n    d: OrderId = {{ let OrderId = bump; take() }};\n}}\n\
+         fn main() {{\n    let o = Outer {{}};\n    println(Int(o.a.n) + Int(o.b.n) + Int(o.c) + Int(o.d));\n}}\n"
+    );
+    let program = parse_source(&src).expect("parses");
+    let errors: Vec<String> =
+        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot =
+        Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let program = snapshot.program().expect("the program");
+    let row = |at: &str, cast: &str| (at.to_string(), cast.to_string(), None);
+    assert_eq!(
+        rows_of(table, program, &src, "main"),
+        [
+            row("", "Int(o.a.n)"),
+            row("", "Int(o.b.n)"),
+            row("", "Int(o.c)"),
+            row("", "Int(o.d)"),
+            row("Outer {} / Inner {}", "OrderId(1)"),
+            row("Outer {} / take()", "OrderId(1)"),
+        ],
+        "`a`'s and `c`'s paths hold the conversion; `b`'s and `d`'s, where a local shadows the type, hold none"
+    );
+    // By key: the two nested evaluations under one `Outer {}`.
+    let literals: Vec<u32> =
+        sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().map(|(id, _)| id).collect();
+    let [inner_a, inner_b, outer] = literals[..] else { panic!("three literals: {literals:?}") };
+    let call = sites_of(program, &src, hale_syntax::sites::SiteKind::Call)
+        .into_iter()
+        .find(|(_, at)| at == "OrderId(1)")
+        .expect("`Inner`'s default cast")
+        .0;
+    let a = table.conversion(&ConversionSite::DefaultCast { path: vec![outer, inner_a], call });
+    assert_eq!(a.map(|r| (r.kind, r.target.as_str())), Some((ConversionKind::Total, "OrderId")));
+    assert!(
+        table.conversion(&ConversionSite::DefaultCast { path: vec![outer, inner_b], call }).is_none(),
+        "`b`'s evaluation calls the local `OrderId`"
+    );
+    assert!(table.conversion(&ConversionSite::DefaultCast { path: vec![outer], call }).is_none());
 }
 
 #[test]

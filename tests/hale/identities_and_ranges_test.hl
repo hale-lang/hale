@@ -28,6 +28,14 @@ type Box<T> { v: T; }
 
 type Slot { id: OrderId = OrderId(1); }
 
+type Pair {
+    plain: Slot = Slot { };
+    shadowed: Slot = {
+        let OrderId = bump;
+        Slot { }
+    };
+}
+
 @form(hashmap)
 locus Book {
     capacity { pool rows of Order indexed_by id; }
@@ -146,4 +154,9 @@ fn main() {
         std::test::assert_eq_int(Int(shadowed.id), 11, "the shadowed default calls the local");
     }
     std::test::assert_eq_int(Int(plain.id), 1, "the default elsewhere is the conversion");
+    // The same inside other defaults: one `Pair { }` evaluates `Slot`'s
+    // default in each of its fields' defaults, each in its own scope.
+    let pair = Pair { };
+    std::test::assert_eq_int(Int(pair.plain.id), 1, "the nested default is the conversion");
+    std::test::assert_eq_int(Int(pair.shadowed.id), 11, "the nested shadowed default calls the local");
 }
