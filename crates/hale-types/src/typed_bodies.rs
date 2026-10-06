@@ -299,17 +299,28 @@ impl Discharge {
 }
 
 /// Where a conversion is: a cast `T(x)` (and a quantity's `.in(u)` and
-/// `.split(u)`) by its call site, the site lowering reads it at; an
-/// implicit conversion by the span of the value that converts (a quantity
-/// literal's own row is there too); a quantity divided by a literal by the
-/// division's span (U3); a printed quantity by the span of the value
-/// printed (U3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// `.split(u)`) by its call site, the site lowering reads it at, or in a
+/// default by its evaluation path and call; an implicit conversion by the
+/// span of the value that converts (a quantity literal's own row is there
+/// too); a quantity divided by a literal by the division's span (U3); a
+/// printed quantity by the span of the value printed (U3).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConversionSite {
     Cast(u32),
     Value { start: u32, end: u32 },
     Divide { start: u32, end: u32 },
     Printed { start: u32, end: u32 },
+    /// A cast in a default, by the evaluation path it was typed on and
+    /// its call: a default is an expression of each scope that leaves
+    /// it, so its name means what that scope says (a local can shadow
+    /// the type there and not elsewhere). `path` is every evaluation
+    /// from the outermost inward: the struct literal that leaves a field
+    /// or the call that leaves a parameter, then the literal or call in
+    /// that default that leaves the next default, and so on, so two
+    /// evaluations of one default under one outer construction, each in
+    /// its own scope, are two keys. Lowering reads the row by the path
+    /// it is lowering.
+    DefaultCast { path: Vec<u32>, call: u32 },
 }
 
 impl ConversionSite {
@@ -682,10 +693,19 @@ impl TypingRecord {
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
-        if matches!(site, ConversionSite::Cast(id) if NodeId(id).is_none()) {
+        let unminted = match &site {
+            ConversionSite::Cast(id) => NodeId(*id).is_none(),
+            ConversionSite::DefaultCast { path, call } => {
+                NodeId(*call).is_none() || path.iter().any(|at| NodeId(*at).is_none())
+            }
+            ConversionSite::Value { .. }
+            | ConversionSite::Divide { .. }
+            | ConversionSite::Printed { .. } => false,
+        };
+        if unminted {
             return;
         }
-        self.conversion_sites.insert(site, body.0);
+        self.conversion_sites.insert(site.clone(), body.0);
         self.body(body).conversions.entry(site).or_insert(row);
     }
 
@@ -693,22 +713,22 @@ impl TypingRecord {
     /// quantity literal's row once the checker knows where the literal
     /// flows (U3).
     pub fn reconversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
-        self.conversion_sites.insert(site, body.0);
+        self.conversion_sites.insert(site.clone(), body.0);
         self.body(body).conversions.insert(site, row);
     }
 
     /// Record what discharges the narrowing at `site` (its `or`).
-    pub fn discharge(&mut self, site: ConversionSite, policy: Discharge) {
-        let Some(body) = self.conversion_sites.get(&site).copied() else { return };
-        if let Some(row) = self.body(NodeId(body)).conversions.get_mut(&site) {
+    pub fn discharge(&mut self, site: &ConversionSite, policy: Discharge) {
+        let Some(body) = self.conversion_sites.get(site).copied() else { return };
+        if let Some(row) = self.body(NodeId(body)).conversions.get_mut(site) {
             row.policy = Some(policy);
         }
     }
 
     /// The row recorded at `site`.
-    pub fn conversion_at(&self, site: ConversionSite) -> Option<&ConversionRow> {
-        let body = self.conversion_sites.get(&site)?;
-        self.bodies.get(body)?.conversions.get(&site)
+    pub fn conversion_at(&self, site: &ConversionSite) -> Option<&ConversionRow> {
+        let body = self.conversion_sites.get(site)?;
+        self.bodies.get(body)?.conversions.get(site)
     }
 
     /// Record that `call` leaves `callee`'s parameters from `from` on to
@@ -804,11 +824,12 @@ impl TypedBodies {
     }
 
     /// The `conversions` column's row at `site`: lowering reads a cast's
-    /// by its call (`ConversionSite::Cast`); `None` for a call that is no
-    /// conversion.
-    pub fn conversion(&self, site: ConversionSite) -> Option<&ConversionRow> {
-        let body = self.conversion_sites.get(&site)?;
-        self.bodies.get(body)?.conversions.get(&site)
+    /// by its call (`ConversionSite::Cast`), and a cast's in a default by
+    /// the evaluation path it lowers and its call (`DefaultCast`); `None`
+    /// for a call that is no conversion there.
+    pub fn conversion(&self, site: &ConversionSite) -> Option<&ConversionRow> {
+        let body = self.conversion_sites.get(site)?;
+        self.bodies.get(body)?.conversions.get(site)
     }
 
     /// Every conversion's row, body by body.
@@ -818,7 +839,7 @@ impl TypedBodies {
 
     /// Every conversion's row with its site, body by body.
     pub fn conversion_sites(&self) -> impl Iterator<Item = (ConversionSite, &ConversionRow)> {
-        self.bodies.values().flat_map(|b| b.conversions.iter().map(|(s, r)| (*s, r)))
+        self.bodies.values().flat_map(|b| b.conversions.iter().map(|(s, r)| (s.clone(), r)))
     }
 
     /// The `omitted_args` column: what each call leaves to its defaults.

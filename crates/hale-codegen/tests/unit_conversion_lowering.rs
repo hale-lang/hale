@@ -6,8 +6,8 @@
 //! emitted shape per policy, as the IR text of one function before the
 //! optimizer runs: a total conversion and a widening emit nothing (no
 //! call, no compare); a narrowing emits its two comparisons and, from the
-//! row's policy, two selects (`clamp`), a remainder corrected for a
-//! negative one (`wrap`), or the checked value the `or`'s join takes
+//! row's policy, two selects (`clamp`), an unsigned remainder of the
+//! distance from the low bound (`wrap`), or the checked value the `or`'s join takes
 //! (a substitute's phi, a handler's call, a raise's store into the
 //! enclosing error). A view without the row lowers the cast as the
 //! ordinary call it then is.
@@ -25,7 +25,12 @@ const DECLS: &str = "type OrderId = distinct Int;\ntype Session = distinct Int {
 
 /// The IR of `conv`, a fn whose body is `body`, before optimization.
 fn conv_ir(signature: &str, body: &str) -> String {
-    let src = format!("{DECLS}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
+    conv_ir_after("", signature, body)
+}
+
+/// The same, with `decls` declared beside the common ones.
+fn conv_ir_after(decls: &str, signature: &str, body: &str) -> String {
+    let src = format!("{DECLS}{decls}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
     let bin = harness::unique_bin("unit_conversion_lowering");
     let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}\n{src}"));
     let _ = std::fs::remove_file(&bin);
@@ -85,15 +90,41 @@ fn a_clamp_is_two_selects() {
     assert_eq!(count(&fun, "br i1"), 0, "a clamp does not branch: {fun}");
 }
 
+/// U2 (review 2): `v - lo` overflowed for a nonzero low bound (an `Int`
+/// near its maximum into `-5..5`). The distance from `lo` is taken on
+/// whichever side `v` is, where the wrapping subtraction is exact as an
+/// unsigned `Int`, and its remainder is unsigned: no signed subtraction
+/// can overflow and no remainder is signed. `Byte`'s `0..256` and a
+/// range with a negative low bound lower to the same shape.
 #[test]
-fn a_wrap_is_a_remainder_corrected_for_negatives() {
-    let fun = conv_ir("(n: Int) -> Int", "    let b = Byte(n) or wrap;\n    return b;\n");
-    assert!(fun.contains("%narrow.wrap.off = sub i64"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.rem = srem i64 %narrow.wrap.off, 256"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.neg = icmp slt i64 %narrow.wrap.rem, 0"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.lift = add i64 %narrow.wrap.rem, 256"), "{fun}");
-    assert!(fun.contains("%narrow.wrap.mod = select i1 %narrow.wrap.neg"), "{fun}");
-    assert_eq!(count(&fun, "narrow.err"), 0, "a wrap cannot fail: {fun}");
+fn a_wrap_is_an_unsigned_remainder_on_either_side_of_the_low_bound() {
+    let byte = conv_ir("(n: Int) -> Int", "    let b = Byte(n) or wrap;\n    return b;\n");
+    let digit = conv_ir_after(
+        "type Digit = Int { range: -5..5; }\n",
+        "(n: Int) -> Int",
+        "    let d = Digit(n) or wrap;\n    return d;\n",
+    );
+    for (fun, lo, width) in [(&byte, "0", "256"), (&digit, "-5", "10")] {
+        for line in [
+            format!("%narrow.wrap.up = icmp sge i64 %n1, {lo}"),
+            format!("%narrow.wrap.above = sub i64 %n1, {lo}"),
+            format!("%narrow.wrap.above.rem = urem i64 %narrow.wrap.above, {width}"),
+            format!("%narrow.wrap.below = sub i64 {lo}, %n1"),
+            format!("%narrow.wrap.below.rem = urem i64 %narrow.wrap.below, {width}"),
+            "%narrow.wrap.below.zero = icmp eq i64 %narrow.wrap.below.rem, 0".to_string(),
+            format!("%narrow.wrap.below.back = sub i64 {width}, %narrow.wrap.below.rem"),
+            "%narrow.wrap.below.off = select i1 %narrow.wrap.below.zero, i64 0, i64 %narrow.wrap.below.back".to_string(),
+            "%narrow.wrap.off = select i1 %narrow.wrap.up, i64 %narrow.wrap.above.rem, i64 %narrow.wrap.below.off"
+                .to_string(),
+            format!("%narrow.wrap = add i64 {lo}, %narrow.wrap.off"),
+        ] {
+            assert!(fun.contains(&line), "{line}\n{fun}");
+        }
+        assert_eq!(count(fun, "srem"), 0, "no signed remainder: {fun}");
+        assert_eq!(count(fun, " nsw "), 0, "no arithmetic that assumes no overflow: {fun}");
+        assert_eq!(count(fun, "narrow.err"), 0, "a wrap cannot fail: {fun}");
+        assert_eq!(count(fun, "br i1"), 0, "a wrap does not branch: {fun}");
+    }
 }
 
 #[test]
@@ -111,6 +142,50 @@ fn a_raise_takes_the_enclosing_error_path() {
     assert!(fun.contains("br i1 %narrow.outside, label %narrow.err, label %narrow.ok"), "{fun}");
     assert!(fun.contains("or.raise.payload.load"), "the RangeError is the fn's error: {fun}");
     assert_eq!(count(&fun, "lotus_root_panic"), 0, "{fun}");
+}
+
+/// U2 (review 2): a default's cast is lowered by the row of the
+/// evaluation being lowered. `S`'s default `OrderId(1)` is evaluated
+/// twice in `conv`: at `a`, where it is the total conversion and emits
+/// nothing, and at `b`, where a local `OrderId` holding `bump` shadows
+/// the type, so it is the call of the local, the one call `conv` makes.
+#[test]
+fn a_defaults_cast_is_lowered_by_its_evaluations_row() {
+    let fun = conv_ir_after(
+        "type S { o: OrderId = OrderId(1); }\nfn bump(n: Int) -> OrderId { return OrderId(n + 10); }\n",
+        "() -> Int",
+        "    let a = S {};\n    {\n        let OrderId = bump;\n        let b = S {};\n        println(Int(b.o));\n    }\n    return Int(a.o);\n",
+    );
+    // `a`'s field is the `Int` itself.
+    assert!(fun.contains("store i64 1, ptr %S.o.ptr,"), "{fun}");
+    // `b`'s is what the local's fn returns, given the default's `1`.
+    let calls: Vec<&str> = program_calls(&fun).into_iter().filter(|l| !l.contains("@printf(")).collect();
+    assert_eq!(calls.len(), 1, "one call, the local's: {fun}");
+    assert!(calls[0].contains("%fnptr.call = call i64 %OrderId") && calls[0].ends_with(", i64 1)"), "{fun}");
+    assert!(fun.contains("store i64 %fnptr.call, ptr %S.o.ptr"), "{fun}");
+}
+
+/// U2 (review 3): the same inside another default. One `Outer {}`
+/// evaluates `Inner`'s default twice, in `a`'s default and in `b`'s,
+/// where a local shadows the type: each evaluation's path (`Outer {}`,
+/// then its own `Inner {}`) is its key, so `a`'s stores the constant and
+/// `b`'s is the call of the local, the one call `conv` makes.
+#[test]
+fn a_nested_defaults_cast_is_lowered_by_its_paths_row() {
+    let fun = conv_ir_after(
+        "type Inner { o: OrderId = OrderId(1); }\n\
+         type Outer {\n    a: Inner = Inner {};\n    b: Inner = { let OrderId = bump; Inner {} };\n}\n\
+         fn bump(n: Int) -> OrderId { return OrderId(n + 10); }\n",
+        "() -> Int",
+        "    let o = Outer {};\n    return Int(o.a.o) + Int(o.b.o);\n",
+    );
+    // `a`'s `Inner` field is the `Int` itself.
+    assert!(fun.contains("store i64 1, ptr %Inner.o.ptr,"), "{fun}");
+    // `b`'s is what the local's fn returns, given the default's `1`.
+    let calls: Vec<&str> = program_calls(&fun).into_iter().filter(|l| !l.contains("@printf(")).collect();
+    assert_eq!(calls.len(), 1, "one call, the local's: {fun}");
+    assert!(calls[0].contains("%fnptr.call = call i64 %OrderId") && calls[0].ends_with(", i64 1)"), "{fun}");
+    assert!(fun.contains("store i64 %fnptr.call, ptr %Inner.o.ptr"), "{fun}");
 }
 
 /// A call is a conversion when its row says so, and no row is the total

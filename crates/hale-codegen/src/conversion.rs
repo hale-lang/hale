@@ -11,9 +11,10 @@
 //!
 //! - Between identities and ranges (U2), a total conversion and a
 //!   widening emit nothing; a narrowing emits the two comparisons and,
-//!   from the row's policy, the clamp (two selects), the wrap (a
-//!   remainder, corrected for a negative one), or the checked value the
-//!   `or`'s join takes (the substitute, the handler, the raise).
+//!   from the row's policy, the clamp (two selects), the wrap (an
+//!   unsigned remainder of the distance from the low bound, on whichever
+//!   side of it the value is), or the checked value the `or`'s join
+//!   takes (the substitute, the handler, the raise).
 //! - Between denominations (U3), one multiplication by the factor's
 //!   numerator (and a point's shift), then, when the denominator is above
 //!   one, one division by it: rounded by the row's policy (`trunc`,
@@ -60,7 +61,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// total answer: the call is no conversion, whatever its callee is
     /// named (a local, a parameter or a fn the checker resolved the name
     /// to, or `Int(x)`, the numeric builtin), and is lowered as the call
-    /// it is; a division is the `Int`'s.
+    /// it is; a division is the `Int`'s. Inside a default a call's row is
+    /// the evaluation path's being lowered (`default_evaluation`): the
+    /// default's name means what that scope says, a cast in one and a
+    /// local's call in another.
     pub(crate) fn conversion_operand<'e>(&self, e: &'e Expr) -> Option<(ConversionRow, Option<&'e Expr>)> {
         match e {
             Expr::Call { callee, id, args, .. } => {
@@ -74,11 +78,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     _ => return None,
                 };
-                let row = self.typed.conversion(ConversionSite::Cast(id.0))?;
+                let site = if self.default_evaluation.is_empty() {
+                    ConversionSite::Cast(id.0)
+                } else {
+                    ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: id.0 }
+                };
+                let row = self.typed.conversion(&site)?;
                 Some((row.clone(), operand))
             }
             Expr::Binary { op: BinOp::Div, left, span, .. } if self.typed.has_quantity_rows() => {
-                let row = self.typed.conversion(ConversionSite::divide(*span))?;
+                let row = self.typed.conversion(&ConversionSite::divide(*span))?;
                 if self.lowering_stdlib_body() {
                     return None;
                 }
@@ -102,7 +111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return Ok(lowered);
         }
-        let Some(row) = self.typed.conversion(ConversionSite::value(e.span())) else { return Ok(lowered) };
+        let Some(row) = self.typed.conversion(&ConversionSite::value(e.span())) else { return Ok(lowered) };
         if row.count.is_some() || row.scale.is_none() || matches!(e, hale_syntax::ast::Expr::Literal(..)) {
             return Ok(lowered);
         }
@@ -136,7 +145,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         unit: &str,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let count = self.typed.conversion(ConversionSite::value(span)).and_then(|row| row.count).ok_or_else(|| {
+        let count = self.typed.conversion(&ConversionSite::value(span)).and_then(|row| row.count).ok_or_else(|| {
             CodegenError::UnsupportedAt(
                 format!(
                     "quantity literal `{value}{unit}` has no required `expression_typing` row: the checker converts a \
@@ -154,7 +163,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return None;
         }
-        let unit = self.typed.conversion(ConversionSite::printed(e.span()))?.printed.clone();
+        let unit = self.typed.conversion(&ConversionSite::printed(e.span()))?.printed.clone();
         if self.lowering_stdlib_body() {
             return None;
         }
@@ -224,8 +233,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// `or wrap`: `lo + ((v - lo) mod (hi - lo))`, the remainder taken
-    /// non-negative.
+    /// `or wrap`: `lo + ((v - lo) mod w)`, `w = hi - lo`, the remainder
+    /// taken non-negative, for every `Int` `v` and without overflow. The
+    /// distance between `v` and `lo` is exact as an unsigned `Int` (the
+    /// wrapping subtraction of the smaller from the larger), so each side
+    /// takes an unsigned remainder: at or above `lo`, `t = (v - lo) urem
+    /// w`; below it, `m = (lo - v) urem w` and `t = w - m`, or `0` when
+    /// `m` is. `t < w`, so `lo + t` is at most `hi - 1`. Both sides are
+    /// computed and one selected: neither can trap.
     fn lower_wrap(&mut self, row: &ConversionRow, v: IntValue<'ctx>, lo: i64, hi: i128) -> Result<IntValue<'ctx>, CodegenError> {
         let width = hi - i128::from(lo);
         let Ok(width) = i64::try_from(width) else {
@@ -236,12 +251,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let i64_t = self.context.i64_type();
         let (lo_c, width_c) = (i64_t.const_int(lo as u64, true), i64_t.const_int(width as u64, true));
-        let off = emit(self.builder.build_int_sub(v, lo_c, "narrow.wrap.off"))?;
-        let rem = emit(self.builder.build_int_signed_rem(off, width_c, "narrow.wrap.rem"))?;
-        let negative = emit(self.builder.build_int_compare(IntPredicate::SLT, rem, i64_t.const_zero(), "narrow.wrap.neg"))?;
-        let lifted = emit(self.builder.build_int_add(rem, width_c, "narrow.wrap.lift"))?;
-        let rem = emit(self.builder.build_select(negative, lifted, rem, "narrow.wrap.mod"))?.into_int_value();
-        emit(self.builder.build_int_add(rem, lo_c, "narrow.wrap"))
+        let zero = i64_t.const_zero();
+        let at_or_above = emit(self.builder.build_int_compare(IntPredicate::SGE, v, lo_c, "narrow.wrap.up"))?;
+        let above = emit(self.builder.build_int_sub(v, lo_c, "narrow.wrap.above"))?;
+        let above = emit(self.builder.build_int_unsigned_rem(above, width_c, "narrow.wrap.above.rem"))?;
+        let below = emit(self.builder.build_int_sub(lo_c, v, "narrow.wrap.below"))?;
+        let below = emit(self.builder.build_int_unsigned_rem(below, width_c, "narrow.wrap.below.rem"))?;
+        let on_lo = emit(self.builder.build_int_compare(IntPredicate::EQ, below, zero, "narrow.wrap.below.zero"))?;
+        let back = emit(self.builder.build_int_sub(width_c, below, "narrow.wrap.below.back"))?;
+        let below = emit(self.builder.build_select(on_lo, zero, back, "narrow.wrap.below.off"))?.into_int_value();
+        let off = emit(self.builder.build_select(at_or_above, above, below, "narrow.wrap.off"))?.into_int_value();
+        emit(self.builder.build_int_add(lo_c, off, "narrow.wrap"))
     }
 
     /// A narrowing its `or` discharges: the value in the success slot,

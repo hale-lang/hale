@@ -25,9 +25,19 @@ use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, ConversionS
 
 /// Every fallible call `table` holds that nothing handles, as errors;
 /// then every narrowing nothing discharges (GH #1076, U2), from the
-/// `conversions` column.
+/// `conversions` column, once per cast: a cast in a default has a row
+/// per evaluation (`ConversionSite::DefaultCast`), and what discharges
+/// it is written in the default, the same in each. A quantity's narrowing
+/// (U3) is judged through the same filter; two different judgments at
+/// one span (a division by a literal that also flows into a narrower
+/// denomination) both stand.
 pub fn bare_fallible_calls(table: &TypedBodies) -> Vec<Diag> {
-    table.fallible_calls().filter_map(judge).chain(table.conversion_sites().filter_map(judge_narrowing)).collect()
+    let mut judged = std::collections::BTreeSet::new();
+    let narrowings = table
+        .conversion_sites()
+        .filter_map(judge_narrowing)
+        .filter(|d| judged.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone())));
+    table.fallible_calls().filter_map(judge).chain(narrowings).collect()
 }
 
 /// A narrowing (`Session(n)`) is fallible like a call: a value outside

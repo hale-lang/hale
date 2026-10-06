@@ -651,7 +651,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // enum payloads, expressions producing already-allocated
         // pointers, etc.).
         let stack_payload: Option<(PointerValue<'ctx>, String)> = match value {
-            Expr::Struct { path, inits, .. } => {
+            Expr::Struct { path, inits, id: literal, .. } => {
                 let mangled: Option<String> = if path.segments.len() == 1 {
                     let name = path.segments[0].name.clone();
                     if self.user_types.contains_key(&name) {
@@ -684,6 +684,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         &format!("{}.send.payload", mname),
                     )?;
                     self.populate_user_type_fields(
+                        *literal,
                         &mname, &info, inits, slot, scope,
                     )?;
                     Some((slot, mname))
@@ -1945,7 +1946,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // Stack-alloca fast path for bare struct literals
         // (mirrors the normal lower_send shape).
         let stack_payload: Option<(PointerValue<'ctx>, String)> = match value {
-            Expr::Struct { path, inits, .. } => {
+            Expr::Struct { path, inits, id: literal, .. } => {
                 let mangled: Option<String> = if path.segments.len() == 1 {
                     let name = path.segments[0].name.clone();
                     if self.user_types.contains_key(&name) {
@@ -1978,6 +1979,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         &format!("{}.shm.send.payload", mname),
                     )?;
                     self.populate_user_type_fields(
+                        *literal,
                         &mname, &info, inits, slot, scope,
                     )?;
                     Some((slot, mname))

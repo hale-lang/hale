@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    Expr, Ident, Literal, PrimType, QualifiedName, StructInit, TopDecl,
+    Expr, Ident, Literal, NodeId, PrimType, QualifiedName, StructInit, TopDecl,
     TypeDecl, TypeDeclBody, TypeExpr,
 };
 use inkwell::values::{BasicValueEnum, PointerValue};
@@ -855,6 +855,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// literals like `BookSignalSnapshot { buys: let_bound_value }`).
     pub(crate) fn populate_user_type_fields(
         &mut self,
+        literal: NodeId,
         type_name: &str,
         info: &TypeInfo<'ctx>,
         inits: &[StructInit],
@@ -921,6 +922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 continue;
             }
+            let defaulted = !by_name.contains_key(fname.as_str());
             let expr: &Expr = match by_name.get(fname.as_str()).copied() {
                 Some(e) => e,
                 None => info
@@ -961,7 +963,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 _ => expr,
             };
-            let (val, val_ty) = self.lower_expr(expr_to_lower, scope)?;
+            // A default is evaluated here, in the literal's scope: the
+            // literal is one step of the evaluation path, as the
+            // checker's `type_omitted_defaults` pushes it, and its casts
+            // are that path's rows (`conversion_row`).
+            if defaulted {
+                self.default_evaluation.push(literal.0);
+            }
+            let lowered = self.lower_expr(expr_to_lower, scope);
+            if defaulted {
+                self.default_evaluation.pop();
+            }
+            let (val, val_ty) = lowered?;
             // B13 / G30: F.23 Int → Float widening in user-type
             // field-init position. Matches the call-site Int→Float
             // coercion in `lower_user_fn_call`.

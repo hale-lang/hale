@@ -345,7 +345,7 @@ range.
 |---|---|
 | `or <value>` | the value, a value of the target held to its range |
 | `or clamp` | the nearest bound |
-| `or wrap` | `low + ((v - low) mod (high - low))`, the remainder taken non-negative |
+| `or wrap` | `low + ((v - low) mod w)`, `w = high - low`, the remainder taken non-negative, for every `Int` `v` (its extremes included), computed without overflow |
 | `or handler(err)` | the handler's result, given the `RangeError` |
 | `or raise` | the enclosing fallible fn fails with the `RangeError` |
 | `or fail <payload>` | the enclosing fallible fn fails with its own payload |
@@ -366,16 +366,40 @@ let s = Session(n);        // error: `Session(…)` narrows `Int` into `Session`
 
 **Lowering** reads each cast's row and decides nothing: a total
 conversion and a widening emit nothing; a narrowing emits its two
-comparisons and, from the row's policy, two selects (`clamp`), a
-remainder lifted when negative (`wrap`), or the value and the
+comparisons and, from the row's policy, two selects (`clamp`), an
+unsigned remainder of the distance from `low` on whichever side of it
+the value is, exact in an `Int`'s 64 bits (`wrap`), or the value and the
 `RangeError` the `or`'s join takes. Lowering decides nothing by a
 name: a call is a conversion when the checker recorded a row for it,
 and a call with no row is the ordinary call the checker resolved, so a
 local or a parameter named like the type (`let Money = id;`) is the
-callee of `Money(1)`. A struct field's default is typed at each
-literal that leaves the field, so its casts' rows are recorded in the
-typed body of the declaration that constructs the value, one per cast
-however many literals leave the field.
+callee of `Money(1)`. A default is evaluated, and typed, at each place
+that leaves it (a struct literal that leaves a field, a call that
+leaves a parameter), in that place's scope, so a default's conversion
+is classified per evaluation, along the chain of defaults that reaches
+it: its casts' rows are recorded in the typed body of the declaration
+that evaluates it, by the evaluation path (every place on the way in,
+from the outermost: the literal or call that leaves a default, then the
+literal or call in that default that leaves the next) and the cast, and
+lowering reads the row of the path it lowers (a quantity's `.in(u)` and
+`.split(u)` are casts here; a quantity literal's count and a value
+converted where it stands, which no local can rename, are one row each
+at the value, the same in every evaluation). One default can be a
+conversion in one scope and a call of a local in another, at the top or
+inside another default:
+
+```hale,fragment
+type S { n: ItemId = ItemId(1); }
+let a = S {};              // `ItemId(1)`: the conversion
+{
+    let ItemId = bump;
+    let b = S {};          // `ItemId(1)`: the call `bump(1)`
+}
+type Pair {
+    a: S = S {};                           // the conversion
+    b: S = { let ItemId = bump; S {} };    // the call `bump(1)`
+}
+```
 
 **Layout.** Wherever a type reaches a representation, an identity or a
 range is its `Int`: it prints as its `Int`, it is a legal hashmap key

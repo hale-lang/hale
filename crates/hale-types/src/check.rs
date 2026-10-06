@@ -883,6 +883,7 @@ pub fn check_bundle_by_declaration(
         defaults_judged_at_literals: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
+        default_evaluation: Vec::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -6147,6 +6148,17 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
+    /// While a default is typed where it is evaluated: the evaluation
+    /// path, outermost first, each a struct literal that leaves a field
+    /// or a call that leaves a parameter. A cast typed there is that
+    /// path's row (`ConversionSite::DefaultCast`), so one default
+    /// evaluated in two scopes has two answers, nested or not. Lowering
+    /// keeps the same stack (`Cx::default_evaluation`): both push at the
+    /// same two events, a literal leaving a field
+    /// (`type_omitted_defaults`) and a call leaving a parameter
+    /// (`record_omitted_defaults`), for exactly the walk of the defaults
+    /// left, so the two stacks agree.
+    default_evaluation: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -12617,7 +12629,7 @@ impl<'a> Checker<'a> {
     /// `x` into `T`, its row at the call (a narrowing `T`'s `round:`
     /// discharges, or the `or` after the call), or refused.
     fn quantity_cast(&mut self, call: NodeId, span: Span, to: Ty, q: crate::unit_quantities::QType, arg: &Expr) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge};
         let from = self.check_expr(arg);
         if matches!(from, Ty::Unknown) {
             return to;
@@ -12645,7 +12657,8 @@ impl<'a> Checker<'a> {
                             let mut row =
                                 ConversionRow::new(span, to.clone(), to.clone(), ConversionKind::Widening, self.scalars.type_display(&to));
                             row.scale = Some(one);
-                            self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                            let site = self.cast_site(call);
+                            self.typed.conversion(self.body, site, row);
                         }
                         return to;
                     }
@@ -12658,7 +12671,8 @@ impl<'a> Checker<'a> {
                         row.policy = q.policy.map(|policy| Discharge::Round { policy, from_type: true });
                     }
                     row.scale = Some(scale);
-                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                    let site = self.cast_site(call);
+                    self.typed.conversion(self.body, site, row);
                 }
             }
         }
@@ -12679,7 +12693,7 @@ impl<'a> Checker<'a> {
         q: crate::unit_quantities::QType,
         arg: &Expr,
     ) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
         let denom = match self.scalars.named_denomination(&q, arg) {
             Ok(d) => d,
             Err(why) => {
@@ -12696,7 +12710,8 @@ impl<'a> Checker<'a> {
                         if scale.factor.is_integral() { ConversionKind::Widening } else { ConversionKind::Narrowing };
                     let mut row = ConversionRow::new(span, t, to.clone(), kind, self.scalars.type_display(&to));
                     row.scale = Some(scale);
-                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                    let site = self.cast_site(call);
+                    self.typed.conversion(self.body, site, row);
                 }
                 Ok(_) => {}
                 Err(why) => self.unit_error(Diag::ty(span, why)),
@@ -12724,7 +12739,8 @@ impl<'a> Checker<'a> {
             let mut row = ConversionRow::new(span, t, rest.clone(), ConversionKind::Widening, self.scalars.type_display(&rest));
             row.scale = Some(scale);
             row.split = Some(divisor);
-            self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+            let site = self.cast_site(call);
+            self.typed.conversion(self.body, site, row);
         }
         Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
     }
@@ -12805,7 +12821,7 @@ impl<'a> Checker<'a> {
     /// The cast `to(x)` of a value of `from`, classified by the scalar
     /// rules: refused at `span` with their message, or recorded as a row.
     fn check_cast(&mut self, call: NodeId, span: Span, to: Ty, from: Ty, target: &str) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
         match self.scalars.cast(&to, &from) {
             Err(why) => self.diags.push(Diag::ty(span, why)),
             Ok(kind) => {
@@ -12821,23 +12837,36 @@ impl<'a> Checker<'a> {
                 if self.specializing.is_none() {
                     let mut row = ConversionRow::new(span, from, to.clone(), kind, target.to_string());
                     row.range = range;
-                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                    let site = self.cast_site(call);
+                    self.typed.conversion(self.body, site, row);
                 }
             }
         }
         to
     }
 
+    /// The key of the cast at `call` (a quantity's `.in(u)` and
+    /// `.split(u)` too): its call, or inside a default the evaluation
+    /// path being typed and its call.
+    fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
+        use crate::typed_bodies::ConversionSite;
+        if self.default_evaluation.is_empty() {
+            ConversionSite::Cast(call.0)
+        } else {
+            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: call.0 }
+        }
+    }
+
     /// The narrowing `inner` is, when the conversions column holds it as
-    /// one: a cast's, a quantity's `.in(u)`, by the call; a quantity
-    /// divided by a literal (U3), by the division.
+    /// one: a cast's, a quantity's `.in(u)`, by the call (`cast_site`); a
+    /// quantity divided by a literal (U3), by the division.
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
         let site = match inner {
-            Expr::Call { id, .. } => crate::typed_bodies::ConversionSite::Cast(id.0),
+            Expr::Call { id, .. } => self.cast_site(*id),
             Expr::Binary { op: BinOp::Div, span, .. } => crate::typed_bodies::ConversionSite::divide(*span),
             _ => return None,
         };
-        let row = self.typed.conversion_at(site)?;
+        let row = self.typed.conversion_at(&site)?;
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
 
@@ -12851,11 +12880,15 @@ impl<'a> Checker<'a> {
     /// records (its casts', its quantity literals', the default's own
     /// into the field's type, U3), which lowering reads where it evaluates
     /// the default and which are kept in the constructing declaration's
-    /// body, one per site however many literals leave the field (the
-    /// first's), and for the errors a quantity's conversion into the
-    /// field's type finds, which no other walk would. A default no
-    /// literal leaves is never evaluated.
-    fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
+    /// body, and for the errors a quantity's conversion into the field's
+    /// type finds, which no other walk would. A cast's row is kept one per
+    /// cast per evaluation (the path of evaluations ending at `literal`:
+    /// `default_evaluation`), since the cast's name means what that scope
+    /// says; a row keyed by a value's span (a quantity literal's, a
+    /// conversion where a value stands) one per site however many
+    /// literals leave the field (the first's). A default no literal
+    /// leaves is never evaluated.
+    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
         // Without a scalar type of any kind no cast has a row to keep, and
         // without a quantity literal no literal has an error to find.
@@ -12901,6 +12934,10 @@ impl<'a> Checker<'a> {
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
         self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        // The literal leaves these fields: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`populate_user_type_fields`).
+        self.default_evaluation.push(literal.0);
         for (default, want) in omitted {
             self.struct_defaults_typing.push(default);
             let got = self.check_expr(default);
@@ -12913,19 +12950,20 @@ impl<'a> Checker<'a> {
             }
             self.struct_defaults_typing.pop();
         }
+        self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_keeping_unit_errors(mark);
         if let Some((typed, closed, seen)) = saved {
             // The conversions the walk recorded that the record did not
-            // hold yet (a cast an earlier literal's walk recorded keeps
-            // that row): lowering reads them where it evaluates the
-            // default, so they are the constructing declaration's.
+            // hold yet (an evaluation walked again keeps its first row):
+            // lowering reads them where it evaluates the default, so they
+            // are the constructing declaration's.
             let converted: Vec<_> = self
                 .typed
                 .conversion_sites
                 .keys()
                 .filter(|site| !typed.conversion_sites.contains_key(site))
-                .filter_map(|site| Some((*site, self.typed.conversion_at(*site)?.clone())))
+                .filter_map(|site| Some((site.clone(), self.typed.conversion_at(site)?.clone())))
                 .collect();
             *self.typed = typed;
             for (site, row) in converted {
@@ -13513,7 +13551,9 @@ impl<'a> Checker<'a> {
 
     /// Defaults are expressions at the invocation, with the caller's
     /// locals and self. Record their generic calls under the invocation
-    /// path and caller monomorph, retaining each default's source site.
+    /// path and caller monomorph, retaining each default's source site,
+    /// and their casts' conversions under the evaluation path that ends
+    /// at the invocation (`default_evaluation`).
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -13561,6 +13601,10 @@ impl<'a> Checker<'a> {
         }
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
+        // The call leaves these parameters: one step of the path, pushed
+        // for their walk as lowering pushes it for their lowering
+        // (`lower_default_in_caller`).
+        self.default_evaluation.push(invocation.0);
         for (default, te) in defaults {
             let got = self.check_expr(default);
             // GH #1076 (U3): a quantity's default converts into its
@@ -13574,6 +13618,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.default_evaluation.pop();
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
         // holes remain facts and are refused by the row consumer. The
@@ -15100,7 +15145,7 @@ impl<'a> Checker<'a> {
                 let elem = self.check_expr_local(val);
                 Ty::Array(Box::new(elem), Some(*count))
             }
-            Expr::Struct { path, inits, span, .. } => self.check_struct_literal(path, inits, *span),
+            Expr::Struct { path, inits, span, id } => self.check_struct_literal(*id, path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
             // Gap C (2026-07-17): match in expression position types
@@ -15195,8 +15240,9 @@ impl<'a> Checker<'a> {
                 let narrowing = self.narrowing_at(inner);
                 // GH #1076 (U3): a change of denomination's narrowing fails
                 // with an `InexactError`, a range's with a `RangeError`.
-                let ratio = narrowing.and_then(|site| self.typed.conversion_at(site)).is_some_and(|row| row.scale.is_some());
-                if let Some(site) = narrowing {
+                let ratio =
+                    narrowing.as_ref().and_then(|site| self.typed.conversion_at(site)).is_some_and(|row| row.scale.is_some());
+                if let Some(site) = &narrowing {
                     use crate::typed_bodies::Discharge;
                     let policy = match disposition {
                         OrDisposition::Raise(_) => Some(Discharge::Raise),
@@ -16338,6 +16384,7 @@ impl<'a> Checker<'a> {
 
     fn check_struct_literal(
         &mut self,
+        literal: NodeId,
         path: &QualifiedName,
         inits: &[StructInit],
         span: Span,
@@ -16487,7 +16534,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.type_omitted_defaults(td, inits);
+                            self.type_omitted_defaults(literal, td, inits);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -16600,7 +16647,7 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.type_omitted_defaults(decl, inits);
+                self.type_omitted_defaults(literal, decl, inits);
             }
         }
 

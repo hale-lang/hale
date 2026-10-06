@@ -701,6 +701,116 @@ fn a_scalars_cast_in_an_omitted_struct_default_is_lowered_from_its_row() {
     }
 }
 
+/// U2 (review 2): one default evaluated in two scopes has two answers.
+/// A local that shadows the type in one scope makes the default's
+/// `ItemId(1)` a call of the local there, and the cast elsewhere: each
+/// evaluation's row is keyed by the evaluation (the literal that leaves
+/// the field, the call that leaves the parameter), and lowering reads
+/// the one it lowers. Before, the first evaluation's row was every
+/// evaluation's, and each program below printed `1` for the shadowed
+/// one: the call of `bump` was dropped. Both orders of the two
+/// constructions, the shadowed one alone, and a parameter's default.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
+    let shadowed_second = "type ItemId = distinct Int;\n\
+                           type S { n: ItemId = ItemId(1); }\n\
+                           fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                           fn main() {\n\
+                           let a = S {};\n\
+                           { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n\
+                           println(Int(a.n));\n\
+                           }\n";
+    let shadowed_first = "type ItemId = distinct Int;\n\
+                          type S { n: ItemId = ItemId(1); }\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          fn main() {\n\
+                          { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n\
+                          let a = S {};\n\
+                          println(Int(a.n));\n\
+                          }\n";
+    let shadowed_alone = "type ItemId = distinct Int;\n\
+                          type S { n: ItemId = ItemId(1); }\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          fn main() { let ItemId = bump; let b = S {}; println(Int(b.n)); }\n";
+    let parameter = "type ItemId = distinct Int;\n\
+                     fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                     fn take(n: ItemId = ItemId(1)) -> Int { return Int(n); }\n\
+                     fn main() {\n\
+                     let a = take();\n\
+                     { let ItemId = bump; println(take()); }\n\
+                     println(a);\n\
+                     }\n";
+    for (src, tag, printed) in [
+        (shadowed_second, "default_scopes_second", "11\n1\n"),
+        (shadowed_first, "default_scopes_first", "11\n1\n"),
+        (shadowed_alone, "default_scopes_alone", "11\n"),
+        (parameter, "default_scopes_param", "11\n1\n"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
+    }
+}
+
+/// U2 (review 3): the nested form. One `Outer {}` evaluates `Inner`'s
+/// default twice, once in each field's default, and `b`'s scope shadows
+/// the type. Keyed by the outermost evaluation alone, the two shared one
+/// key, so `a`'s row lowered `b`'s call of `bump` as the cast and each
+/// shadowed program below printed `1` where it says `11`. The key is the
+/// whole evaluation path (`Outer {}`, then the `Inner {}` or the call in
+/// the field's default), so each nested evaluation reads its own. The
+/// reviewer's program, its fields reversed, a parameter's default left by
+/// a call in a field's default, the shadowed field alone, and two nested
+/// evaluations in one scope: those have two paths and two rows, equal,
+/// and print `1` twice.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_nested_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
+    let reviewed = "type ItemId = distinct Int;\n\
+                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                    type Inner { n: ItemId = ItemId(1); }\n\
+                    type Outer {\n\
+                    a: Inner = Inner {};\n\
+                    b: Inner = { let ItemId = bump; Inner {} };\n\
+                    }\n\
+                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    let reversed = "type ItemId = distinct Int;\n\
+                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                    type Inner { n: ItemId = ItemId(1); }\n\
+                    type Outer {\n\
+                    a: Inner = { let ItemId = bump; Inner {} };\n\
+                    b: Inner = Inner {};\n\
+                    }\n\
+                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    let parameter = "type ItemId = distinct Int;\n\
+                     fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                     fn take(n: ItemId = ItemId(1)) -> ItemId { return n; }\n\
+                     type Outer {\n\
+                     a: ItemId = take();\n\
+                     b: ItemId = { let ItemId = bump; take() };\n\
+                     }\n\
+                     fn main() { let o = Outer {}; println(Int(o.a)); println(Int(o.b)); }\n";
+    let shadowed_alone = "type ItemId = distinct Int;\n\
+                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                          type Inner { n: ItemId = ItemId(1); }\n\
+                          type Outer { b: Inner = { let ItemId = bump; Inner {} }; }\n\
+                          fn main() { let o = Outer {}; println(Int(o.b.n)); }\n";
+    let same_scope = "type ItemId = distinct Int;\n\
+                      type Inner { n: ItemId = ItemId(1); }\n\
+                      type Outer { a: Inner = Inner {}; b: Inner = Inner {}; }\n\
+                      fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    for (src, tag, printed) in [
+        (reviewed, "nested_scopes_reviewed", "1\n11\n"),
+        (reversed, "nested_scopes_reversed", "11\n1\n"),
+        (parameter, "nested_scopes_param", "1\n11\n"),
+        (shadowed_alone, "nested_scopes_alone", "11\n"),
+        (same_scope, "nested_scopes_same", "1\n1\n"),
+    ] {
+        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///
