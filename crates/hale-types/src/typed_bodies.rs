@@ -643,6 +643,25 @@ impl Monomorphs {
         self.by_name.get(name).map(|&i| &self.rows[i])
     }
 
+    /// Drop the rows from `len` on, as if never inserted: each was pushed
+    /// last on its template's list, and named by its name unless an
+    /// earlier row already was.
+    fn truncate(&mut self, len: usize) {
+        while self.rows.len() > len {
+            let row = self.rows.pop().expect("a row past len");
+            let i = self.rows.len();
+            if let Some(list) = self.by_template.get_mut(&row.template.0) {
+                list.pop();
+                if list.is_empty() {
+                    self.by_template.remove(&row.template.0);
+                }
+            }
+            if self.by_name.get(&row.name) == Some(&i) {
+                self.by_name.remove(&row.name);
+            }
+        }
+    }
+
     /// Record a specialization; a key already held keeps its row.
     pub fn insert(&mut self, row: Monomorph) {
         if self.of(row.template, &row.args).is_some() {
@@ -760,9 +779,86 @@ pub struct TypingRecord {
     pub omitted_args: OmittedArgsByCall,
     /// Which body each conversion belongs to.
     pub conversion_sites: BTreeMap<ConversionSite, u32>,
+    /// What a discarded walk changed, while one is open
+    /// ([`Self::open_walk`]).
+    walk: Option<WalkUndo>,
+}
+
+/// The record as an open walk found it, kept for what the walk writes
+/// only: each entry's value before the walk's first write to it (`None`
+/// where it had none), and the monomorph table's length. Putting these
+/// back leaves the record as a copy taken when the walk opened would,
+/// at the price of what the walk touched instead of the whole record.
+#[derive(Debug, Clone, Default)]
+struct WalkUndo {
+    bodies: BTreeMap<u32, Option<TypedBody>>,
+    sites: BTreeMap<u32, Option<u32>>,
+    omitted_args: BTreeMap<u32, Option<std::collections::BTreeSet<OmittedArgs>>>,
+    conversion_sites: BTreeMap<ConversionSite, Option<u32>>,
+    monomorphs: usize,
 }
 
 impl TypingRecord {
+    /// Open a walk whose rows are discarded (a struct field's default,
+    /// typed at a literal that leaves it): every write from here on is
+    /// undone by [`Self::close_walk`]. Walks do not nest.
+    pub fn open_walk(&mut self) {
+        debug_assert!(self.walk.is_none(), "a discarded walk opened inside another");
+        self.walk = Some(WalkUndo { monomorphs: self.monomorphs.rows.len(), ..WalkUndo::default() });
+    }
+
+    /// Close the open walk: the record put back as it was when the walk
+    /// opened, and the conversions the walk recorded at a site the record
+    /// did not hold then returned (by site), each with its row as the
+    /// walk left it.
+    pub fn close_walk(&mut self) -> Vec<(ConversionSite, ConversionRow)> {
+        let Some(undo) = self.walk.take() else { return Vec::new() };
+        let converted: Vec<_> = undo
+            .conversion_sites
+            .iter()
+            .filter(|(_, before)| before.is_none())
+            .filter_map(|(site, _)| Some((site.clone(), self.conversion_at(site)?.clone())))
+            .collect();
+        fn put_back<K: Ord, V>(map: &mut BTreeMap<K, V>, undo: BTreeMap<K, Option<V>>) {
+            for (k, before) in undo {
+                match before {
+                    Some(v) => {
+                        map.insert(k, v);
+                    }
+                    None => {
+                        map.remove(&k);
+                    }
+                }
+            }
+        }
+        put_back(&mut self.bodies, undo.bodies);
+        put_back(&mut self.sites, undo.sites);
+        put_back(&mut self.omitted_args, undo.omitted_args);
+        put_back(&mut self.conversion_sites, undo.conversion_sites);
+        self.monomorphs.truncate(undo.monomorphs);
+        converted
+    }
+
+    fn touch_body(&mut self, decl: u32) {
+        if let Some(undo) = &mut self.walk {
+            undo.bodies.entry(decl).or_insert_with(|| self.bodies.get(&decl).cloned());
+        }
+    }
+
+    fn touch_site(&mut self, call: u32) {
+        if let Some(undo) = &mut self.walk {
+            undo.sites.entry(call).or_insert_with(|| self.sites.get(&call).copied());
+        }
+    }
+
+    fn touch_conversion_site(&mut self, site: &ConversionSite) {
+        if let Some(undo) = &mut self.walk {
+            if !undo.conversion_sites.contains_key(site) {
+                undo.conversion_sites.insert(site.clone(), self.conversion_sites.get(site).copied());
+            }
+        }
+    }
+
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
@@ -775,6 +871,7 @@ impl TypingRecord {
         if unminted || site.path.iter().any(|at| NodeId(*at).is_none()) {
             return;
         }
+        self.touch_conversion_site(&site);
         self.conversion_sites.insert(site.clone(), body.0);
         self.body(body).conversions.entry(site).or_insert(row);
     }
@@ -783,6 +880,7 @@ impl TypingRecord {
     /// quantity literal's row once the checker knows where the literal
     /// flows (U3).
     pub fn reconversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
+        self.touch_conversion_site(&site);
         self.conversion_sites.insert(site.clone(), body.0);
         self.body(body).conversions.insert(site, row);
     }
@@ -798,7 +896,9 @@ impl TypingRecord {
     /// literal's elements, converted into the elements' meet, convert into
     /// the element type of the place the array flows into instead (U3).
     pub fn restore_conversion(&mut self, site: &ConversionSite, saved: Option<(u32, ConversionRow)>) {
+        self.touch_conversion_site(site);
         if let Some(body) = self.conversion_sites.remove(site) {
+            self.touch_body(body);
             if let Some(b) = self.bodies.get_mut(&body) {
                 b.conversions.remove(site);
             }
@@ -828,10 +928,14 @@ impl TypingRecord {
         if call.is_none() || callee.is_none() {
             return;
         }
+        if let Some(undo) = &mut self.walk {
+            undo.omitted_args.entry(call.0).or_insert_with(|| self.omitted_args.get(&call.0).cloned());
+        }
         self.omitted_args.entry(call.0).or_default().insert(OmittedArgs { callee: callee.0, from });
     }
 
     pub fn body(&mut self, decl: NodeId) -> &mut TypedBody {
+        self.touch_body(decl.0);
         self.bodies.entry(decl.0).or_default()
     }
 
@@ -844,6 +948,7 @@ impl TypingRecord {
         if call.is_none() || invocations.is_empty() {
             return;
         }
+        self.touch_site(invocations[0]);
         self.sites.insert(invocations[0], body.0);
         let rows = &mut self.body(body).default_calls;
         let at = match rows.iter().position(|r| r.invocations == invocations && r.specialization == specialization) {
@@ -860,6 +965,7 @@ impl TypingRecord {
         if call.is_none() {
             return;
         }
+        self.touch_site(call.0);
         self.sites.insert(call.0, body.0);
         self.body(body).generic_calls.insert(call.0, row);
     }
@@ -868,6 +974,7 @@ impl TypingRecord {
         if call.is_none() {
             return;
         }
+        self.touch_site(call.0);
         self.sites.insert(call.0, body.0);
         let rows = &mut self.body(body).specialized_generic_calls;
         let at = match rows.iter().position(|(a, _)| *a == args) {
@@ -887,6 +994,7 @@ impl TypingRecord {
         if call.is_none() {
             return;
         }
+        self.touch_site(call.0);
         self.sites.insert(call.0, body.0);
         self.body(body).fallible_calls.entry(call.0).or_insert(row);
     }
@@ -1539,5 +1647,65 @@ mod tests {
         assert_eq!(target(table.conversion_in(stdlib, &site)), Some("Stdlib".to_string()));
         assert_eq!(target(table.conversion_in(neither, &site)), None);
         assert_eq!(target(table.conversion(&site)), Some("Stdlib".to_string()), "the one index: the last body's");
+    }
+
+    /// A discarded walk (a struct field's default, typed at a literal)
+    /// leaves the record as a copy taken when it opened would: every
+    /// column it wrote is put back, entries it made are gone, entries it
+    /// overwrote or removed hold what they held, the monomorphs it added
+    /// are dropped. What it returns is the conversions it recorded at a
+    /// site the record did not hold, with the rows it left there.
+    #[test]
+    fn a_closed_walk_leaves_the_record_as_it_opened() {
+        use hale_syntax::ast::PrimType;
+        let row = |at: usize, target: &str| {
+            ConversionRow::new(Span::new(at, at + 2), Ty::Named("A".into()), Ty::Named(target.into()), ConversionKind::Widening, target.into())
+        };
+        let site = |at: usize| ConversionSite::new(SiteKind::value(Span::new(at, at + 2)), Vec::new());
+        let call = |template: u32| Typed::Known(GenericCall { template: NodeId(template), type_args: Vec::new(), params: Vec::new() });
+        let mono = |template: u32, arg: PrimType, name: &str| Monomorph {
+            template: NodeId(template),
+            kind: TemplateKind::Fn,
+            args: vec![Ty::Prim(arg)],
+            name: name.into(),
+        };
+        let (caller, other, fresh) = (NodeId(3), NodeId(5), NodeId(8));
+        let mut record = TypingRecord::default();
+        record.conversion(caller, site(10), row(10, "Kept"));
+        record.conversion(other, site(20), row(20, "Removed"));
+        record.conversion(caller, site(30), row(30, "Overwritten"));
+        record.generic_call(other, NodeId(40), call(1));
+        record.omitted_args(NodeId(50), NodeId(2), 1);
+        record.monomorphs.insert(mono(60, PrimType::Int, "f_Int"));
+        let before = record.clone();
+
+        record.open_walk();
+        record.conversion(caller, site(10), row(10, "Ignored"));
+        record.conversion(caller, site(11), row(11, "New"));
+        record.restore_conversion(&site(20), None);
+        record.reconversion(caller, site(30), row(30, "Rewritten"));
+        record.reconversion(caller, site(31), row(31, "Withdrawn"));
+        record.restore_conversion(&site(31), None);
+        record.generic_call(caller, NodeId(40), call(9));
+        record.generic_call(fresh, NodeId(41), call(9));
+        record.omitted_args(NodeId(50), NodeId(2), 0);
+        record.omitted_args(NodeId(51), NodeId(2), 0);
+        record.body(caller).enclosing_locus = Some(NodeId(70));
+        record.monomorphs.insert(mono(60, PrimType::Float, "f_Float"));
+        record.monomorphs.insert(mono(61, PrimType::Int, "f_Int"));
+        let kept = record.close_walk();
+
+        assert_eq!(record.bodies, before.bodies);
+        assert_eq!(record.sites, before.sites);
+        assert_eq!(record.omitted_args, before.omitted_args);
+        assert_eq!(record.conversion_sites, before.conversion_sites);
+        assert_eq!(record.monomorphs.rows, before.monomorphs.rows);
+        assert_eq!(record.monomorphs.by_template, before.monomorphs.by_template);
+        assert_eq!(record.monomorphs.by_name, before.monomorphs.by_name);
+        assert!(record.walk.is_none());
+        let kept: Vec<(ConversionSite, String)> = kept.into_iter().map(|(s, r)| (s, r.target)).collect();
+        assert_eq!(kept, vec![(site(11), "New".to_string())], "only the site the record did not hold, still held");
+        assert!(record.monomorphs.of(NodeId(60), &[Ty::Prim(PrimType::Float)]).is_none());
+        assert_eq!(record.monomorphs.named("f_Int").map(|m| m.template), Some(NodeId(60)));
     }
 }
