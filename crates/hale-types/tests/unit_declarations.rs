@@ -457,8 +457,16 @@ fn an_identity_over_no_int_and_a_range_over_no_int_are_refused() {
                type G = distinct Int in g;\n\
                type R = Float { range: 0..1; }\n\
                type Session = distinct Int;\n\
-               type S = Session in g { range: 0..3; }\n";
+               type S = Session in g { range: 0..3; }\n\
+               type Plain = Int { round: floor; }\n";
     let all = diags(src);
+    let plain: Vec<&String> =
+        all.iter().filter(|d| d.message.starts_with("type `Plain`: a refinement of `Int`")).map(|d| &d.message).collect();
+    assert_eq!(
+        plain,
+        ["type `Plain`: a refinement of `Int` is a range, and states it: write `{ range: LO..HI; }`, or `type Plain \
+          = Int;` for another name of `Int`"]
+    );
     let d = the_error(&all, "type `F`");
     assert_eq!(d.message, "type `F`: an identity is `distinct Int`, and `Float` is not `Int`: write `distinct Int`");
     assert_eq!(at(src, d.span), "Float");
