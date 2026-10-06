@@ -2504,7 +2504,11 @@ its `KNOWN_OPEN` table, which is empty today.
   while its worker runs a handler. The main queue's handlers and a
   pinned thread's take no hold: their subscribers are reclaimed on
   the thread that runs them, between handlers, or after the pinned
-  thread's join. A cell still queued for a subscriber whose reclaim
+  thread's join. A yield inside a pinned thread's handler departs
+  from this today: it drains the thread's mailbox, so an owner's
+  handler it runs can replace the suspended handler's subscriber,
+  which is reclaimed under it (`l19_pinned_yield_replaces_child.hl`,
+  known open, R52). A cell still queued for a subscriber whose reclaim
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
   drops the cell or the reclaim waits for its handler. A subscriber

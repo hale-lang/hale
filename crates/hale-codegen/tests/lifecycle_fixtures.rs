@@ -286,6 +286,13 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
     Fixture { file: "l19_reused_address_queued_cell.hl", line: "19", adopted: Some("dropped"), run: RunMode::Plain, judge: reused_address },
+    Fixture {
+        file: "l19_pinned_yield_replaces_child.hl",
+        line: "19",
+        adopted: Some("read-whole reclaimed-after-handler dissolved-once-each"),
+        run: RunMode::Plain,
+        judge: pinned_yield,
+    },
     Fixture { file: "rd_restart_during_teardown.hl", line: "RD", adopted: Some("restart-not-performed"), run: RunMode::Plain, judge: restart_during_teardown },
     Fixture { file: "jp_late_failure_pinned_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "jp_late_failure_pool_join.hl", line: "JP", adopted: Some("delivered-once"), run: RunMode::Plain, judge: outcome_line },
@@ -304,6 +311,11 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     // lived there runs on the new one. Deferred: a queued cell has to
     // name the registration it was posted for, not only its address.
     ("l19_reused_address_queued_cell.hl", "R33", "heard-by-new"),
+    // A yield inside a handler on a pinned thread runs the owner's
+    // handler that reclaims the suspended one's subscriber, which no hold
+    // keeps. Deferred: a pinned handler holds its subscriber (or the
+    // reclaim waits for it to return) as a pool worker's does.
+    ("l19_pinned_yield_replaces_child.hl", "R52", "read-torn reclaimed-under-handler dissolved-once-each"),
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -521,8 +533,9 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             &["19"]
         }
         // Two let-bound Kids at one address, each reclaimed at its
-        // frame's end (R33).
-        "l19_reused_address_queued_cell.hl" => {
+        // frame's end (R33); a placed Kid replaced in a pinned handler
+        // (R52).
+        "l19_reused_address_queued_cell.hl" | "l19_pinned_yield_replaces_child.hl" => {
             p.occurrences = count(&[("Kid", 2)]);
             &["19"]
         }
@@ -1504,6 +1517,28 @@ fn reused_address(r: &Ran) -> String {
     }
 }
 
+/// Whether the old Kid's suspended handler read its own name, whether its
+/// reclaim came after that read or under it, and each Kid's teardown
+/// (R52 on a pinned thread).
+fn pinned_yield(r: &Ran) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    let starts = |prefix: &str| r.stdout.lines().position(|l| l.starts_with(prefix));
+    let read = if count(r, "ev kid-handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" };
+    let order = match (starts("ev kid-handler-read "), pos(r, "ev kid-dissolve 1")) {
+        (Some(h), Some(d)) if h < d => "reclaimed-after-handler",
+        (Some(_), Some(_)) => "reclaimed-under-handler",
+        _ => "unread-or-undissolved",
+    };
+    let once = if count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1 {
+        "dissolved-once-each"
+    } else {
+        "dissolved-other"
+    };
+    format!("{read} {order} {once}")
+}
+
 fn completed_or_named(r: &Ran) -> String {
     let dissolved_once = count(r, "ev kid-dissolve") == 1;
     let ended = count(r, "ev kid-run-end") == 1 || r.stderr.contains("not-started");
@@ -1884,6 +1919,8 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l08_sibling_replaced_kept.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    ("l19_pinned_yield_replaces_child.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     // L4's restart and resume spine: the producer owes no resume for a
     // held run() failure, whose phase-0 resume C43 names.
     ("l01_held_failure_settle.hl", "Boom@Settle recovery: emitted [Resume], the plan owes []",
@@ -2112,6 +2149,7 @@ fixture_tests! {
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
     l19_reused_address_queued_cell => "l19_reused_address_queued_cell.hl",
+    l19_pinned_yield_replaces_child => "l19_pinned_yield_replaces_child.hl",
     rd_restart_during_teardown => "rd_restart_during_teardown.hl",
     jp_late_failure_pinned_join => "jp_late_failure_pinned_join.hl",
     jp_late_failure_pool_join => "jp_late_failure_pool_join.hl",
@@ -2172,6 +2210,29 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
     assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+/// R52 on a pinned thread, known open, under AddressSanitizer with chunk
+/// pooling off (GH #816): the owner's handler, run by the yield inside
+/// the child's handler, releases the child's arena, and the suspended
+/// handler reads its name from it once the sleep returns. Asserted to
+/// report that heap-use-after-free today; when a pinned handler holds
+/// its subscriber the run is clean, this fails, and it becomes an
+/// [`assert_clean_under_asan`] test beside the fixture's KNOWN_OPEN
+/// entry going.
+#[test]
+fn l19_pinned_yield_replaces_child_under_asan() {
+    let file = "l19_pinned_yield_replaces_child.hl";
+    let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
+    harness::build_source_asan(&source(file), &bin);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
+    assert!(
+        report.contains("heap-use-after-free") && report.contains("Kid.on_go") && report.contains("__release_storage_Kid_Reclaim"),
+        "{file} under ASan no longer reports the handler reading its reclaimed arena (KNOWN_OPEN at R52): {}\n{report}",
+        exit_word(&ran)
+    );
 }
 
 /// Decision line 19, a started run, under AddressSanitizer with chunk
