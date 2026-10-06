@@ -34,24 +34,14 @@ fn emit<T>(r: Result<T, inkwell::builder::BuilderError>) -> Result<T, CodegenErr
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The conversion row of `e`, when `e` is a call the checker
-    /// classified as one. A call naming an identity or a range with no
-    /// row is a missing required row of the typed bodies, refused at the
-    /// call; `Int(x)` with no row is the numeric `Int(…)` builtin.
-    pub(crate) fn conversion_row(&self, e: &Expr) -> Result<Option<ConversionRow>, CodegenError> {
-        let Expr::Call { callee, id, span, .. } = e else { return Ok(None) };
-        let Expr::Ident(name) = callee.as_ref() else { return Ok(None) };
-        match self.typed.conversion(ConversionSite::Cast(id.0)) {
-            Some(row) => Ok(Some(row.clone())),
-            None if self.scalar_type_names.contains(&name.name) => Err(CodegenError::UnsupportedAt(
-                format!(
-                    "`{}(…)` has no required `expression_typing` row: a conversion is lowered from the typed \
-                     bodies' `conversions` column, which the checker fills for every one",
-                    name.name
-                ),
-                *span,
-            )),
-            None => Ok(None),
-        }
+    /// classified as one. No row is the total answer: the call is no
+    /// conversion, whatever its callee is named (a local, a parameter or
+    /// a fn the checker resolved the name to, or `Int(x)`, the numeric
+    /// builtin), and is lowered as the call it is.
+    pub(crate) fn conversion_row(&self, e: &Expr) -> Option<ConversionRow> {
+        let Expr::Call { callee, id, .. } = e else { return None };
+        let Expr::Ident(_) = callee.as_ref() else { return None };
+        self.typed.conversion(ConversionSite::Cast(id.0)).cloned()
     }
 
     /// Lower the conversion `row` of the value `arg`.

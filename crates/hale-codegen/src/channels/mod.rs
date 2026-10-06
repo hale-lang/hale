@@ -726,7 +726,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1076 (U2): a narrowing `T(x) or …`, from its row: a clamp or
         // a wrap is the value itself; any other discharge is the checked
         // value this `or`'s join takes, as a fallible call's result.
-        let narrowing = match (self.conversion_row(inner)?, inner) {
+        let narrowing = match (self.conversion_row(inner), inner) {
             (Some(row), Expr::Call { args, span, .. }) => {
                 let [arg] = args.as_slice() else {
                     return Err(CodegenError::UnsupportedAt(format!("`{}(…)` converts one value", row.target), *span));

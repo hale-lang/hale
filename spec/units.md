@@ -373,8 +373,11 @@ let s = Session(n);        // error: `Session(…)` narrows `Int` into `Session`
 conversion and a widening emit nothing; a narrowing emits its two
 comparisons and, from the row's policy, two selects (`clamp`), a
 remainder lifted when negative (`wrap`), or the value and the
-`RangeError` the `or`'s join takes. A cast with no row is a missing
-required row, refused at the cast.
+`RangeError` the `or`'s join takes. Lowering decides nothing by a
+name: a call is a conversion when the checker recorded a row for it,
+and a call with no row is the ordinary call the checker resolved, so a
+local or a parameter named like the type (`let Money = id;`) is the
+callee of `Money(1)`.
 
 **Layout.** Wherever a type reaches a representation, an identity or a
 range is its `Int`: it prints as its `Int`, it is a legal hashmap key

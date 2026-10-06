@@ -524,6 +524,12 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
 /// boundary's, and the check refuses it before the build; an identity's
 /// is a conversion (U2), which builds and prints 1.
 ///
+/// U2 (fix): lowering decided a conversion by the callee's name, so the
+/// shadowing local of an identity's or a range's name, which the checker
+/// resolves as the callee and records no conversion row for, was refused
+/// by the build as a cast with no row. A call is a conversion when its
+/// row says so; the local is the callee for every kind of type.
+///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_local_that_shadows_a_unit_type_is_the_callee() {
@@ -536,7 +542,7 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
             ty
         )
     };
-    for ty in ["quantity Int in cent", "Int"] {
+    for ty in ["quantity Int in cent", "Int", "distinct Int", "Int { range: 0..64; }"] {
         let src = shadows(ty);
         assert_eq!(build_and_run_probe(&src, "unit_shadow"), Ok("1\n".to_string()), "{}", src);
     }

@@ -1518,7 +1518,6 @@ pub fn build_resolved(
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
         user_type_aliases: BTreeMap::new(),
-        scalar_type_names: BTreeSet::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
         user_consts: BTreeMap::new(),
@@ -3447,11 +3446,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// name straight to the target's lowering. Populated in pass
     /// A0 before any type decl is declared.
     pub(crate) user_type_aliases: BTreeMap<String, TypeExpr>,
-    /// GH #1076 (U2): the identities and ranges, each lowered as `Int`
-    /// through `user_type_aliases`. A call naming one is a conversion,
-    /// read from its typed-body row (`lower_conversion`); the names are
-    /// here so a call with no row is refused, never lowered as a call.
-    pub(crate) scalar_type_names: BTreeSet<String>,
     /// m47: user-defined enum declarations indexed by name. Each
     /// entry carries the variant-name → tag-index map. m47-payloads
     /// added payload-bearing variants (`Trade(Decimal, Int)`): such
@@ -8488,7 +8482,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for name in hale_types::units::typed_scalar_names(&scalars) {
             self.user_type_aliases
                 .insert(name.to_string(), TypeExpr::Primitive(PrimType::Int, hale_syntax::span::Span::new(0, 0)));
-            self.scalar_type_names.insert(name.to_string());
         }
 
         // m61 / m61b: discover generic instantiations referenced
@@ -23595,8 +23588,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #1076 (U2): a conversion `T(x)` is lowered from its
                 // typed-body row. Outside an `or` it is total or a
                 // widening; a narrowing is lowered under its `or`.
-                Expr::Ident(_) if self.conversion_row(e)?.is_some() => {
-                    let row = self.conversion_row(e)?.expect("guard checked");
+                Expr::Ident(_) if self.conversion_row(e).is_some() => {
+                    let row = self.conversion_row(e).expect("guard checked");
                     let [arg] = args.as_slice() else {
                         return Err(CodegenError::UnsupportedAt(
                             format!("`{}(…)` converts one value", row.target),

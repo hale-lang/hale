@@ -9,7 +9,8 @@
 //! row's policy, two selects (`clamp`), a remainder corrected for a
 //! negative one (`wrap`), or the checked value the `or`'s join takes
 //! (a substitute's phi, a handler's call, a raise's store into the
-//! enclosing error). A view without the row is refused at the cast.
+//! enclosing error). A view without the row lowers the cast as the
+//! ordinary call it then is.
 
 use hale_codegen::{build_resolved, CodegenError};
 use hale_frontend::snapshot::{Config, Snapshot, Target};
@@ -112,31 +113,37 @@ fn a_raise_takes_the_enclosing_error_path() {
     assert_eq!(count(&fun, "lotus_root_panic"), 0, "{fun}");
 }
 
-/// A cast is lowered from its row: a view without the typed bodies'
-/// `conversions` column is refused at the cast, naming the family,
-/// never lowered as a call or guessed.
+/// A call is a conversion when its row says so, and no row is the total
+/// answer: the call is no conversion, whatever its callee is named. A
+/// view without the typed bodies' `conversions` column lowers each cast
+/// as the ordinary call it then is, refused as any call to a name no fn
+/// declares (a narrowing under its `or`, a total conversion alone),
+/// never as a missing row and never by the name's being a type.
 #[test]
-fn a_conversion_without_its_row_is_refused_at_the_cast() {
-    let src = format!("{DECLS}fn main() {{\n    let n = 70;\n    let s = Session(n) or 0;\n    println(Int(s));\n}}\n");
-    let program = hale_syntax::parse_source(&src).expect("parses");
-    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
-        panic!("the program does not load");
-    };
-    let whole = snap.demand_lowering().unwrap_or_else(|b| panic!("lowering blocked: {:?}", b.refused)).clone();
-    let lower = |tag: &str, view: &hale_types::resolved::LoweringView| {
-        let bin = harness::unique_bin(&format!("unit_conversion_row_{tag}"));
-        let built = build_resolved(view, &bin, &build_opts::options());
-        let _ = std::fs::remove_file(&bin);
-        built
-    };
-    lower("control", &whole).unwrap_or_else(|e| panic!("the control lowers: {e}"));
-    let mut cut = whole;
-    cut.typed = hale_types::typed_bodies::TypedBodies::default();
-    match lower("cut", &cut) {
-        Err(CodegenError::UnsupportedAt(msg, span)) => {
-            assert!(msg.contains("has no required `expression_typing` row"), "{msg}");
-            assert_eq!(span.slice(&src), "Session(n)");
+fn a_cast_without_its_row_is_an_ordinary_call() {
+    let narrowing = format!("{DECLS}fn main() {{\n    let n = 70;\n    let s = Session(n) or 0;\n    println(Int(s));\n}}\n");
+    let total = format!("{DECLS}fn main() {{\n    let n = 70;\n    let o = OrderId(n);\n    println(Int(o));\n}}\n");
+    for (tag, src, refusal) in [
+        ("narrowing", &narrowing, "`or` over call to unknown fn `Session`"),
+        ("total", &total, "call to `OrderId`: no free fn / generic fn / fn-pointer binding with that name is in scope"),
+    ] {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+            panic!("the program does not load");
+        };
+        let whole = snap.demand_lowering().unwrap_or_else(|b| panic!("lowering blocked: {:?}", b.refused)).clone();
+        let lower = |what: &str, view: &hale_types::resolved::LoweringView| {
+            let bin = harness::unique_bin(&format!("unit_conversion_row_{tag}_{what}"));
+            let built = build_resolved(view, &bin, &build_opts::options());
+            let _ = std::fs::remove_file(&bin);
+            built
+        };
+        lower("control", &whole).unwrap_or_else(|e| panic!("the control lowers: {e}"));
+        let mut cut = whole;
+        cut.typed = hale_types::typed_bodies::TypedBodies::default();
+        match lower("cut", &cut) {
+            Err(CodegenError::Unsupported(msg)) => assert_eq!(msg, refusal, "{tag}"),
+            other => panic!("{tag}: expected the strict callee's refusal, got {other:?}"),
         }
-        other => panic!("expected a located refusal, got {other:?}"),
     }
 }
