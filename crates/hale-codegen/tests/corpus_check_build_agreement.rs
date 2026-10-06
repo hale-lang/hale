@@ -601,7 +601,7 @@ fn a_quantity_default_converts_into_its_fields_and_parameters_type() {
     let field = format!("{decls}type S {{ m: Money = 3USD; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
     let param = format!("{decls}fn take(m: Money = 3USD) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
     for (src, tag) in [(field, "unit_quantity_field_default"), (param, "unit_quantity_param_default")] {
-        assert_eq!(build_and_run_probe(&src, tag), Ok("300\n".to_string()), "{}", src);
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n".to_string()), "{}", src);
     }
 }
 

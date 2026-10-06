@@ -5,11 +5,12 @@
 //! (`hale_types::unit_quantities`). An expression's type also carries its
 //! denomination, which no declaration need have pinned: a synthesized
 //! type, displayed `Money in 1/100 cent`. Pinned here: what a quantity
-//! literal is and where it converts, a cast's conversion, the conversion
-//! row each kind of site records (its factor, its kind, its policy and
-//! where the policy came from), every refusal by its message and the
-//! source text at its span, and the law that no program with a narrowing
-//! nothing discharges checks.
+//! literal is; the algebra, as a matrix of operand kinds by operators;
+//! every refusal by its message and the source text at its span; the
+//! conversion row each kind of site records (its factor, its kind, its
+//! policy and where the policy came from); the ratio product three ways;
+//! and the law that no program with a narrowing nothing discharges
+//! checks.
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_syntax::{parse_source, Diag};
@@ -59,6 +60,7 @@ fn amount(n: Int) -> Money { return n * 1USD; }
 fn rate(n: Int) -> Rate { return n * 1bp; }
 fn seconds(d: Seconds) -> Seconds { return d; }
 fn wait(d: Span) -> Span { return d; }
+fn whole(e: InexactError) -> Seconds { return 0sec; }
 ";
 
 fn source(body: &str) -> String {
@@ -116,13 +118,6 @@ struct Row {
     printed: Option<String>,
 }
 
-impl PartialEq for Row {
-    fn eq(&self, o: &Row) -> bool {
-        (&self.at, &self.to, self.kind, &self.factor, self.offset, self.policy, self.count, self.split, &self.printed)
-            == (&o.at, &o.to, o.kind, &o.factor, o.offset, o.policy, o.count, o.split, &o.printed)
-    }
-}
-
 /// Every quantity row `body` records (rows with a scale or a printed
 /// unit), in source order, `body` checking clean.
 fn rows(body: &str) -> Vec<Row> {
@@ -155,6 +150,13 @@ fn rows_of(src: &str) -> Vec<Row> {
             printed: r.printed.clone(),
         })
         .collect()
+}
+
+impl PartialEq for Row {
+    fn eq(&self, o: &Row) -> bool {
+        (&self.at, &self.to, self.kind, &self.factor, self.offset, self.policy, self.count, self.split, &self.printed)
+            == (&o.at, &o.to, o.kind, &o.factor, o.offset, o.policy, o.count, o.split, &o.printed)
+    }
 }
 
 /// A row with nothing but its site, target, kind and factor said.
@@ -191,7 +193,7 @@ fn a_literal_is_its_quantity_at_its_own_unit() {
     assert_eq!(ty_of("", "3bp"), "Rate");
     assert_eq!(ty_of("", "4KiB"), "ByteCount in KiB");
     assert_eq!(ty_of("", "3cent"), "Money");
-    clean("    let sec = 2;\n    let d: Span = 3sec;\n    let s: Seconds = 4sec;\n    let n: Int = sec;\n");
+    clean("    let sec = 2;\n    let d = 3sec + 1sec;\n    let w = d.in(sec);\n    let n = sec + 1;\n");
     one("    let q = 3xyz;\n", "3xyz", "`3xyz`: no `unit` declares `xyz`");
     one("    let q = 3usc;\n", "3usc", "`3usc`: no `unit` declares `usc`; did you mean `usec`?");
 }
@@ -199,7 +201,8 @@ fn a_literal_is_its_quantity_at_its_own_unit() {
 /// A literal converts into the denomination it flows into at compile
 /// time: its row holds the count lowering emits. A whole number of the
 /// target is exact; one that is not is a narrowing like any other, the
-/// target's `round:` discharging it or the check refusing it.
+/// target's `round:` discharging it or the check refusing it. Literal
+/// arithmetic is not folded: each literal is its own constant.
 #[test]
 fn a_literal_converts_where_it_flows_at_compile_time() {
     use ConversionKind::*;
@@ -215,6 +218,13 @@ fn a_literal_converts_where_it_flows_at_compile_time() {
             literal("150msec", "Bucket", Narrowing, "1/100", 1, round(RoundPolicy::Floor, true)),
             // 2000 msec is 2 sec, exactly: no narrowing.
             literal("2_000msec", "Seconds", Widening, "1/1000", 2, None),
+        ]
+    );
+    assert_eq!(
+        rows("    let d = 3sec + 500msec;\n"),
+        [
+            literal("3sec", "Span in msec", Widening, "1000", 3_000, None),
+            literal("500msec", "Span in msec", Widening, "1", 500, None),
         ]
     );
     one(
@@ -285,12 +295,10 @@ fn the_algebra_is_the_plans_table() {
     assert_eq!(table, pinned, "the algebra moved; regenerate with HALE_REGEN_UNIT_ALGEBRA=1 and read the diff");
 }
 
-/// An operator's refusal names both declarations: one note at each (a
-/// synthesized type's at its quantity's), the error at the operator's
-/// expression. A sum's operand at a coarser denomination is widened, a
-/// row at it; literal arithmetic is not folded.
+/// A refusal names both declarations: one note at each (a synthesized
+/// type's at its quantity's), the error at the operator's expression.
 #[test]
-fn an_operator_refusal_names_both_declarations() {
+fn a_refusal_names_both_declarations() {
     let (src, all) = diags("    let bad = 5msec + 4KiB;\n");
     let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "{errors:#?}");
@@ -302,37 +310,66 @@ fn an_operator_refusal_names_both_declarations() {
     let notes: Vec<(&str, &str)> = errors[0].related.iter().map(|r| (r.span.slice(&src), r.label.as_str())).collect();
     assert_eq!(notes, [("Span", "`Span` is declared here"), ("ByteCount", "`ByteCount` is declared here")]);
     one("    let n = -Instant(span(1));\n", "-Instant(span(1))", "`-` of the point `Instant`: a point has no negation");
-    use ConversionKind::*;
-    assert_eq!(
-        rows("    let d = 3sec + 500msec;\n"),
-        [
-            Row { count: Some(3_000), ..row("3sec", "Span in msec", Widening, "1000") },
-            Row { count: Some(500), ..row("500msec", "Span in msec", Widening, "1") },
-        ]
+    one(
+        "    let i = Int(span(1));\n",
+        "Int(span(1))",
+        "`Int(…)` of `Span`: a quantity's count in a unit is a quotient (`q / 1nsec`), a point's the quantity from an \
+         origin's",
+    );
+    one("    let m = Money(5);\n", "Money(5)", "`Money(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1cent`)");
+    one(
+        "    let x: Money = 3sec;\n",
+        "3sec",
+        "`Span in sec` is not `Money`: different quantities, `Span` and `Money`; no conversion holds between them",
+    );
+    one("    let y: Int = 3sec;\n", "3sec", "`Span in sec` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1sec`)");
+    one("    let z: Span = 5;\n", "5", "`Int` is not `Span`: a count becomes a quantity by a unit (`n * 1nsec`)");
+    clean("    let zero: Span = 0;\n");
+    one(
+        "    let r = span(1).in(cent);\n",
+        "cent",
+        "`.in(…)`: `cent` is not a unit of `Span`: `Span` counts in the units of `Span`",
+    );
+    one(
+        "    let c = Celsius(0mK);\n    let k: Kelvin = c;\n",
+        "c",
+        "`Celsius` and `Kelvin` are points of different origins: convert explicitly, `Kelvin(…)`",
     );
 }
 
-// The conversions.
+// The conversion rows.
 
-/// A binding, an argument, a cast, a point's cast across origins: each a
-/// row with its exact factor, a widening when the factor is whole, a
-/// narrowing its target type's `round:` discharges.
+/// Every kind of site a value changes denomination at records a row:
+/// a binding, an argument, an operand, `.in(u)`, `.split(u)`, a cast, a
+/// division by a literal, a compound assignment, a point's cast across
+/// origins; a printed quantity records its unit. Each row has its exact
+/// factor, its kind (a widening when the factor is whole), its policy and
+/// whether the policy came from the site or from the target type.
 #[test]
 fn every_site_a_denomination_changes_is_a_row() {
     use ConversionKind::*;
-    let body = "    let s = 3sec;\n    let a: Span = s;\n    let w = wait(s);\n    let b = Bucket(w);\n    \
-                let c = Celsius(0mK);\n    let k = Kelvin(c);\n    let i = Instant(w);\n";
+    let body = "    let d = span(3_500_000_000);\n    let s = 3sec;\n    let a: Span = s;\n    let w = wait(s);\n    \
+                let e = s + 1msec;\n    let f = d.in(sec) or floor;\n    let (whole, rest) = d.split(sec);\n    \
+                let b = Bucket(d);\n    let h = d / 2 or floor;\n    println(s);\n    let mut t = 0nsec;\n    \
+                t += s;\n    let c = Celsius(0mK);\n    let k = Kelvin(c);\n";
     assert_eq!(
         rows(body),
         [
             Row { count: Some(3), ..row("3sec", "Span in sec", Widening, "1") },
             row("s", "Span", Widening, "1000000000"),
             row("s", "Span", Widening, "1000000000"),
-            Row { policy: round(RoundPolicy::Floor, true), ..row("Bucket(w)", "Bucket", Narrowing, "1/100000000") },
+            row("s", "Span in msec", Widening, "1000"),
+            Row { count: Some(1), ..row("1msec", "Span in msec", Widening, "1") },
+            Row { policy: round(RoundPolicy::Floor, false), ..row("d.in(sec)", "Span in sec", Narrowing, "1/1000000000") },
+            Row { split: Some(1_000_000_000), ..row("d.split(sec)", "Span", Widening, "1") },
+            Row { policy: round(RoundPolicy::Floor, true), ..row("Bucket(d)", "Bucket", Narrowing, "1/100000000") },
+            Row { policy: round(RoundPolicy::Floor, false), ..row("d / 2", "Span", Narrowing, "1/2") },
+            Row { printed: Some("sec".into()), factor: String::new(), ..row("s", "String", Total, "") },
+            Row { count: Some(0), ..row("0nsec", "Span", Widening, "1") },
+            row("s", "Span", Widening, "1000000000"),
             row("Celsius(0mK)", "Celsius", Widening, "1"),
             Row { count: Some(0), ..row("0mK", "Celsius", Widening, "1") },
             Row { offset: 273_150, ..row("Kelvin(c)", "Kelvin", Widening, "1") },
-            row("Instant(w)", "Instant", Widening, "1"),
         ]
     );
 }
@@ -345,45 +382,119 @@ fn a_return_and_a_default_convert_into_their_types() {
     use ConversionKind::*;
     let src = format!(
         "{DECLS}type Fee {{ m: Money = 3USD; }}\nfn charge(m: Money = 2USD) -> Money {{ return m; }}\n\
-         fn price() -> Money {{ return 4USD; }}\n\
-         fn main() {{\n    let f = Fee {{}};\n    println(f.m);\n    println(charge());\n    println(price());\n}}\n"
+         fn main() {{\n    let f = Fee {{}};\n    println(f.m + charge());\n}}\n"
     );
     let found = rows_of(&src);
     let at = |text: &str| found.iter().filter(|r| r.at == text).collect::<Vec<_>>();
-    assert_eq!(at("4USD"), [&Row { count: Some(400), ..row("4USD", "Money", Widening, "100") }], "a return");
+    assert_eq!(at("n * 1USD"), [&row("n * 1USD", "Money", Widening, "100")], "a return");
     assert_eq!(at("3USD"), [&Row { count: Some(300), ..row("3USD", "Money", Widening, "100") }], "a field's default");
     assert_eq!(at("2USD"), [&Row { count: Some(200), ..row("2USD", "Money", Widening, "100") }], "a parameter's default");
 }
 
-/// What is refused where a value meets a type: another quantity, an
-/// `Int` either way (but a literal zero), a cast of an `Int`, a point
-/// into one of another origin. Each names the declarations it is about.
+// The ratio product (decision 2), three ways.
+
+/// A quantity scaled by a ratio is the quantity at the product of the two
+/// denominations, exact: nothing is rounded at the product. The
+/// narrowing is where the value meets a coarser type: the target's
+/// `round:` discharges it, and with none the check refuses it. With
+/// literal operands each literal is its own unit's (`USD`), so the
+/// product counts `1/100 cent`; with runtime operands typed `Money` and
+/// `Rate`, `1/10000 cent`.
 #[test]
-fn a_refusal_names_both_declarations() {
-    let (src, all) = diags("    let x: Money = 3sec;\n");
-    let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    assert_eq!(errors[0].span.slice(&src), "3sec");
+fn the_ratio_product_is_exact_and_narrows_at_the_boundary() {
+    use ConversionKind::*;
+    // Literal operands, the products bound separately.
+    let literal = "    let fee = 1_250_000USD * 3bp;\n    let odd = 1_234_567USD * 3bp;\n    let paid: Ledger = odd;\n";
+    assert_eq!(ty_of("", "1_250_000USD * 3bp"), "Money in 1/100 cent");
+    assert_eq!(ty_of("", "1_234_567USD * 3bp"), "Money in 1/100 cent");
+    let found = rows(literal);
     assert_eq!(
-        errors[0].message,
-        "`Span in sec` is not `Money`: different quantities, `Span` and `Money`; no conversion holds between them"
+        found.iter().map(|r| (r.at.as_str(), r.count)).filter(|(_, c)| c.is_some()).collect::<Vec<_>>(),
+        [("1_250_000USD", Some(1_250_000)), ("3bp", Some(3)), ("1_234_567USD", Some(1_234_567)), ("3bp", Some(3))],
+        "each literal at its own unit"
     );
-    let notes: Vec<(&str, &str)> = errors[0].related.iter().map(|r| (r.span.slice(&src), r.label.as_str())).collect();
-    assert_eq!(notes, [("Money", "`Money` is declared here"), ("Span", "`Span` is declared here")]);
-    one(
-        "    let i = Int(wait(1nsec));\n",
-        "Int(wait(1nsec))",
-        "`Int(…)` of `Span`: a quantity's count in a unit is a quotient (`q / 1nsec`), a point's the quantity from an \
-         origin's",
+    assert_eq!(
+        found.last(),
+        Some(&Row { policy: round(RoundPolicy::HalfEven, true), ..row("odd", "Ledger", Narrowing, "1/100") }),
+        "the narrowing is at the binding, its policy `Ledger`'s"
     );
-    one("    let m = Money(5);\n", "Money(5)", "`Money(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1cent`)");
-    one("    let y: Int = 3sec;\n", "3sec", "`Span in sec` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1sec`)");
-    one("    let z: Span = 5;\n", "5", "`Int` is not `Span`: a count becomes a quantity by a unit (`n * 1nsec`)");
-    clean("    let zero: Span = 0;\n");
+    // Runtime operands.
+    let runtime = "    let amt = amount(1_234_567);\n    let r = rate(3);\n    let odd = amt * r;\n    let paid: Ledger = odd;\n";
+    assert_eq!(ty_of("    let amt = amount(1);\n    let r = rate(3);\n", "amt * r"), "Money in 1/10000 cent");
+    assert_eq!(
+        rows(runtime).last(),
+        Some(&Row { policy: round(RoundPolicy::HalfEven, true), ..row("odd", "Ledger", Narrowing, "1/10000") })
+    );
+    // Into a type with no policy: refused, with the two ways to say it.
     one(
-        "    let c = Celsius(0mK);\n    let k: Kelvin = c;\n",
-        "c",
-        "`Celsius` and `Kelvin` are points of different origins: convert explicitly, `Kelvin(…)`",
+        "    let odd = 1_234_567USD * 3bp;\n    let bad: Money = odd;\n",
+        "odd",
+        "`Money` from `Money in 1/100 cent` divides by 100: say what happens to the remainder: convert explicitly \
+         (`.in(u) or floor`, `Money(…) or half_even`, `or <value>`, `or raise`), or give `Money` a `round:` policy",
+    );
+    clean(
+        "    let odd = 1_234_567USD * 3bp;\n    let a: Money = odd.in(cent) or half_even;\n    \
+         let b: Money = odd.in(cent) or 0cent;\n    let c = Money(odd) or half_even;\n",
+    );
+}
+
+// The law.
+
+/// No program with a narrowing nothing discharges checks: an implicit
+/// one into a type with no `round:` (a binding, an argument, a return, a
+/// struct field's default, a parameter's default, a compound assignment),
+/// `.in(u)`, a cast, a division by a literal. Each discharged (a policy
+/// word, a substitute, a handler, `or raise`, the target's `round:`)
+/// checks clean.
+#[test]
+fn no_program_with_a_narrowing_and_no_policy_checks() {
+    let refused = [
+        "    let s: Seconds = span(1);\n",
+        "    let s = seconds(span(1));\n",
+        "    let s = span(1).in(sec);\n",
+        "    let s = Seconds(span(1));\n",
+        "    let s = span(1) / 2;\n",
+        "    let mut s: Seconds = 1sec;\n    s += 1msec;\n",
+        "    let s: Seconds = 1_500msec;\n",
+    ];
+    for body in refused {
+        let found = errors(body);
+        assert_eq!(found.len(), 1, "one refusal: {found:#?}\n{body}");
+        assert!(found[0].1.contains("say what happens to the remainder"), "{}", found[0].1);
+    }
+    for (decl, body) in [
+        ("fn f(d: Span) -> Seconds { return d; }\n", "    let s = f(span(1));\n"),
+        ("type T { s: Seconds = 1_500msec; }\n", "    let t = T {};\n"),
+        ("fn g(s: Seconds = 1_500msec) -> Seconds { return s; }\n", "    let s = g();\n"),
+    ] {
+        let src = format!("{DECLS}{decl}fn main() {{\n{body}    println(1);\n}}\n");
+        let found: Vec<String> =
+            check_program(&parse_source(&src).expect("parses")).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+        assert_eq!(found.len(), 1, "one refusal: {found:#?}\n{src}");
+        assert!(found[0].contains("say what happens to the remainder"), "{}", found[0]);
+    }
+    clean(
+        "    let a: Bucket = span(1);\n    let b = span(1).in(sec) or floor;\n    let c = span(1).in(sec) or 0sec;\n    \
+         let d = Seconds(span(1)) or whole(err);\n    let e = span(1) / 2 or half_up;\n    let f = Bucket(span(1));\n    \
+         let g = span(1).in(sec) or ceil;\n    let h = span(1).in(sec) or trunc;\n    let i = span(1).in(sec) or half_even;\n",
+    );
+}
+
+/// A policy belongs to the family its narrowing admits: a rounding to a
+/// conversion that divides, `clamp` and `wrap` to a range's.
+#[test]
+fn a_policy_belongs_to_its_narrowings_family() {
+    one(
+        "    let s = span(1).in(sec) or clamp;\n",
+        "span(1).in(sec) or clamp",
+        "`or clamp` is a range's policy, and this conversion divides: say what becomes of the remainder (`or floor`, \
+         `or ceil`, `or trunc`, `or half_even`, `or half_up`), or `or <value>`",
+    );
+    one(
+        "    let n = 300;\n    let b = Byte(n) or floor;\n",
+        "Byte(n) or floor",
+        "`or floor` rounds a conversion that divides, and this one narrows into a range: `or clamp`, `or wrap`, or \
+         `or <value>`",
     );
 }
 
@@ -432,35 +543,19 @@ fn an_unclassified_position_refuses_a_synthesized_denomination() {
     );
 }
 
-// The law.
-
-/// No program with a narrowing nothing discharges checks: an implicit
-/// one into a type with no `round:` (a binding, an argument, a return, a
-/// struct field's default, a parameter's default), a cast. Into a type
-/// with a `round:` each checks clean.
+/// `InexactError`, which a conversion that divides fails with under its
+/// `or`, is a builtin type in a program with a quantity, and in no other.
 #[test]
-fn no_program_with_a_narrowing_and_no_policy_checks() {
-    let refused = [
-        "    let s: Seconds = wait(1nsec);\n",
-        "    let s = seconds(wait(1nsec));\n",
-        "    let s = Seconds(wait(1nsec));\n",
-        "    let s: Seconds = 1_500msec;\n",
-    ];
-    for body in refused {
-        let found = errors(body);
-        assert_eq!(found.len(), 1, "one refusal: {found:#?}\n{body}");
-        assert!(found[0].1.contains("say what happens to the remainder"), "{}", found[0].1);
-    }
-    for (decl, body) in [
-        ("fn f(d: Span) -> Seconds { return d; }\n", "    let s = f(wait(1nsec));\n"),
-        ("type T { s: Seconds = 1_500msec; }\n", "    let t = T {};\n"),
-        ("fn g(s: Seconds = 1_500msec) -> Seconds { return s; }\n", "    let s = g();\n"),
-    ] {
-        let src = format!("{DECLS}{decl}fn main() {{\n{body}    println(1);\n}}\n");
-        let found: Vec<String> =
-            check_program(&parse_source(&src).expect("parses")).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
-        assert_eq!(found.len(), 1, "one refusal: {found:#?}\n{src}");
-        assert!(found[0].contains("say what happens to the remainder"), "{}", found[0]);
-    }
-    clean("    let a: Bucket = wait(1nsec);\n    let b = Bucket(wait(1nsec));\n    let c: WireStamp = Instant(wait(1nsec));\n");
+fn inexact_error_is_a_builtin_where_a_quantity_is_declared() {
+    let row = hale_types::builtin_types::builtin_type("InexactError").expect("a builtin type");
+    let fields: Vec<&str> = row.fields.iter().map(|(n, _)| *n).collect();
+    assert_eq!(fields, ["kind", "value", "divisor"]);
+    clean("    let s = Seconds(span(1)) or whole(err);\n");
+    let injected = |src: &str| {
+        let program = parse_source(src).expect("parses");
+        let bundle = hale_types::Bundle::new(std::collections::BTreeMap::from([(String::new(), &program)]));
+        hale_types::resolve::build_top_scope(&bundle).0.lookup("InexactError").is_some()
+    };
+    assert!(injected("unit cent;\ntype Money = quantity Int in cent;\nfn main() { println(1); }\n"));
+    assert!(!injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
 }

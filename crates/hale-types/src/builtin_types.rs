@@ -27,6 +27,9 @@ pub enum Injected {
     /// Only in a bundle that declares a type with a `range:` clause, whose
     /// narrowings carry the type through an `or`.
     WhenARange,
+    /// Only in a bundle that declares a quantity or a point, whose
+    /// conversions that divide carry the type through an `or` (U3).
+    WhenAQuantity,
 }
 
 /// One builtin type: its name, its fields in declaration order (each a
@@ -76,6 +79,15 @@ pub const BUILTIN_TYPES: &[BuiltinType] = &[
     // The fallible `std::io::*` calls: `kind` is the errno-derived tag
     // (`not_found`, `permission_denied`, `timeout`, ...), `errno` the raw
     // platform errno, `path` the file or connection target.
+    // GH #1076 (U3): a conversion between two denominations that divides
+    // (`d.in(s)`, `Bucket(d)`, `spread / 2`) and leaves a remainder.
+    // `kind` names the target type, `value` the count converted, after its
+    // multiplication, and `divisor` what it was divided by.
+    BuiltinType {
+        name: "InexactError",
+        fields: &[("kind", Str), ("value", Int), ("divisor", Int)],
+        injected: Injected::WhenAQuantity,
+    },
     BuiltinType {
         name: "IoError",
         fields: &[("kind", Str), ("errno", Int), ("path", Str)],

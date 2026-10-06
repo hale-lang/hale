@@ -368,6 +368,13 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             .entry("RangeError".to_string())
             .or_insert(Span::new(0, 0));
     }
+    // GH #1076 (U3): `InexactError`, which a conversion that divides
+    // carries through its `or`, when a type is a quantity or a point.
+    if bundle_declares_a_quantity(bundle) {
+        known_names
+            .entry("InexactError".to_string())
+            .or_insert(Span::new(0, 0));
+    }
     // GH #470: pre-register the ENTIRE Hale-source stdlib surface —
     // loci, types, interfaces, enums, free fns — so a user's
     // `std::http::Router {}` / `ctx: std::http::Context` resolves to
@@ -472,7 +479,12 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // injected only for `on_unmatched: fail` topics, whose publishes
     // carry it through `or handler(err)` / `or fail <payload>`, to keep
     // the name out of scope for programs that don't use them.
-    inject_builtin_types(&mut scope, bundle_uses_fail_topics(bundle), bundle_declares_a_range(bundle));
+    inject_builtin_types(
+        &mut scope,
+        bundle_uses_fail_topics(bundle),
+        bundle_declares_a_range(bundle),
+        bundle_declares_a_quantity(bundle),
+    );
     // FUv0.8.2 #1 (2026-05-25): if the user has declared a
     // type whose name shadows a stdlib error type but with
     // a different shape AND the program actually uses a
@@ -566,6 +578,19 @@ fn bundle_declares_a_range(bundle: &Bundle<'_>) -> bool {
         flat_decls(&p.items).any(|item| {
             matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
                 if s.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }))))
+        })
+    })
+}
+
+/// GH #1076 (U3): true when a type in the bundle is a quantity or a
+/// point (its word, or a denomination). Gates `InexactError`
+/// injection: no program without one sees the name.
+fn bundle_declares_a_quantity(bundle: &Bundle<'_>) -> bool {
+    bundle.programs.values().any(|p| {
+        flat_decls(&p.items).any(|item| {
+            matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
+                if matches!(s.kind, Some(hale_syntax::ast::ScalarKind::Quantity | hale_syntax::ast::ScalarKind::Point))
+                    || s.denom.is_some()))
         })
     })
 }
@@ -2169,14 +2194,16 @@ fn synthesize_form_lru_cache_methods(
 /// `BusUnmatchedKey` publish payload. A synthesized `@form` method's,
 /// a `bounded` push's and a fallible stdlib call's error type then
 /// resolves with its fields. With `ranges` (a type declares a `range:`
-/// clause, GH #1076), the `RangeError` a narrowing carries.
+/// clause, GH #1076), the `RangeError` a narrowing carries; with
+/// `quantities` (a type is a quantity or a point, U3), the `InexactError`
+/// a conversion that divides carries.
 ///
 /// Idempotent per name: a name the scope already holds (declared by
 /// user code or a stdlib `.hl` file) wins, so a project that shipped
 /// its own error shapes keeps them (and `check_stdlib_error_shadowing`
 /// says when one cannot stand in for the stdlib's). The injected
 /// entries carry a zero span.
-pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool) {
+pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool, quantities: bool) {
     use crate::builtin_types::{Injected, BUILTIN_TYPES};
     let zero = Span::new(0, 0);
     for t in BUILTIN_TYPES {
@@ -2184,6 +2211,7 @@ pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, rang
             Injected::Always => true,
             Injected::WhenAFailTopic => fail_topics,
             Injected::WhenARange => ranges,
+            Injected::WhenAQuantity => quantities,
         };
         if !injected || scope.symbols.contains_key(t.name) {
             continue;

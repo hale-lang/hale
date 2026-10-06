@@ -26,7 +26,7 @@
 //! `conversions` column, and lowering emits one multiplication or one
 //! division from the row.
 
-use hale_syntax::ast::{BinOp, Expr, UnaryOp};
+use hale_syntax::ast::{BinOp, Expr, Literal, UnaryOp};
 use hale_syntax::Span;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -617,6 +617,59 @@ impl<'r> ScalarTypes<'r> {
             (UnaryOp::Neg, QKind::Quantity) => Ok(t.clone()),
             (UnaryOp::Neg, QKind::Point) => Err(format!("`-` of the point `{}`: a point has no negation", self.quantity_display(&q))),
             _ => Err(format!("`{}` is a quantity or a point; it has no logical or bitwise operator", self.quantity_display(&q))),
+        })
+    }
+
+    /// The denomination `.in(…)`/`.split(…)`'s argument names, in `q`'s
+    /// component: a unit's name (`s`), a multiple of one (`100ms`).
+    pub fn named_denomination(&self, q: &QType, arg: &Expr) -> Result<Denom, String> {
+        let (multiple, unit, text) = match arg {
+            Expr::Ident(id) => (1, id.name.as_str(), id.name.clone()),
+            Expr::Literal(Literal::Quantity { value, unit }, _) if *value > 0 => (*value as u64, unit.as_str(), format!("{value}{unit}")),
+            Expr::Literal(Literal::Duration(_), _) => {
+                return Err("a duration suffix is `Duration`'s, which is no quantity of a declared unit until U4 (GH #1076)".into())
+            }
+            _ => return Err("its argument names a unit (`.in(cent)`) or a multiple of one (`.in(100msec)`)".into()),
+        };
+        let Some(u) = self.rows.unit_named(unit) else {
+            return Err(format!("no `unit` declares `{unit}`"));
+        };
+        if self.rows.units[u].component != q.component {
+            return Err(format!(
+                "`{text}` is not a unit of `{}`: `{}` counts in the units of `{}`",
+                self.rows.scalars[q.base].display,
+                self.quantity_display(q),
+                self.rows.scalars[q.base].display
+            ));
+        }
+        Ok(Denom { unit: self.rows.units[u].site.id, multiple: Ratio::new(BigInt::from(multiple), BigInt::from(1)).expect("positive") })
+    }
+
+    /// What `.split(u)` makes of a value of `q`: the type of the rest
+    /// (`q` at the meet of its denomination and `u`'s), the conversion
+    /// of `q` there, and `u`'s count there (the whole part's divisor).
+    pub fn split(&self, t: &Ty, q: &QType, u: &Denom) -> Option<(Ty, Scale, BigInt)> {
+        let at = self.meet(&q.denom, u)?;
+        let rest = self.at_denomination(q.base, &at);
+        let target = QType { denom: at.clone(), ..q.clone() };
+        let scale = self.scale(q, &target).ok()?;
+        let divisor = self.factor(u, &at)?;
+        let _ = t;
+        divisor.is_integral().then(|| (rest, scale, divisor.numerator().clone()))
+    }
+
+    /// What a printed value of `q` is followed by: a quantity at one of a
+    /// unit, the unit (`1500msec`); at another denomination, its type
+    /// (`37037 Money in 1/100 cent`, `3 Bucket`); a point, nothing.
+    pub fn printed_unit(&self, q: &QType) -> Option<String> {
+        if q.kind == QKind::Point {
+            return None;
+        }
+        let spelled = self.spelling(q.base, q.component, &q.denom);
+        Some(if !spelled.contains(' ') {
+            spelled
+        } else {
+            format!(" {}", self.quantity_display(q))
         })
     }
 

@@ -12599,6 +12599,20 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1076 (U3): a value of `t`, the expression `e`, printed: a
+    /// quantity's row says the unit lowering writes after its count.
+    fn record_printed(&mut self, e: &Expr, t: &Ty) {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        if self.specializing.is_some() || !self.scalars.has_quantities() {
+            return;
+        }
+        let Some(q) = self.scalars.quantity(t) else { return };
+        let Some(unit) = self.scalars.printed_unit(&q) else { return };
+        let mut row = ConversionRow::new(e.span(), t.clone(), Ty::Prim(PrimType::String), ConversionKind::Total, "String".into());
+        row.printed = Some(unit);
+        self.typed.conversion(self.body, ConversionSite::printed(e.span()), row);
+    }
+
     /// GH #1076 (U3): `T(x)`, `T` a quantity or a point: the conversion of
     /// `x` into `T`, its row at the call (a narrowing `T`'s `round:`
     /// discharges, or the `or` after the call), or refused.
@@ -12649,6 +12663,70 @@ impl<'a> Checker<'a> {
             }
         }
         to
+    }
+
+    /// GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or a point
+    /// `x` of type `t`: the conversion into `u`'s denomination, its row at
+    /// the call (a narrowing the `or` after the call discharges); and the
+    /// whole count of `u` with the rest, at the finer of the two
+    /// denominations, total.
+    fn quantity_method(
+        &mut self,
+        call: NodeId,
+        span: Span,
+        method: &str,
+        t: Ty,
+        q: crate::unit_quantities::QType,
+        arg: &Expr,
+    ) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        let denom = match self.scalars.named_denomination(&q, arg) {
+            Ok(d) => d,
+            Err(why) => {
+                self.unit_error(Diag::ty(arg.span(), format!("`.{method}(…)`: {why}")));
+                return Ty::Unknown;
+            }
+        };
+        if method == "in" {
+            let to = self.scalars.at_denomination(q.base, &denom);
+            let target = crate::unit_quantities::QType { denom, policy: None, range: None, synthesized: true, ..q.clone() };
+            match self.scalars.scale(&q, &target) {
+                Ok(scale) if self.specializing.is_none() => {
+                    let kind =
+                        if scale.factor.is_integral() { ConversionKind::Widening } else { ConversionKind::Narrowing };
+                    let mut row = ConversionRow::new(span, t, to.clone(), kind, self.scalars.type_display(&to));
+                    row.scale = Some(scale);
+                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                }
+                Ok(_) => {}
+                Err(why) => self.unit_error(Diag::ty(span, why)),
+            }
+            return to;
+        }
+        if q.kind == crate::unit_quantities::QKind::Point {
+            self.unit_error(Diag::ty(
+                span,
+                format!(
+                    "`.split(…)` of the point `{}`: a point is split as the quantity from an origin (`(p - o).split(u)`)",
+                    self.scalars.type_display(&t)
+                ),
+            ));
+            return Ty::Unknown;
+        }
+        let Some((rest, scale, divisor)) = self.scalars.split(&t, &q, &denom) else {
+            return Ty::Unknown;
+        };
+        let Ok(divisor) = i64::try_from(divisor) else {
+            self.unit_error(Diag::ty(span, "`.split(…)`: the unit's count overflows an `Int`".to_string()));
+            return Ty::Unknown;
+        };
+        if self.specializing.is_none() {
+            let mut row = ConversionRow::new(span, t, rest.clone(), ConversionKind::Widening, self.scalars.type_display(&rest));
+            row.scale = Some(scale);
+            row.split = Some(divisor);
+            self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+        }
+        Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
     }
 
     /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
@@ -13685,6 +13763,18 @@ impl<'a> Checker<'a> {
                         return t;
                     }
                 }
+                // GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or
+                // a point.
+                if let (Expr::Field { receiver, name, .. }, [arg]) = (callee.as_ref(), args.as_slice()) {
+                    if matches!(name.name.as_str(), "in" | "split") && self.scalars.has_quantities() {
+                        let mark = self.walk_mark();
+                        let t = self.check_expr(receiver);
+                        if let Some(q) = self.scalars.quantity(&t) {
+                            return self.quantity_method(*call_id, *call_span, &name.name, t, q, arg);
+                        }
+                        self.discard_since(mark);
+                    }
+                }
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
                 // every way a program reaches a namespace, not only a
@@ -13880,6 +13970,7 @@ impl<'a> Checker<'a> {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr(a);
+                                    self.record_printed(a, &at);
                                     if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
@@ -15102,6 +15193,9 @@ impl<'a> Checker<'a> {
                 // success is `T`, its failure a `RangeError`, and what
                 // discharges it is its row's policy.
                 let narrowing = self.narrowing_at(inner);
+                // GH #1076 (U3): a change of denomination's narrowing fails
+                // with an `InexactError`, a range's with a `RangeError`.
+                let ratio = narrowing.and_then(|site| self.typed.conversion_at(site)).is_some_and(|row| row.scale.is_some());
                 if let Some(site) = narrowing {
                     use crate::typed_bodies::Discharge;
                     let policy = match disposition {
@@ -15114,21 +15208,51 @@ impl<'a> Checker<'a> {
                             // that name is written in parentheses.
                             Expr::Ident(w) if w.span.end == span.end && w.name == "clamp" => Discharge::Clamp,
                             Expr::Ident(w) if w.span.end == span.end && w.name == "wrap" => Discharge::Wrap,
+                            Expr::Ident(w) if w.span.end == span.end && crate::units::RoundPolicy::of(&w.name).is_some() => {
+                                Discharge::Round {
+                                    policy: crate::units::RoundPolicy::of(&w.name).expect("guard checked"),
+                                    from_type: false,
+                                }
+                            }
                             Expr::Call { .. } => Discharge::Handler,
                             _ => Discharge::Substitute,
                         }),
                     };
                     if let Some(p) = policy {
+                        // A policy belongs to the family its narrowing admits.
+                        let family = match (p, ratio) {
+                            (Discharge::Clamp | Discharge::Wrap, true) => Some(format!(
+                                "`{}` is a range's policy, and this conversion divides: say what becomes of the \
+                                 remainder (`or floor`, `or ceil`, `or trunc`, `or half_even`, `or half_up`), or \
+                                 `or <value>`",
+                                p.spelled()
+                            )),
+                            (Discharge::Round { .. }, false) => Some(format!(
+                                "`{}` rounds a conversion that divides, and this one narrows into a range: `or \
+                                 clamp`, `or wrap`, or `or <value>`",
+                                p.spelled()
+                            )),
+                            _ => None,
+                        };
+                        if let Some(why) = family {
+                            self.unit_error(Diag::ty(*span, why));
+                            // Said once: the narrowing is not also bare.
+                            if self.specializing.is_none() {
+                                self.typed.discharge(site, p);
+                            }
+                            return inner_ty;
+                        }
                         if self.specializing.is_none() {
                             self.typed.discharge(site, p);
                         }
-                        if matches!(p, Discharge::Clamp | Discharge::Wrap) {
+                        if matches!(p, Discharge::Clamp | Discharge::Wrap | Discharge::Round { .. }) {
                             return inner_ty;
                         }
                     }
                 }
                 let (success, payload) = match (stdlib_or, inner_ty) {
                     (Some((s, p)), _) => (s, p),
+                    (None, success) if ratio => (success, Ty::Named("InexactError".to_string())),
                     (None, success) if narrowing.is_some() => (success, Ty::Named("RangeError".to_string())),
                     (None, Ty::Fallible { success, payload }) => {
                         (*success, *payload)
@@ -15841,6 +15965,9 @@ impl<'a> Checker<'a> {
             if (l_str && self.ty_is_printable(rt))
                 || (r_str && self.ty_is_printable(lt))
             {
+                // GH #1076 (U3): a quantity side prints with its unit.
+                self.record_printed(operands.0, lt);
+                self.record_printed(operands.1, rt);
                 return Ty::Prim(PrimType::String);
             }
         }
