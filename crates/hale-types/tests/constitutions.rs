@@ -342,7 +342,8 @@ main locus App {
 /// Review finding 3: identity is the normalized closure, not the
 /// display name. Two constitutions with the same NAME and different
 /// clauses must not share a digest; the same closure reached two ways
-/// must.
+/// must. `constitution_digest` moves with a clause and keeps its value
+/// over where and in what order the closure is written.
 #[test]
 fn constitution_identity_follows_the_closure_not_the_name() {
     fn identities(src: &str) -> Vec<(String, String)> {
@@ -379,6 +380,18 @@ main locus App {
 
     // Identity is stable for the same closure.
     assert_eq!(identities(&base)[0].1, a[0].1);
+
+    // Where the closure is declared, and the order its entries are
+    // written in, are no part of it.
+    let decl = "constitution Core { r: count publishers(topic Settled) == 1; }";
+    let moved = format!("{}\n{decl}\n", base.replace(decl, ""));
+    assert_eq!(identities(&moved)[0].1, a[0].1, "the declaration moved below its adopter");
+    let reordered = base.replace(
+        decl,
+        "constitution Core { s: count subscribers(topic Settled) == 0; \
+         r: count publishers(topic Settled) == 1; }",
+    );
+    assert_eq!(identities(&reordered)[0].1, b[0].1, "the entries written in another order");
 }
 
 /// An inherited clause changing must change the derived digest —

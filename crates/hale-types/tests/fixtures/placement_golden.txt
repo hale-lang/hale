@@ -4077,6 +4077,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sub	main	default
 
+== crates/hale-types/tests/artifact_law_projection.rs#6abab6fa
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	A	main	default
+
 == crates/hale-types/tests/artifact_law_projection.rs#6bc3df78
 root	App	the entry
 row	App@literal1	App	main	default

@@ -131,16 +131,24 @@ fn an_artifact_without_a_digest_is_unverifiable_not_valid() {
 }
 
 /// The digest changes with the model, so it cannot be a constant that
-/// happens to match.
+/// happens to match. `artifact_digest`'s keeping half is the absolute
+/// root, which no section names:
+/// `hale-cli/tests/source_map.rs`'s
+/// `one_tree_checked_out_at_two_roots_has_one_artifact`.
 #[test]
 fn a_different_program_produces_a_different_digest() {
     let a = artifact();
     let other_src = SRC.replace("locus Sub {", "locus Extra { }\n    locus Sub {");
     let b = dump(&other_src);
     assert_eq!(verify_artifact_digest(&b), Some(true));
+    let digest = |art: &str| -> String {
+        let v: serde_json::Value = serde_json::from_str(art).expect("valid JSON");
+        v["artifact_digest"].as_str().expect("artifact_digest").to_string()
+    };
     assert_ne!(
-        a, b,
-        "adding a locus must change the artifact"
+        digest(&a),
+        digest(&b),
+        "adding a locus must change the artifact's digest"
     );
 }
 

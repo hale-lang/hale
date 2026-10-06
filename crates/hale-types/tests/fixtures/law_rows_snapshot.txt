@@ -55,9 +55,10 @@ crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl	one_op_per
 crates/hale-types/tests/artifact_integrity.rs#1	iso	forbid reaches(srcs, sinks)	Uncertified	None
 crates/hale-types/tests/artifact_integrity.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	Some("Core")
 crates/hale-types/tests/artifact_law_projection.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
-crates/hale-types/tests/artifact_law_projection.rs#14	iso	forbid reaches(a_side, b_side)	Violated	None
-crates/hale-types/tests/artifact_law_projection.rs#15	iso	forbid reaches(a_side, b_side) during boot	Invalid	None
-crates/hale-types/tests/artifact_law_projection.rs#2	one	count publishers(topic T) == 1	Holds	None
+crates/hale-types/tests/artifact_law_projection.rs#1	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-types/tests/artifact_law_projection.rs#15	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/artifact_law_projection.rs#16	iso	forbid reaches(a_side, b_side) during boot	Invalid	None
+crates/hale-types/tests/artifact_law_projection.rs#3	one	count publishers(topic T) == 1	Holds	None
 crates/hale-types/tests/claim_judgment_gating.rs#0	wired	require subscribes(some subs, topic Plain)	Holds	None
 crates/hale-types/tests/claim_judgment_gating.rs#1	isolation	forbid reaches(src, dst)	Violated	None
 crates/hale-types/tests/claim_lowering.rs#0	edge	only edges gates -> wings { publish Readings }	Holds	None

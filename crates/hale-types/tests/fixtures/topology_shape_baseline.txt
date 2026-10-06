@@ -1447,9 +1447,10 @@ crates/hale-types/tests/api_binding_check.rs#13 9dbcce1e7ab99412
 crates/hale-types/tests/api_binding_check.rs#22 d5e860cd50b8449d
 crates/hale-types/tests/api_binding_check.rs#26 a8fcc1c466212038
 crates/hale-types/tests/artifact_integrity.rs#2 ceb97d5adb719c07
-crates/hale-types/tests/artifact_law_projection.rs#10 a35d4c64d00f5eeb
-crates/hale-types/tests/artifact_law_projection.rs#13 5b19cc4370a72a2f
-crates/hale-types/tests/artifact_law_projection.rs#2 909347b7987625fc
+crates/hale-types/tests/artifact_law_projection.rs#1 489030bd07962ba4
+crates/hale-types/tests/artifact_law_projection.rs#11 a35d4c64d00f5eeb
+crates/hale-types/tests/artifact_law_projection.rs#14 5b19cc4370a72a2f
+crates/hale-types/tests/artifact_law_projection.rs#3 909347b7987625fc
 crates/hale-types/tests/birth_order_trap.rs#0 c52fb6e0d7e19f18
 crates/hale-types/tests/birth_order_trap.rs#1 8009d125ad0b1435
 crates/hale-types/tests/birth_order_trap.rs#2 4011036d321675f8
