@@ -289,6 +289,7 @@ const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
+const CG_CONVERSION: &str = "crates/hale-codegen/src/conversion.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
@@ -555,12 +556,14 @@ pub const FAMILIES: &[Family] = &[
             site(UNITS, "identity_and_range_bases"),
             site(UNITS, "refinement_bases"),
             site(UNITS, "duration_suffix_names"),
+            site(UNITS, "typed_scalar_names"),
             site(SNAPSHOT, "demand_units"),
         ],
         consumers: &[
             consumer_at("demand (one cell per snapshot, counted as this family)", SNAPSHOT, "derive_unit_rows"),
             consumer_at("check (the ten laws, through one entry, over the rows handed in: `CheckInputs::units`)", CHECK, "unit_laws"),
-            consumer_at("check (the not-yet boundary: a scalar type's name where a value would live, read from the rows' names, and a quantity literal, are one located error each)", CHECK, "value_not_yet"),
+            consumer_at("check (the not-yet boundary: a quantity's or a point's name where a value would live, read from the rows' names and kinds, and a quantity literal, are one located error each)", CHECK, "value_not_yet"),
+            consumer_at("check (the identities' and ranges' value rules, `unit_values`: each scalar's kind, parent and range, from the rows handed in)", CHECK, "ScalarTypes::new"),
         ],
         invariants: &[
             "one producer over the programs after the desugar sequence, each row keyed by its declaration's site (`SiteRef`), demanded once per snapshot (`Snapshot::demand_units`), not gated on the typing: it reads declarations only. The stdlib declares no unit and no scalar yet; when its time catalogue arrives (U4) its declarations join the rows under `SiteRef::stdlib`",
@@ -568,19 +571,23 @@ pub const FAMILIES: &[Family] = &[
             "the catalogue is closed once, from the rows (the number one under an identity the snapshot's mint never issues), and kept only when no catalogue law fails: a unit declared twice, an equation naming no declared unit, a cycle that does not multiply to one",
             "a scalar's kind is its word's (`quantity`, `point`, `distinct`), else its base's: a refinement of a quantity is a quantity, of a point a point, of `Int`, an identity or a range a range, and `Int in D` a quantity missing its word. A quantity's or a point's denomination is its own `in`, else its parent's; its component is its parent's, else its denomination's unit's. Each component's quantity is the first declared with `quantity` and no policy; every other quantity over the component is a boundary denomination of it and records it as its `of`. A point's origin is a count of its own denomination, through the catalogue",
             "the laws are registered rules of `spec/verification.md`'s structural table, each a function over the rows producing `law::Violation`s, run by the check through `unit_laws`: a unit is declared once; an equation, a denomination or an origin names a declared unit; every cycle of equations multiplies to one; a component has one quantity, and a refinement of a quantity stays in its component; a quantity counts an `Int` and names its denomination; a point is over a quantity, and its denomination and origin are in its component; `round:` names a policy, on a quantity or a point, and a `range:` is literal, non-empty and inside its parent's; an identity is `distinct Int` and a range refines `Int`, an identity or a range; a refinement refines a scalar or `Int`, never a struct, an enum or itself; no unit takes a duration suffix's name",
-            "values are not typed yet: a scalar type's name where a value would live (a parameter, a field, a binding, a return, a topic payload, a generic argument, an alias's target) and a quantity literal are one located error each, made by one function (`value_not_yet`), so a program that passes the check holds no value of a new type",
+            "an identity's and a range's values are typed (U2): the scope registers each such declaration whose chain reaches `Int` as a nominal `TypeKind::Scalar` represented as an `Int`, which `typed_scalar_names` decides once from the declarations for every reader (the resolver, codegen's alias table, the topic shape renderer), and the checker's rules (`unit_values`) read its row's kind, parent and range. A quantity's and a point's values are not typed yet: the name of one where a value would live (a parameter, a field, a binding, a return, a topic payload, a generic argument, an alias's target) and a quantity literal are one located error each, made by one function (`value_not_yet`), so a program that passes the check holds no value of a quantity or a point; a declaration the laws refuse resolves to `Unknown`, so a use of it is no second error",
         ],
-        // Lowering reads none of the rows: a program that passes the
-        // check declares and holds no value of a new type, and codegen
-        // lowers a declaration to nothing from the program itself. Not in
-        // `lowering_reads_are_classified`'s list for that reason.
+        // Lowering reads none of the rows. An identity's or a range's
+        // conversions are rows of the typed bodies (`expression_typing`'s
+        // `conversions` column, which lowering reads, classified there),
+        // and codegen lowers each name as `Int` from the program's own
+        // declarations through `typed_scalar_names`; a quantity or a point
+        // reaches no value. Not in `lowering_reads_are_classified`'s list
+        // for that reason.
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/unit_declarations.rs", "crates/hale-types/tests/demand_gate.rs", "tests/hale/unit_declarations_test.hl"],
-        spec: &["spec/units.md § Declarations", "spec/verification.md § Structural & design rules"],
+        tests: &["crates/hale-types/tests/unit_declarations.rs", "crates/hale-types/tests/unit_values.rs", "crates/hale-types/tests/demand_gate.rs", "tests/hale/unit_declarations_test.hl", "tests/hale/identities_and_ranges_test.hl"],
+        spec: &["spec/units.md § Declarations", "spec/units.md § Identities and ranges", "spec/verification.md § Structural & design rules"],
         seams: &[
             Seam { symbol: "derive_unit_rows(", allowed: &[(UNITS, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "unit_laws(", allowed: &[(UNITS, 1), (CHECK, 1)] },
             Seam { symbol: "value_not_yet(", allowed: &[(UNITS, 1), (CHECK, 1)] },
+            Seam { symbol: "typed_scalar_names(", allowed: &[(RESOLVE, 1), (CG, 1), (TOPIC_ID, 1)] },
         ],
     },
     Family {
@@ -621,18 +628,18 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["top_scope", "declarations", "bodies"],
         producer: Some(site(CHECK, "check_bundle_scoped")),
         legacy: &[],
-        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law)", CHECK, "check_bundle_reporting"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer_at("codegen (a bare builtin's arity and result: its signature row)", CG, "builtin_sig"), consumer_at("the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's)", SNAPSHOT, "omitted_args"), consumer_at("the sealed rule (`sealability`: the `param_accesses` rows of each declaration, as its walk ends)", CHECK, "settle_param_accesses"), consumer_at("check --sealable (the snapshot's table's `param_accesses`)", V_CHECK, "demand_typed_bodies"), consumer("every layer"), ],
+        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("the check of a bundle no snapshot holds (the record packaged for the `bare_fallible` law)", CHECK, "check_bundle_reporting"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer_at("codegen (a bare builtin's arity and result: its signature row)", CG, "builtin_sig"), consumer_at("the cross-pool value law (`law_backstops`, at the harness's lowering view: the table's `omitted_args`; the check reads its record's)", SNAPSHOT, "omitted_args"), consumer_at("the sealed rule (`sealability`: the `param_accesses` rows of each declaration, as its walk ends)", CHECK, "settle_param_accesses"), consumer_at("check --sealable (the snapshot's table's `param_accesses`)", V_CHECK, "demand_typed_bodies"), consumer_at("codegen (a conversion between an identity or a range and its family: its cast's `conversions` row, by its call; `lower_conversion` reads the kind, the range and the discharge, and a cast with no row is refused at the cast)", CG_CONVERSION, "conversion_row"), consumer_at("the `bare_fallible` law (a narrowing nothing discharges: the `conversions` column)", "crates/hale-types/src/bare_fallible.rs", "judge_narrowing"), consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
             "codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span",
-            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with seven columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too), and `param_accesses` (per body, each read or write of a locus's `params` through a receiver typed as that locus, with the reader and the receiver by declaration: the `sealability` family's rows); a site the checker could not type is a hole with its reason",
+            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; the check demands it once, for the `bare_fallible` law), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with eight columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls (the callee's mark and what addresses the call), `omitted_args` (per call that leaves arguments to their defaults, the declaration the checker resolves the callee to, a method by its receiver's type, and the first parameter it leaves; a type's field defaults, which the checker does not type, have their calls recorded too), and `param_accesses` (per body, each read or write of a locus's `params` through a receiver typed as that locus, with the reader and the receiver by declaration: the `sealability` family's rows), and `conversions` (GH #1076: per conversion between an identity or a range and its family, a cast by its call and an implicit widening by the value's span, its kind (total, widening, narrowing), a narrowing's range and what discharges it; lowering reads a cast's row and decides nothing, emitting nothing for a total conversion or a widening); a site the checker could not type is a hole with its reason",
             "the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row",
         ],
         missing: Missing::Required {
             pinned_by: Site { path: "crates/hale-codegen/tests/typed_body_rows.rs", symbol: "an_accumulator_without_a_row_is_refused_at_its_expression" },
             total: None,
         },
-        tests: &["crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
+        tests: &["crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs", "crates/hale-types/tests/unit_values.rs (the conversion rows, by shape)", "crates/hale-codegen/tests/unit_conversion_lowering.rs (the emitted shape per policy, and a_conversion_without_its_row_is_refused_at_the_cast)"],
         spec: &["spec/types.md"],
         owned: &[site(RESOLVE, "infer_literal_ty"), site(TYPED_BODIES, "typed_bodies"), site(BUILTIN_SIGS, "BARE_BUILTIN_SIGS")],
         seams: &[Seam { symbol: "typed_bodies(", allowed: &[(TYPED_BODIES, 1), (SNAPSHOT, 1), (CHECK, 1)] }],
@@ -1395,7 +1402,7 @@ pub const FAMILIES: &[Family] = &[
         state: State::Canonical,
         kind: Kind::Law,
         answers: "Whether a fallible call's error is addressed.",
-        inputs: &["typed_bodies (the fallible_calls column: each call's callee mark and what addresses it)"],
+        inputs: &["typed_bodies (the fallible_calls column: each call's callee mark and what addresses it)", "typed_bodies (the conversions column: each narrowing's discharge, GH #1076)"],
         producer: Some(site("crates/hale-types/src/bare_fallible.rs", "bare_fallible_calls")),
         legacy: &[],
         consumers: &[consumer_at("check, verify, build, run, test, replay, bench, the LSP (the snapshot's check, with the typing diagnostics)", SNAPSHOT, "bare_fallible_calls"), consumer_at("the check of a bundle no snapshot holds (the tests' entries)", CHECK, "bare_fallible_calls")],
@@ -1405,9 +1412,10 @@ pub const FAMILIES: &[Family] = &[
             "an `or`'s handler takes the implicit `or raise` exactly where lowering does (`expr_is_fallible_call`): a `Declared` callee; any other fallible handler is refused with the nested spelling, a limitation to lift, not a rule",
             "the checker types a fallible value no `or` addresses as its success type, so a bare call reports the law's one error and no type mismatch",
             "runs on every entry point, the LSP and bench included (the snapshot's check)",
+            "a narrowing into a range (`Session(n)`, GH #1076) is fallible like a call: its `conversions` row records what its `or` discharges it with, and a narrowing nothing discharges is refused in the law's own words (`judge_narrowing`), listing the five discharges",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/check_strict_fallible.rs", "crates/hale-types/tests/typed_bodies.rs"],
+        tests: &["crates/hale-cli/tests/check_strict_fallible.rs", "crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/unit_values.rs"],
         spec: &["spec/semantics.md § A bare fallible call is an error", "spec/types.md"],
         owned: &[],
         seams: &[Seam { symbol: "bare_fallible_calls(", allowed: &[("crates/hale-types/src/bare_fallible.rs", 1), (SNAPSHOT, 1), (CHECK, 1)] }],
