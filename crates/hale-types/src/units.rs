@@ -746,13 +746,18 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
 /// or a point's name where a value would live, or a quantity literal.
 /// `what` names it (``type `Money` ``, ``quantity literal `3bp` ``).
 pub(crate) fn value_not_yet(span: Span, what: &str) -> Diag {
-    Diag::ty(
-        span,
-        format!(
-            "{what}: values of the unit dialect's types are not typed yet (GH #1076): declarations are \
-             checked, and values arrive with the next step; until then, count in `Int`"
-        ),
-    )
+    Diag::ty(span, format!("{what}{NOT_YET}"))
+}
+
+/// What every one of the boundary's errors says after naming its place.
+const NOT_YET: &str = ": values of the unit dialect's types are not typed yet (GH #1076): declarations are \
+                       checked, and values arrive with the next step; until then, count in `Int`";
+
+/// Whether `d` is the not-yet boundary's error: the check reports each
+/// place once where it assembles the declarations' results, which each
+/// carry the boundary's errors their walk reached.
+pub(crate) fn is_boundary_refusal(d: &Diag) -> bool {
+    d.kind == hale_syntax::DiagKind::Type && d.message.ends_with(NOT_YET)
 }
 
 /// Law 1: a unit is declared once. At the second declaration's name; the

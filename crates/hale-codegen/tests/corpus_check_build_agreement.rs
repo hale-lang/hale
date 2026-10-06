@@ -484,6 +484,151 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
+/// GH #1076 (U1, review): a quantity literal in a default checked clean
+/// and was refused by the build. A parameter's default is typed at the
+/// invocation in a walk whose findings the check discards, which took
+/// the not-yet boundary's error with them; a field's default was not
+/// typed at all. The check refuses each now, at the literal, so the
+/// build is never reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
+    let param = "unit cent;\n\
+                 fn take(n: Int = 3cent) { println(n); }\n\
+                 fn main() { take(); }\n";
+    let field = "unit cent;\n\
+                 type S { n: Int = 3cent; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    for src in [param, field] {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
+        assert_eq!(errors[0].span.slice(src), "3cent", "located at the literal:\n{}", src);
+        assert!(errors[0].message.starts_with("quantity literal `3cent`: "), "{}", errors[0].message);
+        assert_eq!(
+            sweep_verdict(src, "hale_cb_unit_default"),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}
+
+/// GH #1076 (U1, review): the not-yet boundary refused `Money(1)` as a
+/// cast to the scalar type `Money` before the callee was resolved, so a
+/// local of that name holding a fn was refused too. The local is the
+/// callee: the program checks, builds and runs it, as it does when
+/// `Money` is an alias. With no local, a quantity's cast is the
+/// boundary's, and the check refuses it before the build; an identity's
+/// is a conversion (U2), which builds and prints 1.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_local_that_shadows_a_unit_type_is_the_callee() {
+    let shadows = |ty: &str| {
+        format!(
+            "unit cent;\n\
+             type Money = {};\n\
+             fn id(n: Int) -> Int {{ return n; }}\n\
+             fn main() {{ let Money = id; println(Money(1)); }}\n",
+            ty
+        )
+    };
+    for ty in ["quantity Int in cent", "Int"] {
+        let src = shadows(ty);
+        assert_eq!(build_and_run_probe(&src, "unit_shadow"), Ok("1\n".to_string()), "{}", src);
+    }
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                fn main() { println(Money(1)); }\n";
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+    let identity = cast.replace("quantity Int in cent", "distinct Int");
+    assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
+}
+
+/// GH #1076 (U1, review 2): a struct field's default is evaluated in the
+/// scope of the literal that leaves the field, so `Money(1)` in it calls
+/// the constructing fn's local `Money` (a fn), not the scalar type the
+/// declaration's scope would name. The check judges the cast there, and
+/// the program checks, builds and prints 1; with no local, the check
+/// refuses the cast before the build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_struct_default_cast_is_judged_in_the_literals_scope() {
+    let shadows = "unit cent;\n\
+                   type Money = quantity Int in cent;\n\
+                   type S { n: Int = Money(1); }\n\
+                   fn id(n: Int) -> Int { return n; }\n\
+                   fn main() { let Money = id; let s = S {}; println(s.n); }\n";
+    assert_eq!(build_and_run_probe(shadows, "unit_default_shadow"), Ok("1\n".to_string()), "{}", shadows);
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                type S { n: Int = Money(1); }\n\
+                fn main() { let s = S {}; println(s.n); }\n";
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_default_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+}
+
+/// GH #1076 (U1, review 3): an omitted struct default is typed where it
+/// is evaluated, so the check follows the scopes it opens (a block binding
+/// `Money` itself), the parameter defaults its calls leave and the field
+/// defaults its own literals leave, each in the constructing fn's scope.
+/// Each shadowing program checks, builds and prints 1. With nothing
+/// shadowing the nested literal's cast, the check refuses it once, at
+/// `Inner`'s default, before the build (`Outer {}` evaluates `Inner {}`,
+/// whose omitted `n` the build would otherwise reach).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
+    let block = "unit cent;\n\
+                 type Money = quantity Int in cent;\n\
+                 fn id(n: Int) -> Int { return n; }\n\
+                 type S { n: Int = { let Money = id; Money(1) }; }\n\
+                 fn main() { let s = S {}; println(s.n); }\n";
+    let through_fn = "unit cent;\n\
+                      type Money = quantity Int in cent;\n\
+                      fn id(n: Int) -> Int { return n; }\n\
+                      fn take(n: Int = Money(1)) -> Int { return n; }\n\
+                      type S { n: Int = take(); }\n\
+                      fn main() { let Money = id; let s = S {}; println(s.n); }\n";
+    let nested = "unit cent;\n\
+                  type Money = quantity Int in cent;\n\
+                  fn id(n: Int) -> Int { return n; }\n\
+                  type Inner { n: Int = Money(1); }\n\
+                  type Outer { inner: Inner = Inner {}; }\n\
+                  fn main() { let Money = id; let o = Outer {}; println(o.inner.n); }\n";
+    for (src, tag) in [(block, "unit_block_default"), (through_fn, "unit_fn_default"), (nested, "unit_nested_default")] {
+        assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
+    }
+    let cast = "unit cent;\n\
+                type Money = quantity Int in cent;\n\
+                type Inner { n: Int = Money(1); }\n\
+                type Outer { inner: Inner = Inner {}; }\n\
+                fn main() { let o = Outer {}; println(o.inner.n); }\n";
+    let program = hale_syntax::parse_source(cast).expect("parses");
+    let errors: Vec<hale_syntax::Diag> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
+    assert_eq!(errors[0].span.start.as_usize(), cast.find("Money(1)").expect("the cast"), "at `Inner`'s default");
+    assert!(errors[0].message.starts_with("type `Money`: "), "{}", errors[0].message);
+    assert_eq!(
+        sweep_verdict(cast, "hale_cb_unit_nested_default_cast"),
+        Verdict::Skipped("the checker rejects it"),
+        "the cast is the boundary's, so the build is never reached"
+    );
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

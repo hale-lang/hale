@@ -242,9 +242,15 @@ error each ("values of the unit dialect's types are not typed yet
 (GH #1076)"), so a program that passes the check holds no value of a
 quantity or a point, and their declarations lower to no code. A
 declaration the laws refuse has no values either: its name resolves to
-nothing, so a use of it is no second error. Quantity values, literals
-of declared units and the conversions between denominations arrive
-with the next step.
+nothing, so a use of it is no second error. A cast's name means what it means
+at the call: a local, a parameter or a fn of the name is the callee,
+and no cast. A struct field's default is evaluated at each literal that
+leaves the field, in that literal's scope, so a cast in it is judged
+there (once, at the default, however many literals leave it), with the
+scopes the default opens, the parameter defaults its calls leave and
+the field defaults its own literals leave; a quantity literal in it is
+refused at the declaration. Quantity values, literals of declared units
+and the conversions between denominations arrive with the next step.
 
 ## Identities and ranges
 
