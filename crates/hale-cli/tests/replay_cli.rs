@@ -2339,7 +2339,8 @@ const TWO_UTILS_MAIN: &str =
 /// files of the identity. The frame named a file outside the entry's
 /// directory by its bare file name, so `a/util.hl` and `b/util.hl` were
 /// framed alike and told apart only by where their absolute paths
-/// sorted; the frame names each by its source-map path now.
+/// sorted; the frame names each by its source-map path now. The
+/// covered change that moves `exec_digest`.
 #[test]
 fn same_named_imports_with_their_contents_swapped_are_two_identities() {
     let dir = workdir("same_named");
@@ -2366,7 +2367,8 @@ fn same_named_imports_with_their_contents_swapped_are_two_identities() {
 /// target typed relative to the working directory sorted after every
 /// absolute import and one typed absolute sorted among them: the same
 /// program had two identities, and `hale replay` of one refused a
-/// recording of the other.
+/// recording of the other. The uncovered change that keeps
+/// `exec_digest`: the checkout's root and how the target is typed.
 #[test]
 fn one_program_at_two_roots_has_one_identity() {
     let dir = workdir("two_roots");

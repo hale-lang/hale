@@ -336,7 +336,8 @@ mod tests {
     /// The DNA host cache's options (I5): the default environment's are
     /// the default build's, a knob the subprocess build inherits and
     /// fingerprints moves them, and what the fingerprint leaves out
-    /// (a narration, the DWARF switch) leaves them too.
+    /// (a narration, the DWARF switch) leaves them too; so the cache's
+    /// key, `toolchain_hash`, moves and keeps with them.
     #[test]
     fn the_host_caches_options_are_the_inherited_builds_fingerprint() {
         let options = |pairs: &[(&str, &str)]| {
@@ -346,11 +347,14 @@ mod tests {
         let plain = options(&[]);
         assert_eq!(plain, "target=Native;cpu=Native;dev=false;debug=false");
         assert_eq!(plain, options(&[]), "the unchanged environment gives the options it gave");
+        let key = hale_iris::toolchain_hash(&plain);
         for knob in [("LOTUS_ASAN", "1"), ("LOTUS_UBSAN", "1"), ("HALE_DEV", "1"), ("LOTUS_LTO", "thin"), ("LOTUS_NO_BUS_DEVIRT", "1")] {
             assert_ne!(options(&[knob]), plain, "{knob:?} is inherited by the cache's build and must move its key");
+            assert_ne!(hale_iris::toolchain_hash(&options(&[knob])), key, "{knob:?} moves toolchain_hash");
         }
         for quiet in [("HALE_TIME", "1"), ("LOTUS_NO_DEBUGINFO", "1"), ("HALE_CC_WARNINGS", "1")] {
             assert_eq!(options(&[quiet]), plain, "{quiet:?} is no part of the execution identity");
+            assert_eq!(hale_iris::toolchain_hash(&options(&[quiet])), key, "{quiet:?} keeps toolchain_hash");
         }
     }
 

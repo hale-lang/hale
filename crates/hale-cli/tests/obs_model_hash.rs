@@ -81,6 +81,8 @@ fn main() {
 }
 "#;
 
+/// `model_hash`, stamped into the obs header: a comment-only rebuild
+/// keeps it, a locus added moves it.
 #[test]
 fn model_identity_is_stamped_and_tracks_the_model() {
     let dir = std::env::temp_dir()
