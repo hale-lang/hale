@@ -48,6 +48,8 @@ fn hale_check(root: &Path) -> String {
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
+/// `embedded_dna_digest`: a file outside the embedded set keeps it, an
+/// edited embedded file moves it and the stale check warns.
 #[test]
 fn a_tree_the_binary_embeds_raises_nothing_and_an_edited_one_warns() {
     let root = copy_dna("edit");
@@ -59,6 +61,19 @@ fn a_tree_the_binary_embeds_raises_nothing_and_an_edited_one_warns() {
     let quiet = hale_check(&root);
     assert!(!quiet.contains(WARNING), "an unchanged tree raises nothing: {quiet}");
 
+    // What `embedded_dna_digest` leaves out keeps it: the directories
+    // are listed non-recursively, each with its extensions, so a file
+    // of another extension, or one in a directory not listed, is not
+    // embedded.
+    std::fs::write(root.join("dna/core/NOTES.md"), "not embedded\n").unwrap();
+    std::fs::create_dir_all(root.join("dna/core/scratch")).unwrap();
+    std::fs::write(root.join("dna/core/scratch/extra.hl"), "fn extra() { }\n").unwrap();
+    assert_eq!(
+        hale_dna::digest_of_tree(&root).unwrap(),
+        hale_dna::EMBEDDED_DIGEST,
+        "a file outside the embedded set keeps embedded_dna_digest"
+    );
+
     let core = root.join("dna").join("core");
     let edited = std::fs::read_dir(&core)
         .unwrap()
@@ -69,6 +84,7 @@ fn a_tree_the_binary_embeds_raises_nothing_and_an_edited_one_warns() {
     let mut text = std::fs::read_to_string(&edited).unwrap();
     text.push_str("\n// edited after the build\n");
     std::fs::write(&edited, text).unwrap();
+    assert_ne!(hale_dna::digest_of_tree(&root).unwrap(), hale_dna::EMBEDDED_DIGEST, "an embedded file edited");
     let warned = hale_check(&root);
     assert!(warned.contains(WARNING), "an edited dna/core warns: {warned}");
     assert!(warned.contains("cargo build --release"), "and says how to rebuild: {warned}");

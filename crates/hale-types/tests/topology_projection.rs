@@ -848,14 +848,24 @@ fn main() { App { }; }
 
 /// F.40 phase 2.1b: the omitted `run` is synthesized in the desugar
 /// sequence before the check, so the checker and the model now see it.
-/// The spec makes the omitted and the empty spelling one program, and
-/// what an artifact's identity holds is the hooks the author wrote: a
-/// synthesized `run` (`LifecycleDecl::synthesized`) must move neither
-/// the artifact (the model half is replay admission's key) nor a
+/// The spec makes the omitted and the empty spelling one program: a
+/// synthesized `run` (`LifecycleDecl::synthesized`) must move no
 /// diagnostic. Every corpus program is put through the sequence and
-/// compared with itself minus the hooks the sequence synthesized.
+/// checked by `hale_types::check::check_bundle`, which takes the AST as
+/// given, beside itself minus the hooks the sequence synthesized. (A
+/// snapshot entry cannot be the checker here: it shapes through the
+/// sequence again and puts the stripped hooks back.)
+///
+/// The artifact is not compared, because no program without its
+/// synthesized `run` reaches one: every entry to the model
+/// (`Snapshot::load`, `Snapshot::from_program`) shapes through the
+/// desugar sequence, whose fifth pass is the omitted `run`
+/// (`desugar_sequence.rs`, the module's list and the call in `shape`).
+/// The registry's `desugar_sequence` family holds where the sequence and
+/// the pass are called; no test pinned that a snapshot's program carries
+/// the hook, so the first assertion here does.
 #[test]
-fn the_omitted_run_moves_no_artifact_and_no_diagnostic() {
+fn the_omitted_run_moves_no_diagnostic() {
     use hale_syntax::ast::{LocusMember, TopDecl};
     fn strip(items: &mut [TopDecl]) {
         for item in items {
@@ -868,16 +878,33 @@ fn the_omitted_run_moves_no_artifact_and_no_diagnostic() {
             }
         }
     }
-    fn outputs(program: &hale_syntax::ast::Program) -> (String, Vec<String>) {
+    fn synthesized(items: &[TopDecl]) -> bool {
+        items.iter().any(|item| match item {
+            TopDecl::Locus(l) => l
+                .members
+                .iter()
+                .any(|m| matches!(m, LocusMember::Lifecycle(lc) if lc.synthesized)),
+            TopDecl::Module(m) => synthesized(&m.items),
+            _ => false,
+        })
+    }
+    let bare = hale_syntax::parse_source("locus L { params { n: Int = 0; } }\nfn main() { L { }; }\n").expect("parse");
+    let Ok(snap) = hale_frontend::snapshot::Snapshot::from_program(bare, Vec::new(), hale_frontend::snapshot::Config::check(false, false)) else {
+        panic!("the program shapes")
+    };
+    assert!(
+        snap.bundle().programs.values().any(|p| synthesized(&p.items)),
+        "the model's entry runs the desugar sequence: a snapshot's locus carries its synthesized `run`"
+    );
+    fn diagnostics(program: &hale_syntax::ast::Program) -> Vec<String> {
         let mut programs = BTreeMap::new();
         programs.insert("app.hl".to_string(), program);
         let bundle = Bundle::new(programs);
-        let art = entries::dump_topology_parts(&bundle);
-        let diags = entries::check_bundle_opts_whole_program(&bundle, false)
+        let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
+        hale_types::check::check_bundle(&bundle, &scope, false)
             .into_iter()
             .map(|d| format!("{:?} {:?} {}", d.kind, d.span, d.message))
-            .collect();
-        (art, diags)
+            .collect()
     }
     let mut compared = 0usize;
     let mut bad: Vec<String> = Vec::new();
@@ -893,28 +920,25 @@ fn the_omitted_run_moves_no_artifact_and_no_diagnostic() {
         if hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq).is_err() {
             continue;
         }
-        let mut written = program.clone();
-        strip(&mut written.items);
-        if written == program {
+        if !synthesized(&program.items) {
             continue;
         }
+        let mut written = program.clone();
+        strip(&mut written.items);
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            (outputs(&program), outputs(&written))
+            (diagnostics(&program), diagnostics(&written))
         }));
-        let Ok(((art, diags), (art_w, diags_w))) = caught else {
+        let Ok((diags, diags_w)) = caught else {
             bad.push(format!("{}: PANIC", p.origin));
             continue;
         };
         compared += 1;
-        if art != art_w {
-            bad.push(format!("{}: artifact moved\n{}", p.origin, first_diff(&art_w, &art)));
-        }
         // The stdlib's own seeds declare its loci under the names the
-        // bundled stdlib merges them in by, and the bundled twin carries
-        // its synthesized `run` too: stripping the seed's alone makes
-        // the two shapes differ, a program no entry point checks (the
-        // shadow over `hale check` of these files is unchanged). Their
-        // artifacts are still compared.
+        // bundled stdlib merges them in by, and the checker holds each
+        // against its bundled twin, which carries its synthesized `run`
+        // too: stripping the seed's alone makes the two shapes differ
+        // ("cannot share one"), a program no entry point checks (the
+        // shadow over `hale check` of these files is unchanged).
         let stdlib_seed = p.origin.starts_with("crates/hale-stdlib/");
         if diags != diags_w && !stdlib_seed {
             bad.push(format!(

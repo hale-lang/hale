@@ -594,7 +594,9 @@ fn the_harness_snapshot_lowers_without_a_check() {
 /// file through the whole-seed load (a seed of one) and the editor's
 /// load (its directory) reads different file sets and gets different
 /// keys; editing a file on disk changes the key; two bare programs
-/// differ (outside review of #1283, finding 2).
+/// differ (outside review of #1283, finding 2). An edit to a file the
+/// load does not read keeps `snapshot_key` and its
+/// `snapshot_sources_digest`.
 #[test]
 fn a_snapshot_key_tells_different_loads_apart() {
     let d = seed("key", NO_CLAIMS);
@@ -606,9 +608,15 @@ fn a_snapshot_key_tells_different_loads_apart() {
     assert_ne!(whole.key(), editor_load.key(), "different loads, different keys");
     let again = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
     assert_eq!(whole.key(), again.key(), "the same load, the same key");
+    // A file the load does not read is no part of it.
+    std::fs::write(d.join("sibling.hl"), "fn helper() -> Int { return 2; }\n").unwrap();
+    let unread = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
+    assert_eq!(whole.key().sources_digest, unread.key().sources_digest, "an unread sibling edited");
+    assert_eq!(whole.key(), unread.key(), "an unread sibling edited");
     std::fs::write(&entry, format!("{NO_CLAIMS}\n// edited\n")).unwrap();
     let edited = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
     assert_ne!(whole.key(), edited.key(), "an edit on disk is a different snapshot");
+    assert_ne!(whole.key().sources_digest, edited.key().sources_digest, "the text it read");
     let a = hale_syntax::parse_source("fn main() { }").unwrap();
     let b = hale_syntax::parse_source("fn main() { let x = 1; }").unwrap();
     let bare = |p| match Snapshot::from_program(p, Vec::new(), Config::build(Target::host())) {

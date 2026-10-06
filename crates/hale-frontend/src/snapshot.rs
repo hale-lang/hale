@@ -2337,7 +2337,9 @@ mod tests {
     }
 
     /// Contract 4: a changed entry, target, config or overlay is a
-    /// different snapshot, and each computes its own results.
+    /// different snapshot, and each computes its own results. A switch
+    /// moves `snapshot_config_digest` and a buffer does not; a buffer
+    /// moves `snapshot_overlay_digest` and a reused parse does not.
     #[test]
     fn a_changed_input_is_a_distinct_snapshot_and_shares_no_result() {
         let d = scratch("keys");
@@ -2353,9 +2355,15 @@ mod tests {
         buffers.insert(app.clone(), MISTYPED.to_string());
         let edited = load(&app, &Overlay::new(&buffers), Config::editor());
         assert_ne!(disk.key().overlay_digest, edited.key().overlay_digest);
+        // A reused parse is the parse: the overlay keeps its digest.
+        let cache = crate::parse_cache::ParseCache::new();
+        let reused = load(&app, &Overlay::new(&buffers).reusing(&cache), Config::editor());
+        assert_eq!(edited.key().overlay_digest, reused.key().overlay_digest, "a reused parse");
 
         let one_file = load(&app, &Disk, Config::check(false, false));
         assert_ne!(disk.key().config_digest, one_file.key().config_digest);
+        // A buffer over the disk is no part of the configuration.
+        assert_eq!(disk.key().config_digest, edited.key().config_digest, "an editor buffer");
 
         // A build of the same seed refuses the build rules in its check
         // (as the editor's does), `hale check` runs them beside it; an

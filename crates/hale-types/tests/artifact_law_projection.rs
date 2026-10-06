@@ -329,6 +329,40 @@ fn main() { App { }; }
     assert_eq!(v["adequacy"]["certificate"], "exact");
 }
 
+/// `law_digest` covers the law rows and their issues, and nothing
+/// else of the artifact: a claim changed moves it, and a locus no
+/// claim names, declared after every row so that no row's span moves,
+/// keeps it while the model's `shape_hash` moves.
+#[test]
+fn law_digest_moves_with_a_row_and_keeps_without_one() {
+    const SRC: &str = r#"
+locus A { fn go(v: Int) -> Int { return v; } }
+locus B { fn work(v: Int) -> Int { return v; } }
+group a_side = { A };
+group b_side = { B };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+}
+fn main() { App { }; }
+"#;
+    let digests = |src: &str| -> (String, String) {
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let v: serde_json::Value =
+            serde_json::from_str(&entries::dump_topology(&bundle_of(src, &program)))
+                .expect("valid JSON");
+        let law = v["law"]["law_digest"].as_str().expect("law_digest").to_string();
+        let shape = v["shape_hash"].as_str().expect("shape_hash").to_string();
+        (law, shape)
+    };
+    let (law, shape) = digests(SRC);
+    let (renamed, _) = digests(&SRC.replace("iso:", "apart:"));
+    assert_ne!(law, renamed, "a renamed claim is another row: law_digest must move");
+    let (grown, grown_shape) = digests(&format!("{SRC}locus Extra {{ }}\n"));
+    assert_ne!(shape, grown_shape, "the locus is a model change");
+    assert_eq!(law, grown, "no row changed: law_digest must keep its value");
+}
+
 /// Adequacy, both directions (review round 1): a computed publish
 /// subject is unresolved knowledge for the CERTIFICATE family too
 /// (`@effects(publish: {…})` cannot prove the subject in-set), so

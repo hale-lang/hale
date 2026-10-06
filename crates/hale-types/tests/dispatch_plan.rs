@@ -213,8 +213,9 @@ fn main() { Sub { }; Pub { }; }
     assert_eq!(p.same_domain_queued(), (0, 1));
 }
 
-/// The digest is an identity, not a summary: moving any decision
-/// moves it. Same plan, same digest.
+/// The digest (`dispatch_plan_digest`) is an identity, not a summary:
+/// moving any decision moves it. Same plan, same digest, and what the
+/// lowering does not read keeps it.
 #[test]
 fn the_digest_tracks_the_plan() {
     const ONE_SUB: &str = r#"
@@ -234,6 +235,16 @@ fn main() { App { }; }
 "#;
     // Same program, second derivation: identical.
     assert_eq!(plan_of(ONE_SUB).digest(), plan_of(ONE_SUB).digest());
+    // A handler's body is no decision the lowering bakes, and the
+    // same-domain column is a reserved byte no lowering reads: each
+    // keeps the digest.
+    let body = ONE_SUB.replace("self.seen + 1", "self.seen + 2");
+    assert_eq!(plan_of(ONE_SUB).digest(), plan_of(&body).digest(), "a handler's body");
+    let mut flipped = plan_of(ONE_SUB);
+    for row in &mut flipped.subjects {
+        row.same_domain = !row.same_domain;
+    }
+    assert_eq!(plan_of(ONE_SUB).digest(), flipped.digest(), "the same-domain column");
     // A second subscriber changes what the direct lowering bakes.
     let two_subs = ONE_SUB.replace(
         "params { a: A = A { }; }",

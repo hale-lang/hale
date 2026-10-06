@@ -962,7 +962,9 @@ fn different_toolchain_evidence_is_refused() {
 /// (identical semantic annotations, shifted locations) has a
 /// different semantic digest AND different source units, so
 /// evidence derived beside the ORIGINAL model/table is refused
-/// when judged against the re-lowered table.
+/// when judged against the re-lowered table. `claim_table_digest`
+/// (`semantic_digest`) moves with the provenance store and keeps its
+/// value over a model change no row records.
 #[test]
 fn relowered_table_from_edited_source_is_refused() {
     let v1 = r#"
@@ -1019,6 +1021,21 @@ fn main() { App { }; }
         "a re-lowered table must not replay another snapshot's \
          evidence"
     );
+    // The keeping half: the model half is no part of the table's
+    // identity. A locus written where a comment of its length stood
+    // changes the model and leaves every row, span and source unit.
+    let table_and_shape = |tail: &str| {
+        let src = format!("{v1}{tail}");
+        let program = hale_syntax::parse_source(&src).expect("parse");
+        let bundle = bundle_of(&src, &program);
+        let model = derive_application_model(&bundle);
+        let digest = lower_claims(&bundle, &model).semantic_digest();
+        (digest, hale_types::topology_projection::project_shape_hash(&model))
+    };
+    let (commented, commented_shape) = table_and_shape("// padding here\n");
+    let (grown, grown_shape) = table_and_shape("locus Extra { }\n");
+    assert_ne!(commented_shape, grown_shape, "the locus is a model change");
+    assert_eq!(commented, grown, "no row changed: claim_table_digest must keep its value");
 }
 
 /// Review pin (round 5): a certificate naming a cyclically-defined
@@ -1132,6 +1149,8 @@ fn main() { App { }; }
 /// `TopologyShapeV1` (recording compatibility), so the sidecar
 /// carries a coverage digest — a synthetic sidecar derived beside
 /// one coverage cannot validate against the other.
+/// `analysis_coverage_digest` moves with a bit and keeps its value
+/// over a source edit that moves none.
 #[test]
 fn coverage_change_invalidates_evidence_identity() {
     let src = HOLDS_SRC;
@@ -1143,6 +1162,14 @@ fn coverage_change_invalidates_evidence_identity() {
         derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     assert_eq!(judged[0].verdict, Verdict::Holds);
+    // The keeping half: a comment that moves every span moves no bit.
+    let shifted_src = format!("// a comment that moves every span\n{src}");
+    let shifted = hale_syntax::parse_source(&shifted_src).expect("parse");
+    assert_eq!(
+        derive_application_model(&bundle_of(&shifted_src, &shifted)).analysis_coverage_digest(),
+        model.analysis_coverage_digest(),
+        "no coverage bit moved: analysis_coverage_digest must keep its value"
+    );
     // Flip one coverage bit: same shape, different coverage.
     let before = model.analysis_coverage_digest();
     let f = model

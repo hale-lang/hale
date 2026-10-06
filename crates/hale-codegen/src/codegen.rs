@@ -34009,6 +34009,36 @@ mod tests {
         }
         assert!(index.get("Missing").is_none());
     }
+
+    /// `runtime_object_key`, read from the cached object's name over a
+    /// one-line translation unit (the runtime's own C would take seconds
+    /// to compile): the source, a flag, and another compiler's version
+    /// move it; the host `clang`'s version, the stem and the cache's
+    /// place keep it.
+    #[test]
+    fn runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang() {
+        let dir = std::env::temp_dir().join(format!("hale-codegen-rt-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let options = |at: &str| BuildOptions::new(dir.join(at));
+        let key = |options: &BuildOptions, cc: &[&str], version: &str, source: &str, stem: &str, flags: &[&str]| {
+            let cc: Vec<String> = cc.iter().map(|s| s.to_string()).collect();
+            let flags: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+            let obj = compile_cached_runtime_object_with(options, &cc, version, source, stem, &flags)
+                .expect("a one-line runtime object compiles");
+            let name = obj.file_name().unwrap().to_string_lossy().into_owned();
+            name.rsplit('-').next().unwrap().trim_end_matches(".o").to_string()
+        };
+        let a = options("a");
+        let base = key(&a, &["clang"], "", "int x;\n", "t", &["-O1"]);
+        assert_ne!(base, key(&a, &["clang"], "", "int y;\n", "t", &["-O1"]), "the source");
+        assert_ne!(base, key(&a, &["clang"], "", "int x;\n", "t", &["-O2"]), "a flag");
+        let other = ["clang", "-w"];
+        assert_ne!(key(&a, &other, "1", "int x;\n", "t", &["-O1"]), key(&a, &other, "2", "int x;\n", "t", &["-O1"]), "another compiler's version");
+        assert_eq!(base, key(&a, &["clang"], "clang version 99", "int x;\n", "t", &["-O1"]), "the host clang's version");
+        assert_eq!(base, key(&a, &["clang"], "", "int x;\n", "u", &["-O1"]), "the stem");
+        assert_eq!(base, key(&options("b"), &["clang"], "", "int x;\n", "t", &["-O1"]), "the cache's place");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Where a `std::*` call sits, for [`Cx::lower_std_call`]: a statement
