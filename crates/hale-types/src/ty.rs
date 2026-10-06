@@ -335,7 +335,10 @@ fn is_flat_shapeable_inner(
                     crate::symbol::TypeKind::Struct(fields) => fields
                         .iter()
                         .all(|f| is_flat_shapeable_inner(&f.ty, scope, seen)),
-                    crate::symbol::TypeKind::Alias(inner) => {
+                    // GH #1076: an identity or a range is laid out as
+                    // its representation, `Int`.
+                    crate::symbol::TypeKind::Alias(inner)
+                    | crate::symbol::TypeKind::Scalar(inner) => {
                         is_flat_shapeable_inner(inner, scope, seen)
                     }
                     // Enums are not currently shipped as bus
@@ -383,7 +386,9 @@ pub fn is_key_eligible(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
         ),
         Ty::Named(name) => match scope.lookup(name) {
             Some(crate::symbol::TopSymbol::Type(info)) => match &info.kind {
-                crate::symbol::TypeKind::Alias(inner) => {
+                // GH #1076: an identity or a range keys as its `Int`.
+                crate::symbol::TypeKind::Alias(inner)
+                | crate::symbol::TypeKind::Scalar(inner) => {
                     is_key_eligible(inner, scope)
                 }
                 crate::symbol::TypeKind::Enum(variants) => {

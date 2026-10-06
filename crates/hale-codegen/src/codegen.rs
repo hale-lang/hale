@@ -8749,6 +8749,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1076 (U2): an identity or a range is represented as an
+        // `Int`, so a use of its name lowers as `Int` exactly as an alias
+        // of `Int` does. It is nominal only to the checker, whose rows
+        // (the typed bodies' conversion column) are what lowering reads
+        // where a value changes type.
+        let scalars: BTreeMap<&str, &ScalarDecl> = type_decls
+            .iter()
+            .filter_map(|t| match &t.body {
+                TypeDeclBody::Scalar(s) => Some((t.name.name.as_str(), s)),
+                _ => None,
+            })
+            .collect();
+        for name in hale_types::units::typed_scalar_names(&scalars) {
+            self.user_type_aliases
+                .insert(name.to_string(), TypeExpr::Primitive(PrimType::Int, hale_syntax::span::Span::new(0, 0)));
+        }
         // Drop any alias whose chain comes back to its own name.
         // `check` reports the cycle with a span; codegen only has
         // to make sure the resolution below terminates — following

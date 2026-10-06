@@ -318,6 +318,22 @@ pub enum TypeKind {
     Struct(Vec<FieldInfo>),
     Enum(Vec<VariantInfo>),
     Alias(Ty),
+    /// GH #1076: an identity (`distinct Int`) or a range (`Int { range:
+    /// 0..256; }`), carrying its representation, `Int`. Unlike an alias
+    /// the name survives resolution (`Ty::Named`), so the type is
+    /// nominal; what it is beyond its representation (its kind, parent
+    /// and range) is its row of the `unit_declarations` family, by this
+    /// name. Every predicate that asks what a value is laid out as
+    /// (printable, flat, a key, a field) answers through the
+    /// representation.
+    Scalar(Ty),
+}
+
+impl TypeKind {
+    /// The representation of a scalar type: `Int`.
+    pub fn scalar_representation() -> Ty {
+        Ty::Prim(hale_syntax::ast::PrimType::Int)
+    }
 }
 
 #[derive(Debug, Clone)]

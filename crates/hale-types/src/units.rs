@@ -711,9 +711,39 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
     laws.iter().flat_map(|law| law.diags(rows)).collect()
 }
 
+/// The scalar declarations whose values are typed (U2): an identity or a
+/// range counted in `Int`, by name, from the declarations as written (the
+/// resolver's input; the rows' [`kind`] reads the same words and bases).
+/// A quantity, a point, a declaration over neither `Int` nor one of these,
+/// and a refinement cycle are not: the resolver registers their names as
+/// `Unknown`, so a use of one is the not-yet boundary's error or no second
+/// error beside the laws'.
+pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std::collections::BTreeSet<&'a str> {
+    let typed = |name: &'a str| -> bool {
+        let mut at = name;
+        for _ in 0..=decls.len() {
+            let Some(s) = decls.get(at) else { return false };
+            match (s.kind, &s.base, &s.denom) {
+                (Some(ScalarKind::Quantity | ScalarKind::Point), _, _) | (_, _, Some(_)) => return false,
+                (Some(ScalarKind::Distinct), TypeExpr::Primitive(PrimType::Int, _), None) => return true,
+                (Some(ScalarKind::Distinct), _, _) => return false,
+                (None, TypeExpr::Primitive(PrimType::Int, _), None) => return true,
+                (None, TypeExpr::Named { path, generic_args, .. }, None)
+                    if path.segments.len() == 1 && generic_args.is_empty() =>
+                {
+                    at = path.segments[0].name.as_str()
+                }
+                _ => return false,
+            }
+        }
+        false
+    };
+    decls.keys().copied().filter(|n| typed(n)).collect()
+}
+
 /// The one error a value of the unit dialect gets until values are typed
-/// (the next step deletes this function and its callers in the check): a
-/// scalar type's name where a value would live, or a quantity literal.
+/// (U3 deletes this function and its callers in the check): a quantity's
+/// or a point's name where a value would live, or a quantity literal.
 /// `what` names it (``type `Money` ``, ``quantity literal `3bp` ``).
 pub(crate) fn value_not_yet(span: Span, what: &str) -> Diag {
     Diag::ty(

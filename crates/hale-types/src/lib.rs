@@ -75,6 +75,7 @@ pub mod resolved;
 pub mod roles;
 pub mod unit_graph;
 pub mod units;
+pub mod unit_values;
 mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;

@@ -873,7 +873,14 @@ pub fn check_bundle_by_declaration(
         specializing: None,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
-        unit_types: inputs.units.scalars.iter().map(|s| (s.name.as_str(), s.display.as_str())).collect(),
+        unit_types: inputs
+            .units
+            .scalars
+            .iter()
+            .filter(|s| matches!(s.kind, crate::units::ScalarKindRow::Quantity | crate::units::ScalarKindRow::Point))
+            .map(|s| (s.name.as_str(), s.display.as_str()))
+            .collect(),
+        scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
         unit_values_refused: BTreeSet::new(),
     };
     for (key, program) in &bundle.programs {
@@ -5819,6 +5826,9 @@ fn payload_carriage(
                 // `resolve_type_expr`, so this arm is unreachable in
                 // practice; judging it would be judging a name.
                 TypeKind::Alias(_) => Carriage::Unresolved,
+                // GH #1076: an identity or a range is carried as its
+                // `Int`, which a bus subject does not carry bare.
+                TypeKind::Scalar(_) => Carriage::NotCarried("wrap it in a user `type`"),
             },
             // A locus, interface, perspective or topic name in
             // payload position is a different mistake, reported
@@ -6104,11 +6114,14 @@ struct Checker<'a> {
     /// addresses types as its success type (the `bare_fallible` law
     /// reports the call).
     handling: crate::typed_bodies::Handling,
-    /// GH #1076: the unit dialect's type names (as declared, mangled
-    /// for an import), each with its author's spelling, read from the
-    /// unit rows: the not-yet boundary refuses each where a value would
-    /// live (`refuse_unit_types`).
+    /// GH #1076: the unit dialect's quantity and point names (as
+    /// declared, mangled for an import), each with its author's spelling,
+    /// read from the unit rows: the not-yet boundary refuses each where a
+    /// value would live (`refuse_unit_types`) until U3.
     unit_types: BTreeMap<&'a str, &'a str>,
+    /// GH #1076 (U2): the identities and ranges, whose values the rules
+    /// of `unit_values` type.
+    scalars: crate::unit_values::ScalarTypes<'a>,
     /// The places the boundary refused, by span, so a place walked twice
     /// is refused once.
     unit_values_refused: BTreeSet<(usize, usize)>,
@@ -8660,6 +8673,18 @@ impl<'a> Checker<'a> {
                     ));
                     return;
                 }
+                TypeKind::Scalar(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(lru_cache) cell type `{}` is an identity or a \
+                             range, an `Int`; cell must be a struct so `indexed_by` \
+                             can resolve",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
             },
             Some(TopSymbol::Locus(_)) => {
                 self.diags.push(Diag::ty(
@@ -8922,6 +8947,18 @@ impl<'a> Checker<'a> {
                         format!(
                             "@form(hashmap) cell type `{}` is a type alias; \
                              cell must be a struct so `indexed_by` can resolve",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
+                TypeKind::Scalar(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(hashmap) cell type `{}` is an identity or a \
+                             range, an `Int`; cell must be a struct so `indexed_by` \
+                             can resolve (an identity is a legal key field)",
                             cell_name
                         ),
                     ));
@@ -9405,7 +9442,7 @@ impl<'a> Checker<'a> {
                         }
                         _ => false,
                     };
-                    if !widen_ok && !conforms && !want.assignable_from(&got) {
+                    if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
                             init.span(),
                             format!(
@@ -10101,10 +10138,13 @@ impl<'a> Checker<'a> {
             // ABI name is refused elsewhere; it is judged as `c`).
             let abi = crate::capability::Abi::of(&ffi.abi).unwrap_or(crate::capability::Abi::C);
             let class = self.target_class;
-            let cell = move |ty: &Ty| crate::capability::ffi_type_refusal(class, ty, abi);
+            // GH #1076 (U2): an identity or a range crosses as its `Int`.
+            let cell = |this: &Self, ty: &Ty| {
+                crate::capability::ffi_type_refusal(class, &this.scalars.representation(ty), abi)
+            };
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = cell(&ty) {
+                if let Some(reason) = cell(self, &ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -10119,7 +10159,7 @@ impl<'a> Checker<'a> {
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = cell(&ret_ty) {
+                if let Some(reason) = cell(self, &ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -10338,7 +10378,7 @@ impl<'a> Checker<'a> {
                             .two_spellings_of_one_monomorph(
                                 &want, &got, true,
                             );
-                        if !monomorph && !want.assignable_from(&got) {
+                        if !monomorph && !self.flows_into(&want, &got, value) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -10412,9 +10452,30 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Stmt::Assign { target, value, span, .. } => {
-                let got = self.check_expr(value);
+            Stmt::Assign { target, op, value, span, .. } => {
+                let mut got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
+                // GH #1076 (U2): `x += v` is the operator over the target
+                // and the value, stored back: no arithmetic on an
+                // identity, and a range's sum is an `Int` storing it
+                // back narrows.
+                let mut stored: Option<Expr> = None;
+                if let Some(bin) = assign_binop(*op) {
+                    if self.scalars.index(&want).is_some() || self.scalars.index(&got).is_some() {
+                        let place = Expr::Ident(target.head.clone());
+                        got = self.binop_ty(bin, &want, &got, *span, (&place, value));
+                        if matches!(got, Ty::Unknown) {
+                            got = want.clone();
+                        }
+                        stored = Some(Expr::Binary {
+                            op: bin,
+                            left: Box::new(place),
+                            right: Box::new(value.clone()),
+                            span: *span,
+                        });
+                    }
+                }
+                let stored = stored.as_ref().unwrap_or(value);
                 // bounded[T; N] fields cannot be whole-assigned
                 // (even from another bounded of the same shape —
                 // no copy semantics exist; the mutation surface is
@@ -10427,7 +10488,7 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     ));
                 }
-                if !want.assignable_from(&got) {
+                if !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
@@ -10519,7 +10580,8 @@ impl<'a> Checker<'a> {
                     // Check that the returned type matches the fn's
                     // declared success return type when in a
                     // fallible body.
-                    if let Some((expected_ret, _)) = &self.fallible_ctx {
+                    if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
+                        let expected_ret = &expected_ret;
                         // GH #911 B5: the return slot is the other
                         // site codegen rewrites a bare generic
                         // template name at — `fn make() -> Box<Int> {
@@ -10530,7 +10592,7 @@ impl<'a> Checker<'a> {
                                 &got,
                                 true,
                             );
-                        if !monomorph && !expected_ret.assignable_from(&got) {
+                        if !monomorph && !self.flows_into(expected_ret, &got, e) {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -10540,7 +10602,8 @@ impl<'a> Checker<'a> {
                                 ),
                             ));
                         }
-                    } else if let Some(expected_ret) = &self.return_ctx {
+                    } else if let Some(expected_ret) = self.return_ctx.clone() {
+                        let expected_ret = &expected_ret;
                         // #335: the non-fallible case, which had no
                         // check. Same Unknown-permissive rule, and the
                         // same Int -> Float widening a call site
@@ -10562,7 +10625,7 @@ impl<'a> Checker<'a> {
                             );
                         if !widening
                             && !monomorph
-                            && !expected_ret.assignable_from(&got)
+                            && !self.flows_into(expected_ret, &got, e)
                         {
                             self.diags.push(Diag::ty(
                                 e.span(),
@@ -11984,7 +12047,8 @@ impl<'a> Checker<'a> {
                         .find(|f| f.name == name)
                         .map(|f| f.ty.clone()),
                     TypeKind::Alias(t) => self.field_ty(t, name),
-                    TypeKind::Enum(_) => None,
+                    // GH #1076: an `Int` has no fields.
+                    TypeKind::Enum(_) | TypeKind::Scalar(_) => None,
                 },
                 TopSymbol::Locus(info) => {
                     if name == "children" {
@@ -12279,6 +12343,44 @@ impl<'a> Checker<'a> {
                 }
             }
             TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// GH #1076 (U2): whether a value of `got`, the expression `value`,
+    /// flows into a place of type `want`: assignability, and the
+    /// identities' and ranges' rules (`unit_values`). An integer literal
+    /// where an identity or a range is expected is a value of it, checked
+    /// against its range here; a range widens to its parent, and an
+    /// `Int`-rooted range to `Int`, for free. A pair the scalar rules speak
+    /// about and refuse (an implicit narrowing, an identity as an `Int`, two
+    /// distinct identities) is refused here with their message, and is
+    /// `true` so the caller adds no second error; `false` is the caller's
+    /// own mismatch to report.
+    fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        if want.assignable_from(got) || self.scalars.is_empty() {
+            return want.assignable_from(got);
+        }
+        if let Some(v) = crate::unit_values::int_literal(value) {
+            if matches!(got, Ty::Prim(PrimType::Int)) {
+                match self.scalars.literal(want, v, value.span()) {
+                    Some(Ok(())) => return true,
+                    Some(Err(d)) => {
+                        self.diags.push(d);
+                        return true;
+                    }
+                    None => {}
+                }
+            }
+        }
+        if self.scalars.widens(got, want) {
+            return true;
+        }
+        match self.scalars.flow_refusal(want, got, value.span()) {
+            Some(d) => {
+                self.diags.push(d);
+                true
+            }
+            None => false,
         }
     }
 
@@ -13043,10 +13145,20 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, left, right, span } => {
                 let lt = self.check_expr(left);
                 let rt = self.check_expr(right);
-                self.binop_ty(*op, &lt, &rt, *span)
+                self.binop_ty(*op, &lt, &rt, *span, (left.as_ref(), right.as_ref()))
             }
-            Expr::Unary { op, operand, .. } => {
+            Expr::Unary { op, operand, span } => {
                 let t = self.check_expr(operand);
+                // GH #1076 (U2): no arithmetic on an identity; a range's
+                // is its `Int`'s.
+                match self.scalars.unary(*op, &t) {
+                    Some(Ok(t)) => return t,
+                    Some(Err(why)) => {
+                        self.diags.push(Diag::ty(*span, why));
+                        return Ty::Unknown;
+                    }
+                    None => {}
+                }
                 match op {
                     UnaryOp::Neg | UnaryOp::BitNot => t,
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
@@ -13127,7 +13239,7 @@ impl<'a> Checker<'a> {
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
-                                        if !want.assignable_from(&got) {
+                                        if !self.flows_into(want, &got, a) {
                                             self.diags.push(Diag::ty(
                                                 a.span(),
                                                 format!(
@@ -14048,7 +14160,10 @@ impl<'a> Checker<'a> {
                         if !widening
                             && !view_coerces
                             && !param_is_iface
-                            && !param_ty.assignable_from(arg_ty)
+                            && !match args.get(i) {
+                                Some(a) => self.flows_into(param_ty, arg_ty, a),
+                                None => param_ty.assignable_from(arg_ty),
+                            }
                         {
                             self.diags.push(Diag::ty(
                                 callee.span(),
@@ -14733,7 +14848,7 @@ impl<'a> Checker<'a> {
                         if !interface_satisfied
                             && !value_discarded
                             && !rhs_diverges
-                            && !success.assignable_from(&rhs_ty)
+                            && !self.flows_into(&success, &rhs_ty, rhs)
                         {
                             self.diags.push(Diag::ty(
                                 *span,
@@ -15066,6 +15181,9 @@ impl<'a> Checker<'a> {
                         PrintShape::Record(fs.iter().map(|f| f.ty.clone()).collect())
                     }
                     TypeKind::Alias(inner) => PrintShape::Alias(inner.clone()),
+                    // GH #1076: an identity or a range prints as its
+                    // representation, `Int`.
+                    TypeKind::Scalar(repr) => PrintShape::Alias(repr.clone()),
                 },
                 Some(
                     TopSymbol::Locus(_)
@@ -15149,7 +15267,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span) -> Ty {
+    fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Ty {
         use BinOp::*;
         // Ergonomics arc: `String + <printable>` and the symmetric
         // form auto-coerce in codegen via value_to_string. The
@@ -15163,6 +15281,20 @@ impl<'a> Checker<'a> {
             {
                 return Ty::Prim(PrimType::String);
             }
+        }
+        // GH #1076 (U2): an identity or a range on either side. A range's
+        // arithmetic is its `Int`'s; an identity has none; a comparison
+        // holds within one type and along a widening.
+        match self.scalars.binop(op, lt, rt, operands.0, operands.1) {
+            Some(crate::unit_values::BinopRule::AsInt(l, r)) => {
+                return self.binop_ty(op, &l, &r, span, operands);
+            }
+            Some(crate::unit_values::BinopRule::Compared) => return Ty::Prim(PrimType::Bool),
+            Some(crate::unit_values::BinopRule::Refused(why)) => {
+                self.diags.push(Diag::ty(span, why));
+                return if matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq) { Ty::Prim(PrimType::Bool) } else { Ty::Unknown };
+            }
+            None => {}
         }
         // B13 / G30: F.23 Int → Float widening in binary-op
         // position. If exactly one side is Int and the other is
@@ -15858,7 +15990,7 @@ impl<'a> Checker<'a> {
                     if !interface_satisfied
                         && !perspective_designated
                         && !monomorph_field
-                        && !want.assignable_from(&got)
+                        && !self.flows_into(want, &got, &init.value)
                     {
                         self.diags.push(Diag::ty(
                             init.value.span(),
@@ -16298,6 +16430,22 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
 /// prefix would resolve it.
 pub const UNPREFIXED_STDLIB_PATHS: &[(&str, &str)] =
     &[("time", "sleep"), ("time", "monotonic")];
+
+/// The operator a compound assignment applies (`+=` is `+`); `None` for
+/// a plain `=`.
+fn assign_binop(op: AssignOp) -> Option<BinOp> {
+    Some(match op {
+        AssignOp::Eq => return None,
+        AssignOp::PlusEq => BinOp::Add,
+        AssignOp::MinusEq => BinOp::Sub,
+        AssignOp::StarEq => BinOp::Mul,
+        AssignOp::SlashEq => BinOp::Div,
+        AssignOp::PercentEq => BinOp::Mod,
+        AssignOp::AmpEq => BinOp::BitAnd,
+        AssignOp::PipeEq => BinOp::BitOr,
+        AssignOp::CaretEq => BinOp::BitXor,
+    })
+}
 
 /// Nearest name by edit distance, for the "did you mean" hint; `None`
 /// when nothing is within a short distance.
