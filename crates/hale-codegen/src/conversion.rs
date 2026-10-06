@@ -214,6 +214,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         out
     }
 
+    /// Lower `f` as the initializer of the constant `decl`, re-lowered at
+    /// a use: its own evaluation, as the checker types it once in its own
+    /// body outside every default, so its rows are read from `decl` on no
+    /// evaluation path, whatever default the use stands in, and the
+    /// caller's path is back when `f` returns.
+    pub(crate) fn in_const_body<T>(
+        &mut self,
+        decl: hale_syntax::ast::NodeId,
+        f: impl FnOnce(&mut Self) -> Result<T, CodegenError>,
+    ) -> Result<T, CodegenError> {
+        let evaluation = std::mem::take(&mut self.default_evaluation);
+        let out = self.in_body(decl, f);
+        self.default_evaluation = evaluation;
+        out
+    }
+
     /// Lower the conversion `row` of the value `arg`.
     pub(crate) fn lower_conversion(
         &mut self,

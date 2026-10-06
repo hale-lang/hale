@@ -118,6 +118,8 @@ struct Row {
     /// Where the site starts; not compared.
     start: usize,
     at: String,
+    /// The type it converts from; not compared.
+    from: String,
     to: String,
     kind: ConversionKind,
     factor: String,
@@ -150,6 +152,7 @@ fn rows_of(src: &str) -> Vec<Row> {
         .map(|(_, r)| Row {
             start: r.span.start.as_usize(),
             at: r.span.slice(src).to_string(),
+            from: r.from.display(),
             to: r.target.clone(),
             kind: r.kind,
             factor: r.scale.as_ref().map_or_else(String::new, |s| s.factor.to_string()),
@@ -174,6 +177,7 @@ fn row(at: &str, to: &str, kind: ConversionKind, factor: &str) -> Row {
     Row {
         start: 0,
         at: at.into(),
+        from: String::new(),
         to: to.into(),
         kind,
         factor: factor.into(),
@@ -467,6 +471,206 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
     assert_eq!(table.conversion(&at(vec![plain])).and_then(|r| r.count), Some(2), "the cast's evaluation: into `sec`");
     assert_eq!(table.conversion(&at(vec![shadowed])).and_then(|r| r.count), Some(2000), "`fake`'s: a `Span`");
     assert!(table.conversion(&at(vec![])).is_none(), "a default's literal has no evaluation-less row");
+}
+
+/// A default flows into its declared type as a binding's initializer does,
+/// whatever the type's shape: an array literal's elements each flow into
+/// the element type, each a row on the evaluation's path, the struct
+/// literal that leaves the field or the call that leaves the parameter.
+/// The walks converted a default only when the whole type was a quantity,
+/// so these elements had no row there and kept their counts in `USD`.
+#[test]
+fn an_array_defaults_elements_convert_on_the_evaluation_path() {
+    let src = "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n\
+               type S { p: [Money; 2] = [3USD, 2USD]; }\n\
+               fn take(q: [Money; 2] = [5USD, 4USD]) -> [Money; 2] { return q; }\n\
+               fn main() {\n    let s = S {};\n    let q = take();\n    println(s.p[0]);\n    println(q[0]);\n}\n";
+    let program = parse_source(src).expect("parses");
+    let errors: Vec<String> = check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot = Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let (mut literal, mut call) = (None, None);
+    hale_syntax::sites::for_each_site(snapshot.program().expect("the program"), &mut |k, span, id| match k {
+        hale_syntax::sites::SiteKind::StructLiteral => literal = Some(id.0),
+        hale_syntax::sites::SiteKind::Call if span.slice(src) == "take()" => call = Some(id.0),
+        _ => {}
+    });
+    let (literal, call) = (literal.expect("`S {}`"), call.expect("`take()`"));
+    let mut found: Vec<(String, Vec<u32>, String, Option<i64>)> = table
+        .conversion_sites()
+        .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src).ends_with("USD"))
+        .map(|(s, r)| (r.span.slice(src).to_string(), s.path, r.target.clone(), r.count))
+        .collect();
+    found.sort();
+    let element = |at: &str, path: u32, count: i64| (at.to_string(), vec![path], "Money".to_string(), Some(count));
+    assert_eq!(
+        found,
+        [element("2USD", literal, 200), element("3USD", literal, 300), element("4USD", call, 400), element("5USD", call, 500)],
+        "each element into `Money`, on its evaluation's path and on no other"
+    );
+}
+
+/// A default is refused where the same binding is. An array default whose
+/// element narrows into an element type with no `round:` is refused by the
+/// law: one error at the element, worded as the binding's. A tuple holding
+/// a quantity at another denomination is a mismatch for a binding (only
+/// an array literal's elements flow one by one), and for a default: the
+/// default walk keeps it, worded as a default's.
+#[test]
+fn a_default_is_refused_where_the_same_binding_is() {
+    let array = "[2_000msec, 1_500msec]";
+    let binding = errors(&format!("    let s: [Seconds; 2] = {array};\n"));
+    assert_eq!(binding.len(), 1, "{binding:#?}");
+    assert_eq!(binding[0].0, "1_500msec");
+    assert!(binding[0].1.contains("say what happens to the remainder"), "{}", binding[0].1);
+    let errors_of = |decl: &str, body: &str| {
+        let src = format!("{DECLS}{decl}fn main() {{\n{body}    println(1);\n}}\n");
+        let found: Vec<(String, String)> = check_program(&parse_source(&src).expect("parses"))
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| (d.span.slice(&src).to_string(), d.message))
+            .collect();
+        found
+    };
+    for (decl, body) in [
+        (format!("type T {{ s: [Seconds; 2] = {array}; }}\n"), "    let t = T {};\n"),
+        (format!("fn g(s: [Seconds; 2] = {array}) -> [Seconds; 2] {{ return s; }}\n"), "    let s = g();\n"),
+    ] {
+        assert_eq!(errors_of(&decl, body), binding, "{decl}");
+    }
+    let tuple = "(3USD, 1)";
+    one(
+        &format!("    let t: (Money, Int) = {tuple};\n"),
+        tuple,
+        "let `t`: expected `(Money, Int)`, got `(Money in USD, Int)`",
+    );
+    for (decl, body, place) in [
+        (format!("type T {{ t: (Money, Int) = {tuple}; }}\n"), "    let t = T {};\n", "field `t`"),
+        (format!("fn g(t: (Money, Int) = {tuple}) -> Int {{ return 1; }}\n"), "    let n = g();\n", "param `t`"),
+    ] {
+        let message = format!("{place}: declared `(Money, Int)`, default is `(Money in USD, Int)`");
+        assert_eq!(errors_of(&decl, body), [(tuple.to_string(), message)], "{decl}");
+    }
+}
+
+/// An array literal's elements, read as (the text at the row's site, the
+/// type it converts from, its target, its factor, a literal's count).
+fn element_rows(body: &str) -> Vec<(String, String, String, String, Option<i64>)> {
+    rows(body).into_iter().map(|r| (r.at, r.from, r.to, r.factor, r.count)).collect()
+}
+
+fn element(at: &str, from: &str, to: &str, factor: &str, count: Option<i64>) -> (String, String, String, String, Option<i64>) {
+    (at.into(), from.into(), to.into(), factor.into(), count)
+}
+
+/// An array literal into a place of an array type: each element flows into
+/// the element type from its own type, its own row (its own factor, its
+/// own count), whatever the first element is. Typed by its first element,
+/// `[3cent, 2USD]` stored `2` cents for `2USD`, and a value element kept
+/// the meet's row in place of its own.
+#[test]
+fn an_array_literals_elements_each_convert_from_their_own_type() {
+    let annotated = |array: &str| element_rows(&format!("    let a: [Money; 2] = {array};\n"));
+    assert_eq!(
+        annotated("[3cent, 2USD]"),
+        [element("3cent", "Money", "Money", "1", Some(3)), element("2USD", "Money in USD", "Money", "100", Some(200))]
+    );
+    assert_eq!(
+        annotated("[3USD, 2cent]"),
+        [element("3USD", "Money in USD", "Money", "100", Some(300)), element("2cent", "Money", "Money", "1", Some(2))]
+    );
+    // A value element: the meet (`msec`) converted `s` there; the place's
+    // element type is `sec`, so `s` converts from its own type instead.
+    assert_eq!(
+        element_rows("    let s = 3sec;\n    let a: [Seconds; 2] = [s, 2_000msec];\n"),
+        [
+            element("3sec", "Span in sec", "Span in sec", "1", Some(3)),
+            element("s", "Span in sec", "Seconds", "1", None),
+            element("2_000msec", "Span in msec", "Seconds", "1/1000", Some(2)),
+        ]
+    );
+    // A type's `round:` discharges a narrowing element as it does a value.
+    assert_eq!(
+        element_rows("    let b: [Bucket; 2] = [1sec, 150msec];\n"),
+        [
+            element("1sec", "Span in sec", "Bucket", "10", Some(10)),
+            element("150msec", "Span in msec", "Bucket", "1/100", Some(1)),
+        ]
+    );
+    // A literal zero is a value of every quantity, in an array as alone.
+    clean("    let z: [Money; 2] = [3USD, 0];\n");
+    // The narrowing element alone is refused, worded as the binding's.
+    one(
+        "    let s: [Seconds; 2] = [1sec, 1_500msec];\n",
+        "1_500msec",
+        "`Seconds` from `Span in msec` divides by 1,000: say what happens to the remainder: convert explicitly \
+         (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` policy",
+    );
+    one("    let a: [Money; 2] = [3cent, 5];\n", "5", "`Int` is not `Money`: a count becomes a quantity by a unit (`n * 1cent`)");
+    one(
+        "    let a: [Span; 2] = [1sec, 3cent];\n",
+        "3cent",
+        "`Money` is not `Span`: different quantities, `Money` and `Span`; no conversion holds between them",
+    );
+    one("    let a: [Money; 2] = [3cent, \"x\"];\n", "\"x\"", "`[…]`: an element of `String` where `Money` is expected");
+}
+
+/// An array literal with no element type to flow into: its elements meet
+/// as a sum's operands do, at the finer denomination, each coarser element
+/// widened exactly with its row; a nested literal meets at each level.
+/// Elements of two quantities, a quantity beside a point or an `Int`, are
+/// refused naming both.
+#[test]
+fn an_array_literals_elements_meet_where_nothing_types_it() {
+    assert_eq!(ty_of("", "[1sec, 1_500msec]"), "[Span in msec; 2]");
+    assert_eq!(ty_of("", "[1_500msec, 1sec]"), "[Span in msec; 2]");
+    assert_eq!(ty_of("", "[[1sec], [1_500msec]]"), "[[Span in msec; 1]; 2]");
+    assert_eq!(ty_of("", "[3USD, 2USD]"), "[Money in USD; 2]");
+    assert_eq!(
+        element_rows("    let a = [1sec, 1_500msec];\n"),
+        [
+            element("1sec", "Span in sec", "Span in msec", "1000", Some(1000)),
+            element("1_500msec", "Span in msec", "Span in msec", "1", Some(1500)),
+        ]
+    );
+    assert_eq!(
+        element_rows("    let n = [[1sec], [1_500msec]];\n"),
+        [
+            element("1sec", "Span in sec", "Span in msec", "1000", Some(1000)),
+            element("1_500msec", "Span in msec", "Span in msec", "1", Some(1500)),
+        ]
+    );
+    let (src, all) = diags("    let a = [1sec, 3cent];\n");
+    let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].span.slice(&src), "[1sec, 3cent]");
+    assert_eq!(errors[0].message, "`[…]`: elements of different quantities, `Span` and `Money`; an array holds one");
+    let notes: Vec<(&str, &str)> = errors[0].related.iter().map(|r| (r.span.slice(&src), r.label.as_str())).collect();
+    assert_eq!(notes, [("Span", "`Span` is declared here"), ("Money", "`Money` is declared here")]);
+    one(
+        "    let p = Instant(span(1));\n    let a = [p, 1sec];\n",
+        "[p, 1sec]",
+        "`[…]`: `Instant` is a point and `Span in sec` a quantity; an array holds one or the other",
+    );
+    one(
+        "    let a = [3cent, 5];\n",
+        "[3cent, 5]",
+        "`[…]`: elements of `Money` and `Int`: an `Int` is no quantity; a count becomes one by a unit (`n * 1cent`)",
+    );
+    one(
+        "    let c = Celsius(0mK);\n    let k = Kelvin(300K);\n    let a = [c, k];\n",
+        "[c, k]",
+        "`[…]`: elements of points of different origins, `Celsius` and `Kelvin`; an array holds one: convert \
+         explicitly, `Celsius(…)`",
+    );
+    // Only a quantity converts: a tuple's part at another denomination
+    // has no meet.
+    one(
+        "    let a = [(3cent, 1), (2USD, 1)];\n",
+        "[(3cent, 1), (2USD, 1)]",
+        "`[…]`: elements of `(Money, Int)` and `(Money in USD, Int)`; an array holds one type",
+    );
 }
 
 // The ratio product (decision 2), three ways.
