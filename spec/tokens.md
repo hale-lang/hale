@@ -524,9 +524,12 @@ annotations are not in v1.
   that is not a duration suffix: `3bp`, `5kg`, `2min`,
   `1_250_000USD`, `2EUR`. One token, carrying the magnitude and the
   unit's name as written. Integer magnitudes only.
-- The unit dialect's checks do not accept one yet: a program that
+- Values of the unit dialect are not typed yet: a program that
   writes a quantity literal is refused by `hale check` with one
-  error per literal (spec/units.md § Declarations).
+  error per literal (spec/units.md § Values arrive with the next
+  step).
+- The duration suffixes are not unit names: no `unit` may take one
+  (spec/units.md § The laws, law 10).
 
 ### Decimal literals
 
@@ -542,8 +545,10 @@ annotations are not in v1.
   nanoseconds, which is what an expression reads. The token also
   keeps the magnitude and the suffix as written (`100ms` is 100 and
   `ms`), which a unit declaration's factor and a denomination read
-  (spec/units.md § Declarations): `unit us = 1_000ns;` means
-  `unit us = 1_000 ns;`.
+  (spec/units.md § Declarations): `unit tick = 100ms;` parses as
+  `unit tick = 100 ms;`. Until the time catalogue is declared, no
+  `unit` named `ms` exists for it to resolve to, so the checker
+  refuses the equation (law 2) as it refuses a `unit ms;` (law 10).
 - Time literals: ISO-8601 UTC between backticks: `` `2026-05-08T12:00:00Z` ``,
   `` `2026-09-14T08:30:15.25Z` `` (a fraction of one to nine digits; the
   `Z` is optional; an offset is a compile error). Parsed at check time
