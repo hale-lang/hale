@@ -88,6 +88,10 @@ fn later(d: Span) -> Bucket {
     return Bucket(d + 5sec);
 }
 
+// A default flows into its field's type as a binding's value does: each
+// element of an array literal into the element type.
+type Fees { pair: [Money; 2] = [3USD, 2USD]; }
+
 fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
     let d = 3sec + 500msec;
@@ -199,4 +203,7 @@ fn main() {
         std::test::assert(shadowed.lit == 7sec, "the literal reaches the local as a `Span`");
         std::test::assert(shadowed.val == 7sec, "and so does the value");
     }
+    let fees = Fees { };
+    std::test::assert(fees.pair[0] == 300cent, "each element converted into cents");
+    std::test::assert(fees.pair[1] == 200cent, "the second as well");
 }

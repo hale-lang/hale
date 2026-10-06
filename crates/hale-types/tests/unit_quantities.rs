@@ -432,6 +432,87 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
     assert!(table.conversion(&at(vec![])).is_none(), "a default's literal has no evaluation-less row");
 }
 
+/// A default flows into its declared type as a binding's initializer does,
+/// whatever the type's shape: an array literal's elements each flow into
+/// the element type, each a row on the evaluation's path, the struct
+/// literal that leaves the field or the call that leaves the parameter.
+/// The walks converted a default only when the whole type was a quantity,
+/// so these elements had no row there and kept their counts in `USD`.
+#[test]
+fn an_array_defaults_elements_convert_on_the_evaluation_path() {
+    let src = "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n\
+               type S { p: [Money; 2] = [3USD, 2USD]; }\n\
+               fn take(q: [Money; 2] = [5USD, 4USD]) -> [Money; 2] { return q; }\n\
+               fn main() {\n    let s = S {};\n    let q = take();\n    println(s.p[0]);\n    println(q[0]);\n}\n";
+    let program = parse_source(src).expect("parses");
+    let errors: Vec<String> = check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot = Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let (mut literal, mut call) = (None, None);
+    hale_syntax::sites::for_each_site(snapshot.program().expect("the program"), &mut |k, span, id| match k {
+        hale_syntax::sites::SiteKind::StructLiteral => literal = Some(id.0),
+        hale_syntax::sites::SiteKind::Call if span.slice(src) == "take()" => call = Some(id.0),
+        _ => {}
+    });
+    let (literal, call) = (literal.expect("`S {}`"), call.expect("`take()`"));
+    let mut found: Vec<(String, Vec<u32>, String, Option<i64>)> = table
+        .conversion_sites()
+        .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src).ends_with("USD"))
+        .map(|(s, r)| (r.span.slice(src).to_string(), s.path, r.target.clone(), r.count))
+        .collect();
+    found.sort();
+    let element = |at: &str, path: u32, count: i64| (at.to_string(), vec![path], "Money".to_string(), Some(count));
+    assert_eq!(
+        found,
+        [element("2USD", literal, 200), element("3USD", literal, 300), element("4USD", call, 400), element("5USD", call, 500)],
+        "each element into `Money`, on its evaluation's path and on no other"
+    );
+}
+
+/// A default is refused where the same binding is. An array default whose
+/// element narrows into an element type with no `round:` is refused by the
+/// law: one error at the element, worded as the binding's. A tuple holding
+/// a quantity at another denomination is a mismatch for a binding (only
+/// an array literal's elements flow one by one), and for a default: the
+/// default walk keeps it, worded as a default's.
+#[test]
+fn a_default_is_refused_where_the_same_binding_is() {
+    let array = "[2_000msec, 1_500msec]";
+    let binding = errors(&format!("    let s: [Seconds; 2] = {array};\n"));
+    assert_eq!(binding.len(), 1, "{binding:#?}");
+    assert_eq!(binding[0].0, "1_500msec");
+    assert!(binding[0].1.contains("say what happens to the remainder"), "{}", binding[0].1);
+    let errors_of = |decl: &str, body: &str| {
+        let src = format!("{DECLS}{decl}fn main() {{\n{body}    println(1);\n}}\n");
+        let found: Vec<(String, String)> = check_program(&parse_source(&src).expect("parses"))
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| (d.span.slice(&src).to_string(), d.message))
+            .collect();
+        found
+    };
+    for (decl, body) in [
+        (format!("type T {{ s: [Seconds; 2] = {array}; }}\n"), "    let t = T {};\n"),
+        (format!("fn g(s: [Seconds; 2] = {array}) -> [Seconds; 2] {{ return s; }}\n"), "    let s = g();\n"),
+    ] {
+        assert_eq!(errors_of(&decl, body), binding, "{decl}");
+    }
+    let tuple = "(3USD, 1)";
+    one(
+        &format!("    let t: (Money, Int) = {tuple};\n"),
+        tuple,
+        "let `t`: expected `(Money, Int)`, got `(Money in USD, Int)`",
+    );
+    for (decl, body, place) in [
+        (format!("type T {{ t: (Money, Int) = {tuple}; }}\n"), "    let t = T {};\n", "field `t`"),
+        (format!("fn g(t: (Money, Int) = {tuple}) -> Int {{ return 1; }}\n"), "    let n = g();\n", "param `t`"),
+    ] {
+        let message = format!("{place}: declared `(Money, Int)`, default is `(Money in USD, Int)`");
+        assert_eq!(errors_of(&decl, body), [(tuple.to_string(), message)], "{decl}");
+    }
+}
+
 // The ratio product (decision 2), three ways.
 
 /// A quantity scaled by a ratio is the quantity at the product of the two

@@ -592,6 +592,15 @@ let bad: Money = odd;                 // error: `Money` from `Money in 1/100 cen
 let k = Kelvin(Celsius(100_000mK));   // 373150 mK
 ```
 
+A default flows into its field's or parameter's type as a binding's
+value flows into its annotation, whatever the type's shape: each
+element of an array literal into the element type, so `p: [Money; 2] =
+[3USD, 2USD]` holds 300 and 200 cents and an element that narrows is
+the law's as the binding's would be; a default holding a quantity that
+does not flow (a tuple's part at another denomination, as for a
+binding) is refused at the default: "field `t`: declared `(Money,
+Int)`, default is `(Money in USD, Int)`".
+
 A position the checker does not classify refuses a value counted in a
 denomination no declaration names, with a located error, and never
 stores it as the wrong count: a generic literal's field whose type is

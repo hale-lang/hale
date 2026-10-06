@@ -865,6 +865,43 @@ fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
     }
 }
 
+/// GH #1076 (U3, review 1): a default's value flows into its declared type
+/// as a binding's initializer does, whatever the type's shape. The default
+/// walks converted a default only when the field's or parameter's type, or
+/// the default, was itself a quantity, so `[3USD, 2USD]` into `[Money; 2]`
+/// kept its literals' counts in `USD` and each program below printed
+/// `3cent` and `2cent`. Each element now has its row on the evaluation's
+/// path: the reviewer's field and parameter defaults, and the field's
+/// default reached through a nested one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_in_an_array_default_converts_into_the_element_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    let field = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         fn main() {{ let s = S {{}}; println(s.p[0]); println(s.p[1]); }}\n"
+    );
+    let param = format!(
+        "{decls}fn take(p: [Money; 2] = [3USD, 2USD]) -> [Money; 2] {{ return p; }}\n\
+         fn main() {{ let p = take(); println(p[0]); println(p[1]); }}\n"
+    );
+    let nested = format!(
+        "{decls}type S {{ p: [Money; 2] = [3USD, 2USD]; }}\n\
+         type Outer {{ s: S = S {{}}; }}\n\
+         fn main() {{ let o = Outer {{}}; println(o.s.p[0]); println(o.s.p[1]); }}\n"
+    );
+    for (src, tag) in [
+        (field, "unit_array_field_default"),
+        (param, "unit_array_param_default"),
+        (nested, "unit_array_nested_default"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300cent\n200cent\n".to_string()), "{}", src);
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

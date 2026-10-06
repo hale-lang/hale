@@ -12463,6 +12463,32 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1076 (U3): a default's value into the type of its `place` (a
+    /// field or a parameter) where the default is evaluated, as a
+    /// binding's initializer flows into its annotation ([`Self::flows_into`]),
+    /// whatever the type's shape: an array literal's elements each into the
+    /// element type, each a row on the evaluation's path. The walk keeps
+    /// only the quantity rules' errors, so the mismatch a binding would
+    /// report is one of them where a quantity is involved: a tuple holding
+    /// a quantity at another denomination is refused, never stored at the
+    /// wrong count.
+    fn default_flows_into(&mut self, place: &str, want: &Ty, got: &Ty, default: &Expr) {
+        if !self.flows_into(want, got, default) && (self.holds_quantity(want) || self.holds_quantity(got)) {
+            let message = format!("{place}: declared `{}`, default is `{}`", want.display(), got.display());
+            self.unit_error(Diag::ty(default.span(), message));
+        }
+    }
+
+    /// GH #1076 (U3): whether a value of `ty` is a quantity or a point, or
+    /// holds one as an array's element or a tuple's part.
+    fn holds_quantity(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Array(e, _) | Ty::Bounded(e, _) => self.holds_quantity(e),
+            Ty::Tuple(parts) => parts.iter().any(|p| self.holds_quantity(p)),
+            _ => self.scalars.quantity(ty).is_some(),
+        }
+    }
+
     /// GH #1076 (U3): an error of the quantity rules, remembered by place
     /// and message so a struct default's discarded walk keeps it.
     fn unit_error(&mut self, d: Diag) {
@@ -12916,11 +12942,13 @@ impl<'a> Checker<'a> {
             }
             _ => BTreeMap::new(),
         };
-        let omitted: Vec<(&'a Expr, Option<Ty>)> = fields
+        let omitted: Vec<(&'a Expr, &'a str, Option<Ty>)> = fields
             .iter()
             .filter(|f| !inits.iter().any(|i| i.name.name == f.name.name))
-            .filter_map(|f| Some((f.default.as_ref()?, field_tys.get(f.name.name.as_str()).cloned())))
-            .filter(|(d, _)| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
+            .filter_map(|f| {
+                Some((f.default.as_ref()?, f.name.name.as_str(), field_tys.get(f.name.name.as_str()).cloned()))
+            })
+            .filter(|(d, _, _)| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
             .collect();
         if omitted.is_empty() {
             return;
@@ -12940,15 +12968,11 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`populate_user_type_fields`).
         self.default_evaluation.push(literal.0);
-        for (default, want) in omitted {
+        for (default, field, want) in omitted {
             self.struct_defaults_typing.push(default);
             let got = self.check_expr(default);
-            // GH #1076 (U3): a quantity's default converts into its
-            // field's type, as a value does wherever it flows.
-            if let Some(want) = want.filter(|w| self.scalars.quantity(w).is_some() || self.scalars.quantity(&got).is_some()) {
-                if !want.assignable_from(&got) {
-                    let _ = self.quantity_flow(&want, &got, default);
-                }
+            if let Some(want) = want {
+                self.default_flows_into(&format!("field `{field}`"), &want, &got, default);
             }
             self.struct_defaults_typing.pop();
         }
@@ -13596,8 +13620,8 @@ impl<'a> Checker<'a> {
         if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
             self.typed.omitted_args(invocation, decl.id, supplied);
         }
-        let defaults: Vec<(&Expr, &TypeExpr)> = decl.params.iter().skip(supplied)
-            .filter_map(|p| Some((p.default.as_ref()?, &p.ty))).collect();
+        let defaults: Vec<(&Expr, &str, &TypeExpr)> = decl.params.iter().skip(supplied)
+            .filter_map(|p| Some((p.default.as_ref()?, p.name.name.as_str(), &p.ty))).collect();
         if defaults.is_empty() {
             return;
         }
@@ -13607,18 +13631,10 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`lower_default_in_caller`).
         self.default_evaluation.push(invocation.0);
-        for (default, te) in defaults {
+        for (default, param, te) in defaults {
             let got = self.check_expr(default);
-            // GH #1076 (U3): a quantity's default converts into its
-            // parameter's type, as a value does wherever it flows.
-            if self.scalars.has_quantities() {
-                let want = crate::resolve::resolve_type_expr(te, self.known);
-                if (self.scalars.quantity(&want).is_some() || self.scalars.quantity(&got).is_some())
-                    && !want.assignable_from(&got)
-                {
-                    let _ = self.quantity_flow(&want, &got, default);
-                }
-            }
+            let want = crate::resolve::resolve_type_expr(te, self.known);
+            self.default_flows_into(&format!("param `{param}`"), &want, &got, default);
         }
         self.default_evaluation.pop();
         self.default_invocations.pop();
