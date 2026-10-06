@@ -1508,6 +1508,21 @@ fn price(n: Int) -> Int {\n    return leaf(n);\n}\n\
 fn main() {\n    println(price(5));\n}\n",
 )];
 
+/// The unit-law parity seed
+/// (`lsp_and_check_agree_over_a_seed_with_unit_laws`, GH #1076): a unit
+/// declared in both files (law 1, its witness in the other file), a
+/// denomination naming no unit (law 2), and a value of a unit-dialect
+/// type inside a body (the not-yet boundary).
+const UNITS: Files = &[
+    ("a_units.hl", "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n"),
+    (
+        "b_app.hl",
+        "unit cent;\ntype Wallet = quantity Int in cnt;\n\
+fn total(n: Int) -> Int {\n    let m: Money = n;\n    return n;\n}\n\
+fn main() {\n    println(total(1));\n}\n",
+    ),
+];
+
 /// Every parity seed: its tag, its files and its library's.
 const PARITY: &[(&str, Files, Files)] = &[
     ("plain", PLAIN, &[]),
@@ -1516,7 +1531,27 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("author-leak", AUTHOR_LEAK, &[]),
     ("laws", LAWS, LAWS_LIB),
     ("effects", EFFECTS, &[]),
+    ("units", UNITS, &[]),
 ];
+
+/// The unit-law parity fixture (GH #1076): the unit laws and the not-yet
+/// boundary are check diagnostics like any other, so `hale check <dir>`,
+/// the editor on disk and the editor's buffers give one answer, each
+/// finding at its file and place.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_unit_laws() {
+    let check = agree_three_ways("units", UNITS, &[]);
+    for (line, col, want) in [
+        (1, 6, "unit `cent` is declared twice"),
+        (2, 31, "type `Wallet`: its denomination names `cnt`, which no `unit` declares"),
+        (4, 12, "type `Money`: values of the unit dialect's types are not typed yet"),
+    ] {
+        let found: Vec<&Finding> = check.iter().filter(|(.., m)| m.contains(want)).collect();
+        assert_eq!(found.len(), 1, "one `{want}` finding: {check:?}");
+        let (f, l, c, _) = found[0];
+        assert_eq!((f.as_str(), *l, *c), ("b_app.hl", line, col), "{want}");
+    }
+}
 
 /// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
 /// law and holds a finding of each kind the typing stage carries is
