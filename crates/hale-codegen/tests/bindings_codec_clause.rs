@@ -121,6 +121,45 @@ fn codec_with_println_in_decode_is_rejected() {
     );
 }
 
+/// The impure stdlib calls are the surface table's `syscall`, `block`
+/// and `publish` rows. `std::io::tcp::connect` is `syscall | block`
+/// there but was missing from the hand list purity used to keep, so
+/// this codec checked clean.
+#[test]
+fn codec_dialing_tcp_in_encode_is_rejected() {
+    let src = r#"
+        type Tick { sym: String = ""; price: Int = 0; }
+        type EncErr { kind: String = ""; }
+        type DecErr { kind: String = ""; }
+
+        topic TickTopic { payload: Tick; subject: "ticks"; }
+
+        locus TickJsonCodec {
+            fn encode(v: Tick) -> Bytes fallible(EncErr) {
+                let fd = std::io::tcp::connect("127.0.0.1", 9) or -1;
+                return std::bytes::from_string(v.sym);
+            }
+            fn decode(b: Bytes) -> Tick fallible(DecErr) {
+                return Tick { sym: "x", price: 0 };
+            }
+        }
+
+        main locus App {
+            bindings {
+                TickTopic: unix("/ticks.sock") codec(TickJsonCodec { });
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let diags = typecheck_diags(src);
+    assert!(
+        diags.iter().any(|m| m.contains("codec `TickJsonCodec.encode` is not safe to dispatch")
+            && m.contains("calls `std::io::tcp::connect`, which has side effects")),
+        "expected the codec-purity refusal for encode, got: {:?}",
+        diags
+    );
+}
+
 #[test]
 fn codec_missing_encode_method_is_rejected() {
     let src = r#"

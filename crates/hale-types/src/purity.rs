@@ -7,8 +7,9 @@
 //! - writes to `self.<field>` (state mutation observable across calls)
 //! - bus publishes (`subject <- value`) — side effects on the bus
 //! - closure violations (`violate NAME`) — effects on parent
-//! - calls to known-impure stdlib fns (`println`, `time::sleep`,
-//!   `std::io::fs::*`, file/process syscalls, etc.)
+//! - calls to impure stdlib fns: those whose row in the stdlib
+//!   surface table carries `syscall`, `block` or `publish`
+//!   (`println`, `time::sleep`, `std::io::fs::*`, sockets, process)
 //! - calls to user-defined methods / free fns that are themselves
 //!   not pure (transitively)
 //!
@@ -33,6 +34,7 @@ use hale_syntax::Span;
 
 use crate::alloc_summary::DeclId;
 use crate::resolve::TopScope;
+use crate::stdlib_surface::EffectSet;
 
 /// Per-method purity result. [`Purity::Impure`] carries the first
 /// impurity the walker found — the diagnostic anchor for Slice 2.
@@ -83,64 +85,26 @@ struct Fns {
     free: BTreeMap<String, PurityKey>,
 }
 
-/// Stdlib paths with observable side effects. Calls to any of
-/// these (matched by qualified path) make the calling fn impure.
-///
-/// The list is conservative — anything that writes to the
-/// filesystem / network / process state / stdout / global mutables.
-/// Pure stdlib (arithmetic helpers, `std::str::*` transforms that
-/// allocate but don't mutate observable state, `std::decimal::to_string`,
-/// `std::bytes::*` builders, JSON walkers that read source) is NOT
-/// in this list — absence means pure (allocation is acceptable).
-const IMPURE_STDLIB_PATHS: &[&[&str]] = &[
-    // Console / debugging
-    &["std", "process", "exit"],
-    &["std", "process", "dump_arena_residency"],
-    &["std", "process", "dump_pool_residency"],
-    &["std", "process", "run"],
-    &["std", "process", "spawn"],
-    // Time
-    &["std", "time", "sleep"],
-    // Bus / yield primitives (when callable from fn bodies)
-    // (yield is a Stmt; the impurity table covers it separately)
-    // Filesystem
-    &["std", "io", "fs", "write_file"],
-    &["std", "io", "fs", "write_file_append"],
-    &["std", "io", "fs", "delete_file"],
-    &["std", "io", "fs", "make_dir"],
-    &["std", "io", "fs", "read_file"],
-    &["std", "io", "fs", "read_file_bytes"],
-    &["std", "io", "fs", "file_size"],
-    // TCP / UDP — both connect and accept have effects (sockets)
-    &["std", "io", "unix", "listen_socket"],
-    &["std", "io", "unix", "connect"],
-    &["std", "io", "unix", "connect_wait"],
-    &["std", "io", "tcp", "__listen_socket"],
-    &["std", "io", "tcp", "__accept_one"],
-    &["std", "io", "tcp", "__connect"],
-    &["std", "io", "tcp", "__close_fd"],
-    &["std", "io", "tcp", "__set_recv_timeout_ns"],
-    &["std", "io", "tcp", "set_recv_timeout"],
-    &["std", "io", "tcp", "set_send_timeout"],
-    &["std", "io", "tcp", "set_nodelay"],
-    &["std", "io", "tcp", "set_rx_timestamps"],
-    &["std", "io", "tls", "set_nodelay"],
-    &["std", "io", "tls", "set_rx_timestamps"],
-    &["std", "io", "udp", "send_bytes"],
-    &["std", "io", "udp", "recv_bytes"],
-    // Diagnostic gate counters: observe mutable process-wide runtime
-    // state, so reads are non-deterministic (impure) even though they
-    // have no effect of their own.
-    &["std", "diag", "heap_alloc_count"],
-    &["std", "diag", "syscall_count"],
-    // Crypto with global state (rare; covered by random for now)
-    &["std", "crypto", "random_bytes"],
-    // Env (reads only; treat var() as pure since env is stable
-    // for the program's lifetime — set at startup).
-];
+/// The effect classes that make a stdlib call impure: a call that
+/// leaves the process (`syscall` — the filesystem, the network, the
+/// process table, stdout, the runtime's own counters), waits
+/// (`block`), or puts a message on the bus (`publish`) is not safely
+/// callable from an arbitrary thread without coordination, which is
+/// what a pure fn promises. Reading the clock (`time`), the PRNG
+/// (`entropy`, a mutex-guarded state) or the environment (`env`,
+/// fixed at startup), allocating (`alloc`) and using confined secret
+/// material (`secret_use`) are not.
+const IMPURE_CLASSES: EffectSet =
+    EffectSet::SYSCALL.union(EffectSet::BLOCK).union(EffectSet::PUBLISH);
 
+/// Whether a qualified call path is an impure stdlib call: its row in
+/// the stdlib surface table ([`crate::stdlib_surface::effects_for`],
+/// public rows only) carries one of [`IMPURE_CLASSES`]. A path with no
+/// public row (an internal `__` leaf, which user code cannot call, or
+/// a user path) answers no here.
 fn is_impure_stdlib(segments: &[&str]) -> bool {
-    IMPURE_STDLIB_PATHS.iter().any(|p| *p == segments)
+    crate::stdlib_surface::effects_for(segments)
+        .is_some_and(|e| e.0 & IMPURE_CLASSES.0 != 0)
 }
 
 /// Bare-identifier callee names that are impure builtins (visible
@@ -758,6 +722,33 @@ mod tests {
             }
             other => panic!("expected ImpureStdlibCall(println), got {:?}", other),
         }
+    }
+
+    /// The surface table is the producer: `std::io::tcp::connect` is
+    /// `syscall | block` there, and was missing from the hand list
+    /// this replaced, so a fn calling it was inferred pure.
+    #[test]
+    fn fn_calling_a_syscall_row_is_impure() {
+        let p = purity_of(
+            r#"fn dial() -> Int { return std::io::tcp::connect("127.0.0.1", 9) or -1; } fn main() { }"#,
+            PurityKey::free_fn(None, "dial"),
+        );
+        match p {
+            Purity::Impure(Impurity::ImpureStdlibCall { fn_name, .. }) => {
+                assert_eq!(fn_name, "std::io::tcp::connect");
+            }
+            other => panic!("expected ImpureStdlibCall(tcp::connect), got {:?}", other),
+        }
+    }
+
+    /// Reading the clock is `time` alone: not an impure class.
+    #[test]
+    fn fn_reading_the_clock_is_pure() {
+        let p = purity_of(
+            "fn stamp() -> Int { return std::time::now(); } fn main() { }",
+            PurityKey::free_fn(None, "stamp"),
+        );
+        assert!(matches!(p, Purity::Pure), "expected pure, got {:?}", p);
     }
 
     #[test]

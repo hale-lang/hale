@@ -113,7 +113,10 @@ fails the build:
   Law-of-Demeter / CQRS / dependency-inversion violation caught in one
   rule).
 - **Codec purity** — a bus codec's `encode` / `decode` must be pure;
-  they may run off-thread.
+  they may run off-thread. A stdlib call is impure when its effect
+  classes include `syscall`, `block` or `publish` (file, socket or
+  process I/O, a sleep, a bus send): `std::io::tcp::connect` in an
+  `encode` is refused, `std::time::now` is not.
 - **`ring_layout` conformance** — a foreign shared-memory ring layout
   is checked for internal and cross-field consistency before a torn
   read is possible.

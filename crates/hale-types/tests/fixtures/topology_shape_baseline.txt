@@ -221,7 +221,7 @@ crates/hale-codegen/tests/binding_birth_fail.rs#1 55a1b5867e438599
 crates/hale-codegen/tests/binding_birth_fail.rs#3 0be475dbbce3d9a6
 crates/hale-codegen/tests/binding_birth_fail.rs#4 55a1b5867e438599
 crates/hale-codegen/tests/bindings_codec_clause.rs#0 e2e976afef6724e4
-crates/hale-codegen/tests/bindings_codec_clause.rs#6 c81a031ef7e38f0b
+crates/hale-codegen/tests/bindings_codec_clause.rs#7 c81a031ef7e38f0b
 crates/hale-codegen/tests/birth_order_trap.rs#0 cdb5a176c4e7d8bd
 crates/hale-codegen/tests/birth_order_trap.rs#1 5fccb7c751c90388
 crates/hale-codegen/tests/birth_order_trap.rs#2 fca1c275854133e6
