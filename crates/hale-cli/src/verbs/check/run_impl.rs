@@ -76,8 +76,11 @@ fn refuse_without_model(target: &Path, doing: &str, b: &hale_frontend::snapshot:
 }
 
 /// Where `span` is for `hale check --units`: its file relative to the
-/// directory checked (so a recorded report does not name the machine it
-/// was made on), its line and column, and its text on one line.
+/// directory checked, its line and column, and its text on one line. A
+/// file outside that directory — a sibling seed imported as
+/// `"../common"` — is written with `..` rather than absolute, so a
+/// recorded report does not name the machine or the checkout it was
+/// made in (review of #1416).
 fn unit_report_place(
     span: hale_syntax::Span,
     file_bases: &[(u32, std::path::PathBuf, u32)],
@@ -89,9 +92,7 @@ fn unit_report_place(
     let src = sources.get(path)?;
     let local = span.shifted(base.wrapping_neg());
     let (line, col) = local.line_col(src);
-    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let file = canonical(path);
-    let shown = file.strip_prefix(canonical(root)).unwrap_or(&file).display().to_string();
+    let shown = hale_frontend::diag::display_relative(root, path);
     Some(hale_types::unit_report::Place {
         at: format!("{shown}:{line}:{col}"),
         text: hale_types::unit_report::collapsed(local.slice(src)),

@@ -791,7 +791,13 @@ outside the hashed model half: no shape hash reads it.
 
 The text is stable (declarations in program order, narrowings by
 site), so it can be recorded and diffed; `--json` prints the same
-fields as one object, a count as a string. With nothing to report it
+fields as one object, a count as a string. A location is
+`file:line:col` with the file relative to the checked seed's
+directory, inside it or outside it: a sibling seed imported as
+`"../common"` is `../common/main.hl:3:1`, never an absolute path, so
+one project checked from two checkouts gives one report. A stdlib
+declaration is its stdlib file and line (`std::time, time.hl:25:1`).
+With nothing to report it
 is the one line `units: no quantity is declared`. From the committed
 form's report:
 

@@ -6,7 +6,8 @@
 //! narrowing its factor (or range), the policy that discharged it and
 //! where the policy came from. The text form is stable, so it is pinned
 //! whole here for the committed form's example (`units/committed_form.hl`);
-//! `--json` carries the same fields.
+//! `--json` carries the same fields. A location's file is relative to the
+//! checked seed's directory, with `..` for a sibling seed's.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -197,6 +198,86 @@ fn the_json_form_carries_the_same_fields() {
     let seq = &narrowings[6];
     assert_eq!((seq["range"].clone(), seq["factor"].is_null()), (serde_json::json!(["0", "65536"]), true));
 }
+
+/// A seed that imports a sibling: the declarations and the narrowing live
+/// in `common/`, beside the checked `app/`, not under it.
+const SIBLING_APP: &str = "import \"../common\" as money;\nfn main() { println(money::to_bill(150)); }\n";
+const SIBLING_COMMON: &str = "unit cent;\nunit bill = 100 cent;\ntype Money = quantity Int in cent;\ntype Bills = Money in bill { round: floor; }\nfn to_bill(n: Int) -> Bills { return n * 1cent; }\n";
+
+/// One copy of the two-seed project, in a checkout of its own.
+fn sibling_checkout(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("hale_units_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&root);
+    for (rel, src) in [("app/main.hl", SIBLING_APP), ("common/main.hl", SIBLING_COMMON)] {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&p, src).expect("write");
+    }
+    root
+}
+
+fn check_in(cwd: &std::path::Path, flags: &[&str]) -> String {
+    check_target(cwd, std::path::Path::new("app/main.hl"), flags)
+}
+
+fn check_target(cwd: &std::path::Path, target: &std::path::Path, flags: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .args(flags)
+        .arg(target)
+        .current_dir(cwd)
+        .output()
+        .expect("hale");
+    assert!(out.status.success(), "the project checks: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// A location in an imported seed outside the checked directory is
+/// written relative to it, with `..`, never absolute: one project checked
+/// from two checkouts gives one report, text and JSON (review of #1416).
+#[test]
+fn a_sibling_seeds_locations_are_relative_to_the_checked_seed() {
+    let (a, b) = (sibling_checkout("checkout_a"), sibling_checkout("checkout_b"));
+    let reports: Vec<(String, String)> =
+        [&a, &b].iter().map(|r| (check_in(r, &["--units"]), check_in(r, &["--units", "--json"]))).collect();
+    // The target named absolutely from an unrelated directory: still
+    // relative to the checked seed, not to where `hale` ran.
+    let absolute = check_target(std::path::Path::new("/"), &a.join("app/main.hl"), &["--units"]);
+    let _ = (std::fs::remove_dir_all(&a), std::fs::remove_dir_all(&b));
+    let (text, json) = &reports[0];
+    assert_eq!(reports[0], reports[1], "one project, two checkouts, one report");
+    assert_eq!(&absolute, text, "the same report whatever directory `hale` ran in");
+    for out in [text, json] {
+        assert!(!out.contains(&*std::env::temp_dir().to_string_lossy()) && !out.contains("hale_units_"), "no checkout path: {out}");
+    }
+    assert_eq!(text, SIBLING_REPORT, "the report now reads:\n{text}");
+    let v: serde_json::Value = serde_json::from_str(json.trim()).expect("JSON");
+    let at = |d: &serde_json::Value| d["at"].as_str().unwrap_or_default().to_string();
+    let declared: Vec<String> = v["declarations"].as_array().expect("declarations").iter().map(|d| at(&d["declared"])).collect();
+    assert_eq!(declared, ["../common/main.hl:3:1", "../common/main.hl:4:1"]);
+    assert_eq!(at(&v["narrowings"][0]["site"]), "../common/main.hl:5:38");
+    assert_eq!(at(&v["narrowings"][0]["policy_from"]), "../common/main.hl:4:1");
+}
+
+const SIBLING_REPORT: &str = r#"units: 2 declarations, 1 narrowing
+
+../common/main.hl:3:1  type Money = quantity Int in cent
+    kind         : quantity
+    denomination : cent, fixed by its own `in`
+    headroom     : ±9223372036854775807 cent (92233720368547758 bill)
+
+../common/main.hl:4:1  type Bills = Money in bill { round: floor; }
+    kind         : quantity, a denomination of money::Money
+    denomination : bill, fixed by its own `in`
+    policy       : floor, from its own `round:`
+    headroom     : ±9223372036854775807 bill
+
+narrowings:
+
+../common/main.hl:5:38  n * 1cent
+    money::Money -> money::Bills, factor 1/100
+    policy       : floor, the `round:` of `type Bills = Money in bill { round: floor; }` (../common/main.hl:4:1)
+"#;
 
 #[test]
 fn a_program_with_no_quantity_says_so_in_one_line() {

@@ -281,7 +281,9 @@ The second entry is the money example's one rounding: a factor of
 at most about 9.2 trillion USD, where `Money` holds ten thousand times
 that. The text is stable, so a project can record it and review its
 diff like any other artifact; `--json` gives the same fields as one
-object. A program with no unit declarations prints one line, `units:
+object. Its files are named from the checked seed's directory, so a
+declaration in a sibling seed reads `../common/main.hl:3:1` and two
+checkouts of one project record one report. A program with no unit declarations prints one line, `units:
 no quantity is declared`.
 
 ## What it does not do
