@@ -245,7 +245,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Focused tests.** crates/hale-types/src/unit_graph.rs; crates/hale-types/tests/unit_declarations.rs; crates/hale-types/tests/time_declarations.rs
 
-**Spec.** spec/units.md
+**Spec.** spec/units.md § The catalogue
 
 ### `unit_declarations` — Canonical · derivation
 
@@ -274,7 +274,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Focused tests.** crates/hale-types/tests/unit_declarations.rs; crates/hale-types/tests/unit_values.rs; crates/hale-types/tests/unit_quantities.rs; crates/hale-types/tests/time_declarations.rs; crates/hale-types/tests/time_literal_diagnostics.rs (a compound or retired time literal says what to write); crates/hale-types/tests/unit_report.rs; crates/hale-cli/tests/check_units.rs (the committed form's report, pinned whole); crates/hale-codegen/tests/duration_scalar_arith.rs; crates/hale-types/tests/demand_gate.rs; tests/hale/unit_declarations_test.hl; tests/hale/identities_and_ranges_test.hl; tests/hale/unit_quantities_test.hl; crates/hale-types/tests/unit_acceptance.rs (the committed form's example: each error it marks, its text where an earlier step decided otherwise, and no narrowing without a policy, per form); tests/hale/units_time_test.hl (the committed form's stated results, U5, with the next four); tests/hale/units_money_test.hl; tests/hale/units_ticks_test.hl; tests/hale/units_identities_test.hl; tests/hale/units_temperature_test.hl
 
-**Spec.** spec/units.md § Declarations; spec/units.md § Identities and ranges; spec/units.md § Quantities and points; spec/verification.md § Structural & design rules
+**Spec.** spec/units.md § Declarations; spec/units.md § The rows; spec/units.md § The laws; spec/units.md § The algebra; spec/units.md § Conversions; spec/units.md § The witness report; spec/verification.md § Structural & design rules
 
 **Guarded seams.**
 

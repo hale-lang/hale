@@ -46,22 +46,25 @@ the lifetime contract.
 ## Scalar types (GH #1076)
 
 Beside the primitives, a program declares the unit dialect's scalar
-types (spec/units.md). Each is a nominal named type, not a new
-primitive, and each is represented as an `Int`:
+types. spec/units.md is their whole contract (the declarations, the
+laws, the algebra, the conversions and their policies, printing and the
+wire); what the type system holds of them is this. Each is a nominal
+named type, not a new primitive: the name survives resolution, two of
+them never unify, and each is represented as an `Int`.
 
-| Kind | Declared | Values |
+| Kind | Declared | As a type |
 |---|---|---|
-| Identity | `type OrderId = distinct Int;`, optionally `{ range: a..b; }` | Typed (spec/units.md § Identities and ranges): no arithmetic, equality and ordering within one, widens to nothing, `Int(id)` and `OrderId(n)` convert |
-| Range | `type Byte = Int { range: 0..256; }`, or over an identity or a range | Typed: a refinement of `Int` (or of its parent), widens to it for free; narrowing into it is `Byte(n) or …` |
-| Quantity | `type Money = quantity Int in cent;`, or a boundary denomination of one, `Money { round: half_even; }`, `Span in 100 msec` | Typed (spec/units.md § Quantities and points): one algebra (a sum at the finer denomination, a ratio product at the product of the two), every change of denomination a classified conversion, a narrowing discharged at the site or by the target's `round:`; literals `3bp`, `1_250_000USD` |
-| Point | `type Price = point Tick;`, optionally `{ origin: N UNIT; }` | Typed: two of one origin differ by their quantity, a point moves by one; `Kelvin(c)` converts across origins |
+| Identity | `type OrderId = distinct Int;`, optionally `{ range: a..b; }` | no arithmetic; compares within one; widens to nothing (`Int(id)`, `OrderId(n)` convert) |
+| Range | `type Byte = Int { range: 0..256; }`, or over an identity or a range | widens to its parent for free; narrowing into it is `Byte(n) or …` |
+| Quantity | `type Money = quantity Int in cent;`, or a boundary denomination of one, `type Ledger = quantity Int in cent { round: half_even; }` | carries its denomination; converts by an exact factor |
+| Point | `type Price = point Tick;`, optionally `{ origin: N UNIT; }` | a position over its quantity |
 
-An expression's quantity type carries its denomination; one no
-declaration names is synthesized and displayed `Money in 1/100 cent`.
-Wherever a type reaches a representation (codegen, the FFI, a hashmap
-key, a flat payload) an identity, a range, a quantity or a point is
-its `Int`. A quantity prints with its unit (`1500msec`), and on the
-wire its field is tagged by its denomination.
+An expression's quantity or point type carries its denomination, and
+one no declaration names is a synthesized type, keyed by its quantity
+and its denomination as a monomorph is by its arguments, and displayed
+`Money in 1/10000 cent` (spec/units.md § Synthesized denominations).
+`Duration` and `Time` are a quantity and a point declared by the
+stdlib, which keep their own representation class (the table above).
 
 ## Compound types
 

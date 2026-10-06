@@ -534,7 +534,7 @@ annotations are not in v1.
   a quantity literal is its unit's component's quantity, at the
   quantity's denomination when it is a whole count of it and else
   at its unit, converted at compile time into the denomination it
-  flows into (spec/units.md § Quantities and points, Literals). A
+  flows into (spec/units.md § Literals). A
   unit no `unit` declares is refused at the literal.
 
 ### Decimal literals
