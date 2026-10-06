@@ -4289,12 +4289,16 @@ Two warnings say when a clause cannot take effect:
   the program's own seed names that no recovery applies to its locus:
   no parent's `on_failure` for the locus's type performs it, and no
   recovery statement outside a handler performs it on a child of that
-  type. The witness lists each handler and statement that names the
-  locus, with the events it applies. A library checked alone has no
-  parents, so it is not judged; nor is an imported locus, nor an event
-  some recovery applies to a child the check cannot name (a generic
-  supervisor's type parameter, a receiver that is not a declared
-  param) (*Unreached recovery event*).
+  type. A statement's child is the type the checker gives its
+  receiver, whatever the receiver is (a param, a local, a field of
+  another value, a call's result); in a generic body, the type each
+  specialization gives it. The witness lists each handler and
+  statement that names the locus, with the events it applies. A
+  library checked alone has no parents, so it is not judged; nor is an
+  imported locus, nor an event some recovery applies to a child the
+  check cannot name (a generic supervisor's handler's type parameter,
+  a receiver of a type parameter in a generic body no specialization
+  binds) (*Unreached recovery event*).
 - `persists_through(...)` on a closure whose assertion accumulates
   nothing keeps nothing (*Persistence with no accumulator*).
 

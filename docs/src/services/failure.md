@@ -226,7 +226,10 @@ recovery in both is refused, since the two cannot both hold.
 applies that recovery to the locus, it lists the handlers that do
 handle it and what they apply; and when a closure with no `sum`,
 `count` or `mean` says `persists_through`, since it has no totals to
-keep.
+keep. A recovery statement counts for the locus its receiver is, as
+the checker types it: `restart(x)` on a local counts as much as
+`restart(self.t)`, and one in a generic locus counts for whatever
+each use of the generic locus binds.
 
 ## Crossing from value to structural
 

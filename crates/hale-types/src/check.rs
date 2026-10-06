@@ -661,8 +661,9 @@ pub fn check_bundle_scoped(
 /// its `@effects`, `@phase_effects` and placement diagnostics, and the
 /// certificate evidence a law is judged against reads the same run
 /// instead of repeating it. The entry of a bundle no snapshot holds, so
-/// the `bare_fallible` law runs here over the table packaged from the
-/// typing's record, as the snapshot's check runs it over its own.
+/// the `bare_fallible` law and the closures' reach law run here over the
+/// table packaged from the typing's record, as the snapshot's check runs
+/// them over its own.
 pub fn check_bundle_reporting(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -674,6 +675,7 @@ pub fn check_bundle_reporting(
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
     let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
+    diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
 
@@ -965,8 +967,10 @@ pub fn check_bundle_by_declaration(
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
-    // `persists_through(...)` / `resets_on(...)` clauses name.
-    diags.extend(crate::closure_events::closure_event_laws(bundle, inputs.handlers, inputs.entry));
+    // `persists_through(...)` / `resets_on(...)` clauses name; whether a
+    // recovery reaches each is judged over the typed-body table
+    // (`unreached_event_laws`, beside the `bare_fallible` law).
+    diags.extend(crate::closure_events::closure_event_laws(bundle));
     // GH #1076: the unit dialect's declarations, judged over their rows.
     diags.extend(crate::units::unit_laws(inputs.units));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
@@ -10809,12 +10813,16 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Block(b) => self.check_block(b),
-            Stmt::Recovery { args, modifier, .. } => {
-                for a in args {
-                    let _ = self.check_expr(a);
-                }
+            Stmt::Recovery { op, args, modifier, span } => {
+                let tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
                 if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
                     let _ = self.check_expr(e);
+                }
+                // A handler's statements are its handler row's ops, on the
+                // handler's child.
+                if !self.in_on_failure {
+                    let bounded = matches!(modifier, Some(RecoveryModifier::For(_)));
+                    self.record_recovery(*op, bounded, *span, tys.into_iter().next().unwrap_or(Ty::Unknown));
                 }
             }
             // v1.x-VIOLATE (F.27): rejection-context enforcement
@@ -11992,16 +12000,9 @@ impl<'a> Checker<'a> {
         span: Span,
         kind: crate::typed_bodies::AccessKind,
     ) {
-        let Ty::Named(named) = rt else { return };
         // A receiver typed as a generic locus's monomorph (`Box_Int`) is
         // the template's params reached: the row names the template.
-        let locus_name = match self.top.symbols.get(named) {
-            Some(_) => named.clone(),
-            None => match self.typed.monomorphs.named(named).and_then(|m| self.templates.get(m.template)) {
-                Some(GenericTemplate::Locus(l)) => l.name.name.clone(),
-                _ => return,
-            },
-        };
+        let Some(locus_name) = self.scope_name_of(rt) else { return };
         let Some(TopSymbol::Locus(li)) = self.top.symbols.get(&locus_name) else {
             return;
         };
@@ -12021,6 +12022,47 @@ impl<'a> Checker<'a> {
             specialization: self.specializing.clone().unwrap_or_default(),
         };
         self.access_visits.push(AccessVisit { at: self.diags.len(), body: self.body, row });
+    }
+
+    /// The scope name a type is declared by: a named type's own, or for
+    /// a generic locus's monomorph (`Box_Int`), which the scope declares
+    /// nothing by, its template's. `None` for any other type.
+    fn scope_name_of(&self, ty: &Ty) -> Option<String> {
+        let Ty::Named(named) = ty else { return None };
+        if self.top.symbols.get(named).is_some() {
+            return Some(named.clone());
+        }
+        match self.typed.monomorphs.named(named).and_then(|m| self.templates.get(m.template)) {
+            Some(GenericTemplate::Locus(l)) => Some(l.name.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// The `recoveries` row of a recovery statement outside every
+    /// `on_failure` body: its operation, its bound, and the locus the
+    /// checker typed its receiver as (a monomorph's template), in the
+    /// body being walked, on the walk's specialization. A statement a
+    /// walk reaches twice is one row.
+    fn record_recovery(&mut self, op: RecoveryOp, bounded: bool, statement: Span, receiver: Ty) {
+        let child = match self.scope_name_of(&receiver) {
+            Some(name) if matches!(self.top.symbols.get(&name), Some(TopSymbol::Locus(_))) => self.locus_ref(&name),
+            _ => None,
+        };
+        let parent_name = self.current_locus.map(|l| l.name.clone());
+        let row = crate::typed_bodies::RecoveryRow {
+            parent: parent_name.as_deref().and_then(|n| self.locus_ref(n)),
+            parent_name,
+            statement,
+            op,
+            bounded,
+            receiver,
+            child,
+            specialization: self.specializing.clone().unwrap_or_default(),
+        };
+        let rows = &mut self.typed.body(self.body).recoveries;
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
     }
 
     /// Keep `reached`, the accesses a walk reached before the walk was
