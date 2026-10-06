@@ -21,20 +21,42 @@
 
 use hale_syntax::error::Diag;
 
-use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, FallibleCall, Handling, TypedBodies};
+use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, ConversionSite, FallibleCall, Handling, TypedBodies};
 
 /// Every fallible call `table` holds that nothing handles, as errors;
 /// then every narrowing nothing discharges (GH #1076, U2), from the
 /// `conversions` column.
 pub fn bare_fallible_calls(table: &TypedBodies) -> Vec<Diag> {
-    table.fallible_calls().filter_map(judge).chain(table.conversions().filter_map(judge_narrowing)).collect()
+    table.fallible_calls().filter_map(judge).chain(table.conversion_sites().filter_map(judge_narrowing)).collect()
 }
 
 /// A narrowing (`Session(n)`) is fallible like a call: a value outside
-/// the range has to become something, and the program says what.
-fn judge_narrowing(row: &ConversionRow) -> Option<Diag> {
+/// the range has to become something, and the program says what. A
+/// conversion between denominations that divides (U3) has a remainder
+/// to say something about, at the site (`or floor`) or by the target
+/// type's `round:`.
+fn judge_narrowing((site, row): (ConversionSite, &ConversionRow)) -> Option<Diag> {
     if row.kind != ConversionKind::Narrowing || row.policy.is_some() {
         return None;
+    }
+    if let Some(scale) = &row.scale {
+        let divisor = crate::unit_quantities::grouped(scale.factor.denominator());
+        let declared = !row.target.contains(" in ");
+        let policy = if declared { format!(", or give `{}` a `round:` policy", row.target) } else { String::new() };
+        let say = match site {
+            // An implicit conversion has no `or` of its own.
+            ConversionSite::Value { .. } => format!(
+                "say what happens to the remainder: convert explicitly (`.in(u) or floor`, `{}(…) or half_even`, \
+                 `or <value>`, `or raise`){policy}",
+                row.target
+            ),
+            _ => format!("say what happens to the remainder: `or floor`, `or <value>`, `or raise`{policy}"),
+        };
+        let what = match site {
+            ConversionSite::Divide { .. } => format!("`{}` divided by {divisor} leaves a remainder", row.target),
+            _ => format!("`{}` from `{}` divides by {divisor}", row.target, row.from.display()),
+        };
+        return Some(Diag::ty(row.span, format!("{what}: {say}")));
     }
     let range = row.range.map(|(lo, hi)| format!("`{lo}..{hi}`")).unwrap_or_default();
     Some(Diag::ty(

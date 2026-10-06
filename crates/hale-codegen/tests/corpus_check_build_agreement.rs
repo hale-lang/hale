@@ -489,7 +489,8 @@ fn an_entry_point_less_program_is_built() {
 /// invocation in a walk whose findings the check discards, which took
 /// the not-yet boundary's error with them; a field's default was not
 /// typed at all. The check refuses each now, at the literal, so the
-/// build is never reached.
+/// build is never reached. U3: the literal's unit has no quantity here,
+/// and the quantity rules' errors survive the discarded walk.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -506,7 +507,7 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
             entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
         assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
         assert_eq!(errors[0].span.slice(src), "3cent", "located at the literal:\n{}", src);
-        assert!(errors[0].message.starts_with("quantity literal `3cent`: "), "{}", errors[0].message);
+        assert!(errors[0].message.starts_with("`3cent`: the units of `cent` have no quantity"), "{}", errors[0].message);
         assert_eq!(
             sweep_verdict(src, "hale_cb_unit_default"),
             Verdict::Skipped("the checker rejects it"),
@@ -520,9 +521,10 @@ fn a_unit_value_in_a_default_is_refused_by_the_check_not_the_build() {
 /// cast to the scalar type `Money` before the callee was resolved, so a
 /// local of that name holding a fn was refused too. The local is the
 /// callee: the program checks, builds and runs it, as it does when
-/// `Money` is an alias. With no local, a quantity's cast is the
-/// boundary's, and the check refuses it before the build; an identity's
-/// is a conversion (U2), which builds and prints 1.
+/// `Money` is an alias. With no local, a quantity's cast of an `Int` is
+/// refused by the check before the build (U3: a count becomes a quantity
+/// by a unit); an identity's is a conversion (U2), which builds and
+/// prints 1.
 ///
 /// U2 (fix): lowering decided a conversion by the callee's name, so the
 /// shadowing local of an identity's or a range's name, which the checker
@@ -552,7 +554,7 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
     let identity = cast.replace("quantity Int in cent", "distinct Int");
     assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
@@ -581,8 +583,26 @@ fn a_struct_default_cast_is_judged_in_the_literals_scope() {
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_default_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
+}
+
+/// GH #1076 (U3): a quantity in a default converts into its field's or
+/// its parameter's type where the default is evaluated, as a value does
+/// wherever it flows: `3USD` into a `Money` counted in cents is 300, and
+/// a build that lowered the literal at its own unit would print 3.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_quantity_default_converts_into_its_fields_and_parameters_type() {
+    let decls = "unit cent;\n\
+                 unit USD = 100 cent;\n\
+                 type Money = quantity Int in cent;\n";
+    let field = format!("{decls}type S {{ m: Money = 3USD; }}\nfn main() {{ let s = S {{}}; println(s.m); }}\n");
+    let param = format!("{decls}fn take(m: Money = 3USD) -> Money {{ return m; }}\nfn main() {{ println(take()); }}\n");
+    for (src, tag) in [(field, "unit_quantity_field_default"), (param, "unit_quantity_param_default")] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("300\n".to_string()), "{}", src);
+    }
 }
 
 /// GH #1076 (U1, review 3): an omitted struct default is typed where it
@@ -627,11 +647,11 @@ fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
         entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
     assert_eq!(errors[0].span.start.as_usize(), cast.find("Money(1)").expect("the cast"), "at `Inner`'s default");
-    assert!(errors[0].message.starts_with("type `Money`: "), "{}", errors[0].message);
+    assert!(errors[0].message.starts_with("`Money(…)` of an `Int`: "), "{}", errors[0].message);
     assert_eq!(
         sweep_verdict(cast, "hale_cb_unit_nested_default_cast"),
         Verdict::Skipped("the checker rejects it"),
-        "the cast is the boundary's, so the build is never reached"
+        "the check refuses the cast, so the build is never reached"
     );
 }
 

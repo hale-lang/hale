@@ -185,8 +185,11 @@ fn a_range_widens_for_free_and_an_identity_to_nothing() {
     );
 }
 
+/// An integer literal is a value of an identity or a range where one is
+/// expected; of a quantity it is not (U3): a count becomes a quantity by
+/// a unit.
 #[test]
-fn the_boundary_refuses_quantities_and_points_only() {
+fn an_int_literal_is_a_value_of_a_range_and_never_of_a_quantity() {
     let src = format!(
         "unit cent;\ntype Money = quantity Int in cent;\n{DECLS}\
          fn main() {{\n    let s: Session = 1;\n    let m: Money = 5;\n    println(1);\n}}\n"
@@ -194,14 +197,7 @@ fn the_boundary_refuses_quantities_and_points_only() {
     let all = check_program(&parse_source(&src).expect("parses"));
     let found: Vec<(&str, &str)> =
         all.iter().filter(|d| d.is_error()).map(|d| (d.span.slice(&src), d.message.as_str())).collect();
-    assert_eq!(
-        found,
-        [(
-            "Money",
-            "type `Money`: values of the unit dialect's types are not typed yet (GH #1076): declarations are \
-             checked, and values arrive with the next step; until then, count in `Int`"
-        )]
-    );
+    assert_eq!(found, [("5", "`Int` is not `Money`: a count becomes a quantity by a unit (`n * 1cent`)")]);
 }
 
 /// The program the predicate pins read: an identity and a range as a

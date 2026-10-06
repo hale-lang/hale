@@ -878,41 +878,32 @@ pub fn check_bundle_by_declaration(
         specializing: None,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
-        unit_types: inputs
-            .units
-            .scalars
-            .iter()
-            .filter(|s| matches!(s.kind, crate::units::ScalarKindRow::Quantity | crate::units::ScalarKindRow::Point))
-            .map(|s| (s.name.as_str(), s.display.as_str()))
-            .collect(),
         scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
-        unit_values_refused: BTreeMap::new(),
-        casts_judged_at_literals: false,
+        unit_findings: std::collections::BTreeSet::new(),
+        defaults_judged_at_literals: false,
+        decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
     };
-    // GH #1076: the not-yet boundary's errors belong to every declaration
-    // whose walk reaches them (a parameter's default, reached by each
-    // caller that leaves it; a struct default's cast, by each literal that
-    // leaves the field), so each declaration's result is its own and a
-    // reused one still carries them. Each place is reported once, here,
-    // where the results are assembled.
-    let mut boundary: BTreeMap<(usize, usize), String> = BTreeMap::new();
+    let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
             let typing = match &reused[key.as_str()][i] {
                 Some(done) => done.typing.clone(),
                 None => {
-                    cx.unit_values_refused.clear();
                     let start = cx.diags.len();
+                    cx.decl_diags_start = start;
                     cx.check_top_decl(item);
                     cx.settle_param_accesses();
                     cx.diags.split_off(start)
                 }
             };
+            // GH #1076 (U3): a quantity rule's error a default's walk found
+            // is in the result of each declaration that leaves the default,
+            // and is reported once.
             for d in &typing {
-                let place = (d.span.start.as_usize(), d.span.end.as_usize());
-                if !crate::units::is_boundary_refusal(d) || boundary.insert(place, d.message.clone()).is_none() {
+                let key = (d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone());
+                if !cx.unit_findings.contains(&key) || reported.insert(key) {
                     cx.diags.push(d.clone());
                 }
             }
@@ -920,8 +911,6 @@ pub fn check_bundle_by_declaration(
         }
         by_decl.insert(key.clone(), per);
     }
-    // The walks per monomorph report a place no declaration reported.
-    cx.unit_values_refused = boundary;
     cx.specialize_generic_bodies();
     // The walks per monomorph keep nothing: there is nothing to settle.
     debug_assert!(cx.access_visits.is_empty(), "a discarded walk's accesses are discarded with it");
@@ -6138,26 +6127,22 @@ struct Checker<'a> {
     /// addresses types as its success type (the `bare_fallible` law
     /// reports the call).
     handling: crate::typed_bodies::Handling,
-    /// GH #1076: the unit dialect's quantity and point names (as
-    /// declared, mangled for an import), each with its author's spelling,
-    /// read from the unit rows: the not-yet boundary refuses each where a
-    /// value would live (`refuse_unit_types`) until U3.
-    unit_types: BTreeMap<&'a str, &'a str>,
-    /// GH #1076 (U2): the identities and ranges, whose values the rules
-    /// of `unit_values` type.
+    /// GH #1076: the unit dialect's scalar types, whose values the rules
+    /// of `unit_values` (identities and ranges, U2) and `unit_quantities`
+    /// (quantities and points, U3) type.
     scalars: crate::unit_values::ScalarTypes<'a>,
-    /// The places the boundary refused in the declaration being walked,
-    /// by span, each with its error's message: a place walked twice is
-    /// refused once, and a walk whose findings are discarded keeps the
-    /// boundary's (`discard_since`). Across declarations each place is
-    /// reported once where their results are assembled
-    /// (`check_bundle_by_declaration`).
-    unit_values_refused: BTreeMap<(usize, usize), String>,
+    /// GH #1076 (U3): the quantity rules' errors (`unit_error`), by place
+    /// and message: a struct default's walk, whose findings are otherwise
+    /// discarded, keeps them, since no other walk types the default.
+    unit_findings: std::collections::BTreeSet<(usize, usize, String)>,
     /// While a type declaration's field defaults are walked for the
-    /// defaults their calls leave: a cast's name there means what each
-    /// literal's scope says, so the cast is judged at the literal
-    /// (`type_omitted_defaults`), not here.
-    casts_judged_at_literals: bool,
+    /// defaults their calls leave: a name there means what each literal's
+    /// scope says, so the quantity rules' errors are found at the literal
+    /// (`type_omitted_defaults`), not kept here.
+    defaults_judged_at_literals: bool,
+    /// Where the declaration being walked starts in `diags`: a kept
+    /// error is once per declaration, which owns its result.
+    decl_diags_start: usize,
     /// The struct field defaults being typed at a literal that leaves
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
@@ -6335,36 +6320,25 @@ impl<'a> Checker<'a> {
                         // leave are expanded there: the `omitted_args`
                         // column records them (C3 rest, the review of
                         // #1351).
-                        // GH #1076: so is a quantity literal, whose value is
-                        // not typed yet in any scope, so the not-yet
-                        // boundary refuses it here. A cast's name means
-                        // what the literal's scope says, also in a default
-                        // a call here leaves; it is judged there
-                        // (`type_omitted_defaults`).
+                        // GH #1076: a default's casts and quantity
+                        // literals are typed there too, in the literal's
+                        // scope (`type_omitted_defaults`).
                         let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
-                        let mut unit_values: Vec<(Span, String)> = Vec::new();
-                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
-                            Expr::Call { callee, args, id, .. } => {
+                        let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
+                            if let Expr::Call { callee, args, id, .. } = e {
                                 calls.push((*id, callee.as_ref(), args.len()));
                             }
-                            Expr::Literal(Literal::Quantity { value, unit }, span) => {
-                                unit_values.push((*span, format!("quantity literal `{value}{unit}`")));
-                            }
-                            _ => {}
                         });
                         for f in fields {
                             if let Some(d) = &f.default {
                                 walk.expr(d);
                             }
                         }
-                        for (span, what) in unit_values {
-                            self.refuse_unit_value(span, what);
-                        }
-                        let judged = std::mem::replace(&mut self.casts_judged_at_literals, true);
+                        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
                         for (id, callee, supplied) in calls {
                             self.record_omitted_defaults(id, callee, supplied);
                         }
-                        self.casts_judged_at_literals = judged;
+                        self.defaults_judged_at_literals = judged;
                     }
                     TypeDeclBody::Enum(variants) => {
                         for v in variants {
@@ -6426,9 +6400,6 @@ impl<'a> Checker<'a> {
                 //     check_phase3_fallback_subscribers (bundle
                 //     pass).
                 let _ = t.on_unmatched;
-                // GH #1076: a payload is a value, and a unit-dialect
-                // type's values are not typed yet.
-                self.refuse_unit_types(&t.payload);
 
                 // (1) keyed_by field must exist on the payload
                 // type and resolve to an int-shaped scalar
@@ -11949,14 +11920,9 @@ impl<'a> Checker<'a> {
     }
 
     /// Discard what the walk since `mark` found: its diagnostics and the
-    /// param accesses it reached. The not-yet boundary's errors stay
-    /// (GH #1076): each is refused once, so a place first reached by a
-    /// discarded walk (a default typed at its invocation, a receiver
-    /// typed ahead) is never refused again, and lowering would get it.
+    /// param accesses it reached.
     fn discard_since(&mut self, mark: WalkMark) {
-        let found = self.diags.split_off(mark.diags);
-        let kept: Vec<Diag> = found.into_iter().filter(|d| self.is_unit_value_refusal(d)).collect();
-        self.diags.extend(kept);
+        self.diags.truncate(mark.diags);
         self.access_visits.truncate(mark.visits);
     }
 
@@ -12368,42 +12334,6 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
-    /// GH #1076: a unit-dialect type named where a value would live (an
-    /// annotation, at any depth: `Vec<Money>`), one error per name. A
-    /// type parameter of that name shadows the declaration.
-    fn refuse_unit_types(&mut self, te: &TypeExpr) {
-        match te {
-            TypeExpr::Named { path, generic_args, span } => {
-                for arg in generic_args {
-                    self.refuse_unit_types(arg);
-                }
-                if let [name] = path.segments.as_slice() {
-                    if !self.generic_params.contains(&name.name) {
-                        if let Some(display) = self.unit_types.get(name.name.as_str()) {
-                            self.refuse_unit_value(*span, format!("type `{display}`"));
-                        }
-                    }
-                }
-            }
-            TypeExpr::Projection { inner, .. } => self.refuse_unit_types(inner),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.refuse_unit_types(elem),
-            TypeExpr::Tuple(parts, _) => {
-                for p in parts {
-                    self.refuse_unit_types(p);
-                }
-            }
-            TypeExpr::Function { params, ret, .. } => {
-                for p in params {
-                    self.refuse_unit_types(p);
-                }
-                if let Some(r) = ret {
-                    self.refuse_unit_types(r);
-                }
-            }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
-        }
-    }
-
     /// GH #1076 (U2): whether a value of `got`, the expression `value`,
     /// flows into a place of type `want`: assignability, and the
     /// identities' and ranges' rules (`unit_values`). An integer literal
@@ -12415,6 +12345,24 @@ impl<'a> Checker<'a> {
     /// `true` so the caller adds no second error; `false` is the caller's
     /// own mismatch to report.
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        // GH #1076 (U3): a value counted in a denomination no declaration
+        // names, meeting a place the checker has no type for (a generic
+        // field of a literal, a parameter it cannot see), has nothing to
+        // be converted into: refused, never stored as the wrong count.
+        if matches!(want, Ty::Unknown) && self.scalars.has_quantities() {
+            if let Some(q) = self.scalars.quantity(got).filter(|q| q.synthesized) {
+                let shown = self.scalars.quantity_display(&q);
+                let base = self.scalars.base_display(&q);
+                self.unit_error(Diag::ty(
+                    value.span(),
+                    format!(
+                        "a value of `{shown}` meets a place whose type is not known here, so it has nothing to be \
+                         converted into: convert it first (`{base}(…)`)"
+                    ),
+                ));
+                return true;
+            }
+        }
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
         }
@@ -12429,6 +12377,10 @@ impl<'a> Checker<'a> {
                 }
                 return all;
             }
+        }
+        // GH #1076 (U3): a quantity or a point on either side.
+        if let Some(handled) = self.quantity_flow(want, got, value) {
+            return handled;
         }
         if let Some(v) = crate::unit_values::int_literal(value) {
             if matches!(got, Ty::Prim(PrimType::Int)) {
@@ -12446,15 +12398,13 @@ impl<'a> Checker<'a> {
             // A row, so every place a value changes type is one; lowering
             // emits nothing for it.
             if self.specializing.is_none() {
-                let row = crate::typed_bodies::ConversionRow {
-                    span: value.span(),
-                    from: got.clone(),
-                    to: want.clone(),
-                    kind: crate::typed_bodies::ConversionKind::Widening,
-                    range: None,
-                    policy: None,
-                    target: want.display(),
-                };
+                let row = crate::typed_bodies::ConversionRow::new(
+                    value.span(),
+                    got.clone(),
+                    want.clone(),
+                    crate::typed_bodies::ConversionKind::Widening,
+                    want.display(),
+                );
                 self.typed.conversion(self.body, crate::typed_bodies::ConversionSite::value(value.span()), row);
             }
             return true;
@@ -12466,6 +12416,209 @@ impl<'a> Checker<'a> {
             }
             None => false,
         }
+    }
+
+    /// GH #1076 (U3): an error of the quantity rules, remembered by place
+    /// and message so a struct default's discarded walk keeps it.
+    fn unit_error(&mut self, d: Diag) {
+        self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+        self.diags.push(d);
+    }
+
+    /// GH #1076 (U3): a value of `got` (the expression `value`) into a
+    /// place of `want`, either of them a quantity or a point. Two types of
+    /// one component and kind (two points of one origin) convert by the
+    /// row recorded at the value: a widening, or a narrowing the target's
+    /// `round:` discharges (with none, the `bare_fallible` law refuses
+    /// it). A literal zero is a value of every quantity. Anything else is
+    /// refused here, naming both. `None` when neither is a quantity or a
+    /// point.
+    fn quantity_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
+        use crate::unit_quantities::QKind;
+        let (wq, gq) = (self.scalars.quantity(want), self.scalars.quantity(got));
+        if wq.is_none() && gq.is_none() {
+            return None;
+        }
+        let (w_name, g_name) = (self.scalars.type_display(want), self.scalars.type_display(got));
+        let refusal = match (&wq, &gq) {
+            (Some(w), Some(g)) if w.component != g.component => Some(format!(
+                "`{g_name}` is not `{w_name}`: different quantities, `{}` and `{}`; no conversion holds between them",
+                self.scalars.base_display(g),
+                self.scalars.base_display(w)
+            )),
+            (Some(w), Some(_)) if w.kind == QKind::Point && gq.as_ref().is_some_and(|g| g.kind == QKind::Quantity) => {
+                Some(format!(
+                    "`{g_name}` is a quantity and `{w_name}` a point: `{}(…)` is the point that far from its origin",
+                    self.scalars.base_display(w)
+                ))
+            }
+            (Some(_), Some(g)) if g.kind == QKind::Point && wq.as_ref().is_some_and(|w| w.kind == QKind::Quantity) => {
+                Some(format!(
+                    "`{g_name}` is a point and `{w_name}` a quantity: the quantity between two points is their \
+                     difference (`p - q`)"
+                ))
+            }
+            (Some(w), Some(g)) if w.kind == QKind::Point && w.base != g.base => Some(format!(
+                "`{g_name}` and `{w_name}` are points of different origins: convert explicitly, `{}(…)`",
+                self.scalars.base_display(w)
+            )),
+            (Some(_), Some(_)) => None,
+            (Some(w), None) => {
+                if w.kind == QKind::Quantity && crate::unit_values::int_literal(value) == Some(0) {
+                    return Some(true);
+                }
+                Some(match got {
+                    Ty::Prim(PrimType::Int) => format!(
+                        "`Int` is not `{w_name}`: a count becomes a quantity by a unit (`n * 1{}`)",
+                        self.scalars.unit_hint(w)
+                    ),
+                    _ => return None,
+                })
+            }
+            (None, Some(g)) => Some(match want {
+                Ty::Prim(PrimType::Int) => format!(
+                    "`{g_name}` is not an `Int`: a quantity's count in a unit is a quotient (`q / 1{}`)",
+                    self.scalars.unit_hint(g)
+                ),
+                _ => return None,
+            }),
+            (None, None) => None,
+        };
+        if let Some(message) = refusal {
+            let mut d = Diag::ty(value.span(), message);
+            for (span, label) in self.scalars.notes(&[wq.as_ref(), gq.as_ref()]) {
+                d = d.with_related(span, label);
+            }
+            self.unit_error(d);
+            return Some(true);
+        }
+        let (w, g) = (wq?, gq?);
+        match self.scalars.scale(&g, &w) {
+            Ok(scale) => self.record_scale(value, got, want, scale, w.policy),
+            Err(why) => self.unit_error(Diag::ty(value.span(), why)),
+        }
+        Some(true)
+    }
+
+    /// GH #1076 (U3): the conversion of `value`, of `from`, into `to` by
+    /// `scale`, recorded as the row at the value: a widening, or a
+    /// narrowing `policy` (the target's `round:`) discharges or nothing
+    /// does. A quantity literal's row is its own: its count, converted
+    /// here, is the constant lowering emits.
+    fn record_scale(
+        &mut self,
+        value: &Expr,
+        from: &Ty,
+        to: &Ty,
+        scale: crate::typed_bodies::Scale,
+        policy: Option<crate::units::RoundPolicy>,
+    ) {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+        if self.specializing.is_some() {
+            return;
+        }
+        let narrows = !scale.factor.is_integral();
+        let kind = if narrows { ConversionKind::Narrowing } else { ConversionKind::Widening };
+        let mut row = ConversionRow::new(value.span(), from.clone(), to.clone(), kind, self.scalars.type_display(to));
+        if narrows {
+            row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
+        }
+        let site = ConversionSite::value(value.span());
+        if let Expr::Literal(Literal::Quantity { value: n, unit }, span) = value {
+            // A literal's conversion is computed here: a whole number of
+            // the target is exact, whatever the factor.
+            if narrows && crate::unit_quantities::convert_count(*n, &scale, None).is_some() {
+                row.kind = ConversionKind::Widening;
+                row.policy = None;
+            }
+            match crate::unit_quantities::convert_count(*n, &scale, policy) {
+                Some(Ok(count)) => row.count = Some(count),
+                Some(Err(())) => self.unit_error(Diag::ty(
+                    *span,
+                    format!("`{n}{unit}` as a count of `{}` overflows an `Int`", row.target),
+                )),
+                None => {}
+            }
+            row.scale = Some(scale);
+            self.typed.reconversion(self.body, site, row);
+            return;
+        }
+        row.scale = Some(scale);
+        self.typed.conversion(self.body, site, row);
+    }
+
+    /// GH #1076 (U3): a quantity literal: its component's quantity at its
+    /// own unit, with its own row (its count, before it flows anywhere).
+    fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Scale};
+        match self.scalars.literal_type(n, unit) {
+            Err(why) => {
+                self.unit_error(Diag::ty(span, why));
+                Ty::Unknown
+            }
+            Ok(Ty::Unknown) => Ty::Unknown,
+            Ok(t) => {
+                if self.specializing.is_none() {
+                    let mut row = ConversionRow::new(span, t.clone(), t.clone(), ConversionKind::Widening, self.scalars.type_display(&t));
+                    row.scale = Some(Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 });
+                    row.count = Some(n);
+                    self.typed.conversion(self.body, ConversionSite::value(span), row);
+                }
+                t
+            }
+        }
+    }
+
+    /// GH #1076 (U3): `T(x)`, `T` a quantity or a point: the conversion of
+    /// `x` into `T`, its row at the call (a narrowing `T`'s `round:`
+    /// discharges, or the `or` after the call), or refused.
+    fn quantity_cast(&mut self, call: NodeId, span: Span, to: Ty, q: crate::unit_quantities::QType, arg: &Expr) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+        let from = self.check_expr(arg);
+        if matches!(from, Ty::Unknown) {
+            return to;
+        }
+        match self.scalars.quantity_cast(&q, &from) {
+            Err(why) => {
+                let mut d = Diag::ty(span, why);
+                let fq = self.scalars.quantity(&from);
+                for (at, label) in self.scalars.notes(&[Some(&q), fq.as_ref()]) {
+                    d = d.with_related(at, label);
+                }
+                self.unit_error(d);
+                // A refused cast's value has no type to hold elsewhere.
+                return Ty::Unknown;
+            }
+            Ok(scale) => {
+                // A literal's cast is the literal flowing into `T`, at
+                // compile time, when its count is a whole number of `T` or
+                // `T` rounds it: the cast itself then changes nothing.
+                if let Expr::Literal(Literal::Quantity { value: n, .. }, _) = arg {
+                    if crate::unit_quantities::convert_count(*n, &scale, q.policy).is_some() {
+                        self.record_scale(arg, &from, &to, scale, q.policy);
+                        let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
+                        if self.specializing.is_none() {
+                            let mut row =
+                                ConversionRow::new(span, to.clone(), to.clone(), ConversionKind::Widening, self.scalars.type_display(&to));
+                            row.scale = Some(one);
+                            self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                        }
+                        return to;
+                    }
+                }
+                if self.specializing.is_none() {
+                    let narrows = !scale.factor.is_integral();
+                    let kind = if narrows { ConversionKind::Narrowing } else { ConversionKind::Widening };
+                    let mut row = ConversionRow::new(span, from, to.clone(), kind, self.scalars.type_display(&to));
+                    if narrows {
+                        row.policy = q.policy.map(|policy| Discharge::Round { policy, from_type: true });
+                    }
+                    row.scale = Some(scale);
+                    self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
+                }
+            }
+        }
+        to
     }
 
     /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
@@ -12487,6 +12640,19 @@ impl<'a> Checker<'a> {
             }
             let mark = self.walk_mark();
             let from = self.check_expr(&args[0]);
+            // GH #1076 (U3): a quantity's count is a quotient by a unit.
+            if let Some(q) = self.scalars.quantity(&from) {
+                self.unit_error(Diag::ty(
+                    span,
+                    format!(
+                        "`Int(…)` of `{}`: a quantity's count in a unit is a quotient (`q / 1{}`), a point's the \
+                         quantity from an origin's",
+                        self.scalars.quantity_display(&q),
+                        self.scalars.unit_hint(&q)
+                    ),
+                ));
+                return Some(Ty::Prim(PrimType::Int));
+            }
             if self.scalars.index(&from).is_none() {
                 self.discard_since(mark);
                 return None;
@@ -12494,6 +12660,21 @@ impl<'a> Checker<'a> {
             return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
         } else {
             let t = Ty::Named(callee.name.clone());
+            // GH #1076 (U3): a quantity's or a point's cast.
+            if let Some(q) = self.scalars.quantity(&t).filter(|q| !q.synthesized) {
+                if args.len() != 1 {
+                    for a in args {
+                        let _ = self.check_expr(a);
+                    }
+                    let name = self.scalars.quantity_display(&q);
+                    self.unit_error(Diag::ty(
+                        span,
+                        format!("`{name}(…)` converts one value into `{name}`; it is given {}", args.len()),
+                    ));
+                    return Some(t);
+                }
+                return Some(self.quantity_cast(call, span, t, q, &args[0]));
+            }
             let i = self.scalars.index(&t)?;
             if args.len() != 1 {
                 for a in args {
@@ -12530,8 +12711,8 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 if self.specializing.is_none() {
-                    let row =
-                        ConversionRow { span, from, to: to.clone(), kind, range, policy: None, target: target.to_string() };
+                    let mut row = ConversionRow::new(span, from, to.clone(), kind, target.to_string());
+                    row.range = range;
                     self.typed.conversion(self.body, ConversionSite::Cast(call.0), row);
                 }
             }
@@ -12548,63 +12729,51 @@ impl<'a> Checker<'a> {
         (row.kind == crate::typed_bodies::ConversionKind::Narrowing).then_some(site)
     }
 
-    /// GH #1076: the not-yet boundary's error, once per place however
-    /// often a declaration's walk reaches it (a generic body is walked
-    /// again per specialization; an annotation's arguments by both walks).
-    fn refuse_unit_value(&mut self, span: Span, what: String) {
-        if let std::collections::btree_map::Entry::Vacant(at) =
-            self.unit_values_refused.entry((span.start.as_usize(), span.end.as_usize()))
-        {
-            let diag = crate::units::value_not_yet(span, &what);
-            at.insert(diag.message.clone());
-            self.diags.push(diag);
-        }
-    }
-
-    /// Whether `d` is the not-yet boundary's error at its place.
-    fn is_unit_value_refusal(&self, d: &Diag) -> bool {
-        self.unit_values_refused.get(&(d.span.start.as_usize(), d.span.end.as_usize())) == Some(&d.message)
-    }
-
-    /// GH #1076: a call through `name` is a cast to a unit-dialect type
-    /// only when the name means the declaration: a local, a parameter or
-    /// a fn of the name is what the name means, as for any other name.
-    fn refuse_unit_cast(&mut self, name: &Ident) {
-        let Some(display) = self.unit_types.get(name.name.as_str()).copied() else { return };
-        if self.casts_judged_at_literals {
-            return;
-        }
-        if self.locals.lookup(&name.name).is_none() && !self.fn_decls.contains_key(&name.name) {
-            self.refuse_unit_value(name.span, format!("type `{display}`"));
-        }
-    }
-
     /// GH #1076: a struct field's default is evaluated at each literal
     /// that leaves the field, in the literal's scope (lowering emits it
     /// there), so it is typed there, as a parameter's default is at each
     /// call that leaves it (`record_omitted_defaults`): the scopes it
     /// opens, the parameter defaults its calls leave and the field
     /// defaults its own literals leave are all walked where they are
-    /// evaluated. The walk is discarded but for two things: the not-yet
-    /// boundary's errors (`discard_since`), and the conversion rows of
-    /// its casts, which lowering reads where it evaluates the default and
-    /// which are kept in the constructing declaration's body, one per
-    /// cast however many literals leave the field (the first's). A
-    /// default no literal leaves is never evaluated. Its quantity
-    /// literals are refused at the declaration too, which they are in any
-    /// scope.
+    /// evaluated. The walk is discarded but for the conversion rows it
+    /// records (its casts', its quantity literals', the default's own
+    /// into the field's type, U3), which lowering reads where it evaluates
+    /// the default and which are kept in the constructing declaration's
+    /// body, one per site however many literals leave the field (the
+    /// first's), and for the errors a quantity's conversion into the
+    /// field's type finds, which no other walk would. A default no
+    /// literal leaves is never evaluated.
     fn type_omitted_defaults(&mut self, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Without a scalar type of any kind the boundary refuses nothing
-        // here a declaration did not, and no cast has a row to keep.
-        if self.unit_types.is_empty() && self.scalars.is_empty() {
+        // Without a scalar type of any kind no cast has a row to keep, and
+        // without a quantity literal no literal has an error to find.
+        let quantity_literal = || {
+            let mut found = false;
+            let mut walk = crate::lowering_laws::literals(|e: &Expr, _| {
+                found |= matches!(e, Expr::Literal(Literal::Quantity { .. }, _));
+            });
+            for f in fields {
+                if let Some(d) = &f.default {
+                    walk.expr(d);
+                }
+            }
+            drop(walk);
+            found
+        };
+        if self.scalars.is_empty() && !quantity_literal() {
             return;
         }
-        let omitted: Vec<&'a Expr> = fields
+        let field_tys: BTreeMap<String, Ty> = match self.top.lookup(&decl.name.name) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
+                infos.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+            }
+            _ => BTreeMap::new(),
+        };
+        let omitted: Vec<(&'a Expr, Option<Ty>)> = fields
             .iter()
             .filter(|f| !inits.iter().any(|i| i.name.name == f.name.name))
-            .filter_map(|f| f.default.as_ref())
-            .filter(|d| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
+            .filter_map(|f| Some((f.default.as_ref()?, field_tys.get(f.name.name.as_str()).cloned())))
+            .filter(|(d, _)| !self.struct_defaults_typing.contains(&(*d as *const Expr)))
             .collect();
         if omitted.is_empty() {
             return;
@@ -12620,13 +12789,20 @@ impl<'a> Checker<'a> {
         let mark = self.walk_mark();
         let generics = self.generic_params.len();
         self.generic_params.extend(decl.generics.iter().map(|g| g.name.name.clone()));
-        for default in omitted {
+        for (default, want) in omitted {
             self.struct_defaults_typing.push(default);
-            let _ = self.check_expr(default);
+            let got = self.check_expr(default);
+            // GH #1076 (U3): a quantity's default converts into its
+            // field's type, as a value does wherever it flows.
+            if let Some(want) = want.filter(|w| self.scalars.quantity(w).is_some() || self.scalars.quantity(&got).is_some()) {
+                if !want.assignable_from(&got) {
+                    let _ = self.quantity_flow(&want, &got, default);
+                }
+            }
             self.struct_defaults_typing.pop();
         }
         self.generic_params.truncate(generics);
-        self.discard_since(mark);
+        self.discard_keeping_unit_errors(mark);
         if let Some((typed, closed, seen)) = saved {
             // The conversions the walk recorded that the record did not
             // hold yet (a cast an earlier literal's walk recorded keeps
@@ -12678,7 +12854,6 @@ impl<'a> Checker<'a> {
         if self.specializing.is_some() {
             self.record_specialized_type(te);
         }
-        self.refuse_unit_types(te);
         // GH #911 B3 (#907): the generic-argument vocabulary is a
         // property of the type expression, not of how much of the
         // program this bundle holds, so it is decided before the
@@ -13267,20 +13442,54 @@ impl<'a> Checker<'a> {
         if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
             self.typed.omitted_args(invocation, decl.id, supplied);
         }
-        let defaults: Vec<&Expr> = decl.params.iter().skip(supplied)
-            .filter_map(|p| p.default.as_ref()).collect();
+        let defaults: Vec<(&Expr, &TypeExpr)> = decl.params.iter().skip(supplied)
+            .filter_map(|p| Some((p.default.as_ref()?, &p.ty))).collect();
         if defaults.is_empty() {
             return;
         }
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
-        for default in defaults {
-            let _ = self.check_expr(default);
+        for (default, te) in defaults {
+            let got = self.check_expr(default);
+            // GH #1076 (U3): a quantity's default converts into its
+            // parameter's type, as a value does wherever it flows.
+            if self.scalars.has_quantities() {
+                let want = crate::resolve::resolve_type_expr(te, self.known);
+                if (self.scalars.quantity(&want).is_some() || self.scalars.quantity(&got).is_some())
+                    && !want.assignable_from(&got)
+                {
+                    let _ = self.quantity_flow(&want, &got, default);
+                }
+            }
         }
         self.default_invocations.pop();
         // Preserve the existing default-diagnostic surface. Located
-        // holes remain facts and are refused by the row consumer.
+        // holes remain facts and are refused by the row consumer. The
+        // quantity rules' errors stay: no other walk types a default.
+        self.discard_keeping_unit_errors(mark);
+    }
+
+    /// GH #1076 (U3): [`Self::discard_since`], keeping the quantity rules'
+    /// errors the walk found (`unit_error`), each once.
+    fn discard_keeping_unit_errors(&mut self, mark: WalkMark) {
+        if self.defaults_judged_at_literals {
+            self.discard_since(mark);
+            return;
+        }
+        let kept: Vec<Diag> = self.diags[mark.diags..]
+            .iter()
+            .filter(|d| {
+                self.unit_findings.contains(&(d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()))
+            })
+            .cloned()
+            .collect();
         self.discard_since(mark);
+        for d in kept {
+            let start = self.decl_diags_start.min(self.diags.len());
+            if !self.diags[start..].iter().any(|seen| seen.span == d.span && seen.message == d.message) {
+                self.diags.push(d);
+            }
+        }
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -13339,8 +13548,10 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                // GH #1076 (U3): a quantity literal is its component's
+                // quantity at its own unit.
                 if let Literal::Quantity { value, unit } = lit {
-                    self.refuse_unit_value(*span, format!("quantity literal `{value}{unit}`"));
+                    return self.quantity_literal(*value, unit, *span);
                 }
                 lit_ty(lit)
             }
@@ -13423,12 +13634,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => {
                 self.record_omitted_defaults(*call_id, callee, args.len());
-                // GH #1076: `Money(5)` makes a value of a quantity or a
-                // point, which is not typed yet.
                 if let Expr::Ident(id) = callee.as_ref() {
-                    self.refuse_unit_cast(id);
-                    // GH #1076 (U2): `Session(n)`, `OrderId(n)`, `Int(id)`:
-                    // a conversion, classified and recorded.
+                    // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
+                    // `Int(id)`, `Bucket(d)`: a conversion, classified and
+                    // recorded.
                     if let Some(t) = self.scalar_cast(*call_id, *call_span, id, args) {
                         return t;
                     }
@@ -14020,6 +14229,24 @@ impl<'a> Checker<'a> {
                                 Typed::Known(GenericCall { template: template.id, type_args, params })
                             }
                         };
+                        // GH #1076 (U3): a monomorph is named by its type
+                        // arguments, and a synthesized denomination has no
+                        // declaration to name it by.
+                        if let crate::typed_bodies::Typed::Known(call) = &row {
+                            let synthesized =
+                                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
+                            if let Some(t) = synthesized {
+                                let shown = self.scalars.type_display(t);
+                                self.unit_error(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
+                                         argument is a declared type: bind the value to one first (`let x: T = …`)",
+                                        id.name
+                                    ),
+                                ));
+                            }
+                        }
                         if let crate::typed_bodies::Typed::Known(call) = &row {
                             let tokens: Option<Vec<String>> =
                                 call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();

@@ -4,8 +4,9 @@
 //! `derive_unit_rows` makes one row per `unit` and scalar `type`
 //! declaration and closes the catalogue from the equations; each law of
 //! `unit_laws` is pinned here by its message, the source text at its
-//! span, and its witness. Values of the new types are not typed yet: a
-//! use of one where a value would live is one located error.
+//! span, and its witness. Values of the new types are typed (U2, U3:
+//! `unit_values.rs`, `unit_quantities.rs`); what remains here is where a
+//! value of one may live, and what a cast's name means in a default.
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_syntax::{parse_source, Diag, DiagKind};
@@ -552,82 +553,67 @@ fn units_written_against_a_number_share_one_component() {
     assert_eq!(witness(src, d), [("Ratio", "`Ratio` is that component's quantity, declared with no policy".to_string())]);
 }
 
-// The boundary of this step: a value of a new type is not typed yet.
+// Where a value of a new type lives (U3 deleted the not-yet boundary).
 
+/// Every place U1's boundary refused a quantity (a field, an alias's
+/// target, a parameter, a return, a generic argument, a binding, a
+/// literal, a cast) now holds one: the program checks clean.
 #[test]
-fn a_value_of_a_unit_type_is_one_located_error_per_use() {
+fn a_quantity_is_a_value_wherever_a_value_lives() {
     let src = "unit cent;\n\
                type Money = quantity Int in cent;\n\
                type Order { total: Money; }\n\
                type Wallet = Money;\n\
                type Pair<T> { a: T; b: T; }\n\
-               topic Paid {\n    payload: Money;\n    subject: \"paid\";\n}\n\
+               topic Paid {\n    payload: Order;\n    subject: \"paid\";\n}\n\
                fn pay(m: Money) -> Money {\n    return m;\n}\n\
                fn both(p: Pair<Money>) {\n}\n\
-               fn main() {\n    let x: Money = pay(1);\n    let f = 3cent;\n    let m = Money(5);\n    println(1);\n}\n";
-    let all = diags(src);
-    let tail = ": values of the unit dialect's types are not typed yet (GH #1076): declarations are checked, and \
-                values arrive with the next step; until then, count in `Int`";
-    let found: Vec<(&str, String)> =
-        all.iter().filter(|d| d.message.ends_with(tail)).map(|d| (at(src, d.span), d.message.replace(tail, ""))).collect();
-    // Each use once, in walk order: the field, the alias's target, the
-    // topic's payload, the parameter, the return, the generic argument,
-    // the `let`, the literal, the cast.
-    let money = || ("Money", "type `Money`".to_string());
-    assert_eq!(
-        found,
-        [
-            money(),
-            money(),
-            money(),
-            money(),
-            money(),
-            money(),
-            money(),
-            ("3cent", "quantity literal `3cent`".to_string()),
-            money(),
-        ]
-    );
-    let other: Vec<&String> = all.iter().filter(|d| d.is_error() && !d.message.ends_with(tail)).map(|d| &d.message).collect();
-    assert!(other.is_empty(), "the boundary is the only error: {other:#?}");
+               fn main() {\n    let x: Money = pay(1cent);\n    let f = 3cent;\n    let m = Money(f);\n    \
+               let w: Wallet = m;\n    let o = Order { total: x + w };\n    println(o.total);\n}\n";
+    let errors: Vec<String> = diags(src).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "checks clean: {errors:#?}");
 }
 
-/// A parameter's default is typed at each invocation that leaves it, in a
-/// walk whose findings the check discards, and a field's default is not
-/// typed at all; a unit value in either still meets the boundary, at its
-/// place, or lowering gets it. An identity has values, so its cast in a
-/// default is a conversion like any other.
+/// A parameter's default is typed at its declaration, a struct field's
+/// at each literal that leaves it, in a walk whose findings the check
+/// discards but for the quantity rules' own: a quantity literal of a unit
+/// with no quantity, and a quantity's cast of an `Int`, are each one
+/// error at their place. A literal into its field's quantity converts.
 #[test]
-fn a_unit_value_in_a_default_is_refused_where_it_is_written() {
+fn a_quantity_value_in_a_default_is_judged_where_it_is_written() {
+    let no_quantity = "`3cent`: the units of `cent` have no quantity: declare one (`type T = quantity Int in cent;`)";
     let cases = [
-        ("unit cent;\nfn take(n: Int = 3cent) {\n    println(n);\n}\nfn main() {\n    take();\n}\n", "3cent"),
-        ("unit cent;\ntype S { n: Int = 3cent; }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n", "3cent"),
+        ("unit cent;\nfn take(n: Int = 3cent) {\n    println(n);\n}\nfn main() {\n    take();\n}\n", "3cent", no_quantity),
+        ("unit cent;\ntype S { n: Int = 3cent; }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n", "3cent", no_quantity),
         (
             "unit cent;\ntype Money = quantity Int in cent;\ntype S { n: Int = Money(1); }\n\
              fn main() {\n    let s = S {};\n    println(s.n);\n}\n",
-            "Money",
+            "Money(1)",
+            "`Money(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1cent`)",
         ),
     ];
-    let identity = "type ItemId = distinct Int;\ntype S { n: ItemId = ItemId(1); }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n";
-    let errors: Vec<String> = diags(identity).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
-    assert!(errors.is_empty(), "an identity's cast is a conversion: {errors:#?}");
-    for (src, place) in cases {
+    for src in [
+        "type ItemId = distinct Int;\ntype S { n: ItemId = ItemId(1); }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n",
+        "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\ntype S { n: Money = 3USD; }\n\
+         fn main() {\n    let s = S {};\n    println(s.n);\n}\n",
+    ] {
+        let errors: Vec<String> = diags(src).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+        assert!(errors.is_empty(), "a conversion: {errors:#?}\n{src}");
+    }
+    for (src, place, message) in cases {
         let all = diags(src);
         let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
         assert_eq!(errors.len(), 1, "one error: {:#?}\n{src}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
         assert_eq!(at(src, errors[0].span), place, "{src}");
-        assert!(
-            errors[0].message.contains(": values of the unit dialect's types are not typed yet (GH #1076)"),
-            "the boundary's error: {}",
-            errors[0].message
-        );
+        assert_eq!(errors[0].message, message);
     }
 }
 
-/// The cast is refused when the callee is the declaration. A local, a
+/// What a cast is when the callee is the declaration: `Money(1)` of an
+/// `Int` is refused, a count becoming a quantity by a unit. A local, a
 /// parameter or a fn of the name is what the name means at the call, as
 /// it is for every other name, and an alias is not a unit-dialect type.
-/// An identity has values, so its cast is a conversion.
+/// An identity's cast of an `Int` is a conversion.
 #[test]
 fn a_call_through_a_name_that_shadows_a_unit_type_is_no_cast() {
     let prelude = "unit cent;\ntype Money = quantity Int in cent;\nfn id(n: Int) -> Int {\n    return n;\n}\n";
@@ -646,8 +632,8 @@ fn a_call_through_a_name_that_shadows_a_unit_type_is_no_cast() {
     let all = diags(&cast);
     let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "one error: {:#?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
-    assert_eq!(at(&cast, errors[0].span), "Money");
-    assert!(errors[0].message.starts_with("type `Money`: values of the unit dialect's types are not typed yet"));
+    assert_eq!(at(&cast, errors[0].span), "Money(1)");
+    assert_eq!(errors[0].message, CAST_OF_AN_INT);
     for (ty, what) in [("Int", "an alias is no unit-dialect type"), ("distinct Int", "an identity's cast is a conversion")] {
         let other = cast.replace("quantity Int in cent", ty);
         let errors: Vec<String> = diags(&other).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
@@ -655,12 +641,15 @@ fn a_call_through_a_name_that_shadows_a_unit_type_is_no_cast() {
     }
 }
 
+/// The refusal of `Money(1)`, a quantity's cast of an `Int`.
+const CAST_OF_AN_INT: &str = "`Money(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1cent`)";
+
 /// A struct field's default is evaluated at each literal that leaves the
 /// field, in the literal's scope, so what a cast's name in it means is
 /// that scope's: a local or a parameter of the constructing fn is the
-/// callee. With nothing shadowing it, the cast is the boundary's one
-/// error at the default, however many literals leave the field; a default
-/// no literal leaves is never evaluated.
+/// callee. With nothing shadowing it, the cast is one error at the
+/// default, however many literals leave the field; a default no literal
+/// leaves is never evaluated.
 #[test]
 fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
     let prelude =
@@ -681,28 +670,25 @@ fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
     let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
     assert_eq!(errors.len(), 1, "one error: {:#?}", errors.iter().map(|d| &d.message).collect::<Vec<_>>());
     let default = unshadowed.find("Money(1)").expect("the default");
-    assert_eq!(errors[0].span.start.as_usize(), default, "at the default's `Money`");
-    assert_eq!(at(&unshadowed, errors[0].span), "Money");
-    assert!(errors[0].message.starts_with("type `Money`: values of the unit dialect's types are not typed yet"));
+    assert_eq!(errors[0].span.start.as_usize(), default, "at the default's `Money(1)`");
+    assert_eq!(at(&unshadowed, errors[0].span), "Money(1)");
+    assert_eq!(errors[0].message, CAST_OF_AN_INT);
     let written = format!("{prelude}fn main() {{\n    let s = S {{ n: 2 }};\n    println(s.n);\n}}\n");
     let errors: Vec<String> = diags(&written).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
     assert!(errors.is_empty(), "a default no literal leaves is never evaluated: {errors:#?}");
     let alias = unshadowed.replace("quantity Int in cent", "Int");
-    let boundary: Vec<String> =
-        diags(&alias).into_iter().filter(|d| d.message.contains("not typed yet")).map(|d| d.message).collect();
-    assert!(boundary.is_empty(), "an alias is no unit-dialect type: {boundary:#?}");
+    let errors: Vec<String> = diags(&alias).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "an alias is no unit-dialect type: {errors:#?}");
 }
 
-/// The boundary's errors among `src`'s, with the source text at each, and
-/// every other error.
-fn boundary_and_rest(src: &str) -> (Vec<(usize, String)>, Vec<String>) {
+/// The casts of an `Int` refused among `src`'s errors, with the source
+/// position and text at each, and every other error.
+fn casts_and_rest(src: &str) -> (Vec<(usize, String)>, Vec<String>) {
     let all = diags(src);
-    let (boundary, rest): (Vec<&Diag>, Vec<&Diag>) = all
-        .iter()
-        .filter(|d| d.is_error())
-        .partition(|d| d.message.contains(": values of the unit dialect's types are not typed yet (GH #1076)"));
+    let (casts, rest): (Vec<&Diag>, Vec<&Diag>) =
+        all.iter().filter(|d| d.is_error()).partition(|d| d.message == CAST_OF_AN_INT);
     (
-        boundary.iter().map(|d| (d.span.start.as_usize(), at(src, d.span).to_string())).collect(),
+        casts.iter().map(|d| (d.span.start.as_usize(), at(src, d.span).to_string())).collect(),
         rest.iter().map(|d| d.message.clone()).collect(),
     )
 }
@@ -729,22 +715,30 @@ fn an_omitted_struct_default_is_typed_where_it_is_evaluated() {
     ];
     for body in clean {
         let src = format!("{prelude}{body}");
-        let (boundary, rest) = boundary_and_rest(&src);
-        assert!(boundary.is_empty() && rest.is_empty(), "checks clean: {boundary:?} {rest:#?}\n{src}");
+        let (casts, rest) = casts_and_rest(&src);
+        assert!(casts.is_empty() && rest.is_empty(), "checks clean: {casts:?} {rest:#?}\n{src}");
     }
     let refused = [
-        "fn take(n: Int = Money(1)) -> Int {\n    return n;\n}\ntype S { n: Int = take(); }\n\
-         fn main() {\n    let s = S {};\n    println(s.n);\n}\n",
         "type Inner { n: Int = Money(1); }\ntype Outer { inner: Inner = Inner {}; }\n\
          fn main() {\n    let o = Outer {};\n    println(o.inner.n);\n}\n",
     ];
     for body in refused {
         let src = format!("{prelude}{body}");
-        let (boundary, rest) = boundary_and_rest(&src);
+        let (casts, rest) = casts_and_rest(&src);
         let place = src.find("Money(1)").expect("the cast");
-        assert_eq!(boundary, [(place, "Money".to_string())], "one error, at the cast\n{src}");
-        assert!(rest.is_empty(), "the boundary is the only error: {rest:#?}\n{src}");
+        assert_eq!(casts, [(place, "Money(1)".to_string())], "one error, at the cast\n{src}");
+        assert!(rest.is_empty(), "the cast is the only error: {rest:#?}\n{src}");
     }
+    // A parameter's default is typed at its declaration, where the name
+    // is the declaration: one error there, whoever leaves it.
+    let through_fn = format!(
+        "{prelude}fn take(n: Int = Money(1)) -> Int {{\n    return n;\n}}\ntype S {{ n: Int = take(); }}\n\
+         fn main() {{\n    let s = S {{}};\n    println(s.n);\n}}\n"
+    );
+    let (casts, rest) = casts_and_rest(&through_fn);
+    let place = through_fn.find("Money(1)").expect("the cast");
+    assert_eq!(casts, [(place, "Money(1)".to_string())], "one error, at the cast\n{through_fn}");
+    assert!(rest.is_empty(), "the cast is the only error: {rest:#?}");
 }
 
 /// A default whose own literal leaves the same field stops at that field:
@@ -753,9 +747,9 @@ fn an_omitted_struct_default_is_typed_where_it_is_evaluated() {
 fn a_self_referential_default_chain_is_entered_once() {
     let src = "unit cent;\ntype Money = quantity Int in cent;\ntype T { n: Int = Money(1); t: T = T {}; }\n\
                fn main() {\n    let x = T {};\n    println(x.n);\n}\n";
-    let (boundary, _) = boundary_and_rest(src);
+    let (casts, _) = casts_and_rest(src);
     let place = src.find("Money(1)").expect("the cast");
-    assert_eq!(boundary, [(place, "Money".to_string())]);
+    assert_eq!(casts, [(place, "Money(1)".to_string())]);
 }
 
 /// The rows are one cell of the snapshot, derived once however often the

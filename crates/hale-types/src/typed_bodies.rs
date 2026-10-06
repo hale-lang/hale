@@ -53,7 +53,12 @@
 //!    widening, narrowing), the range a narrowing checks against and what
 //!    discharges it. Lowering reads a cast's row (`lower_conversion`) and
 //!    decides nothing; the `bare_fallible` law refuses a narrowing nothing
-//!    discharges.
+//!    discharges. U3 adds a quantity's and a point's: every place a value
+//!    of one denomination meets another (an argument, a binding, a return,
+//!    an operand, `.in(u)`, `.split(u)`, a cast, a division by a literal)
+//!    with its exact factor ([`Scale`]) and its policy, each quantity
+//!    literal with its count converted at compile time, and each printed
+//!    quantity with its unit.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -265,6 +270,10 @@ pub enum Discharge {
     Fail,
     /// `or discard`, which the check refuses on a value.
     Discard,
+    /// GH #1076 (U3): a rounding of a ratio narrowing (`or floor`, …),
+    /// total: written after the `or` at the site, or the target type's
+    /// `round:` policy (`from_type`), which needs no `or`.
+    Round { policy: crate::units::RoundPolicy, from_type: bool },
 }
 
 impl Discharge {
@@ -278,23 +287,56 @@ impl Discharge {
             Discharge::Raise => "or raise",
             Discharge::Fail => "or fail",
             Discharge::Discard => "or discard",
+            Discharge::Round { policy, .. } => match policy {
+                crate::units::RoundPolicy::Floor => "or floor",
+                crate::units::RoundPolicy::Ceil => "or ceil",
+                crate::units::RoundPolicy::Trunc => "or trunc",
+                crate::units::RoundPolicy::HalfEven => "or half_even",
+                crate::units::RoundPolicy::HalfUp => "or half_up",
+            },
         }
     }
 }
 
-/// Where a conversion is: a cast `T(x)` by its call site, the site
-/// lowering reads it at; an implicit widening by the span of the value
-/// that widens.
+/// Where a conversion is: a cast `T(x)` (and a quantity's `.in(u)` and
+/// `.split(u)`) by its call site, the site lowering reads it at; an
+/// implicit conversion by the span of the value that converts (a quantity
+/// literal's own row is there too); a quantity divided by a literal by the
+/// division's span (U3); a printed quantity by the span of the value
+/// printed (U3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConversionSite {
     Cast(u32),
     Value { start: u32, end: u32 },
+    Divide { start: u32, end: u32 },
+    Printed { start: u32, end: u32 },
 }
 
 impl ConversionSite {
     pub fn value(span: Span) -> ConversionSite {
         ConversionSite::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
     }
+
+    pub fn divide(span: Span) -> ConversionSite {
+        ConversionSite::Divide { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
+    pub fn printed(span: Span) -> ConversionSite {
+        ConversionSite::Printed { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+}
+
+/// GH #1076 (U3): a change of denomination, exact: a count of the
+/// source becomes `(count × factor.numerator + offset) /
+/// factor.denominator` of the target. The denominator is one for a
+/// widening; above one, the row's policy says what becomes of the
+/// remainder. `offset` is a point's: the two origins' difference, in
+/// the numerator's terms (zero for a quantity and for two points of one
+/// origin).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scale {
+    pub factor: crate::unit_graph::Ratio,
+    pub offset: i64,
 }
 
 /// One conversion the checker classified: the `conversions` column.
@@ -314,6 +356,40 @@ pub struct ConversionRow {
     pub policy: Option<Discharge>,
     /// The target as the program spells it (`Session`, `Int`).
     pub target: String,
+    /// GH #1076 (U3): a quantity's or a point's change of denomination;
+    /// `None` for an identity's or a range's conversion, which changes
+    /// no count.
+    pub scale: Option<Scale>,
+    /// A quantity literal's count in the denomination it flows into,
+    /// converted (and, under the target's `round:`, rounded) by the
+    /// checker: lowering emits it as a constant.
+    pub count: Option<i64>,
+    /// `.split(u)`: the count of `u` in the widened denomination, the
+    /// divisor of the whole part.
+    pub split: Option<i64>,
+    /// A printed quantity's or point's unit, written after its count
+    /// (`ms`, ` Money in 1/10000 cent`).
+    pub printed: Option<String>,
+}
+
+impl ConversionRow {
+    /// A row of `kind` from `from` to `to`, at `span`, with nothing else
+    /// said.
+    pub fn new(span: Span, from: Ty, to: Ty, kind: ConversionKind, target: String) -> ConversionRow {
+        ConversionRow {
+            span,
+            from,
+            to,
+            kind,
+            range: None,
+            policy: None,
+            target,
+            scale: None,
+            count: None,
+            split: None,
+            printed: None,
+        }
+    }
 }
 
 /// A call that leaves trailing arguments to their defaults: the
@@ -613,6 +689,14 @@ impl TypingRecord {
         self.body(body).conversions.entry(site).or_insert(row);
     }
 
+    /// Record the conversion at `site` in place of what it held: a
+    /// quantity literal's row once the checker knows where the literal
+    /// flows (U3).
+    pub fn reconversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
+        self.conversion_sites.insert(site, body.0);
+        self.body(body).conversions.insert(site, row);
+    }
+
     /// Record what discharges the narrowing at `site` (its `or`).
     pub fn discharge(&mut self, site: ConversionSite, policy: Discharge) {
         let Some(body) = self.conversion_sites.get(&site).copied() else { return };
@@ -707,9 +791,18 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
+    /// Whether a row changes a denomination or prints a unit (U3): a
+    /// program with neither has no value row for lowering to look up.
+    scaled: bool,
 }
 
 impl TypedBodies {
+    /// Whether lowering has a value's row to look up at all (U3): a
+    /// quantity's or a point's conversion, or a printed unit.
+    pub fn has_quantity_rows(&self) -> bool {
+        self.scaled
+    }
+
     /// The `conversions` column's row at `site`: lowering reads a cast's
     /// by its call (`ConversionSite::Cast`); `None` for a call that is no
     /// conversion.
@@ -721,6 +814,11 @@ impl TypedBodies {
     /// Every conversion's row, body by body.
     pub fn conversions(&self) -> impl Iterator<Item = &ConversionRow> {
         self.bodies.values().flat_map(|b| b.conversions.values())
+    }
+
+    /// Every conversion's row with its site, body by body.
+    pub fn conversion_sites(&self) -> impl Iterator<Item = (ConversionSite, &ConversionRow)> {
+        self.bodies.values().flat_map(|b| b.conversions.iter().map(|(s, r)| (*s, r)))
     }
 
     /// The `omitted_args` column: what each call leaves to its defaults.
@@ -911,6 +1009,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
         conversion_sites: record.conversion_sites.clone(),
+        scaled: record.bodies.values().any(|b| b.conversions.values().any(|r| r.scale.is_some() || r.printed.is_some())),
     };
     let mut decls = Declared::default();
     for p in bundle.programs.values() {

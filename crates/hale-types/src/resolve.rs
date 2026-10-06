@@ -215,13 +215,12 @@ fn resolve_alias_targets(
     for it in stdlib_top_decls() {
         collect(std::slice::from_ref(it), &mut raw, &mut scalars);
     }
-    // GH #1076: an identity or a range is a nominal type (`register_type`
-    // registers it as `TypeKind::Scalar`), so its name resolves to itself.
-    // A quantity's or a point's values are not typed yet (U3), and a
-    // declaration the laws refuse has none: those names resolve to
-    // `Unknown` everywhere, as `register_type` registers them, so a use
-    // of one is the checker's one not-yet error, or no second error beside
-    // the laws', never a mismatch.
+    // GH #1076: an identity, a range, a quantity or a point is a nominal
+    // type (`register_type` registers it as `TypeKind::Scalar`), so its
+    // name resolves to itself. A declaration the laws refuse has none:
+    // those names resolve to `Unknown` everywhere, as `register_type`
+    // registers them, so a use of one is no second error beside the
+    // laws', never a mismatch.
     let typed = crate::units::typed_scalar_names(&scalars);
     for name in scalars.keys().filter(|n| !typed.contains(*n)) {
         known.set_alias(name.to_string(), Ty::Unknown);
@@ -1272,12 +1271,11 @@ fn register_type(
     let known = scoped.as_ref();
     let kind = match &decl.body {
         TypeDeclBody::Alias(te) => TypeKind::Alias(resolve_type_expr(te, known)),
-        // GH #1076: an identity or a range is a scalar type, represented
-        // as an `Int`. A quantity or a point (U3), or a declaration the
-        // laws refuse, is the alias of `Unknown` the alias pre-pass made
-        // it, so a use of the name is no second error: the unit laws judge
-        // the declaration, and the checker refuses a quantity or a point
-        // where a value would live (`units::value_not_yet`).
+        // GH #1076: an identity, a range, a quantity or a point is a
+        // scalar type, represented as an `Int`. A declaration the laws
+        // refuse is the alias of `Unknown` the alias pre-pass made it, so a
+        // use of the name is no second error: the unit laws judge the
+        // declaration.
         TypeDeclBody::Scalar(_) => match known.alias_target(&decl.name.name) {
             Some(t) => TypeKind::Alias(t.clone()),
             None => TypeKind::Scalar(TypeKind::scalar_representation()),

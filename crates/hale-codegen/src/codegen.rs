@@ -19001,6 +19001,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
+        let res = self.with_printed_unit(&args[0], res)?;
         Ok((res, Self::builtin_result(sig, &ty)))
     }
 
@@ -19880,6 +19881,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let close = self.global_string("]");
         self.str_concat(acc, close.into())
+    }
+
+    /// GH #1076 (U3): the text `s` of the value `e`, followed by the unit
+    /// its printed row writes (a quantity's), when it has one.
+    fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match self.printed_unit(e) {
+            Some(unit) => {
+                let unit = self.global_string(&unit);
+                self.str_concat(s, unit.into())
+            }
+            None => Ok(s),
+        }
     }
 
     /// Inline lotus_str_concat call. Caller's arena owns the
@@ -22766,7 +22779,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let result = self.lower_expr_at(e, scope);
         self.current_call = previous;
-        result
+        // GH #1076 (U3): a value the checker converted where it stands.
+        self.convert_value(e, result?)
     }
 
     fn lower_expr_at(
@@ -23014,9 +23028,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))?;
                 Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
             }
-            Expr::Literal(Literal::Quantity { value, unit }, span) => Err(
-                unit_dialect_unsupported(&format!("quantity literal `{value}{unit}`"), *span),
-            ),
+            Expr::Literal(Literal::Quantity { value, unit }, span) => self.lower_quantity_literal(*value, unit, *span),
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
                 // `EnumName::Variant`. For pure no-payload enums
@@ -23500,6 +23512,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             {
                 self.lower_short_circuit(*op, left, right, scope)
             }
+            // GH #1076 (U3): a quantity divided by a literal, from its row:
+            // the dividend converted, rounded by its type's `round:` here,
+            // or checked under its `or`.
+            Expr::Binary { op: BinOp::Div, span, .. } if self.conversion_operand(e).is_some() => {
+                let (row, operand) = self.conversion_operand(e).expect("guard checked");
+                let arg = operand.expect("a division's dividend");
+                match self.lower_conversion(&row, arg, scope)? {
+                    crate::conversion::Converted::Value(v, t) => Ok((v, t)),
+                    crate::conversion::Converted::Checked(_) => Err(CodegenError::UnsupportedAt(
+                        format!("the division of `{}` is lowered only under its `or`", row.target),
+                        *span,
+                    )),
+                }
+            }
             Expr::Binary { op, left, right, span: _ } => {
                 let (lv, lt) = self.lower_expr(left, scope)?;
                 let (rv, rt) = self.lower_expr(right, scope)?;
@@ -23512,10 +23538,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if *op == BinOp::Add && lt != rt {
                     if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
                         let coerced = self.value_to_string(rv, &rt)?;
+                        let coerced = self.with_printed_unit(right, coerced)?;
                         return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
                     }
                     if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
                         let coerced = self.value_to_string(lv, &lt)?;
+                        let coerced = self.with_printed_unit(left, coerced)?;
                         return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
                     }
                 }
@@ -23585,12 +23613,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_unop(*op, v, &t)
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => match callee.as_ref() {
-                // GH #1076 (U2): a conversion `T(x)` is lowered from its
-                // typed-body row. Outside an `or` it is total or a
-                // widening; a narrowing is lowered under its `or`.
-                Expr::Ident(_) if self.conversion_row(e).is_some() => {
-                    let row = self.conversion_row(e).expect("guard checked");
-                    let [arg] = args.as_slice() else {
+                // GH #1076 (U2, U3): a conversion `T(x)`, `x.in(u)`,
+                // `x.split(u)` is lowered from its typed-body row. Outside
+                // an `or` it is total, a widening, or rounded by its
+                // target's `round:`; any other narrowing is lowered under
+                // its `or`.
+                Expr::Ident(_) | Expr::Field { .. } if self.conversion_operand(e).is_some() => {
+                    let (row, operand) = self.conversion_operand(e).expect("guard checked");
+                    let Some(arg) = operand else {
                         return Err(CodegenError::UnsupportedAt(
                             format!("`{}(…)` converts one value", row.target),
                             *call_span,
@@ -25160,6 +25190,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int => {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
+                    // GH #1076 (U3): a quantity's count, then its unit.
+                    if let Some(unit) = self.printed_unit(a) {
+                        format.push_str(&escape_format(&unit));
+                    }
                 }
                 CodegenTy::Float => {
                     format.push_str("%g");
@@ -33607,8 +33641,13 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Decimal(m))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
-        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(unit_dialect_unsupported(
-            &format!("quantity literal `{value}{unit}`"),
+        // GH #1076 (U3): a quantity literal's count is its row's, which a
+        // `params` initializer, read without the typed bodies, cannot see.
+        Expr::Literal(Literal::Quantity { value, unit }, span) => Err(CodegenError::UnsupportedAt(
+            format!(
+                "quantity literal `{value}{unit}` as a `params` initializer: a quantity parameter's initial value is \
+                 set in `birth` (`self.p = {value}{unit};`)"
+            ),
             *span,
         )),
         _ => Err(CodegenError::Unsupported(
