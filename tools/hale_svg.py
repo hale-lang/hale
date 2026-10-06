@@ -22,7 +22,7 @@ import sys
 # by hand. Source: crates/hale-syntax/src/keywords.rs.
 # BEGIN GENERATED KEYWORDS — regen: `cargo test -p hale-syntax --test keyword_sync` (UPDATE_KEYWORDS=1 to bless).
 KEYWORDS = set(
-    "accept adopt api approx as as_parent_for async avoiding await bindings birth birth_check block bound break bubble bulk bus cap capacity captures chunked claims closure connect const constitution consume continue contract cooperative core cores count cover cross_machine dissolve distinct domain drain drop duration during edges else epoch explicit export expose extends fail fallible fixed_cell fn for forbid gated group harmonic heap http if impl import in includes indexed_by inferred inline interface intra_machine intra_process l3 let listen locus macro main match may_be_empty mode module mut node of on on_failure on_full on_overflow on_unauthorized on_watch_full or params payload persists_through perspective pinned placement point pool principals prod projection publish quantity quarantine reaches recognition refuse release reorganize reperspective replicas require reserve resets_on resets_per_epoch resolution restart restart_in_place return rich ring_layout role roles run schedule seed self serialize_as serve serves shared_slab shm_ring slot_count spillover stable_when subject subscribe sum summary_only terminate tick tier topic topology trait type unit unix until via violate watch_bound where while with within yield zero_copy".split()
+    "accept adopt api approx as as_parent_for async avoiding await bindings birth birth_check block bound break bubble bulk bus cap capacity captures ceil chunked claims clamp closure connect const constitution consume continue contract cooperative core cores count cover cross_machine discard dissolve distinct domain drain drop duration during edges else epoch explicit export expose extends fail fallible fixed_cell floor fn for forbid gated group half_even half_up harmonic heap http if impl import in includes indexed_by inferred inline interface intra_machine intra_process l3 let listen locus macro main match may_be_empty mode module mut node of on on_failure on_full on_overflow on_unauthorized on_watch_full or origin params payload persists_through perspective pinned placement point pool principals prod projection publish quantity quarantine raise range reaches recognition refuse release reorganize reperspective replicas require reserve resets_on resets_per_epoch resolution restart restart_in_place return rich ring_layout role roles round run schedule seed self serialize_as serve serves shared_slab shm_ring slot_count spillover stable_when subject subscribe sum summary_only terminate tick tier topic topology trait trunc type unit unix until via violate wait watch_bound where while with within wrap yield zero_copy".split()
 )
 # END GENERATED KEYWORDS
 LITERALS = {"true", "false", "nil"}
@@ -52,7 +52,8 @@ TOKEN_RE = re.compile(
     r"""(?P<comment>//[^\n]*)
       | (?P<string>"(?:\\.|[^"\\])*")
       | (?P<meta>@[A-Za-z_][A-Za-z0-9_]*)
-      | (?P<number>\b0[xXoObB][0-9a-fA-F_]+\b | \b\d[\d_]*(?:\.[\d_]+|[A-Za-z]\w*)?\b)
+      | (?P<number>\b0[xXoObB][0-9a-fA-F_]+\b
+                  | \b\d[\d_]*(?:(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?d?|[A-Za-z]\w*)\b)
       | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
       | (?P<ws>\s+)
       | (?P<other>.)""",

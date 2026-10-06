@@ -235,7 +235,7 @@ Every form a narrowing takes is held to this: `.in(u)`, a cast, a
 division by a literal, a binding, an argument, a return, a field, a
 compound assignment, a literal that is no whole count, and a range's
 narrowing (`Session(n)` alone: "…this conversion says nothing about a
-value outside it: write \`or <fallback>\` …").
+value outside it: write `or <fallback>` …").
 
 **A bare number where a quantity goes.** A count is not a duration
 until you say in what:

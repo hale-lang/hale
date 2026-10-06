@@ -72,13 +72,21 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "constitution", "extends", "adopt",
     // GH #1076: the unit dialect's declarations (`UNIT_DIALECT_KEYWORDS`).
     "unit", "quantity", "point", "distinct",
+    // GH #1076: a scalar's clause names, words of its `{ }` block only.
+    "range", "round", "origin",
+    // GH #1076: the policies a narrowing's `or` ends in (and a `round:`
+    // clause names): the checker reads the word where it ends the `or`.
+    "floor", "ceil", "trunc", "half_even", "half_up", "clamp", "wrap",
+    // The `or` dispositions the parser reads after `or`.
+    "raise", "discard", "wait",
 ];
 
 /// GH #1076: the unit dialect's declaration words: `unit` at the top
 /// level, and a scalar's kind right after a `type` declaration's `=`.
 /// All four are in [`CONTEXTUAL_KEYWORDS`]; the editor completes them.
 /// The clause names (`range`, `round`, `origin`) are words of a
-/// scalar's `{ }` block only and are not listed.
+/// scalar's `{ }` block only: highlighters colour them, the editor
+/// does not complete them.
 pub const UNIT_DIALECT_KEYWORDS: &[&str] = &["unit", "quantity", "point", "distinct"];
 
 /// The union of [`HARD_KEYWORDS`] and [`CONTEXTUAL_KEYWORDS`], sorted and

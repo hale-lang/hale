@@ -16,11 +16,11 @@
     const KEYWORDS = {
       // BEGIN GENERATED KEYWORDS — regen: `cargo test -p hale-syntax --test keyword_sync` (UPDATE_KEYWORDS=1 to bless). Source: crates/hale-syntax/src/keywords.rs.
       keyword:
-        "accept adopt api approx as as_parent_for async avoiding await bindings birth birth_check block bound break bubble bulk bus cap capacity captures chunked claims closure connect const constitution consume continue contract cooperative core cores count cover cross_machine dissolve distinct domain drain drop duration during edges else epoch explicit export expose extends fail fallible fixed_cell fn for forbid gated group harmonic heap http if impl import in includes indexed_by inferred inline interface intra_machine intra_process l3 let listen locus macro main match may_be_empty mode module mut node of on on_failure on_full on_overflow on_unauthorized on_watch_full or params payload persists_through perspective pinned placement point pool principals prod projection publish quantity quarantine reaches recognition refuse release reorganize reperspective replicas require reserve resets_on resets_per_epoch resolution restart restart_in_place return rich ring_layout role roles run schedule seed self serialize_as serve serves shared_slab shm_ring slot_count spillover stable_when subject subscribe sum summary_only terminate tick tier topic topology trait type unit unix until via violate watch_bound where while with within yield zero_copy",
+        "accept adopt api approx as as_parent_for async avoiding await bindings birth birth_check block bound break bubble bulk bus cap capacity captures ceil chunked claims clamp closure connect const constitution consume continue contract cooperative core cores count cover cross_machine discard dissolve distinct domain drain drop duration during edges else epoch explicit export expose extends fail fallible fixed_cell floor fn for forbid gated group half_even half_up harmonic heap http if impl import in includes indexed_by inferred inline interface intra_machine intra_process l3 let listen locus macro main match may_be_empty mode module mut node of on on_failure on_full on_overflow on_unauthorized on_watch_full or origin params payload persists_through perspective pinned placement point pool principals prod projection publish quantity quarantine raise range reaches recognition refuse release reorganize reperspective replicas require reserve resets_on resets_per_epoch resolution restart restart_in_place return rich ring_layout role roles round run schedule seed self serialize_as serve serves shared_slab shm_ring slot_count spillover stable_when subject subscribe sum summary_only terminate tick tier topic topology trait trunc type unit unix until via violate wait watch_bound where while with within wrap yield zero_copy",
       // END GENERATED KEYWORDS
       literal: "true false nil",
       built_in:
-        "Int Float Bool String Bytes BytesView StringView Unit",
+        "Int Uint Float Decimal Bool String Time Duration Bytes BytesView BytesMut StringView Unit",
     };
 
     return {
@@ -33,10 +33,14 @@
         hljs.QUOTE_STRING_MODE,
         // `@form`, `@locality`, `@ffi` … annotations.
         { className: "meta", begin: "@\\w+" },
-        // Prefixed-radix literals, then a number with any unit written
-        // against an integer (`500ms`, `3bp`: GH #1076).
+        // Prefixed-radix literals, then a number: a Float or Decimal
+        // (`2.5`, `1e-5`, `1.5d`), or a quantity, an integer with its unit
+        // written against it (`500ms`, `3bp`, `1_250_000USD`: GH #1076).
         { className: "number", begin: "\\b0[xXoObB][0-9a-fA-F_]+\\b" },
-        { className: "number", begin: "\\b\\d[\\d_]*(\\.[\\d_]+|[A-Za-z]\\w*)?\\b" },
+        {
+          className: "number",
+          begin: "\\b\\d[\\d_]*(?:(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?d?|[A-Za-z]\\w*)\\b",
+        },
         // Capitalized identifiers read as type / locus / topic names.
         { className: "type", begin: "\\b[A-Z][A-Za-z0-9_]*\\b", relevance: 0 },
       ],
