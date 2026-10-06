@@ -11,7 +11,7 @@ crates/hale-codegen/tests/generics.rs#8
 crates/hale-codegen/tests/library_shape_2026_05_16.rs#1
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#6
 crates/hale-types/tests/check_rules.rs#0
-crates/hale-types/tests/check_rules.rs#106
+crates/hale-types/tests/check_rules.rs#107
 crates/hale-types/tests/check_rules.rs#14
 crates/hale-types/tests/check_rules.rs#15
 crates/hale-types/tests/check_rules.rs#8

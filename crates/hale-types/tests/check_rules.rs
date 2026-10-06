@@ -2268,6 +2268,41 @@ mod tests {
         );
     }
 
+    /// Which builtin error a stdlib call fails with is its row's error
+    /// column: `std::time::parse_iso8601` is `! "ParseError"`. The
+    /// resolver's hand list knew only `std::str::parse_*`, so this
+    /// program checked clean and lowering refused it.
+    #[test]
+    fn err_user_parse_error_shadows_stdlib_for_time_parse() {
+        let src = r#"
+            type ParseError { code: Int; }
+            fn main() {
+                let t = std::time::parse_iso8601("2026-10-06T00:00:00Z") or raise;
+            }
+        "#;
+        let diags = check(src);
+        let shadow: Vec<(&str, &str)> = diags
+            .iter()
+            .filter(|d| d.message.contains("shadows"))
+            .map(|d| (d.message.as_str(), &src[d.span.start.0 as usize..d.span.end.0 as usize]))
+            .collect();
+        assert_eq!(
+            shadow,
+            vec![(
+                "user-declared `type ParseError` shadows the stdlib's \
+                 `ParseError` but is missing the expected `kind: String` \
+                 field (used by stdlib path-calls that allocate \
+                 `ParseError` on failure). Either match the stdlib \
+                 shape, rename your type (e.g. `MyParseError`), or use \
+                 `std::str::ParseError` qualified where you need the \
+                 stdlib's shape.",
+                "type ParseError { code: Int; }",
+            )],
+            "all diagnostics: {:?}",
+            diags
+        );
+    }
+
     #[test]
     fn ok_user_parse_error_matches_stdlib_shape() {
         // User declares a type with the same name but the right

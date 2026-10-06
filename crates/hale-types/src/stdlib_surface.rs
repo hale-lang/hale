@@ -961,7 +961,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv_with_source", SYSCALL | BLOCK, [Int, Int] -> Bytes ! "IoError", Intrinsic(IoUdpRecvWithSource)),
             row!("send", SYSCALL, [Int, Str, Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSend)),
             row!("set_multicast_iface", SYSCALL, [Int, Str] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastIface)),
-            row!("set_multicast_loop", SYSCALL, [Int, Any] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastLoop)),
+            row!("set_multicast_loop", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastLoop)),
             row!("set_multicast_ttl", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(IoUdpSetMulticastTtl)),
             row!("set_option_bool", SYSCALL, [Int, Int, Int, Bool] -> Unit ! "IoError", Intrinsic(IoUdpSetOptionBool)),
             row!("set_option_int", SYSCALL, [Int, Int, Int, Int] -> Unit ! "IoError", Intrinsic(IoUdpSetOptionInt)),

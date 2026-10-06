@@ -623,6 +623,14 @@ fn std_io_udp_calls_are_checked() {
             "std::bytes::from_string(\"x\")",
         )],
     );
+    // `set_multicast_loop`'s flag was `Any` in its row while the spec,
+    // its lowering's doc and its sibling `set_option_bool` say `Bool`:
+    // an Int flag is refused by the check, a Bool one checks.
+    refused(
+        "    std::io::udp::set_multicast_loop(3, 1) or raise;",
+        &[("`std::io::udp::set_multicast_loop` argument 2: expected `Bool`, got `Int`", "1")],
+    );
+    refused("    std::io::udp::set_multicast_loop(3, false) or raise;", &[]);
 }
 
 #[test]

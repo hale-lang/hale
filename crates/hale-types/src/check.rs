@@ -3992,7 +3992,7 @@ fn render_impurity(
         ImpureStdlibCall { fn_name, .. } => (
             format!(
                 "calls `{}`, which has side effects (printing, \
-                 file/process I/O, sleeping, or recovery)",
+                 file, network or process I/O, sleeping, or publishing)",
                 fn_name
             ),
             "codecs must be deterministic, side-effect-free \
