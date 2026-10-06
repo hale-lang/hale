@@ -20,7 +20,7 @@
       // END GENERATED KEYWORDS
       literal: "true false nil",
       built_in:
-        "Int Float Bool String Bytes BytesView StringView Unit",
+        "Int Uint Float Decimal Bool String Time Duration Bytes BytesView BytesMut StringView Unit",
     };
 
     return {
@@ -33,10 +33,14 @@
         hljs.QUOTE_STRING_MODE,
         // `@form`, `@locality`, `@ffi` … annotations.
         { className: "meta", begin: "@\\w+" },
-        // Prefixed-radix literals, then a number with any unit written
-        // against an integer (`500ms`, `3bp`: GH #1076).
+        // Prefixed-radix literals, then a number: a Float or Decimal
+        // (`2.5`, `1e-5`, `1.5d`), or a quantity, an integer with its unit
+        // written against it (`500ms`, `3bp`, `1_250_000USD`: GH #1076).
         { className: "number", begin: "\\b0[xXoObB][0-9a-fA-F_]+\\b" },
-        { className: "number", begin: "\\b\\d[\\d_]*(\\.[\\d_]+|[A-Za-z]\\w*)?\\b" },
+        {
+          className: "number",
+          begin: "\\b\\d[\\d_]*(?:(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?d?|[A-Za-z]\\w*)\\b",
+        },
         // Capitalized identifiers read as type / locus / topic names.
         { className: "type", begin: "\\b[A-Z][A-Za-z0-9_]*\\b", relevance: 0 },
       ],
