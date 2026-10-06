@@ -21,13 +21,13 @@
 
 use hale_syntax::error::Diag;
 
-use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, ConversionSite, FallibleCall, Handling, TypedBodies};
+use crate::typed_bodies::{CalleeKind, ConversionKind, ConversionRow, ConversionSite, FallibleCall, Handling, SiteKind, TypedBodies};
 
 /// Every fallible call `table` holds that nothing handles, as errors;
 /// then every narrowing nothing discharges (GH #1076, U2), from the
-/// `conversions` column, once per cast: a cast in a default has a row
-/// per evaluation (`ConversionSite::DefaultCast`), and what discharges
-/// it is written in the default, the same in each. A quantity's narrowing
+/// `conversions` column, once per conversion: a conversion in a default
+/// has a row per evaluation (its `ConversionSite::path`), and what
+/// discharges it is written in the default, the same in each. A quantity's narrowing
 /// (U3) is judged through the same filter; two different judgments at
 /// one span (a division by a literal that also flows into a narrower
 /// denomination) both stand.
@@ -53,17 +53,17 @@ fn judge_narrowing((site, row): (ConversionSite, &ConversionRow)) -> Option<Diag
         let divisor = crate::unit_quantities::grouped(scale.factor.denominator());
         let declared = !row.target.contains(" in ");
         let policy = if declared { format!(", or give `{}` a `round:` policy", row.target) } else { String::new() };
-        let say = match site {
+        let say = match site.kind {
             // An implicit conversion has no `or` of its own.
-            ConversionSite::Value { .. } => format!(
+            SiteKind::Value { .. } => format!(
                 "say what happens to the remainder: convert explicitly (`.in(u) or floor`, `{}(…) or half_even`, \
                  `or <value>`, `or raise`){policy}",
                 row.target
             ),
             _ => format!("say what happens to the remainder: `or floor`, `or <value>`, `or raise`{policy}"),
         };
-        let what = match site {
-            ConversionSite::Divide { .. } => format!("`{}` divided by {divisor} leaves a remainder", row.target),
+        let what = match site.kind {
+            SiteKind::Divide { .. } => format!("`{}` divided by {divisor} leaves a remainder", row.target),
             _ => format!("`{}` from `{}` divides by {divisor}", row.target, row.from.display()),
         };
         return Some(Diag::ty(row.span, format!("{what}: {say}")));

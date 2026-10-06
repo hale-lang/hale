@@ -811,6 +811,60 @@ fn a_nested_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
     }
 }
 
+/// GH #1076 (U3 polish A): every conversion in a default is the
+/// evaluation's, not only a cast's. Where a local shadows `Bucket`, the
+/// default's `Bucket(2000msec)` is a call of `fake`, and its literal flows
+/// into `fake`'s `Span` (2000); elsewhere it is the cast, and its literal
+/// flows into `sec` (2). Keyed by its span alone, the literal had one row,
+/// the cast's count, and the shadowed evaluation printed `5sec`. The
+/// same for a value converted where it stands: `milli()` flows into
+/// `fake`'s `Span` in `usec` (widened by 1,000) in the shadowed scope
+/// only, and the cast's evaluation, reading that row too, converted it
+/// twice and printed `2000sec`. The literal in both orders of the two
+/// evaluations.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
+    let literal = |shadowed_first: bool| {
+        let (first, second) = if shadowed_first {
+            ("{ let Bucket = fake; let m = L {}; println(m.b); }\n", "let l = L {};\nprintln(l.b);\n")
+        } else {
+            ("let l = L {};\n", "{ let Bucket = fake; let m = L {}; println(m.b); }\nprintln(l.b);\n")
+        };
+        format!(
+            "unit msec;\n\
+             unit sec = 1_000 msec;\n\
+             type Span = quantity Int in msec;\n\
+             type Bucket = Span in sec {{ round: floor; }}\n\
+             fn fake(d: Span) -> Bucket {{ return Bucket(d + 5000msec); }}\n\
+             type L {{ b: Bucket = Bucket(2000msec); }}\n\
+             fn main() {{\n{first}{second}}}\n"
+        )
+    };
+    let value = "unit usec;\n\
+                 unit msec = 1_000 usec;\n\
+                 unit sec = 1_000 msec;\n\
+                 type Span = quantity Int in usec;\n\
+                 type Milli = Span in msec;\n\
+                 type Bucket = Span in sec { round: floor; }\n\
+                 fn milli() -> Milli { return 2000msec; }\n\
+                 fn fake(d: Span) -> Bucket { return Bucket(d + 5sec); }\n\
+                 type L { b: Bucket = Bucket(milli()); }\n\
+                 fn main() {\n\
+                 let l = L {};\n\
+                 { let Bucket = fake; let m = L {}; println(m.b); }\n\
+                 println(l.b);\n\
+                 }\n";
+    for (src, tag) in [
+        (literal(false), "default_literal_second"),
+        (literal(true), "default_literal_first"),
+        (value.to_string(), "default_value"),
+    ] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("7sec\n2sec\n".to_string()), "{}", src);
+    }
+}
+
 /// The check with the whole-program rules OFF — what a caller holding
 /// a fragment gets, and what `check_program` was before GH #911 B1.
 ///

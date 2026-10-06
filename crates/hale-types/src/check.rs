@@ -35,6 +35,7 @@ use crate::law::{Law, RuleId, Violation};
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
+use crate::typed_bodies::SiteKind;
 
 fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     Ty::Function {
@@ -6150,9 +6151,10 @@ struct Checker<'a> {
     struct_defaults_typing: Vec<*const Expr>,
     /// While a default is typed where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
-    /// or a call that leaves a parameter. A cast typed there is that
-    /// path's row (`ConversionSite::DefaultCast`), so one default
-    /// evaluated in two scopes has two answers, nested or not. Lowering
+    /// or a call that leaves a parameter. A conversion typed there (a
+    /// cast's, a literal's, a value's) is that path's row
+    /// (`ConversionSite::path`), so one default evaluated in two scopes
+    /// has two answers, nested or not. Lowering
     /// keeps the same stack (`Cx::default_evaluation`): both push at the
     /// same two events, a literal leaving a field
     /// (`type_omitted_defaults`) and a call leaving a parameter
@@ -12447,7 +12449,8 @@ impl<'a> Checker<'a> {
                     crate::typed_bodies::ConversionKind::Widening,
                     want.display(),
                 );
-                self.typed.conversion(self.body, crate::typed_bodies::ConversionSite::value(value.span()), row);
+                let site = self.site(SiteKind::value(value.span()));
+                self.typed.conversion(self.body, site, row);
             }
             return true;
         }
@@ -12555,7 +12558,7 @@ impl<'a> Checker<'a> {
         scale: crate::typed_bodies::Scale,
         policy: Option<crate::units::RoundPolicy>,
     ) {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge};
         if self.specializing.is_some() {
             return;
         }
@@ -12565,7 +12568,7 @@ impl<'a> Checker<'a> {
         if narrows {
             row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
         }
-        let site = ConversionSite::value(value.span());
+        let site = self.site(SiteKind::value(value.span()));
         if let Expr::Literal(Literal::Quantity { value: n, unit }, span) = value {
             // A literal's conversion is computed here: a whole number of
             // the target is exact, whatever the factor.
@@ -12592,7 +12595,7 @@ impl<'a> Checker<'a> {
     /// GH #1076 (U3): a quantity literal: its component's quantity at its
     /// own unit, with its own row (its count, before it flows anywhere).
     fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Scale};
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
         match self.scalars.literal_type(n, unit) {
             Err(why) => {
                 self.unit_error(Diag::ty(span, why));
@@ -12604,7 +12607,8 @@ impl<'a> Checker<'a> {
                     let mut row = ConversionRow::new(span, t.clone(), t.clone(), ConversionKind::Widening, self.scalars.type_display(&t));
                     row.scale = Some(Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 });
                     row.count = Some(n);
-                    self.typed.conversion(self.body, ConversionSite::value(span), row);
+                    let site = self.site(SiteKind::value(span));
+                    self.typed.conversion(self.body, site, row);
                 }
                 t
             }
@@ -12614,7 +12618,7 @@ impl<'a> Checker<'a> {
     /// GH #1076 (U3): a value of `t`, the expression `e`, printed: a
     /// quantity's row says the unit lowering writes after its count.
     fn record_printed(&mut self, e: &Expr, t: &Ty) {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite};
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
         if self.specializing.is_some() || !self.scalars.has_quantities() {
             return;
         }
@@ -12622,7 +12626,8 @@ impl<'a> Checker<'a> {
         let Some(unit) = self.scalars.printed_unit(&q) else { return };
         let mut row = ConversionRow::new(e.span(), t.clone(), Ty::Prim(PrimType::String), ConversionKind::Total, "String".into());
         row.printed = Some(unit);
-        self.typed.conversion(self.body, ConversionSite::printed(e.span()), row);
+        let site = self.site(SiteKind::printed(e.span()));
+        self.typed.conversion(self.body, site, row);
     }
 
     /// GH #1076 (U3): `T(x)`, `T` a quantity or a point: the conversion of
@@ -12657,7 +12662,7 @@ impl<'a> Checker<'a> {
                             let mut row =
                                 ConversionRow::new(span, to.clone(), to.clone(), ConversionKind::Widening, self.scalars.type_display(&to));
                             row.scale = Some(one);
-                            let site = self.cast_site(call);
+                            let site = self.site(SiteKind::Cast(call.0));
                             self.typed.conversion(self.body, site, row);
                         }
                         return to;
@@ -12671,7 +12676,7 @@ impl<'a> Checker<'a> {
                         row.policy = q.policy.map(|policy| Discharge::Round { policy, from_type: true });
                     }
                     row.scale = Some(scale);
-                    let site = self.cast_site(call);
+                    let site = self.site(SiteKind::Cast(call.0));
                     self.typed.conversion(self.body, site, row);
                 }
             }
@@ -12710,7 +12715,7 @@ impl<'a> Checker<'a> {
                         if scale.factor.is_integral() { ConversionKind::Widening } else { ConversionKind::Narrowing };
                     let mut row = ConversionRow::new(span, t, to.clone(), kind, self.scalars.type_display(&to));
                     row.scale = Some(scale);
-                    let site = self.cast_site(call);
+                    let site = self.site(SiteKind::Cast(call.0));
                     self.typed.conversion(self.body, site, row);
                 }
                 Ok(_) => {}
@@ -12739,7 +12744,7 @@ impl<'a> Checker<'a> {
             let mut row = ConversionRow::new(span, t, rest.clone(), ConversionKind::Widening, self.scalars.type_display(&rest));
             row.scale = Some(scale);
             row.split = Some(divisor);
-            let site = self.cast_site(call);
+            let site = self.site(SiteKind::Cast(call.0));
             self.typed.conversion(self.body, site, row);
         }
         Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
@@ -12837,7 +12842,7 @@ impl<'a> Checker<'a> {
                 if self.specializing.is_none() {
                     let mut row = ConversionRow::new(span, from, to.clone(), kind, target.to_string());
                     row.range = range;
-                    let site = self.cast_site(call);
+                    let site = self.site(SiteKind::Cast(call.0));
                     self.typed.conversion(self.body, site, row);
                 }
             }
@@ -12845,25 +12850,23 @@ impl<'a> Checker<'a> {
         to
     }
 
-    /// The key of the cast at `call` (a quantity's `.in(u)` and
-    /// `.split(u)` too): its call, or inside a default the evaluation
-    /// path being typed and its call.
-    fn cast_site(&self, call: NodeId) -> crate::typed_bodies::ConversionSite {
-        use crate::typed_bodies::ConversionSite;
-        if self.default_evaluation.is_empty() {
-            ConversionSite::Cast(call.0)
-        } else {
-            ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: call.0 }
-        }
+    /// The key of a conversion of `kind` (a cast's, a quantity's `.in(u)`
+    /// and `.split(u)`, by the call; a value's, a literal's, a division's,
+    /// a printed value's, by the span): inside a default, on the
+    /// evaluation path being typed, since what the default's names mean
+    /// and what its values flow into are that scope's. Every row the
+    /// checker records is keyed here.
+    fn site(&self, kind: SiteKind) -> crate::typed_bodies::ConversionSite {
+        crate::typed_bodies::ConversionSite::new(kind, self.default_evaluation.clone())
     }
 
     /// The narrowing `inner` is, when the conversions column holds it as
-    /// one: a cast's, a quantity's `.in(u)`, by the call (`cast_site`); a
-    /// quantity divided by a literal (U3), by the division.
+    /// one: a cast's, a quantity's `.in(u)`, by the call; a quantity
+    /// divided by a literal (U3), by the division.
     fn narrowing_at(&self, inner: &Expr) -> Option<crate::typed_bodies::ConversionSite> {
         let site = match inner {
-            Expr::Call { id, .. } => self.cast_site(*id),
-            Expr::Binary { op: BinOp::Div, span, .. } => crate::typed_bodies::ConversionSite::divide(*span),
+            Expr::Call { id, .. } => self.site(SiteKind::Cast(id.0)),
+            Expr::Binary { op: BinOp::Div, span, .. } => self.site(SiteKind::divide(*span)),
             _ => return None,
         };
         let row = self.typed.conversion_at(&site)?;
@@ -12881,13 +12884,12 @@ impl<'a> Checker<'a> {
     /// into the field's type, U3), which lowering reads where it evaluates
     /// the default and which are kept in the constructing declaration's
     /// body, and for the errors a quantity's conversion into the field's
-    /// type finds, which no other walk would. A cast's row is kept one per
-    /// cast per evaluation (the path of evaluations ending at `literal`:
-    /// `default_evaluation`), since the cast's name means what that scope
-    /// says; a row keyed by a value's span (a quantity literal's, a
-    /// conversion where a value stands) one per site however many
-    /// literals leave the field (the first's). A default no literal
-    /// leaves is never evaluated.
+    /// type finds, which no other walk would. Every row is kept one per
+    /// site per evaluation (the path of evaluations ending at `literal`:
+    /// `default_evaluation`), a cast's, a quantity literal's, a
+    /// conversion's where a value stands: the default's names mean what
+    /// that scope says, and its values flow into what that scope makes of
+    /// them. A default no literal leaves is never evaluated.
     fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
         // Without a scalar type of any kind no cast has a row to keep, and
@@ -16165,7 +16167,7 @@ impl<'a> Checker<'a> {
         span: Span,
         operands: (&Expr, &Expr),
     ) -> Ty {
-        use crate::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, Scale};
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Discharge, Scale};
         use crate::unit_quantities::QBinop;
         match rule {
             QBinop::Typed { ty, left, right } => {
@@ -16186,7 +16188,8 @@ impl<'a> Checker<'a> {
                         .quantity(lt)
                         .and_then(|q| q.policy)
                         .map(|policy| Discharge::Round { policy, from_type: true });
-                    self.typed.conversion(self.body, ConversionSite::divide(span), row);
+                    let site = self.site(SiteKind::divide(span));
+                    self.typed.conversion(self.body, site, row);
                 }
                 ty
             }

@@ -16,7 +16,7 @@ use hale_syntax::{parse_source, Diag};
 use hale_types::capability::{FfiTypeClass, TargetClass};
 use hale_types::resolve::build_top_scope;
 use hale_types::ty::{is_flat_shapeable, is_key_eligible, Ty};
-use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, SiteKind};
 use hale_types::unit_values::ScalarTypes;
 
 #[path = "support/entries.rs"]
@@ -416,12 +416,7 @@ fn rows_of(
             b.conversions
                 .iter()
                 .map(|(site, r)| {
-                    let path = match site {
-                        ConversionSite::DefaultCast { path, .. } => {
-                            path.iter().map(|at| steps[at].as_str()).collect::<Vec<_>>().join(" / ")
-                        }
-                        _ => String::new(),
-                    };
+                    let path = site.path.iter().map(|at| steps[at].as_str()).collect::<Vec<_>>().join(" / ");
                     (path, r.span.slice(src).to_string(), r.policy)
                 })
                 .collect()
@@ -435,7 +430,8 @@ fn rows_of(
 /// that leaves the field, and its casts' rows are that evaluation's:
 /// kept in the typed body of the declaration that constructs the value,
 /// by the evaluation path and the cast's call
-/// (`ConversionSite::DefaultCast`), where lowering evaluates the default
+/// (a `SiteKind::Cast` on its `ConversionSite::path`), where lowering
+/// evaluates the default
 /// and reads them. A literal that writes the field evaluates no default.
 #[test]
 fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
@@ -476,7 +472,10 @@ fn an_omitted_defaults_casts_are_rows_of_each_evaluation() {
         .find(|(_, at)| at == "OrderId(1)")
         .expect("the default's cast")
         .0;
-    assert!(table.conversion(&ConversionSite::Cast(default_cast)).is_none(), "a default's cast has no evaluation-less row");
+    assert!(
+        table.conversion(&ConversionSite::new(SiteKind::Cast(default_cast), vec![])).is_none(),
+        "a default's cast has no evaluation-less row"
+    );
 }
 
 /// U2 (review 2): a default has a row per evaluation, and what
@@ -535,14 +534,14 @@ fn a_defaults_evaluation_where_a_local_shadows_the_type_has_no_row() {
         .expect("the default's cast")
         .0;
     let row = table
-        .conversion(&ConversionSite::DefaultCast { path: vec![a], call })
+        .conversion(&ConversionSite::new(SiteKind::Cast(call), vec![a]))
         .expect("`a`'s evaluation is a conversion");
     assert_eq!((row.kind, row.target.as_str()), (ConversionKind::Total, "OrderId"));
     assert!(
-        table.conversion(&ConversionSite::DefaultCast { path: vec![b], call }).is_none(),
+        table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![b])).is_none(),
         "`b`'s evaluation calls the local `OrderId`"
     );
-    assert!(table.conversion(&ConversionSite::Cast(call)).is_none());
+    assert!(table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![])).is_none());
 }
 
 /// U2 (review 3): a default evaluated inside another default is keyed by
@@ -592,13 +591,13 @@ fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
         .find(|(_, at)| at == "OrderId(1)")
         .expect("`Inner`'s default cast")
         .0;
-    let a = table.conversion(&ConversionSite::DefaultCast { path: vec![outer, inner_a], call });
+    let a = table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer, inner_a]));
     assert_eq!(a.map(|r| (r.kind, r.target.as_str())), Some((ConversionKind::Total, "OrderId")));
     assert!(
-        table.conversion(&ConversionSite::DefaultCast { path: vec![outer, inner_b], call }).is_none(),
+        table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer, inner_b])).is_none(),
         "`b`'s evaluation calls the local `OrderId`"
     );
-    assert!(table.conversion(&ConversionSite::DefaultCast { path: vec![outer], call }).is_none());
+    assert!(table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer])).is_none());
 }
 
 #[test]

@@ -75,6 +75,19 @@ fn caught(e: InexactError) -> Seconds {
     return 0sec;
 }
 
+// A default is evaluated in the scope of each literal that leaves it.
+// Where a local shadows `Bucket`, `Bucket(…)` there calls the local, and
+// the literal and the value in it flow into the local's `Span`.
+type Window { lit: Bucket = Bucket(2000msec); val: Bucket = Bucket(two_sec()); }
+
+fn two_sec() -> Seconds {
+    return 2sec;
+}
+
+fn later(d: Span) -> Bucket {
+    return Bucket(d + 5sec);
+}
+
 fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
     let d = 3sec + 500msec;
@@ -174,4 +187,16 @@ fn main() {
     total -= 1cent;
     total *= 2;
     std::test::assert(total == 998cent, "compound assignment converts its value");
+
+    // A default's literal and value convert per evaluation, into what
+    // that scope flows them into.
+    let plain = Window { };
+    std::test::assert(plain.lit == 2sec, "the cast's evaluation: 20 buckets");
+    std::test::assert(plain.val == 2sec, "the value cast once, not twice");
+    {
+        let Bucket = later;
+        let shadowed = Window { };
+        std::test::assert(shadowed.lit == 7sec, "the literal reaches the local as a `Span`");
+        std::test::assert(shadowed.val == 7sec, "and so does the value");
+    }
 }

@@ -31,7 +31,7 @@
 
 use hale_syntax::ast::{BinOp, Expr};
 use hale_syntax::Span;
-use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, Scale};
+use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, Scale, SiteKind};
 use hale_types::units::RoundPolicy;
 use inkwell::values::{BasicValueEnum, IntValue};
 use inkwell::IntPredicate;
@@ -61,10 +61,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// total answer: the call is no conversion, whatever its callee is
     /// named (a local, a parameter or a fn the checker resolved the name
     /// to, or `Int(x)`, the numeric builtin), and is lowered as the call
-    /// it is; a division is the `Int`'s. Inside a default a call's row is
+    /// it is; a division is the `Int`'s. Inside a default every row is
     /// the evaluation path's being lowered (`default_evaluation`): the
     /// default's name means what that scope says, a cast in one and a
-    /// local's call in another.
+    /// local's call in another, and its literals and values convert into
+    /// what that scope flows them into.
     pub(crate) fn conversion_operand<'e>(&self, e: &'e Expr) -> Option<(ConversionRow, Option<&'e Expr>)> {
         match e {
             Expr::Call { callee, id, args, .. } => {
@@ -78,16 +79,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     _ => return None,
                 };
-                let site = if self.default_evaluation.is_empty() {
-                    ConversionSite::Cast(id.0)
-                } else {
-                    ConversionSite::DefaultCast { path: self.default_evaluation.clone(), call: id.0 }
-                };
-                let row = self.typed.conversion(&site)?;
+                let row = self.typed.conversion(&self.site(SiteKind::Cast(id.0)))?;
                 Some((row.clone(), operand))
             }
             Expr::Binary { op: BinOp::Div, left, span, .. } if self.typed.has_quantity_rows() => {
-                let row = self.typed.conversion(&ConversionSite::divide(*span))?;
+                let row = self.typed.conversion(&self.site(SiteKind::divide(*span)))?;
                 if self.lowering_stdlib_body() {
                     return None;
                 }
@@ -111,7 +107,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return Ok(lowered);
         }
-        let Some(row) = self.typed.conversion(&ConversionSite::value(e.span())) else { return Ok(lowered) };
+        let Some(row) = self.typed.conversion(&self.site(SiteKind::value(e.span()))) else { return Ok(lowered) };
         if row.count.is_some() || row.scale.is_none() || matches!(e, hale_syntax::ast::Expr::Literal(..)) {
             return Ok(lowered);
         }
@@ -145,7 +141,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         unit: &str,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let count = self.typed.conversion(&ConversionSite::value(span)).and_then(|row| row.count).ok_or_else(|| {
+        let count = self.typed.conversion(&self.site(SiteKind::value(span))).and_then(|row| row.count).ok_or_else(|| {
             CodegenError::UnsupportedAt(
                 format!(
                     "quantity literal `{value}{unit}` has no required `expression_typing` row: the checker converts a \
@@ -163,11 +159,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return None;
         }
-        let unit = self.typed.conversion(&ConversionSite::printed(e.span()))?.printed.clone();
+        let unit = self.typed.conversion(&self.site(SiteKind::printed(e.span())))?.printed.clone();
         if self.lowering_stdlib_body() {
             return None;
         }
         unit
+    }
+
+    /// The key of the conversion of `kind` here: inside a default, on the
+    /// evaluation path being lowered (`default_evaluation`), the
+    /// checker's key for the same evaluation (`site` in `hale-types`).
+    fn site(&self, kind: SiteKind) -> ConversionSite {
+        ConversionSite::new(kind, self.default_evaluation.clone())
     }
 
     /// Whether the function being emitted is a stdlib declaration's

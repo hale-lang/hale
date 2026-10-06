@@ -14,7 +14,7 @@
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_syntax::{parse_source, Diag};
-use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge};
+use hale_types::typed_bodies::{ConversionKind, ConversionRow, ConversionSite, Discharge, SiteKind};
 use hale_types::units::RoundPolicy;
 
 #[path = "support/entries.rs"]
@@ -134,7 +134,7 @@ fn rows_of(src: &str) -> Vec<Row> {
     let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
     let mut found: Vec<(ConversionSite, &ConversionRow)> =
         table.conversion_sites().filter(|(_, r)| r.scale.is_some() || r.printed.is_some()).collect();
-    found.sort_by_key(|(s, r)| (r.span.start.as_usize(), r.span.end.as_usize(), matches!(s, ConversionSite::Printed { .. })));
+    found.sort_by_key(|(s, r)| (r.span.start.as_usize(), r.span.end.as_usize(), matches!(s.kind, SiteKind::Printed { .. })));
     found
         .into_iter()
         .map(|(_, r)| Row {
@@ -389,6 +389,47 @@ fn a_return_and_a_default_convert_into_their_types() {
     assert_eq!(at("n * 1USD"), [&row("n * 1USD", "Money", Widening, "100")], "a return");
     assert_eq!(at("3USD"), [&Row { count: Some(300), ..row("3USD", "Money", Widening, "100") }], "a field's default");
     assert_eq!(at("2USD"), [&Row { count: Some(200), ..row("2USD", "Money", Widening, "100") }], "a parameter's default");
+}
+
+/// A literal in a default is converted once per evaluation, into what
+/// that evaluation's scope flows it into: its row is keyed by the
+/// evaluation path as a cast's is. Where a local shadows `Bucket`,
+/// `Bucket(2000msec)` calls `fake` and the literal stays a `Span` (2000);
+/// elsewhere it is the cast's, into `sec` (2). Keyed by its span alone,
+/// the literal had one row, and the shadowed evaluation was handed 2.
+#[test]
+fn a_literal_in_a_default_has_a_row_per_evaluation() {
+    let src = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
+               type Bucket = Span in sec { round: floor; }\n\
+               fn fake(d: Span) -> Bucket { return Bucket(d + 5000msec); }\n\
+               type L { b: Bucket = Bucket(2000msec); }\n\
+               fn main() {\n    let l = L {};\n    { let Bucket = fake; let m = L {}; println(m.b); }\n    println(l.b);\n}\n";
+    let program = parse_source(src).expect("parses");
+    let errors: Vec<String> = check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let snapshot = Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
+    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let mut literals = Vec::new();
+    hale_syntax::sites::for_each_site(snapshot.program().expect("the program"), &mut |k, _, id| {
+        if k == hale_syntax::sites::SiteKind::StructLiteral {
+            literals.push(id.0);
+        }
+    });
+    let [plain, shadowed] = literals[..] else { panic!("two literals: {literals:?}") };
+    let mut found: Vec<(ConversionSite, Option<i64>)> = table
+        .conversion_sites()
+        .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src) == "2000msec")
+        .map(|(s, r)| (s, r.count))
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let span = table.conversions().find(|r| r.span.slice(src) == "2000msec").expect("the literal's row").span;
+    let at = |path: Vec<u32>| ConversionSite::new(SiteKind::value(span), path);
+    let mut want = vec![(at(vec![plain]), Some(2)), (at(vec![shadowed]), Some(2000))];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(found, want, "one row per evaluation, each with its own count");
+    assert_eq!(table.conversion(&at(vec![plain])).and_then(|r| r.count), Some(2), "the cast's evaluation: into `sec`");
+    assert_eq!(table.conversion(&at(vec![shadowed])).and_then(|r| r.count), Some(2000), "`fake`'s: a `Span`");
+    assert!(table.conversion(&at(vec![])).is_none(), "a default's literal has no evaluation-less row");
 }
 
 // The ratio product (decision 2), three ways.

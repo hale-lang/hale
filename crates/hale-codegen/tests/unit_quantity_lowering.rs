@@ -28,7 +28,12 @@ const DECLS: &str = "unit nsec;\nunit usec = 1_000 nsec;\nunit msec = 1_000 usec
 
 /// The IR of `conv`, a fn whose body is `body`, before optimization.
 fn conv_ir(signature: &str, body: &str) -> String {
-    let src = format!("{DECLS}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
+    conv_ir_after("", signature, body)
+}
+
+/// The same, with `decls` declared beside the common ones.
+fn conv_ir_after(decls: &str, signature: &str, body: &str) -> String {
+    let src = format!("{DECLS}{decls}fn conv{signature} {{\n{body}}}\nfn main() {{ println(1); }}\n");
     let bin = harness::unique_bin("unit_quantity_lowering");
     let ir = harness::build_source_ir_text(&src, &bin).unwrap_or_else(|e| panic!("lowers: {e:?}\n{src}"));
     let _ = std::fs::remove_file(&bin);
@@ -109,6 +114,24 @@ fn a_split_is_a_floored_division_and_its_remainder() {
     assert!(fun.contains("%unit.split.quo = sdiv i64"), "{fun}");
     assert!(fun.contains("%unit.split.whole = sub i64 %unit.split.quo, %unit.split.adj"), "{fun}");
     assert!(fun.contains("%unit.split.rest = add i64 %unit.split.rem, %unit.split.lift"), "{fun}");
+}
+
+/// U3 polish (A): a literal in a default is converted per evaluation.
+/// `L`'s default `Seconds(2000msec)` is evaluated twice in `conv`: at
+/// `l`, where it is the cast and the literal its count in `sec`, 2; at
+/// `m`, where a local `Seconds` holding `fake` shadows the type, so the
+/// literal is `fake`'s `Span` argument, its count in `nsec`.
+#[test]
+fn a_literal_in_a_default_is_each_evaluations_count() {
+    let fun = conv_ir_after(
+        "type L { b: Seconds = Seconds(2000msec); }\nfn fake(d: Span) -> Seconds { return 7sec; }\n",
+        "() -> Int",
+        "    let l = L {};\n    {\n        let Seconds = fake;\n        let m = L {};\n        println(m.b / 1sec);\n    }\n    return l.b / 1sec;\n",
+    );
+    assert!(fun.contains("store i64 2, ptr %L.b.ptr,"), "the cast's evaluation stores the count in `sec`: {fun}");
+    let calls: Vec<&str> = fun.lines().filter(|l| l.contains("%fnptr.call = call i64 %Seconds")).collect();
+    assert_eq!(calls.len(), 1, "one call, the local's: {fun}");
+    assert!(calls[0].ends_with(", i64 2000000000)"), "the local is handed the count in `nsec`: {fun}");
 }
 
 #[test]

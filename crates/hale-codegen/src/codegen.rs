@@ -3342,8 +3342,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     default_invocations: Vec<u32>,
     /// While a default is lowered where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
-    /// or a call that leaves a parameter, the key under which the checker
-    /// recorded its casts' conversions (`ConversionSite::DefaultCast`).
+    /// or a call that leaves a parameter, the path under which the checker
+    /// recorded every conversion there (`ConversionSite::path`).
     /// It is the checker's stack (`default_evaluation` in `hale-types`'
     /// `check.rs`) rebuilt: both push at the same two events, a literal
     /// leaving a field (`populate_user_type_fields`) and a call leaving a

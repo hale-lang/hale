@@ -298,42 +298,55 @@ impl Discharge {
     }
 }
 
-/// Where a conversion is: a cast `T(x)` (and a quantity's `.in(u)` and
-/// `.split(u)`) by its call site, the site lowering reads it at, or in a
-/// default by its evaluation path and call; an implicit conversion by the
-/// span of the value that converts (a quantity literal's own row is there
-/// too); a quantity divided by a literal by the division's span (U3); a
-/// printed quantity by the span of the value printed (U3).
+/// Where a conversion is: what it is at ([`SiteKind`]) and the evaluation
+/// path it was typed on. `path` is empty outside a default. In a default
+/// it is every evaluation from the outermost inward: the struct literal
+/// that leaves a field or the call that leaves a parameter, then the
+/// literal or call in that default that leaves the next default, and so
+/// on. A default is an expression of each scope that leaves it, so its
+/// names mean what that scope says (a local can shadow a type there and
+/// not elsewhere) and what its values flow into is that scope's: two
+/// evaluations of one default, each in its own scope, are two keys for
+/// every conversion in it, a cast's, a literal's, a value's. Lowering
+/// reads the row by the path it is lowering.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConversionSite {
+pub struct ConversionSite {
+    pub kind: SiteKind,
+    pub path: Vec<u32>,
+}
+
+/// What a conversion is at: a cast `T(x)` (and a quantity's `.in(u)` and
+/// `.split(u)`) by its call site; an implicit conversion by the span of
+/// the value that converts (a quantity literal's own row is there too);
+/// a quantity divided by a literal by the division's span (U3); a printed
+/// quantity by the span of the value printed (U3).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SiteKind {
     Cast(u32),
     Value { start: u32, end: u32 },
     Divide { start: u32, end: u32 },
     Printed { start: u32, end: u32 },
-    /// A cast in a default, by the evaluation path it was typed on and
-    /// its call: a default is an expression of each scope that leaves
-    /// it, so its name means what that scope says (a local can shadow
-    /// the type there and not elsewhere). `path` is every evaluation
-    /// from the outermost inward: the struct literal that leaves a field
-    /// or the call that leaves a parameter, then the literal or call in
-    /// that default that leaves the next default, and so on, so two
-    /// evaluations of one default under one outer construction, each in
-    /// its own scope, are two keys. Lowering reads the row by the path
-    /// it is lowering.
-    DefaultCast { path: Vec<u32>, call: u32 },
+}
+
+impl SiteKind {
+    pub fn value(span: Span) -> SiteKind {
+        SiteKind::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
+    pub fn divide(span: Span) -> SiteKind {
+        SiteKind::Divide { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
+
+    pub fn printed(span: Span) -> SiteKind {
+        SiteKind::Printed { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    }
 }
 
 impl ConversionSite {
-    pub fn value(span: Span) -> ConversionSite {
-        ConversionSite::Value { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
-    }
-
-    pub fn divide(span: Span) -> ConversionSite {
-        ConversionSite::Divide { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
-    }
-
-    pub fn printed(span: Span) -> ConversionSite {
-        ConversionSite::Printed { start: span.start.as_usize() as u32, end: span.end.as_usize() as u32 }
+    /// The site of `kind` on the evaluation path `path` (empty outside a
+    /// default).
+    pub fn new(kind: SiteKind, path: Vec<u32>) -> ConversionSite {
+        ConversionSite { kind, path }
     }
 }
 
@@ -693,16 +706,11 @@ impl TypingRecord {
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
-        let unminted = match &site {
-            ConversionSite::Cast(id) => NodeId(*id).is_none(),
-            ConversionSite::DefaultCast { path, call } => {
-                NodeId(*call).is_none() || path.iter().any(|at| NodeId(*at).is_none())
-            }
-            ConversionSite::Value { .. }
-            | ConversionSite::Divide { .. }
-            | ConversionSite::Printed { .. } => false,
+        let unminted = match &site.kind {
+            SiteKind::Cast(id) => NodeId(*id).is_none(),
+            SiteKind::Value { .. } | SiteKind::Divide { .. } | SiteKind::Printed { .. } => false,
         };
-        if unminted {
+        if unminted || site.path.iter().any(|at| NodeId(*at).is_none()) {
             return;
         }
         self.conversion_sites.insert(site.clone(), body.0);
@@ -824,9 +832,9 @@ impl TypedBodies {
     }
 
     /// The `conversions` column's row at `site`: lowering reads a cast's
-    /// by its call (`ConversionSite::Cast`), and a cast's in a default by
-    /// the evaluation path it lowers and its call (`DefaultCast`); `None`
-    /// for a call that is no conversion there.
+    /// by its call (`SiteKind::Cast`), a value's by its span, each in a
+    /// default by the evaluation path it lowers too; `None` for a call
+    /// that is no conversion there.
     pub fn conversion(&self, site: &ConversionSite) -> Option<&ConversionRow> {
         let body = self.conversion_sites.get(site)?;
         self.bodies.get(body)?.conversions.get(site)
