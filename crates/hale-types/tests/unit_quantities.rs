@@ -539,17 +539,19 @@ fn a_default_is_refused_where_the_same_binding_is() {
     ] {
         assert_eq!(errors_of(&decl, body), binding, "{decl}");
     }
-    let tuple = "(3USD, 1)";
+    // `1_500mg` is no whole count of grams, so it is a `Mass in mg` (U4:
+    // `3USD` would be a count of `Money` already).
+    let tuple = "(1_500mg, 1)";
     one(
-        &format!("    let t: (Money, Int) = {tuple};\n"),
+        &format!("    let t: (Mass, Int) = {tuple};\n"),
         tuple,
-        "let `t`: expected `(Money, Int)`, got `(Money in USD, Int)`",
+        "let `t`: expected `(Mass, Int)`, got `(Mass in mg, Int)`",
     );
     for (decl, body, place) in [
-        (format!("type T {{ t: (Money, Int) = {tuple}; }}\n"), "    let t = T {};\n", "field `t`"),
-        (format!("fn g(t: (Money, Int) = {tuple}) -> Int {{ return 1; }}\n"), "    let n = g();\n", "param `t`"),
+        (format!("type T {{ t: (Mass, Int) = {tuple}; }}\n"), "    let t = T {};\n", "field `t`"),
+        (format!("fn g(t: (Mass, Int) = {tuple}) -> Int {{ return 1; }}\n"), "    let n = g();\n", "param `t`"),
     ] {
-        let message = format!("{place}: declared `(Money, Int)`, default is `(Money in USD, Int)`");
+        let message = format!("{place}: declared `(Mass, Int)`, default is `(Mass in mg, Int)`");
         assert_eq!(errors_of(&decl, body), [(tuple.to_string(), message)], "{decl}");
     }
 }
@@ -568,34 +570,56 @@ fn element(at: &str, from: &str, to: &str, factor: &str, count: Option<i64>) -> 
 /// the element type from its own type, its own row (its own factor, its
 /// own count), whatever the first element is. Typed by its first element,
 /// `[3cent, 2USD]` stored `2` cents for `2USD`, and a value element kept
-/// the meet's row in place of its own.
+/// the meet's row in place of its own. A literal counts in its quantity's
+/// denomination when whole (U4), so `[3cent, 2USD]` is two counts of
+/// `Money` already: their meet is `Money`, and each keeps its own row.
+/// Elements of two denominations are a value beside a literal, or a
+/// literal that is no whole count of its quantity (`1_500mg`).
 #[test]
 fn an_array_literals_elements_each_convert_from_their_own_type() {
     let annotated = |array: &str| element_rows(&format!("    let a: [Money; 2] = {array};\n"));
     assert_eq!(
         annotated("[3cent, 2USD]"),
-        [element("3cent", "Money", "Money", "1", Some(3)), element("2USD", "Money in USD", "Money", "100", Some(200))]
+        [element("3cent", "Money", "Money", "1", Some(3)), element("2USD", "Money", "Money", "1", Some(200))]
     );
     assert_eq!(
         annotated("[3USD, 2cent]"),
-        [element("3USD", "Money in USD", "Money", "100", Some(300)), element("2cent", "Money", "Money", "1", Some(2))]
+        [element("3USD", "Money", "Money", "1", Some(300)), element("2cent", "Money", "Money", "1", Some(2))]
     );
-    // A value element: the meet (`msec`) converted `s` there; the place's
-    // element type is `sec`, so `s` converts from its own type instead.
+    // A value at another denomination, either side of a literal.
+    let bytes = |array: &str| element_rows(&format!("    let a: [ByteCount; 2] = {array};\n"));
     assert_eq!(
-        element_rows("    let s = 3sec;\n    let a: [Seconds; 2] = [s, 2_000msec];\n"),
+        bytes("[kib(1KiB), 3B]"),
         [
-            element("3sec", "Span in sec", "Span in sec", "1", Some(3)),
-            element("s", "Span in sec", "Seconds", "1", None),
-            element("2_000msec", "Span in msec", "Seconds", "1/1000", Some(2)),
+            element("kib(1KiB)", "KiBs", "ByteCount", "1024", None),
+            element("1KiB", "ByteCount", "KiBs", "1/1024", Some(1)),
+            element("3B", "ByteCount", "ByteCount", "1", Some(3)),
+        ]
+    );
+    assert_eq!(
+        bytes("[3B, kib(1KiB)]"),
+        [
+            element("3B", "ByteCount", "ByteCount", "1", Some(3)),
+            element("kib(1KiB)", "KiBs", "ByteCount", "1024", None),
+            element("1KiB", "ByteCount", "KiBs", "1/1024", Some(1)),
+        ]
+    );
+    // A value element: the meet (`Span`) converted `s` there; the place's
+    // element type is `Seconds`, `s`'s own, so the meet's row is withdrawn
+    // and `s` has none.
+    assert_eq!(
+        element_rows("    let s = seconds(3sec);\n    let a: [Seconds; 2] = [s, 2_000msec];\n"),
+        [
+            element("3sec", "Span", "Seconds", "1/1000000000", Some(3)),
+            element("2_000msec", "Span", "Seconds", "1/1000000000", Some(2)),
         ]
     );
     // A type's `round:` discharges a narrowing element as it does a value.
     assert_eq!(
         element_rows("    let b: [Bucket; 2] = [1sec, 150msec];\n"),
         [
-            element("1sec", "Span in sec", "Bucket", "10", Some(10)),
-            element("150msec", "Span in msec", "Bucket", "1/100", Some(1)),
+            element("1sec", "Span", "Bucket", "1/100000000", Some(10)),
+            element("150msec", "Span", "Bucket", "1/100000000", Some(1)),
         ]
     );
     // A literal zero is a value of every quantity, in an array as alone.
@@ -604,8 +628,16 @@ fn an_array_literals_elements_each_convert_from_their_own_type() {
     one(
         "    let s: [Seconds; 2] = [1sec, 1_500msec];\n",
         "1_500msec",
-        "`Seconds` from `Span in msec` divides by 1,000: say what happens to the remainder: convert explicitly \
+        "`Seconds` from `Span` divides by 1,000,000,000: say what happens to the remainder: convert explicitly \
          (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` policy",
+    );
+    // A literal at its own unit is the element whose type differs: the meet
+    // (`Mass in mg`) widened `3g`; into `Mass` each converts from its own.
+    one(
+        "    let m: [Mass; 2] = [3g, 1_500mg];\n",
+        "1_500mg",
+        "`Mass` from `Mass in mg` divides by 1,000: say what happens to the remainder: convert explicitly \
+         (`.in(u) or floor`, `Mass(…) or half_even`, `or <value>`, `or raise`), or give `Mass` a `round:` policy",
     );
     one("    let a: [Money; 2] = [3cent, 5];\n", "5", "`Int` is not `Money`: a count becomes a quantity by a unit (`n * 1cent`)");
     one(
@@ -620,26 +652,34 @@ fn an_array_literals_elements_each_convert_from_their_own_type() {
 /// as a sum's operands do, at the finer denomination, each coarser element
 /// widened exactly with its row; a nested literal meets at each level.
 /// Elements of two quantities, a quantity beside a point or an `Int`, are
-/// refused naming both.
+/// refused naming both. Elements all of one type (literals that are whole
+/// counts of their quantity, U4) meet at that type: the meet converts
+/// none, and each keeps its literal's own row.
 #[test]
 fn an_array_literals_elements_meet_where_nothing_types_it() {
-    assert_eq!(ty_of("", "[1sec, 1_500msec]"), "[Span in msec; 2]");
-    assert_eq!(ty_of("", "[1_500msec, 1sec]"), "[Span in msec; 2]");
-    assert_eq!(ty_of("", "[[1sec], [1_500msec]]"), "[[Span in msec; 1]; 2]");
-    assert_eq!(ty_of("", "[3USD, 2USD]"), "[Money in USD; 2]");
+    assert_eq!(ty_of("", "[3g, 1_500mg]"), "[Mass in mg; 2]");
+    assert_eq!(ty_of("", "[1_500mg, 3g]"), "[Mass in mg; 2]");
+    assert_eq!(ty_of("", "[[3g], [1_500mg]]"), "[[Mass in mg; 1]; 2]");
+    assert_eq!(ty_of("", "[seconds(1sec), 1_500msec]"), "[Span; 2]");
+    assert_eq!(ty_of("", "[1sec, 1_500msec]"), "[Span; 2]");
+    assert_eq!(ty_of("", "[3USD, 2USD]"), "[Money; 2]");
     assert_eq!(
-        element_rows("    let a = [1sec, 1_500msec];\n"),
+        element_rows("    let a = [3g, 1_500mg];\n"),
         [
-            element("1sec", "Span in sec", "Span in msec", "1000", Some(1000)),
-            element("1_500msec", "Span in msec", "Span in msec", "1", Some(1500)),
+            element("3g", "Mass", "Mass in mg", "1000", Some(3000)),
+            element("1_500mg", "Mass in mg", "Mass in mg", "1", Some(1500)),
         ]
     );
     assert_eq!(
-        element_rows("    let n = [[1sec], [1_500msec]];\n"),
+        element_rows("    let n = [[3g], [1_500mg]];\n"),
         [
-            element("1sec", "Span in sec", "Span in msec", "1000", Some(1000)),
-            element("1_500msec", "Span in msec", "Span in msec", "1", Some(1500)),
+            element("3g", "Mass", "Mass in mg", "1000", Some(3000)),
+            element("1_500mg", "Mass in mg", "Mass in mg", "1", Some(1500)),
         ]
+    );
+    assert_eq!(
+        element_rows("    let a = [1sec, 1_500msec];\n"),
+        [element("1sec", "Span", "Span", "1", Some(1_000_000_000)), element("1_500msec", "Span", "Span", "1", Some(1_500_000_000))]
     );
     let (src, all) = diags("    let a = [1sec, 3cent];\n");
     let errors: Vec<&Diag> = all.iter().filter(|d| d.is_error()).collect();
@@ -651,7 +691,7 @@ fn an_array_literals_elements_meet_where_nothing_types_it() {
     one(
         "    let p = Instant(span(1));\n    let a = [p, 1sec];\n",
         "[p, 1sec]",
-        "`[…]`: `Instant` is a point and `Span in sec` a quantity; an array holds one or the other",
+        "`[…]`: `Instant` is a point and `Span` a quantity; an array holds one or the other",
     );
     one(
         "    let a = [3cent, 5];\n",
@@ -667,9 +707,9 @@ fn an_array_literals_elements_meet_where_nothing_types_it() {
     // Only a quantity converts: a tuple's part at another denomination
     // has no meet.
     one(
-        "    let a = [(3cent, 1), (2USD, 1)];\n",
-        "[(3cent, 1), (2USD, 1)]",
-        "`[…]`: elements of `(Money, Int)` and `(Money in USD, Int)`; an array holds one type",
+        "    let a = [(3g, 1), (1_500mg, 1)];\n",
+        "[(3g, 1), (1_500mg, 1)]",
+        "`[…]`: elements of `(Mass, Int)` and `(Mass in mg, Int)`; an array holds one type",
     );
 }
 
