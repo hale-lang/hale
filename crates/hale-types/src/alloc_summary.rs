@@ -1875,7 +1875,7 @@ pub fn summarize_identified(
     // is in, whether it is an `@hot` fn and a mode, and the declaration
     // it is a member of, and every param's name (the outermost of its
     // bindings). A body's place in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>);
+    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     // What a call spelling (locus, name) resolves to: the row of the last
     // declaration of the name.
@@ -2111,7 +2111,7 @@ pub fn summarize_identified(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert((None, key.fn_name.clone()), key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
+                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -2181,7 +2181,7 @@ pub fn summarize_identified(
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
-                                    md.body.clone(),
+                                    &md.body,
                                     None,
                                     Some(locus.clone()),
                                     param_var_types(&md.params),
@@ -2211,7 +2211,7 @@ pub fn summarize_identified(
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
-                                    decl.body.clone(),
+                                    &decl.body,
                                     entry,
                                     Some(locus.clone()),
                                     param_var_types(&decl.params),
@@ -2236,7 +2236,7 @@ pub fn summarize_identified(
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
-                                    lc.body.clone(),
+                                    &lc.body,
                                     Some(entry),
                                     Some(locus.clone()),
                                     param_var_types(&lc.params),
