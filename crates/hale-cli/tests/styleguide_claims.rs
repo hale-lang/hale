@@ -335,6 +335,34 @@ fn claim_qualified_std_time_time_fails_build() {
     );
 }
 
+/// The same entry, `Duration` alone: the mixed program above stops at
+/// its `Time` field, so a fix to qualified `Duration` by itself would
+/// leave it green. This one names the `Duration` message.
+#[test]
+fn claim_qualified_std_time_duration_alone_fails_build() {
+    let (checked, failed, out) = check_then_build(
+        "type Span { key: Int; took: std::time::Duration; }\n\
+         fn main() {\n\
+             let s = Span { key: 1, took: 2s };\n\
+             println(s.took);\n\
+         }",
+        "duration-qualified",
+    );
+    assert!(
+        checked,
+        "spec/styleguide.md §7 says `hale check` accepts a qualified \
+         `std::time::Duration` field. It refuses it now — reword the \
+         entry:\n{}",
+        out
+    );
+    assert!(
+        failed && out.contains("qualified type `std::time::Duration` not in stdlib path-renames table"),
+        "spec/styleguide.md §7 says a qualified `std::time::Duration` field \
+         fails at build. It builds now — the entry's `Duration` half goes:\n{}",
+        out
+    );
+}
+
 /// §7 sharp edges: "An `Int` returned from a `-> Float` fn typechecks
 /// and fails at build." A fix is in progress; when it lands this
 /// fails, and the entry goes.

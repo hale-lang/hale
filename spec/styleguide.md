@@ -1241,8 +1241,10 @@ one hands a caller a value nothing computed: know those cold.
   `std::time::Time` or `std::time::Duration`.** The qualified
   spelling typechecks as a field, a `@form` cell type or a fn
   parameter and fails at build ("qualified type
-  `std::time::Duration` not in stdlib path-renames table"); only a
-  `let` annotation builds qualified.
+  `std::time::Duration` not in stdlib path-renames table"). A
+  qualified `let` annotation builds, but the binding is not the
+  quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
+  write it bare there too.
 - **An `Int` returned from a `-> Float` fn** typechecks and fails
   at build ("return type mismatch: declared Float, got Int").
   Return `Float(n)`. (Fix in progress.)
