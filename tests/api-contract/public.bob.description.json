@@ -1,9 +1,9 @@
 {
   "description": 1,
-  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
   "name": "public",
   "surface": "Public",
-  "digest": "fnv1a64:fe65e6d3036ee1eb",
+  "digest": "fnv1a64:a8930d6e7998e986",
   "listener": {
     "transport": "http",
     "address": "127.0.0.1:8080"
@@ -25,7 +25,7 @@
       "response": {
         "$ref": "#/schemas/OrderReceipt"
       },
-      "error": null,
+      "error": "ClosureViolation",
       "requires": []
     }
   ],

@@ -1,7 +1,7 @@
 {
   "wire": 1,
   "transport": "http",
-  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
   "outcome": "refusal",
   "kind": "unauthenticated",
   "request": {
@@ -10,7 +10,7 @@
     "headers": {
       "Authorization": "Bearer t-mallory",
       "Content-Type": "application/json",
-      "Hale-Surface-Digest": "fnv1a64:fe65e6d3036ee1eb"
+      "Hale-Surface-Digest": "fnv1a64:a8930d6e7998e986"
     },
     "body": {
       "symbol": "ACME",

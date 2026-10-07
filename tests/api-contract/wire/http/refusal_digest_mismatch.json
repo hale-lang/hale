@@ -1,7 +1,7 @@
 {
   "wire": 1,
   "transport": "http",
-  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
   "outcome": "refusal",
   "kind": "digest_mismatch",
   "request": {
@@ -27,7 +27,7 @@
       "refusal": {
         "kind": "digest_mismatch",
         "reason": "the request was generated against fnv1a64:0123456789abcdef",
-        "served": "fnv1a64:fe65e6d3036ee1eb"
+        "served": "fnv1a64:a8930d6e7998e986"
       }
     }
   }

@@ -118,7 +118,7 @@
         "name": { "$ref": "#/$defs/member_name" },
         "request": { "$ref": "#/$defs/type_ref" },
         "response": { "$ref": "#/$defs/type_ref" },
-        "error": { "$ref": "#/$defs/type_ref" },
+        "error": { "$ref": "#/$defs/error" },
         "requires": { "$ref": "#/$defs/requires" }
       }
     },
@@ -209,12 +209,21 @@
       }
     },
     "type_ref": {
-      "$comment": "A JSON Schema for the type: a reference into the document's schemas (#/schemas/<Type>) or an inline schema for a scalar; null when the member has none (no request, a () response, not fallible).",
-      "type": ["object", "null"]
+      "$comment": "A JSON Schema for the type: a reference into the document's schemas (#/schemas/<Type>) or an inline schema for a scalar; null when the member has none (no request, a () response, not fallible). ClosureViolation is never a schema of the document.",
+      "type": ["object", "null"],
+      "properties": { "$ref": { "not": { "const": "#/schemas/ClosureViolation" } } }
+    },
+    "error": {
+      "$comment": "A member's error: the schema of its handler's E, whose failure is the handler error; the string ClosureViolation for a fallible(ClosureViolation) handler, whose failure is the server error and which has no error schema; null when the handler is not fallible (spec/api.md, Surfaces and their rows).",
+      "oneOf": [
+        { "$ref": "#/$defs/type_ref" },
+        { "const": "ClosureViolation" }
+      ]
     },
     "schemas": {
-      "$comment": "The JSON Schema of every type the document's members and streams name, by type name. A quantity's field carries x-hale-unit (its q(...) tag, spec/units.md); a named scalar's carries x-hale-type.",
+      "$comment": "The JSON Schema of every type the document's members and streams name, by type name. A quantity's field carries x-hale-unit (its q(...) tag, spec/units.md); a named scalar's carries x-hale-type. ClosureViolation is no member's schema: a structural failure is the server error.",
       "type": "object",
+      "properties": { "ClosureViolation": false },
       "additionalProperties": { "type": "object" }
     },
     "requires": {

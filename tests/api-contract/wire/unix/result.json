@@ -1,7 +1,7 @@
 {
   "wire": 1,
   "transport": "unix",
-  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
   "outcome": "result",
   "peer": {
     "uid": 1000,
@@ -14,7 +14,7 @@
       "order": 41
     },
     "id": "c-1",
-    "digest": "fnv1a64:98daa4b3e265ed98"
+    "digest": "fnv1a64:40381db6685c9f75"
   },
   "reply": {
     "request_id": 1,

@@ -1,7 +1,7 @@
 {
   "wire": 1,
   "transport": "unix",
-  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
   "outcome": "refusal",
   "kind": "digest_mismatch",
   "peer": {
@@ -24,7 +24,7 @@
     "refusal": {
       "kind": "digest_mismatch",
       "reason": "the request was generated against fnv1a64:0123456789abcdef",
-      "served": "fnv1a64:98daa4b3e265ed98"
+      "served": "fnv1a64:40381db6685c9f75"
     },
     "caller": {
       "mode": "unix",

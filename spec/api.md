@@ -41,7 +41,7 @@ type Cancelled { order: OrderId; was_open: Bool; }
 type OrderError { code: String; reason: String; }
 
 locus Orders {
-    fn place(o: PlaceOrder) -> OrderReceipt { … }
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) { … }
     fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) { … }
 }
 ```
@@ -69,7 +69,7 @@ A row's columns:
 | member | the handler as a caller names it: `Locus::fn`, the locus in its author spelling (`lib::Orders::cancel` for a locus another seed declares) |
 | request | the type of the handler's one value parameter, or none |
 | response | the handler's return type, or none for `()` |
-| error | `E` when the handler is `fallible(E)`, or none |
+| error | `E` when the handler is `fallible(E)`, `ClosureViolation` among them, or none |
 | pool | the handler's pool, as the receiver instance a serve site binds is placed (§ Serving) |
 | requires | the role names a caller must hold, as written |
 
@@ -80,6 +80,31 @@ request. The request, response and error types cross the boundary by
 shape: a quantity's field carries its unit (the unit dialect's
 `q(<denomination>)` tag, `spec/units.md` § Layout and the wire), so a
 client knows `notional` counts `cent`.
+
+**A handler is an ordinary method under F.42.** A handler that returns
+a value and may `violate` is declared `fallible(ClosureViolation)`, as
+any such method is (`spec/semantics.md` § A value-returning method that
+may violate is fallible); being a row's handler adds no exemption. The
+exemption F.42 makes is for lifecycle bodies and bus handlers, whose
+caller is the runtime and writes no `or`; a handler's callers inside
+the program write `or` at every call, as the bare-call law requires,
+and that is what keeps an internal call from reading a value the
+handler never computed. A row's error column is therefore one of two
+kinds, and the kind decides what a caller over a transport sees when
+the handler fails:
+
+- **`ClosureViolation`**: the failure is structural, the outcome is the
+  **server error** (§ Outcomes), never the handler error, and a
+  description carries no error schema for the member: its `error` is
+  the string `"ClosureViolation"`;
+- **any other `E`**: the failure is the **handler error**, its body `E`
+  by codec, and the description carries `E`'s schema.
+
+A handler is one or the other, never both, since a fn has one error
+type and a fn that may violate declares no other (F.42). A handler
+that may violate and returns a value but is not `fallible`, or is
+`fallible(E)` with another `E`, is refused by F.42 at the check before
+any row is admitted.
 
 A handler may sit in several surfaces, and in each it is held to that
 surface's row: `Orders::cancel` above requires `trader` through
@@ -95,7 +120,7 @@ surface**, named after the seed (`spec/packages.md`):
 ```hale,fragment
 locus Orders {
     @rpc
-    fn place(o: PlaceOrder) -> OrderReceipt { … }
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) { … }
     @rpc(requires: [trader])
     fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) { … }
 }
@@ -130,6 +155,15 @@ before anything is served:
    Bytes\`, which the JSON codec does not carry". A row is never left
    out of a served surface with a warning: the row is the intent, and
    an intent the program cannot honour is an error.
+6. **A row's error type decides its failure.** A row whose error type
+   is `ClosureViolation` fails as the server error and its description
+   lists no error schema; a row with any other error type fails as the
+   handler error with that type's schema. The check states it where it
+   reports the row: "rpc \`Orders::place\`: its error type is
+   \`ClosureViolation\`, so a failure is the server error; a description
+   carries no error schema for it". The law refuses nothing F.42 does
+   not; it fixes the outcome, so the description, the digest and the
+   transport read one fact.
 
 ## The contract digest
 
@@ -159,7 +193,10 @@ one LF (0x0A):
      when the handler takes no request;
    - the response's shape hash, or `-` when the handler returns `()`;
    - the error type's shape hash, or `-` when the handler is not
-     fallible;
+     fallible; for a `fallible(ClosureViolation)` handler it is
+     `ClosureViolation`'s (`locus:s;closure:s;diff:i`), so declaring a
+     violation, or removing one, moves the digest as any change of
+     error type does;
    - the required roles, sorted as bytes, each once, joined by `,`
      (0x2C), or `-` when the row requires none.
 
@@ -169,7 +206,7 @@ holds a TAB or a LF. The digest is the 64-bit FNV-1a fold
 prime `0x100000001b3`, each byte xor-ed in and then multiplied, the
 fold every FNV identity uses, `spec/registry.md` § `digests`) over the
 whole text, written `fnv1a64:` followed by sixteen lowercase hex
-digits: `fnv1a64:fe65e6d3036ee1eb`.
+digits: `fnv1a64:a8930d6e7998e986`.
 
 A type's **shape hash** is its payload contract's hash
 (`spec/model.md` § Sorts, the `payloads` table): the 64-bit FNV-1a fold
@@ -357,7 +394,7 @@ to hash for one.
 | result | the handler returned | 200, body = the response by codec | `{"ok": true, "value": …}` | OK | result |
 | handler error | the handler failed with its declared `E` | 422, body = `E` by codec | `{"ok": false, "error": E}` | FAILED_PRECONDITION, `E` in details | error object with `E` |
 | refusal | the request was not accepted (the kinds below) | 400 / 409 / 401 / 403 / 429 / 503, body = `{"refusal": …}` | `{"ok": false, "refusal": {"kind": …, "reason": …}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
-| server error | the handler violated (§ Structural failure in a handler) | 500, body = `{"refusal": {"kind": "server"}}` | `{"ok": false, "refusal": {"kind": "server"}}` | INTERNAL | error object |
+| server error | the handler failed with `ClosureViolation`, its row's error type (§ Structural failure in a handler) | 500, body = `{"refusal": {"kind": "server"}}` | `{"ok": false, "refusal": {"kind": "server"}}` | INTERNAL | error object |
 | transport failure | the connection or the protocol broke | the transport's own | EOF | the transport's own | the transport's own |
 
 The refusal kinds, each with its status:
@@ -382,7 +419,7 @@ socket carrying one JSON object per line, as the GH #1106 binding's
 wire was. A request:
 
 ```text
-{"call": "Orders::cancel", "payload": {"order": 41}, "id": "c-1", "digest": "fnv1a64:98daa4b3e265ed98"}
+{"call": "Orders::cancel", "payload": {"order": 41}, "id": "c-1", "digest": "fnv1a64:40381db6685c9f75"}
 {"describe": true}
 ```
 
@@ -438,13 +475,17 @@ answer cannot be shed silently.
 
 ## Structural failure in a handler
 
-The runtime invokes a handler to produce a reply through the fallible
-ABI F.42 (GH #1426) gives `violate`: a violation lands in the error slot
-as the `ClosureViolation`, the runtime maps it to the server error
-outcome, and the owner's `on_failure` runs as it does for any violation
-(`spec/semantics.md` § Inline closure violation). No rule on the
-handler is needed, and no caller ever reads a reply the handler did not
-produce (R2).
+A handler that may violate is `fallible(ClosureViolation)` (§ Surfaces
+and their rows, F.42), and the runtime calls it as any caller calls a
+fallible fn (R2): through the fallible ABI (GH #1426), so a violation
+arrives in the error slot as the `ClosureViolation` the owner's
+`on_failure` received, and no value is produced. The owner's
+`on_failure` runs first, as for any violation (`spec/semantics.md` §
+Inline closure violation, step 5); then the runtime answers the caller
+with the server error, whose object says nothing of the violation,
+which is the program's to report. The runtime's call is the transport
+caller's `or`: it reads the error slot and never a reply the handler
+did not produce. Nothing beyond F.42 is asked of the handler.
 
 ## Streams
 
@@ -520,7 +561,7 @@ reach: a serve site's surface over its transport under its role
 source, identified as
 
 ```text
-<surface>@<digest>/<exposure name>       Public@fnv1a64:fe65e6d3036ee1eb/public
+<surface>@<digest>/<exposure name>       Public@fnv1a64:a8930d6e7998e986/public
 ```
 
 The document a caller fetches from a listener (`GET /.description`,
@@ -533,7 +574,9 @@ caller's `Context` under that exposure's role source:
 - the caller: the principal the exposure established, and the roles it
   holds among those the exposure's rows and streams require;
 - the **members** the caller may call: name, request, response and
-  error schemas, and `requires`;
+  error schemas, and `requires`; a member whose error type is
+  `ClosureViolation` carries the string `"ClosureViolation"` in place
+  of an error schema (§ Surfaces and their rows);
 - the **streams** of the hubs at that listener the caller may subscribe
   to: topic, wire subject, direction, payload schema, codec, `bound`,
   `on_full`, the loss statement, whether the binding replays, and
@@ -594,10 +637,11 @@ by hand:
   `requires`; `Public` over `http::Rpc` twice (`public`, `partner`),
   under two role sources and bound to two `Orders` instances; `Admin`
   over `unix::Rpc` (`admin`) under a third; a fallible rpc
-  (`Orders::cancel`); two rpcs that violate (`Orders::place`,
-  `Ledger::rebalance`); one outward stream, `Fills`, through a
-  `ws::Hub`. It is written in this document's syntax and parses from R1
-  on;
+  (`Orders::cancel`, `fallible(OrderError)`: the handler error); two
+  rpcs that violate (`Orders::place`, `Ledger::rebalance`, each
+  `fallible(ClosureViolation)`: the server error); one outward stream,
+  `Fills`, through a `ws::Hub`. It is written in this document's syntax
+  and parses from R1 on;
 - `<exposure>.<caller>.description.json`: each exposure's description
   for two callers;
 - `inventory.json`: the program-wide document;
@@ -609,8 +653,10 @@ by hand:
 document against the schema and holds the fixtures to this contract:
 an exposure identity is its surface, digest and name; a caller's
 description lists exactly the members whose `requires` the caller
-holds; the digests are the ones `digest.md` folds; every wire record
-encodes its outcome as § Outcomes says. The plan's § 3 assertions that
+holds; the digests are the ones `digest.md` folds; a row whose error
+type is `ClosureViolation` carries no error schema and is the only kind
+of member a server error is recorded for; every wire record encodes its
+outcome as § Outcomes says. The plan's § 3 assertions that
 need a running program (refusals before a handler's counter moves,
 queued shutdown, a lost response, revocation while connected) are the
 exit criteria of R2, R3 and R5.

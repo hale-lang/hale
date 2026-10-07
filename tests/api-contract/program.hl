@@ -19,10 +19,14 @@
 // `Orders::cancel` under different `requires`; `Public` over HTTP
 // twice, under two role sources and bound to two `Orders` instances,
 // and `Admin` over the Unix socket under a third; one fallible rpc
-// (`Orders::cancel`); two rpcs that violate on a structural limit
-// (`Orders::place`, `Ledger::rebalance`); one outward stream (`Fills`)
-// through a hub. The unbound case — a serve of `Public` naming no
-// `Orders` while two are held — is a check error and so is not here.
+// (`Orders::cancel`, the handler error); two rpcs that violate on a
+// structural limit (`Orders::place`, `Ledger::rebalance`), each
+// `fallible(ClosureViolation)` as F.42 makes any value-returning method
+// that may violate, so their failure is the server error; one outward
+// stream (`Fills`) through a hub. No fn here calls either violating
+// handler, so no `or` is written; one that did would write it. The
+// unbound case — a serve of `Public` naming no `Orders` while two are
+// held — is a check error and so is not here.
 
 role trader;
 role operator;
@@ -87,7 +91,7 @@ locus Orders {
     bus { publish Fills; }
     closure position_limit { captures: open; epoch inline; }
 
-    fn place(o: PlaceOrder) -> OrderReceipt {
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) {
         if o.qty > 10000 { violate position_limit; }
         let id = OrderId(self.next);
         self.next = self.next + 1;
@@ -110,7 +114,7 @@ locus Ledger {
     params { moved: Int = 0; }
     closure books_balanced { captures: moved; epoch inline; }
 
-    fn rebalance(r: Rebalance) -> Rebalanced {
+    fn rebalance(r: Rebalance) -> Rebalanced fallible(ClosureViolation) {
         if len(r.book) == 0 { violate books_balanced; }
         self.moved = self.moved + 1500;
         return Rebalanced { moved: 1500cent };

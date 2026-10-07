@@ -4,7 +4,7 @@
   "surfaces": [
     {
       "name": "Admin",
-      "digest": "fnv1a64:98daa4b3e265ed98",
+      "digest": "fnv1a64:40381db6685c9f75",
       "members": [
         {
           "name": "Ledger::rebalance",
@@ -14,7 +14,7 @@
           "response": {
             "$ref": "#/schemas/Rebalanced"
           },
-          "error": null,
+          "error": "ClosureViolation",
           "requires": [
             "operator"
           ]
@@ -38,7 +38,7 @@
     },
     {
       "name": "Public",
-      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "digest": "fnv1a64:a8930d6e7998e986",
       "members": [
         {
           "name": "Orders::cancel",
@@ -63,7 +63,7 @@
           "response": {
             "$ref": "#/schemas/OrderReceipt"
           },
-          "error": null,
+          "error": "ClosureViolation",
           "requires": []
         }
       ]
@@ -71,10 +71,10 @@
   ],
   "exposures": [
     {
-      "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+      "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
       "name": "admin",
       "surface": "Admin",
-      "digest": "fnv1a64:98daa4b3e265ed98",
+      "digest": "fnv1a64:40381db6685c9f75",
       "listener": {
         "transport": "unix",
         "address": "/run/desk/admin.sock"
@@ -103,10 +103,10 @@
       ]
     },
     {
-      "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/partner",
+      "exposure": "Public@fnv1a64:a8930d6e7998e986/partner",
       "name": "partner",
       "surface": "Public",
-      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "digest": "fnv1a64:a8930d6e7998e986",
       "listener": {
         "transport": "http",
         "address": "127.0.0.1:8081"
@@ -130,10 +130,10 @@
       ]
     },
     {
-      "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+      "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
       "name": "public",
       "surface": "Public",
-      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "digest": "fnv1a64:a8930d6e7998e986",
       "listener": {
         "transport": "http",
         "address": "127.0.0.1:8080"

@@ -1,9 +1,9 @@
 {
   "description": 1,
-  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
   "name": "admin",
   "surface": "Admin",
-  "digest": "fnv1a64:98daa4b3e265ed98",
+  "digest": "fnv1a64:40381db6685c9f75",
   "listener": {
     "transport": "unix",
     "address": "/run/desk/admin.sock"

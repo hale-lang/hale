@@ -26,11 +26,15 @@ api Public {
 
 | member | request | response | error | requires |
 |---|---|---|---|---|
-| `Orders::place` | `PlaceOrder` | `OrderReceipt` | none | none |
+| `Orders::place` | `PlaceOrder` | `OrderReceipt` | `ClosureViolation` | none |
 | `Orders::cancel` | `CancelOrder` | `Cancelled` | `OrderError` | `trader` |
 
 `Orders::cancel` takes `ctx: std::api::Context` after its request; the
-`Context` is not part of the request.
+`Context` is not part of the request. `Orders::place` may violate and
+returns a value, so it is `fallible(ClosureViolation)` (F.42): its error
+column is `ClosureViolation`, its failure the server error, and its
+error slot below is `ClosureViolation`'s shape hash, as any error
+type's is.
 
 ## 2. Canonical order
 
@@ -56,7 +60,12 @@ PlaceOrder    symbol:s;qty:i;limit:q(cent)    cb5775974312c858
 OrderReceipt  order:i;notional:q(cent)        bb4f99639cf069af
 Rebalance     book:s                          19611780fbd68ecf
 Rebalanced    moved:q(cent)                   3193bf68569ed280
+ClosureViolation  locus:s;closure:s;diff:i    36c7f0561125943e
 ```
+
+`ClosureViolation` is the builtin record a violation carries
+(`spec/semantics.md` § Inline closure violation: `locus` and `closure`
+Strings, `diff` an Int, in that order).
 
 ## 4. The hash input
 
@@ -68,10 +77,10 @@ each TAB written `→`:
 ```text
 hale-api-surface 1
 Orders::cancel→deb8489f34994e5a→e1506381a35c8ced→db0311924c0e7333→trader
-Orders::place→cb5775974312c858→bb4f99639cf069af→-→-
+Orders::place→cb5775974312c858→bb4f99639cf069af→36c7f0561125943e→-
 ```
 
-The exact bytes, 144 of them, in hex:
+The exact bytes, 159 of them, in hex:
 
 <!-- input: Public -->
 ```text
@@ -79,20 +88,20 @@ The exact bytes, 144 of them, in hex:
 6c09646562383438396633343939346535610965313530363338316133356338
 6365640964623033313139323463306537333333097472616465720a4f726465
 72733a3a706c6163650963623537373539373433313263383538096262346639
-3936333963663036396166092d092d0a
+39363339636630363961660933366337663035363131323539343365092d0a
 ```
 
 ## 5. The digest
 
-The 64-bit FNV-1a fold of those 144 bytes:
+The 64-bit FNV-1a fold of those 159 bytes:
 
 ```text
-fnv1a64:fe65e6d3036ee1eb
+fnv1a64:a8930d6e7998e986
 ```
 
 The exposures `public` and `partner` serve this surface, so both carry
-it: `Public@fnv1a64:fe65e6d3036ee1eb/public` and
-`Public@fnv1a64:fe65e6d3036ee1eb/partner`. Neither the listener, the
+it: `Public@fnv1a64:a8930d6e7998e986/public` and
+`Public@fnv1a64:a8930d6e7998e986/partner`. Neither the listener, the
 receiver instance (`self.orders`, `self.partner_orders`), the role
 source nor the surface's name entered the input.
 
@@ -100,7 +109,7 @@ source nor the surface's name entered the input.
 
 ```text
 hale-api-surface 1
-Ledger::rebalance→19611780fbd68ecf→3193bf68569ed280→-→operator
+Ledger::rebalance→19611780fbd68ecf→3193bf68569ed280→36c7f0561125943e→operator
 Orders::cancel→deb8489f34994e5a→e1506381a35c8ced→db0311924c0e7333→operator
 ```
 
@@ -108,12 +117,22 @@ Orders::cancel→deb8489f34994e5a→e1506381a35c8ced→db0311924c0e7333→operat
 ```text
 68616c652d6170692d7375726661636520310a4c65646765723a3a726562616c
 616e636509313936313137383066626436386563660933313933626636383536
-396564323830092d096f70657261746f720a4f72646572733a3a63616e63656c
-0964656238343839663334393934653561096531353036333831613335633863
-65640964623033313139323463306537333333096f70657261746f720a
+3965643238300933366337663035363131323539343365096f70657261746f72
+0a4f72646572733a3a63616e63656c0964656238343839663334393934653561
+0965313530363338316133356338636564096462303331313932346330653733
+3333096f70657261746f720a
 ```
 
-157 bytes, folding to `fnv1a64:98daa4b3e265ed98`.
+172 bytes, folding to `fnv1a64:40381db6685c9f75`.
 `Orders::cancel`'s line differs from `Public`'s only in its required
 role: the same handler under another surface's `requires` is another
 contract.
+
+## Declaring a violation moves the digest
+
+Before `Orders::place` and `Ledger::rebalance` were declared
+`fallible(ClosureViolation)`, their error slots were `-`, and the two
+surfaces folded to `fnv1a64:fe65e6d3036ee1eb` (`Public`, 144 bytes) and
+`fnv1a64:98daa4b3e265ed98` (`Admin`, 157 bytes). Whether a member may
+fail structurally is a fact about its contract, so declaring a violation,
+or removing one, is another digest, as adding a member is.

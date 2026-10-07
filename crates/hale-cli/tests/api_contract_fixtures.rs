@@ -94,6 +94,13 @@ fn validate(root: &Value, schema: &Value, v: &Value, at: &str, errs: &mut Vec<St
                 let target = resolve(root, sub.as_str().expect("$ref is a string"));
                 validate(root, target, v, at, errs);
             }
+            "not" => {
+                let mut e = Vec::new();
+                validate(root, sub, v, at, &mut e);
+                if e.is_empty() {
+                    errs.push(format!("{at}: {v} is what `not` forbids"));
+                }
+            }
             "oneOf" | "anyOf" => {
                 let branches = sub.as_array().expect("oneOf/anyOf is an array");
                 let passing = branches
@@ -482,6 +489,59 @@ fn a_description_lists_exactly_what_its_caller_may_call() {
 }
 
 // ------------------------------------------------------------------
+// The error column (F.42).
+
+/// A `fallible(ClosureViolation)` handler's error column: its failure is
+/// the server error, and no document carries a schema for it.
+const STRUCTURAL: &str = "ClosureViolation";
+
+/// The members of `program.hl` that may violate and return a value.
+const VIOLATING: &[&str] = &["Orders::place", "Ledger::rebalance"];
+
+/// Every member row a document lists, under the surface it is listed in.
+fn member_rows(doc: &Value) -> Vec<&Value> {
+    let mut out: Vec<&Value> = doc["members"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    for s in doc["surfaces"].as_array().into_iter().flatten() {
+        out.extend(s["members"].as_array().unwrap());
+    }
+    out
+}
+
+#[test]
+fn a_violating_handler_is_the_server_error_and_carries_no_error_schema() {
+    let mut docs: Vec<(String, Value)> = descriptions().into_iter().collect();
+    docs.push(("inventory.json".to_string(), inventory()));
+    let mut seen = BTreeSet::new();
+    for (file, doc) in &docs {
+        for m in member_rows(doc) {
+            let name = m["name"].as_str().unwrap();
+            if VIOLATING.contains(&name) {
+                assert_eq!(m["error"], json!(STRUCTURAL), "{file}: `{name}` is `fallible(ClosureViolation)`, so its error is the string");
+                seen.insert(name.to_string());
+            } else {
+                assert_ne!(m["error"], json!(STRUCTURAL), "{file}: `{name}` does not violate");
+            }
+        }
+        assert!(doc["schemas"].get(STRUCTURAL).is_none(), "{file}: no document carries a ClosureViolation schema");
+    }
+    assert_eq!(seen, VIOLATING.iter().map(|s| s.to_string()).collect(), "both violating handlers are listed somewhere");
+
+    // Giving `place` an error schema is refused: its error type is
+    // ClosureViolation, whose failure has none to give.
+    let base = read_json(&contract_dir().join("public.alice.description.json"));
+    let at = base["members"].as_array().unwrap().iter().position(|m| m["name"] == "Orders::place").expect("alice may place");
+    let mut doc = base.clone();
+    doc["members"][at]["error"] = json!({"$ref": "#/schemas/ClosureViolation"});
+    assert!(!errors_against_schema(&doc).is_empty(), "the schema accepts a reference to a ClosureViolation schema");
+    let mut doc = base.clone();
+    doc["schemas"][STRUCTURAL] = json!({"type": "object", "properties": {"locus": {"type": "string"}, "closure": {"type": "string"}, "diff": {"type": "integer"}}});
+    assert!(!errors_against_schema(&doc).is_empty(), "the schema accepts a ClosureViolation schema in the document");
+    let mut doc = base.clone();
+    doc["members"][at]["error"] = json!("OrderError");
+    assert!(!errors_against_schema(&doc).is_empty(), "the schema accepts an error named by a string other than ClosureViolation");
+}
+
+// ------------------------------------------------------------------
 // The digest.
 
 /// The ```text block after the marker `<!-- <marker> -->` in digest.md.
@@ -535,9 +595,12 @@ fn the_digests_are_the_ones_digest_md_folds() {
             previous = member.to_string();
             assert_eq!(m["name"], json!(member), "{name}: the input's rows are the surface's, in its order");
             for (field, slot) in [("request", request), ("response", response), ("error", error)] {
-                let expect = match m[field]["$ref"].as_str() {
-                    Some(r) => shape_hash[r.strip_prefix("#/schemas/").unwrap()].clone(),
-                    None => "-".to_string(),
+                // A `fallible(ClosureViolation)` handler's error is the
+                // string, not a schema, and its slot is that record's hash.
+                let expect = match (m[field]["$ref"].as_str(), m[field].as_str()) {
+                    (Some(r), _) => shape_hash[r.strip_prefix("#/schemas/").unwrap()].clone(),
+                    (None, Some(t)) => shape_hash[t].clone(),
+                    (None, None) => "-".to_string(),
                 };
                 assert_eq!(slot, expect, "{name} {member}: the {field} slot");
             }
@@ -674,8 +737,11 @@ fn every_wire_record_encodes_its_outcome() {
                 conforms(&inv, &row["response"], &reply, &format!("{at}: the response"));
             }
             ("handler_error", _) => {
-                assert!(!row["error"].is_null(), "{at}: only a fallible member has a handler error");
+                assert!(row["error"].is_object(), "{at}: only a member with an error schema has a handler error");
                 conforms(&inv, &row["error"], &reply, &format!("{at}: the error"));
+            }
+            ("server_error", _) => {
+                assert_eq!(row["error"], json!(STRUCTURAL), "{at}: a server error is a `fallible(ClosureViolation)` member's failure");
             }
             (_, Some("digest_mismatch")) => {
                 assert_eq!(reply["served"], json!(served), "{at}: the refusal names the served digest");

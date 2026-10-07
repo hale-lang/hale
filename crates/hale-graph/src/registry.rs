@@ -1267,6 +1267,7 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "one row family for both spellings: an `api` block's `rpc` line and an `@rpc` handler produce the same row, and nothing else about the locus is read",
             "the digest is the FNV-1a fold of the rows in canonical order (member, request, response and error shape hashes, sorted requires) and excludes the listener, the receivers, the serve site, the surface's name, the build identity and the incarnation",
+            "a row whose error type is `ClosureViolation` (a handler that may violate, `fallible(ClosureViolation)` under F.42 with no exemption) fails as the server error and its description carries no error schema; a row with any other error type fails as the handler error with that type's schema; the digest's error slot folds `ClosureViolation`'s shape hash like any error type's",
             "authorization is evaluated before enqueue: a refused request never reaches the handler's queue",
             "descriptions read the rows dispatch reads: a caller's description under an exposure lists exactly the members whose `requires` that exposure's role source grants it",
             "grants belong to the role-source instance a serve site names, never to a role name",
