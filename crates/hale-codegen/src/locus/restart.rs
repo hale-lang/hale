@@ -428,21 +428,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let size = info.struct_ty.size_of().expect("locus struct has a size");
         let snap = self.arena_alloc(size, "built_params.alloc")?;
         for (idx, ty) in self.built_param_fields(info) {
-            let llvm_ty = info
-                .struct_ty
-                .get_field_type_at_index(idx)
-                .expect("param field index is in the struct");
-            let src = self
-                .builder
-                .build_struct_gep(info.struct_ty, self_ptr, idx, "built_params.src")
-                .map_err(e)?;
-            let v = self.builder.build_load(llvm_ty, src, "built_params.v").map_err(e)?;
-            let owned = self.emit_owned_store_copy_ptr(v, &ty, arena)?;
-            let dst = self
-                .builder
-                .build_struct_gep(info.struct_ty, snap, idx, "built_params.dst")
-                .map_err(e)?;
-            self.builder.build_store(dst, owned).map_err(e)?;
+            self.emit_copy_built_param(info.struct_ty, idx, &ty, self_ptr, snap, arena, "built_params")?;
         }
         let slot = self
             .builder
@@ -482,21 +468,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(do_bb);
         let arena = self.emit_locus_arena_load(info, self_ptr)?;
         for (idx, ty) in self.built_param_fields(info) {
-            let llvm_ty = struct_ty.get_field_type_at_index(idx).expect("param field index is in the struct");
-            let src = self
-                .builder
-                .build_struct_gep(struct_ty, snap, idx, "restore.src")
-                .map_err(e)?;
-            let v = self.builder.build_load(llvm_ty, src, "restore.v").map_err(e)?;
-            let owned = self.emit_owned_store_copy_ptr(v, &ty, arena)?;
-            let dst = self
-                .builder
-                .build_struct_gep(struct_ty, self_ptr, idx, "restore.dst")
-                .map_err(e)?;
-            self.builder.build_store(dst, owned).map_err(e)?;
+            self.emit_copy_built_param(struct_ty, idx, &ty, snap, self_ptr, arena, "restore")?;
         }
         self.builder.build_unconditional_branch(done_bb).map_err(e)?;
         self.builder.position_at_end(done_bb);
+        Ok(())
+    }
+
+    /// Copy one built param's field from `from` to `to`, both instances
+    /// of `struct_ty`. Only a field that points at out-of-line arena
+    /// storage takes an owned copy, so the destination owns its block.
+    /// A field whose slot holds the value itself is copied as it is: an
+    /// inline fixed array (`[T; N]` of scalars, `array_inline_spec`) is
+    /// its `[N x T]` element bytes, memcpy'd slot to slot, and a scalar
+    /// is stored as loaded. Decided from the param's type and the
+    /// struct's field type, never from the loaded value.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_copy_built_param(
+        &mut self,
+        struct_ty: StructType<'ctx>,
+        idx: u32,
+        ty: &crate::codegen::CodegenTy,
+        from: PointerValue<'ctx>,
+        to: PointerValue<'ctx>,
+        arena: PointerValue<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let llvm_ty = struct_ty.get_field_type_at_index(idx).expect("param field index is in the struct");
+        let src = self
+            .builder
+            .build_struct_gep(struct_ty, from, idx, &format!("{site}.src"))
+            .map_err(e)?;
+        if Self::array_inline_spec(ty).is_some() {
+            let size = self.compound_storage_size(ty)?;
+            let dst = self
+                .builder
+                .build_struct_gep(struct_ty, to, idx, &format!("{site}.dst"))
+                .map_err(e)?;
+            return self.emit_memcpy_call(dst, src, size, &format!("{site}.inline_arr"));
+        }
+        let v = self.builder.build_load(llvm_ty, src, &format!("{site}.v")).map_err(e)?;
+        let v = if llvm_ty.is_pointer_type() { self.emit_owned_store_copy_ptr(v, ty, arena)? } else { v };
+        let dst = self
+            .builder
+            .build_struct_gep(struct_ty, to, idx, &format!("{site}.dst"))
+            .map_err(e)?;
+        self.builder.build_store(dst, v).map_err(e)?;
         Ok(())
     }
 
