@@ -297,6 +297,89 @@ Two distinctions in that table are load-bearing:
   even where no instance is born; `LocusInstance::replica` is the
   0-based index the runtime pins, not a count.
 
+### The shape of a type
+
+A type has a **shape**, a string, and a **shape hash**, the 64-bit
+FNV-1a fold of the string's bytes (`hale_graph::identity::Fnv64`:
+offset basis `0xcbf29ce484222325`, prime `0x100000001b3`, each byte
+xor-ed in and then multiplied), written as sixteen lowercase hex
+digits. One renderer (`hale_types::topic_identity::Shapes`) renders it
+in two forms; the payload contract reads one and the surface rows the
+other, and neither renders a shape of its own.
+
+Both forms tag a field the same way when its type is flat:
+
+| field type | tag |
+|---|---|
+| `Int`, `Uint`, an identity, a range (`spec/units.md`) | `i` |
+| `Float` | `f` |
+| `Bool` | `b` |
+| `Decimal` | `d` |
+| `Time` | `t` |
+| `Duration` | `u` |
+| `String`, `StringView` | `s` |
+| `Bytes`, `BytesView`, `BytesMut` | `y` |
+| a quantity or a point | `q(<denomination>)`, `q(<denomination> point)`, `q(<denomination> point <origin>)` (`spec/units.md` § Layout and the wire) |
+
+A struct's shape is its fields in declaration order, each
+`<field>:<tag>`, joined by `;`. A **flat struct** is one whose every
+field has a tag of the table; it has one shape whichever form reads it,
+so one shape hash: `type OrderReceipt { order: OrderId; notional:
+Money; }` is `order:i;notional:q(cent)`, `bb4f99639cf069af`, in both.
+
+**The observation form** is the topic's observation identity (the
+`topics` section of the artifact, `PROTOCOL.md` §4, mirrored byte for
+byte by the runtime's `obs_fnv`, which folds the wire subject, `:` and
+this string) and the `payloads` table's contract. Only a bare,
+non-generic declared struct has one, and any field whose type is not
+in the table is tagged `struct`, name-free, so the hash never depends
+on a declaring binary's local type names. A payload with no observation
+shape (an enum, a scalar, an array, a builtin record, a type the seed
+cannot see) is the opaque contract `opaque:<type>`. This form is a wire
+identity and does not move.
+
+**The contract form** is what a surface row's request, response and
+error are, which the contract digest folds (`spec/api.md` § The
+contract digest). Every type has one, and it is deep, so a field
+changed inside a nested struct, or a variant added to an enum, moves
+the hash of every type that reaches it:
+
+- a declared struct: its fields, each `<field>:<tag>`, joined by `;`;
+- a builtin record (`ClosureViolation`, `IndexError`, … the records
+  the compiler declares, `hale_types::builtin_types`): its fields as a
+  struct's, `ClosureViolation` being `locus:s;closure:s;diff:i`
+  (`36c7f0561125943e`); a declaration of the name in the program
+  replaces it, as it does in the checker;
+- an enum: `=enum(` its variants in declaration order joined by `|`,
+  a variant written `<Name>` or `<Name>(<tag>,…)` `)`: `type Side =
+  enum { Buy, Sell(Int, String) }` is `=enum(Buy|Sell(i,s))`;
+- an alias, and a scalar that is neither an identity, a range, a
+  quantity nor a point (`distinct Float`): the shape of what it stands
+  for;
+- any other type: `=` and its tag (`=i` for an `OrderId` a row names
+  by itself, `=q(cent)` for a `Money`).
+
+A field's tag in the contract form is the table's, or:
+
+| field type | tag |
+|---|---|
+| a declared struct, a builtin record, an enum | `#` and its own contract shape hash: `body:#e661911904a01160` for a `body: Inner` with `type Inner { a: Bool; }` |
+| one of those already being rendered (a recursive type) | `rec(<k>)`, `k` the number of enclosing named types out to it: `type Node { v: Int; kids: [Node]; }` is `v:i;kids:[rec(1)]` |
+| an alias, and a scalar of the kind above | the tag of what it stands for |
+| `[T]`, `[T; N]` | `[<tag>]`, `[<tag>;<N>]` (`_` for a size that is not a literal) |
+| `bounded[T; N]` | `bounded[<tag>;<N>]` |
+| a tuple | `(<tag>,…)` |
+| a type the program declares nothing for | `opaque(<type as written>)` |
+
+The nested type's slot is its hash, not its fields inlined, so a
+type's contract shape is a function of its own fields and of the
+hashes of the types it names; and because a flat struct's fields are
+all tagged by the shared table, its contract shape is its observation
+shape and **no flat struct's hash differs between the two forms**. A
+struct with a compound field is the one kind whose two hashes differ:
+`type Outer { id: Int; body: Inner; }` is `id:i;body:struct` as a
+payload and `id:i;body:#e661911904a01160` as a row's type.
+
 ### The arrangement
 
 `locus_instances`, `realizes`, `owns`, `placed_in`, `thread_domains`

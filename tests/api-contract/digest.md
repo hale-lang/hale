@@ -11,12 +11,13 @@ below and holds them to the fixtures: the shape hashes are the folds of
 the shapes, the hash input's rows are the inventory's, and the input
 folds to the digest every document of the surface carries.
 
-**Provisional.** A shape hash here is the payload contract's (the fold
-of the canonical structural shape), which R1 replaces with the
-contract shape for nested and enum types (`spec/api.md`, the open
-point). `program.hl`'s types are flat structs, which the payload
-contract renders whole, but the values below are re-derived when R1
-states the contract shape; the framing is not.
+A shape hash here is the type's contract shape hash (`spec/model.md`
+§ The shape of a type). `program.hl`'s types are flat structs, whose
+contract shape is their payload contract's shape, and
+`ClosureViolation`, whose contract shape is its record's fields; so
+when R1 stated the contract shape for nested and enum types, no value
+below moved. They were provisional in R0 and are the compiler's from
+R1 on.
 
 ## 1. The rows
 
@@ -46,18 +47,15 @@ By member name, compared as bytes: `Orders::cancel` before
 
 ## 3. Each type's shape and shape hash
 
-The canonical structural shape: the struct's fields in declaration
-order as `<field>:<tag>` joined by `;`, an identity tagged `i` as the
-`Int` it is, a quantity tagged by its denomination (`q(cent)`). Its
-hash is the 64-bit FNV-1a fold of the shape's bytes (offset basis
+The contract shape: the struct's fields in declaration order as
+`<field>:<tag>` joined by `;`, an identity tagged `i` as the `Int` it
+is, a quantity tagged by its denomination (`q(cent)`). Its hash is the
+64-bit FNV-1a fold of the shape's bytes (offset basis
 `0xcbf29ce484222325`, prime `0x100000001b3`), as sixteen lowercase hex
-digits. The shapes of the fixture's own types are the compiler's: `hale check
---dump-model` on a program publishing each type prints them in its
-`topics` section. `ClosureViolation`'s is the contract's
-(`spec/api.md` § The contract digest): its record's fields, which R1
-renders; today's compiler renders the builtin as
-`opaque:ClosureViolation` (`3540d9b9bc365834`), which no digest here
-folds.
+digits. `ClosureViolation`'s is its record's fields
+(`spec/api.md` § The contract digest); its payload contract, which a
+topic carrying it would have, stays `opaque:ClosureViolation`
+(`3540d9b9bc365834`), which no digest here folds.
 
 <!-- shapes: type, shape, shape hash; one per line, TAB-free -->
 ```text

@@ -222,27 +222,21 @@ fold every FNV identity uses, `spec/registry.md` § `digests`) over the
 whole text, written `fnv1a64:` followed by sixteen lowercase hex
 digits: `fnv1a64:a8930d6e7998e986`.
 
-A type's **shape hash** is its payload contract's hash
-(`spec/model.md` § Sorts, the `payloads` table): the 64-bit FNV-1a fold
-of its canonical structural shape, the struct's fields in declaration
-order as `<field>:<tag>` joined by `;` (`order:i;notional:q(cent)`,
-the tags of `spec/units.md` § Layout and the wire), and for a type that
-is not a bare struct the fold of `opaque:<type>`.
-
-**Open (R1): the contract shape.** The payload contract renders a
-nested struct as the tag `struct` and every type that is not a bare
-struct by its name, so a field changed inside a nested type, or a
-variant added to an enum error type, moves no digest built on it,
-against the rule above. R1 states the shape the digest folds for every
-type a row names; the framing above does not change with it. Until
-then the digests in `tests/api-contract/` are computed with the payload
-contract as it stands for the fixture's own types (flat structs, which
-it renders whole) and are provisional; `tests/api-contract/digest.md`
-works them by hand. One shape is the contract's already, not today's
-compiler's: `ClosureViolation`'s contract shape is its record's fields,
-`locus:s;closure:s;diff:i`, folded like a flat struct; today's payload
-contract renders the builtin as `opaque:ClosureViolation`, and R1
-renders the fields, which is what the fixture digests fold.
+A type's **shape hash** is the hash of its **contract shape**
+(`spec/model.md` § The shape of a type): the 64-bit FNV-1a fold of a
+struct's fields in declaration order as `<field>:<tag>` joined by `;`
+(`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
+the wire), a nested struct or enum tagged by its own contract shape
+hash (`#<hash>`), an enum `=enum(<variants>)`, and any other type `=`
+and its tag. The form is deep, so a field changed inside a nested type,
+or a variant added to an enum error type, moves every digest built on
+it. A flat struct's contract shape is its payload contract's shape, so
+its shape hash is the one a topic carrying it has always had; the
+payload contract renders a nested field as the name-free tag `struct`
+and keeps doing so, since it is a wire identity of its own.
+`ClosureViolation`'s contract shape is its record's fields,
+`locus:s;closure:s;diff:i`, folded like a flat struct (its payload
+contract stays `opaque:ClosureViolation`).
 
 **Compatibility is equality (v1).** A description carries its
 surface's name and digest, and a generated client carries the digest
@@ -772,8 +766,6 @@ criteria of R2, R3 and R5.
 
 ## Open points
 
-- **The contract shape** a digest folds for a nested type or an enum
-  (§ The contract digest; R1).
 - **Additive compatibility**: a client built against a subset of a
   surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,
