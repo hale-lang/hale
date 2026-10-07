@@ -675,6 +675,7 @@ pub fn check_bundle_reporting(
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
     let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
+    diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }

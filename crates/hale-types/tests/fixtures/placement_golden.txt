@@ -5799,7 +5799,7 @@ row	Fills@main1	Fills	main	default
 == crates/hale-types/tests/unit_values.rs#2c79e9b2
 row	Book@main1	Book	main	default
 
-== crates/hale-types/tests/violate.rs#8acd0731
+== crates/hale-types/tests/violate.rs#6ffc06ed
 row	L@main1	L	main	default
 
 == crates/hale-types/tests/violate.rs#b91728b8
@@ -5810,6 +5810,9 @@ row	L@main1	L	main	default
 
 == crates/hale-types/tests/violate.rs#174096bb
 shared	Parent@main1	Parent #6fbf107e
+
+== crates/hale-types/tests/violate_fallible.rs#f3938d8f
+row	Kid@main1	Kid	main	default
 
 == crates/hale-types/tests/violate_fallible.rs#8c371e6a
 root	App	the entry

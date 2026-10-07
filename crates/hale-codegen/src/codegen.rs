@@ -18371,9 +18371,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     Some(declared) => {
                         // Undef poison value of the declared
-                        // return type. The canonical pattern
-                        // guards consumption with self.draining
-                        // so the poison is never read.
+                        // return type. The check refuses every
+                        // value-returning violator that is not
+                        // `fallible(ClosureViolation)` (F.42) except
+                        // the exempt: a bus handler that declares a
+                        // reply type (the runtime is its caller), so
+                        // only that one, or a build that skipped the
+                        // check, reaches here.
                         let llvm_ty = self.llvm_basic_type(&declared);
                         let undef: inkwell::values::BasicValueEnum<'ctx> =
                             match llvm_ty {
