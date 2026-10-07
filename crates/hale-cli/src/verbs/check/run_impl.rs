@@ -75,6 +75,34 @@ fn refuse_without_model(target: &Path, doing: &str, b: &hale_frontend::snapshot:
     1
 }
 
+/// GH #730 / #1048: a borrow must outlive its holder — a handle stored
+/// by name into a locus-carrying field, or kept by a method
+/// (`Router.add`), is never the holder's to reclaim, so the frame, the
+/// dispatch or the binding that owns it must last longer than the
+/// holder. Errors, with the witness call site where a parameter carries
+/// the handle in. Beside it the GH #737 notice. `build`, `run` and
+/// `test` refuse the same through their snapshot (`Config::build_rules`).
+/// Which locus accepts which child is the snapshot's ownership graph's
+/// (its rows; the bundle's own walk where the graph is blocked).
+fn borrow_diags(snap: &Snapshot) -> Vec<hale_syntax::Diag> {
+    let bundle = snap.bundle();
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let own;
+    let ownership = match snap.demand_ownership_graph() {
+        Ok(graph) => &graph.rows,
+        Err(_) => {
+            own = hale_types::ownership_graph::OwnershipRows::of(&bundle);
+            &own
+        }
+    };
+    hale_types::borrow_lifetime::borrow_lifetime_diags_with_renames(
+        &progs,
+        &bundle.snapshot,
+        &bundle.import_renames,
+        ownership,
+    )
+}
+
 /// Where `span` is for `hale check --units`: its file relative to the
 /// directory checked, its line and column, and its text on one line. A
 /// file outside that directory — a sibling seed imported as
@@ -242,13 +270,31 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
         Ok(effects) => hale_types::dump_effects_manifest(&bundle, effects),
         Err(_) => String::new(),
     };
-    if std::env::args().any(|a| a == "--dump-effects-manifest") {
+    // A program that does not check has no manifest: its effect rows
+    // describe source the compiler refused, and a CI gate diffing them
+    // reported "drift" for a program that does not typecheck (a
+    // downstream handoff). Either flag says so in one line and falls
+    // through to the diagnostics, so the exit code is the check's.
+    // Warnings do not block it; any error does, the borrow rule's
+    // included, which the check reports further down.
+    let check_failed = || {
+        let checked_err = match snap.demand_check() {
+            Ok(c) => c.diags.iter().any(|d| d.is_error()),
+            Err(_) => true,
+        };
+        checked_err || borrow_diags(snap).iter().any(|d| d.is_error())
+    };
+    let dump_manifest = std::env::args().any(|a| a == "--dump-effects-manifest");
+    let manifest_gate = std::env::args()
+        .position(|a| a == "--check-effects-manifest")
+        .and_then(|i| std::env::args().nth(i + 1));
+    let manifest_refused = (dump_manifest || manifest_gate.is_some()) && check_failed();
+    if manifest_refused {
+        eprintln!("check failed: no effects manifest");
+    } else if dump_manifest {
         print!("{}", manifest());
     }
-    if let Some(path) = std::env::args()
-        .position(|a| a == "--check-effects-manifest")
-        .and_then(|i| std::env::args().nth(i + 1))
-    {
+    if let Some(path) = manifest_gate.filter(|_| !manifest_refused) {
         let current = manifest();
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
@@ -812,33 +858,8 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::frontier::secret_taint_strict(&progs));
     }
-    // GH #730 / #1048: a borrow must outlive its holder — a handle stored
-    // by name into a locus-carrying field, or kept by a method
-    // (`Router.add`), is never the holder's to reclaim, so the frame, the
-    // dispatch or the binding that owns it must last longer than the
-    // holder. Errors, with the witness call site where a parameter carries
-    // the handle in. Beside it the GH #737 notice. `build`, `run` and
-    // `test` refuse the same through their snapshot (`Config::build_rules`).
-    // Which locus accepts which child is the snapshot's ownership graph's
-    // (its rows; the bundle's own walk where the graph is blocked).
-    {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        let own;
-        let ownership = match snap.demand_ownership_graph() {
-            Ok(graph) => &graph.rows,
-            Err(_) => {
-                own = hale_types::ownership_graph::OwnershipRows::of(&bundle);
-                &own
-            }
-        };
-        diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags_with_renames(
-            &progs,
-            &bundle.snapshot,
-            &bundle.import_renames,
-            ownership,
-        ));
-    }
+    // GH #730 / #1048: a borrow must outlive its holder.
+    diags.extend(borrow_diags(snap));
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
     // line, col, severity, kind, message) for editor/LSP

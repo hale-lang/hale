@@ -420,6 +420,11 @@ effect manifest changed — .hale.effects no longer matches the program's effect
   + Api::emit  none={block}  does={syscall,publish,alloc}
 ```
 
+A program that does not check has no manifest. With an error in the
+check, either flag prints `check failed: no effects manifest` instead
+of a manifest or a diff, and `hale check` exits as it would without
+the flag; warnings do not stop the manifest.
+
 This catches what annotations structurally cannot. `Api::emit` gained
 filesystem I/O and *nothing in its source changed* — a helper three
 calls away did. No contract was violated, because none was declared;

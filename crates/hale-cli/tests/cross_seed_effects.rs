@@ -267,23 +267,32 @@ fn the_targets_own_advisories_survive_the_filter() {
 /// Nothing is lost: a library's rows come from checking the library,
 /// and what an imported fn contributes here is already folded into
 /// the caller's inferred `does={…}`.
+///
+/// Over `clean/`, the fixture's library called with no contract to
+/// break: `app/` violates its contracts on purpose, and a program whose
+/// check fails has no manifest.
 #[test]
 fn the_manifest_carries_no_merged_symbols() {
+    let clean = fixture().parent().unwrap().join("clean");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("check")
-        .arg(fixture())
+        .arg(&clean)
         .arg("--dump-effects-manifest")
         .output()
         .expect("invoke hale check --dump-effects-manifest");
     let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "the clean app checks:\n{}", String::from_utf8_lossy(&out.stderr));
     assert!(
-        !text.contains("__lib_"),
+        !text.contains("__lib_") && !text.lines().any(|l| l.starts_with("far_") || l.contains("::far_")),
         "no merged cross-seed symbol may appear in a manifest:\n{}",
         text
     );
-    // Non-vacuous: the app's OWN annotated fns must still be listed.
+    // Non-vacuous: the app's OWN fns must still be listed, carrying
+    // what the far side does.
     assert!(
-        text.contains("certified_no_syscall"),
+        text.contains("reaches_far_syscall  does={syscall}")
+            && text.contains("reaches_far_alloc  does={alloc}")
+            && text.contains("control_clean  none={syscall}"),
         "the app's own rows must survive the filter:\n{}",
         text
     );

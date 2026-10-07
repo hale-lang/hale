@@ -24,6 +24,7 @@ crates/hale-cli/tests/dna_ui.rs#0 f2c1228edb650960
 crates/hale-cli/tests/doc.rs#0 a9238ad19f21c0ec
 crates/hale-cli/tests/effects_manifest.rs#0 0a8481ef56eab005
 crates/hale-cli/tests/effects_manifest.rs#1 e91db4ab4aed156e
+crates/hale-cli/tests/effects_manifest.rs#2 68987e25a83ab8b0
 crates/hale-cli/tests/env_matrix.rs#0 2a2f5fd182496fe2
 crates/hale-cli/tests/env_matrix.rs#1 dca4d6b5b8aa87a0
 crates/hale-cli/tests/env_matrix.rs#2 c5dea0831abe641c
@@ -72,6 +73,7 @@ crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl 0e15724545744a1a
 crates/hale-cli/tests/fixtures/xseed-cqrs/app/main.hl 0dcc2f399e4e2cc9
 crates/hale-cli/tests/fixtures/xseed-cqrs/lib/mat/m.hl bf060e593f77f631
 crates/hale-cli/tests/fixtures/xseed-effects/app/main.hl 8d244db256d86d85
+crates/hale-cli/tests/fixtures/xseed-effects/clean/main.hl 53ebdf1203be096b
 crates/hale-cli/tests/fixtures/xseed-effects/lib/probe/p.hl 5b10837fa4f83f40
 crates/hale-cli/tests/fixtures/xseed-launderer/app/main.hl 1b4eb4af7454c528
 crates/hale-cli/tests/fixtures/xseed-launderer/lib/relay/main.hl 8b3b6f6f0290af0b

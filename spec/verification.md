@@ -2073,7 +2073,11 @@ assume the others in a build:
   for diffs. `hale check <target> --dump-effects-manifest` writes it;
   `--check-effects-manifest <path>` diffs against a committed
   baseline and **fails the build** when the program's effects change,
-  printing which fn gained or lost what. That catches the case
+  printing which fn gained or lost what. A program whose check has
+  an error has no manifest: either flag prints nothing on stdout and
+  `check failed: no effects manifest` on stderr, nothing is diffed,
+  and the exit code is the check's; warnings alone do not block it.
+  That catches the case
   annotations cannot: a handler that quietly starts doing filesystem
   I/O shows up as `+ Api::emit … does={syscall,publish,alloc}` in
   review even though no annotation changed. Regenerate deliberately

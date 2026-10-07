@@ -698,6 +698,12 @@ row	Sink@main1	Sink	main	default
 row	Api@main2	Api	main	default
 row	Sink@main1	Sink	main	default
 
+== crates/hale-cli/tests/effects_manifest.rs#fc7aa465
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+
 == crates/hale-cli/tests/env_matrix.rs#a6058e7c
 root	A	the entry
 row	A@literal1	A	main	default

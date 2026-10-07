@@ -35,7 +35,9 @@ mkdir -p .effects-baseline
   for d in $(LC_ALL=C ls -d crates/hale-codegen/tests/fixtures/examples/*/ | LC_ALL=C sort); do
     n=$(basename "$d"); [ -f "$d/main.hl" ] || continue
     echo "### $n"
-    "$HALE" check "$d/main.hl" --dump-effects-manifest 2>/dev/null \
+    # The seed, as it is built: `main.hl` alone leaves its sibling
+    # files out, and a program that does not check has no manifest.
+    "$HALE" check "$d" --dump-effects-manifest 2>/dev/null \
       | grep -v '^ok:' | grep -v '^# .hale.effects' || true
   done
 } > "$out"

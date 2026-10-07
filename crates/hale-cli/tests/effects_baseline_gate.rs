@@ -34,10 +34,14 @@ fn hale_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_hale"))
 }
 
-fn manifest_for(main_hl: &Path) -> String {
+/// The manifest of one example, checked as the seed it is built as:
+/// its directory. `main.hl` alone leaves a sibling file's declarations
+/// out — `25-imports/main.hl` does not even typecheck without
+/// `types.hl`, and a program that does not check has no manifest.
+fn manifest_for(seed: &Path) -> String {
     let out = Command::new(hale_bin())
         .arg("check")
-        .arg(main_hl)
+        .arg(seed)
         .arg("--dump-effects-manifest")
         .output()
         .expect("invoke hale check --dump-effects-manifest");
@@ -62,7 +66,7 @@ fn current() -> String {
     for d in dirs {
         let name = d.file_name().unwrap().to_string_lossy().to_string();
         out.push_str(&format!("### {}\n", name));
-        out.push_str(&manifest_for(&d.join("main.hl")));
+        out.push_str(&manifest_for(&d));
     }
     out
 }
