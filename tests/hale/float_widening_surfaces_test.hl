@@ -1,8 +1,10 @@
-// The four Int -> Float widening surfaces of spec/types.md § "Numeric
+// The five Int -> Float widening surfaces of spec/types.md § "Numeric
 // coercion" (F.23), each with a variable and a literal. The let
 // ascription and the field init were refused by the checker though
 // codegen widens at both (a downstream handoff: `let whole_f: Float =
-// whole;`). The refusals at the rule's edges are pinned in
+// whole;`); the return was accepted by the checker and refused by
+// codegen (`fn ret_f(n: Int) -> Float { return n; }`). The refusals at
+// the rule's edges are pinned in
 // crates/hale-types/tests/int_float_widening.rs.
 
 type Cfg {
@@ -12,6 +14,18 @@ type Cfg {
 
 fn takes(x: Float) -> Float {
     return x;
+}
+
+fn ret_f(n: Int) -> Float {
+    return n;
+}
+
+fn ret_lit() -> Float {
+    return 2;
+}
+
+fn tail_f(n: Int) -> Float {
+    n
 }
 
 fn main() {
@@ -41,4 +55,10 @@ fn main() {
     std::test::assert(d.timeout == 3.0, "Cfg { timeout: n }");
     std::test::assert(d.scale == 2.0, "Cfg { scale: 2 }");
     std::test::assert(d.timeout / d.scale == 1.5, "the widened fields are Floats");
+
+    // return from a `-> Float` fn
+    std::test::assert(ret_f(3) == 3.0, "ret_f(3)");
+    std::test::assert(ret_f(n) / 2 == 1.5, "the returned value is a Float");
+    std::test::assert(ret_lit() == 2.0, "return 2");
+    std::test::assert(tail_f(whole) == -7.0, "a tail expression returns");
 }

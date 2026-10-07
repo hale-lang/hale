@@ -45,8 +45,10 @@ let found = cached || lookup(key);     // lookup runs only on a miss
 widens `Int` to `Float` automatically where it's unambiguous —
 at a `let` with a `Float` annotation, when passing an `Int` to a
 `Float` parameter, when one side of an arithmetic or comparison
-operator is a `Float`, and when a `Float` field of a `type` literal
-is given an `Int`:
+operator is a `Float`, when a `Float` field of a `type` literal
+is given an `Int`, and when a fn declared `-> Float` returns an
+`Int` (`fn half(n: Int) -> Float { return n; }`; a `fallible` fn's
+success return does not widen):
 
 ```hale,fragment
 let n = 3;
