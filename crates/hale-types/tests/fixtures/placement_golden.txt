@@ -4013,6 +4013,14 @@ row	Child@main1	Child	main	default
 == crates/hale-codegen/tests/violate_build.rs#45144db2
 row	Child@main1	Child	main	default
 
+== crates/hale-codegen/tests/violate_build.rs#b964390d
+row	Picker@main1	Picker	main	default
+
+== crates/hale-codegen/tests/violate_build.rs#26f8ea21
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.p	Picker	main	default
+
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
