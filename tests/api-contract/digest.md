@@ -51,8 +51,13 @@ order as `<field>:<tag>` joined by `;`, an identity tagged `i` as the
 `Int` it is, a quantity tagged by its denomination (`q(cent)`). Its
 hash is the 64-bit FNV-1a fold of the shape's bytes (offset basis
 `0xcbf29ce484222325`, prime `0x100000001b3`), as sixteen lowercase hex
-digits. The shapes are the compiler's: `hale check --dump-model` on
-a program publishing each type prints them in its `topics` section.
+digits. The shapes of the fixture's own types are the compiler's: `hale check
+--dump-model` on a program publishing each type prints them in its
+`topics` section. `ClosureViolation`'s is the contract's
+(`spec/api.md` § The contract digest): its record's fields, which R1
+renders; today's compiler renders the builtin as
+`opaque:ClosureViolation` (`3540d9b9bc365834`), which no digest here
+folds.
 
 <!-- shapes: type, shape, shape hash; one per line, TAB-free -->
 ```text

@@ -84,7 +84,10 @@ client knows `notional` counts `cent`.
 **A handler is an ordinary method under F.42.** A handler that returns
 a value and may `violate` is declared `fallible(ClosureViolation)`, as
 any such method is (`spec/semantics.md` § A value-returning method that
-may violate is fallible); being a row's handler adds no exemption. The
+may violate is fallible); being a row's handler adds no exemption, and
+adds one requirement, law 7: a handler that may violate declares it
+whatever it returns, where F.42 only warns about a method returning
+nothing. The
 exemption F.42 makes is for lifecycle bodies and bus handlers, whose
 caller is the runtime and writes no `or`; a handler's callers inside
 the program write `or` at every call, as the bare-call law requires,
@@ -161,9 +164,11 @@ before anything is served:
    handler error with that type's schema. The check states it where it
    reports the row: "rpc \`Orders::place\`: its error type is
    \`ClosureViolation\`, so a failure is the server error; a description
-   carries no error schema for it". The law refuses nothing F.42 does
-   not; it fixes the outcome, so the description, the digest and the
-   transport read one fact.
+   carries no error schema for it". The law is a statement of the row,
+   not a refusal: the quoted line is a note `hale check --api` prints
+   beside such a member, and the fact it states is what the description
+   (the member's `error` form), the digest (the error slot) and the
+   transport (the server-error outcome) each read.
 
 7. **A handler that may violate is `fallible(ClosureViolation)`,
    whatever it returns.** F.42 requires the declaration of a
@@ -231,9 +236,13 @@ variant added to an enum error type, moves no digest built on it,
 against the rule above. R1 states the shape the digest folds for every
 type a row names; the framing above does not change with it. Until
 then the digests in `tests/api-contract/` are computed with the payload
-contract as it stands (the fixture's types are flat structs, which it
-renders whole) and are provisional; `tests/api-contract/digest.md`
-works `Public`'s by hand.
+contract as it stands for the fixture's own types (flat structs, which
+it renders whole) and are provisional; `tests/api-contract/digest.md`
+works them by hand. One shape is the contract's already, not today's
+compiler's: `ClosureViolation`'s contract shape is its record's fields,
+`locus:s;closure:s;diff:i`, folded like a flat struct; today's payload
+contract renders the builtin as `opaque:ClosureViolation`, and R1
+renders the fields, which is what the fixture digests fold.
 
 **Compatibility is equality (v1).** A description carries its
 surface's name and digest, and a generated client carries the digest
@@ -497,7 +506,7 @@ Inline closure violation, step 5); then the runtime answers the caller
 with the server error, whose object says nothing of the violation,
 which is the program's to report. The runtime's call is the transport
 caller's `or`: it reads the error slot and never a reply the handler
-did not produce. Nothing beyond F.42 is asked of the handler.
+did not produce. Nothing beyond F.42 and law 7 is asked of the handler.
 
 ## Streams
 
