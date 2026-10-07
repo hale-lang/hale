@@ -276,7 +276,10 @@ fn main() {
 fn assert_generic_handler_output(src: &str, expected: &str) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let diagnostics = entries::check_program(&program);
-    assert!(diagnostics.is_empty(), "check: {diagnostics:?}");
+    // The children violate from methods returning nothing, which F.42
+    // warns about (the lint, not the law); only an error fails the check.
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert!(errors.is_empty(), "check: {errors:?}");
     for asan in [false, true] {
         let bin = harness::unique_bin("hale_generic_failure_children");
         let mut options = build_opts::options();
