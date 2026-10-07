@@ -840,3 +840,238 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
     }
     diags
 }
+
+// ---- the admission law (spec/api.md § Surfaces and their rows) ----
+
+/// A count as a word, for a message.
+fn count_word(n: usize) -> String {
+    const WORDS: [&str; 10] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+    WORDS.get(n).map_or_else(|| n.to_string(), |w| w.to_string())
+}
+
+fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
+    crate::stdlib_surface::nearest_name(name, candidates).map_or_else(String::new, |n| format!("; did you mean `{n}`?"))
+}
+
+/// Why a type a row names has no JSON form (spec/api.md § Codecs: `Int`,
+/// `Float`, `Bool`, `String` and nested structs of the same; an
+/// identity, a range, a quantity and a point as their integer): the
+/// field path from the row's type to what the codec does not carry,
+/// and that type as written. `None` when every field has a form.
+fn json_refusal(
+    shapes: &Shapes<'_>,
+    te: &TypeExpr,
+    path: &mut Vec<String>,
+    seen: &mut BTreeSet<String>,
+) -> Option<(Vec<String>, String)> {
+    use crate::topic_identity::TypeClass;
+    use hale_syntax::ast::PrimType;
+    let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String);
+    match shapes.classify(te) {
+        TypeClass::Prim(p) if carried(p) => None,
+        TypeClass::Named { base, .. } if carried(base) => None,
+        TypeClass::Builtin => None,
+        TypeClass::Struct { name, fields } => {
+            if !seen.insert(name.to_string()) {
+                return None;
+            }
+            for f in fields {
+                path.push(f.name.name.clone());
+                if let Some(r) = json_refusal(shapes, &f.ty, path, seen) {
+                    return Some(r);
+                }
+                path.pop();
+            }
+            None
+        }
+        _ => Some((path.clone(), type_text(te))),
+    }
+}
+
+/// Law 6, the statement of a row whose error type is
+/// `ClosureViolation`: what `hale check --api` prints beside the member,
+/// for each such row, by surface and member.
+pub fn server_error_notes(rows: &SurfaceRows) -> Vec<(String, String, String)> {
+    rows.rows
+        .iter()
+        .filter(|r| matches!(&r.handler, Handled::Fn(h) if h.server_error))
+        .map(|r| {
+            (
+                r.surface.clone(),
+                r.member.clone(),
+                format!(
+                    "rpc `{}`: its error type is `ClosureViolation`, so a failure is the server error; a \
+                     description carries no error schema for it",
+                    r.member
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The admission law over the rows (spec/api.md § Surfaces and their
+/// rows), each in its wording, in the order the rows were written:
+///
+/// 1. a row names a handler: a member fn of a declared locus, never a
+///    lifecycle method, a mode or `on_failure`, and `@rpc` sits on a
+///    locus fn;
+/// 2. a handler takes one request;
+/// 3. a member is one row of its surface;
+/// 4. a required role is declared;
+/// 5. every shape has a codec form: the request, response and error
+///    types are carried by the JSON codec, the one codec a serve site
+///    has in R1 (a `ClosureViolation` error carries no schema, so no
+///    form is asked of it);
+/// 7. a handler that may violate is `fallible(ClosureViolation)`
+///    whatever it returns: F.42 refuses a value-returning one that is
+///    not, and law 7 adds the one returning nothing, whose violation a
+///    remote caller could not otherwise see. The may-violate judgment is
+///    F.42's (`violate_fallible::may_violate`, over the summary).
+///
+/// Law 6 is a statement of the row, not a refusal
+/// ([`server_error_notes`]). The serve sites' laws are R2's: a serve
+/// site is named, not checked.
+pub fn surface_laws(
+    bundle: &Bundle<'_>,
+    rows: &SurfaceRows,
+    roles: &crate::roles::RoleRows,
+    summary: &crate::alloc_summary::AllocSummary,
+) -> Vec<Diag> {
+    if rows.rows.is_empty() {
+        return Vec::new();
+    }
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
+    let shapes = Shapes::of_all(&slices);
+    let decls = crate::violate_fallible::fn_decl_rows(&programs);
+    let may = crate::violate_fallible::may_violate(summary, &decls);
+    let declared: BTreeSet<&str> = roles.roles.iter().map(|r| r.name.name.as_str()).collect();
+
+    let mut written: Vec<&Row> = rows.rows.iter().collect();
+    written.sort_by_key(|r| r.written_at);
+    let mut first_of: BTreeMap<(&str, &str), Span> = BTreeMap::new();
+    let mut diags = Vec::new();
+    for r in written {
+        let m = &r.member;
+        // Law 3: a member is one row of its surface.
+        if let Some(first) = first_of.get(&(r.surface.as_str(), m.as_str())) {
+            diags.push(
+                Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}` is in `{}` twice: a member is one row; keep one, with the roles it requires",
+                        r.surface
+                    ),
+                )
+                .with_related(*first, "its first row"),
+            );
+        } else {
+            first_of.insert((r.surface.as_str(), m.as_str()), r.span);
+        }
+        // Law 4: a required role is declared.
+        for (role, span) in &r.requires {
+            if !declared.contains(role.as_str()) {
+                diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "rpc `{m}` requires `{role}`, which no `role` declares{}",
+                        did_you_mean(role, declared.iter().copied())
+                    ),
+                ));
+            }
+        }
+        // Law 1: a row names a handler.
+        let locus_written = m.rsplit_once("::").map_or(m.as_str(), |(l, _)| l);
+        let h = match &r.handler {
+            Handled::Fn(h) => h,
+            Handled::NoLocus { loci } => {
+                diags.push(Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}`: no locus `{locus_written}` is declared{}",
+                        did_you_mean(&r.locus, loci.iter().map(String::as_str))
+                    ),
+                ));
+                continue;
+            }
+            Handled::NoFn { fns } => {
+                diags.push(Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}`: `{locus_written}` declares no fn `{}`{}",
+                        r.method,
+                        did_you_mean(&r.method, fns.iter().map(String::as_str))
+                    ),
+                ));
+                continue;
+            }
+            Handled::NotAHandler { kind } => {
+                diags.push(Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}`: `{}` is a {kind} of `{locus_written}`, and a handler is a member fn",
+                        r.method
+                    ),
+                ));
+                continue;
+            }
+            Handled::FreeFn => {
+                diags.push(Diag::ty(
+                    r.span,
+                    format!("`@rpc` on `{m}`: a handler is a member fn of a locus, and `{m}` is a free fn"),
+                ));
+                continue;
+            }
+        };
+        // Law 2: a handler takes one request.
+        if h.params.len() > 1 {
+            diags.push(
+                Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}`: a handler takes its request as one parameter, and `{}` takes {}: declare a \
+                         type for the request",
+                        r.method,
+                        count_word(h.params.len())
+                    ),
+                )
+                .with_related(h.name_span, "the handler"),
+            );
+        }
+        // Law 5: every shape has a codec form.
+        let slots = [("request", h.request.as_ref()), ("response", h.response.as_ref())]
+            .into_iter()
+            .chain((!h.server_error).then_some(("error", h.error.as_ref())));
+        for (slot, ty) in slots {
+            let Some(ty) = ty else { continue };
+            if let Some((path, at)) = json_refusal(&shapes, &ty.te, &mut Vec::new(), &mut BTreeSet::new()) {
+                let message = if path.is_empty() {
+                    format!("rpc `{m}`: its {slot} is `{at}`, which the JSON codec does not carry")
+                } else {
+                    format!(
+                        "rpc `{m}`: its {slot} `{}` has a field `{}: {at}`, which the JSON codec does not carry",
+                        ty.display,
+                        path.join(".")
+                    )
+                };
+                diags.push(Diag::ty(r.span, message).with_related(h.name_span, "the handler"));
+            }
+        }
+        // Law 7: a handler that may violate is `fallible(ClosureViolation)`,
+        // whatever it returns.
+        if h.response.is_none() && h.error.is_none() && may.contains_key(&h.key) {
+            let how = crate::violate_fallible::how(&h.key, &may, &decls);
+            diags.push(
+                Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{m}` may violate ({how}) and returns nothing: an rpc handler that may violate is \
+                         `fallible(ClosureViolation)`, so its caller receives the server error instead of a result"
+                    ),
+                )
+                .with_related(h.name_span, "the handler"),
+            );
+        }
+    }
+    diags
+}

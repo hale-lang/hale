@@ -274,6 +274,7 @@ const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
 const ARRANGEMENT: &str = "crates/hale-types/src/arrangement.rs";
 const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const ROLES: &str = "crates/hale-types/src/roles.rs";
+const SURFACES: &str = "crates/hale-types/src/surfaces.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -1243,20 +1244,25 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "surface",
         layer: Layer::Locus,
-        state: State::Reserved,
+        state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types, the handler's pool, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; the producers land in R1 (rows, digest), R2 (serve sites) and R5 (stream rows), and the family replaces `api_surface` at R4.",
+        answers: "The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types with their contract shape hashes, whether a failure is the server error, the pools the handler's locus runs on, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; R1 produces the rows and digests and names the serve sites and hub bindings for the description, R2 checks and serves the sites, R5 the hubs, and the family replaces `api_surface` at R4.",
         inputs: &[
-            "`api` blocks and `@rpc` handlers (R1)",
-            "role declarations",
-            "the payload contracts (the shape hashes the digest folds)",
-            "serve sites: `api::serve(…)`, `as:`, `receivers:` (R2)",
-            "topic bindings to a hub with `requires:` (R5)",
+            "`api` blocks and `@rpc` handlers (the parse: `TopDecl::Api`, `FnDecl::rpc`)",
+            "the locus declarations the rows name (their member fns, lifecycle methods, modes and failure handlers)",
+            "the contract shapes (`topic_identity::Shapes`, the shape hashes the digest folds)",
+            "placement (the pools the handlers' loci and the receivers run on)",
+            "topics (a hub stream's wire subject)",
+            "serve sites: `api::serve(…)` and its named arguments, named, not checked (R2 checks them)",
+            "topic bindings to a hub with `requires:`, named, not served (R5)",
         ],
-        producer: None,
+        producer: Some(site(SURFACES, "surface_rows")),
         legacy: &[],
         consumers: &[
-            consumer("check (the admission law over the rows, R1; the serve-site laws)"),
+            consumer_at("check (the admission law over the rows: laws 1 to 5 and 7 of spec/api.md, beside the may-violate law, `CheckInputs::surfaces`)", CHECK, "surface_laws"),
+            consumer_at("check (the snapshot's check stage: the same laws over the snapshot's rows)", SNAPSHOT, "surface_laws"),
+            consumer_at("the model (the `surfaces` and `surface_rows` tables, projected; the digest law)", MODEL_BUILDER, "inputs.surfaces"),
+            consumer_at("build (a serve site and a hub binding are refused until served)", TLIB, "unserved_sites"),
             consumer("check --api (the inventory; the descriptions per exposure, R1)"),
             consumer("the contract digest (R1)"),
             consumer("the OpenAPI, JSON Schema and MCP generators (re-homed onto the rows, R1)"),
@@ -1274,12 +1280,25 @@ pub const FAMILIES: &[Family] = &[
             "descriptions read the rows dispatch reads: a caller's description under an exposure lists exactly the members whose `requires` that exposure's role source grants it",
             "grants belong to the role-source instance a serve site names, never to a role name",
             "the outcome mappings are fixed per transport (v1): no row carries a status and the digest hashes none",
+            "the rows have one producer (`surfaces::surface_rows`), demanded once per snapshot (`Snapshot::demand_surface_rows`, the `surface` count), not gated on the typing; a bundle no snapshot holds builds its own in the check's entry. Its columns: each row's surface, member (the locus in the row author's spelling), the locus and fn it resolves to, the roles as written with their spans, and what the handler resolves to (a member fn with its key, its value parameters past a trailing `ctx: std::api::Context`, the request, response and error types, whether the error is `ClosureViolation`, the pools; or no locus, no fn, a lifecycle method, mode or failure handler, a free fn); an `@rpc` row feeds the seed's default surface, named after the seed (an imported seed's by its import alias)",
+            "the admission law is a law over the rows (`surfaces::surface_laws`), in spec/api.md's wordings: a row names a handler (1), takes one request (2), is its surface's member once (3), requires declared roles (4), names types the JSON codec carries (5, the one codec a serve site has in R1), and a handler that may violate is `fallible(ClosureViolation)` whatever it returns (7, F.42's may-violate judgment over the summary); law 6 is a statement of the row (`server_error_notes`), not a refusal; the serve-site laws are R2's",
+            "the model holds the surfaces and their rows under one law: each surface's digest is the fold of its own rows; neither table enters `shape_hash`, so a program with no surface hashes as it did",
+            "a type's contract shape is `topic_identity::Shapes`' contract form, which agrees with the payload contract's observation form on every flat struct (spec/model.md § The shape of a type)",
         ],
-        missing: Missing::NotApplicable,
-        tests: &["crates/hale-cli/tests/api_contract_fixtures.rs"],
-        spec: &["spec/api.md", "spec/api-description.schema.json"],
-        owned: &[],
-        seams: &[],
+        missing: Missing::Error,
+        tests: &[
+            "crates/hale-cli/tests/api_contract_fixtures.rs",
+            "crates/hale-types/tests/api_rows_check.rs (one refusal per law in its wording, law 6's statement, the fixture admitted)",
+            "crates/hale-types/tests/surface_rows.rs (the fixture's rows, digests and model rows; an `@rpc` row and an `rpc` line are one row)",
+            "crates/hale-syntax/tests/api_surface_parse.rs (both spellings, the serve site, the hub binding, the refusals)",
+            "crates/hale-model/src/surface.rs (the digest framings against digest.md)",
+        ],
+        spec: &["spec/api.md", "spec/api-description.schema.json", "spec/model.md § The shape of a type"],
+        owned: &[site(SURFACES, "surface_rows"), site(SURFACES, "surface_laws"), site(SNAPSHOT, "demand_surface_rows")],
+        seams: &[
+            Seam { symbol: "surface_rows(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
+            Seam { symbol: "surface_laws(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
+        ],
     },
     Family {
         name: "sealability",

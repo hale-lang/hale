@@ -273,6 +273,23 @@ pub struct Shapes<'a> {
     quantities: BTreeMap<&'a str, String>,
 }
 
+/// What a type is, as [`Shapes::classify`] reads it.
+#[derive(Clone, Debug)]
+pub enum TypeClass<'a> {
+    Prim(PrimType),
+    /// A named scalar or alias: its name, the primitive it stands for,
+    /// and a quantity's or a point's unit tag (`q(cent)`).
+    Named { name: &'a str, base: PrimType, unit: Option<String> },
+    /// A declared struct.
+    Struct { name: &'a str, fields: &'a [hale_syntax::ast::StructField] },
+    /// A builtin record (`ClosureViolation`, …).
+    Builtin,
+    Enum,
+    /// Anything else: an array, a tuple, a generic, a name the program
+    /// does not declare.
+    Other,
+}
+
 /// The FNV-1a/64 fold of a shape string: a type's shape hash, in either
 /// form, written as sixteen lowercase hex digits where it is shown.
 pub fn shape_hash(shape: &str) -> u64 {
@@ -362,6 +379,55 @@ impl<'a> Shapes<'a> {
     /// The shape hash of `te`'s contract shape.
     pub fn contract_hash(&self, te: &TypeExpr) -> u64 {
         shape_hash(&self.shape(te, ShapeForm::Contract).unwrap_or_default())
+    }
+
+    /// What `te` is, for a codec (spec/api.md § Codecs) and a
+    /// description's schema: a primitive, a named scalar (an identity, a
+    /// range, a quantity, a point, a `distinct` or an alias, each over
+    /// the primitive it stands for, a quantity or point with its unit
+    /// tag), a struct (declared or builtin) with its fields, an enum, or
+    /// anything else.
+    pub fn classify(&self, te: &TypeExpr) -> TypeClass<'a> {
+        if let TypeExpr::Primitive(p, _) = te {
+            return TypeClass::Prim(*p);
+        }
+        let Some(name) = Self::bare_name(te) else { return TypeClass::Other };
+        if let Some(td) = self.types.get(name) {
+            match &td.body {
+                TypeDeclBody::Struct(fields) => return TypeClass::Struct { name: td.name.name.as_str(), fields },
+                TypeDeclBody::Enum(_) => return TypeClass::Enum,
+                TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) => {
+                    let unit = self.quantities.get(name).cloned();
+                    // An identity, a range, a quantity or a point over
+                    // `Int` is the `Int` it is; anything else is what its
+                    // chain of bases ends at.
+                    let base = if self.ints.contains(name) { Some(PrimType::Int) } else { self.base_prim(te, 0) };
+                    return match base {
+                        Some(base) => TypeClass::Named { name: td.name.name.as_str(), base, unit },
+                        None => TypeClass::Other,
+                    };
+                }
+            }
+        }
+        if self.struct_fields(te, true).is_some() {
+            return TypeClass::Builtin;
+        }
+        TypeClass::Other
+    }
+
+    /// The primitive a chain of scalars and aliases ends at.
+    fn base_prim(&self, te: &TypeExpr, depth: usize) -> Option<PrimType> {
+        if depth > self.types.len() + 2 {
+            return None;
+        }
+        match te {
+            TypeExpr::Primitive(p, _) => Some(*p),
+            _ => match &self.types.get(Self::bare_name(te)?)?.body {
+                TypeDeclBody::Scalar(s) => self.base_prim(&s.base, depth + 1),
+                TypeDeclBody::Alias(t) => self.base_prim(t, depth + 1),
+                _ => None,
+            },
+        }
     }
 
     /// The single-segment, non-generic name `te` spells.

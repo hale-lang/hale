@@ -550,6 +550,12 @@ pub struct CheckInputs<'a> {
     /// program has an `api:` entry (`Snapshot::api_surface`, the desugar
     /// sequence's): the api entry's rules read it.
     pub api_surface: Option<&'a hale_syntax::api_gen::ApiSurface>,
+    /// The surface rows (GH #1417, the snapshot's `surface` cell): the
+    /// `api` blocks' and `@rpc` handlers' rows, which the surface laws
+    /// read beside the api entry's rules. They read declarations, the
+    /// placement table's pools and the topic rows, so they are total
+    /// over a program that does not typecheck.
+    pub surfaces: &'a crate::surfaces::SurfaceRows,
     /// The use rows (the `target_capability` family's): every way the
     /// program asks its target for a capability, which the admission law
     /// holds to the effective target's cells.
@@ -606,6 +612,7 @@ fn check_numbered_bundle(
     let laws = crate::bundle_law_selection(bundle);
     let roles = crate::roles::role_rows(bundle, &entry);
     let api_surface = crate::bundle_api_surface(bundle, &entry);
+    let surfaces = crate::surfaces::surface_rows(bundle, &entry, &placement, &top.topics);
     let units = crate::units::derive_unit_rows(bundle);
     let inputs = CheckInputs {
         top,
@@ -625,6 +632,7 @@ fn check_numbered_bundle(
         laws: &laws,
         roles: &roles,
         api_surface: api_surface.as_ref(),
+        surfaces: &surfaces,
         units: &units,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
@@ -676,6 +684,7 @@ pub fn check_bundle_reporting(
     let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
+    diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }

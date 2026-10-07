@@ -141,8 +141,13 @@ before anything is served:
 
 1. **A row names a handler.** `Locus::fn` resolves to a member fn of a
    declared locus: "rpc \`Orders::plcae\`: \`Orders\` declares no fn
-   \`plcae\`; did you mean \`place\`?". A lifecycle method, a mode or
-   `on_failure` is no handler.
+   \`plcae\`; did you mean \`place\`?", and "rpc \`Ordrs::place\`: no
+   locus \`Ordrs\` is declared; did you mean \`Orders\`?". A lifecycle
+   method, a mode or `on_failure` is no handler: "rpc \`Orders::run\`:
+   \`run\` is a lifecycle method of \`Orders\`, and a handler is a
+   member fn" (a mode and a failure handler are named so); and `@rpc`
+   goes on a locus fn: "\`@rpc\` on \`helper\`: a handler is a member fn
+   of a locus, and \`helper\` is a free fn".
 2. **A handler takes one request.** At most one value parameter beside
    a trailing `ctx: std::api::Context`: "rpc \`Orders::fill\`: a
    handler takes its request as one parameter, and \`fill\` takes two:
@@ -154,10 +159,16 @@ before anything is served:
    \`tradr\`, which no \`role\` declares; did you mean \`trader\`?".
 5. **Every shape has a codec form.** The request, response and error
    types encode under the serve sites' codecs (§ Codecs): "rpc
-   \`Ledger::export\`: its response \`Export\` has a field \`raw:
-   Bytes\`, which the JSON codec does not carry". A row is never left
-   out of a served surface with a warning: the row is the intent, and
-   an intent the program cannot honour is an error.
+   \`Ledger::dump\`: its response \`Export\` has a field \`raw:
+   Bytes\`, which the JSON codec does not carry" (a field of a nested
+   struct by its path, `inner.raw`), and for a type that is no struct
+   the codec carries, "rpc \`Ledger::dump\`: its request is
+   \`Bytes\`, which the JSON codec does not carry". A
+   `ClosureViolation` error carries no schema (law 6), so no form is
+   asked of it. R1 holds every row to the JSON codec, the one codec a
+   serve site has until R2 reads a serve site's own. A row is never
+   left out of a served surface with a warning: the row is the intent,
+   and an intent the program cannot honour is an error.
 6. **A row's error type decides its failure.** A row whose error type
    is `ClosureViolation` fails as the server error and its description
    lists no error schema; a row with any other error type fails as the
@@ -295,7 +306,11 @@ and makes an **exposure**:
 - the call returns the **handle**: what the serving locus holds, joins
   and stops (`stop()`, § The request lifecycle).
 
-The laws of a serve site (R1):
+The laws of a serve site (R2; R1 parses a serve site only as far as a
+description names it, its surface, its transport instance's kind,
+listener, codec and sources, `as:`, `receivers:`, `bound:` and
+`on_full:`, checks none of these laws and builds no program that holds
+one):
 
 1. **An exposure is named once.** "exposure \`public\` is served twice:
    \`as:\` names one exposure; name this one apart".

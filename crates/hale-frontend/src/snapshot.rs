@@ -1193,6 +1193,7 @@ impl Snapshot {
             laws: self.demand_law_selection().map_err(Clone::clone)?,
             roles: self.demand_role_rows().map_err(Clone::clone)?,
             api_surface: self.api_surface(),
+            surfaces: self.demand_surface_rows().map_err(Clone::clone)?,
             units: self.demand_units().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
@@ -1771,6 +1772,11 @@ impl Snapshot {
                 // already resolved.
                 let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
                 diags.extend(hale_types::violate_fallible::violate_fallible_laws(&self.bundle(), summary));
+                // The surface laws (GH #1417) read the rows, the role
+                // declarations and the same may-violate judgment.
+                let surfaces = self.demand_surface_rows().map_err(Clone::clone)?;
+                let roles = self.demand_role_rows().map_err(Clone::clone)?;
+                diags.extend(hale_types::surfaces::surface_laws(&self.bundle(), surfaces, roles, summary));
                 // So does the closures' reach law: whether a recovery
                 // reaches a locus is the typed receivers' answer.
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
