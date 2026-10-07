@@ -277,12 +277,24 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // through to the diagnostics, so the exit code is the check's.
     // Warnings do not block it; any error does, the borrow rule's
     // included, which the check reports further down.
+    // The strict secret walk (`--strict-secret`) adds errors of its own
+    // further down; the manifest gate counts them too, so the gate and
+    // the diagnostics judge the same list (found in review of #1424).
+    let strict_secret_diags = || -> Vec<hale_syntax::Diag> {
+        if !std::env::args().any(|a| a == "--strict-secret") {
+            return Vec::new();
+        }
+        let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+        hale_types::frontier::secret_taint_strict(&progs)
+    };
     let check_failed = || {
         let checked_err = match snap.demand_check() {
             Ok(c) => c.diags.iter().any(|d| d.is_error()),
             Err(_) => true,
         };
-        checked_err || borrow_diags(snap).iter().any(|d| d.is_error())
+        checked_err
+            || borrow_diags(snap).iter().any(|d| d.is_error())
+            || strict_secret_diags().iter().any(|d| d.is_error())
     };
     let dump_manifest = std::env::args().any(|a| a == "--dump-effects-manifest");
     let manifest_gate = std::env::args()
@@ -853,11 +865,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
         let flows = snap.demand_flows().expect("a whole seed has no hole, so its flow rows are never blocked");
         eprint!("{}", render_flows(flows, file_bases, sources, import_renames));
     }
-    if std::env::args().any(|a| a == "--strict-secret") {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        diags.extend(hale_types::frontier::secret_taint_strict(&progs));
-    }
+    diags.extend(strict_secret_diags());
     // GH #730 / #1048: a borrow must outlive its holder.
     diags.extend(borrow_diags(snap));
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits

@@ -170,6 +170,62 @@ main locus App {
 fn main() { App { }; }
 "#;
 
+/// Passes plain `check`; `--strict-secret` adds an "uncertified"
+/// error (a `@secret` value reaches a call the strict walk does not
+/// follow).
+const STRICT_SECRET_ONLY: &str = "fn keep(@secret t: String) -> Int { if t == \"open\" { return 1; } return 0; }\n\
+fn f(@secret token: String) -> Int { return keep(token); }\n\
+fn main() { println(f(\"open\")); }\n";
+
+/// An error the `--strict-secret` pass adds blocks the manifest like
+/// any other: the gate judges the same list the diagnostics print.
+#[test]
+fn a_strict_secret_error_blocks_the_manifest_too() {
+    let d = workdir("strict-secret");
+    let app = d.join("app.hl");
+    let baseline = d.join("baseline.effects");
+    std::fs::write(&app, STRICT_SECRET_ONLY).unwrap();
+    std::fs::write(&baseline, "# .hale.effects v1 — declared effect contracts\n").unwrap();
+    let plain = hale().arg("check").arg(&app).output().expect("check");
+    let plain_dump = hale().arg("check").arg(&app).arg("--dump-effects-manifest").output().expect("dump");
+    let strict = hale().arg("check").arg(&app).arg("--strict-secret").output().expect("strict");
+    let dump = hale()
+        .arg("check")
+        .arg(&app)
+        .arg("--strict-secret")
+        .arg("--dump-effects-manifest")
+        .output()
+        .expect("strict dump");
+    let gate = hale()
+        .arg("check")
+        .arg(&app)
+        .arg("--strict-secret")
+        .arg("--check-effects-manifest")
+        .arg(&baseline)
+        .output()
+        .expect("strict gate");
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(plain.status.code(), Some(0), "the program checks without the flag");
+    assert!(
+        String::from_utf8_lossy(&plain_dump.stdout).contains("main  does="),
+        "without the flag the manifest dumps: {}",
+        String::from_utf8_lossy(&plain_dump.stdout)
+    );
+    assert_eq!(strict.status.code(), Some(1), "the strict walk refuses it");
+    for (flag, out) in [("--dump-effects-manifest", &dump), ("--check-effects-manifest", &gate)] {
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.stdout.is_empty(), "{flag}: no manifest on stdout: {}", String::from_utf8_lossy(&out.stdout));
+        assert_eq!(
+            err.lines().filter(|l| *l == "check failed: no effects manifest").count(),
+            1,
+            "{flag}: one refusal line: {err}"
+        );
+        assert!(!err.contains("effect manifest changed"), "{flag}: nothing diffed: {err}");
+        assert!(err.contains("uncertified"), "{flag}: the strict error still reports: {err}");
+        assert_eq!(out.status.code(), Some(1), "{flag}: the check's exit code: {err}");
+    }
+}
+
 #[test]
 fn a_failed_check_writes_no_manifest_and_exits_with_the_checks_code() {
     let d = workdir("ill-typed");
