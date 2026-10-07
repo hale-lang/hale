@@ -52,7 +52,9 @@ The contract shape: the struct's fields in declaration order as
 is, a quantity tagged by its denomination (`q(cent)`). Its hash is the
 64-bit FNV-1a fold of the shape's bytes (offset basis
 `0xcbf29ce484222325`, prime `0x100000001b3`), as sixteen lowercase hex
-digits. `ClosureViolation`'s is its record's fields
+digits. `hale check --dump-model` prints each row's shape hashes, and
+each surface's digest, in its `surfaces` section. `ClosureViolation`'s
+is its record's fields
 (`spec/api.md` § The contract digest); its payload contract, which a
 topic carrying it would have, stays `opaque:ClosureViolation`
 (`3540d9b9bc365834`), which no digest here folds.

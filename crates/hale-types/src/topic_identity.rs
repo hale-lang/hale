@@ -281,6 +281,12 @@ pub fn shape_hash(shape: &str) -> u64 {
 
 impl<'a> Shapes<'a> {
     pub fn of(items: &'a [TopDecl]) -> Shapes<'a> {
+        Self::of_all(&[items])
+    }
+
+    /// Over every program of a bundle; a later declaration of a name
+    /// replaces an earlier one, as within one program.
+    pub fn of_all(slices: &[&'a [TopDecl]]) -> Shapes<'a> {
         let mut types: BTreeMap<&str, &TypeDecl> = BTreeMap::new();
         fn collect<'a>(items: &'a [TopDecl], out: &mut BTreeMap<&'a str, &'a TypeDecl>) {
             for item in items {
@@ -293,7 +299,9 @@ impl<'a> Shapes<'a> {
                 }
             }
         }
-        collect(items, &mut types);
+        for items in slices {
+            collect(items, &mut types);
+        }
         let scalars: BTreeMap<&str, &hale_syntax::ast::ScalarDecl> = types
             .iter()
             .filter_map(|(n, t)| match &t.body {

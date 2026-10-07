@@ -128,7 +128,10 @@ use crate::source::SourceProvider;
 /// selection, which the check, the laws stage and the artifact read
 /// ([`Snapshot::demand_law_selection`]); `api_surface` the role rows,
 /// which the check reads ([`Snapshot::demand_role_rows`]: the surface
-/// itself is the desugar sequence's product); `arrangement` the
+/// itself is the desugar sequence's product); `surface` the surface
+/// rows of `api` blocks and `@rpc` handlers, which the check, the model
+/// and `hale check --api` read ([`Snapshot::demand_surface_rows`]);
+/// `arrangement` the
 /// placement table's projection onto the user's declarations, which the
 /// model and the lowering view read ([`Snapshot::demand_arrangement`]);
 /// `dispatch` the dispatch plan, derived once from the one gate set
@@ -148,7 +151,7 @@ use crate::source::SourceProvider;
 /// carried to lowering; `unit_declarations` the unit-dialect rows and
 /// the catalogue closed from them ([`Snapshot::demand_units`]), which
 /// the check reads.
-pub const FAMILIES: [&str; 27] = [
+pub const FAMILIES: [&str; 28] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -166,6 +169,7 @@ pub const FAMILIES: [&str; 27] = [
     "flows",
     "law_selection",
     "api_surface",
+    "surface",
     "alloc_summary",
     "effects",
     "placement",
@@ -490,6 +494,7 @@ pub struct Snapshot {
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     law_selection: OnceCell<Result<LawSelection, Blocked>>,
     role_rows: OnceCell<Result<RoleRows, Blocked>>,
+    surface_rows: OnceCell<Result<hale_types::surfaces::SurfaceRows, Blocked>>,
     units: OnceCell<Result<UnitRows, Blocked>>,
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
@@ -672,6 +677,7 @@ impl Snapshot {
             alloc_summary: OnceCell::new(),
             law_selection: OnceCell::new(),
             role_rows: OnceCell::new(),
+            surface_rows: OnceCell::new(),
             units: OnceCell::new(),
             effects: OnceCell::new(),
             placement: OnceCell::new(),
@@ -1449,6 +1455,26 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The surface rows ([`hale_types::surfaces::surface_rows`], GH
+    /// #1417): every `api` block's and `@rpc` handler's rows, resolved
+    /// against the loci they name, each surface's digest, and the serve
+    /// sites and hubs named for the description. The check's surface
+    /// laws read them (`CheckInputs::surfaces`), the model projects them
+    /// and `hale check --api` renders them. Not gated on the typing:
+    /// they read declarations, the placement table's pools and the topic
+    /// rows' wire subjects. Blocked with the placement table.
+    pub fn demand_surface_rows(&self) -> Result<&hale_types::surfaces::SurfaceRows, &Blocked> {
+        self.surface_rows
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                let entry = self.demand_entry().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                self.count("surface");
+                Ok(hale_types::surfaces::surface_rows(&self.bundle(), entry, placement, &scope.top.topics))
+            })
+            .as_ref()
+    }
+
     /// The unit declarations ([`hale_types::units::derive_unit_rows`],
     /// GH #1076): every `unit` and scalar `type` declaration over the
     /// programs after the sequence, resolved, and the program's
@@ -1710,6 +1736,7 @@ impl Snapshot {
                     placement: self.demand_placement().map_err(Clone::clone)?,
                     arrangement: self.demand_arrangement().map_err(Clone::clone)?,
                     dispatch_plan: self.demand_dispatch_plan().map_err(Clone::clone)?,
+                    surfaces: self.demand_surface_rows().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(

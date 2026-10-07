@@ -5073,6 +5073,17 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     let api_bound = entry.entry().and_then(|m| m.decl(bundle)).is_some_and(|l| {
         l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some()))
     });
+    let hub_bound: BTreeSet<&str> = entry
+        .entry()
+        .and_then(|m| m.decl(bundle))
+        .into_iter()
+        .flat_map(|l| l.members.iter())
+        .filter_map(|m| match m {
+            LocusMember::Bindings(bb) => Some(bb.hubs.iter().map(|h| h.topic.name.as_str())),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
             || row.is_some_and(|r| {
@@ -5097,8 +5108,11 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         }
         declared_wires.insert(info.wire_subject.as_str());
         let row = bus.wires.get(&info.wire_subject);
-        let p = has_pub(row);
-        let s = has_sub(row);
+        // GH #1417: a topic bound to a hub has its other end outside the
+        // program, as a transport binding's does.
+        let hub = hub_bound.contains(name.as_str());
+        let p = hub || has_pub(row);
+        let s = hub || has_sub(row);
         if p && !s {
             let span = row.and_then(|r| r.published).unwrap_or(info.span);
             out.push(Violation::warning(
@@ -6615,6 +6629,10 @@ impl<'a> Checker<'a> {
             TopDecl::Unit(_) => {
                 // GH #1076: a row of the unit declarations, judged by
                 // the unit laws (`units::unit_laws`).
+            }
+            TopDecl::Api(_) => {
+                // GH #1417: rows of the `surface` family, judged by the
+                // surface laws over the whole bundle.
             }
         }
     }
@@ -14263,6 +14281,14 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, id: call_id, span: call_span } => {
+                // GH #1417: a serve site is named in R1 (its surface,
+                // transport, `as:`, receivers and queue, read by the
+                // description) and neither typed nor lowered: its laws
+                // and its handle's type are R2's. A build refuses it
+                // (`surfaces::unserved_sites`).
+                if hale_syntax::ast::ServeSite::of(expr).is_some() {
+                    return Ty::Unknown;
+                }
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,

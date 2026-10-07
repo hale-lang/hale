@@ -59,6 +59,8 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Claims(_) | TopDecl::Constitution(_) => None,
         // GH #1076: a unit is seed-global and never mangled.
         TopDecl::Unit(_) => None,
+        // GH #1417: a surface is seed-global and never mangled.
+        TopDecl::Api(_) => None,
     }
 }
 

@@ -67,6 +67,8 @@ struct FnDecorators {
     budget: Option<u32>,
     /// GH #1109: `@gated(role: R)`.
     gated: Option<Ident>,
+    /// GH #1417: `@rpc` / `@rpc(requires: [R, …])`.
+    rpc: Option<RpcAttr>,
     quantities: Vec<(QuantDim, u64)>,
     effects: Vec<EffectAssert>,
     /// Every decorator as written, in source order — the record the
@@ -123,6 +125,9 @@ impl FnDecorators {
         }
         if self.gated.is_some() {
             fn_decl.gated = self.gated;
+        }
+        if self.rpc.is_some() {
+            fn_decl.rpc = self.rpc;
         }
         fn_decl.quantities.extend(self.quantities);
         fn_decl.effects.extend(self.effects);
@@ -1254,6 +1259,15 @@ impl Parser {
             {
                 self.parse_role_decl().map(TopDecl::Role)
             }
+            // GH #1417: `api NAME { rpc Locus::fn ...; }`, told from an
+            // identifier named `api` by a name and then `{`.
+            TokenKind::Ident(s)
+                if s == "api"
+                    && matches!(self.peek_at(1), TokenKind::Ident(_))
+                    && matches!(self.peek_at(2), TokenKind::LBrace) =>
+            {
+                self.parse_api_decl().map(TopDecl::Api)
+            }
             // GH #1076: `unit NAME;` / `unit NAME = ...;`, told from an
             // identifier named `unit` by a name and then `=` or `;`.
             TokenKind::Ident(s)
@@ -1367,6 +1381,25 @@ impl Parser {
         Ok((role, at.span.merge(close.span)))
     }
 
+    /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn.
+    fn parse_rpc_annotation(&mut self) -> Result<RpcAttr, Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        let kw = self.expect_ident("rpc")?;
+        if !self.at(&TokenKind::LParen) {
+            return Ok(RpcAttr { requires: Vec::new(), span: at.span.merge(kw.span) });
+        }
+        self.bump();
+        if !matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "`@rpc` takes `requires: [<role>, …]`, or nothing: `@rpc`",
+            ));
+        }
+        let requires = self.parse_requires_list()?;
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok(RpcAttr { requires, span: at.span.merge(close.span) })
+    }
+
     /// GH #1109: `role NAME;` or `role NAME includes A, B;` — declared
     /// authorization vocabulary. `role` is contextual (it is also the
     /// `unix(..., role: listen)` kwarg); here it is told by position:
@@ -1391,6 +1424,75 @@ impl Parser {
             includes,
             span: kw_tok.span.merge(semi.span),
         })
+    }
+
+    /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }` —
+    /// a surface (spec/api.md § Surfaces and their rows). `api` and `rpc`
+    /// are contextual; the locus may be qualified (`rpc lib::Orders::cancel;`),
+    /// its last segment being the handler.
+    fn parse_api_decl(&mut self) -> Result<ApiDecl, Diag> {
+        let kw = self.bump(); // `api`
+        let name = self.expect_ident("surface name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut rows = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let tok = self.peek_token().clone();
+            if !matches!(&tok.kind, TokenKind::Ident(s) if s == "rpc") {
+                return Err(Diag::parse(
+                    tok.span,
+                    format!("an `api` block holds `rpc Locus::fn;` rows, got {:?}", tok.kind),
+                ));
+            }
+            self.bump(); // `rpc`
+            let mut segs = vec![self.expect_ident("the handler's locus")?];
+            while self.eat(&TokenKind::ColonColon) {
+                segs.push(self.expect_member_name("a name after `::`")?);
+            }
+            if segs.len() < 2 {
+                return Err(Diag::parse(
+                    segs[0].span,
+                    format!(
+                        "`rpc {}` names no handler: a row names a locus fn as `Locus::fn`",
+                        segs[0].name
+                    ),
+                ));
+            }
+            let method = segs.pop().expect("two segments");
+            let written = segs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+            let locus = Ident::new(written.clone(), segs[0].span.merge(segs[segs.len() - 1].span));
+            let requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
+                self.parse_requires_list()?
+            } else {
+                Vec::new()
+            };
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span) });
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span) })
+    }
+
+    /// GH #1417: `requires: [ROLE, …]`, the roles a caller of a row (or a
+    /// subscriber of a hub's stream) must hold. The list may be empty.
+    fn parse_requires_list(&mut self) -> Result<Vec<Ident>, Diag> {
+        self.bump(); // `requires`
+        self.expect(TokenKind::Colon, ":")?;
+        if !self.at(&TokenKind::LBracket) {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "`requires:` takes its roles in brackets: `requires: [trader]`",
+            ));
+        }
+        self.bump();
+        let mut roles = Vec::new();
+        while !self.at(&TokenKind::RBracket) {
+            roles.push(self.expect_ident("role name")?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket, "]")?;
+        Ok(roles)
     }
 
     /// GH #1076: `unit NAME;` or `unit NAME = FACTOR [TARGET];`, where
@@ -2944,6 +3046,7 @@ impl Parser {
             || name == "hot"
             || name == "budget"
             || name == "gated"
+            || name == "rpc"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -2983,6 +3086,15 @@ impl Parser {
                 let (role, gspan) = self.parse_gated_annotation()?;
                 out.gated = Some(role);
                 out.note("gated", gspan);
+                continue;
+            }
+            if name == "rpc" {
+                let attr = self.parse_rpc_annotation()?;
+                if out.rpc.is_some() {
+                    return Err(Diag::parse(attr.span, "a fn takes one `@rpc`"));
+                }
+                out.note("rpc", attr.span);
+                out.rpc = Some(attr);
                 continue;
             }
             if name == "budget" {
@@ -3876,6 +3988,7 @@ impl Parser {
         self.expect(TokenKind::LBrace, "{")?;
         let mut entries = Vec::new();
         let mut api: Option<ApiBinding> = None;
+        let mut hubs = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
             // GH #1106: `api: unix(...)` binds the program's API, not
             // one topic. `api` is a contextual keyword in this head
@@ -3905,6 +4018,12 @@ impl Parser {
             // decl exactly as it does for qualified bus subjects.
             let topic = self.expect_joined_path("topic name")?;
             self.expect(TokenKind::Colon, ":")?;
+            // GH #1417: `Topic: self.hub requires: [...], bound: N,
+            // on_full: drop_old;`, a stream row of a hub instance.
+            if self.at(&TokenKind::KwSelf) {
+                hubs.push(self.parse_hub_binding(topic)?);
+                continue;
+            }
             let transport = self.parse_transport_spec()?;
             // F.36 Slice 2: optional codec(L { ... }) clause
             // between the transport and the `where` constraints.
@@ -3924,7 +4043,84 @@ impl Parser {
         Ok(BindingsBlock {
             entries,
             api,
+            hubs,
             span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    /// GH #1417: the rest of `Topic: self.hub requires: [R, …], bound: N,
+    /// on_full: drop_old;`, the topic already read. The knobs are
+    /// optional here and comma-separated, in any order, each once; what a
+    /// stream row must state is the description's to say, not the
+    /// parser's.
+    fn parse_hub_binding(&mut self, topic: Ident) -> Result<HubBinding, Diag> {
+        self.bump(); // `self`
+        self.expect(TokenKind::Dot, ".")?;
+        let instance = self.expect_ident("the hub param")?;
+        let mut requires: Option<Vec<Ident>> = None;
+        let mut bound: Option<(u64, Span)> = None;
+        let mut on_full: Option<Ident> = None;
+        let mut first = true;
+        while !self.at(&TokenKind::Semi) {
+            if !first {
+                self.expect(TokenKind::Comma, ",")?;
+            }
+            first = false;
+            let key_tok = self.peek_token().clone();
+            let key = match &key_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                other => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        format!("a hub binding takes `requires:`, `bound:` and `on_full:`, got {:?}", other),
+                    ));
+                }
+            };
+            let twice = || Diag::parse(key_tok.span, format!("`{key}:` is written twice"));
+            match key.as_str() {
+                "requires" => {
+                    if requires.is_some() {
+                        return Err(twice());
+                    }
+                    requires = Some(self.parse_requires_list()?);
+                }
+                "bound" => {
+                    if bound.is_some() {
+                        return Err(twice());
+                    }
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    let n_tok = self.peek_token().clone();
+                    let TokenKind::IntLit(n) = n_tok.kind else {
+                        return Err(Diag::parse(n_tok.span, "`bound:` takes a positive integer"));
+                    };
+                    self.bump();
+                    bound = Some((n as u64, n_tok.span));
+                }
+                "on_full" => {
+                    if on_full.is_some() {
+                        return Err(twice());
+                    }
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    on_full = Some(self.expect_ident("`drop_old` or `drop_new`")?);
+                }
+                other => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        format!("a hub binding takes `requires:`, `bound:` and `on_full:`, got `{other}`"),
+                    ));
+                }
+            }
+        }
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(HubBinding {
+            span: topic.span.merge(semi.span),
+            topic,
+            instance,
+            requires: requires.unwrap_or_default(),
+            bound,
+            on_full,
         })
     }
 
@@ -6448,6 +6644,7 @@ impl Parser {
                 export: false,
                 unbounded: false,
                 gated: None,
+                rpc: None,
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
@@ -6479,6 +6676,7 @@ impl Parser {
                 export: false,
                 unbounded: false,
                 gated: None,
+                rpc: None,
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
@@ -6506,6 +6704,7 @@ impl Parser {
             export: false,
             unbounded: false,
             gated: None,
+            rpc: None,
             budget: None,
             hot: false,
             effects: Vec::new(),
@@ -7697,6 +7896,86 @@ impl Parser {
         }
     }
 
+    /// GH #1417: the arguments of `api::serve(SURFACE, TRANSPORT, as:
+    /// NAME, receivers: { TYPE: INSTANCE, … }, bound: N, on_full:
+    /// POLICY)`, up to the `)`. The positional ones are expressions; the
+    /// named ones, which only this call takes, ride in one trailing
+    /// struct literal named [`SERVE_OPTIONS`] (`receivers:` in one named
+    /// [`SERVE_RECEIVERS`], one init per type as written), so the call
+    /// stays an ordinary call every walker reads ([`ServeSite::of`] reads
+    /// it back). R1 names a serve site; R2 checks and lowers it.
+    fn parse_serve_args(&mut self) -> Result<Vec<Expr>, Diag> {
+        let mut args = Vec::new();
+        let mut options: Vec<StructInit> = Vec::new();
+        let mut opts_span: Option<Span> = None;
+        while !self.at(&TokenKind::RParen) {
+            let named = matches!(self.peek(), TokenKind::Ident(_)) && matches!(self.peek_at(1), TokenKind::Colon);
+            if named {
+                let key = self.expect_ident("argument name")?;
+                if !matches!(key.name.as_str(), "as" | "receivers" | "bound" | "on_full") {
+                    return Err(Diag::parse(
+                        key.span,
+                        format!(
+                            "`api::serve` takes `as:`, `receivers:`, `bound:` and `on_full:`, got `{}:`",
+                            key.name
+                        ),
+                    ));
+                }
+                if options.iter().any(|o| o.name.name == key.name) {
+                    return Err(Diag::parse(key.span, format!("`{}:` is written twice", key.name)));
+                }
+                self.expect(TokenKind::Colon, ":")?;
+                let value = if key.name == "receivers" {
+                    let open = self.expect(TokenKind::LBrace, "{")?;
+                    let mut inits = Vec::new();
+                    while !self.at(&TokenKind::RBrace) {
+                        let ty = self.expect_joined_path("the receiver's locus type")?;
+                        self.expect(TokenKind::Colon, ":")?;
+                        let v = self.parse_expr()?;
+                        let span = ty.span.merge(v.span());
+                        inits.push(StructInit { name: ty, value: v, span });
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let close = self.expect(TokenKind::RBrace, "}")?;
+                    let span = open.span.merge(close.span);
+                    Expr::Struct {
+                        path: QualifiedName { segments: vec![Ident::new(SERVE_RECEIVERS, span)], span },
+                        inits,
+                        span,
+                        id: NodeId::NONE,
+                    }
+                } else {
+                    self.parse_expr()?
+                };
+                let span = key.span.merge(value.span());
+                opts_span = Some(opts_span.map_or(span, |s| s.merge(span)));
+                options.push(StructInit { name: key, value, span });
+            } else {
+                if !options.is_empty() {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "`api::serve`'s named arguments follow its surface and its transport",
+                    ));
+                }
+                args.push(self.parse_expr()?);
+            }
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        if let Some(span) = opts_span {
+            args.push(Expr::Struct {
+                path: QualifiedName { segments: vec![Ident::new(SERVE_OPTIONS, span)], span },
+                inits: options,
+                span,
+                id: NodeId::NONE,
+            });
+        }
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, Diag> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -7762,8 +8041,12 @@ impl Parser {
                 }
                 TokenKind::LParen => {
                     let lp = self.bump();
+                    let serve = matches!(&expr, Expr::Path(qn)
+                        if qn.segments.len() == 2 && qn.segments[0].name == "api" && qn.segments[1].name == "serve");
                     let mut args = Vec::new();
-                    if !self.at(&TokenKind::RParen) {
+                    if serve {
+                        args = self.parse_serve_args()?;
+                    } else if !self.at(&TokenKind::RParen) {
                         args.push(self.parse_expr()?);
                         while self.eat(&TokenKind::Comma) {
                             args.push(self.parse_expr()?);

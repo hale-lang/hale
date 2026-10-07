@@ -407,6 +407,29 @@ method may still be named by any of them:
 words anywhere else. `in` stays a hard keyword; after `.` it is a
 member name, so `d.in(s)` is an ordinary method call.
 
+### Surface words (GH #1417)
+
+```
+api             rpc             requires
+```
+
+All three are **contextual keywords** (spec/api.md § Surfaces and
+their rows), each recognized in its positions and an ordinary `Ident`
+everywhere else:
+
+- **`api`** — at top level, when a name and then `{` follow it: `api
+  Public { … }` declares a surface. It stays the `bindings { api: … }`
+  entry head of the structural path (spec/semantics.md § The api
+  binding) and the `api::serve` path head.
+- **`rpc`** — at the head of a row inside an `api` block (`rpc
+  Orders::place;`), and as the annotation `@rpc` on a locus fn.
+- **`requires`** — after a row's handler, inside `@rpc( … )`, and
+  among a hub binding's clauses: `requires: [trader]`.
+
+`api::serve( … )` is a call whose arguments after the surface and the
+transport are named (`as:`, `receivers:`, `bound:`, `on_full:`); no
+other call takes named arguments (spec/api.md § Serving).
+
 ## Operators
 
 ### Arithmetic
@@ -892,6 +915,7 @@ They attach to the declaration that follows.
 | `@effects(only: {…})` | fn | CLOSED contract — the inferred set must be a subset of these |
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
+| `@rpc` / `@rpc(requires: [ROLE, …])` | locus fn | a row of the seed's default surface (spec/api.md) |
 
 The fn CONTRACT annotations — `@unbounded`, `@hot`, `@budget(...)` and
 the effect assertions — stack on one fn in any order; `@ffi` and

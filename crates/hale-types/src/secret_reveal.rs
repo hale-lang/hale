@@ -625,6 +625,11 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
         for field in ["id: NodeId(), ", ", id: NodeId()"] {
             text = text.replace(field, "");
         }
+        // GH #1417: a fn with no `@rpc` renders the field's absence,
+        // which a body reviewed before the field existed did not; the
+        // absence says nothing about the body, so it goes as well (an
+        // `@rpc` on the fn stays in the text, and is a change).
+        text = text.replace("rpc: None, ", "");
         text
     });
     let mut text = text;

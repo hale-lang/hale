@@ -793,6 +793,10 @@ fn register_top_decls(
                 // never a value or a type; the checker refuses the
                 // declaration until the dialect's rows land.
             }
+            TopDecl::Api(_) => {
+                // GH #1417: a surface names a table of rows, never a
+                // value or a type; `api::serve` reads it by name.
+            }
         }
     }
 }

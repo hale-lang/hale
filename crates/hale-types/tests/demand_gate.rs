@@ -789,6 +789,7 @@ const GATE: &[GateRow] = &[
     row("flows", 1, 1, |s| { let _ = s.demand_flows(); }),
     row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
     row("api_surface", 1, 1, |s| { let _ = s.demand_role_rows(); }),
+    row("surface", 1, 1, |s| { let _ = s.demand_surface_rows(); }),
     row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
     row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),
     row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),

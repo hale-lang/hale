@@ -81,6 +81,12 @@ table_id!(
     /// [`Declaration`]: crate::entity::Declaration
     DeclarationId
 );
+table_id!(
+    /// A surface (GH #1417) — see [`Surface`].
+    ///
+    /// [`Surface`]: crate::surface::Surface
+    SurfaceId
+);
 
 /// A reference to any entity sort — the anchor vocabulary shared by
 /// holes, labels, weights, and (later) evidence steps.

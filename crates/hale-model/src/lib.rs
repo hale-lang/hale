@@ -229,6 +229,7 @@ pub mod keys;
 pub mod obs_ids;
 pub mod provenance;
 pub mod relation;
+pub mod surface;
 
 pub use application::{
     AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
@@ -255,13 +256,14 @@ pub use hole::{allowed_hole_families, hole_site_shaped, Hole, HoleKind, Relation
 pub use ids::{
     BindingId, DeclarationId, EffectClassId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
     LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,
-    ThreadDomainId, TopicId, TypeDeclId,
+    SurfaceId, ThreadDomainId, TopicId, TypeDeclId,
 };
 pub use keys::{
     BindingLossBehavior, Capacity, KeyDomain, KeyOnUnmatched, KeyPredicate, KeyValue,
     PublishDisposition, ShedPolicy, TopicBound, TopicKey, TopicOnFull,
 };
 pub use provenance::{Provenance, ProvenanceTable};
+pub use surface::{RowType, Surface, SurfaceRow};
 pub use relation::{CostDimension, CostSite,
     AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,

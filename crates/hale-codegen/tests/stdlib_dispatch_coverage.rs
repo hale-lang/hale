@@ -624,7 +624,7 @@ impl CallWalk {
             }
             TopDecl::Type(t) => self.type_decl(t),
             // A unit declaration holds names and numbers, no call.
-            TopDecl::Unit(_) => {}
+            TopDecl::Unit(_) | TopDecl::Api(_) => {}
             TopDecl::Const(c) => {
                 self.owner = c.name.name.clone();
                 self.ty(&c.ty);

@@ -237,15 +237,17 @@ never builds a model from it.
 `spec/api.md` (GH #1417) replaces it with model rows: the `surface`
 family (`spec/registry.md`), one row per `rpc` line of an `api` block
 or `@rpc` handler — the surface, the member, the request, response and
-error types as payload contracts, the pool and the required roles —
-from which the surface's contract digest is folded and every
+error types with their contract shape hashes (§ The shape of a type),
+whether the error is the server error, the pools and the required
+roles — from which the surface's contract digest is folded and every
 description is rendered, per exposure, from the rows dispatch reads.
-The family is reserved until R1 produces it; the description above is
-today's.
+The model holds the surfaces and their rows (the `surfaces` and
+`surface_rows` tables, below) from R1; the description above stays the
+structural path's until R4 retires it.
 
 ## Sorts — the entity tables
 
-`Entities` holds fifteen tables. A row's **id is its index** in its
+`Entities` holds seventeen tables. A row's **id is its index** in its
 own table, wrapped in a newtype (`FunctionId`, `SubjectId`, …) —
 not a field stored on the row.
 
@@ -282,6 +284,16 @@ digest.
 | `types`, `interfaces` | type and interface declarations |
 | `effect_classes` | declared **or merely referenced** user effect classes — `declared: false` is "referenced, never declared". Built-ins are a separate fixed vocabulary (`BUILTIN_EFFECT_CLASSES`) and have no row |
 | `declarations` | the declaration universe, for coverage laws |
+| `surfaces` | an `api` block, or a seed's default surface its `@rpc` handlers feed, with its contract digest (`spec/api.md`, GH #1417) |
+| `surface_rows` | one row of a surface: the member as a caller names it, the handler's function, the request, response and error types (each its spelling, contract shape and hash), whether a failure is the server error, the pools the handler's locus runs on and the required roles as written |
+
+The surface family has one law of its own beside canonical order (by
+surface name; rows by surface, then member): a surface's digest is the
+fold of its rows (`hale_model::surface::surface_digest`, the framing
+of `spec/api.md` § The contract digest), so a row added, removed or
+changed without the digest moving is not a model. Neither table enters
+`shape_hash`: a program with no surface hashes as it did, and one with
+surfaces gains these rows and no hash.
 
 Two distinctions in that table are load-bearing:
 
@@ -955,6 +967,10 @@ Absorption: `StdlibAbsorption`, `AbsorbedNode`, `AbsorbedEvent`,
 `BindingRole`, `TransportKind`, `Group`, `TypeDecl`,
 `InterfaceDecl`, `EffectClassDecl`, `EffectClassDefinition`,
 `Declaration`, `DeclKind`.
+
+**`surface`** — the surface family (GH #1417): `Surface`,
+`SurfaceRow`, `RowType`, and the digest framings
+(`surface_digest_input`, `stream_digest_input`) with their folds.
 
 **`relation`** — the seventeen relation row types. Structure:
 `MemberOf`, `PhaseOf`, `DeclaredIn`, `Realizes`, `Owns`. Behaviour:

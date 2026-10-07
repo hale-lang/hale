@@ -183,6 +183,8 @@ fn tiny_model() -> ApplicationModel {
             types: vec![],
             interfaces: vec![],
             declarations: vec![],
+            surfaces: vec![],
+            surface_rows: vec![],
         },
         relations: Relations {
             realizes: vec![Realizes {

@@ -200,6 +200,7 @@ macro_rules! walk {
                     TopDecl::RingLayout(_)
                     | TopDecl::Target(_)
                     | TopDecl::Role(_)
+                    | TopDecl::Api(_)
                     | TopDecl::Claims(_)
                     | TopDecl::Constitution(_) => {}
                 }

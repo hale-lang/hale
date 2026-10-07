@@ -47,6 +47,7 @@ top_decl          = locus_decl
                   | claims_block          (* #392: library tier *)
                   | constitution_decl     (* #409 *)
                   | unit_decl             (* #1076 *)
+                  | api_decl              (* #1417 *)
                   ;
 
 (* #392 thread 2 — a TOP-LEVEL claims_block is the LIBRARY tier: a
@@ -94,6 +95,21 @@ role_decl         = "role" , IDENTIFIER ,
    the declaration when a name and then `=` or `;` follow it. Unit
    names are never mangled. *)
 unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
+
+(* GH #1417 — `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }`
+   declares a surface: a named table of operations, each `rpc` line a
+   row naming a handler (a member fn of a locus, the locus qualified
+   when another seed declares it: `rpc lib::Orders::cancel;`) and the
+   roles a caller must hold (spec/api.md § Surfaces and their rows).
+   `api`, `rpc` and `requires` are contextual: at top level `api`
+   followed by a name and `{` is the declaration. A row names at least
+   `Locus::fn`. Surface names are never mangled. The `@rpc` annotation
+   (`rpc_annotation`) contributes the same row to the seed's default
+   surface. *)
+api_decl          = "api" , IDENTIFIER , "{" , { rpc_row } , "}" ;
+rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
+                    [ requires_clause ] , ";" ;
+requires_clause   = "requires" , ":" , "[" , [ identifier_list , [ "," ] ] , "]" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;
 
@@ -501,7 +517,17 @@ birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
    gives a qualified bus subject, so a binding and a subscribe compare
    like with like) and the cross-seed rename pass collapses it to the
    mangled declaration. *)
-bindings_block    = "bindings" , "{" , { binding_entry | api_entry } , "}" ;
+bindings_block    = "bindings" , "{" , { binding_entry | api_entry | hub_entry } , "}" ;
+(* GH #1417 — a topic bound to a hub, a transport INSTANCE the locus
+   holds as a param, with the stream row's exposure fields on the
+   binding (spec/api.md § Streams). Each clause at most once, in any
+   order. Described by `hale check --api`; a build refuses it until a
+   hub is served (R5). *)
+hub_entry         = qualified_name , ":" , "self" , "." , IDENTIFIER ,
+                    [ hub_clause , { "," , hub_clause } ] , ";" ;
+hub_clause        = requires_clause
+                  | "bound" , ":" , INT_LIT
+                  | "on_full" , ":" , IDENTIFIER ;
 binding_entry     = qualified_name , ":" , transport_spec ,
                     [ codec_spec ] ,
                     [ binding_where ] , ";" ;
@@ -1138,7 +1164,8 @@ function_decl     = [ ffi_annotation | export_annotation
    `spec/verification.md` § Effect assertions for the clause forms
    inside `@effects(...)`. *)
 contract_decorator = unbounded_annotation | budget_annotation
-                   | hot_annotation | effect_annotation ;
+                   | hot_annotation | effect_annotation
+                   | rpc_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
@@ -1149,6 +1176,10 @@ hot_annotation    = "@" , "hot" ;
    member or a `publish` member: the role a caller through the api
    binding must hold. spec/types.md § "Roles and `@gated`". *)
 gated_annotation  = "@" , "gated" , "(" , "role" , ":" , IDENTIFIER , ")" ;
+(* GH #1417 — on a locus fn: the row it contributes to its seed's
+   default surface, named after the seed, with the roles a caller must
+   hold (spec/api.md § Surfaces and their rows). *)
+rpc_annotation    = "@" , "rpc" , [ "(" , requires_clause , ")" ] ;
 effect_annotation = "@" , effect_assert_flag
                   | "@" , "effects" , "(" , effect_clauses , ")" ;
 effect_assert_flag = "no_syscall" | "no_block" | "no_ffi"
@@ -1440,6 +1471,20 @@ postfix_op        = "." , member_name
                   | "(" , [ argument_list ] , ")"
                   | "[" , expression , "]"
                   ;
+
+(* GH #1417 — a call of the path `api::serve` takes, after its
+   surface and its transport instance, the named arguments of a serve
+   site (spec/api.md § Serving); no other call takes named arguments.
+   `hale check --api` names the site; a build refuses it until R2
+   serves it. *)
+serve_arguments   = expression , [ "," , expression ] ,
+                    { "," , serve_option } ;
+serve_option      = "as" , ":" , expression
+                  | "receivers" , ":" , "{" ,
+                    [ qualified_name , ":" , expression ,
+                      { "," , qualified_name , ":" , expression } , [ "," ] ] , "}"
+                  | "bound" , ":" , expression
+                  | "on_full" , ":" , expression ;
 
 (* member_name accepts identifiers AND framework-vocabulary
    keywords as field / method names. Post-`.` is unambiguous

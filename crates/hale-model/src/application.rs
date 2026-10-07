@@ -117,6 +117,10 @@ pub struct Entities {
     /// Seed-membership-only declarations (perspective, const, ring
     /// layout, target) — the rest of the nameable universe.
     pub declarations: Vec<Declaration>,
+    /// GH #1417: the surfaces, by name, each with its contract digest.
+    pub surfaces: Vec<crate::surface::Surface>,
+    /// GH #1417: every surface's rows, by surface and member.
+    pub surface_rows: Vec<crate::surface::SurfaceRow>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -989,7 +993,7 @@ pub struct ApplicationModel {
     /// Identity and versioning: what produced this model and under
     /// which semantics.
     pub header: ModelHeader,
-    /// The fifteen entity tables. A row's id is its index here.
+    /// The seventeen entity tables. A row's id is its index here.
     pub entities: Entities,
     /// The seventeen relation tables. Read each one's grain before
     /// counting.
@@ -1341,6 +1345,30 @@ impl ApplicationModel {
         check_sorted_keys("thread_domains", e.thread_domains.iter().map(|d| &d.name))?;
         check_sorted_keys("groups", e.groups.iter().map(|g| &g.name))?;
         check_sorted_keys("types", e.types.iter().map(|t| &t.name))?;
+        // GH #1417: surfaces by name, rows by surface then member, each
+        // row's surface and handler resolving, and each surface's digest
+        // the fold of its own rows.
+        check_sorted_keys("surfaces", e.surfaces.iter().map(|s| &s.name))?;
+        check_sorted_keys("surface_rows", e.surface_rows.iter().map(|r| (r.surface, &r.member)))?;
+        for (i, r) in e.surface_rows.iter().enumerate() {
+            if r.surface.index() >= e.surfaces.len() {
+                return Err(ModelError::DanglingId { table: "surface_rows.surface", index: i });
+            }
+            if r.handler.is_some_and(|f| f.index() >= e.functions.len()) {
+                return Err(ModelError::DanglingId { table: "surface_rows.handler", index: i });
+            }
+        }
+        for (i, s) in e.surfaces.iter().enumerate() {
+            let lines: Vec<crate::surface::DigestLine<'_>> = e
+                .surface_rows
+                .iter()
+                .filter(|r| r.surface.index() == i)
+                .map(crate::surface::DigestLine::from)
+                .collect();
+            if crate::surface::surface_digest(&lines) != s.digest {
+                return Err(ModelError::NotCanonical { table: "surfaces.digest", index: i });
+            }
+        }
         check_sorted_keys(
             "effect_classes",
             e.effect_classes.iter().map(|c| &c.name),

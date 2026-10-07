@@ -1098,6 +1098,7 @@ pub fn inject_api_entry(l: &mut LocusDecl, path: &str) {
         l.members.push(LocusMember::Bindings(crate::ast::BindingsBlock {
             entries: Vec::new(),
             api: Some(entry),
+            hubs: Vec::new(),
             span,
         }));
     }
