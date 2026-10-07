@@ -228,3 +228,140 @@ fn claim_a_chain_is_zero_alloc() {
         ds
     );
 }
+
+/// §7 deliberate absences: "A locus is never a `@form` cell", with
+/// the compiler's own reason. A struct from the stdlib is a cell type
+/// (C7 and 2.5 say so; the qualified-path refusal is gone).
+#[test]
+fn claim_a_locus_is_never_a_form_cell() {
+    let ds = build_errs(
+        "locus Worker { params { id: Int = 0; } }\n\
+         @form(vec)\n\
+         locus Workers { capacity { heap items of Worker; } }\n\
+         fn main() { let w = Workers { }; println(w.len()); }",
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("cell type cannot be a locus")),
+        "spec/styleguide.md §7 lists a locus cell as a deliberate \
+         absence and quotes its diagnostic. If a locus cell is accepted \
+         now, the absence is gone — move or delete the entry: {:?}",
+        ds
+    );
+    let ok = build_errs(
+        "@form(vec)\n\
+         locus Reqs { capacity { heap items of std::http::Request; } }\n\
+         fn main() { let r = Reqs { }; println(r.len()); }",
+    );
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.5 and C7 say a stdlib struct is a cell \
+         type like an in-seed one: {:?}",
+        ok
+    );
+}
+
+/// §7 sharp edges: "An `Int` does not widen into a `Float` let or
+/// field", although spec/types.md § "Numeric coercion" lists both.
+/// A fix is in progress; when it lands this fails, and the entry goes
+/// (spec/types.md is then true again).
+#[test]
+fn claim_int_does_not_widen_into_a_float_let_or_field() {
+    let widens = build_errs(
+        "fn half(x: Float) -> Float { return x / 2.0; }\n\
+         fn main() { let i = 4; println(half(i), \" \", i + 0.5); }",
+    );
+    assert!(
+        widens.is_empty(),
+        "§7 says a call's argument and a mixed binop still widen an \
+         `Int`: {:?}",
+        widens
+    );
+    for (what, src) in [
+        ("a literal", "fn main() { let x: Float = 5; println(x); }"),
+        ("a local", "fn main() { let i = 4; let x: Float = i; println(x); }"),
+        (
+            "a struct field",
+            "type Cfg { timeout: Float; }\n\
+             fn main() { let c = Cfg { timeout: 7 }; println(c.timeout); }",
+        ),
+    ] {
+        let ds = build_errs(src);
+        assert!(
+            ds.iter().any(|m| m.contains("expects `Float`, got `Int`")
+                || m.contains("expected `Float`, got `Int`")),
+            "spec/styleguide.md §7 says {} of type `Int` is refused where \
+             a `Float` is declared. It widens now — delete the \"An `Int` \
+             does not widen into a `Float` let or field\" sharp edge: {:?}",
+            what,
+            ds
+        );
+    }
+}
+
+/// C8: the bare narrowing is refused with the diagnostic the guide
+/// quotes, the policy discharges it, and a quantity's count in a unit
+/// is the one division that takes none.
+#[test]
+fn claim_a_narrowing_names_its_policy() {
+    let catalogue = "unit cent;\nunit USD = 100 cent;\ntype Money = quantity Int in cent;\n";
+    let bare = build_errs(&format!(
+        "{catalogue}fn main() {{ let fee: Money = 250cent; println(fee / 2); }}"
+    ));
+    assert!(
+        bare.iter().any(|m| m.contains(
+            "`Money` divided by 2 leaves a remainder: say what happens to \
+             the remainder: `or floor`, `or <value>`, `or raise`, or give \
+             `Money` a `round:` policy"
+        )),
+        "spec/styleguide.md C8 quotes this refusal word for word; \
+         update the quote (or the rule, if it no longer refuses): {:?}",
+        bare
+    );
+    let named = build_errs(&format!(
+        "{catalogue}fn main() {{\n\
+             let fee: Money = 250cent;\n\
+             let count: Int = (fee.in(USD) or half_even) / 1USD;\n\
+             println(fee / 2 or floor, \" \", fee / 1USD, \" \", count);\n\
+         }}"
+    ));
+    assert!(
+        named.is_empty(),
+        "C8: a policy discharges the narrowing, and `fee / 1USD` is an \
+         `Int` quotient that takes none. If the quotient now asks for a \
+         policy, C8's last paragraph is wrong: {:?}",
+        named
+    );
+}
+
+/// S9: what a `where zero_copy` binding accepts. A scalar-element
+/// fixed array is inline and flat; an array of structs is refused.
+#[test]
+fn claim_zero_copy_takes_inline_scalar_arrays_only() {
+    let shape = |field: &str| {
+        build_errs(&format!(
+            "type P {{ a: Int; }}\n\
+             type Pay {{ n: Int; {field} }}\n\
+             topic Tk {{ payload: Pay; }}\n\
+             main locus App {{\n\
+                 bindings {{ Tk: shm_ring(\"/sg-claim\", slot_count: 8, on_overflow: drop) where zero_copy; }}\n\
+             }}\n\
+             fn main() {{ App {{ }}; }}"
+        ))
+    };
+    let inline = shape("xs: [Int; 4]; ds: [Duration; 2];");
+    assert!(
+        inline.is_empty(),
+        "styleguide S9 and spec/semantics.md § Payload-shape \
+         compatibility say a fixed array of scalars is flat: {:?}",
+        inline
+    );
+    for refused in ["ps: [P; 2];", "ts: [Time; 2];", "xs: [Int];", "s: String;"] {
+        let ds = shape(refused);
+        assert!(
+            ds.iter().any(|m| m.contains("is not flat-shapeable")),
+            "styleguide S9 says `{}` is refused on a zero_copy binding: {:?}",
+            refused,
+            ds
+        );
+    }
+}
