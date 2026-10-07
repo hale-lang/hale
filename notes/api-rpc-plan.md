@@ -104,9 +104,9 @@ params {
 }
 run() {
     let h1 = api::serve(Public, http::Rpc { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.public_roles },
-                        as: "public", receivers: { Orders: self.orders });
-    let h2 = api::serve(Admin, unix::Rpc { path: "/run/app.sock", principals: self.bearer, roles: self.admin_roles },
-                        as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger });
+                        as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+    let h2 = api::serve(Admin, unix::Rpc { path: "/run/app.sock", roles: self.admin_roles },
+                        as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger }, bound: 16, on_full: refuse);
     …
 }
 ```
@@ -114,7 +114,12 @@ run() {
 A serve site pairs one surface with one transport instance, names the
 exposure (`as:`), supplies the bearer source and the role source, and
 binds every receiver type the surface's rows name to one instance
-(`receivers:`). The bound instance is the destination: its pool is
+(`receivers:`), and states the exposure's queue (`bound:`, the
+requests accepted and not yet answered, and `on_full: refuse`, the
+only policy for a request: a call is never dropped silently). A
+`unix::Rpc` takes its principal from the kernel's peer credentials
+(#1108) and names a bearer source only to accept tokens as well; an
+`http::Rpc` always names one. The bound instance is the destination: its pool is
 the dispatch pool and its lifetime bounds the exposure, so a receiver
 must be a param of the serving locus or a child it owns for as long
 as the handle lives (a `let`-bound child that dissolves before
@@ -207,14 +212,20 @@ binding row:
 params { hub: ws::Hub = ws::Hub { bind: "0.0.0.0:9000", principals: self.bearer, roles: self.public_roles }; }
 bindings {
     Prices: self.hub requires: [trader], bound: 256, on_full: drop_old;
-    Fills:  self.hub requires: [operator], bound: 64, on_full: refuse;
+    Fills:  self.hub requires: [operator], bound: 64, on_full: drop_new;
 }
 ```
 
 A hub is a transport instance that implements the stream adapter
 (`__StdBusAdapter`) and may implement `Rpc` as well, so one listener
 carries rpcs and streams over one connection authenticated once at
-connect. A subscription is authorized against the row's `requires`
+connect. A stream row's `on_full` is `drop_old` or `drop_new`, the
+two policies a watcher queue has; a stream is never `refuse`d, since
+a subscriber that cannot keep up loses events, not the subscription.
+A hub that serves no surface is still an exposure, of its stream rows
+alone, identified `hub@<digest of its stream rows>/<name>`, and a
+caller's description from its listener lists the streams the caller
+may subscribe to (R5 fixes the stream digest's framing). A subscription is authorized against the row's `requires`
 before it is admitted, from the `Context` the hub's sources
 established; a caller who may not read a stream buffers nothing. The
 description derives every stream a caller may use from the binding
@@ -369,6 +380,12 @@ descriptions a consumer built against in R0 are what R1 generates.
     program-wide description is an inventory.
 16. Outcome mappings are fixed per transport in v1 and stated in the
     contract; no row or digest carries a status.
+17. A serve site states its queue (`bound:`, `on_full: refuse`); a
+    stream row's `on_full` is `drop_old` or `drop_new`; a hub that
+    serves no surface is an exposure of its stream rows.
+18. Credential expiry and the role-source revision are fields of the
+    bearer and role source interfaces, shaped in R5 with the hub that
+    reads them.
 
 ## 8. Open points
 
