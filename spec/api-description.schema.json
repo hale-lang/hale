@@ -2,13 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:hale:api-description:1",
   "title": "The API description and the program-wide inventory (spec/api.md, GH #1417)",
-  "$comment": "A description is one exposure's document, filtered for one caller (\"description\": 1); the inventory is the program-wide document hale check --api prints (\"inventory\": 1). The v1 outcome mappings are consts: a transport may not choose others.",
+  "$comment": "A description is one exposure's document, filtered for one caller (\"description\": 1): a serve site's, or a hub's that serves no surface; the inventory is the program-wide document hale check --api prints (\"inventory\": 1). The v1 outcome mappings and the ws frame envelope are consts: a transport may not choose others.",
   "oneOf": [
     { "$ref": "#/$defs/description" },
     { "$ref": "#/$defs/inventory" }
   ],
   "$defs": {
     "description": {
+      "$comment": "One document type for both kinds of exposure: a serve site's (a surface over a transport) and a hub's that serves no surface (its stream rows alone, surface null, no members, the ws outcome form).",
+      "oneOf": [
+        { "$ref": "#/$defs/surface_description" },
+        { "$ref": "#/$defs/hub_description" }
+      ]
+    },
+    "surface_description": {
       "type": "object",
       "additionalProperties": false,
       "required": ["description", "exposure", "name", "surface", "digest", "listener", "codec", "caller", "members", "streams", "outcomes", "schemas", "notes"],
@@ -25,12 +32,34 @@
         "streams": { "type": "array", "items": { "$ref": "#/$defs/stream" } },
         "outcomes": { "$ref": "#/$defs/outcomes" },
         "schemas": { "$ref": "#/$defs/schemas" },
-        "notes": {
-          "type": "object",
-          "required": ["authorization", "lifecycle", "discovery"],
-          "additionalProperties": { "type": "string" }
-        }
+        "notes": { "$ref": "#/$defs/description_notes" }
       }
+    },
+    "hub_description": {
+      "$comment": "A hub exposure's document (spec/api.md, Streams): identified hub@<stream digest>/<name>, the digest the stream digest, surface null and members empty, streams the rows this caller may subscribe to, outcomes the ws frame envelope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "exposure", "name", "surface", "digest", "listener", "codec", "caller", "members", "streams", "outcomes", "schemas", "notes"],
+      "properties": {
+        "description": { "const": 1 },
+        "exposure": { "$ref": "#/$defs/hub_exposure_id" },
+        "name": { "$ref": "#/$defs/exposure_name" },
+        "surface": { "type": "null" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "listener": { "$ref": "#/$defs/listener" },
+        "codec": { "$ref": "#/$defs/codec" },
+        "caller": { "$ref": "#/$defs/caller" },
+        "members": { "const": [] },
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/stream" } },
+        "outcomes": { "$ref": "#/$defs/outcomes_ws" },
+        "schemas": { "$ref": "#/$defs/schemas" },
+        "notes": { "$ref": "#/$defs/description_notes" }
+      }
+    },
+    "description_notes": {
+      "type": "object",
+      "required": ["authorization", "lifecycle", "discovery"],
+      "additionalProperties": { "type": "string" }
     },
     "inventory": {
       "type": "object",
@@ -90,8 +119,11 @@
     "hub": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["instance", "listener", "codec", "principals", "roles", "streams"],
+      "required": ["exposure", "name", "digest", "instance", "listener", "codec", "principals", "roles", "streams"],
       "properties": {
+        "exposure": { "$ref": "#/$defs/hub_exposure_id" },
+        "name": { "$ref": "#/$defs/exposure_name" },
+        "digest": { "$ref": "#/$defs/digest" },
         "instance": { "type": "string" },
         "listener": { "$ref": "#/$defs/listener" },
         "codec": { "$ref": "#/$defs/codec" },
@@ -199,6 +231,24 @@
         "transport_failure": { "const": "eof" }
       }
     },
+    "outcomes_ws": {
+      "$comment": "The ws form: the frames a hub exchanges, each a JSON object whose type names it. The client sends subscribe; the hub answers subscribed or refusal, then sends event frames whose seq increases by one per event offered to the subscription (a gap is the frames shed), unauthorized once when the subscription is invalidated, and closed at stop(). No member, no status.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "subscribe", "subscribed", "refusal", "event", "unauthorized", "closed", "transport_failure"],
+      "properties": {
+        "transport": { "const": "ws" },
+        "subscribe": { "const": { "type": "subscribe", "fields": ["topic"] } },
+        "subscribed": { "const": { "type": "subscribed", "fields": ["topic"] } },
+        "refusal": {
+          "const": { "type": "refusal", "fields": ["topic", "refusal"], "kinds": ["malformed", "unauthenticated", "unauthorized", "shutting_down"] }
+        },
+        "event": { "const": { "type": "event", "fields": ["topic", "seq", "payload"] } },
+        "unauthorized": { "const": { "type": "unauthorized", "fields": ["topic", "reason"], "reasons": ["expired", "revoked"] } },
+        "closed": { "const": { "type": "closed", "fields": ["reason"], "reasons": ["shutting_down"] } },
+        "transport_failure": { "const": "the connection closes without a closed frame" }
+      }
+    },
     "listener": {
       "type": "object",
       "additionalProperties": false,
@@ -237,6 +287,7 @@
     "surface_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*$" },
     "member_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*::[A-Za-z_][A-Za-z0-9_]*$" },
     "exposure_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
-    "exposure_id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*@fnv1a64:[0-9a-f]{16}/[A-Za-z0-9_.-]+$" }
+    "exposure_id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*@fnv1a64:[0-9a-f]{16}/[A-Za-z0-9_.-]+$" },
+    "hub_exposure_id": { "type": "string", "pattern": "^hub@fnv1a64:[0-9a-f]{16}/[A-Za-z0-9_.-]+$" }
   }
 }

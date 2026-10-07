@@ -45,7 +45,7 @@ fn descriptions() -> BTreeMap<String, Value> {
             out.insert(name, read_json(&path));
         }
     }
-    assert!(out.len() >= 6, "expected the six descriptions of tests/api-contract, found {:?}", out.keys());
+    assert!(out.len() >= 8, "expected the eight descriptions of tests/api-contract, found {:?}", out.keys());
     out
 }
 
@@ -402,13 +402,22 @@ fn the_validator_refuses_what_the_schema_forbids() {
     assert!(!errors_against_schema(&inv).is_empty(), "the schema accepts `refuse` as a stream's on_full (decision 17: drop_old or drop_new)");
 }
 
-/// The inventory's row of the named surface, exposure.
+/// The inventory's row of the named surface, exposure, hub.
 fn surface_of<'a>(inv: &'a Value, name: &str) -> &'a Value {
     inv["surfaces"].as_array().unwrap().iter().find(|s| s["name"] == name).unwrap_or_else(|| panic!("no surface `{name}` in the inventory"))
 }
 
 fn exposure_of<'a>(inv: &'a Value, id: &str) -> &'a Value {
     inv["exposures"].as_array().unwrap().iter().find(|e| e["exposure"] == id).unwrap_or_else(|| panic!("no exposure `{id}` in the inventory"))
+}
+
+fn hub_of<'a>(inv: &'a Value, id: &str) -> &'a Value {
+    inv["hubs"].as_array().unwrap().iter().find(|h| h["exposure"] == id).unwrap_or_else(|| panic!("no hub exposure `{id}` in the inventory"))
+}
+
+/// A hub exposure's description: one with no surface.
+fn is_hub(d: &Value) -> bool {
+    d["surface"].is_null()
 }
 
 fn strings(v: &Value) -> BTreeSet<String> {
@@ -423,12 +432,26 @@ fn an_exposure_is_its_surface_its_digest_and_its_name() {
         assert_eq!(e["exposure"], json!(id), "an inventory exposure's identity is surface@digest/name");
         assert_eq!(e["digest"], surface_of(&inv, e["surface"].as_str().unwrap())["digest"], "{id}: the exposure carries its surface's digest");
     }
-    let names: Vec<&str> = inv["exposures"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
-    assert_eq!(names.len(), names.iter().collect::<BTreeSet<_>>().len(), "an exposure is named once");
+    for h in inv["hubs"].as_array().unwrap() {
+        let id = format!("hub@{}/{}", h["digest"].as_str().unwrap(), h["name"].as_str().unwrap());
+        assert_eq!(h["exposure"], json!(id), "a hub exposure's identity is hub@<stream digest>/name");
+    }
+    let names: Vec<&str> = inv["exposures"].as_array().unwrap().iter().chain(inv["hubs"].as_array().unwrap()).map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), names.iter().collect::<BTreeSet<_>>().len(), "an exposure is named once, a hub's among them");
 
     let mut digest_of_exposure: BTreeMap<String, (String, String)> = BTreeMap::new();
     for (file, d) in descriptions() {
         let id = d["exposure"].as_str().unwrap();
+        if is_hub(&d) {
+            assert_eq!(id, format!("hub@{}/{}", d["digest"].as_str().unwrap(), d["name"].as_str().unwrap()), "{file}");
+            assert!(file.starts_with(&format!("{}.", d["name"].as_str().unwrap())), "{file} is named by its exposure");
+            let h = hub_of(&inv, id);
+            for field in ["digest", "listener", "codec"] {
+                assert_eq!(d[field], h[field], "{file}: `{field}` is the inventory hub's");
+            }
+            assert_eq!(d["outcomes"]["transport"], d["listener"]["transport"], "{file}: the outcome encoding is its listener's");
+            continue;
+        }
         assert_eq!(id, format!("{}@{}/{}", d["surface"].as_str().unwrap(), d["digest"].as_str().unwrap(), d["name"].as_str().unwrap()), "{file}");
         assert!(file.starts_with(&format!("{}.", d["name"].as_str().unwrap())), "{file} is named by its exposure");
         let e = exposure_of(&inv, id);
@@ -471,11 +494,20 @@ fn a_description_lists_exactly_what_its_caller_may_call() {
     let mut differ: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (file, d) in descriptions() {
         let roles = strings(&d["caller"]["roles"]);
-        let surface = surface_of(&inv, d["surface"].as_str().unwrap());
-        let may: Vec<&Value> = surface["members"].as_array().unwrap().iter().filter(|m| strings(&m["requires"]).is_subset(&roles)).collect();
+        // The rows the exposure offers: a surface's members (none for a
+        // hub exposure), and the stream rows of every hub at its listener.
+        let rows: Vec<&Value> = match d["surface"].as_str() {
+            Some(name) => surface_of(&inv, name)["members"].as_array().unwrap().iter().collect(),
+            None => Vec::new(),
+        };
+        let stream_rows: Vec<&Value> = inv["hubs"].as_array().unwrap().iter().filter(|h| h["listener"] == d["listener"]).flat_map(|h| h["streams"].as_array().unwrap()).collect();
+        let may: Vec<&Value> = rows.iter().copied().filter(|m| strings(&m["requires"]).is_subset(&roles)).collect();
         let listed: Vec<&Value> = d["members"].as_array().unwrap().iter().collect();
         assert_eq!(listed, may, "{file}: the members are exactly the surface's rows whose requires the caller holds, in the surface's order");
-        let named: BTreeSet<String> = surface["members"].as_array().unwrap().iter().flat_map(|m| strings(&m["requires"])).collect();
+        let may: Vec<&Value> = stream_rows.iter().copied().filter(|s| strings(&s["requires"]).is_subset(&roles)).collect();
+        let listed: Vec<&Value> = d["streams"].as_array().unwrap().iter().collect();
+        assert_eq!(listed, may, "{file}: the streams are exactly the stream rows of the hubs at its listener whose requires the caller holds");
+        let named: BTreeSet<String> = rows.iter().chain(&stream_rows).flat_map(|m| strings(&m["requires"])).collect();
         assert!(roles.is_subset(&named), "{file}: the caller's roles are among those the exposure requires");
 
         let mut used = BTreeSet::new();
@@ -620,6 +652,89 @@ fn the_digests_are_the_ones_digest_md_folds() {
         folded += 1;
     }
     assert_eq!(folded, 2, "both surfaces are folded");
+
+    // The stream digest of each hub (spec/api.md § Streams).
+    for h in inv["hubs"].as_array().unwrap() {
+        let name = h["name"].as_str().unwrap();
+        let bytes = hex_bytes(&block_after(&md, &format!("input: hub {name}")));
+        let digest = format!("fnv1a64:{:016x}", hale_graph::identity::fnv64(&bytes));
+        assert_eq!(h["digest"], json!(digest), "hub {name}: the inventory's stream digest is the fold of digest.md's input");
+        assert!(md.contains(&digest), "digest.md states hub {name}'s stream digest, {digest}");
+        let text = String::from_utf8(bytes).expect("the input is UTF-8");
+        assert!(text.ends_with('\n'), "every line of the input ends with LF");
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("hale-api-hub 1"), "hub {name}: the header line");
+        let rows: Vec<&str> = lines.collect();
+        let streams = h["streams"].as_array().unwrap();
+        assert_eq!(rows.len(), streams.len(), "hub {name}: one line per stream row");
+        let mut previous = String::new();
+        for (row, st) in rows.iter().zip(streams) {
+            let f: Vec<&str> = row.split('\t').collect();
+            let [topic, payload, direction, codec, bound, on_full, replay, requires] = f[..] else { panic!("hub {name}: a row is eight TAB-separated fields: `{row}`") };
+            assert!(previous.as_str() < topic, "hub {name}: rows in byte order of topic");
+            previous = topic.to_string();
+            assert_eq!(st["topic"], json!(topic), "hub {name}: the input's rows are the hub's, in its order");
+            let payload_type = st["payload"]["$ref"].as_str().unwrap().strip_prefix("#/schemas/").unwrap();
+            assert_eq!(payload, shape_hash[payload_type], "hub {name} {topic}: the payload slot");
+            assert_eq!(st["direction"], json!(direction), "hub {name} {topic}: the direction slot");
+            assert_eq!(st["codec"], json!(codec), "hub {name} {topic}: the codec slot");
+            assert_eq!(st["bound"].to_string(), bound, "hub {name} {topic}: the bound slot, in decimal");
+            assert_eq!(st["on_full"], json!(on_full), "hub {name} {topic}: the on_full slot");
+            assert_eq!(if st["replay"] == json!(true) { "1" } else { "0" }, replay, "hub {name} {topic}: the replay slot");
+            let req: Vec<String> = strings(&st["requires"]).into_iter().collect();
+            assert_eq!(requires, if req.is_empty() { "-".to_string() } else { req.join(",") }, "hub {name} {topic}: the requires slot");
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// The hub exposure (spec/api.md § Streams).
+
+#[test]
+fn a_hub_exposure_lists_a_stream_exactly_when_its_caller_holds_requires() {
+    let inv = inventory();
+    let docs = descriptions();
+    let hub = &inv["hubs"][0];
+    let fills = hub["streams"].as_array().unwrap().iter().find(|s| s["topic"] == "Fills").expect("the hub binds Fills");
+    let id = format!("hub@{}/{}", hub["digest"].as_str().unwrap(), hub["name"].as_str().unwrap());
+
+    let dave = &docs["fills.dave.description.json"];
+    let bob = &docs["fills.bob.description.json"];
+    for (who, d) in [("dave", dave), ("bob", bob)] {
+        assert_eq!(d["exposure"], json!(id), "{who}: the identity is hub@<stream digest>/<name>");
+        assert!(d["surface"].is_null(), "{who}: a hub exposure has no surface");
+        assert_eq!(d["members"], json!([]), "{who}: a hub exposure has no member");
+        assert_eq!(d["outcomes"]["transport"], json!("ws"), "{who}: the ws form");
+        assert_eq!(d["caller"]["principal"]["name"], json!(who), "{who}: the caller");
+    }
+    // dave holds operator under hub_roles: Fills, with its payload's schema.
+    assert!(strings(&fills["requires"]).is_subset(&strings(&dave["caller"]["roles"])), "dave holds what Fills requires");
+    assert_eq!(dave["streams"], json!([fills]), "the description for dave lists Fills, as the inventory's row");
+    assert_eq!(dave["schemas"]["Fill"], inv["schemas"]["Fill"], "the description for dave carries Fill's schema");
+    // bob holds nothing there: no stream, and no payload schema either.
+    assert!(!strings(&fills["requires"]).is_subset(&strings(&bob["caller"]["roles"])), "bob does not hold what Fills requires");
+    assert_eq!(bob["streams"], json!([]), "the description for bob lists no stream");
+    assert_eq!(bob["schemas"], json!({}), "the description for bob carries no payload schema");
+
+    // The ws form admits nothing of an rpc's.
+    let mutations: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        ("a member", Box::new(|d| d["members"] = json!([{"name": "Orders::place", "request": null, "response": null, "error": null, "requires": []}]))),
+        ("an HTTP status", Box::new(|d| d["outcomes"]["result"] = json!({"status": 200, "body": "response"}))),
+        ("a status on a frame", Box::new(|d| d["outcomes"]["event"]["status"] = json!(200))),
+        ("a surface", Box::new(|d| d["surface"] = json!("Public"))),
+        ("a frame the envelope does not have", Box::new(|d| d["outcomes"]["ping"] = json!({"type": "ping", "fields": []}))),
+        ("a refusal kind a subscription cannot meet", Box::new(|d| d["outcomes"]["refusal"]["kinds"] = json!(["malformed", "unauthenticated", "unauthorized", "full", "shutting_down"]))),
+        ("an identity that is a surface's", Box::new(|d| d["exposure"] = json!("Fills@fnv1a64:26970854397ab154/fills"))),
+    ];
+    for (what, mutate) in mutations {
+        let mut doc = dave.clone();
+        mutate(&mut doc);
+        assert!(!errors_against_schema(&doc).is_empty(), "the schema accepts a ws document with {what}");
+    }
+    // And a surface's exposure may not take the ws form.
+    let mut doc = docs["public.alice.description.json"].clone();
+    doc["outcomes"] = dave["outcomes"].clone();
+    assert!(!errors_against_schema(&doc).is_empty(), "the schema accepts the ws form on a surface's exposure");
 }
 
 // ------------------------------------------------------------------

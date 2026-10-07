@@ -159,6 +159,9 @@
   ],
   "hubs": [
     {
+      "exposure": "hub@fnv1a64:26970854397ab154/fills",
+      "name": "fills",
+      "digest": "fnv1a64:26970854397ab154",
       "instance": "self.hub",
       "listener": {
         "transport": "ws",
@@ -184,7 +187,7 @@
           "codec": "json",
           "bound": 64,
           "on_full": "drop_old",
-          "loss": "at most once per admitted subscriber, in publish order; drop_old sheds the oldest undelivered frame and the count shed is reported on the subscriber's next frame; a subscription invalidated by expiry or revocation loses what it had buffered",
+          "loss": "at most once per admitted subscriber, in publish order; drop_old sheds the oldest undelivered frame, and seq counts every event offered to the subscription, so a gap in seq is the frames shed; a subscription invalidated by expiry or revocation loses what it had buffered",
           "replay": false,
           "requires": [
             "operator"

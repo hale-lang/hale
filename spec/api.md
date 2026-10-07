@@ -495,7 +495,7 @@ did not produce. Nothing beyond F.42 is asked of the handler.
 ```hale,fragment
 params {
     hub_roles: Grants = Grants { operator: "dave" };
-    hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles };
+    hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles, as: "fills" };
 }
 bindings {
     Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
@@ -506,7 +506,11 @@ Streams are topic bindings, and the exposure's fields live on the
 binding row: `requires`, `bound`, `on_full`. A **hub** is a transport
 instance that implements the stream adapter (`__StdBusAdapter`) and may
 implement `Rpc` as well, so one listener carries rpcs and streams over
-one connection authenticated once, at connect (R5).
+one connection authenticated once, at connect (R5). A hub's **stream
+rows** are the topic bindings to it, each with its topic, payload,
+direction (`out` for a topic the program publishes, `in` for one it
+subscribes), codec, `bound`, `on_full`, whether it replays, and
+`requires`.
 
 - **Admission.** A subscription is authorized against the row's
   `requires` before it is admitted, from the `Context` the hub's
@@ -516,15 +520,10 @@ one connection authenticated once, at connect (R5).
   contract, `spec/semantics.md` § The publish contract) when it is
   handed to every admitted subscriber's queue, each holding at most
   `bound` frames and shedding under `on_full` (`drop_old` sheds the
-  oldest undelivered frame, `drop_new` the frame being published);
-  frames shed are counted and the count is reported on the next frame
-  the subscriber receives.
-- **A hub without a surface is an exposure too,** of its stream rows
-  alone, identified `hub@<digest of its stream rows>/<name>` (the
-  hub's `as:`); a caller's description from its listener lists the
-  streams the caller may subscribe to. R5 fixes the stream digest's
-  framing, so the fixture's inventory lists `Fills` under its hub and
-  no per-caller description does yet.
+  oldest undelivered frame, `drop_new` the frame being published).
+  Every event offered to a subscription takes the next `seq` of that
+  subscription, delivered or shed, so the frames shed are the gap
+  between two `seq`s the subscriber receives.
 - **Replay.** A reconnect implies replay only if the binding provides
   it, and its row says whether it does; a hub binding provides none in
   v1, so a reconnecting subscriber receives what is published after it
@@ -535,16 +534,78 @@ one connection authenticated once, at connect (R5).
   changes when a grant is added or revoked. The hub invalidates a
   subscription when its credential expires, or when, at a role-source
   revision, its row's `requires` no longer holds for the subscriber: it
-  sends one `unauthorized` frame naming the subscription, removes it,
-  and drops whatever that subscription had buffered and not yet
-  delivered. No event is delivered under an authorization older than
-  the role source's current revision or past the credential's expiry;
-  the check happens at the revision and at every delivery, whichever
-  comes first. An rpc needs no such rule: each call is authorized on
-  arrival.
+  sends one `unauthorized` frame naming the subscription's topic and
+  why (`expired`, `revoked`), removes it, and drops whatever that
+  subscription had buffered and not yet delivered. No event is
+  delivered under an authorization older than the role source's
+  current revision or past the credential's expiry; the check happens
+  at the revision and at every delivery, whichever comes first. An rpc
+  needs no such rule: each call is authorized on arrival.
 
 There is no second stream declaration: the description derives every
 stream a caller may use from the binding rows (§ The description).
+
+**The hub exposure.** A hub that serves no surface is an exposure too,
+of its stream rows alone. Its name is the hub's `as:` field, unique
+among the program's exposure names as a serve site's `as:` is, and its
+identity is
+
+```text
+hub@<stream digest>/<name>       hub@fnv1a64:26970854397ab154/fills
+```
+
+The **stream digest** is the hub's contract as a surface digest is a
+surface's, and is folded the same way (§ The contract digest: the
+64-bit FNV-1a fold, written `fnv1a64:` and sixteen lowercase hex
+digits) over a UTF-8 text of lines, each ended by one LF:
+
+1. the header line `hale-api-hub 1`;
+2. one line per stream row, the rows ordered by topic name, compared
+   as bytes. A row's line is eight fields separated by one TAB:
+   - the topic (`Fills`);
+   - the payload's shape hash, sixteen lowercase hex digits (§ The
+     contract digest, the shape hash);
+   - the direction, `out` or `in`;
+   - the codec (`json`);
+   - `bound`, in decimal;
+   - `on_full`, `drop_old` or `drop_new`;
+   - replay, `1` when the binding replays and `0` when it does not;
+   - the required roles, sorted as bytes, each once, joined by `,`, or
+     `-` when the row requires none.
+
+It moves when a stream is bound to the hub or unbound, its payload's
+shape changes, or any of its direction, codec, `bound`, `on_full`,
+replay or `requires` changes: unlike an rpc's, those are what a
+subscriber's loss statement is made of. It never covers the listener's
+address, the hub's name or sources, the subscribers, the build identity
+or the incarnation. `tests/api-contract/digest.md` works `fills`'s by
+hand.
+
+**The `ws` frames.** A hub speaks JSON frames, one object per WebSocket
+text message, each naming itself in `"type"`; this is the `ws` outcome
+form a hub exposure's description states:
+
+| frame | from | shape |
+|---|---|---|
+| subscribe | client | `{"type": "subscribe", "topic": T}` |
+| subscribed | hub | `{"type": "subscribed", "topic": T}`: the subscription is admitted |
+| refusal | hub | `{"type": "refusal", "topic": T, "refusal": {"kind": K, "reason": …}}`: the subscription is not admitted |
+| event | hub | `{"type": "event", "topic": T, "seq": N, "payload": P}` |
+| unauthorized | hub | `{"type": "unauthorized", "topic": T, "reason": R}`, `R` being `"expired"` or `"revoked"`, once; then the subscription is gone |
+| closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`; then the connection closes |
+
+A refusal's object is § Outcomes', its kind one of `unauthenticated`
+(the sources named nobody at connect), `unauthorized` (the `Context`
+does not hold the row's `requires`, and the object carries
+`"requires"`), `malformed` (not a frame, or a topic the hub binds no
+stream for, reason `unknown_topic`) and `shutting_down`. `P` is the
+payload by the row's codec. `seq` starts at 1 for a subscription and
+grows by one per event offered to it, so a gap is the frames shed (the
+delivery bullet above). A connection that ends without a `closed` frame
+is the transport failure. The frames are R0's contract, which a
+consumer builds against; the runtime that sends them, the timing of
+expiry and revocation, and the framing of rpcs over WebSocket (a
+correlation field, the largest frame) are R5's.
 
 ## Codecs
 
@@ -564,7 +625,7 @@ never left out.
 
 A description is scoped to one **exposure**, the unit a caller can
 reach: a serve site's surface over its transport under its role
-source, identified as
+source (or a hub's stream rows, below), identified as
 
 ```text
 <surface>@<digest>/<exposure name>       Public@fnv1a64:a8930d6e7998e986/public
@@ -601,11 +662,27 @@ caller's description under each may differ: in the fixture, `alice`
 may cancel through `public` and not through `partner`, `carol` the
 reverse.
 
+**A hub exposure's description** (§ Streams, the hub exposure) is the
+same document, fetched from the hub's listener (`GET /.description` at
+its address, as over HTTP, before any WebSocket upgrade) and filtered
+by the caller's `Context` under the hub's role source, with these
+differences: the identity is `hub@<stream digest>/<name>` and the digest the stream
+digest; `surface` is `null`; `members` is empty; `streams` holds the
+hub's stream rows whose `requires` the caller holds; the outcome
+encoding is the `ws` form, the frames of § Streams and nothing of an
+rpc's (no member, no status); and the schemas are those of the listed
+streams' payloads only, so a caller who may subscribe to nothing
+receives no payload schema. In the fixture, `dave` holds `operator`
+under `hub_roles`, so the description of `fills` for `dave` lists
+`Fills` with `Fill`'s schema; `bob` holds nothing there, and the one
+for `bob` lists no stream and no schema.
+
 The **inventory** is the program-wide document `hale check --api`
 prints from the rows, without a running program (R1): every surface
 with its digest and all its rows, every exposure with its listener, its
-sources and its receivers, and every hub with its stream rows. It is a
-deployment inventory, not an authorization statement for any caller.
+sources and its receivers, and every hub with its exposure identity,
+its stream digest, its listener, its sources and its stream rows. It is
+a deployment inventory, not an authorization statement for any caller.
 
 Both are versioned (`"description": 1`, `"inventory": 1`); their format
 is `spec/api-description.schema.json`. A document is served as compact
@@ -651,23 +728,29 @@ by hand:
   whose operator is the bearer `dave`. It is written in this document's
   syntax and parses from R1 on;
 - `<exposure>.<caller>.description.json`: each exposure's description
-  for two callers;
+  for two callers, the hub's `fills` among them (`dave`, who may
+  subscribe to `Fills`, and `bob`, who may not);
 - `inventory.json`: the program-wide document;
 - `wire/unix/*.json`, `wire/http/*.json`: one request and its reply per
   outcome (result, handler error, each refusal kind, server error);
-- `digest.md`: `Public`'s digest worked byte for byte.
+- `digest.md`: `Public`'s digest worked byte for byte, `Admin`'s, and
+  the hub `fills`'s stream digest.
 
 `crates/hale-cli/tests/api_contract_fixtures.rs` validates every
-document against the schema and holds the fixtures to this contract:
-an exposure identity is its surface, digest and name; a caller's
+document against the schema and holds the fixtures to this contract: an
+exposure identity is its surface, digest and name; a caller's
 description lists exactly the members whose `requires` the caller
-holds; the digests are the ones `digest.md` folds; a row whose error
-type is `ClosureViolation` carries no error schema and is the only kind
-of member a server error is recorded for; every wire record encodes its
-outcome as § Outcomes says. The plan's § 3 assertions that
-need a running program (refusals before a handler's counter moves,
-queued shutdown, a lost response, revocation while connected) are the
-exit criteria of R2, R3 and R5.
+holds, and exactly the streams of the hubs at its listener whose
+`requires` it holds, with the schemas of what it lists and no other; a
+hub exposure's identity is `hub@<stream digest>/<name>`, and its `ws`
+form admits no member and no status; the digests, the stream digest
+among them, are the ones `digest.md` folds; a row whose error type is
+`ClosureViolation` carries no error schema and is the only kind of
+member a server error is recorded for; every wire record encodes its
+outcome as § Outcomes says. The plan's § 3 assertions that need a
+running program (refusals before a handler's counter moves, queued
+shutdown, a lost response, revocation while connected) are the exit
+criteria of R2, R3 and R5.
 
 ## Open points
 
@@ -680,10 +763,9 @@ exit criteria of R2, R3 and R5.
 - **A receiver binding naming a `@form` collection's element** (a
   surface over many instances of one type, keyed by the request), or
   only a single instance.
-- **The stream digest's framing** for a hub that serves no surface (its
-  exposure is `hub@<digest of its stream rows>/<name>`, § Streams), and
-  the outcome encoding over WebSocket (the table above has no WebSocket
-  column); R5.
+- **A hub that also serves a surface** (rpcs and streams on one
+  connection): its description lists both, and the frames that carry
+  an rpc over WebSocket are R5's (below).
 - **Expiry and revision as interfaces**: the field on `Context` that
   states a credential's expiry, and how a role source announces a
   revision (R5).

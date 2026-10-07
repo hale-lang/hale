@@ -1,8 +1,11 @@
-# The digest of `Public`, by hand
+# The digests, by hand
 
 `spec/api.md` § The contract digest states the rule; this is the rule
 applied to `program.hl`'s `Public`, step by step, so a consumer can
-check its own implementation against every intermediate value.
+check its own implementation against every intermediate value, then to
+`Admin`, and last the stream digest of the hub `fills` (`spec/api.md`
+§ Streams, the hub exposure), which folds the same way over another
+framing.
 `crates/hale-cli/tests/api_contract_fixtures.rs` reads the blocks
 below and holds them to the fixtures: the shape hashes are the folds of
 the shapes, the hash input's rows are the inventory's, and the input
@@ -61,6 +64,7 @@ OrderReceipt  order:i;notional:q(cent)        bb4f99639cf069af
 Rebalance     book:s                          19611780fbd68ecf
 Rebalanced    moved:q(cent)                   3193bf68569ed280
 ClosureViolation  locus:s;closure:s;diff:i    36c7f0561125943e
+Fill          order:i;qty:i;price:q(cent)     32e4848051d36e16
 ```
 
 `ClosureViolation` is the builtin record a violation carries
@@ -127,6 +131,46 @@ Orders::cancel→deb8489f34994e5a→e1506381a35c8ced→db0311924c0e7333→operat
 `Orders::cancel`'s line differs from `Public`'s only in its required
 role: the same handler under another surface's `requires` is another
 contract.
+
+## The hub `fills`: its stream digest
+
+The hub serves no surface, so its exposure is its stream rows alone:
+`hub@<stream digest>/fills`. Its rows are the topic bindings to
+`self.hub`, one here:
+
+```hale,fragment
+bindings {
+    Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+}
+```
+
+| topic | payload | direction | codec | bound | on_full | replay | requires |
+|---|---|---|---|---|---|---|---|
+| `Fills` | `Fill` | `out` | `json` | 64 | `drop_old` | no | `operator` |
+
+The header line `hale-api-hub 1`, then one line per stream row sorted
+by topic name as bytes: topic, payload shape hash, direction, codec,
+bound in decimal, `on_full`, replay as `0` or `1`, requires (sorted,
+joined by `,`, or `-`), separated by one TAB; every line ended by one
+LF. With each TAB written `→`:
+
+```text
+hale-api-hub 1
+Fills→32e4848051d36e16→out→json→64→drop_old→0→operator
+```
+
+<!-- input: hub fills -->
+```text
+68616c652d6170692d68756220310a46696c6c73093332653438343830353164
+3336653136096f7574096a736f6e0936340964726f705f6f6c640930096f7065
+7261746f720a
+```
+
+70 bytes, folding to `fnv1a64:26970854397ab154`, so the exposure is
+`hub@fnv1a64:26970854397ab154/fills`. Neither the listener, the hub's
+name, its sources nor the subscribers entered the input; the codec,
+the bound, the shedding policy and replay did, since they are what a
+subscriber's loss statement is made of.
 
 ## Declaring a violation moves the digest
 

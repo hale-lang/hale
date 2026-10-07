@@ -136,7 +136,7 @@ main locus Desk {
         orders: Orders = Orders { };
         partner_orders: Orders = Orders { next: 9001 };
         ledger: Ledger = Ledger { };
-        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles, as: "fills" };
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
     }
