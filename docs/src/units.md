@@ -53,7 +53,10 @@ buffer type, so the byte count is `ByteCount`.
 
 A literal names its unit with no space, and counts in its quantity's
 denomination: `1_250_000USD` is 125,000,000 cents, `4KiB` is 4096 `B`,
-`500ms` is 500,000,000 nanoseconds.
+`500ms` is 500,000,000 nanoseconds. In an expression the literal is one
+token, so `1_250_000 USD` is two and refused; a declaration's magnitude
+and unit, in a `unit` equation, a denomination and an `origin:`, may
+be written either way (`1024 B` or `1024B`, `100 ms` or `100ms`).
 
 ## Time
 
@@ -159,7 +162,8 @@ time divides as integers do.
 
 Some integers must never mix. An identity has no arithmetic and
 compares only with itself; a range is an `Int` with bounds, and a
-width is a range:
+width is a range. Bounds are half-open: `0..256` holds 0 to 255;
+`..=` includes the upper bound (`0..=255` is the same range):
 
 ```hale
 type OrderId = distinct Int;
@@ -170,7 +174,7 @@ type Byte = Int { range: 0..256; }
 fn main() {
     let id = OrderId(7);
     let sess = Session(70) or 0;          // outside 0..64: the substitute
-    let seq = SeqNo(70_000) or wrap;      // around the range: 4464
+    let seq = SeqNo(70_000) or wrap;      // 70000 modulo 65536: 4464
     let b: Byte = 200;
     let top = Byte(b + 100) or clamp;     // the nearest bound: 255
     println(Int(id), " ", sess, " ", seq, " ", top);
@@ -178,8 +182,11 @@ fn main() {
 ```
 
 Going into a range can fail, so `Session(n)` says what becomes of a
-value outside it: a value of the type, `clamp`, `wrap`, a handler given
-the `RangeError`, or `raise`.
+value outside it: a value of the type; `clamp`, the nearest bound;
+`wrap`, the value modulo the range's width, counted from the lower
+bound so that it lands inside (`low + (v - low) mod width`, the
+remainder never negative: `SeqNo(0 - 1) or wrap` is 65535); a handler
+given the `RangeError`; or `raise`.
 
 ## Two origins
 
@@ -290,8 +297,11 @@ no quantity is declared`.
 
 Not yet: a rate type such as bytes per second (one quantity over
 another of a different kind is refused; over the same kind it is a
-plain count), `Float` quantities, calendars, and packing a narrow range
-into a narrow field (the report says what a range would fit in; every
-value is still an `Int`). `spec/units.md` is the whole contract.
+plain count, and stays one when rates arrive, since a rate is a
+quotient of two different kinds, the one refused today: `d / 1ms`
+keeps its meaning), `Float` quantities, calendars, and packing a
+narrow range into a narrow field (the report says what a range would
+fit in; every value is still an `Int`). `spec/units.md` is the whole
+contract.
 
 Next: [Functions](./basics/functions.md).

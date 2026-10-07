@@ -53,12 +53,40 @@ TOKEN_RE = re.compile(
       | (?P<string>"(?:\\.|[^"\\])*")
       | (?P<meta>@[A-Za-z_][A-Za-z0-9_]*)
       | (?P<number>\b0[xXoObB][0-9a-fA-F_]+\b
-                  | \b\d[\d_]*(?:(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?d?|[A-Za-z]\w*)\b)
+                  | \b\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?d?\b)
+      | (?P<quantity>(?P<magnitude>\b\d[\d_]*)(?P<unit>[A-Za-z]\w*)\b)
       | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
       | (?P<ws>\s+)
       | (?P<other>.)""",
     re.VERBOSE,
 )
+
+# A unit name is coloured as a type (GH #1076), as in docs/hale-highlight.js.
+# No highlighter knows the catalogue, so the rule is positional: a quantity
+# literal's suffix (the `quantity` token above), the names of a `unit`
+# declaration, a denomination after `in` or an `origin:`, and the target of
+# `.in(…)` / `.split(…)`. Each group below names a unit identifier's start.
+NAME = r"[A-Za-z_]\w*"
+UNIT_POSITION_RES = [
+    re.compile(
+        rf"^\s*unit\s+(?P<u>{NAME})\s*"
+        rf"(?:=\s*(?:\d[\d_]*\s*/\s*)?\d[\d_]*(?:\s*(?P<v>{NAME}))?\s*)?;"
+    ),
+    re.compile(rf"\b[A-Z]\w*\s+in\s+(?:\d[\d_]*\s+)?(?P<u>{NAME})"),
+    re.compile(rf"\borigin\s*:\s*-?\s*\d[\d_]*\s+(?P<u>{NAME})"),
+    re.compile(rf"\.(?:in|split)\(\s*(?:\d[\d_]*\s+)?(?P<u>{NAME})\s*\)"),
+]
+
+
+def unit_starts(line):
+    """The columns where an identifier in a unit position starts."""
+    starts = set()
+    for pat in UNIT_POSITION_RES:
+        for m in pat.finditer(line):
+            for name, value in m.groupdict().items():
+                if value is not None:
+                    starts.add(m.start(name))
+    return starts
 
 
 def classify(kind, text):
@@ -96,14 +124,21 @@ def render(src):
     for i, line in enumerate(lines):
         y = PAD_Y + (i + 1) * LINE_H - 6
         spans = []
+        units = unit_starts(line)
         for m in TOKEN_RE.finditer(line):
             kind = m.lastgroup
             text = m.group()
             if kind == "ws":
                 spans.append(html.escape(text))
                 continue
-            color = THEME[classify(kind, text)]
-            spans.append(f'<tspan fill="{color}">{html.escape(text)}</tspan>')
+            if kind == "quantity":
+                parts = [("number", m.group("magnitude")), ("type", m.group("unit"))]
+            elif kind == "ident" and m.start() in units:
+                parts = [("type", text)]
+            else:
+                parts = [(classify(kind, text), text)]
+            for cls, part in parts:
+                spans.append(f'<tspan fill="{THEME[cls]}">{html.escape(part)}</tspan>')
         out.append(
             f'<text xml:space="preserve" x="{PAD_X:.0f}" y="{y:.1f}">'
             + "".join(spans)

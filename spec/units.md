@@ -82,16 +82,21 @@ with at least one of the kind word, the `in` and the clause block
 
 A denomination is a unit and a positive integer multiple of it (`ns`,
 `100ms`, `100 ms`). The clauses are `range: LO..HI` (or `LO..=HI`),
-`round: POLICY` and `origin: N UNIT`; each appears at most once, and
-any other name is a parse error listing the three. A clause block
-closes the declaration, so a `;` after it is optional. A scalar type
-takes no generic parameters. The words `unit`, `quantity`, `point` and
+`round: POLICY` and `origin: N UNIT`; a range is half-open (`0..256`
+holds 0 to 255, and `..=` includes its upper bound), and an origin's
+magnitude and unit, like an equation's and a denomination's, may be
+written apart or together (`273_150 mK`, `273_150mK`). Each clause
+appears at most once, and any other name is a parse error listing the
+three. A clause block closes the declaration, so a `;` after it is
+optional. A scalar type takes no generic parameters. The words `unit`, `quantity`, `point` and
 `distinct` are contextual: each is recognized in its one position and
 is an ordinary identifier everywhere else.
 
 **A quantity literal** is an integer written against a unit name, with
-no space: `3bp`, `1_250_000USD`, `500ms` (§ Literals). `1_250_000 USD`
-is two tokens and a parse error ("expected ;, got Ident("USD")").
+no space: `3bp`, `1_250_000USD`, `500ms` (§ Literals). In an
+expression it is one token, and `1_250_000 USD` is two and a parse
+error ("expected ;, got Ident("USD")"); only a declaration (an
+equation, a denomination, an origin) also takes the spaced form.
 
 **`x.in(D)`** is its own form (`in` is a keyword elsewhere), and
 `x.split(u)` a method call (§ Conversions).
@@ -818,10 +823,13 @@ committed_form.hl:81:24  odd
 
 At v1, by the committed form's deferral or the plan's own decision:
 
-- **Derived dimensions.** `Bytes / Duration` is no rate type: a
+- **Derived dimensions.** `ByteCount / Duration` is no rate type: a
   quotient of two quantities is a count only within one quantity, and
   `quantity / quantity -> Int` covers throughput arithmetic until
-  exponent vectors arrive.
+  exponent vectors arrive. A quotient within one quantity is
+  dimensionless, and stays an `Int` when they do: a rate is a quotient
+  of two different quantities, which is what is refused now, so `d /
+  1ms` keeps its meaning.
 - **`Float` quantities** and a physics catalogue: a quantity counts an
   `Int` (law 5); an irrational edge is lossy by definition.
 - **Calendars.** `day` is 24 hours; months, years and time zones are
