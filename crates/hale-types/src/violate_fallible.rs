@@ -28,10 +28,18 @@
 //! Lifecycle bodies, bus handlers and `fn main` are exempt: the runtime
 //! is their caller. The stdlib's analysis copy is a callee only; its own
 //! fns are held to the law by `tests/violate_fallible.rs`.
+//!
+//! A locus method that serves a perspective fn (`serves`, matched by name
+//! as conformance matches it) is exempt from the law and the lint, and
+//! carries nothing to its callers, until a perspective call can carry the
+//! failure: conformance holds the method to the perspective fn's
+//! fallibility, and the build refuses a `fallible` perspective call, so no
+//! spelling of it both checks and runs. It is warned about instead, and
+//! keeps today's lowering.
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{flat_decls, LocusMember, Program, TopDecl, TypeExpr};
+use hale_syntax::ast::{flat_decls, LocusMember, PerspectiveMember, Program, TopDecl, TypeExpr};
 use hale_syntax::{Diag, Span};
 
 use crate::alloc_summary::{AllocSummary, Callee, DeclId, EntryKind, FnKey};
@@ -70,22 +78,44 @@ pub struct FnDeclRow {
     pub declared: Declared,
     /// It is the stdlib analysis copy's.
     pub stdlib: bool,
+    /// The perspective fn it serves, as `Perspective.fn`: a method of a
+    /// locus that `serves` a perspective declaring a fn of its name.
+    pub serves: Option<String>,
 }
 
 /// The rows of every fn and locus method of `programs` (the checked ones)
 /// and of the stdlib's analysis copy, keyed as the summary keys them.
 pub fn fn_decl_rows(programs: &[&Program]) -> BTreeMap<FnKey, FnDeclRow> {
+    // Each perspective's fns, by its name (a `serves` names it as
+    // written, qualified or not, and is matched by its last segment).
+    let mut perspectives: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for p in programs {
+        for item in flat_decls(&p.items) {
+            if let TopDecl::Perspective(p) = item {
+                let fns = p.members.iter().filter_map(|m| match m {
+                    PerspectiveMember::Fn(f) => Some(f.name.name.as_str()),
+                    _ => None,
+                });
+                perspectives.entry(p.name.name.as_str()).or_default().extend(fns);
+            }
+        }
+    }
     let mut out = BTreeMap::new();
     for p in programs {
-        collect(p, false, &mut out);
+        collect(p, false, &perspectives, &mut out);
     }
     if let Some(p) = crate::stdlib_bodies::program() {
-        collect(p, true, &mut out);
+        collect(p, true, &BTreeMap::new(), &mut out);
     }
     out
 }
 
-fn collect(program: &Program, stdlib: bool, out: &mut BTreeMap<FnKey, FnDeclRow>) {
+fn collect(
+    program: &Program,
+    stdlib: bool,
+    perspectives: &BTreeMap<&str, Vec<&str>>,
+    out: &mut BTreeMap<FnKey, FnDeclRow>,
+) {
     let decl = |node| if stdlib { DeclId::stdlib(node) } else { DeclId::user(node) };
     let row = |name: String, f: &hale_syntax::ast::FnDecl| FnDeclRow {
         name,
@@ -105,6 +135,7 @@ fn collect(program: &Program, stdlib: bool, out: &mut BTreeMap<FnKey, FnDeclRow>
             Some(t) => Declared::Other(type_text(t)),
         },
         stdlib,
+        serves: None,
     };
     for item in flat_decls(&program.items) {
         match item {
@@ -115,9 +146,14 @@ fn collect(program: &Program, stdlib: bool, out: &mut BTreeMap<FnKey, FnDeclRow>
                 let shown = public_locus_name(&l.name.name);
                 for m in &l.members {
                     if let LocusMember::Fn(f) = m {
+                        let serves = l.serves.iter().find_map(|p| {
+                            let last = p.name.rsplit("::").next().unwrap_or(&p.name);
+                            let fns = perspectives.get(last)?;
+                            fns.contains(&f.name.name.as_str()).then(|| format!("{}.{}", p.name, f.name.name))
+                        });
                         out.insert(
                             FnKey::method(decl(f.id), l.name.name.clone(), f.name.name.clone()),
-                            row(format!("{shown}.{}", f.name.name), f),
+                            FnDeclRow { serves, ..row(format!("{shown}.{}", f.name.name), f) },
                         );
                     }
                 }
@@ -158,8 +194,11 @@ pub fn may_violate(summary: &AllocSummary, decls: &BTreeMap<FnKey, FnDeclRow>) -
         }
     }
     // A callee whose violation is its caller's: it returns a value and
-    // has no failure path to report it on.
-    let carries = |k: &FnKey| decls.get(k).is_some_and(|d| d.returns_value && d.declared == Declared::Infallible);
+    // has no failure path to report it on. A perspective-served method
+    // keeps today's behaviour, so it carries nothing.
+    let carries = |k: &FnKey| {
+        decls.get(k).is_some_and(|d| d.returns_value && d.declared == Declared::Infallible && d.serves.is_none())
+    };
     loop {
         let mut next = Vec::new();
         for (key, fs) in &summary.fns {
@@ -202,6 +241,10 @@ pub enum Verdict {
     WrongError(String),
     /// Unit, may violate, not `fallible`: warned.
     Lint,
+    /// Serves a perspective fn, may violate, not `fallible`: exempt from
+    /// the law and the lint until a perspective call can carry the
+    /// failure, and warned about.
+    Serves(String),
 }
 
 /// The verdict on each of the program's own fns that may violate and is
@@ -220,6 +263,7 @@ pub fn verdicts(
         let verdict = match &d.declared {
             Declared::Violation => continue,
             Declared::Other(e) => Verdict::WrongError(e.clone()),
+            Declared::Infallible if d.serves.is_some() => Verdict::Serves(d.serves.clone().unwrap_or_default()),
             Declared::Infallible if d.returns_value => Verdict::Law,
             Declared::Infallible => Verdict::Lint,
         };
@@ -228,8 +272,9 @@ pub fn verdicts(
     out
 }
 
-/// The law, the wrong-error refusal and the lint over `bundle`'s own fns,
-/// as diagnostics: errors for the first two, a warning for the third.
+/// The law, the wrong-error refusal, the lint and the perspective-served
+/// exemption over `bundle`'s own fns, as diagnostics: errors for the first
+/// two, warnings for the others.
 pub fn violate_fallible_laws(bundle: &Bundle<'_>, summary: &AllocSummary) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let decls = fn_decl_rows(&programs);
@@ -254,9 +299,15 @@ pub fn violate_fallible_laws(bundle: &Bundle<'_>, summary: &AllocSummary) -> Vec
                  say what happens when the locus fails. This becomes a law in a later release",
                 d.name
             ),
+            Verdict::Serves(p) => format!(
+                "`{}` serves `{p}` and may violate ({how}); a perspective call cannot carry the failure yet, \
+                 so the method keeps today's behaviour{}",
+                d.name,
+                if d.returns_value { " (the caller of a violated perspective call must not read the value)" } else { "" }
+            ),
         };
         let mut diag = match verdict {
-            Verdict::Lint => Diag::warn(d.name_span, message),
+            Verdict::Lint | Verdict::Serves(_) => Diag::warn(d.name_span, message),
             _ => Diag::ty(d.name_span, message),
         };
         for (span, label, stdlib) in path_notes(&key, &may, &decls) {

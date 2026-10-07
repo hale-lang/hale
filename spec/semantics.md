@@ -4411,6 +4411,22 @@ caller.
   a warning with the law's wording and "This becomes a law in a
   later release". Nothing else changes for it.
 
+**A stated gap: a method serving a perspective.** A locus method
+that implements a perspective fn (`serves`, matched by name as
+conformance matches it) is exempt from the law and the lint, and a
+call to it does not make its caller one that may violate. A
+perspective call cannot carry the failure yet: conformance holds
+the method to the perspective fn's fallibility (§ "Perspectives"),
+and the build refuses a `fallible` perspective call, so no spelling
+of such a method both checks and runs. Until that call lowers, the
+method keeps today's behaviour, and a warning names the shape:
+"\`RouterV1.route\` serves \`Router.route\` and may violate
+(\`violate c\`); a perspective call cannot carry the failure yet,
+so the method keeps today's behaviour (the caller of a violated
+perspective call must not read the value)". The value a violated
+call returns when the owner's `on_failure` absorbs the violation is
+undefined, as it was before F.42.
+
 The call to a `fallible(ClosureViolation)` method follows the
 bare-call law unchanged: an `or` disposition is required, and the
 `err` that `or handler(err)`, `or { … }` and `or fail` see is the
@@ -4568,7 +4584,7 @@ locus Gateway {
 
 **`serves` conformance (error).** A `locus L : serves P` must
 provide every contract method P declares — matching arity, param
-types, and return type — **and** (Phase 2c) every bus edge P's
+types, return type and fallibility — **and** (Phase 2c) every bus edge P's
 contract declares: a `bus { subscribe/publish ... }` block in the
 perspective is part of the ABI, so a serving impl must subscribe /
 publish each named subject. A missing or mismatched method, a
@@ -4579,6 +4595,20 @@ then `reperspective` on such a perspective is rejected. This is the perspective 
 structural satisfaction (and reuses its shape). The synthesized
 `is_stable` (from `stable_when`) is not a contract method the impl
 must provide.
+
+Fallibility matches both ways, unlike an interface's (an infallible
+method may satisfy a `fallible` interface method): a perspective
+call lowers the perspective fn's signature against the impl's
+body, so a `fallible` impl behind an infallible perspective fn
+would hand the caller a failure path the call never reads, and the
+reverse a failure the impl never sets. Either is a typecheck error
+naming both: "\`RouterV1.route\` is
+\`fallible(ClosureViolation)\` but \`Router.route\` is not: a
+method serving a perspective matches its fallibility". A
+`fallible` perspective fn is refused at the call by the build
+("fallible method call on non-locus value of type
+Perspective(\"Router\")"): a perspective call cannot carry a
+failure yet (F.42).
 
 **Qualified contract names (2026-09-19, GH #724).** `P` may be an
 **imported** perspective, named through its import alias:

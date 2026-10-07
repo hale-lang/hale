@@ -298,7 +298,11 @@ locus DbConnection {
   would carry on with an empty row, and `or handler(err)` gets the
   `ClosureViolation` itself. A method that returns nothing and
   violates just exits, and the checker warns that it will need the
-  same declaration in a later release.
+  same declaration in a later release. One shape is not covered
+  yet: a method that serves a [perspective](./perspectives.md) fn
+  cannot be `fallible`, because a perspective call cannot carry the
+  failure, so it is exempt and the checker warns instead. A caller
+  of such a call must not read the value after the method violated.
 - `self.draining` is a Bool every locus can read — true once it's
   decided to wind down. Use it to stop publishing after the
   decision.

@@ -235,6 +235,82 @@ fn main() {
     assert_eq!(v, [(true, format!("`Picker.take` {LAW} (`violate exhausted`): {TAIL}"))], "{v:#?}");
 }
 
+/// A perspective-served program: `Router.route` as the perspective
+/// declares it, `RouterV1.route` as the impl does, and the call through
+/// the slot with `call`.
+fn router(persp: &str, imp: &str, call: &str) -> String {
+    format!(
+        r#"
+perspective Router {{ fn route(code: Int) -> Int{persp}; }}
+locus RouterV1 : serves Router {{
+    params {{ k: Int = 0; }}
+    closure c {{ captures: k; epoch inline; }}
+    fn route(code: Int) -> Int{imp} {{ if code > 5 {{ violate c; }} return code + 100; }}
+    fn twice(code: Int) -> Int {{ return self.k + code; }}
+}}
+locus Gateway {{
+    params {{ router: perspective(Router) = RouterV1 {{ }}; }}
+    on_failure(r: RouterV1, err: ClosureViolation) {{ println("absorbed ", err.closure); }}
+    run() {{ println({call}); }}
+}}
+main locus App {{ params {{ gw: Gateway = Gateway {{ }}; }} }}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+const CV: &str = " fallible(ClosureViolation)";
+const MATCHES: &str = "a method serving a perspective matches its fallibility";
+
+#[test]
+fn a_method_serving_a_perspective_is_exempt_and_warned() {
+    // A perspective call cannot carry the failure yet (the build refuses
+    // a `fallible` one), so the impl keeps today's behaviour: not refused,
+    // warned. A direct call to it from a value-returning method carries
+    // nothing either.
+    let src = router("", "", "self.router.route(1)").replace(
+        "fn twice(code: Int) -> Int { return self.k + code; }",
+        "fn twice(code: Int) -> Int { return self.route(code) + 1; }",
+    );
+    assert_eq!(
+        verdicts(&src),
+        [(
+            false,
+            "`RouterV1.route` serves `Router.route` and may violate (`violate c`); a perspective call cannot carry \
+             the failure yet, so the method keeps today's behaviour (the caller of a violated perspective call \
+             must not read the value)"
+                .to_string()
+        )]
+    );
+    assert_eq!(errors(&src), Vec::<String>::new(), "check passes with the warning");
+}
+
+#[test]
+fn conformance_matches_a_perspective_fn_s_fallibility_both_ways() {
+    // The impl declared as the law asks, the perspective not: the slot
+    // would call a fallible body through the infallible ABI (a SIGSEGV
+    // even on a call that never violates). Refused at check.
+    let errs = errors(&router("", CV, "self.router.route(1)"));
+    assert_eq!(
+        errs,
+        [format!("`RouterV1.route` is `fallible(ClosureViolation)` but `Router.route` is not: {MATCHES}")]
+    );
+    // The reverse: the perspective fallible, the impl not. Refused; the
+    // impl itself is the exempt shape, warned.
+    let src = router(CV, "", "self.router.route(1) or 0");
+    assert_eq!(
+        errors(&src),
+        [format!("`Router.route` is `fallible(ClosureViolation)` but `RouterV1.route` is not: {MATCHES}")]
+    );
+    assert_eq!(verdicts(&src).len(), 1);
+    assert!(!verdicts(&src)[0].0);
+    // Both fallible: check passes (the build refuses the perspective
+    // call, `build::violate_build` pins its wording).
+    let src = router(CV, CV, "self.router.route(1) or 0");
+    assert_eq!(errors(&src), Vec::<String>::new());
+    assert_eq!(verdicts(&src), Vec::<(bool, String)>::new());
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }

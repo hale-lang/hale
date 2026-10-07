@@ -11735,6 +11735,38 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // F.42: a perspective call lowers the perspective fn's
+                // ABI against the impl's body, so a `fallible` impl
+                // behind an infallible fn (or the reverse) reads a
+                // failure path the call never set. Unlike an
+                // interface's, a perspective fn's fallibility is
+                // matched both ways.
+                let fallible = |f: &Option<Ty>| match f {
+                    Some(e) => format!("is `fallible({})`", e.display()),
+                    None => "is not".to_string(),
+                };
+                let clash = match (&pm.fallible, &lm.fallible) {
+                    (None, Some(_)) => true,
+                    (Some(_), None) => true,
+                    (Some(pe), Some(le)) => pe != le,
+                    (None, None) => false,
+                };
+                if clash {
+                    let (impl_name, persp_fn) =
+                        (format!("{}.{}", decl.name.name, pm.name), format!("{}.{}", persp_name.name, pm.name));
+                    let (first, first_is, second, second_is) = if lm.fallible.is_some() {
+                        (impl_name, fallible(&lm.fallible), persp_fn, fallible(&pm.fallible))
+                    } else {
+                        (persp_fn, fallible(&pm.fallible), impl_name, fallible(&lm.fallible))
+                    };
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "`{first}` {first_is} but `{second}` {second_is}: a method serving a \
+                             perspective matches its fallibility"
+                        ),
+                    ));
+                }
             }
             // Phase 2c: bus-surface conformance — the impl must
             // subscribe / publish every subject the contract declares.

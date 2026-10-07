@@ -4042,6 +4042,11 @@ row	App@literal1	App	main	default
 row	~	Owner	pool:side	entry	off owner
 row	~.kid	Kid	pool:side	inherited
 
+== crates/hale-codegen/tests/violate_build.rs#742e5d25
+root	App	the entry
+row	App@literal1	App	main	default
+shared	App@literal1.gw	Gateway #7eef2531
+
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed

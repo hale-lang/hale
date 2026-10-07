@@ -3674,6 +3674,24 @@ safe only while every caller remembers the guard.
 4. **The stdlib follows the law.** `BytesBuilder.snapshot` and
    `finish` become `-> Bytes fallible(ClosureViolation)`, and every
    caller gains an `or`.
+5. **A stated gap: perspective-served methods.** A locus method that
+   implements a perspective fn is exempt from the law and the lint,
+   carries nothing to its callers, and is warned about instead ("…
+   serves `P.f` and may violate …; a perspective call cannot carry
+   the failure yet, so the method keeps today's behaviour"). The
+   reason is that no spelling of it both checks and runs: an
+   infallible impl is the law's refusal; a `fallible` impl behind an
+   infallible perspective fn passed conformance, which did not
+   compare fallibility, and the perspective call, lowered with the
+   perspective fn's infallible signature against the fallible body,
+   crashed with SIGSEGV even on a call that never violates; and a
+   `fallible` perspective fn is refused at the call by the build
+   ("fallible method call on non-locus value"). Conformance now
+   matches a perspective fn's fallibility both ways, which closes the
+   crash at check time. The exemption goes when a `fallible`
+   perspective call lowers; `build::violate_build`'s
+   `a_fallible_perspective_call_is_refused_at_the_build` pins the
+   refusal so that day is visible.
 
 **F.27 stands.** Allocation failure is structural: a builder that
 cannot grow violates `alloc_failed`, and its owner's `on_failure`

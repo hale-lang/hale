@@ -484,3 +484,36 @@ fn main() { App { }; }
         "{stderr}"
     );
 }
+
+/// A method serving a perspective, the perspective fn and the impl both
+/// `fallible(ClosureViolation)`: `hale check` passes (conformance matches
+/// the fallibility, `hale-types`' `violate_fallible.rs` pins it), and the
+/// build refuses the perspective call, as it refused every `fallible`
+/// perspective call before F.42. This is why F.42 exempts a
+/// perspective-served method: the day the call lowers, this pin fails
+/// and the exemption goes.
+#[test]
+fn a_fallible_perspective_call_is_refused_at_the_build() {
+    let src = r#"
+perspective Router { fn route(code: Int) -> Int fallible(ClosureViolation); }
+locus RouterV1 : serves Router {
+    params { k: Int = 0; }
+    closure c { captures: k; epoch inline; }
+    fn route(code: Int) -> Int fallible(ClosureViolation) { if code > 5 { violate c; } return code + 100; }
+}
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+    on_failure(r: RouterV1, err: ClosureViolation) { println("absorbed ", err.closure); }
+    run() { println(self.router.route(1) or 0); }
+}
+main locus App { params { gw: Gateway = Gateway { }; } }
+fn main() { App { }; }
+"#;
+    let bin = harness::unique_bin("lotus_test_violate_fallible_perspective_call");
+    let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("the build refuses it");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        err.to_string().contains("fallible method call on non-locus value of type Perspective(\"Router\")"),
+        "{err}"
+    );
+}
