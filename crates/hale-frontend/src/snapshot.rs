@@ -1740,6 +1740,10 @@ impl Snapshot {
                 // record the typing kept, so it runs no second check.
                 let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 diags.extend(hale_types::bare_fallible::bare_fallible_calls(typed));
+                // The may-violate law reads the call graph the summary
+                // already resolved.
+                let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
+                diags.extend(hale_types::violate_fallible::violate_fallible_laws(&self.bundle(), summary));
                 // So does the closures' reach law: whether a recovery
                 // reaches a locus is the typed receivers' answer.
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;

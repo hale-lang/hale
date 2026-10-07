@@ -154,7 +154,7 @@ locus ApplicationWire {
                 b.append_u8(decoded); i = i + 3;
             } else { b.append_u8(c); i = i + 1; }
         }
-        let result = std::str::from_bytes(b.snapshot());
+        let result = std::str::from_bytes(b.snapshot() or raise);
         return if self.identifier(result) { result } else { "" };
     }
     fn state_ok(s: ApplicationState, application_id: String) -> Bool {
@@ -201,7 +201,7 @@ locus ApplicationWire {
             let byte = std::bytes::at(hash, i) or 0;
             b.append_u8(std::str::byte_at_unchecked(digits, byte / 16)); b.append_u8(std::str::byte_at_unchecked(digits, byte % 16)); i = i + 1;
         }
-        return "sha256:" + std::str::from_bytes(b.snapshot());
+        return "sha256:" + std::str::from_bytes(b.snapshot() or raise);
     }
     fn receipt_ok(r: Receipt, actor: Actor, application_id: String, command: Command, submitted: Bool) -> Bool {
         if r.application_id != application_id || r.principal_mode != actor.mode || r.principal_name != actor.name || r.request_id != command.request_id || !self.identifier(r.command_id) || !self.identifier(r.request_id) || !self.identifier(r.operation) || !self.identifier(r.operation_version) || r.target_kind != "application.control" || !self.identifier(r.target_id) || !self.hex_id(r.incarnation_id) || !self.decimal(r.expected_revision) || !self.identifier(r.value) || !self.text_ok(r.reason, 512, false) || !self.decimal(r.resulting_revision) || !self.identifier(r.resulting_value) { return false; }

@@ -675,6 +675,7 @@ pub fn check_bundle_reporting(
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
     let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
+    diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
@@ -11731,6 +11732,38 @@ impl<'a> Checker<'a> {
                             lm.ret.display(),
                             persp_name.name,
                             pm.ret.display()
+                        ),
+                    ));
+                }
+                // F.42: a perspective call lowers the perspective fn's
+                // ABI against the impl's body, so a `fallible` impl
+                // behind an infallible fn (or the reverse) reads a
+                // failure path the call never set. Unlike an
+                // interface's, a perspective fn's fallibility is
+                // matched both ways.
+                let fallible = |f: &Option<Ty>| match f {
+                    Some(e) => format!("is `fallible({})`", e.display()),
+                    None => "is not".to_string(),
+                };
+                let clash = match (&pm.fallible, &lm.fallible) {
+                    (None, Some(_)) => true,
+                    (Some(_), None) => true,
+                    (Some(pe), Some(le)) => pe != le,
+                    (None, None) => false,
+                };
+                if clash {
+                    let (impl_name, persp_fn) =
+                        (format!("{}.{}", decl.name.name, pm.name), format!("{}.{}", persp_name.name, pm.name));
+                    let (first, first_is, second, second_is) = if lm.fallible.is_some() {
+                        (impl_name, fallible(&lm.fallible), persp_fn, fallible(&pm.fallible))
+                    } else {
+                        (persp_fn, fallible(&pm.fallible), impl_name, fallible(&lm.fallible))
+                    };
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "`{first}` {first_is} but `{second}` {second_is}: a method serving a \
+                             perspective matches its fallibility"
                         ),
                     ));
                 }

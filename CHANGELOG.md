@@ -8,6 +8,573 @@ behavior.
 
 ## Unreleased
 
+## v0.23.0 — one model, and units (2026-10-07)
+
+The compiler converges on one model, and numbers get units. Every analysis `hale check` runs, the claims, the topology and placement gates, the effects manifest, the replay gate and the model dump, now reads one derivation of the program, held in one snapshot, with every semantic family the compiler derives named in a registry that says who produces it and who may read it (F.40, GH #1212). Codegen, the dispatch plan and the model read one placement table, so a program is deployed the way it was checked. The lifecycle has a stated order, construction, readiness, failure delivery, drain, join and cancellation, and a trace that shows it; a season of races and leaks on cooperative pools and pinned threads is closed against it. On top of that stands the unit dialect (GH #1076): `unit cent; unit USD = 100 cent;`, quantities, points with an origin, identities and ranges, with every narrowing named at its site (`spread / 2 or floor`) and `Time` and `Duration` now the stdlib's own declarations over the same catalogue. A downstream smoke test of the result found two regressions and three older defects; all are fixed, and the one rule it forced into the open, that a value-returning fn which may `violate` is `fallible(ClosureViolation)`, is F.42.
+
+The item-level notes for this release, one entry per change with every issue reference, follow this page; the CHANGELOG as it stood at the tag is `git show v0.23.0:CHANGELOG.md`.
+
+**Performance.** Large seeds check about twice as fast as on v0.21.0 (the two largest applications of a downstream handoff: 0.130 s → 0.063 s and 0.066 s → 0.050 s), paid for by a fixed cost on every invocation of about 5 ms and, of a measured 14 MB of peak RSS, about 8 MB attributed to the stdlib's analysis copy, the capability and placement walks over it and a larger binary, the other 6 MB being a page-cache measurement artifact of a freshly built binary (PR #1425's profile, which also removes the one avoidable part, a copy of every body per run). `hale build` times were flat in the same downstream measurements. Of the 29 runtime benchmarks, 27 sit inside their bands against v0.22.0; two are 13 to 16 percent slower (`locus_instantiation`, `coord_with_churn`) and are open.
+
+### Breaking changes
+
+- **A value-returning fn or locus method that may `violate` is `fallible(ClosureViolation)` (F.42, PR #1426).** The checker refuses one that is not, naming the `violate` or the call it comes through; a violator declared with another error type is refused. In such a fn the violation is the call's failure: the owner's `on_failure` runs first, then the caller's `or`, with `err` the `ClosureViolation`. A method returning nothing that violates gets a warning, which becomes a law in a later release. `BytesBuilder.snapshot()` and `finish()` are `fallible(ClosureViolation)`, since they violate on allocation failure (F.27): every call needs an `or`; `or raise` keeps today's behaviour when no owner absorbs the violation, and when an owner's `on_failure` absorbs it the process now ends at the `or raise` where it used to continue with a garbage value. A method serving a perspective matches its fallibility both ways: an impl `fallible(ClosureViolation)` behind an infallible perspective fn, which segfaulted at run time, is refused at check.
+- **The unit dialect's time catalogue is `ns us ms s min h day` (GH #1076 U4, PR #1415).** `5m` and `3d` are not time literals (`3d` is the Decimal 3), `1h30m` is refused (write `1h + 30min`), `Duration ÷ Duration` is an `Int`, and a literal divisor is a narrowing: `timeout / 2 or floor`.
+- **A fallible call is handled only by an `or` form (PR #1323);** `match` over the call and every other position report the unhandled error at `hale check`. `std::crypto::ecdsa_p256_sign` has one mode, `Bytes fallible(CryptoError)` (PR #1396). The legacy bare forms of `std::bytes::at` and the `std::io::fs` file functions are gone (PR #1396).
+- **The entry locus is the seed's own top-level `main locus` (PRs #1293, #1358, #1349).** A library's `main` reached through `import` or a `main` inside a `module { }` is not the entry; a seed whose only `main` is module-nested is refused, and `--api` on a seed whose only `main` is imported is refused.
+- **`hale check` refuses what used to fail later or pass silently:** a publish or subscription to a qualified topic path that names no declaration (PR #1305); more than 54 user effect classes (PR #1295); `persists_through(dissolve)` and a recovery name that is not a recovery event (PR #1393); on wasm32, `pinned` placements, pools and `async_io`, at the declaration with the capability named (PR #1318).
+- **A codec's `encode` or `decode` may not do I/O, block or publish (PR #1418),** a user type named `ParseError`, `IoError`, `CryptoError` or `BytesError` of another shape is refused where a stdlib call that raises the stdlib's is reached, and `std::io::udp::set_multicast_loop` takes a `Bool`, as the spec says; an `Int` argument is refused.
+- **Budgets and roles count more (PRs #1396, #1329).** The resource budget counts `std::io::tcp::connect_wait` as an fd-acquisition site, so a ceiling set on the old count can now be exceeded; the api binding's `*` role grant admits any authenticated caller on either transport, bearer callers included.
+
+### F.40: one model under every analysis (GH #1212)
+
+- **The registry (`hale-graph`, PRs #1270, #1272).** Every semantic family the compiler derives, with its producer, its permitted readers and its invariants, generated into `spec/registry.md`; a guard counts every seamed call per file, so a reader that bypasses a family fails the build.
+- **One snapshot per check (PRs #1284, #1285, #1287, #1294, #1301).** The model, both topology gates, the effects manifest, the replay gate, the certificate evidence, the codec law, the handler-routing rows and `@form` sync inference are derived once and read by all; a build's `model_hash` is the check's.
+- **One placement table (PRs #1315, #1332, #1333).** Codegen reads deployment classes, replica cores, pool affinity and NUMA placement from the table the checker judged cross-pool access by; the model's instance arrangement follows it; budgets count what it says.
+- **Identity (PR #1272, #1384, #1381, #1388).** The replay identity, the toolchain cache key and the stale-binary hash take one list and one walk; a topology artifact carries no absolute path; a directory build replays against its entry; `hale replay` admits recordings from `hale build` of a file.
+- **Lifecycle obligations (PR #1300) and the trace (PR #1304).** `spec/runtime.md` states the order of construction, readiness, failure delivery, drain, join and cancellation; `HALE_LIFECYCLE_TRACE=1` prints one line per event. Against them: four use-after-frees on cooperative pools are closed (PRs #1310, #1316, #1324, #1408) and a startup race between a publish and a subscription registering on another thread (PR #1355); nested loci under a pinned locus or a pool-placed field are built on that thread (PR #1319); a child's failure is handled on its owner's thread (PR #1348); fields behind interfaces drain before their owner (PR #1337); `restart_in_place` copies an inline fixed-array param as bytes instead of panicking (PR #1424), a child the handler already replaced is not restarted (PR #1357), and a locus without `run()` is not entered on resume (PR #1353); teardown aborts unsatisfiable waits before joining pools (PRs #1331, #1354).
+- **Phase-4 hangovers (PRs #1418, #1419).** Purity from the effect table, the stdlib call error from its `!` column, sealed access judged per evaluation path and specialization, typed recoveries with the unreached-event law at table level, and the evidence batch: identities inventoried, two known-open fixtures named, a quarantine guard refuted and pinned.
+
+### The unit dialect (GH #1076, PRs #1345, #1412 to #1416, #1421)
+
+- **Declarations.** `unit`, `quantity`, `point … origin:`, `distinct`, ranges; identities never mix; a range is a declared interval with `clamp` and `wrap`.
+- **Values.** A literal names its unit and converts where it flows, exactly; every narrowing is a policy at the site (`floor`, `ceil`, `trunc`, `half_up`, `half_even`, a handler, `raise`); `.in(u)`, `.split(u)`, origins across points; a quantity prints with its unit and crosses the wire as its integer with a denomination tag.
+- **`Time` and `Duration`** are `type Duration = quantity Int in ns; type Time = point Duration;` in the stdlib seed; the checker's hand-written time rows and codegen's copy are gone.
+- **`hale check --units`** reports every scalar declaration, denomination, narrowing and policy; the book has the chapter "Units, end to end"; the corpus has `93-units`. The default re-typing that made every program pay for the dialect is an undo journal (PR #1421).
+
+### Checker, language server, platforms
+
+- **The checker sees more.** Calls of 118 stdlib functions that had no signature are checked (PR #1403); builtins are typed by the signature lowering uses (PR #1323); module-nested bodies are analyzed (PR #1311); generics shadow globals and keep their concrete rows through supervisors and defaults (PRs #1346, #1343, #1344); bus subjects compare by wire subject (PR #1305); a method serving a perspective matches its fallibility (PR #1426); `ClosureViolation` is a type the checker knows (PR #1407); an `Int` widens into a `Float` let, field and return as the spec says (PR #1424); a failed check writes no effects manifest (PR #1424).
+- **The language server** loads a seed the way `hale check <dir>` does (PR #1286), checks once per burst of edits (PR #1289), re-checks only the declaration an edit changed (PR #1321), and publishes the typing stage first (PR #1312).
+- **wasm32** refuses at check what it cannot lower, renders its chapter from the capability matrix (PR #1308), and imports no POSIX call it cannot run (PRs #1360, #1362). macOS durable recordings use `F_FULLFSYNC` (PR #1318).
+
+### Docs and tooling
+
+- **Highlighting** follows the grammar: the book's highlighter is generated from the keyword table, the tree-sitter grammar is synced, and unit names are coloured as types (PRs #1420, #1422). The style guide's boundary section is re-verified against the compiler and gains quantities (PR #1423); three spec passages that described unshipped or renamed behaviour are corrected.
+- **The book** gains "Build an API" (PR #1328) and the units chapter; `hale check --env` and `hale replay --env` resolve the environment as `run --env` does (PRs #1374, #1381).
+
+### Docs-pass fixes
+
+- `Drain<T>` is accepted in a type annotation by the checker, so a batch handler that uses it builds from `hale build` and `hale check`.
+- `std::io::sockopt` is a checked namespace: its 30 constants typecheck and a made-up name is flagged, as the book always said.
+- A wasm build no longer prints a linker signature-mismatch warning for the bytes/string view helpers.
+
+### Compiler internals
+
+- F.40 phase 0: a new dependency-free crate `hale-graph` carries the semantic-family registry — every family the compiler derives, with its producer, permitted legacy producers, consumers, invariants and focused tests; the spec's numbered rules with their evaluators; the frozen Debug-string scans. `spec/registry.md` is rendered from it; guard tests fail the build on an unregistered derivation, a seam referenced from an unlisted file, a new Debug-string scan, or a cited site that no longer exists. `spec/decisions.md` F.40 records the boundaries. No derivation moves yet.
+
+### Documentation
+
+- The design chapter states the dialect table (each construct declares a graph of a stated shape, closed at a stated horizon) and points at the graph registry; the model chapter names the lowered law `ClaimIr` and says where derive-once applies now. `AGENTS.md` gains `I7 lower-reads`, `I8 dialect`, and the horizon each construct's graph closes at in its map (F.40 phase 0).
+
+### Compiler internals
+
+- F.40 phase 0, identity coverage: the replay identity, the DNA toolchain cache key and the stale-binary hash take one list and one walk from `hale_graph::identity`; hale-model, hale-graph and the stdlib's `.hl` seeds are covered, as are the lock file and the ts-shim manifest. A model-shape change now busts a cached host and refuses a recording, as a codegen change always did.
+
+### Checker
+- `hale check` now refuses `accept()` or a closure with `epoch birth` or `epoch dissolve` on a locus placed `pinned`, at the placement entry, with the entry's span (placement rule 6); `hale build` refused the same programs before, without a location. A second `epoch` clause on a closure is a parse error.
+
+### Compiler
+- In a generic fn's monomorphs and in `@export` bodies, a `let`'s binding facts (handed back, moved by `=`, frame-local array) are read by site: a returned locus is no longer dissolved in the frame, a value moved by `=` is no longer dissolved twice, and a frame-local array is no longer arena-allocated. The old name-keyed join never found those bodies.
+- `HALE_TIME=1` profiles report the frontend's `resolve` step as their first mark; every total includes it.
+
+### Checker
+- `hale check` compares a deferred secret pin only against the DNA declaration the pin names, identified by its file and directory, never against a program's own fn or method that shares the name; and a pinned body's string literals count in full, so a literal that spells `id: NodeId(…)` or `Pos(…)` is body text, not identity.
+
+### Tooling
+- The DNA toolchain cache key covers the compiler CLI's sources and the workspace manifests, so a change to either rebuilds a cached host; every cached host rebuilds once after this change.
+
+### Checker
+- `hale build`, `hale run`, `hale test` and `hale replay` read a deferred secret pin the same way `hale check` does (by the declaration's file, from the source map), so a directory target that checks clean builds and runs; and a pin's companion declaration must come from the same module, so two unrelated imports no longer vouch for each other's names.
+
+### Checker
+- The self-containment rule again refuses a locus whose default builds itself through a fn that returns a locus it built after handing it to another call; the fn's construction products no longer depend on whether its returned binding escapes.
+
+### Compiler
+- An `accept` of a qualified imported locus type runs when a program is built through the library API with an import rename table; the resolved program's graphs resolve imports the way the CLI's merged program does.
+
+### Checker
+- `hale run <file>`, `hale test` and `hale replay` check the generated JSON parsers and the api binding before building, as `hale check` and `hale build` do; a `hale run <file> --api` no longer injects the api surface after its check.
+- A declaration `@ffi fn f() -> ();` checks clean; the checker rejected the empty-tuple return that `hale build` accepted.
+- `hale check --dump-alloc` names the declaration a type-alias literal builds (the alias's target), and the topology and model dumps show the call through it; the shape hash is unchanged.
+
+### Editor
+- The LSP loads files through the same loader and source provider as the CLI, so a seed read from editor overlays and the same seed on disk give identical diagnostics.
+
+### Changed
+
+- `hale check --check-topology` and `--check-topology-shape` refuse a program that does not typecheck by name ("refusing to compare a topology baseline: … does not typecheck", exit 1 as before) instead of comparing an artifact of a model the check could not stand behind.
+- `hale check` derives one model per check: the claims, `--dump-topology`, both topology gates and `--dump-model` read the snapshot's model, and a build's `model_hash` and observation entity ids read it too, where a second model used to be rendered as an artifact and its `shape_hash` scraped from the text. Artifacts, model dumps and api descriptions are unchanged.
+
+### Changed
+
+- `hale check --check-topology-shape` compares the model's own digest with the baseline's `shape_hash` instead of rendering a second artifact and reading the value out of its text; a program that does not typecheck is refused by name, as `--dump-topology` refuses it.
+
+### Changed
+
+- The language server loads the seed the way `hale check <dir>` does: the open file's directory and every `import` it reaches, through the editor's buffers, so a seed that imports gets the same diagnostics in the editor and on the command line, including the build rules (a borrow that outlives its owner, a bare fallible call).
+- A seed member the server cannot read (a dangling symlink, an unreadable file) is published as an error, `seed member <name>: <os error>`, against the member and the open file, and no diagnostics are computed over the partial seed; the server used to publish a clean result for a seed `hale check` refuses.
+- Every editor request (hover, completion, definition, references, `hale/busGraph`, `hale/placement`, `hale/allocSummary`, `hale/enforcement`) reads the same loaded and resolved seed the diagnostics use; `hale/busGraph`'s eligibility can no longer disagree with the diagnostics pass. References also find uses inside imported libraries.
+
+### Changed
+
+- `hale check` builds the handler-routing rows once per check: the duplicate-handler rule and the supervision law read the rows the snapshot built instead of building their own (the same rows the model reads), so a check of a program with a law no longer derives them three times.
+
+### Changed
+
+- A binding that a locus factory returns is resolved by identity rather than by name: an inner `let` that happens to spell the returned name is its own binding, so the allocation summary tags it as local, and a factory whose returned name is shadowed is checked as a factory of the outer binding (`spec/types.md`, `spec/decisions.md`).
+
+### Changed
+
+- The bound solver's "unbounded allocation" advisory no longer reports sites inside code a desugar generated (the api binding's socket loci, a generated JSON parser): such a finding had no author position and could not be acknowledged with `@unbounded`. The editor and `hale check` now report one answer over a seed with generated source.
+- The language server pays one check per burst of edits instead of one per keystroke: consecutive document events are applied together and checked once, so typing into a large seed no longer queues a check per character behind the editor.
+
+### Fixed
+
+- The api binding's generated ingress no longer stores a per-message `Principal` in the locus arena on a refused bearer request; the refusal reply carries the caller on its payload, which is reclaimed per dispatch.
+- The bound solver's "unbounded allocation" advisory drops a finding only when it has no author position (a site inside generated source); a finding inside the author's own handlers, including ones the api binding calls, is reported as before. The editor's `hale/allocSummary` applies the same rule.
+- The language server exits non-zero when its reader thread fails, and refuses a frame whose `Content-Length` exceeds 64 MiB or is not a number instead of trying to allocate it.
+- The allocation summary's escape tag follows `let x = y` aliases back to the allocating declaration.
+
+### Changed
+
+- The entry locus is defined once: the seed's own top-level `main locus`. A library's `main` reached through `import`, or a `main` nested in a module, is not the entry. A seed whose only `main` is a library's checks as a seed with no `main` (its cross-pool placement errors no longer refer to it), and `hale check --env` on a seed whose only `main` is either of those is refused with the library message instead of accepted (`spec/semantics.md` § The entry locus).
+
+### Fixed
+
+- The effects manifest (`hale check --dump-effects-manifest`) and the replay gate's live-effects check follow calls into imported seeds; they used to ignore import renames and under-report a seed's effects through imported code. On the DNA seeds that import others, rows gain the classes reached through the import; the replay gate's refusals are unchanged.
+
+### Changed
+
+- The effects analysis runs once per check (one fixpoint the model, the manifest, the replay gate, the certificate evidence, the codec law and the claims read); `hale check --dump-topology` on a program with a law runs the certificate engines once instead of three times.
+
+### Changed
+
+- Declaring more than 54 user effect classes across a program's seeds is refused where the classes are declared; the extras used to get no effect bit silently.
+- The editor's document outline reads the loaded seed; a file whose seed cannot be loaded (an unresolvable import) gets an empty outline instead of one parsed from the buffer alone.
+
+### Changed
+
+- A library's mangled symbols are a function of its own path: relative to the workspace root, or to the entry's directory for a library outside the workspace. A declaration's full name, `__lib_<library>__<stem>__<name>`, encodes the library path, the file stem and the declaration name as one injective tuple (`/` as `__`, any other non-identifier byte as a hex escape, a directory library ending in `_`), so no two declarations share a name — two `util.hl` in different directories, or `a/b__util.hl` beside `a/b/util.hl`, included — and neither import order, the build's other imports nor where the tree is checked out changes a library's symbols. Every symbol changes except, in a single-file library beside the entry whose file name is letters and digits, a declaration whose name neither starts with `_` nor holds `__` (`util.hl`'s `make_err` stays `__lib_util_util_make_err`); a mangled name a diagnostic prints today, as the bus dead-wiring warnings do, reads in the new form.
+- Qualified bus subjects are resolved once, in the desugar sequence, before the check; the checker, the model and lowering read one rewritten program.
+
+### Changed
+
+- `spec/runtime.md` gains § Lifecycle obligations: the order of construction, readiness, failure delivery, drain, join and cancellation as rules, each saying whether it ships today; eight sentences that contradicted shipped behaviour (accept cannot reject, subscriptions wire before birth, a birth or run failure is a closure violation, delivery at the failing epoch, closures before dissolve, a let-bound literal drains with its dissolve, order by construction, a signal only raises a flag) are corrected.
+
+### Changed
+
+- Sync inference for `@form` maps runs once per build over the whole seed: the language server now gives the same inferred discipline as `hale check` on multi-file seeds instead of inferring per file, and the inferred discipline is no longer written into the program as a `sync =` argument.
+- `@no_block` and `@effects(depends: …)` no longer refuse a locus for reading a `@form` map declared `sync = none`, which takes no lock; sharing such a map across pools now gets the unsynchronized-state warning.
+
+### Changed
+
+- `hale check` no longer refuses a subscriber born in a bus handler when an ancestor of the handler's locus accepts its type on every path that constructs that locus (placement rule 20 now reads the ownership graph, and the construction paths from the placement table, so a locus built both under an accepting parent and directly in `fn main` is still refused); an `accept` that only matches a type's last segment or another specialization no longer counts as owning it.
+
+### Changed
+
+- `hale check`'s allocation advisory and `--dump-alloc-summary` now see allocations reached through imported and stdlib code, and no longer report a stdlib loop the program never starts; the unbounded-invocation analysis resolves each seed's names in that seed's own scope, so a stdlib body's call to a builtin never resolves to a user function of the same name.
+- The compiled-corpus AddressSanitizer oracle (`LOTUS_ASAN=1`) now actually builds the corpus under the sanitizer.
+
+### Added
+
+- A lifecycle trace for debug builds: `HALE_LIFECYCLE_TRACE=1 hale build` emits one line per lifecycle event (params settle, accept, birth, run, failure delivery, drain, dissolve, reclaim, the joins and wait-abort) with the spine, the thread domain and the instance; release builds are unchanged.
+
+### Changed
+
+- `hale check` compares bus subjects by their wire subject: a literal subject that spells a topic's name rather than its `subject:` is its own subject, an unresolved topic name is no longer reported as an orphan or a cycle, and two loci declared under one name have separate cycle edges.
+- A bus cycle within one locus is the re-entrant error only when every send in it becomes a direct call; one with a send that stays on the bus (a topic subscribed by its literal subject, a bound topic, a topic with more than one subscriber) is carried by the queue, cannot overflow the stack, and is now the queue's warning instead of a refusal.
+- `hale check` refuses a subscription or publish to a qualified topic path that names no declaration, which previously checked clean and failed at `hale build`.
+
+### Changed
+
+- The WebAssembly chapter of the book and the FFI type table in the spec are rendered from the capability matrix (one cell per target and capability, with its witness) and a test fails when they drift; the chapter now states which stdlib namespaces are refused on wasm32, which build but are stubs, and that a `pinned` locus or an adapter binding fails to link for wasm32 today.
+
+### Changed
+
+- A locus whose methods only match an interface by name, not by signature, and a generic locus's specialization no longer get the program-lifetime arena; storage routing now requires a real conformance witness, so such instances stay frame-owned (output unchanged).
+
+### Fixed
+
+- A use-after-free on cooperative pools: when an owner was torn down on a pool worker, a child's `run()` queued on that same worker could start after the teardown had reclaimed the child. A queued run now holds its child until it is admitted or canceled, and a teardown cancels the dying child's queued runs by name before reclaiming it.
+
+### Changed
+
+- `hale check`'s allocation and effects analyses now see module-nested declaration bodies: a module-nested fn is no longer an unanalyzed hole, so `causes` laws through one can be certified and effect sets include what it does; the model hash of programs with module-nested bodies changes.
+- The hot-path allocation lint is a law over the allocation summary's rows; it now also flags a locus built in a loop inside a publish or a bare block. The summary walks an index expression's subscript as it walks any operand, so a locus built inside `xs[…]` in a `@hot` loop is still refused, and a call written in a subscript is a call edge: the model hash of programs with one changes.
+
+### Changed
+
+- The language server publishes diagnostics twice per change: the typing stage first (scope, types, the build rules and the allocation advisory), then the full check with the claims' judgments replacing it per file, so a seed with laws shows its first findings in well under half the time; the final set equals `hale check`'s. Parses are reused per file and text across loads, so an edit reparses only the edited file.
+
+### Changed
+
+- `hale check` judges cross-pool access per instance from the placement table: a stdlib or alias-typed field placed on another pool and called by its owner is now refused like any other field, two owner types holding their own `@form` maps are no longer synchronized for each other, and a cross-pool call into a map that no other pool touches is refused.
+
+### Fixed
+
+- A run queued on one pool for a child whose owner is torn down on another could start after the child's arena was destroyed; the reclaim now cancels the child's queued runs before destroying its arena. A run post refused at shutdown, or a queued run freed when the pools are torn down, is now named in the lifecycle trace instead of vanishing.
+
+### Changed
+
+- A source `target wasm` declaration now selects wasm32 for `hale check`, the editor and `hale build` alike (an explicit conflicting `--target` is refused at the declaration), and `hale check` takes `--target`.
+- On wasm32, `hale check` now refuses what the build could never lower, with a located diagnostic naming the capability and its witness: `pinned` placements, pools, `async_io`, transport bindings, the stub namespaces (`std::time`, `std::env`, `std::ts` and four more, each with its substitute named), and `@ffi("js")` declarations in a native build. A library's code is refused where the program reaches it — at the call into it, or at the construction of its locus, through the locus's lifecycle, params defaults and `on_failure` handler — with the chain as the witness. An export-only program with no `target` declaration is refused at its first `@export` instead of failing late at the native link.
+- A call through a local bound by `let` to a function (`let f = pid; f()`) is now judged as the call of that function by every effect, budget and topology reading of the call graph; it used to be a call to nothing, so `@no_syscall` and `@effects` certified a function that performs a syscall that way. A topology artifact whose program makes such a call gains the edge and a new `artifact_digest`; `shape_hash` is unchanged.
+- Native builds on macOS use `F_FULLFSYNC` for durable recordings, replacing the unavailable `fdatasync` call while retaining the storage flush required by the durability grade.
+
+### Fixed
+
+- Adapter bindings now report unsupported `accept()` and birth/dissolve closures during checking, at the binding, as explicit pinned placements already do. Previously these passed checking and failed during lowering.
+- A subscriber nested under a pinned locus (or under a field on a worker pool) now receives on its anchor's thread: the owner's mailbox exists before its nested instances register, and the join retires every registration pointing at it before destroying it. Previously such a handler ran on main.
+- The loci nested under a pinned locus are now built on the pinned thread: their `birth()`, a nested cooperative `run()` and anything such a body waits for through the pinned locus's mailbox run there, before the literal that builds the pinned locus returns. Previously they ran on the instantiating thread, usually main. While it waits for them, the thread building the pinned locus keeps handling its own messages, as a `std::time::sleep` there would, so such a body can also wait for a reply from a subscriber on that thread. An override written in the literal is still evaluated where the literal is. As a consequence, a temporary locus built inside a pinned locus's default is dissolved when that initialization ends, on the pinned thread; previously it lived until the scope of the function that built the pinned locus ended.
+- The loci nested under a field placed on a worker pool are now built on that pool's worker, as the field's first job there: their `birth()` and a nested cooperative `run()` run on the worker that runs their handlers, before the literal that builds the field returns. Previously they ran on the instantiating thread while the worker already ran their handlers, so a nested body and its own handler could touch the same field from two threads at once. A `std::time::sleep` inside that build lets the worker handle the pool's queued messages, so a nested body can wait for a message to itself or for a reply through the instantiating thread. The field's own `birth()` still runs where the literal is, and its `run()` is still posted to the worker after it. On a `where async_io` pool the build never parks. The build waits behind whatever the worker is already running: a field placed after a sibling on the same pool whose `run()` never returns (without `where async_io`) is never built, and the program waits there.
+- A worker waiting for its constructor to settle a held failure can perform a pending initialization even with a full message queue. The constructor then reaches the readiness wait without needing queue space; initialization still runs exactly once on the worker.
+
+### Changed
+
+- The editor re-checks only the declaration an edit changed and the declarations that depend on it, reusing the previous typing for the rest; the published diagnostics are unchanged.
+
+### Fixed
+
+- `hale check` compares a topic's publish and subscribe payload types by the declaration they name, so an alias of the payload type (`type Beat = Tick;`) no longer reports a conflict between two names of one declaration.
+
+### Changed
+
+- A fallible call is handled only by an `or` form; every other position, including `match` over the call, reports the unhandled-error diagnostic at `hale check` (before, some were check-clean and refused at build). A bundled stdlib function can be an `or` handler.
+- A bare builtin call (`len`, `to_string`, `Int`, `Float`, `abs`, `min`, `max`, `starts_with`, `contains`) is typed by the signature lowering uses, so a wrong `let` annotation on one is now a type error instead of being ignored.
+- Generic function calls inside a generic locus use the checked rows for each concrete locus specialization, including local bindings and params defaults. A template instantiated for both `Int` and `String` keeps separate call types for each instance.
+- Generic calls in omitted function and method defaults use the checked rows for each invocation in its caller's scope, including different caller types and nested defaults.
+- Concurrent lifecycle trace events wait for their subject's instance number to be initialized, preventing a spurious instance-zero entry and unmatched completion.
+
+### Fixed
+
+- A use-after-free on cooperative pools: reassigning a pool-placed field while the old child's `run()` was already running on another pool released the old child's arena under that run. A started run now holds its child until it returns, and the child's teardown waits for it before releasing the memory, servicing its own thread's queue meanwhile, so a run that publishes back to that thread cannot deadlock it.
+- Field replacement from a queued main-thread handler preserves handler completion order. The old child's drain and dissolve still precede construction of the replacement; physical release waits until the handler returns, allowing queued replies to finish the old run. Retention covers forms and owned descendants as well as the old child's arena.
+- A retired child that terminates or completes as a flow on its worker cannot reclaim itself a second time while another thread owns its deferred release. Shared reclaim admission is claimed atomically per instance before accessing its arena.
+- The lifecycle plan now states the started-run retention edge and gives statement-position subscribers their deferred teardown. The four started-run trace fixtures use that derived plan.
+
+### Fixed
+
+- A program that imports a library whose own `main locus` has a `placement { }` block no longer treats itself as off-thread for it; a program whose only `main locus` is module-nested and binds a listener now locks the bus queue for that listener's reader thread.
+
+### Documentation
+
+- The book gains "Build an API", a step-by-step guide from an empty file to a gated API driven by `hale call`, `hale watch`, `curl`, `hale mcp` and `hale admin`; the binding's own chapter is now titled "The API binding", and the grammar shows its `http(…)` and `serve: […]` clauses.
+
+### Changed
+
+- The api binding's role table grants roles to bearer callers on its HTTP transport: `*` is any authenticated caller on either transport, and the new member spelling `bearer:<name>` names a bearer principal by the name its source gives it (an OIDC subject such as `oidc:auth0|123` included). Account spellings (`uid:`, `gid:`, `user:`, `group:`) never match a bearer caller, and `bearer:` never matches a socket peer.
+
+### Fixed
+
+- Effect, capability, budget and claim analyses now follow calls through function values to conservative sets of address-taken free functions. Unresolved values remain explicit unknowns, and target-refusal diagnostics include the resolved callback path. Editor dependency tracking also follows callbacks in parameter initializers and failure handlers.
+
+### Fixed
+
+- Teardown now aborts unsatisfiable bus waits before joining worker pools on every main exit path, preventing a worker parked in `or wait` from hanging shutdown. Target-dependent lowering and FFI portability checks read the shared capability matrix, including WebAssembly's lifecycle obligations.
+- The dispatch plan now reports static enqueuing for managed bus payloads, matching the emitted code. This corrects the execution digest for affected programs; exact replay refuses recordings whose execution identity differs.
+
+### Fixed
+
+- The model's instance arrangement now follows the compiler's placement table: aliased and interface-typed fields resolve to their actual loci, replicas retain their own instance indices, and imported main loci are excluded as deployment roots. Paths must be enumerable and agree across every construction and alternative. CPU affinity appears once per arranged thread domain.
+- The publish-to-direct-call optimization reads the same placement table, keeping calls to off-thread subscribers on the bus.
+
+### Fixed
+
+- Resource budgets now count pinned replicas and bounded construction occurrences, count each binding adapter once, and exclude the main thread from worker pools. A thread count with no static bound is reported as uncertain and fails a declared ceiling. The dump identifies runtime threads outside the placement count.
+- Code generation now reads deployment classes, replica cores, pool affinity, and NUMA placement from the shared placement table.
+
+### Fixed
+
+- Allocation analysis now accounts for each function's reclaim boundary: temporaries freed at a scratch-local return do not accumulate across calls, while repeated allocations retained in the caller's arena are reported.
+
+### Fixed
+
+- Messages sent to a subscriber during its birth wait until birth and its checks complete, including sends from helper methods and pinned threads. Deferred sends preserve their exact receiver and owned payload, and pinned readiness keeps cross-thread publishers bounded while allowing ready nested subscribers to progress.
+- Pinned loci now run their birth checks before starting `run()`.
+
+### Fixed
+
+- Owned fields behind interfaces or perspectives now drain before their owner, and fields nested under a pinned locus drain on its thread.
+- A child created across cooperative pools now runs its accepting owner's accept hook before birth.
+
+### Fixed
+
+- Invalid pinned features, looped pinned roots, unconsumed placement entries (for both, a root built in another locus's params default included), a pinned root written in a const, a type's field default or a closure's assertion (built again at every use), cross-pool spawns used as values in locus bodies, and self-containing param defaults are rejected before lowering with source diagnostics, including through the direct build API.
+- Large programs with repeated ownership paths no longer exhaust compiler memory while planning lifecycle operations.
+
+### Improved
+
+- Editor diagnostics for seeds with many repeated imports avoid duplicate rename entries and reuse an index when displaying imported names. Import rename order is stable across checks, and diagnostic spelling is preserved.
+
+### Fixed
+
+- Model dispatch reports retain API adapter domains when binding expressions are copied into generated params initializers. Dynamic connection peers remain explicit placement holes.
+- A qualified standard-library birth no longer creates a placement hole on a user locus with the same final name segment.
+
+### Fixed
+
+- Imported and aliased locus births now retain their resolved ownership, including bubbling to the accepting ancestor and dynamic placement reporting.
+- Cross-pool value-use checks read the shared birth context, including function defaults and birth checks.
+- Pinned subscribers preserve recorded delivery order during readiness and yield, including deliveries held for a later replay slot.
+
+### Fixed
+
+- Application models include default children created under dynamic parents and binding adapters, and no longer invent extra births for overridden defaults or explicit arranged fields.
+
+### Fixed
+
+- Generic supervisors route failures using each concrete child type while retaining handler identities. Children supplied to generic fields keep their owner, and typed field overrides now support bare generic literals consistently in check and build.
+
+### Fixed
+
+- Generic constructions keep their concrete arguments and child types in placement and model rows, including transparent aliases and imports.
+- Whole-instantiation aliases and imported generic literals now build with the same layouts accepted by type checking.
+
+### Compiler internals
+
+- Add the unit dialect's exact rational catalogue core, with witnessed
+  cycle checks, conversion factors and denomination inference. Source
+  syntax and the Time/Duration migration remain separate integration work.
+
+- Generic type parameters now shadow same-named global types, loci and
+  aliases throughout their declarations and body annotations. Unbound
+  generic calls remain unresolved until specialized instead of taking a
+  global type, and monomorph discovery preserves the same lexical scope.
+
+### Fixed
+
+- A child's failure is now handled on its owner's thread: a pinned or pool-placed child's failure is handed to the owner, which runs `on_failure` at its next yield, wait or join, and the child waits for the decision; the owner no longer tears a child down under a delivery still in flight.
+- Subscriptions registered while another thread dispatches (a pinned locus's nested subscribers, say) no longer race the dispatch: the registration table is grown under a lock and read without one.
+
+### Changed
+
+- `--api` on a seed whose only `main locus` is imported is refused instead of building with no api; with two `main locus` declarations the api binding, and the `owner` role `--matrix` asks for, come from the deployed one.
+- The orphan-topic lint is no longer lifted by an imported library's `api:` binding, and the async_io blocking advisory reads the placement of the `main locus` the build deploys.
+- The model's `entrypoint` and the editor's `hale/placement` view name the `main locus` the build deploys, never an imported library's; a module-nested one the build deploys now shows in the placement view.
+
+### Changed
+
+- A cross-pool spawn used as a value inside a default (the instance would be created on another thread and could not be the default's value) is now a located `hale check` error wherever the default is expanded: a `params` default at the literal, saying which construction leaves the param to its default; a function's or a method's argument default at each call that leaves the argument out (a call that supplies it, or one made on the owner's thread, is fine); a `const`'s value or a type's field default where it is written. Each was an unlocated error at `hale build`.
+
+### Changed
+
+- A `params` default that calls a fn handing back an `if`, `match` or block whose every arm builds the locus is now refused as a locus that contains itself, as a direct factory call already was.
+
+- A locus that declares no `run()` and is restarted after a held failure
+  no longer enters an empty `run()` when it is resumed; its first
+  incarnation never entered one. A flow keeps its run end, which is its
+  reclaim. Output and exit status are unchanged.
+
+- A `main locus` torn down in a function other than `fn main` now aborts
+  its pinned fields' `or wait` publishes before joining their threads, as
+  every other teardown already did: a pinned publisher waiting on a queue
+  only `main` drains ends with `BusWaitAborted` instead of hanging the
+  exit.
+- A pinned field of a `main locus` that a function builds and returns
+  keeps its thread until the caller tears that `main` down. Its thread
+  used to be joined when the building function returned, and publishes
+  to it afterwards were dropped.
+- A locus placed on a cooperative pool runs its own `birth()` on that
+  pool's worker, after its nested fields are built and before any
+  message reaches it, so `birth()` and the locus's handlers never run at
+  the same time. The literal still waits for the birth.
+
+- A publish to a computed subject no longer races a subscription being
+  registered on another thread. The table that check reads could be
+  moved by a registration under the reader, a use-after-free a pinned or
+  pool-placed locus's startup could hit while another locus published.
+
+- A `restart(c)` or `restart_in_place(c)` from `on_failure` about a child the handler has already replaced in its field, or whose teardown its owner had begun, is no longer carried out. The replaced child used to be born and run again beside its own teardown, and `restart_in_place` could hang; now it is torn down once, after its handler, and the new child is left alone.
+
+- A seed whose only `main locus` sits inside a `module { }` is now
+  refused at that locus's name: it is not the program's entry, and the
+  build used to deploy it anyway. Move it to the top level. A seed that
+  has a top-level `main locus` may still declare another one inside a
+  module.
+
+- `hale check --dump-model`'s `dispatch_plan` section now gives a locus of an imported seed its thread domains. They were looked up by the locus's display name, which never matched, so such a subject printed no domains and was never counted same-domain. Programs whose bus traffic runs through imported loci see those rows fill in and the same-domain count rise; no build, digest or lowering changes.
+
+- A wasm32 module no longer imports the POSIX socket and thread calls of
+  runtime paths it cannot run (`close`, `shutdown`, `unlink`, `write`,
+  `send`, `sendto`, `perror`, `pthread_join`, `pthread_cond_wait`,
+  `pthread_cond_signal`, `swapcontext`, `sched_yield`), so a host that
+  instantiates it with its own imports object no longer has to stub
+  them. The generated loader's behaviour is unchanged.
+
+- A locus that a child reaches while the locus's own literal is still
+  building its params is now fully initialized at that point. A child
+  whose `run()` spawned a locus its owner accepts, from inside the
+  owner's params default, pushed onto the owner's children list before
+  the literal had initialized it: the program could crash at startup
+  depending on what the stack held, and where it did not, the children
+  accepted that early were forgotten and never torn down. They are now
+  kept and torn down with their owner.
+
+- A wasm32 module no longer imports `fwrite`, `pthread_cond_broadcast`
+  or the observation runtime's `lotus_obs_*` entry points: the paths
+  that named them cannot run there, and no observation probe is emitted
+  for a target that has no observation. What it still imports beyond
+  the loader's writers and its own `@ffi("js")` names is `dprintf` and
+  `fflush`: stderr has no writer on wasm32, so `eprintln` and the
+  report of a violation no handler absorbs print nothing there.
+
+### Fixed
+
+- A stdlib function with a Hale body called as a statement (`std::str::contains(a, b);`, `std::log::kv(..);`) builds; the build used to refuse it as "not implemented" at statement position after `hale check` had accepted it. A bare `std::str::parse_int(..);` or `parse_float(..);` statement in a build that skips the check gets the fallibility refusal instead of "not implemented".
+
+### Fixed
+- `hale check --env <name>` now checks the api binding with the environment's `[environments.<name>.roles]` table, the same one `hale build --env` and `hale run --env` bake in, so the check judges the program the build produces; `hale check --matrix` does the same for each pair. Diagnostics, `--dump-api` and `shape_hash` are unchanged. For a program with an api entry, the `--dump-topology` artifact's provenance spans for the generated binding, and its `artifact_digest`, now match what the build lowers.
+
+### Fixed
+- `hale replay` now admits recordings made by binaries from `hale build` of a file. Every one used to be refused as "recorded from different build inputs", because `hale build` counted its debug information in the execution identity and `hale run` and `hale replay` did not. A built binary and `hale run` now give one program one identity. Execution identities stamped by `hale build` before this release differ from those stamped after, so re-record built binaries (as with any compiler upgrade). The identities `hale run` stamps do not change.
+- `hale replay --env <name>` now resolves the environment as `hale run --env` does, so a run recorded under `--env prod` replays under `hale replay --env prod`.
+
+### Fixed
+
+- A topology artifact no longer carries an absolute path. Its `sources` paths, its `file` fields and its `artifact_digest` change only where they used to hold one: a program with a file outside its `hale.toml` directory, or a program with no `hale.toml` checked through a relative path. Those paths are now relative to one root, so one tree gives one artifact on any machine and however its target is typed. `shape_hash` does not move.
+- A recording of a directory build (`hale build myapp/`) now replays against the directory's entry file. One program has one execution identity however its target is typed and wherever it is checked out, and two imported files with the same name are two inputs to it. Every recording's execution identity moves once with this compiler version, as with any compiler change.
+- The DNA organization view names a declaration's file relative to the project (`dna/org/main.hl`) when the project's committed tree has a `hale.toml` at its root, as `hale dna new` writes. In a committed tree with no manifest the file is named relative to the organization seed (`main.hl`), and the face does not offer structured editing there; it used to, because the compiler wrote an absolute path for such a tree.
+
+### Changed
+
+- `hale check --matrix` no longer prints a role-coverage failure (`role(s) … are not mapped`, `… which the entrypoint does not declare`, and the `(roles)` summary line) for a listed seed it refuses as having no entrypoint: a library, or a seed whose only `main locus` is imported or nested in a module. It also no longer compares that seed's constitutions in the "two different claimsets" check. The pair still fails with the refusal, as before, and each pair's seed is loaded once instead of three times.
+
+### Fixed
+
+- The stale-binary warning now covers every source the compiler is built from (each source of the covered crates, the C runtime, the stdlib seeds, `Cargo.lock` and the ts-shim manifest), where it used to check only `codegen.rs`, `lotus_arena.c` and the stdlib seeds. An ordinary invocation only checks file times and reads nothing unless a source is newer than the binary. The warning's rebuild hint is now `cargo build --release`.
+- The DNA host and observer cache (`~/.cache/hale/iris/<hash>`) is now keyed by the build settings its `hale build` inherits from the environment (`HALE_DEV`, the sanitizers, `LOTUS_LTO` and the other knobs a recording's execution identity names), so a host built under a sanitizer or `HALE_DEV` is never served to a run without it. Every cached host is rebuilt once after upgrading, and `hale iris --where` prints the directory for the current environment.
+
+### Changed
+
+- `hale check` now shows why a locus placed `pinned` (or an adapter in `bindings { }`) breaks rule 6. The error itself is unchanged; three notes follow it: the placement or binding entry that puts the instance on its own thread, the locus declaration it realizes, and the `accept()` or the closure assertion that conflicts, with the closure's epoch named. `--json` carries them as a `related` array, and editors show them as related locations.
+
+### Changed
+
+- `hale check` now refuses a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event (`restart`, `restart_in_place`, `quarantine`), at the name, suggesting the event a one-letter misspelling means. Such a name used to be silently ignored.
+- `persists_through(dissolve)` is refused: an accumulator does not outlive its locus's dissolve.
+- `resets_on(...)` states the default (accumulators reset on every recovery the closure does not persist through) and changes nothing at run time. Naming one recovery in both `persists_through` and `resets_on` is refused, with the other clause shown as a note. The runtime spec no longer claims `resets_on` is honored at recovery time.
+- In a program with a `main locus`, `hale check` warns when a closure names a recovery that no handler or recovery statement ever applies to its locus, listing the handlers that do handle it and what they apply. It also warns when `persists_through(...)` sits on a closure with no `sum`, `count` or `mean`.
+
+### Changed
+
+- The tcp and tls timeout and option setters (`set_recv_timeout`, `set_send_timeout`, tls `set_nodelay` and `set_rx_timestamps`) and the stdlib's `__` file, udp and process primitives are declared fallible (`IoError`), so a bare call is the located bare-fallible error from `hale check`, not a spanless build error or "not implemented".
+- `std::crypto::ecdsa_p256_sign` has one mode: `Bytes fallible(CryptoError)`. A bare call, which returned an empty `Bytes` on a bad key, is now a compile error; write `or b""` for that substitute.
+- An `or` over a stdlib function that cannot fail and has no signature yet is refused in one wording: "is not a fallible call — remove the `or` clause" (some read "`or` over unknown path call").
+- The resource budget counts `std::io::tcp::connect_wait` as an fd-acquisition site, as it does `connect` and the unix `connect_wait`; a ceiling set on the old count can now be exceeded.
+- A stdlib function written in Hale that returns nothing can be called as a statement by the general rule; `std::process::adopt` no longer needs a branch of its own.
+
+### Fixed
+
+- `std::http::header(receiver, name)` evaluates its receiver once; a receiver with an effect used to run twice.
+- `std::io::file::close`, which never existed, no longer has its arity checked: a call is only the unknown-function error.
+
+### Removed
+
+- The legacy bare forms of `std::bytes::at` and `std::io::fs`'s `read_file`, `read_bytes`, `write_file`, `write_file_append`, `mkdir`, `file_size`, `list_dir_count` and `list_dir_at` are gone from the compiler; the check already refused them.
+
+### Fixed
+
+- `hale check --sealable` now counts accesses that reach an imported seed's locus through its qualified name (`lib::Counter { }`) or through an imported fn's result. Before, it could call such a locus free to seal when sealing it would fail the check. The survey reads the same access rows the `@sealed` rule judges, and no longer re-checks the program.
+
+### Changed
+
+- Calls of 118 stdlib functions that had no signature are now checked: the `std::io::sockopt` getters, `std::ts`, `std::str::builder_*`, `std::decimal::format`, `std::crypto::ecdsa_p256_verify`, `std::text::md_to_html`, `std::test::assert*`, `std::http::header` and `write_response`, the json cursor readers, and the `__` primitives behind `BytesBuilder`, `MirrorRing`, `File`, `Stream`, the SPSC ring and the terminal. `hale check` refuses a wrong argument count or type at the call, where the build used to fail without a location, and an `or` over one that cannot fail is the check's "is not fallible" error. `std::io::udp::send`'s message must be a String; a Bytes used to pass the check and fail at build.
+
+### Fixed
+
+- `std::bytes::write_*` return the offset past the write, as documented, so `let next = std::bytes::write_u32_le(buf, off, v) or 0;` builds. It used to pass `hale check` and fail at build.
+
+### Fixed
+
+- A `StringView` now renders everywhere `hale check` accepted it (`"x=" + view`, `to_string(view)`, `f"{view}"`, inside a record or tuple) as a copy of its text; these used to fail at build. The checker and lowering read one printable rule.
+
+### Changed
+
+- `ClosureViolation` is a type the checker knows: `err.locus`, `err.closure` and `err.diff` are typed in an `on_failure` handler, and a misspelled or absent field (`err.closur`, `err.last_error`) is a located type error instead of passing `hale check` and failing at build.
+- `std::io::mirror`'s cursor primitives and `std::bytes::builder::__finish` and `__snapshot` are signature-checked; extra arguments to a mirror primitive, which lowering silently ignored, are a `hale check` error.
+
+### Fixed
+
+- A bus handler running on a cooperative pool now keeps its subscriber alive until it returns. Before, replacing a pool-placed child while that child's bus handler was running freed the child's storage under the handler (for example `self.child = Child { }` from its owner on main): a use-after-free, garbage reads or a crash, `heap-use-after-free` under AddressSanitizer. The owner's reclaim now waits for the running handler, as it already waited for a running `run()`.
+
+### Added
+
+- The unit dialect's declaration layer (GH #1076, step U1): `unit cent;`, `unit USD = 100 cent;`, `unit pct = 1/100;`, and `type` declarations over a catalogue (`quantity Int in cent`, `point Elapsed`, `distinct Int`, refinements with `range:`, `round:` and `origin:` clauses) parse, format, show in the editor and are checked by ten laws with witnesses (a unit declared once; every equation names a declared unit; every cycle multiplies to one; one quantity per component; a point over a quantity; the clauses; a unit may not be named like a built-in duration suffix). Values of the new types are not typed yet: a use of such a type's name, or a quantity literal, is one located error until the next steps land.
+
+### Added
+
+- Identities and ranges have values (GH #1076, step U2). `type OrderId = distinct Int;` is an integer that never mixes with another: no arithmetic, equality and ordering only with itself, and `OrderId(n)` / `Int(id)` to convert. `type Byte = Int { range: 0..256; }` is an `Int` wherever an `Int` is expected, and an integer literal outside its range is an error where it is written. Narrowing into a range is named: `Byte(n) or 0`, `or clamp`, `or wrap`, `or handler(err)` with a `RangeError { kind, value, low, high }`, or `or raise`; a bare narrowing is refused like a bare fallible call, and `or (clamp)` is the value of a variable named `clamp`. An identity or a range is an `Int` everywhere it is laid out: printing, hashmap and routing keys, flat payloads, the FFI, generic arguments and topic shape strings (tag `i`, so no shape hash moves). Quantities and points are still declared only.
+
+### Unit dialect: quantities and points have values (GH #1076, U3)
+
+- **Quantities and points have values.** A literal names its unit (`3bp`, `1_250_000USD`, `500msec`) and is converted where it flows at compile time. Sums are exact at the finer unit, a ratio product is exact at the product of the two units (`1_234_567USD * 3bp`), two points differ by a quantity and a point moves by one, and mixing kinds is an error that names both declarations and says what to write (`n * 1nsec`, `q / 1sec`).
+- **Rounding is always named.** A conversion that divides is discharged at the site, `d.in(sec) or floor`, `Seconds(d) or 0`, `spread / 2 or half_even`, a handler given an `InexactError { kind, value, divisor }`, or `or raise`; a type declared with `{ round: … }` (a boundary type such as `Bucket` or `Ledger`) rounds what is stored into it. A narrowing with neither is refused with the wording that says what to write.
+- **Array literals convert element by element.** Into an array type, each element is converted from its own unit (`[3cent, 2USD]` into `[Money; 2]` holds 3 and 200 cents); with no type to fit, the elements meet at the finer unit as a sum's operands do (`[1sec, 1_500msec]` is counted in `msec`), and elements of different quantities are refused naming both.
+- **`.split(u)` and origins.** `d.split(sec)` gives the whole count and the rest; a point declared with an `origin:` converts across origins (`Kelvin(c)`).
+- **Printing and the wire.** A quantity prints with its unit (`1500msec`, `37037 Money in 1/100 cent`), a point as its count. On the wire a quantity field is its integer, tagged `q(<denomination>)` in the topic's shape, so topics without quantities hash as before.
+- A conversion recorded while a default is typed is keyed by its evaluation path, for every kind of site (a literal's count in a shadowed default is the shadowing scope's), and lowering reads a conversion row from the body it is emitting.
+
+### Unit dialect: Time and Duration are declarations (GH #1076, U4)
+
+- **`Time` and `Duration` are the stdlib's declarations.** The time catalogue is `unit ns; unit us = 1_000 ns; unit ms = 1_000 us; unit s = 1_000 ms; unit min = 60 s; unit h = 60 min; unit day = 24 h;` with `type Duration = quantity Int in ns;` and `type Time = point Duration;`, in the stdlib seed. A time literal is a quantity literal of one of these units, and the quantity algebra types the two (`Int * Duration`, `Time - Time`, `d.in(ms) or floor`, `d.split(s)`, `Duration(x)`, `Time(x)`); they print, cross the wire and the FFI exactly as before. A program's own unit joins the time catalogue by an equation (`unit tick = 10 ms;`) and never redeclares one.
+- **A literal counts in its quantity's denomination when it is a whole count of it**, and at its own unit otherwise: `500ms` is a `Duration` (count 500,000,000), and so is `1000tick` of a `unit tick = 1/1000 ns;` (count 1: the count must be whole, not the unit's factor), while `5tick` is a `Duration in tick`; `1_234_567USD * 3bp` is `Money in 1/10000 cent`. A whole count no `Int` holds (`10000000000s`) is refused at the literal.
+- **`Duration ÷ Duration` is an `Int`** (`1h / 1min` is 60), and a literal divisor says what happens to the remainder: `timeout / 2 or floor` (or `or ceil`, `or <value>`, `or raise`); a runtime divisor is integer division.
+- **A quantity literal has one unit.** `1h30m` is refused, saying to write `1h + 30min`; minutes are `min` (`5m` is refused and says so) and a day is `day`. `3d` is the Decimal `3`, as it always was, and no unit may be named `d` or `e` followed by a digit, since the lexer reads those as a number's own suffix.
+
+### Unit dialect: the report, the acceptance and the book (GH #1076, U5)
+
+- **`hale check --units`** reports every scalar declaration (its kind, denomination and the declaration that fixed it, policy, origin, range, the machine width a range fits in, and the headroom of an `Int` at that denomination) and every narrowing site (the factor or range, a literal's compile-time count, the policy that discharged it and where it came from), sorted by declaration then site so it diffs; `--json` gives the same fields; "units: no quantity is declared" when there is nothing to report.
+- **The book has a chapter**, "Units, end to end" (`docs/src/units.md`): the dialect's worked example as six programs (time, boundary types, money and ratios, ticks and prices, identities and widths, two origins), the three common mistakes with what the compiler says, and the report. `spec/units.md` is one document: declarations, rows, the laws, the algebra, literals, conversions and policies, synthesized denominations, points, printing, the wire, the stdlib's time catalogue, the report, and what the dialect does not do at v1.
+- **A corpus example**, `93-units`, with a topic carrying two quantity fields.
+- A scalar declaration or a unit named like a builtin type (`type Bytes = quantity Int in B;`) is refused at its name, since a type position would never reach it.
+
+### Phase-4 hangovers, batch 1 (GH #1212)
+
+- A codec whose `encode` or `decode` calls a stdlib function the surface table marks as I/O, blocking or publishing (`tcp::connect`, `fs::mkdir`, …) is refused by the codec-purity rule; the hand list that missed those rows is gone, and purity is read from the table.
+- `std::io::udp::set_multicast_loop` takes a `Bool`, as the spec says; passing an `Int` is refused at the argument.
+- A user `type ParseError` (or `IoError`, `CryptoError`, `BytesError`) of another shape is refused wherever a stdlib call that raises it is reached, the `std::time` parsers and the `IoError` rows outside `std::io` included; which error a call raises is its row's.
+- `@gated(role:)` on a perspective fn is an error that names the three sites a gate belongs on, instead of a parse error.
+- The sealed-confinement rule judges three positions it missed: a parameter default evaluated outside the sealed locus, a receiver typed as a generic locus's monomorph, and a generic body reaching a sealed locus through a field of parameter type, at any depth of fields (`self.h.s.key` with `h: Holder<T>`).
+- A recovery statement's receiver is typed by the checker, so `restart(x)` on a local, a field of another locus's value or a call result has its unreached-event judgment; those warnings now follow the typing diagnostics.
+- `hale run` and `hale replay` build with an imported package's `[ffi] csrc` and `link`, as `hale build` does; no `--csrc` flag is needed. A `--csrc` or `--link` naming what an imported package's `[ffi]` already names is a no-op under all three verbs, where `hale build` compiled the C file twice and failed at link on a duplicate symbol.
+- The stale-DNA check hashes the embedded tree only when a file's or folder's time or the file count moved: about 9 ms less per command.
+- The DNA organization API reports a project's `source_file` from the project root (`dna/org/main.hl`) when the project has no committed manifest.
+
+- The book's code blocks colour the unit dialect: `unit` declarations, the scalar kinds, the `range:`, `round:` and `origin:` clauses, the policy words after `or`, and quantity literals (`3bp`, `1_250_000USD`, `500ms`); the number rule follows the lexer (the retired `m` and `d` suffixes are gone, `3d` is Decimal) and every primitive type name is a built-in. The compiler's keyword table lists the dialect's contextual words, so every highlighter generated from it agrees.
+
+- `hale check` and `hale build` are back to their speed on large programs: since `Time` and `Duration` became stdlib declarations, every struct literal that left a defaulted field copied the whole typing record (dna/host checked in 1.5 s instead of 0.7 s, and the editor's typing stage took three times as long); the record keeps an undo journal instead and nothing it records changes.
+
+- The book's code blocks colour a unit name as a type wherever a unit stands: a literal's suffix (`500ms`), a `unit` declaration, a denomination (`quantity Int in cent`), an `origin:`, and the target of `.in(u)` or `.split(u)`; the site and the tree-sitter grammar take the same rule. The units chapter states the one-token rule for literals in expressions and the two spellings a declaration allows, that range bounds are half-open, what `wrap` computes, and that a same-kind quotient stays a plain count when derived dimensions arrive.
+
+### Spec and style guide
+- `spec/styleguide.md` section 7 is brought up to date with 0.22.0: the entries for `Duration` arithmetic, `err` in `or fail` payloads, `return` in lifecycle bodies, zero-copy fixed arrays and qualified `@form` cell types are removed (all work); a locus as a `@form` cell moves to the deliberate absences; the TLS entry says which calls park and which block; the new sharp edges are `std::time::Time` written qualified, an `Int` returned from a `-> Float` fn, an `Int` into a `Float` let or field, and `violate` in a value-returning fn. Every remaining claim is pinned by a test.
+- The style guide adds 2.8 (quantities: when a number gets a unit), C8 (narrow with a policy; a quantity's count is a truncating quotient that takes none), `hale check --units` in the enforcement ladder, and unit naming.
+- `spec/semantics.md` describes `zero_copy` payloads as shipped: scalar-element fixed arrays are inline and accepted, and `shm_ring` satisfies the constraint; `epoch explicit` fires on `check_closures();`, not the never-shipped `epoch_advance`.
+- `spec/stdlib.md`: `mktemp(prefix, suffix)` is the shipped signature, and `std::io::tls::send_bytes` returns an `Int` status and is not fallible, unlike `tcp::Stream.send_bytes`.
+
+### Fixed
+- A locus that can restart in place (a `closure` under `epoch inline` is enough) and has a fixed-size array param of scalars, such as `ring: [Int; 8]`, builds again. 0.22.0 panicked in codegen when copying the params the locus was built with, and a restart now puts the array back to its built values. Found by a downstream handoff.
+- An `Int` widens into a `Float` at a `let` with a `Float` annotation (`let x: Float = n;`) and at a `Float` field of a `type` literal (`Cfg { timeout: n }`), as `spec/types.md` has said since the rule was written; the checker had refused both while codegen widened there. A quantity such as `5ms` is still not an `Int`, and `Float → Int` stays explicit. Found by a downstream handoff.
+- An `Int` returned from a fn declared `-> Float` (`return n;` or a block tail) widens to `Float`. `hale check` accepted it and `hale build` refused it with "return type mismatch: declared Float, got Int". The return is the fifth widening surface in `spec/types.md`.
+- `hale check --dump-effects-manifest` and `--check-effects-manifest` produce no manifest for a program whose check has an error: they print `check failed: no effects manifest` on stderr, diff nothing, and exit with the check's code. A downstream CI gate had reported effect drift for programs that do not typecheck. Warnings do not block the manifest.
+
+### Known open
+- A `violate` in a value-returning locus method that a parent's `on_failure` absorbs gives its caller an undefined value; with no parent handler the process exits through the violation, as before. Pinned as open until the spec names the value a caller observes.
+
+### Performance
+- `hale check` and `hale build` no longer copy every stdlib function body on each run to build the allocation summary: a trivial check runs about 8% fewer instructions (about 1 ms) with a peak heap about 1.5 MB lower. Found while profiling a downstream handoff's measurement of the fixed per-invocation cost since 0.21.0.
+
+### Breaking
+- A value-returning fn or locus method that may `violate` must be declared `fallible(ClosureViolation)` (F.42). The checker refuses one that is not, naming the `violate` or the call it comes through, and refuses a violator declared `fallible(E)` with another `E`. In such a fn the violation is the call's failure: the owner's `on_failure` runs first (posted to the owner's domain and awaited when the pools differ), then the caller's `or`, with `err` the `ClosureViolation`. Before, a caller whose owner absorbed the violation received an undefined value, measured by a downstream handoff as a garbage integer.
+- `std::bytes::BytesBuilder.snapshot()` and `finish()` are `-> Bytes fallible(ClosureViolation)`, since they violate `alloc_failed` on allocation failure (F.27). Every call needs an `or`. When no owner absorbs the violation, `or raise` keeps today's behaviour: from a fn that is not fallible it ends the process exactly as the unabsorbed violation already did. When an owner's `on_failure` absorbs it, the process now ends at the `or raise` ("Hale panic: unhandled ClosureViolation escaping main locus", exit 1), where before the caller continued with a garbage value; a caller that should go on writes a fallback or an `or` block instead. No in-tree program has a builder-typed `on_failure`, so none of the migrated call sites changes behaviour.
+- `serves` conformance matches a perspective fn's fallibility both ways: a `fallible` method behind an infallible perspective fn, or the reverse, is refused, naming both. The first shape passed `hale check` and crashed with SIGSEGV at the perspective call, even when the method did not fail.
+
+### Changed
+- A method returning nothing that may `violate` and is not `fallible` gets a warning with the same wording; it becomes a law in a later release. `hale check` passes with it, `hale verify` gates it.
+- A bare call to a stdlib method that can fail with a violation names `ClosureViolation` instead of `(?)`, and `err` at the call is typed.
+- A locus method that serves a perspective fn is exempt from F.42 until a `fallible` perspective call lowers (the build refuses one today): it keeps today's behaviour and gets a warning saying so, since the caller of a violated perspective call must not read the value.
+
 ## v0.22.0 — the organism, part by part (2026-09-30)
 
 The organism gets its subsystems. DNA, the organism you run with `hale dna`, now keeps its memory in Postgres, one per record, and moves every fact between its parts over its nerves. It takes an application's events into its heart and its readings into its senses, signs people and services in at its skin, keeps every secret it needs in its vault, provisioned by its own bootstrap, and hands work to legs through its head, under one budget gate. Schedules point at workflow definitions, and the repository's graph is the one org chart. Underneath it, a program's API is a first-class binding with a principal, roles, gates and an HTTP transport; a revealed secret must be consumed where it is revealed; Hale builds and runs on macOS and cross-compiles for Linux; and a round of checker, codegen, runtime and supervision fixes turns silent misbehaviour into located errors or a loud stop. The book is reorganized in six parts, with the organism as the fifth, and every chapter is checked against the tree. It is a prerelease: the shapes still move under fixtures rather than under customers.

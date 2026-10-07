@@ -29,7 +29,7 @@ fn main() {
     b.append_u32_be(16909060);   // 0x01020304
     b.append_f64_le(2.5);
     b.append_f32_le(1.5);
-    let s = b.snapshot();
+    let s = b.snapshot() or raise;
     println("len=", to_string(len(s)));
     println("u8=", to_string(std::bytes::read_u8(s, 0) or raise));
     println("u16le=", to_string(std::bytes::read_u16_le(s, 1) or raise));
@@ -56,7 +56,7 @@ fn main() {
     b.append_i8(-1);          // 0xFF
     b.append_pad(4);          // len 1 → +3 zero bytes → len 4
     b.append_i32_le(-2);      // 0xFFFFFFFE
-    let s = b.snapshot();
+    let s = b.snapshot() or raise;
     println("len=", to_string(len(s)));
     println("i8=", to_string(std::bytes::read_i8(s, 0) or raise));
     println("pad1=", to_string(std::bytes::read_u8(s, 1) or raise));
@@ -79,7 +79,7 @@ fn big_endian_byte_order_is_exact() {
 fn main() {
     let b = std::bytes::BytesBuilder { initial_cap: 8 };
     b.append_u32_be(16909060);   // 0x01020304 → [0x01,0x02,0x03,0x04]
-    let s = b.snapshot();
+    let s = b.snapshot() or raise;
     println("b0=", to_string(std::bytes::read_u8(s, 0) or raise));
     println("b1=", to_string(std::bytes::read_u8(s, 1) or raise));
     println("b2=", to_string(std::bytes::read_u8(s, 2) or raise));

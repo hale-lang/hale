@@ -380,6 +380,14 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             .entry("InexactError".to_string())
             .or_insert(Span::new(0, 0));
     }
+    // F.42: `ClosureViolation`, the error of a violating method, so a
+    // signature that names it (`BytesBuilder.snapshot`'s `fallible`, a
+    // handler's parameter) resolves to the record `inject_builtin_types`
+    // declares instead of `Unknown`: the bare-call message names it and
+    // `err` at the call is typed.
+    known_names
+        .entry("ClosureViolation".to_string())
+        .or_insert(Span::new(0, 0));
     // GH #470: pre-register the ENTIRE Hale-source stdlib surface —
     // loci, types, interfaces, enums, free fns — so a user's
     // `std::http::Router {}` / `ctx: std::http::Context` resolves to

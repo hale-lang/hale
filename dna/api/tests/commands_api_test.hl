@@ -21,7 +21,7 @@ locus CommandCases {
     fn repeat(count: Int) -> String {
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < count { b.append_u8(97); i = i + 1; }
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn practice(id: String, text: String, rationale: String) -> api::PracticeProposal { return api::PracticeProposal { request_id: id, subject_digest: SUBJECT, text: text, rationale: rationale }; }
     fn decision(id: String, verdict: String, comment: String) -> api::ReviewDecision {

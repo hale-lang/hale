@@ -137,18 +137,18 @@ locus KnowledgeCommandCodec {
         let node = KnowledgeNodeCommandCodec { };
         if node.known(c.operation) {
             node.fields(b, c);
-            b.append_str("}"); return std::str::from_bytes(b.snapshot());
+            b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
         }
         let binding = KnowledgeBindingCommandCodec { };
         if binding.known(c.operation) {
             binding.fields(b, c);
-            b.append_str("}"); return std::str::from_bytes(b.snapshot());
+            b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
         }
         // Omit this field for link: its existing canonical bytes and durable
         // fingerprints must survive the introduction of another operation.
         if c.operation == "dna.knowledge.edge.unlink" { self.field(b, "edge_id", c.edge_id); }
         self.field(b, "from_id", c.from_id); self.field(b, "to_id", c.to_id); self.field(b, "rel", c.rel); self.field(b, "rationale", c.rationale);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: KnowledgeCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> KnowledgeCommand {
@@ -197,7 +197,7 @@ locus KnowledgeCommandCodec {
         self.field(b, "command_id", self.identity(context, c.request_id)); self.field(b, "command_payload", self.canonical(context, c)); self.field(b, "command_fingerprint", self.fingerprint(context, c));
         self.field(b, "authority", grant.authority); self.field(b, "authority_basis", grant.basis); self.field(b, "record_head", c.record_head);
         self.field(b, "edge_id", self.edge_id(c.from_id, c.to_id, c.rel)); self.field(b, "from_id", c.from_id); self.field(b, "to_id", c.to_id); self.field(b, "rel", c.rel);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_fact(e: dna::Event) -> KnowledgeFact {
         if e.kind == "knowledge.node.requested" { let node = KnowledgeNodeCommandCodec { }; return node.decode_fact(e); }

@@ -74,6 +74,6 @@ locus TaskAuthorityPolicyCodec {
         let common = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let b = std::bytes::BytesBuilder { }; b.append_str("["); let mut first = true;
         let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "members"));
         while !it.done { let name = syntax.decode(it.element); if self.eligible(context, name, journal) { if !first { b.append_str(","); } b.append_str(common.quote(name)); first = false; } it = std::json::array_next(it); }
-        b.append_str("]"); return std::str::from_bytes(b.snapshot());
+        b.append_str("]"); return std::str::from_bytes(b.snapshot() or raise);
     }
 }

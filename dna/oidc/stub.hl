@@ -67,7 +67,7 @@ fn decode(raw: String) -> String {
             i = i + 1;
         }
     }
-    return std::str::from_bytes(bytes.snapshot());
+    return std::str::from_bytes(bytes.snapshot() or raise);
 }
 
 fn form_field(body: String, name: String) -> String {

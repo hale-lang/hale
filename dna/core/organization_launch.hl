@@ -117,7 +117,7 @@ locus OrganizationLaunchCodec {
         self.field(b, "topology_digest", a.topology_digest);
         self.field(b, "topology_shape", a.topology_shape);
         self.number(b, "observation_seconds", a.observation_seconds);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_attempt(e: Event) -> OrganizationLaunchAttempt {
         if e.kind != "organization.source.launch_requested" || len(e.body) > 16384 { return OrganizationLaunchAttempt { }; }
@@ -147,7 +147,7 @@ locus OrganizationLaunchCodec {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launched/1\"");
         self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
         self.number(b, "pid", pid); self.field(b, "process_key", process_key); self.field(b, "process_started", process_started);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_launch(e: Event, a: OrganizationLaunchAttempt) -> OrganizationLaunchReceipt {
         if len(e.body) > 4096 { return OrganizationLaunchReceipt { }; }
@@ -161,7 +161,7 @@ locus OrganizationLaunchCodec {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launch-observation/1\"");
         self.field(b, "attempt_id", l.attempt.attempt_id); self.field(b, "launch_event_id", l.launch_event_id);
         self.number(b, "pid", l.pid); self.field(b, "process_key", l.process_key); self.field(b, "outcome", outcome);
-        self.number(b, "window_started", started); self.number(b, "window_ended", ended); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.number(b, "window_started", started); self.number(b, "window_ended", ended); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_observation(e: Event, l: OrganizationLaunchReceipt) -> OrganizationLaunchObservation {
         if len(e.body) > 4096 { return OrganizationLaunchObservation { }; }
@@ -175,7 +175,7 @@ locus OrganizationLaunchCodec {
     fn exit_body(a: OrganizationLaunchAttempt, pid: Int, code: Int) -> String {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launch-exit/1\"");
         self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
-        self.number(b, "pid", pid); self.number(b, "code", code); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.number(b, "pid", pid); self.number(b, "code", code); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_exit(e: Event, a: OrganizationLaunchAttempt) -> OrganizationLaunchExit {
         if len(e.body) > 4096 { return OrganizationLaunchExit { }; }
@@ -187,7 +187,7 @@ locus OrganizationLaunchCodec {
     fn rollback_body(a: OrganizationLaunchAttempt, failure: String, base: String) -> String {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback/1\"");
         self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
-        self.field(b, "failure_event_id", failure); self.field(b, "base_commit", base); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.field(b, "failure_event_id", failure); self.field(b, "base_commit", base); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_rollback(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackRequest {
         if len(e.body) > 4096 { return OrganizationRollbackRequest { }; }
@@ -201,7 +201,7 @@ locus OrganizationLaunchCodec {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback-launch/1\"");
         self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
         self.field(b, "rollback_event_id", rolled_back); self.field(b, "binary_digest", binary); self.field(b, "topology_digest", topology);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_rollback_launch(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackLaunch {
         if len(e.body) > 4096 { return OrganizationRollbackLaunch { }; }
@@ -214,7 +214,7 @@ locus OrganizationLaunchCodec {
     fn rollback_launched_body(a: OrganizationLaunchAttempt, claim: String, pid: Int, key: String, started: String) -> String {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback-launched/1\"");
         self.field(b, "attempt_id", a.attempt_id); self.field(b, "launch_event_id", claim); self.number(b, "pid", pid);
-        self.field(b, "process_key", key); self.field(b, "process_started", started); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.field(b, "process_key", key); self.field(b, "process_started", started); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_rollback_launched(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackReceipt {
         if len(e.body) > 4096 { return OrganizationRollbackReceipt { }; }

@@ -105,7 +105,7 @@ locus OrganizationInspection {
         blob.append_str("blob " + to_string(size));
         blob.append_u8(0);
         blob.append(bytes);
-        let actual = if len(expected) == 40 { dna::hex(std::crypto::sha1(blob.snapshot())) } else { dna::hex(std::crypto::sha256(blob.snapshot())) };
+        let actual = if len(expected) == 40 { dna::hex(std::crypto::sha1(blob.snapshot() or raise)) } else { dna::hex(std::crypto::sha256(blob.snapshot() or raise)) };
         return actual == expected;
     }
     fn tree(path: String) -> OrganizationTree {

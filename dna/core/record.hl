@@ -190,7 +190,7 @@ fn record_json_quote(value: String) -> String {
         } else { b.append_u8(c); }
         i = i + 1;
     }
-    b.append_u8(34); return std::str::from_bytes(b.snapshot());
+    b.append_u8(34); return std::str::from_bytes(b.snapshot() or raise);
 }
 fn row_line(seq: Int, row: Row, author: String) -> String {
     let b = std::bytes::BytesBuilder { };
@@ -199,7 +199,7 @@ fn row_line(seq: Int, row: Row, author: String) -> String {
     b.append_str(", \"entity\": "); b.append_str(record_json_quote(row.entity));
     b.append_str(", \"body\": "); b.append_str(record_json_quote(row.body));
     b.append_str(", \"author\": "); b.append_str(record_json_quote(author));
-    b.append_str("}\n"); return std::str::from_bytes(b.snapshot());
+    b.append_str("}\n"); return std::str::from_bytes(b.snapshot() or raise);
 }
 
 fn parse_row(line: String, id: String) -> Row {

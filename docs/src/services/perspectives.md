@@ -27,7 +27,8 @@ perspective Router {
 ## Serving a contract
 
 A locus `serves` a perspective by providing every method it
-declares — matching argument and return types. The compiler checks
+declares — matching argument and return types, and `fallible` on
+both or on neither. The compiler checks
 this structurally, the way it checks interfaces; there's no
 separate registration:
 

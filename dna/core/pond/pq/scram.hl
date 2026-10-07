@@ -45,7 +45,7 @@ fn salted_password(@secret password: String, salt: Bytes, iters: Int) -> Bytes {
     let blk = std::bytes::BytesBuilder { initial_cap: len(salt) + 4 };
     blk.append(salt);
     blk.append_u8(0); blk.append_u8(0); blk.append_u8(0); blk.append_u8(1); // INT(1), big-endian
-    let mut u = std::crypto::hmac_sha256(pw, blk.snapshot());
+    let mut u = std::crypto::hmac_sha256(pw, blk.snapshot() or raise);
     let mut acc = u;
     let mut i = 1;
     while i < iters {
@@ -214,7 +214,7 @@ fn scram_xor(a: Bytes, b: Bytes) -> Bytes {
         out.append_u8((std::bytes::at(a, i) or 0) ^ (std::bytes::at(b, i) or 0));
         i = i + 1;
     }
-    return out.snapshot();
+    return out.snapshot() or raise;
 }
 
 // scram_field_after — value of a SCRAM attribute: the text after

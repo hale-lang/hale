@@ -15,7 +15,7 @@ locus TaskQueryCases {
         while len(rest) > 0 { let cut = std::str::index_of(rest, "\n"); let raw = rest[0..cut]; rest = rest[(cut + 1)..len(rest)]; std::test::assert(!h.task_query(raw).ok, "refused task query: " + raw); }
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < 128 { b.append_str("é"); i = i + 1; }
-        let exact = std::str::from_bytes(b.snapshot());
+        let exact = std::str::from_bytes(b.snapshot() or raise);
         std::test::assert(h.task_query("assignee=" + exact).ok, "256 UTF-8 bytes accepted");
         std::test::assert(!h.task_query("assignee=" + exact + "a").ok, "257 UTF-8 bytes refused");
         std::test::assert(h.query("id=t1&limit=2").ok && h.task_query("id=t1&limit=2").assignee == "", "unfiltered common grammar preserved");

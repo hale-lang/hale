@@ -68,13 +68,13 @@ locus DraftCases {
         std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nContent-Type: application/json", body: body }, ORIGIN), "unsupported_media_type", "duplicate content type");
         let large = std::bytes::BytesBuilder { }; let mut n = 0;
         while n < 32769 { large.append_u8(120); n = n + 1; }
-        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: "", body: std::str::from_bytes(large.snapshot()) }, ORIGIN), "definition_draft_too_large", "byte limit precedes parsing");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: "", body: std::str::from_bytes(large.snapshot() or raise) }, ORIGIN), "definition_draft_too_large", "byte limit precedes parsing");
         std::test::assert(!wire.parse(body[0..(len(body) - 1)] + ",\"actor\":\"mallory\"}", self.f.identity).ok, "closed envelope");
         std::test::assert(!wire.parse(body[0..(len(body) - 1)] + ",\"candidate\":{} }", self.f.identity).ok, "duplicate key");
         std::test::assert(!wire.parse(std::str::replace(body, "\"profile\"", "\"\\u0070rofile\""), self.f.identity).ok, "escaped key refused");
         std::test::assert(!wire.parse(std::str::replace(body, "alice", "alice\\u0000"), self.f.identity).ok, "NUL refused");
         let bytes = std::bytes::BytesBuilder { }; bytes.append_u8(255);
-        std::test::assert(!wire.parse(std::str::replace(body, "alice", std::str::from_bytes(bytes.snapshot())), self.f.identity).ok, "invalid UTF-8 refused");
+        std::test::assert(!wire.parse(std::str::replace(body, "alice", std::str::from_bytes(bytes.snapshot() or raise)), self.f.identity).ok, "invalid UTF-8 refused");
     }
     fn artifact_serialization(basis: String) {
         // A transport-only stress case: generated-source semantics are checked
@@ -82,7 +82,7 @@ locus DraftCases {
         let bytes = std::bytes::BytesBuilder { };
         let mut i = 0;
         while i < 8192 { bytes.append_str("\"é\"\\\n"); i = i + 1; }
-        let text = std::str::from_bytes(bytes.snapshot());
+        let text = std::str::from_bytes(bytes.snapshot() or raise);
         let wire = api::DefinitionDraftWire { };
         let codec = ops::DefinitionDraftCodec { };
         let result = ops::DefinitionDraftResult { status: 200, valid: true, basis_json: basis, candidate_digest: dna::digest_of(CANDIDATE), catalog_digest: "sha256:serialization-fixture", artifact_digest: dna::digest_of(text), artifact_text: text };
@@ -150,7 +150,7 @@ locus DraftCases {
         let long_text = std::bytes::BytesBuilder { }; let mut n = 0;
         while n < 8193 { long_text.append_u8(120); n = n + 1; }
         let budget_calls = self.host.calls;
-        self.error(self.post(service, self.body(basis, std::str::replace(CANDIDATE, "Next · équipe", std::str::from_bytes(long_text.snapshot())))), 503, "definition_read_limit");
+        self.error(self.post(service, self.body(basis, std::str::replace(CANDIDATE, "Next · équipe", std::str::from_bytes(long_text.snapshot() or raise)))), 503, "definition_read_limit");
         std::test::assert_eq_int(self.host.calls, budget_calls, "candidate text budget checked before provider capture");
         std::test::assert_eq_str(self.f.refs(), refs, "invalid and refused validation changes no project ref");
         let no_provider = api::Api { root: self.f.root, local_name: "alice", command_origin: ORIGIN };

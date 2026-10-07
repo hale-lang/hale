@@ -69,13 +69,13 @@ fn build_startup(user: String, database: String) -> Bytes {
     __append_cstr(body, "database");
     __append_cstr(body, database);
     body.append(std::bytes::from_int(0)); // terminating empty key
-    let payload = body.snapshot();
+    let payload = body.snapshot() or raise;
     let total = len(payload) + 4; // +4 for the length field itself
 
     let out = std::bytes::BytesBuilder { initial_cap: total + 4 };
     be32_append(out, total);
     out.append(payload);
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // build_query — simple Query: [Byte 'Q'][Int32 len][sql\0].
@@ -87,7 +87,7 @@ fn build_query(sql: String) -> Bytes {
     be32_append(out, body_len);
     out.append(sql_bytes);
     out.append(std::bytes::from_int(0)); // NUL terminator
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // build_terminate — [Byte 'X'][Int32 4]. Graceful close.
@@ -95,7 +95,7 @@ fn build_terminate() -> Bytes {
     let out = std::bytes::BytesBuilder { initial_cap: 5 };
     out.append(std::bytes::from_int(88)); // 'X' = 88
     be32_append(out, 4);
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // build_ssl_request — the pgwire SSLRequest preamble. UNLIKE every other
@@ -110,7 +110,7 @@ fn build_ssl_request() -> Bytes {
     let out = std::bytes::BytesBuilder { initial_cap: 8 };
     be32_append(out, 8); // length, includes the length field itself
     be32_append(out, 80877103); // SSLRequest magic (1234 << 16 | 5679)
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // ===== SASL (SCRAM-SHA-256) outbound messages =====
@@ -126,12 +126,12 @@ fn build_sasl_initial(client_first: String) -> Bytes {
     __append_cstr(body, "SCRAM-SHA-256");
     be32_append(body, len(cf));
     body.append(cf);
-    let payload = body.snapshot();
+    let payload = body.snapshot() or raise;
     let out = std::bytes::BytesBuilder { initial_cap: len(payload) + 5 };
     out.append(std::bytes::from_int(112)); // 'p' = 112
     be32_append(out, len(payload) + 4);
     out.append(payload);
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // build_sasl_response — SASLResponse:
@@ -144,7 +144,7 @@ fn build_sasl_response(client_final: String) -> Bytes {
     out.append(std::bytes::from_int(112)); // 'p' = 112
     be32_append(out, len(cf) + 4);
     out.append(cf);
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // ===== Authentication ('R') message parsers =====

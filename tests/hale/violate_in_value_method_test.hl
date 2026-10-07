@@ -1,0 +1,48 @@
+// A value-returning method that may violate is
+// `fallible(ClosureViolation)` (F.42). When the parent's `on_failure`
+// absorbs the violation the call fails: the handler runs first, then
+// the caller's `or`, with `err` the record the handler received. No
+// value is produced, and the method's tail does not run. Before F.42
+// the caller was handed an undefined value (a downstream handoff
+// measured an `Int` of 104616817497632).
+
+locus Picker {
+    params { k: Int = 21; tails: Int = 0; }
+    closure bad_pick { captures: k; epoch inline; }
+
+    fn pick(flag: Bool) -> Int fallible(ClosureViolation) {
+        if flag { violate bad_pick; }
+        self.tails = self.tails + 1;
+        return self.k * 2;
+    }
+}
+
+main locus App {
+    params { p: Picker = Picker { }; seen: Int = 0; seen_at_or: Int = -1; named: String = ""; }
+
+    on_failure(c: Picker, err: ClosureViolation) { self.seen = self.seen + 1; }
+
+    fn note(e: ClosureViolation) -> Int {
+        self.seen_at_or = self.seen;
+        self.named = e.closure;
+        return 7;
+    }
+
+    run() {
+        let a = self.p.pick(false) or 0;
+        std::test::assert_eq_int(a, 42, "a call that does not violate returns its value");
+
+        let b = self.p.pick(true) or 7;
+        std::test::assert_eq_int(b, 7, "a violating call is the call's failure: the fallback is the value");
+        std::test::assert_eq_int(self.seen, 1, "the parent's on_failure ran");
+
+        let c = self.p.pick(true) or self.note(err);
+        std::test::assert_eq_int(c, 7, "the handler's value");
+        std::test::assert_eq_int(self.seen_at_or, 2, "on_failure ran before the caller's or");
+        std::test::assert_eq_str(self.named, "bad_pick", "err is the ClosureViolation");
+
+        std::test::assert_eq_int(self.p.tails, 1, "the method's tail ran only for the call that did not violate");
+    }
+}
+
+fn main() { App { }; }

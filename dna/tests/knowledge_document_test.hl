@@ -23,7 +23,7 @@ fn check() {
     let b = std::bytes::BytesBuilder { }; let mut i = 1;
     while i < 32 { b.append_u8(i); i = i + 1; }
     b.append_u8(127); b.append_str(" / \\ \" équipe 🧭 <literal> \\n\r\n");
-    let text = std::str::from_bytes(b.snapshot());
+    let text = std::str::from_bytes(b.snapshot() or raise);
     let quotes = std::json::Builder { };
     std::test::assert_eq_str(dna::record_json_quote(text), quotes.quote(text), "linear quote preserves old control, slash, quote and Unicode spelling");
     let simple = dna::Idea { kind: "idea", text: text, author: "org" };

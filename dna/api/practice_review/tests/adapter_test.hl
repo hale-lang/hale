@@ -65,7 +65,7 @@ fn test_strict_policy() {
     rejected(std::str::replace(policy(MEMBER), "\"grants\":[" + MEMBER + "]", "\"grants\":{}"), "grants is an array");
     let many = std::bytes::BytesBuilder { }; let mut i = 0;
     while i < 129 { if i > 0 { many.append_str(","); } many.append_str(std::str::replace(MEMBER, "alice/équipe", "member-" + to_string(i))); i = i + 1; }
-    rejected(policy(std::str::from_bytes(many.snapshot())), "grant-count bound");
+    rejected(policy(std::str::from_bytes(many.snapshot() or raise)), "grant-count bound");
 }
 
 locus NativeStub {

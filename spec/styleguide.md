@@ -386,15 +386,16 @@ locus DbConnection {
 
     closure fatal_io { captures: last_error; epoch inline; }
 
-    fn handle_io(e: DbError) -> Row {
+    fn handle_io(e: DbError) -> Row fallible(ClosureViolation) {
         self.last_error = e.detail;
         if e.kind == "send_failed" { violate fatal_io; }
         return Row { data: "" };
     }
 
     fn on_query(q: Query) {
-        let r = send_query(self.conn_fd, q) or self.handle_io(err);
-        if !self.draining { QueryResult <- r; }
+        let r = send_query(self.conn_fd, q)
+            or (self.handle_io(err) or { return; });
+        QueryResult <- r;
     }
 }
 ```
@@ -403,7 +404,11 @@ locus DbConnection {
   audit-state update and the escalation choice.
 - `violate NAME;` diverges: the runtime synthesizes a
   `ClosureViolation`, sets `draining`, routes to the parent's
-  `on_failure`. Guard downstream sends with `if !self.draining`.
+  `on_failure`.
+- A method that returns a value and may violate is `fallible(ClosureViolation)`
+  (the checker refuses it otherwise), so the violation is the call's
+  failure and the caller's `or` says what happens next: here, nothing
+  is published.
 - The two-channel rule: substrate-facing surfaces (lifecycle,
   modes, closure assertions, bus handlers) cannot declare
   `fallible(E)`; user-declared `fn` members and free fns can.
@@ -1228,8 +1233,8 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Two of them pass `hale check` and fail only at `hale build`, and
-one hands a caller a value nothing computed: know those cold.
+Two of them pass `hale check` and fail only at `hale build`: know
+those cold.
 
 - **No char-level `s[i]`** — and the checker doesn't say so:
   `s[1]` on a `String` typechecks, then the build fails with
@@ -1246,14 +1251,6 @@ one hands a caller a value nothing computed: know those cold.
   qualified `let` annotation builds, but the binding is not the
   quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
   write it bare there too.
-- **`violate` inside a value-returning method, absorbed by the
-  parent's `on_failure`,** leaves the caller an undefined return
-  value; with no parent handler the process exits through the
-  violation and no value is observed. Check `self.draining` before
-  using the result (2.7's guarded publish is the shape), or
-  `violate` from a method returning nothing and let the caller test
-  `self.draining`. What the caller should observe in the absorbed
-  case is a spec decision not yet written.
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows

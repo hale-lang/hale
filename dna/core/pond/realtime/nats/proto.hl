@@ -60,7 +60,7 @@ fn pub_frame(subject: String, reply: String, data: Bytes) -> Bytes {
     out.append_str(to_string(len(data)) + crlf());
     out.append(data);
     out.append_str(crlf());
-    return out.finish();
+    return out.finish() or raise;
 }
 
 /// `HPUB <subject> [reply] <header size> <total size>\r\n<headers><payload>\r\n`:
@@ -74,7 +74,7 @@ fn hpub_frame(subject: String, reply: String, headers: String, data: Bytes) -> B
     out.append_str(headers);
     out.append(data);
     out.append_str(crlf());
-    return out.finish();
+    return out.finish() or raise;
 }
 
 /// The header block that gives a publish its JetStream message id: a

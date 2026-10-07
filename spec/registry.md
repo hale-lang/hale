@@ -40,6 +40,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `alloc_summary` | Layer 4 | Canonical | derivation | `derive_alloc_summary` | 0 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Canonical | law | `bare_fallible_calls` | 0 | Whether a fallible call's error is addressed. |
+| `violate_fallible` | Layer 4 | Canonical | law | `violate_fallible_laws` | 0 | Whether a fn that may violate says so: a value-returning one is `fallible(ClosureViolation)` (F.42), and one returning nothing is warned about until a later release makes it the law. |
 | `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Canonical | derivation | `derive_placement` | 0 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
@@ -384,7 +385,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Missing data.** required: a missing row is a `CodegenError`, pinned by `crates/hale-codegen/tests/missing_rows.rs` · `surfaces_a_pair_without_its_conformance_row_is_refused`; total: no row means no interface: a name that declares none is satisfied by nothing
 
-**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/duplicate_member.rs; crates/hale-types/tests/typed_bodies.rs; crates/hale-codegen/tests/conformance_routing_correction.rs
+**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/violate_fallible.rs; crates/hale-types/tests/duplicate_member.rs; crates/hale-types/tests/typed_bodies.rs; crates/hale-codegen/tests/conformance_routing_correction.rs
 
 **Spec.** spec/types.md; spec/semantics.md
 
@@ -1078,6 +1079,36 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
+### `violate_fallible` — Canonical · law
+
+**Answers.** Whether a fn that may violate says so: a value-returning one is `fallible(ClosureViolation)` (F.42), and one returning nothing is warned about until a later release makes it the law.
+
+**Inputs.** alloc_summary (each fn's `violates` column, the `violate` statements of its own body, and its resolved call edges); fn declarations (each fn's written return type and `fallible` clause, the program's and the stdlib analysis copy's)
+
+**Producer.** `crates/hale-types/src/violate_fallible.rs` · `violate_fallible_laws`
+
+**Also owned.** `crates/hale-types/src/violate_fallible.rs` · `may_violate`; `crates/hale-types/src/violate_fallible.rs` · `verdicts`
+
+**Consumers.** check, verify, build, run, test, replay, bench, the LSP (the snapshot's check, with the typing diagnostics, beside the `bare_fallible` law) (`crates/hale-frontend/src/snapshot.rs` · `violate_fallible_laws`); the check of a bundle no snapshot holds (the tests' entries) (`crates/hale-types/src/check.rs` · `violate_fallible_laws`)
+
+**Invariants.**
+
+- may violate is the direct reading: a `violate` statement in the fn's own body, or a resolved call to a value-returning fn that may violate and is not `fallible`; a violation in a method returning nothing is not the caller's failure, so a call to one carries nothing, and a `fallible` callee is answered at its call by the `bare_fallible` law; an edge the summary cannot resolve contributes nothing
+- three verdicts, over the program's own fns only (the stdlib analysis copy is a callee; its fns are held to the law by `tests/violate_fallible.rs`): a value-returning fn that may violate and is not `fallible` is refused, naming the path (the closure, or the callee it goes through, with the call and the `violate` as notes); one declared `fallible(E)` with another `E` is refused; one returning nothing that is not `fallible` is warned about
+- lifecycle bodies (no fn declaration), bus handlers (the summary's entry kind) and `fn main` are exempt: the runtime is their caller
+- a stated gap: a locus method serving a perspective fn (`serves`, matched by name as conformance matches it) is exempt from the law and the lint and carries nothing to its callers, and is warned about instead, until a `fallible` perspective call lowers (the build refuses one today, and conformance matches the perspective fn's fallibility both ways, so no spelling of it both checks and runs); it keeps today's lowering
+- lowering agrees: in a `fallible(ClosureViolation)` fn a `violate` stores the record in the error slot and takes the failure return, after the owner's `on_failure` (in place, or posted to the owner's domain and awaited); the `undef` of the declared type is reached only by an exempt value-returning bus handler
+
+**Missing data.** an unknown is a hole with a stated policy
+
+**Focused tests.** crates/hale-types/tests/violate_fallible.rs; crates/hale-codegen/tests/violate_build.rs; tests/hale/violate_in_value_method_test.hl
+
+**Spec.** spec/semantics.md § A value-returning method that may violate is fallible; spec/types.md § `ClosureViolation`, the error of a violating fn (F.42); spec/verification.md § Structural & design rules; spec/decisions.md F.42
+
+**Guarded seams.**
+
+- `violate_fallible_laws(` may be referenced from: `crates/hale-types/src/violate_fallible.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
+
 ### `nonreturning` — Canonical · law
 
 **Answers.** Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it.
@@ -1578,7 +1609,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 41 |
+| `spec/verification.md` § Structural & design rules | 46 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1611,6 +1642,11 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/ring-layout-contract | `spec/verification.md` § Structural & design rules | `ring_layout` contract | a foreign-ring layout declaration that is internally ill-formed (error); `check_ring_layout`, and `check_main_and_bindings` for a binding's `layout:` reference | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
 | verification/structural/ring-layout-geometry | `spec/verification.md` § Structural & design rules | `ring_layout` geometry | a cross-field inconsistency in a `ring_layout` (overlap, overrun, a `buffer_size` that is not a multiple of the record alignment) (error); `check_ring_layout` and `check_main_and_bindings` | `bindings` | `crates/hale-types/src/check.rs` · `check_ring_layout` | the declaration | Canonical |
 | verification/structural/foreign-ring-payload-shape | `spec/verification.md` § Structural & design rules | Foreign-ring payload shape | a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error) | `bindings` | `crates/hale-types/src/check.rs` · `check_main_and_bindings` | `bindings`, `top_scope` | Canonical |
+| verification/structural/value-returning-violator-is-fallible | `spec/verification.md` § Structural & design rules | A value-returning violator is fallible | a value-returning fn or locus method that may violate and is not `fallible(ClosureViolation)` (error, at its name, naming the closure or the callee the path goes through) | `violate_fallible` | `crates/hale-types/src/violate_fallible.rs` · `violate_fallible_laws` | `alloc_summary` | Canonical |
+| verification/structural/one-error-type-for-a-violator | `spec/verification.md` § Structural & design rules | One error type for a violator | a fn that may violate declared `fallible(E)` with `E` other than `ClosureViolation` (error) | `violate_fallible` | `crates/hale-types/src/violate_fallible.rs` · `violate_fallible_laws` | `alloc_summary` | Canonical |
+| verification/structural/violation-in-a-method-returning-nothing | `spec/verification.md` § Structural & design rules | Violation in a method returning nothing | a fn returning nothing that may violate and is not `fallible` (warning; a later release makes it the law) | `violate_fallible` | `crates/hale-types/src/violate_fallible.rs` · `violate_fallible_laws` | `alloc_summary` | Canonical |
+| verification/structural/violation-in-a-perspective-served-method | `spec/verification.md` § Structural & design rules | Violation in a perspective-served method | a locus method serving a perspective fn that may violate and is not `fallible`, exempt from the law and the lint until a `fallible` perspective call lowers (warning) | `violate_fallible` | `crates/hale-types/src/violate_fallible.rs` · `violate_fallible_laws` | `alloc_summary` | Canonical |
+| verification/structural/perspective-fallibility-matches | `spec/verification.md` § Structural & design rules | A perspective fn's fallibility | a method serving a perspective fn with a different fallibility, either way (error) | `surfaces` | `crates/hale-types/src/check.rs` · `check_serves_conformance` | the declaration | Canonical |
 | verification/structural/cell-slot-of-origin | `spec/verification.md` § Structural & design rules | Cell slot-of-origin | releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen) | `forms` | `crates/hale-codegen/src/codegen.rs` · `try_lower_capacity_slot_method_call` | the declaration | Canonical |
 | verification/structural/recovery-event-alphabet | `spec/verification.md` § Structural & design rules | Recovery event alphabet | a name in `persists_through(...)` or `resets_on(...)` outside `restart`, `restart_in_place`, `quarantine` (error, at the name, a misspelling one edit away suggesting the event) | `closures` | `crates/hale-types/src/closure_events.rs` · `outside_the_alphabet` | the declaration | Canonical |
 | verification/structural/persist-through-dissolve | `spec/verification.md` § Structural & design rules | Persisting through dissolve | `dissolve` in `persists_through(...)`, which can mean nothing: an accumulator does not outlive its locus's dissolve (error, at the name) | `closures` | `crates/hale-types/src/closure_events.rs` · `persists_through_dissolve` | the declaration | Canonical |

@@ -145,7 +145,7 @@ locus DefinitionDraftCodec {
             else { b.append_u8(c); }
             i = i + 1;
         }
-        b.append_u8(34); return std::str::from_bytes(b.snapshot());
+        b.append_u8(34); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn hale_literal(text: String) -> String {
         let b = std::bytes::BytesBuilder { }; let digits = "0123456789abcdef"; let size = len(text); b.append_u8(34); let mut i = 0;
@@ -156,12 +156,12 @@ locus DefinitionDraftCodec {
             else { b.append_u8(c); }
             i = i + 1;
         }
-        b.append_u8(34); return std::str::from_bytes(b.snapshot());
+        b.append_u8(34); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn reason(message: String) -> String {
         let bytes = std::bytes::BytesBuilder { }; let mut i = 0; let size = len(message);
         while i < size && i < 512 { let c = std::str::byte_at_unchecked(message, i); bytes.append_u8(if c < 32 || c == 127 { 32 } else { c }); i = i + 1; }
-        let out = std::str::from_bytes(bytes.snapshot()); let syntax = OrganizationJson { }; let mut end = len(out);
+        let out = std::str::from_bytes(bytes.snapshot() or raise); let syntax = OrganizationJson { }; let mut end = len(out);
         while end > 0 && !syntax.utf8(out[0..end], end) { end = end - 1; }
         return out[0..end];
     }
@@ -192,7 +192,7 @@ locus DefinitionDraftCodec {
             } else { b.append_str(self.hale_literal(m.child) + ", " + self.hale_integer(m.child_revision)); }
             b.append_str(");\n    if len(" + var + ") > 0 { return " + var + "; }\n"); i = i + 1;
         }
-        b.append_str("    return \"\";\n}\n"); return std::str::from_bytes(b.snapshot());
+        b.append_str("    return \"\";\n}\n"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn dependents(read: Definitions, base: String) -> String {
         let b = std::json::Builder { }; b.begin_array(); let mut i = 0; let mut dep = read.dependent_at(base, i);

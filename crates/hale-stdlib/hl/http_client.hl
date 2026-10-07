@@ -291,11 +291,11 @@ fn __http_recv_to_close(s: __StdHttpConn, max_total: Int) -> Bytes {
         if want < take { take = want; }
         let piece = s.recv_bytes(take);
         let n = len(piece);
-        if n <= 0 { return buf.snapshot(); }
+        if n <= 0 { return buf.snapshot() or raise; }
         buf.append(piece);
         total = total + n;
     }
-    return buf.snapshot();
+    return buf.snapshot() or raise;
 }
 
 // One one-shot round-trip on an auto-closing conn.
@@ -388,7 +388,7 @@ fn __http_scan_chunks(raw: Bytes, start: Int, end: Int) -> __StdHttpChunkScan {
             while tpos < end {
                 let tnl = __http_crlf_at(raw, tpos, end);
                 if tnl < 0 { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
-                if tnl == tpos { return __StdHttpChunkScan { body: out.snapshot(), complete: true, bad: false }; }
+                if tnl == tpos { return __StdHttpChunkScan { body: out.snapshot() or raise, complete: true, bad: false }; }
                 tpos = tnl + 2;
             }
             return __StdHttpChunkScan { body: b"", complete: false, bad: false };
@@ -422,10 +422,10 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
         let take = if (max_body - total) < chunk { max_body - total } else { chunk };
         let piece = __http_recv_raw(handle, is_tls, take);
         let n = len(piece);
-        if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false }; }
+        if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false }; }
         buf.append(piece);
         total = total + n;
-        full = buf.snapshot();
+        full = buf.snapshot() or raise;
         hdr_end = __http_find_hdr_end(full);
         if hdr_end >= 0 { break; }
     }
@@ -452,7 +452,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
             if n <= 0 { return __StdHttpFramedRead { bytes: full, framed: false }; }
             buf.append(piece);
             total = total + n;
-            full = buf.snapshot();
+            full = buf.snapshot() or raise;
         }
         return __StdHttpFramedRead { bytes: full, framed: false };
     }
@@ -466,11 +466,11 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
             let take = if want < chunk { want } else { chunk };
             let piece = __http_recv_raw(handle, is_tls, take);
             let n = len(piece);
-            if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false }; }
+            if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false }; }
             buf.append(piece);
             total = total + n;
         }
-        full = buf.snapshot();
+        full = buf.snapshot() or raise;
         let end = if need < total { need } else { total };
         return __StdHttpFramedRead { bytes: std::bytes::slice(full, 0, end), framed: total >= need };
     }
@@ -483,7 +483,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
         buf.append(piece);
         total = total + n;
     }
-    return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false };
+    return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false };
 }
 
 type __StdHttpExchangeResult { resp: std::http::ClientResponse; ok: Bool; reusable: Bool; }

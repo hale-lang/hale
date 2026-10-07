@@ -6,7 +6,7 @@ fn check() {
     let mut i = 1;
     while i < 32 { b.append_u8(i); i = i + 1; }
     b.append_str(" é 🧭 <literal> \\\"");
-    let exact = std::str::from_bytes(b.snapshot());
+    let exact = std::str::from_bytes(b.snapshot() or raise);
     let doc = std::json::Builder { };
     doc.begin_object(); doc.string_field("value", exact); doc.end_object();
     std::test::assert_eq_str(dna::native_json_string(doc.result(), "value"), exact, "native field decoder preserves every non-NUL control and Unicode byte");

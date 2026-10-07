@@ -605,7 +605,7 @@ locus PgConn {
             }
             self.rx_buf.append(chunk);
         }
-        let hdr = self.rx_buf.snapshot();
+        let hdr = self.rx_buf.snapshot() or raise;
         let mtype = byte_at(hdr, 0);
         let mlen = read_be32(hdr, 1); // length includes itself, excludes type byte
         let total = mlen + 1; // + type byte
@@ -617,7 +617,7 @@ locus PgConn {
             }
             self.rx_buf.append(chunk);
         }
-        let body = self.rx_buf.snapshot();
+        let body = self.rx_buf.snapshot() or raise;
         self.rx_buf.shift_front(total);
         return __PgMsg { mtype: mtype, body: body, total: total, ok: true };
     }
@@ -680,7 +680,7 @@ fn build_extended(sql: String, args: db::Args) -> Bytes {
     pb.append(std::bytes::from_string(sql));
     pb.append(std::bytes::from_int(0)); // query NUL
     be16_append(pb, 0); // 0 param-type oids
-    let pp = pb.snapshot();
+    let pp = pb.snapshot() or raise;
     out.append(std::bytes::from_int(80)); // 'P'
     be32_append(out, len(pp) + 4);
     out.append(pp);
@@ -708,7 +708,7 @@ fn build_extended(sql: String, args: db::Args) -> Bytes {
         i = i + 1;
     }
     be16_append(bb, 0); // 0 result format codes -> all text
-    let bbs = bb.snapshot();
+    let bbs = bb.snapshot() or raise;
     out.append(std::bytes::from_int(66)); // 'B'
     be32_append(out, len(bbs) + 4);
     out.append(bbs);
@@ -717,7 +717,7 @@ fn build_extended(sql: String, args: db::Args) -> Bytes {
     let eb = std::bytes::BytesBuilder { initial_cap: 8 };
     eb.append(std::bytes::from_int(0)); // unnamed portal
     be32_append(eb, 0); // all rows
-    let ebs = eb.snapshot();
+    let ebs = eb.snapshot() or raise;
     out.append(std::bytes::from_int(69)); // 'E'
     be32_append(out, len(ebs) + 4);
     out.append(ebs);
@@ -726,7 +726,7 @@ fn build_extended(sql: String, args: db::Args) -> Bytes {
     out.append(std::bytes::from_int(83)); // 'S'
     be32_append(out, 4);
 
-    return out.finish();
+    return out.finish() or raise;
 }
 
 // __handle_msg — dispatch one complete backend message. Mutates

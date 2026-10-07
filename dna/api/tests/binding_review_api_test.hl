@@ -32,7 +32,7 @@ locus BindingReviewReadCases {
         self.append(journal, "knowledge.ratified", idea, "{\"class\":\"initiative\"}");
         let authority = BindingReadAuthority { }; let commands = ops::KnowledgeCommands { record: record, authority: authority };
         let alice = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
-        let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1); let why = std::str::from_bytes(bytes.snapshot());
+        let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1); let why = std::str::from_bytes(bytes.snapshot() or raise);
         let command = ops::KnowledgeCommand { request_id: "binding-read", operation: "dna.knowledge.binding.bind", application_id: alice.application_id, target_id: idea, idea_id: idea, record_head: record.head("journal").id, author: "org", target: "org/support", rationale: why };
         let admitted = commands.submit(alice, command); std::test::assert(admitted.ok, "native admission: " + admitted.code);
         let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));

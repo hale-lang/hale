@@ -22,7 +22,7 @@ locus MappingProbe {
 locus OrganizationMappingCases {
     params { root: String = ""; identity: String = ""; probe: MappingProbe; commands: api::CommandAdmission; }
     fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
-    fn repeat(text: String, count: Int) -> String { let out = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { out.append_str(text); i = i + 1; } return std::str::from_bytes(out.snapshot()); }
+    fn repeat(text: String, count: Int) -> String { let out = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { out.append_str(text); i = i + 1; } return std::str::from_bytes(out.snapshot() or raise); }
     fn proposal(text: String, rationale: String) -> api::OrganizationProposal {
         return api::OrganizationProposal { request_id: "source-request", source_head: COMMIT, module_digest: DIGEST, dependency_source: "local_vendor_snapshot", dependency_digest: DIGEST, record_head: "record/original", source_text: text, rationale: rationale };
     }
