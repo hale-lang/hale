@@ -2833,29 +2833,32 @@ The typechecker validates three classes of constraint issue
      (`fn send(subject, bytes)`) requires serialization.
 
 3. **Payload-shape compatibility.** `zero_copy` requires the
-   topic's payload to satisfy `is_flat_shapeable` — every
-   leaf must be a fixed-layout primitive or a struct whose
-   fields are all flat-shapeable. String, Bytes, BytesView,
-   StringView fail the predicate (heap-shaped / fat-pointer),
-   and so do **arrays — fixed- or unbounded-size**: codegen
-   stores an array field out-of-line (the field is a pointer,
-   not the inline bytes), so a raw memcpy of the value would
-   share a pointer that dangles across the zero-copy / shm
-   boundary — a cross-process use-after-free. The binding is
-   rejected at typecheck with a diagnostic naming the offending
-   shape, rather than compiling to a runtime segfault. (Inlining
-   array fields for flat payloads — which would let fixed-size
-   arrays be `zero_copy`-eligible again — is a future codegen
-   change; until then, use only fixed-size scalar fields in a
-   `zero_copy` payload, or send variable data as `Bytes`/a
-   `layout:`-bound `BytesView` raw frame.)
+   topic's payload to satisfy `is_flat_shapeable`: its bytes are
+   the whole value, so a raw memcpy of it is the value on the
+   other side. Flat are the fixed-layout primitives (`Int`,
+   `Float`, `Decimal`, `Bool`, `Time`, `Duration`), a struct
+   whose fields are all flat, an identity or a range (its `Int`),
+   and a **fixed-size array of `Int`, `Float`, `Bool`,
+   `Decimal` or `Duration`** (and a `bounded[T; N]` of those):
+   codegen lays a scalar-element `[T; N]` field out inline in its
+   struct (`[N x T]`, since 2026-07-01), so its elements travel in
+   the slot. Not flat: `String`, `Bytes`,
+   `BytesView` and `StringView` (heap-shaped or fat pointers); a
+   fixed-size array of anything else (`[P; 2]` of a struct,
+   `[Time; 2]`), which keeps the out-of-line layout, a pointer
+   that would dangle across the zero-copy / shm boundary; an
+   unbounded array `[T]`; and an enum. The binding is refused at
+   typecheck, at its `zero_copy`, rather than compiled into a
+   cross-process use-after-free: "binding for topic `TA` requires
+   `zero_copy` but payload type `PayA` is not flat-shapeable — it
+   contains a String, Bytes, or fixed-size array field, …". Send
+   variable data as `Bytes` on a binding without `zero_copy`, or as
+   a `layout:`-bound `BytesView` raw frame.
 
-Slot-locus codegen and the `shm_ring(...)` transport variant
-that actually satisfies `zero_copy` land in subsequent K
-sub-tasks. Until then, asserting `zero_copy` on any binding
-produces a clear diagnostic naming the transport limitation.
-Existing bindings without a `where` clause continue to work
-unchanged.
+The `shm_ring(...)` transport variant above satisfies `zero_copy`
+(and `intra_machine`) intrinsically; its slot size is derived from
+the payload's flat layout. Existing bindings without a `where`
+clause continue to work unchanged.
 
 **The entry locus.** A program's entry is its seed's own top-level
 `main locus`; the checker reads it from one row (`hale_types::entry`,
@@ -4209,8 +4212,13 @@ Epoch boundaries:
   cadence).
 - `epoch duration(d)`: fires every `d` of monotonic time.
 - `epoch birth`: fires once, after birth completes.
-- `epoch explicit`: fires only when user code calls
-  `epoch_advance(NAME)`.
+- `epoch explicit`: fires only when the locus's own code calls
+  `check_closures();` — a statement taking no argument, which
+  evaluates every `epoch explicit` closure of `self` at once and
+  routes a violation to the parent's `on_failure` as the other
+  epochs do (a no-op on a locus with none). There is no per-closure
+  form: `epoch_advance(NAME)`, which this section once named, was
+  never shipped.
 - `epoch inline` (F.27, v1.x-VIOLATE): never fires
   automatically; fires only when user code executes
   `violate NAME;`. The closure body has no assertion (no LEFT /
