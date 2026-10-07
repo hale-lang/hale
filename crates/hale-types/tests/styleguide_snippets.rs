@@ -260,44 +260,6 @@ fn claim_a_locus_is_never_a_form_cell() {
     );
 }
 
-/// §7 sharp edges: "An `Int` does not widen into a `Float` let or
-/// field", although spec/types.md § "Numeric coercion" lists both.
-/// A fix is in progress; when it lands this fails, and the entry goes
-/// (spec/types.md is then true again).
-#[test]
-fn claim_int_does_not_widen_into_a_float_let_or_field() {
-    let widens = build_errs(
-        "fn half(x: Float) -> Float { return x / 2.0; }\n\
-         fn main() { let i = 4; println(half(i), \" \", i + 0.5); }",
-    );
-    assert!(
-        widens.is_empty(),
-        "§7 says a call's argument and a mixed binop still widen an \
-         `Int`: {:?}",
-        widens
-    );
-    for (what, src) in [
-        ("a literal", "fn main() { let x: Float = 5; println(x); }"),
-        ("a local", "fn main() { let i = 4; let x: Float = i; println(x); }"),
-        (
-            "a struct field",
-            "type Cfg { timeout: Float; }\n\
-             fn main() { let c = Cfg { timeout: 7 }; println(c.timeout); }",
-        ),
-    ] {
-        let ds = build_errs(src);
-        assert!(
-            ds.iter().any(|m| m.contains("expects `Float`, got `Int`")
-                || m.contains("expected `Float`, got `Int`")),
-            "spec/styleguide.md §7 says {} of type `Int` is refused where \
-             a `Float` is declared. It widens now — delete the \"An `Int` \
-             does not widen into a `Float` let or field\" sharp edge: {:?}",
-            what,
-            ds
-        );
-    }
-}
-
 /// C8: the bare narrowing is refused with the diagnostic the guide
 /// quotes, the policy discharges it, and a quantity's count in a unit
 /// is the one division that takes none.
