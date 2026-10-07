@@ -55,7 +55,7 @@ locus NativeJson {
             }
             i = i + 6;
         }
-        return std::str::from_bytes(bytes.snapshot());
+        return std::str::from_bytes(bytes.snapshot() or raise);
     }
 }
 

@@ -56,7 +56,7 @@ fn snapshot_with_tls_routing_skips_global_cap() {
                 let mut i = 0;
                 while i < 50 {
                     b.append(chunk);
-                    let snap = b.snapshot();
+                    let snap = b.snapshot() or raise;
                     i = i + 1;
                 }
                 println("loop done");
@@ -109,7 +109,7 @@ fn default_cap_does_not_fire_for_modest_workload() {
         fn main() {
             let b = std::bytes::BytesBuilder { initial_cap: 1024 };
             b.append(std::bytes::from_string("hello world"));
-            let s = b.finish();
+            let s = b.finish() or raise;
             println("len=", len(s));
         }
     "#;

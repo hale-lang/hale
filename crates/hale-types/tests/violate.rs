@@ -16,12 +16,13 @@ fn check(src: &str) -> Vec<String> {
 
 #[test]
 fn canonical_shape_typechecks_clean() {
-    // The error-check-fn pattern from F.27 / styleguide pattern 7.
+    // The error-check-fn pattern from F.27 / styleguide pattern 7, as
+    // F.42 declares it: a value-returning violator is fallible.
     let src = r#"
 locus L {
     params { last_error: String = ""; }
     closure fatal_io { captures: last_error; epoch inline; }
-    fn handle(detail: String) -> Int {
+    fn handle(detail: String) -> Int fallible(ClosureViolation) {
         self.last_error = detail;
         violate fatal_io;
         return 0;
@@ -219,8 +220,10 @@ locus L {
 fn main() { L { }; }
 "#;
     let msgs = check(src);
+    // F.42's lint warns about `step` (a method returning nothing that
+    // violates); it is an advisory, not a typing finding.
     assert!(
-        msgs.iter().all(|m| !m.contains("violate")),
+        msgs.iter().all(|m| !m.contains("violate") || m.contains("This becomes a law in a later release")),
         "expected violate-with-payload to typecheck clean, got: {:?}",
         msgs
     );

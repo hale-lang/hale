@@ -1536,7 +1536,7 @@ fn main() {
         zi = zi + 1;
     }
     App {
-        evbuf: bb.snapshot(),
+        evbuf: bb.snapshot() or raise,
         snaps: snaps,
         fds: fds,
         reg_dir: reg_dir,

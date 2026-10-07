@@ -18308,6 +18308,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 // 6. ret_bb: emit divergent return.
                 self.builder.position_at_end(ret_bb);
+                // F.42: in a `fallible(ClosureViolation)` fn the
+                // violation is the call's failure. The record the
+                // owner's `on_failure` received is the error; the
+                // exit epilogue copies it out to the caller's err
+                // slot, and the caller's `or` runs. No value is made.
+                if let Some(fallible) = self.current_user_fn_fallible.clone() {
+                    if fallible.payload_ty != CodegenTy::TypeRef("ClosureViolation".to_string()) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "`violate {}` in a fn declared `fallible` with an error \
+                             other than `ClosureViolation`: a fn that may violate is \
+                             `fallible(ClosureViolation)`",
+                            name.name,
+                        )));
+                    }
+                    let exit_bb = self.current_user_fn_exit_bb.ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "`violate` in a fallible fn with no exit block".to_string(),
+                        )
+                    })?;
+                    self.builder
+                        .build_store(fallible.err_alloca, viol_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(
+                            fallible.path_alloca,
+                            self.context.bool_type().const_int(1, false),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(exit_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(BlockEnd::Terminated);
+                }
                 let ret_ty = self
                     .current_user_fn_ret
                     .clone()
@@ -18338,9 +18371,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     Some(declared) => {
                         // Undef poison value of the declared
-                        // return type. The canonical pattern
-                        // guards consumption with self.draining
-                        // so the poison is never read.
+                        // return type. The check refuses every
+                        // value-returning violator that is not
+                        // `fallible(ClosureViolation)` (F.42) except
+                        // the exempt: a bus handler that declares a
+                        // reply type (the runtime is its caller), so
+                        // only that one, or a build that skipped the
+                        // check, reaches here.
                         let llvm_ty = self.llvm_basic_type(&declared);
                         let undef: inkwell::values::BasicValueEnum<'ctx> =
                             match llvm_ty {

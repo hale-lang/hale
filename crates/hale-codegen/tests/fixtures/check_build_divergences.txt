@@ -10,6 +10,7 @@ crates/hale-codegen/tests/f22_cell_field_io.rs#2
 crates/hale-codegen/tests/generics.rs#8
 crates/hale-codegen/tests/library_shape_2026_05_16.rs#1
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#6
+crates/hale-codegen/tests/violate_build.rs#10
 crates/hale-types/tests/check_rules.rs#0
 crates/hale-types/tests/check_rules.rs#107
 crates/hale-types/tests/check_rules.rs#14

@@ -138,7 +138,7 @@ locus OrganizationPublicationInputs {
         }
         let after = inspection.tree(self.root + "/vendor");
         if !after.ok || after.digest != expected { return OrganizationDependencyCapture { }; }
-        let document = std::str::from_bytes(manifest.snapshot());
+        let document = std::str::from_bytes(manifest.snapshot() or raise);
         if len(document) > 2097152 { return OrganizationDependencyCapture { }; }
         let raw = self.retain(record, inspection, document);
         if !self.hex(raw, 64) { return OrganizationDependencyCapture { }; }
@@ -173,7 +173,7 @@ locus OrganizationPublicationInputs {
             if !self.relative(name) || size < 0 || size > 8388608 || total > 67108864 || count > 8192 || to_string(size) != number || !self.hex(hash, 64) || !self.hex(receipt, 64) { return OrganizationDependencyManifest { }; }
             digest.append_str(to_string(len(name)) + ":" + name + ":" + number + ":" + hash + "\n");
         }
-        if dna::digest_of(std::str::from_bytes(digest.snapshot())) != r.dependency_digest { return OrganizationDependencyManifest { }; }
+        if dna::digest_of(std::str::from_bytes(digest.snapshot() or raise)) != r.dependency_digest { return OrganizationDependencyManifest { }; }
         return OrganizationDependencyManifest { ok: true, text: saved.text[len(prefix)..len(saved.text)] };
     }
     fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation {

@@ -94,7 +94,7 @@ locus GraphHttp {
             bytes.append_u8(value);
             i = i + 2;
         }
-        return std::str::from_bytes(bytes.snapshot());
+        return std::str::from_bytes(bytes.snapshot() or raise);
     }
     fn request(body: String) -> GraphRequest {
         if len(body) > 16384 || !self.fields(body, "record_id record_head record_revision reader kind id target cursor snapshot", "limit") { return GraphRequest { }; }
@@ -185,7 +185,7 @@ locus GraphItems {
             at = at + 1;
         }
         bytes.append_u8(34);
-        return std::str::from_bytes(bytes.snapshot());
+        return std::str::from_bytes(bytes.snapshot() or raise);
     }
     fn append(item: String) -> Bool {
         if len(item) > 1000000 - self.size || self.count >= 100 { return false; }

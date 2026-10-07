@@ -584,7 +584,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/http.hl#6bedc9d9
 
-== crates/hale-stdlib/hl/http_client.hl#38c1f8d8
+== crates/hale-stdlib/hl/http_client.hl#3eb0a967
 
 == crates/hale-stdlib/hl/io_tcp.hl#1d23b046
 
@@ -592,7 +592,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
-== crates/hale-stdlib/hl/metrics.hl#e3f7293f
+== crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
 == crates/hale-stdlib/hl/process.hl#667d2582
 
@@ -1513,11 +1513,11 @@ row	App@literal1	App	main	default
 row	App@literal1.pub	Publisher	main	default
 row	App@literal1.sub	Subscriber	pinned:App@literal1.sub	entry	off owner
 
-== crates/hale-codegen/tests/bus_payload_arena_cap.rs#48b30837
+== crates/hale-codegen/tests/bus_payload_arena_cap.rs#0db7e3ed
 row	Parent@main1	Parent	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
-== crates/hale-codegen/tests/bus_payload_arena_cap.rs#7640545b
+== crates/hale-codegen/tests/bus_payload_arena_cap.rs#68830a3a
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/bus_publish_stack_alloca.rs#7db24943
@@ -1668,31 +1668,31 @@ row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.w	Wire	main	default
 
-== crates/hale-codegen/tests/bytes_builder.rs#f340810f
+== crates/hale-codegen/tests/bytes_builder.rs#737371a4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder.rs#b7b0685c
+== crates/hale-codegen/tests/bytes_builder.rs#44e7df27
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder.rs#e695c0ad
+== crates/hale-codegen/tests/bytes_builder.rs#974a5165
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#dc3ab463
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#81fcb703
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/bytes_builder_inplace.rs#bf737fb8
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#a51e9991
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#8df90a20
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#512ab65f
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#0e83e0c1
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#ffaf4b3f
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#675c5cb4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#c307a0a4
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#abdae92e
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/bytes_builder_inplace.rs#8046b82e
@@ -1702,10 +1702,10 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	Catcher@main1	Catcher	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#8d2a6815
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#0e2f8e0e
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_inplace.rs#c9bcce65
+== crates/hale-codegen/tests/bytes_builder_inplace.rs#af64e758
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/bytes_builder_view.rs#87a2625c
@@ -1732,24 +1732,24 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/bytes_builder_view.rs#0880dd90
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_builder_violate.rs#58026e50
+== crates/hale-codegen/tests/bytes_builder_violate.rs#de3a4bbe
 row	Parent@main1	Parent	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
-== crates/hale-codegen/tests/bytes_builder_violate.rs#dfc88bd6
+== crates/hale-codegen/tests/bytes_builder_violate.rs#ee750e77
 row	Parent@main1	Parent	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
-== crates/hale-codegen/tests/bytes_builder_violate.rs#5b3ecb90
+== crates/hale-codegen/tests/bytes_builder_violate.rs#4db904b7
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_pack_write.rs#a783719b
+== crates/hale-codegen/tests/bytes_pack_write.rs#80d0fd36
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_pack_write.rs#93f64a6f
+== crates/hale-codegen/tests/bytes_pack_write.rs#c7092147
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_pack_write.rs#29046f96
+== crates/hale-codegen/tests/bytes_pack_write.rs#e75ede89
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/bytes_view_stale.rs#7614d372
@@ -1779,7 +1779,7 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/bytes_view_type.rs#f9c5f82b
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/bytes_xor_find.rs#e5a59b29
+== crates/hale-codegen/tests/bytes_xor_find.rs#82202957
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 
@@ -4026,13 +4026,26 @@ row	Child@main1	Child	main	default
 == crates/hale-codegen/tests/violate_build.rs#45144db2
 row	Child@main1	Child	main	default
 
-== crates/hale-codegen/tests/violate_build.rs#b964390d
+== crates/hale-codegen/tests/violate_build.rs#6e4fcdf1
 row	Picker@main1	Picker	main	default
 
-== crates/hale-codegen/tests/violate_build.rs#26f8ea21
+== crates/hale-codegen/tests/violate_build.rs#20ab3262
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.p	Picker	main	default
+
+== crates/hale-codegen/tests/violate_build.rs#c1aa6402
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+-- App@literal1.o	Owner
+row	~	Owner	pool:side	entry	off owner
+row	~.kid	Kid	pool:side	inherited
+
+== crates/hale-codegen/tests/violate_build.rs#742e5d25
+root	App	the entry
+row	App@literal1	App	main	default
+shared	App@literal1.gw	Gateway #7eef2531
 
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
@@ -5791,7 +5804,7 @@ row	Fills@main1	Fills	main	default
 == crates/hale-types/tests/unit_values.rs#2c79e9b2
 row	Book@main1	Book	main	default
 
-== crates/hale-types/tests/violate.rs#8acd0731
+== crates/hale-types/tests/violate.rs#6ffc06ed
 row	L@main1	L	main	default
 
 == crates/hale-types/tests/violate.rs#b91728b8
@@ -5802,6 +5815,14 @@ row	L@main1	L	main	default
 
 == crates/hale-types/tests/violate.rs#174096bb
 shared	Parent@main1	Parent #6fbf107e
+
+== crates/hale-types/tests/violate_fallible.rs#f3938d8f
+row	Kid@main1	Kid	main	default
+
+== crates/hale-types/tests/violate_fallible.rs#8c371e6a
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == crates/hale-types/tests/wasm_target_gating.rs#d6c9c505
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -6198,6 +6219,11 @@ dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
+
+== tests/hale/violate_in_value_method_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.p	Picker	main	default
 
 == dna/acceptance/books/tests/main_test.hl
 

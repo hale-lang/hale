@@ -60,7 +60,7 @@ locus KnowledgeCases {
     fn repeat(count: Int) -> String {
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < count { b.append_u8(120); i = i + 1; }
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn link(id: String, rel: String) -> api::KnowledgeLink { return api::KnowledgeLink { request_id: id, record_head: HEAD, target_id: FROM, from_id: FROM, to_id: TO, rel: rel, rationale: RATIONALE }; }
     fn proposal(id: String, text: String) -> api::KnowledgeNodeProposal {

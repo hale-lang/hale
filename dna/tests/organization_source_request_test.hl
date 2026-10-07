@@ -181,9 +181,9 @@ main locus App {
         std::test::assert(!codec.owner_token("../north") && !codec.owner_token("north\\south") && !codec.owner_token("north:else"), "owner identity cannot traverse or change mutation namespace");
         let owner = std::bytes::BytesBuilder { }; let mut length = 0;
         while length < 183 { owner.append_str("n"); length = length + 1; }
-        std::test::assert(codec.owner_token(std::str::from_bytes(owner.snapshot())), "183-byte owner fits exact native mutation basename");
+        std::test::assert(codec.owner_token(std::str::from_bytes(owner.snapshot() or raise)), "183-byte owner fits exact native mutation basename");
         owner.append_str("n");
-        std::test::assert(!codec.owner_token(std::str::from_bytes(owner.snapshot())), "184-byte owner would exceed native basename and is refused");
+        std::test::assert(!codec.owner_token(std::str::from_bytes(owner.snapshot() or raise)), "184-byte owner would exceed native basename and is refused");
         source_body(repo, st, r.request_id, "north", owners); let candidate = self.check_proposal(repo, reader(repo), r);
         std::test::assert(std::str::starts_with(codec.mutation_id(r), "north:source-"), "native owner-qualified mutation routing preserved");
         let clean = dna::run_tool("rm\n-rf\n" + repo);

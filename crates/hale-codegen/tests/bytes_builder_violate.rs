@@ -42,7 +42,9 @@ fn double_finish_routes_through_violate_alloc_failed() {
     // primitive and returns the empty-global singleton. The locus
     // method body's __is_empty_global check fires and routes
     // through `violate alloc_failed`. The Parent's on_failure
-    // absorbs the violation; run() continues.
+    // absorbs the violation; `finish` is fallible(ClosureViolation)
+    // (F.42), so the call then fails and its `or` runs with the
+    // record; run() continues.
     let src = r#"
         locus Parent {
             accept(b: std::bytes::BytesBuilder) { }
@@ -51,9 +53,9 @@ fn double_finish_routes_through_violate_alloc_failed() {
             }
             run() {
                 let b = std::bytes::BytesBuilder { initial_cap: 64 };
-                let first = b.finish();
+                let first = b.finish() or raise;
                 println("first len=", len(first));
-                let second = b.finish();
+                let second = b.finish() or { println("finish failed closure=", err.closure); std::bytes::from_string("") };
                 println("parent.run continued");
             }
         }
@@ -67,13 +69,10 @@ fn double_finish_routes_through_violate_alloc_failed() {
         stdout
     );
     assert!(
-        stdout.contains("absorbed closure=alloc_failed"),
-        "expected absorbed alloc_failed closure: {:?}",
-        stdout
-    );
-    assert!(
-        stdout.contains("parent.run continued"),
-        "expected run() to keep going after the absorbed violation: {:?}",
+        stdout.contains(
+            "absorbed closure=alloc_failed\nfinish failed closure=alloc_failed\nparent.run continued"
+        ),
+        "expected the handler, then the call's `or` with the record, then run() going on: {:?}",
         stdout
     );
 }
@@ -92,10 +91,10 @@ fn snapshot_after_finish_routes_through_violate_alloc_failed() {
             }
             run() {
                 let b = std::bytes::BytesBuilder { initial_cap: 64 };
-                let done = b.finish();
+                let done = b.finish() or raise;
                 println("first len=", len(done));
-                let snap = b.snapshot();
-                println("parent.run continued");
+                let snap = b.snapshot() or std::bytes::from_string("");
+                println("parent.run continued len=", len(snap));
             }
         }
         fn main() { Parent { }; }
@@ -124,8 +123,8 @@ fn unhandled_snapshot_failure_exits_nonzero() {
     let src = r#"
         fn main() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
-            let done = b.finish();
-            let snap = b.snapshot();
+            let done = b.finish() or raise;
+            let snap = b.snapshot() or raise;
             println("unreachable");
         }
     "#;

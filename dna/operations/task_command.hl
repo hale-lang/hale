@@ -20,7 +20,7 @@ locus TaskCommandCodec {
         self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
         self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
         self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id); self.field(b, "subject_digest", c.subject_digest);
-        self.field(b, "expected_assignee", c.expected_assignee); self.field(b, "new_assignee", c.new_assignee); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.field(b, "expected_assignee", c.expected_assignee); self.field(b, "new_assignee", c.new_assignee); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
@@ -36,7 +36,7 @@ locus TaskCommandCodec {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"command_format\":\"dna.task-command/1\""); self.field(b, "command_id", common.identity(context, c.request_id));
         self.field(b, "command_payload", self.canonical(context, c)); self.field(b, "command_fingerprint", self.fingerprint(context, c));
         self.field(b, "command_authority", grant.authority); self.field(b, "command_authority_basis", grant.basis); self.field(b, "command_record_head", head);
-        self.field(b, "from", c.expected_assignee); self.field(b, "to", c.new_assignee); self.field(b, "by", context.principal_name); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.field(b, "from", c.expected_assignee); self.field(b, "to", c.new_assignee); self.field(b, "by", context.principal_name); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_fact(e: dna::Event) -> TaskCommandFact {
         let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };

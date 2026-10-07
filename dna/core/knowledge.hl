@@ -184,7 +184,7 @@ fn knowledge_document(i: Idea, target: String) -> String {
     b.append_str(", \"provenance\": "); b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
     if len(i.name) > 0 { b.append_str(", \"name\": "); b.append_str(record_json_quote(i.name)); }
     if len(i.supersedes) > 0 { b.append_str(", \"supersedes\": "); b.append_str(record_json_quote(i.supersedes)); }
-    b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
 }
 
 // The review id a proposal's digest is known by: `k:` and the first

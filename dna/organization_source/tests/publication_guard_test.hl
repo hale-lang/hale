@@ -50,7 +50,7 @@ locus PublicationGuardCases {
         std::test::assert(r.dependency_receipt != "" && r.source_text == CANDIDATE, "retained receipt and exact Unicode/CRLF source");
         let owner = std::bytes::BytesBuilder { }; let mut n = 0;
         while n < 183 { owner.append_u8(97); n = n + 1; }
-        let long_owner = dna::OrganizationSourceRequest { source_owner: std::str::from_bytes(owner.snapshot()), request_id: "long-owner-path" };
+        let long_owner = dna::OrganizationSourceRequest { source_owner: std::str::from_bytes(owner.snapshot() or raise), request_id: "long-owner-path" };
         let path_codec = dna::OrganizationSourceRequestCodec { };
         std::test::assert_eq_int(len(path_codec.mutation_id(long_owner)), 255, "full native mutation identity remains authoritative at owner boundary");
         let metadata = guard.topology_path(long_owner);

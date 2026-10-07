@@ -194,7 +194,7 @@ locus __StdBytesBytesBuilder {
     fn len() -> Int {
         return std::bytes::builder::__len(self.handle);
     }
-    fn snapshot() -> Bytes {
+    fn snapshot() -> Bytes fallible(ClosureViolation) {
         let out = std::bytes::builder::__snapshot(self.handle);
         if std::bytes::__is_alloc_fail(out) == 1 {
             violate alloc_failed;
@@ -242,7 +242,7 @@ locus __StdBytesBytesBuilder {
     fn clear() {
         std::bytes::builder::__clear(self.handle);
     }
-    fn finish() -> Bytes {
+    fn finish() -> Bytes fallible(ClosureViolation) {
         // __finish frees the underlying buffer + header. Clearing
         // self.handle to 0 makes the subsequent dissolve's __free
         // a safe no-op (C primitive checks NULL) — avoids the

@@ -28,7 +28,7 @@ fn command(app: String, digest: String, key: String) -> ops::GovernanceCommand {
 }
 fn generic(repo: String, kind: String) {
     let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1);
-    let text = if kind == "retirement" { "" } else { std::str::from_bytes(bytes.snapshot()) };
+    let text = if kind == "retirement" { "" } else { std::str::from_bytes(bytes.snapshot() or raise) };
     let digest = candidate(repo, kind, "org/support", "org/support/intake", text);
     let record = dna::GitRecord { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let j = dna::GitJournal { repo: repo }; let queries = ops::Queries { j: j, receipts: receipts };
     std::test::assert_eq_int(queries.practice_count(), 0, "unnamed candidates do not enter the named catalog");

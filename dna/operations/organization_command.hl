@@ -50,7 +50,7 @@ locus OrganizationCommandCodec {
         self.field(b, "subject_digest", c.subject_digest); self.field(b, "source_head", c.source_head);
         self.field(b, "dependency_source", c.dependency_source); self.field(b, "dependency_digest", c.dependency_digest);
         self.field(b, "record_head", c.record_head); self.field(b, "source_text", c.source_text); self.field(b, "rationale", c.rationale);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
@@ -94,7 +94,7 @@ locus OrganizationCommandCodec {
         let native = dna::OrganizationSourceRequestCodec { }; let common = GovernanceCommandCodec { };
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-source.request/1\",\"command_payload\":");
         b.append_str(common.quote(self.canonical(context, c))); b.append_str(",\"request\":"); b.append_str(native.canonical(r)); b.append_str("}");
-        let out = std::str::from_bytes(b.snapshot()); return if len(out) <= 262144 { out } else { "" };
+        let out = std::str::from_bytes(b.snapshot() or raise); return if len(out) <= 262144 { out } else { "" };
     }
     fn decode_fact(e: dna::Event) -> OrganizationCommandFact {
         let syntax = OrganizationJson { }; let schema = AuthorityPolicyCodec { }; let common = GovernanceCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { };

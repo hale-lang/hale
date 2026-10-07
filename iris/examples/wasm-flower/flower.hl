@@ -31,7 +31,7 @@ fn frames_so_far() -> Int {
     let n = frames_so_far() + 1;
     let b = std::bytes::BytesBuilder { };
     b.append_u32_le(n);
-    lotus_wasm_state_set(b.snapshot());
+    lotus_wasm_state_set(b.snapshot() or raise);
 
     let w = 800.0;
     let h = 600.0;

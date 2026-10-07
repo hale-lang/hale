@@ -138,7 +138,7 @@ locus CreateCases {
         bad = self.sample(context); bad.target_id = "other"; std::test::assert(!codec.valid(context, bad), "the target is this application");
         bad = self.sample(context); bad.text = "stray"; std::test::assert(!codec.valid(context, bad), "no practice fields");
         let big = std::bytes::BytesBuilder { }; let mut i = 0; while i < 8193 { big.append_u8(97); i = i + 1; }
-        bad = self.sample(context); bad.outcome = std::str::from_bytes(big.snapshot()); std::test::assert(!codec.valid(context, bad), "outcome bound");
+        bad = self.sample(context); bad.outcome = std::str::from_bytes(big.snapshot() or raise); std::test::assert(!codec.valid(context, bad), "outcome bound");
         let old = ops::GovernanceCommand { request_id: "key", operation: "dna.practice.propose", application_id: "app", target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because", outcome: "stray" };
         std::test::assert(!common.valid(context, old), "old variant rejects stray create fields");
         let task = ops::TaskCommandCodec { }; let reassign = ops::GovernanceCommand { request_id: "key", operation: "dna.task.reassign", application_id: "app", target_kind: "dna.task", target_id: "task", subject_digest: dna::digest_of("basis"), expected_assignee: "alice", new_assignee: "bob", to: "org" };

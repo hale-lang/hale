@@ -146,7 +146,7 @@ locus GovernanceCommandCodec {
             i = i + 1;
         }
         b.append_u8(34);
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     // One request namespace across operations. This is usable for lookup
     // without knowing which operation originally occupied the caller's key.
@@ -157,7 +157,7 @@ locus GovernanceCommandCodec {
         b.append_str(",\"principal_mode\":"); b.append_str(self.quote(context.principal_mode));
         b.append_str(",\"principal_name\":"); b.append_str(self.quote(context.principal_name));
         b.append_str(",\"request_id\":"); b.append_str(self.quote(request_id)); b.append_str("}");
-        return "command-" + dna::hex_digest(std::str::from_bytes(b.snapshot()));
+        return "command-" + dna::hex_digest(std::str::from_bytes(b.snapshot() or raise));
     }
     // Fixed field order and all typed fields, including the inactive variant's
     // required empty values. No Record-head condition or source normalization
@@ -180,7 +180,7 @@ locus GovernanceCommandCodec {
         b.append_str(",\"expected_review_state\":"); b.append_str(self.quote(command.expected_review_state));
         b.append_str(",\"verdict\":"); b.append_str(self.quote(command.verdict));
         b.append_str(",\"comment\":"); b.append_str(self.quote(command.comment)); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, command: GovernanceCommand) -> String {
         return dna::digest_of(self.canonical(context, command));

@@ -69,7 +69,7 @@ locus KnowledgeBindingCodec {
         if !candidate { self.field(b, "candidate_digest", r.candidate_digest); }
     }
     fn document(r: KnowledgeBindingRequest) -> String {
-        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-binding-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-binding-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fields(b: std::bytes::BytesBuilder, r: KnowledgeBindingRequest) {
         // No format field in the compact typed request; the outer admission
@@ -81,19 +81,19 @@ locus KnowledgeBindingCodec {
         self.field(b, "author", r.author); self.field(b, "target", r.target); self.field(b, "by", r.by); self.field(b, "because", r.because);
         self.field(b, "binding_basis", r.binding_basis); self.field(b, "candidate_digest", r.candidate_digest);
     }
-    fn started(r: KnowledgeBindingRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot()); }
+    fn started(r: KnowledgeBindingRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise); }
     fn proposed(r: KnowledgeBindingRequest) -> String {
-        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn refused(r: KnowledgeBindingRequest, reason_code: String, why: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn review_request(r: KnowledgeBindingRequest) -> String {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"question\":");
         b.append_str(record_json_quote((if r.operation == "dna.knowledge.binding.bind" { "Bind " } else { "Unbind " }) + r.idea_id + " at " + r.target + " by " + r.author + "?"));
         self.field(b, "subject_digest", r.candidate_digest); self.field(b, "required_authority", "board"); self.field(b, "author", r.by);
         self.field(b, "knowledge_binding_digest", r.candidate_digest); self.field(b, "binding_request_id", r.request_id);
-        self.field(b, "target", r.target); self.field(b, "class", classify_binding(r.author, r.target)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        self.field(b, "target", r.target); self.field(b, "class", classify_binding(r.author, r.target)); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn terminal_fields(b: std::bytes::BytesBuilder, r: KnowledgeBindingRequest, decision: String, reviewer: String) {
         b.append_str("{\"format\":\"dna.knowledge-binding-effect/1\""); self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
@@ -103,13 +103,13 @@ locus KnowledgeBindingCodec {
         self.field(b, "class", classify_binding(r.author, r.target)); self.field(b, "binding_basis", r.binding_basis);
     }
     fn effect(r: KnowledgeBindingRequest, decision: String, reviewer: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn declined(r: KnowledgeBindingRequest, decision: String, reviewer: String, outcome: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn apply_refused(r: KnowledgeBindingRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     @unbounded
     fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {

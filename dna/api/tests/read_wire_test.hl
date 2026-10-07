@@ -10,7 +10,7 @@ locus ReadWireCases {
     fn repeated(n: Int, byte: Int) -> String {
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < n { b.append_u8(byte); i = i + 1; }
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn parity(value: String) {
         let old = std::json::Builder { }; old.begin_object(); old.string_field("value", value); old.end_object();

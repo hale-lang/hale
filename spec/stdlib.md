@@ -229,6 +229,12 @@ The discipline that follows:
    BytesBuilder` is `let b = std::bytes::BytesBuilder { ... };
    b.append(bytes)` (copies). The Builder → Bytes direction has
    a zero-cost path via `view()`; the reverse does not.
+   `snapshot()` and `finish()` are `-> Bytes
+   fallible(ClosureViolation)` (F.42): a failed allocation violates
+   `alloc_failed`, the owner's `on_failure` runs, and the call
+   fails, so each call carries an `or` (`b.snapshot() or raise`
+   where the activation should not go on). `view()` and
+   `text_view()` allocate nothing and are not fallible.
 3. **Long-lived accumulators live as locus state.** Either a
    method-body `let`-binding (dissolves at scope exit) or a
    param-typed field on the owning service locus (dissolves via

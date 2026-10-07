@@ -314,7 +314,7 @@ locus L {
     @hot fn drainy(b: std::bytes::BytesBuilder, x: Int) {
         let mut i = 0;
         while i < x {
-            let s = b.snapshot();
+            let s = b.snapshot() or raise;
             self.n = self.n + len(s);
             i = i + 1;
         }
@@ -341,7 +341,7 @@ locus L {
     fn drainy(b: std::bytes::BytesBuilder, x: Int) {
         let mut i = 0;
         while i < x {
-            let s = b.snapshot();
+            let s = b.snapshot() or raise;
             self.n = self.n + len(s);
             i = i + 1;
         }
