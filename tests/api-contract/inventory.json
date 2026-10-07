@@ -170,7 +170,7 @@
         "type": "Tokens"
       },
       "roles": {
-        "source": "self.admin_roles",
+        "source": "self.hub_roles",
         "type": "Grants"
       },
       "streams": [

@@ -441,6 +441,14 @@ fn an_exposure_is_its_surface_its_digest_and_its_name() {
     // The same surface served twice: one digest, two exposures (spec/api.md § The description).
     assert_eq!(digest_of_exposure["public"], digest_of_exposure["partner"]);
     assert_ne!(exposure_of(&inv, &format!("Public@{}/public", digest_of_exposure["public"].1))["roles"], exposure_of(&inv, &format!("Public@{}/partner", digest_of_exposure["partner"].1))["roles"], "the two exposures of Public are under two role sources");
+    // The hub's grants are the hub's: its role source is none of the
+    // rpc exposures', so `operator` through the hub (a bearer) and
+    // through `admin` (a Unix peer) are two grants.
+    for hub in inv["hubs"].as_array().unwrap() {
+        for e in inv["exposures"].as_array().unwrap() {
+            assert_ne!(hub["roles"], e["roles"], "hub {} shares its role source with exposure {}", hub["instance"], e["name"]);
+        }
+    }
 }
 
 /// Every `#/schemas/<T>` a value names, recursively.

@@ -18,15 +18,17 @@
 // What it exercises (spec/api.md § The witness): two surfaces sharing
 // `Orders::cancel` under different `requires`; `Public` over HTTP
 // twice, under two role sources and bound to two `Orders` instances,
-// and `Admin` over the Unix socket under a third; one fallible rpc
-// (`Orders::cancel`, the handler error); two rpcs that violate on a
-// structural limit (`Orders::place`, `Ledger::rebalance`), each
-// `fallible(ClosureViolation)` as F.42 makes any value-returning method
-// that may violate, so their failure is the server error; one outward
-// stream (`Fills`) through a hub. No fn here calls either violating
-// handler, so no `or` is written; one that did would write it. The
-// unbound case — a serve of `Public` naming no `Orders` while two are
-// held — is a check error and so is not here.
+// and `Admin` over the Unix socket under a third, its operator a Unix
+// peer (`uid:1000`); one fallible rpc (`Orders::cancel`, the handler
+// error); two rpcs that violate on a structural limit (`Orders::place`,
+// `Ledger::rebalance`), each `fallible(ClosureViolation)` as F.42 makes
+// any value-returning method that may violate, so their failure is the
+// server error; one outward stream (`Fills`) through a hub under a
+// fourth role source, whose operator is a bearer (`dave`), so a fixture
+// caller can subscribe. No fn here calls either violating handler, so
+// no `or` is written; one that did would write it. The unbound case — a
+// serve of `Public` naming no `Orders` while two are held — is a check
+// error and so is not here.
 
 role trader;
 role operator;
@@ -63,14 +65,17 @@ locus Tokens {
         if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
         if token == "t-bob" { return std::api::Principal { mode: "bearer", name: "bob" }; }
         if token == "t-carol" { return std::api::Principal { mode: "bearer", name: "carol" }; }
+        if token == "t-dave" { return std::api::Principal { mode: "bearer", name: "dave" }; }
         return std::api::Principal { mode: "bearer", name: "" };
     }
     fn refused() -> String { return "no such token"; }
 }
 
-// A role source: one holder per role. Three instances are three
+// A role source: one holder per role. Four instances are four
 // sources, and a grant in one is no grant in another, whatever the
-// role is called.
+// role is called: `operator` is `uid:1000`'s under `admin_roles` (the
+// Unix exposure) and `dave`'s under `hub_roles` (the hub), and neither
+// holds it under the other.
 locus Grants {
     params {
         trader: String = "";
@@ -127,10 +132,11 @@ main locus Desk {
         public_roles: Grants = Grants { trader: "alice" };
         partner_roles: Grants = Grants { trader: "carol" };
         admin_roles: Grants = Grants { operator: "uid:1000" };
+        hub_roles: Grants = Grants { operator: "dave" };
         orders: Orders = Orders { };
         partner_orders: Orders = Orders { next: 9001 };
         ledger: Ledger = Ledger { };
-        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.admin_roles };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles };
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
     }

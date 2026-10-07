@@ -335,9 +335,12 @@ state cannot tell it arrived.
 **Grants belong to the role-source instance**, never to a role name.
 `public_roles` and `partner_roles` above are two sources: `alice`
 holding `trader` in one holds nothing in the other, and the same
-application deployed twice with two sources shares no grant. A handler
-shared by two surfaces meets each surface's `requires` under each
-exposure's source.
+application deployed twice with two sources shares no grant. The
+fixture's `admin_roles` and `hub_roles` grant `operator` to two
+principals, the Unix peer `uid:1000` under the `admin` exposure and the
+bearer `dave` under the hub (§ Streams), and neither holds it under the
+other's source. A handler shared by two surfaces meets each surface's
+`requires` under each exposure's source.
 
 **`Context`** stays (#1108): a handler that declares `ctx:
 std::api::Context` receives the caller the serve site established
@@ -490,7 +493,10 @@ did not produce. Nothing beyond F.42 is asked of the handler.
 ## Streams
 
 ```hale,fragment
-params { hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.admin_roles }; }
+params {
+    hub_roles: Grants = Grants { operator: "dave" };
+    hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles };
+}
 bindings {
     Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
 }
@@ -636,12 +642,14 @@ by hand:
 - `program.hl`: two surfaces sharing `Orders::cancel` under different
   `requires`; `Public` over `http::Rpc` twice (`public`, `partner`),
   under two role sources and bound to two `Orders` instances; `Admin`
-  over `unix::Rpc` (`admin`) under a third; a fallible rpc
-  (`Orders::cancel`, `fallible(OrderError)`: the handler error); two
-  rpcs that violate (`Orders::place`, `Ledger::rebalance`, each
+  over `unix::Rpc` (`admin`) under a third, whose operator is the Unix
+  peer `uid:1000`; a fallible rpc (`Orders::cancel`,
+  `fallible(OrderError)`: the handler error); two rpcs that violate
+  (`Orders::place`, `Ledger::rebalance`, each
   `fallible(ClosureViolation)`: the server error); one outward stream,
-  `Fills`, through a `ws::Hub`. It is written in this document's syntax
-  and parses from R1 on;
+  `Fills`, through a `ws::Hub` under a fourth role source, `hub_roles`,
+  whose operator is the bearer `dave`. It is written in this document's
+  syntax and parses from R1 on;
 - `<exposure>.<caller>.description.json`: each exposure's description
   for two callers;
 - `inventory.json`: the program-wide document;
