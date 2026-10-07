@@ -390,6 +390,9 @@ fn the_validator_refuses_what_the_schema_forbids() {
     let mut inv = inventory();
     inv["exposures"][0]["receivers"] = json!([]);
     assert!(!errors_against_schema(&inv).is_empty(), "the schema accepts an exposure with no receiver");
+    let mut inv = inventory();
+    inv["hubs"][0]["streams"][0]["on_full"] = json!("refuse");
+    assert!(!errors_against_schema(&inv).is_empty(), "the schema accepts `refuse` as a stream's on_full (decision 17: drop_old or drop_new)");
 }
 
 /// The inventory's row of the named surface, exposure.
