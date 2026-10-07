@@ -2810,7 +2810,7 @@ locus TickJsonCodec {
         b.append_str("\",\"price\":");
         b.append_str(std::decimal::to_string(v.price));
         b.append_str("}");
-        return b.finish();
+        return b.finish() or fail EncodeError { kind: "alloc_failed" };
     }
     fn decode(b: Bytes) -> Tick fallible(DecodeError) {
         let w = std::json::Walker { src: std::str::from_bytes(b) };

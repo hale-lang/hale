@@ -13,7 +13,7 @@ fn exact_text() -> String {
     b.append_u8(127);
     i = len(prefix) + 32;
     while i < 8192 { b.append_u8(1); i = i + 1; }
-    return std::str::from_bytes(b.snapshot());
+    return std::str::from_bytes(b.snapshot() or raise);
 }
 
 main locus App {

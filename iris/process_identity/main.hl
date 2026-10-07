@@ -34,7 +34,7 @@ locus Identity {
         let digest = std::crypto::sha256(std::bytes::from_string("hale.iris.process.v1\n" + boot + "\n" + pid + "\n" + started + "\n" + probe.stdout));
         let digits = "0123456789abcdef"; let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < len(digest) { let byte = std::bytes::at(digest, i) or 0; b.append_u8(std::str::byte_at_unchecked(digits, byte / 16)); b.append_u8(std::str::byte_at_unchecked(digits, byte % 16)); i = i + 1; }
-        return ProcessIdentity { key: std::str::from_bytes(b.snapshot()), started: started };
+        return ProcessIdentity { key: std::str::from_bytes(b.snapshot() or raise), started: started };
     }
     fn registered_pid(path: String) -> Int {
         let size = std::io::fs::file_size(path) or - 1;

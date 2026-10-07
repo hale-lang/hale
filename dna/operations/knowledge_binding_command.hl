@@ -53,7 +53,7 @@ locus KnowledgeBindingCommandCodec {
         let b = std::bytes::BytesBuilder { };
         b.append_str("{\"format\":\"dna.knowledge-binding.request/1\","); b.append_str(fields[1..(len(fields) - 1)]);
         common.field(b, "command_payload", common.canonical(context, c)); common.field(b, "record_head", c.record_head);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_fact(e: dna::Event) -> KnowledgeFact {
         let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let wire = GovernanceCommandCodec { }; let common = KnowledgeCommandCodec { };

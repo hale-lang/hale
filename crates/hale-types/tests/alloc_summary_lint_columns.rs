@@ -25,7 +25,7 @@ fn pump(fd: Int, b: std::bytes::BytesBuilder) {
     while i < 3 {
         let c = make(i);
         let got = std::io::tcp::recv(fd, 8) or raise;
-        let s = b.snapshot();
+        let s = b.snapshot() or raise;
         Child { n: i };
         i = i + 1;
     }
@@ -104,8 +104,9 @@ fn calls_and_sites_where_written() {
     let recv = call(pump, CallSpelling::Path("std::io::tcp::recv".to_string()));
     assert_eq!(recv.allocating_recv.as_deref(), Some("std::io::tcp::recv"));
     assert!(recv.in_loop && recv.let_span.is_none(), "the `let`'s value is the `or`, not the call");
+    // `snapshot` is fallible (F.42): its `let` binds the `or` too.
     let snap = call(pump, CallSpelling::Method("snapshot".to_string()));
-    assert!(snap.in_loop && snap.let_span.is_some() && snap.allocating_recv.is_none());
+    assert!(snap.in_loop && snap.let_span.is_none() && snap.allocating_recv.is_none());
     let child = literal(&pump.sites, "Child");
     assert!(child.bare_stmt && child.in_loop && child.self_replace.is_none());
     // A `return` payload allocates once per call, and is written in a

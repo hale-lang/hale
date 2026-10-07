@@ -92,7 +92,7 @@ locus KnowledgeCases {
         let long_head = std::bytes::BytesBuilder { };
         let mut h = 0;
         while h < 129 { long_head.append_u8(97); h = h + 1; }
-        let ledger = self.field(self.field(self.field(basis, "routing_version", "\"1\""), "visibility_ledger_revision", "\"1\""), "visibility_ledger_head", "\"" + std::str::from_bytes(long_head.snapshot()) + "\"");
+        let ledger = self.field(self.field(self.field(basis, "routing_version", "\"1\""), "visibility_ledger_revision", "\"1\""), "visibility_ledger_head", "\"" + std::str::from_bytes(long_head.snapshot() or raise) + "\"");
         self.reject(request, self.field(body, "data", self.field(data, "basis", ledger)), 503);
         self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "snapshot", "\"private-secret\""))), 503);
         self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "returned", "0"))), 503);

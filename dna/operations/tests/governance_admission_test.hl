@@ -143,7 +143,7 @@ fn test_payload_bound(repo: String, byte: Int) {
     let digest = subject(repo, true); let context = who(repo);
     let text = std::bytes::BytesBuilder { }; let rationale = std::bytes::BytesBuilder { }; let mut i = 0;
     while i < 8192 { text.append_u8(byte); if i < 2048 { rationale.append_u8(114); } i = i + 1; }
-    let command = ops::GovernanceCommand { request_id: "maximum", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: std::str::from_bytes(text.snapshot()), rationale: std::str::from_bytes(rationale.snapshot()) };
+    let command = ops::GovernanceCommand { request_id: "maximum", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: std::str::from_bytes(text.snapshot() or raise), rationale: std::str::from_bytes(rationale.snapshot() or raise) };
     let service = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
     let result = service.submit(context, command);
     std::test::assert(result.ok, "advertised maximum payload persists: " + result.code);

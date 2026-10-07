@@ -133,7 +133,7 @@ locus OrganizationJson {
         let bytes = std::bytes::BytesBuilder { };
         let mut i = start;
         while i < end { bytes.append_u8(std::str::byte_at_unchecked(text, i)); i = i + 1; }
-        return std::str::from_bytes(bytes.snapshot());
+        return std::str::from_bytes(bytes.snapshot() or raise);
     }
     fn keyword(text: String, start: Int, size: Int, word: String) -> Int {
         let width = len(word);

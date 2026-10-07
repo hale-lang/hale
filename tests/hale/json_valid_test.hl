@@ -84,7 +84,7 @@ fn main() {
     raw_tab.append_u8(9);
     raw_tab.append_str("b\"");
     refute(
-        std::json::valid(std::str::from_bytes(raw_tab.snapshot())),
+        std::json::valid(std::str::from_bytes(raw_tab.snapshot() or raise)),
         "a raw tab inside a string"
     );
 
@@ -95,7 +95,7 @@ fn main() {
     truncated.append_u8(195);
     truncated.append_str("b\"");
     refute(
-        std::json::valid(std::str::from_bytes(truncated.snapshot())),
+        std::json::valid(std::str::from_bytes(truncated.snapshot() or raise)),
         "a truncated UTF-8 sequence"
     );
     let surrogate = std::bytes::BytesBuilder { };
@@ -105,7 +105,7 @@ fn main() {
     surrogate.append_u8(128);
     surrogate.append_str("\"");
     refute(
-        std::json::valid(std::str::from_bytes(surrogate.snapshot())),
+        std::json::valid(std::str::from_bytes(surrogate.snapshot() or raise)),
         "a surrogate encoded directly as UTF-8"
     );
 

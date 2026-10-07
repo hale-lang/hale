@@ -1019,7 +1019,7 @@ catch:
   `std::io::file::open(path: String) -> File fallible(IoError)`
   are constructors, not factory methods on existing loci.
 - **Methods returning primitives, records, or fallible-of-those.**
-  `BytesBuilder.finish() -> Bytes` is fine; `LeadingEdge.slope()
+  `BytesBuilder.finish() -> Bytes fallible(ClosureViolation)` is fine; `LeadingEdge.slope()
   -> Float` is fine.
 - **Methods returning nothing.** Commands stay commands.
 - **Namespace-lotus pattern.** `__StdLangLang.parse(src) -> Int`

@@ -296,7 +296,7 @@ locus GovernanceCommands {
             self.field(b, "review_id", command.target_id); self.field(b, "subject_digest", command.subject_digest); self.field(b, "verdict", command.verdict);
             self.field(b, "reviewer", context.principal_name); self.field(b, "authority", grant.authority); self.field(b, "comment", command.comment);
         }
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     // GH #1162: why `person` may not act as `holder`'s position, "" when
     // they may — a record that declares `dna.trust = local` is its one

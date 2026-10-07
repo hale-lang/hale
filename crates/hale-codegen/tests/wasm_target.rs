@@ -279,7 +279,7 @@ fn wasm_export_entry_inversion_persists_state() {
             let n = current() + 1;
             let b = std::bytes::BytesBuilder { };
             b.append_u32_le(n);
-            lotus_wasm_state_set(b.snapshot());
+            lotus_wasm_state_set(b.snapshot() or raise);
         }
         @export fn get() -> Int { return current(); }
     "#;

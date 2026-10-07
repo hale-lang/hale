@@ -264,7 +264,7 @@ locus AttemptCommandCodec {
                 self.field(b, "prompt_digest", c.prompt_digest); self.field(b, "renderer", c.renderer);
             }
         }
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {

@@ -25,7 +25,7 @@ locus OrganizationReviewCommandCodec {
         fields.field(b, "command_authority_basis", grant.basis); fields.field(b, "command_record_head", head);
         fields.field(b, "review_id", c.target_id); fields.field(b, "subject_digest", c.subject_digest); fields.field(b, "verdict", c.verdict);
         fields.field(b, "reviewer", context.principal_name); fields.field(b, "authority", grant.authority); fields.field(b, "comment", c.comment);
-        fields.field(b, "command_authority_profile", self.profile()); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        fields.field(b, "command_authority_profile", self.profile()); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode(e: dna::Event) -> OrganizationReviewCommandFact {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let schema = DefinitionCodec { };

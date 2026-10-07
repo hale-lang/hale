@@ -70,7 +70,7 @@ locus JsonSyntax {
             }
             i = i + 6;
         }
-        return std::str::from_bytes(bytes.snapshot());
+        return std::str::from_bytes(bytes.snapshot() or raise);
     }
     fn codepoints(raw: String) -> Int {
         let text = self.decoded(raw);

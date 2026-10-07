@@ -18,7 +18,7 @@ locus PracticeProvenanceCases {
     fn check(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "org", "{}");
         let text = std::bytes::BytesBuilder { }; text.append_str("Exact reason é 🧭\r\n"); text.append_u8(1);
-        let reason = std::str::from_bytes(text.snapshot());
+        let reason = std::str::from_bytes(text.snapshot() or raise);
         let context = ops::GovernanceContext { application_id: if mode == "foreign" { "foreign-app" } else { j.read(0).digest }, principal_mode: "local", principal_name: "alice" };
         let command = ops::KnowledgeCommand { request_id: "private-browser-key", operation: "dna.knowledge.node.propose", application_id: context.application_id,
             target_id: "org", record_head: j.head(), node_kind: "practice", name: "practice/provenance", text: "Keep exact native practice text.", author: "org", target: "org", rationale: reason };

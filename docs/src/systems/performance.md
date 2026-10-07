@@ -56,7 +56,7 @@ fn render(rows: Int) -> String {
         b.append(std::bytes::from_string(render_row(i)));
         i = i + 1;
     }
-    return std::str::from_bytes(b.finish());
+    return std::str::from_bytes(b.finish() or raise);
 }
 ```
 

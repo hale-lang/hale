@@ -96,7 +96,7 @@ locus OrganizationProjection {
             if code == "" || ((step == "check" || step == "fleet") && code != "0") { return false; }
             if i > 0 { b.append_str(" "); } b.append_str(step); b.append_str("="); b.append_str(code); i = i + 1;
         }
-        return std::str::from_bytes(b.snapshot()) == text.string(body, "evidence");
+        return std::str::from_bytes(b.snapshot() or raise) == text.string(body, "evidence");
     }
     fn candidate(j: dna::Journal, id: String, rows: String) -> OrganizationCandidateEvidence {
         let text = GovernanceCommandCodec { }; let codec = OrganizationCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { }; let view = GovernanceProjection { };
