@@ -232,6 +232,10 @@ and makes an **exposure**:
   kernel credentials (`mode: "unix"`, `name: "uid:<n>"`), so it takes
   no bearer source;
 - `as:` names the exposure, unique within the program;
+- `bound:` and `on_full:` state the exposure's queue: the requests
+  accepted and not yet answered that it holds, and `refuse`, the one
+  policy for a request (§ The request lifecycle); a serve site that
+  omits them is refused, as a topic binding without its bound is;
 - `receivers:` binds every locus type the surface's rows name to one
   instance. The bound instance is the destination: its pool is the
   dispatch pool and its lifetime bounds the exposure. When the serving
@@ -464,6 +468,12 @@ one connection authenticated once, at connect (R5).
   oldest undelivered frame, `drop_new` the frame being published);
   frames shed are counted and the count is reported on the next frame
   the subscriber receives.
+- **A hub without a surface is an exposure too,** of its stream rows
+  alone, identified `hub@<digest of its stream rows>/<name>` (the
+  hub's `as:`); a caller's description from its listener lists the
+  streams the caller may subscribe to. R5 fixes the stream digest's
+  framing, so the fixture's inventory lists `Fills` under its hub and
+  no per-caller description does yet.
 - **Replay.** A reconnect implies replay only if the binding provides
   it, and its row says whether it does; a hub binding provides none in
   v1, so a reconnecting subscriber receives what is published after it
