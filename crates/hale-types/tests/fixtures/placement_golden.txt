@@ -981,6 +981,19 @@ row	App@literal1	App	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
+== crates/hale-cli/tests/styleguide_claims.rs#e132d529
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.t	Table	main	default
+
+== crates/hale-cli/tests/styleguide_claims.rs#b89724c9
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.lf	Lf	main	default
+row	App@literal1.p	Plain	main	default
+row	App@literal1.se	Ser	main	default
+row	App@literal1.st	Str	main	default
+
 == crates/hale-cli/tests/target_model.rs#e644e39b
 root	App	the entry
 domain	pool:io	async_io

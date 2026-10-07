@@ -103,8 +103,8 @@ the order you should reach for them:
    since v0.11.3 — *retires* the replaced String clones at the
    method's activation boundary, recycling them on the next
    store. Steady-state replace of a scalar/String struct holds
-   the arena flat. (Structs carrying `Bytes` / nested compound
-   fields aren't fully retired yet — see §7.)
+   the arena flat, and so does a struct carrying `Bytes`. (Nested
+   compound fields aren't retired yet — see §7.)
 4. **Bound the container.** `capacity` slots, `bounded[T; N]`,
    `@form(ring_buffer)` / `@form(lru_cache)` are cap-bounded by
    type.
@@ -125,9 +125,9 @@ in this guide runs its body through a method.)
 
 ## 2. The shape catalog
 
-Seven idiomatic shapes. Every locus or free fn in a well-written
-program matches one; code that doesn't should be reconsidered
-against the catalog before shipping.
+Eight idiomatic shapes. Every locus, type or free fn in a
+well-written program matches one; code that doesn't should be
+reconsidered against the catalog before shipping.
 
 ### 2.1 App locus — outer encapsulation
 
@@ -155,8 +155,8 @@ fn main() {
   app self-demos with no flags).
 - Statement-position literals fire-and-forget: the locus runs and
   dissolves at fn-return.
-- Lifecycle bodies reject `return` — factor short-circuit logic
-  into a free helper called from `run()`.
+- A lifecycle body short-circuits with `return;` as a method does
+  (`birth`, `run` and `dissolve` alike).
 
 ### 2.2 Namespace locus — empty params, methods only
 
@@ -260,9 +260,10 @@ This shape recurs across every production codebase surveyed (a
 downstream service defines it four times; `pond` and `bench`
 pervasively). Conventions learned there:
 
-- Cell types must be **unqualified in-seed structs** — not loci,
-  not qualified paths (F.1 constraint; forces cell decls into
-  the same seed).
+- Cell types are **data, never loci** — a locus cell is refused
+  (§7, deliberate absences). A struct from an imported seed or the
+  stdlib is a cell type like an in-seed one (`shared::Quote`,
+  `std::http::Request`).
 - `@form(hashmap)` iterates in **bucket order** — add a
   `seq: Int` field if consumers need insertion order.
 - `@form(hashmap)` has no delete — model removal with a
@@ -413,6 +414,59 @@ locus DbConnection {
   sentinel return (`pond` logfmt's file sink is the reference
   shape).
 
+### 2.8 Quantity — a counted unit, not a bare Int
+
+Declare a quantity when a number has a unit a reader could get
+wrong: money, time, bytes, ticks. The value is still the `Int` it
+counts, but the compiler now refuses the mix-ups (`5ms + 4KiB`, a
+bare count where a duration goes) and makes every exact conversion
+for you.
+
+```hale
+unit cent;
+unit USD = 100 cent;
+unit B;
+unit KiB = 1024 B;
+unit mK;
+
+type Money = quantity Int in cent;
+type ByteCount = quantity Int in B;
+type TempDelta = quantity Int in mK;
+type Celsius = point TempDelta { origin: 273_150 mK; }
+
+type Line { qty: Int; price: Money; }
+
+fn total(l: Line) -> Money { return l.qty * l.price; }
+
+fn main() {
+    let l = Line { qty: 3, price: 12USD };
+    let cap: ByteCount = 4KiB;
+    let room = Celsius(21_000mK);
+    let started = std::time::monotonic();
+    if std::time::monotonic() - started > 50ms { println("slow"); }
+    println(total(l), " ", cap, " ", room);
+}
+```
+
+- **Name the catalogue once.** A unit is one node of the whole
+  program, so it is declared once, in the seed that owns its domain;
+  an importer writes `12USD` with no prefix, and a second `unit
+  cent;` anywhere in the program is an error. Time is declared
+  already: `ns` to `day`, `Duration` and `Time` are the stdlib's.
+- **A point for a reading whose zero is a convention** — a
+  temperature, a price, an instant (`Time` is one). Two points
+  differ by a quantity and never add; `origin:` says where the
+  point's zero sits.
+- **Hold clock readings as `Time` and `Duration`**, not as `Int`
+  nanoseconds: every sum, difference, scaling and comparison of them
+  is typed, and the representation is the same `i64`.
+- **A bare `Int` is right for a count of things** — an index, a
+  length, a number of items (`qty` above). `qty * price` is `Money`;
+  the count has no unit to get wrong.
+
+Narrowing is C8. The contract is `spec/units.md`, the walk-through
+the book's "Units, end to end".
+
 ### Naming conventions
 
 | Construct | Convention | Example |
@@ -423,6 +477,18 @@ locus DbConnection {
 | Free fn | bare snake_case | `drive`, `handle_one_connection` |
 | Bus subject | dot-separated, lowercase | `log.app.db` |
 | Constants | UPPER_SNAKE_CASE | `STDLIB_AP_SOURCE` |
+| Unit | its symbol: short, in the case its domain writes it | `ms`, `bp`, `cent`, `KiB`, `USD` |
+
+A unit name is written against a number with no space (`500ms`,
+`3bp`), so it reads like the stdlib's time units: short and mostly
+lower-case, with an established symbol keeping its case (`KiB`,
+`mK`). Two names are refused outright: one a
+literal already owns as a suffix (`d` is the Decimal literal's, `e5`
+a Float exponent — "unit `d`: a unit named `d` collides with the
+Decimal literal's suffix: `3d` is the Decimal `3`; give it another
+name"), and a builtin type's (`Bytes`, `String`), which a type
+position reads before any declaration. Hence `ByteCount`, not
+`Bytes`, for a count of `B`.
 
 Library exports: pick short lowercase import aliases; name decls
 to read naturally under the alias (`fin::Quote`, not
@@ -449,7 +515,9 @@ Two gates now run in the normal suite:
   changes, the test fails and names the entry to update.
   (same file, plus `hale-cli/tests/styleguide_claims.rs` for the
   claims that are codegen limits rather than typecheck limits — a
-  split worth knowing, because those are invisible to `hale check`.)
+  split worth knowing, because those are invisible to `hale check` —
+  and for the retirement gaps, which only a running program's
+  resident set shows.)
 
 If you add a claim about the language here, add the test with it.
 
@@ -557,8 +625,12 @@ websocket's client is the reference). **[convention]**
 - A single-writer state locus read from other pools: pin it, and
   poll scalar fields across pools rather than sharing heap
   values. **[convention]**
-- TLS I/O never goes on an async_io pool (its recv blocks the
-  worker; no park integration yet — see §7). **[convention]**
+- TLS on an async_io pool reads with `recv_into` /
+  `recv_stamped_into`, which park the coroutine. The handshake
+  (`connect`, `upgrade`) and `recv_bytes` still block the worker
+  (§7), and the compiler warns where a handler on such a pool
+  reaches them — so does `std::http`'s https client, which uses
+  both. **[warn]**
 
 ### C4. accept / release — flows, not residents
 
@@ -673,13 +745,54 @@ only when you genuinely care about one or two classes]**
 
 ### C7. `@form` constraints (the sharp edges of 2.5)
 
-- Cell types: unqualified in-seed structs only. **[error]**
+- Cell types: data, never a locus. A struct from another seed or
+  the stdlib qualifies; spell the stdlib's time types bare, `Time`
+  and `Duration`
+  (§7). **[error]**
 - Hashmap iteration is bucket-order → `seq` field for order;
   no delete → tombstone. **[convention]**
-- A fixed-array *field* (`[Int; N]` on a struct) is out-of-line
-  storage — it dangles across a zero-copy SHM boundary even
-  though typecheck accepts it; SHM payloads need scalar fields.
-  **[convention — see §7]**
+
+### C8. Narrow with a policy, never by hand
+
+A conversion that divides can lose a remainder: `/` by a literal, a
+quantity into a coarser denomination (`.in(USD)`, a binding or a
+field of a coarser type). Each says what becomes of the remainder —
+`or floor`, `or ceil`, `or trunc`, `or half_up`, `or half_even`,
+`or <value>`, `or raise`, `or fail E { … }` — or the target type
+says it once with `{ round: …; }`:
+
+```hale
+unit cent;
+unit USD = 100 cent;
+type Money = quantity Int in cent;
+
+fn main() {
+    let fee: Money = 250cent;
+    let share = fee / 3 or half_even;
+    let dollars = fee.in(USD) or floor;
+    let count: Int = (fee.in(USD) or half_even) / 1USD;
+    let wait = 1500ms.in(s) or ceil;
+    println(share, " ", dollars, " ", count, " ", wait);
+}
+```
+
+Two reasons. The compiler refuses the bare form, at the site:
+
+```text
+type error: `Money` divided by 2 leaves a remainder: say what happens to the remainder: `or floor`, `or <value>`, `or raise`, or give `Money` a `round:` policy
+```
+
+And the policy is the reader's record of the rounding: a ledger
+that rounds half-even says so where it does, instead of in an
+`Int` division three calls away. Don't route around it by dividing
+`Int`s you pulled out of a quantity — that is the hand-rolled
+rounding the rule exists to name.
+
+The one division that takes no policy is a quantity's count in a
+unit, `fee / 1USD`: an `Int` quotient that truncates toward zero,
+as `Int`'s `/` does, and a runtime divisor (`d / n`) is the same
+integer division. When the count must round another way, narrow
+first, as `count` above does. **[error for an unnamed narrowing]**
 
 ---
 
@@ -790,7 +903,12 @@ code does not need to be monolithic code. **[convention]**
 
 Transitively pointer-free payload types skip the serialize/
 deserialize wire path entirely on cross-thread delivery — prefer
-scalar payloads for high-rate topics. For high-rate consumers,
+scalar payloads for high-rate topics. A `where zero_copy` binding
+holds its payload to that shape at check: scalar fields, nested flat
+structs, and fixed arrays of `Int` / `Float` / `Bool` / `Decimal` /
+`Duration`, which are laid out inline; an array of structs or of
+`Time`, a slice, a `String` or `Bytes` is refused ("payload type …
+is not flat-shapeable"). For high-rate consumers,
 a `Drain<T>` handler runs once per queue drain with a zero-copy
 `for` over the batch instead of once per message. **[convention]**
 
@@ -929,7 +1047,7 @@ certify a path — plus one tier you get for free because your
 
 | Tier | Check | Status |
 |---|---|---|
-| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match; `@form` cell constraints | build fails |
+| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match; `@form` cell constraints; the unit laws, and a narrowing with no policy (C8) | build fails |
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
@@ -938,7 +1056,7 @@ certify a path — plus one tier you get for free because your
 | **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
-| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --flows` (which `release` clause makes each type a flow); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof) | opt-in reports |
+| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --flows` (which `release` clause makes each type a flow); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof); `hale check --units` (every narrowing by site, with its factor and the policy that discharged it and where that policy came from, and each quantity's headroom — record it and review its diff) | opt-in reports |
 
 ### Where law lives
 
@@ -1010,7 +1128,7 @@ thread / pool / subject / fd counts in CI — see
   per-iteration work through a method.
 - **Deep `} else { if` ladders** — `else if` and `match` are
   first-class; String-match the command routers.
-- **Floating quantities** — every named quantity has one locus
+- **Floating state** — every named piece of state has one locus
   owner. State that "lives between loci" is a modeling error.
 
 ---
@@ -1023,9 +1141,12 @@ you should stop wanting (the design says no, and names the shape
 to use instead), gaps you can expect to close (write the
 workaround knowing it's temporary), and sharp edges you step
 around (current limitations, no promise either way). Current as
-of v0.11.3 (2026-07-17); shipped-and-gone entries are removed on
-shipping — keyed String routing, match-as-expression, and
-whole-struct replace reclamation all lived here once.
+of v0.22.0 (2026-10-07); shipped-and-gone entries are removed on
+shipping — keyed String routing, match-as-expression, whole-struct
+replace reclamation, `err` in an `or fail` payload, `Duration`
+arithmetic, `return` in a lifecycle body, inline fixed-array
+payload fields and qualified `@form` cell types all lived here
+once.
 
 ### Deliberate absences — the design says no
 
@@ -1060,21 +1181,32 @@ absent thing means fighting the design, not waiting on it.
   `self`, or routes through bus subjects. A capturing lambda
   would be an anonymous locus without lifecycle or contracts;
   name it instead.
+- **A locus is never a `@form` cell.** Cells are data a form
+  copies, recycles and frees; a locus has a lifecycle that would be
+  orphaned by it. The compiler says so: "cell type cannot be a
+  locus. Cells are data; loci are managed entities … Route locus
+  membership through `accept(c: Worker)` instead". Accept the
+  children, and keep a `@form(hashmap)` of their keys beside them if
+  you need lookup by name.
 
 ### Open gaps — expect these to close
 
 Write the workaround knowing it's a placeholder.
 
 - **Nested-compound fields of a replaced struct don't retire**,
-  nor Bytes fields of a replaced `@form(hashmap)` cell. (String
-  leaves do since v0.11.3; Bytes fields of a self-field struct store
-  and of a vec element do since GH #1033 / #1037.) Until then:
-  a genuinely-churning Bytes field of a map cell in a reused
+  nor Bytes fields of a replaced `@form(hashmap)` cell: each
+  replace leaves the old one in the arena (measured on v0.22.0,
+  ~6 MiB and ~4.5 MiB of resident growth over 200 000 replaces,
+  where a String-only struct holds flat). String leaves retire
+  since v0.11.3; Bytes fields of a self-field struct store and of a
+  vec element since GH #1033 / #1037. Until then: a
+  genuinely-churning Bytes field of a map cell in a reused
   `BytesBuilder`; nested compound fields in their own locus or
   flattened.
 - **`striped` / `lockfree` `@form` maps don't retire** replaced
   cells — a churned String-bearing cell on those modes still
-  accumulates. (`sync = serialized` retires since 2026-08-03:
+  accumulates (~2.3 MiB over 200 000 replaces of 16 keys, on
+  each). (`sync = serialized` retires since 2026-08-03:
   reads are owned snapshots cloned into the caller's arena, so
   churned shared maps no longer need to stay single-pool. The
   clone is per String field per read — a read-heavy hot path on
@@ -1084,39 +1216,49 @@ Write the workaround knowing it's a placeholder.
   topic shape). Keyed routing covers the *bounded/known* key-set
   case — including String keys — but an unbounded,
   runtime-created subject set still has no shape.
-- **TLS has no async_io integration** — its recv blocks the
-  thread, not the coro. Keep TLS off async_io pools (C3) until
-  non-blocking TLS reads land.
-- **`or fail E { ... }` payloads can't reference `err`.** Wrap
-  the fallible call in a helper that catches-and-rebuilds the
-  error (the `pond` subprocess wrapper is the reference).
-- **Duration arithmetic in expression position** is limited —
-  hold clock readings as Int ns from the start (`monotonic_ns`),
-  which is also the fast path (no ASCII round-trip).
+- **TLS parks only its reads into a builder.** On a `where
+  async_io` pool `recv_into` / `recv_stamped_into` park the
+  coroutine; the handshake (`connect`, `upgrade`) and `recv_bytes`
+  block the thread, and `send_bytes` is a plain `SSL_write` on it.
+  Read with `recv_into`, and keep the handshake — and the
+  `std::http` https client, which uses `connect` and `recv_bytes` —
+  off async_io pools (C3).
 
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-One is soundness-adjacent and worth knowing cold.
+Three of them pass `hale check` and fail only at `hale build`, and
+one hands a caller a value nothing computed: know those cold.
 
-- **Fixed-array struct fields are out-of-line pointers, and
-  typecheck accepts them in zero-copy SHM payloads** — where
-  they dangle cross-process. This is the sharpest edge in the
-  list: the compiler does not stop you. SHM payloads need scalar
-  fields (the 512-hand-spelled-fields workaround in `bench`
-  marks the pain; a flattening form is future work).
-- **`@form` cell types can't be loci or qualified paths** — keep
-  cell structs in-seed (C7).
-- **Lifecycle bodies reject `return`** — factor short-circuit
-  logic into a free helper. Related paper cut: empty `if`
-  bodies parse-fail (add a comment or invert the condition).
-  (`-> ()` on a non-fallible method was a paper cut here until
-  2026-08-11; it is now a no-op unit annotation everywhere.)
-- **No char-level `s[i]`** — use `s[i..i+1]` slices,
-  `std::str::index_of`, or the UTF-8 accessors
+- **No char-level `s[i]`** — and the checker doesn't say so:
+  `s[1]` on a `String` typechecks, then the build fails with
+  "indexing a non-array value (type String)". Use `s[i..i + 1]`
+  slices, `std::str::index_of`, or the UTF-8 accessors
   `std::str::cp_at` / `cp_size` / `cp_count` when you need code
   points rather than bytes. There is still no `Char` type;
   `cp_at` yields the code point as an `Int`.
+- **Write the stdlib's time types bare: `Time` and `Duration`, not
+  `std::time::Time` or `std::time::Duration`.** The qualified
+  spelling typechecks as a field, a `@form` cell type or a fn
+  parameter and fails at build ("qualified type
+  `std::time::Duration` not in stdlib path-renames table"). A
+  qualified `let` annotation builds, but the binding is not the
+  quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
+  write it bare there too.
+- **An `Int` returned from a `-> Float` fn** typechecks and fails
+  at build ("return type mismatch: declared Float, got Int").
+  Return `Float(n)`. (Fix in progress.)
+- **An `Int` does not widen into a `Float` let or field.** `let x:
+  Float = 5;`, `= self.n;` or `= n;` and a struct literal's `Float`
+  field given an `Int` are refused ("expected `Float`, got `Int`"),
+  although `spec/types.md` § "Numeric coercion" lists both as
+  widening surfaces. A call's argument and a mixed binop do widen.
+  Write `Float(n)` or `5.0`. (Fix in progress.)
+- **`violate` inside a value-returning fn** diverges, and the
+  caller carries on with an undefined return value. Check
+  `self.draining` before using the result (2.7's guarded publish
+  is the shape), or `violate` from a fn returning nothing and let
+  the caller test `self.draining`. (Fix in progress.)
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows
