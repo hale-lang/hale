@@ -1539,6 +1539,14 @@ common base — there is no `Error` trait, no `impl Error for
 ParseError`. Failure is a single anonymous fact; the payload is
 just a value tagged onto the failure for diagnostic purposes.
 
+Across an API boundary the payload is a contract: a `fallible(E)`
+handler that a surface row names (`spec/api.md` § Surfaces and their
+rows) has `E` as the row's error type, hashed into the surface's
+digest, described as the member's error schema and carried to the
+caller as the handler error outcome (422 over HTTP, `{"ok": false,
+"error": E}` over the Unix socket; `spec/api.md` § Outcomes), encoded
+by the exposure's codec like the response.
+
 ### Synthesized stdlib payload types
 
 The resolver injects four fallible-payload types into the top
@@ -1598,6 +1606,11 @@ own site, and a gated handler's topic cannot also be bound to a
 transport in `bindings { }`, which has no gate. A `@gated` in a program without an api binding is inert and
 legal: the requirement is form, true in every deployment; who holds
 the role is params.
+
+`spec/api.md` replaces `@gated` with a row's `requires: [R, …]` (GH
+#1417): the requirement is a property of the surface row, never of the
+handler, so one handler shared by two surfaces meets each surface's.
+`role` declarations and `includes` stay the vocabulary both read.
 
 ## Recovery-primitive typing
 

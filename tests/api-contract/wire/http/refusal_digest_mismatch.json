@@ -1,0 +1,34 @@
+{
+  "wire": 1,
+  "transport": "http",
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
+  "outcome": "refusal",
+  "kind": "digest_mismatch",
+  "request": {
+    "method": "POST",
+    "path": "/call/Orders::place",
+    "headers": {
+      "Authorization": "Bearer t-alice",
+      "Content-Type": "application/json",
+      "Hale-Surface-Digest": "fnv1a64:0123456789abcdef"
+    },
+    "body": {
+      "symbol": "ACME",
+      "qty": 10,
+      "limit": 12500
+    }
+  },
+  "reply": {
+    "status": 409,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "refusal": {
+        "kind": "digest_mismatch",
+        "reason": "the request was generated against fnv1a64:0123456789abcdef",
+        "served": "fnv1a64:a8930d6e7998e986"
+      }
+    }
+  }
+}

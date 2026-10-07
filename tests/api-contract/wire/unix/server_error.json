@@ -1,0 +1,34 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
+  "outcome": "server_error",
+  "peer": {
+    "uid": 1000,
+    "gid": 1000,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Ledger::rebalance",
+    "payload": {
+      "book": ""
+    },
+    "id": "c-9",
+    "digest": "fnv1a64:40381db6685c9f75"
+  },
+  "reply": {
+    "request_id": 9,
+    "id": "c-9",
+    "ok": false,
+    "refusal": {
+      "kind": "server"
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    }
+  }
+}

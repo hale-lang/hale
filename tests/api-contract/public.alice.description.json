@@ -1,0 +1,166 @@
+{
+  "description": 1,
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
+  "name": "public",
+  "surface": "Public",
+  "digest": "fnv1a64:a8930d6e7998e986",
+  "listener": {
+    "transport": "http",
+    "address": "127.0.0.1:8080"
+  },
+  "codec": "json",
+  "caller": {
+    "principal": {
+      "mode": "bearer",
+      "name": "alice"
+    },
+    "roles": [
+      "trader"
+    ]
+  },
+  "members": [
+    {
+      "name": "Orders::cancel",
+      "request": {
+        "$ref": "#/schemas/CancelOrder"
+      },
+      "response": {
+        "$ref": "#/schemas/Cancelled"
+      },
+      "error": {
+        "$ref": "#/schemas/OrderError"
+      },
+      "requires": [
+        "trader"
+      ]
+    },
+    {
+      "name": "Orders::place",
+      "request": {
+        "$ref": "#/schemas/PlaceOrder"
+      },
+      "response": {
+        "$ref": "#/schemas/OrderReceipt"
+      },
+      "error": "ClosureViolation",
+      "requires": []
+    }
+  ],
+  "streams": [],
+  "outcomes": {
+    "transport": "http",
+    "result": {
+      "status": 200,
+      "body": "response"
+    },
+    "handler_error": {
+      "status": 422,
+      "body": "error"
+    },
+    "refusal": {
+      "body": "refusal",
+      "status": {
+        "malformed": 400,
+        "digest_mismatch": 409,
+        "unauthenticated": 401,
+        "unauthorized": 403,
+        "full": 429,
+        "shutting_down": 503
+      }
+    },
+    "server_error": {
+      "status": 500,
+      "body": "refusal"
+    },
+    "transport_failure": "the transport's own: the connection ends without a response"
+  },
+  "schemas": {
+    "CancelOrder": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    },
+    "Cancelled": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "was_open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "order",
+        "was_open"
+      ]
+    },
+    "OrderError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "OrderReceipt": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "notional": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "order",
+        "notional"
+      ]
+    },
+    "PlaceOrder": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "qty": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "symbol",
+        "qty",
+        "limit"
+      ]
+    }
+  },
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back",
+    "discovery": "this document lists what this caller may use under this exposure's role source; the server still authorizes every request"
+  }
+}

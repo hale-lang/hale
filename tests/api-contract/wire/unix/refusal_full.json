@@ -1,0 +1,36 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
+  "outcome": "refusal",
+  "kind": "full",
+  "peer": {
+    "uid": 1000,
+    "gid": 1000,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Ledger::rebalance",
+    "payload": {
+      "book": "main"
+    },
+    "id": "c-7",
+    "digest": "fnv1a64:40381db6685c9f75"
+  },
+  "reply": {
+    "request_id": 7,
+    "id": "c-7",
+    "ok": false,
+    "refusal": {
+      "kind": "full",
+      "reason": "the exposure holds its bound of requests accepted and not yet answered"
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    }
+  }
+}

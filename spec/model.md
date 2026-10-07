@@ -234,6 +234,15 @@ beside it. It is not a reversible wire form of the model — the
 boundary above stands — and it admits nothing: a consumer reads it,
 never builds a model from it.
 
+`spec/api.md` (GH #1417) replaces it with model rows: the `surface`
+family (`spec/registry.md`), one row per `rpc` line of an `api` block
+or `@rpc` handler — the surface, the member, the request, response and
+error types as payload contracts, the pool and the required roles —
+from which the surface's contract digest is folded and every
+description is rendered, per exposure, from the rows dispatch reads.
+The family is reserved until R1 produces it; the description above is
+today's.
+
 ## Sorts — the entity tables
 
 `Entities` holds fifteen tables. A row's **id is its index** in its

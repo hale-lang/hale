@@ -1,0 +1,158 @@
+{
+  "description": 1,
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
+  "name": "admin",
+  "surface": "Admin",
+  "digest": "fnv1a64:40381db6685c9f75",
+  "listener": {
+    "transport": "unix",
+    "address": "/run/desk/admin.sock"
+  },
+  "codec": "json",
+  "caller": {
+    "principal": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    },
+    "roles": [
+      "operator"
+    ]
+  },
+  "members": [
+    {
+      "name": "Ledger::rebalance",
+      "request": {
+        "$ref": "#/schemas/Rebalance"
+      },
+      "response": {
+        "$ref": "#/schemas/Rebalanced"
+      },
+      "error": "ClosureViolation",
+      "requires": [
+        "operator"
+      ]
+    },
+    {
+      "name": "Orders::cancel",
+      "request": {
+        "$ref": "#/schemas/CancelOrder"
+      },
+      "response": {
+        "$ref": "#/schemas/Cancelled"
+      },
+      "error": {
+        "$ref": "#/schemas/OrderError"
+      },
+      "requires": [
+        "operator"
+      ]
+    }
+  ],
+  "streams": [],
+  "outcomes": {
+    "transport": "unix",
+    "result": {
+      "ok": true,
+      "field": "value"
+    },
+    "handler_error": {
+      "ok": false,
+      "field": "error"
+    },
+    "refusal": {
+      "ok": false,
+      "field": "refusal",
+      "kinds": [
+        "malformed",
+        "digest_mismatch",
+        "unauthenticated",
+        "unauthorized",
+        "full",
+        "shutting_down"
+      ]
+    },
+    "server_error": {
+      "ok": false,
+      "field": "refusal",
+      "kind": "server"
+    },
+    "transport_failure": "eof"
+  },
+  "schemas": {
+    "CancelOrder": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    },
+    "Cancelled": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "was_open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "order",
+        "was_open"
+      ]
+    },
+    "OrderError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "Rebalance": {
+      "type": "object",
+      "properties": {
+        "book": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "book"
+      ]
+    },
+    "Rebalanced": {
+      "type": "object",
+      "properties": {
+        "moved": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "moved"
+      ]
+    }
+  },
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back",
+    "discovery": "this document lists what this caller may use under this exposure's role source; the server still authorizes every request"
+  }
+}

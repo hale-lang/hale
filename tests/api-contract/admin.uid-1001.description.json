@@ -1,0 +1,59 @@
+{
+  "description": 1,
+  "exposure": "Admin@fnv1a64:40381db6685c9f75/admin",
+  "name": "admin",
+  "surface": "Admin",
+  "digest": "fnv1a64:40381db6685c9f75",
+  "listener": {
+    "transport": "unix",
+    "address": "/run/desk/admin.sock"
+  },
+  "codec": "json",
+  "caller": {
+    "principal": {
+      "mode": "unix",
+      "name": "uid:1001",
+      "uid": 1001,
+      "gid": 1001,
+      "pid": 4242
+    },
+    "roles": []
+  },
+  "members": [],
+  "streams": [],
+  "outcomes": {
+    "transport": "unix",
+    "result": {
+      "ok": true,
+      "field": "value"
+    },
+    "handler_error": {
+      "ok": false,
+      "field": "error"
+    },
+    "refusal": {
+      "ok": false,
+      "field": "refusal",
+      "kinds": [
+        "malformed",
+        "digest_mismatch",
+        "unauthenticated",
+        "unauthorized",
+        "full",
+        "shutting_down"
+      ]
+    },
+    "server_error": {
+      "ok": false,
+      "field": "refusal",
+      "kind": "server"
+    },
+    "transport_failure": "eof"
+  },
+  "schemas": {},
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back",
+    "discovery": "this document lists what this caller may use under this exposure's role source; the server still authorizes every request"
+  }
+}

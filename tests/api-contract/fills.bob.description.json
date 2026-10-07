@@ -1,0 +1,84 @@
+{
+  "description": 1,
+  "exposure": "hub@fnv1a64:26970854397ab154/fills",
+  "name": "fills",
+  "surface": null,
+  "digest": "fnv1a64:26970854397ab154",
+  "listener": {
+    "transport": "ws",
+    "address": "127.0.0.1:9000"
+  },
+  "codec": "json",
+  "caller": {
+    "principal": {
+      "mode": "bearer",
+      "name": "bob"
+    },
+    "roles": []
+  },
+  "members": [],
+  "streams": [],
+  "outcomes": {
+    "transport": "ws",
+    "subscribe": {
+      "type": "subscribe",
+      "fields": [
+        "topic"
+      ]
+    },
+    "subscribed": {
+      "type": "subscribed",
+      "fields": [
+        "topic"
+      ]
+    },
+    "refusal": {
+      "type": "refusal",
+      "fields": [
+        "topic",
+        "refusal"
+      ],
+      "kinds": [
+        "malformed",
+        "unauthenticated",
+        "unauthorized",
+        "shutting_down"
+      ]
+    },
+    "event": {
+      "type": "event",
+      "fields": [
+        "topic",
+        "seq",
+        "payload"
+      ]
+    },
+    "unauthorized": {
+      "type": "unauthorized",
+      "fields": [
+        "topic",
+        "reason"
+      ],
+      "reasons": [
+        "expired",
+        "revoked"
+      ]
+    },
+    "closed": {
+      "type": "closed",
+      "fields": [
+        "reason"
+      ],
+      "reasons": [
+        "shutting_down"
+      ]
+    },
+    "transport_failure": "the connection closes without a closed frame"
+  },
+  "schemas": {},
+  "notes": {
+    "authorization": "requires is checked against this hub's role source when a subscription is admitted, and again at the credential's expiry and at every role-source revision: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a subscription invalidated by expiry or revocation receives one unauthorized frame and loses what it had buffered; stop() sends closed, and a reconnect replays only what a stream's replay says",
+    "discovery": "this document lists the streams this caller may subscribe to under this hub's role source; the hub still authorizes every subscription"
+  }
+}

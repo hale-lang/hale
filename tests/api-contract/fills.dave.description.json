@@ -1,0 +1,126 @@
+{
+  "description": 1,
+  "exposure": "hub@fnv1a64:26970854397ab154/fills",
+  "name": "fills",
+  "surface": null,
+  "digest": "fnv1a64:26970854397ab154",
+  "listener": {
+    "transport": "ws",
+    "address": "127.0.0.1:9000"
+  },
+  "codec": "json",
+  "caller": {
+    "principal": {
+      "mode": "bearer",
+      "name": "dave"
+    },
+    "roles": [
+      "operator"
+    ]
+  },
+  "members": [],
+  "streams": [
+    {
+      "topic": "Fills",
+      "subject": "desk.fills",
+      "direction": "out",
+      "payload": {
+        "$ref": "#/schemas/Fill"
+      },
+      "codec": "json",
+      "bound": 64,
+      "on_full": "drop_old",
+      "loss": "at most once per admitted subscriber, in publish order; drop_old sheds the oldest undelivered frame, and seq counts every event offered to the subscription, so a gap in seq is the frames shed; a subscription invalidated by expiry or revocation loses what it had buffered",
+      "replay": false,
+      "requires": [
+        "operator"
+      ]
+    }
+  ],
+  "outcomes": {
+    "transport": "ws",
+    "subscribe": {
+      "type": "subscribe",
+      "fields": [
+        "topic"
+      ]
+    },
+    "subscribed": {
+      "type": "subscribed",
+      "fields": [
+        "topic"
+      ]
+    },
+    "refusal": {
+      "type": "refusal",
+      "fields": [
+        "topic",
+        "refusal"
+      ],
+      "kinds": [
+        "malformed",
+        "unauthenticated",
+        "unauthorized",
+        "shutting_down"
+      ]
+    },
+    "event": {
+      "type": "event",
+      "fields": [
+        "topic",
+        "seq",
+        "payload"
+      ]
+    },
+    "unauthorized": {
+      "type": "unauthorized",
+      "fields": [
+        "topic",
+        "reason"
+      ],
+      "reasons": [
+        "expired",
+        "revoked"
+      ]
+    },
+    "closed": {
+      "type": "closed",
+      "fields": [
+        "reason"
+      ],
+      "reasons": [
+        "shutting_down"
+      ]
+    },
+    "transport_failure": "the connection closes without a closed frame"
+  },
+  "schemas": {
+    "Fill": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "qty": {
+          "type": "integer"
+        },
+        "price": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "order",
+        "qty",
+        "price"
+      ]
+    }
+  },
+  "notes": {
+    "authorization": "requires is checked against this hub's role source when a subscription is admitted, and again at the credential's expiry and at every role-source revision: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a subscription invalidated by expiry or revocation receives one unauthorized frame and loses what it had buffered; stop() sends closed, and a reconnect replays only what a stream's replay says",
+    "discovery": "this document lists the streams this caller may subscribe to under this hub's role source; the hub still authorizes every subscription"
+  }
+}

@@ -32,6 +32,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Canonical | law | `closure_event_rows` | 0 | Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep. |
 | `api_surface` | Layer 3 | Canonical | derivation | `api_surface` | 0 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form; and the role rows: every `role` declaration, every `@gated` site and the api entry's role source, with or without an `api:` entry. |
+| `surface` | Layer 3 | Reserved | derivation | — | 0 | The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types, the handler's pool, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; the producers land in R1 (rows, digest), R2 (serve sites) and R5 (stream rows), and the family replaces `api_surface` at R4. |
 | `sealability` | Layer 3 | Canonical | law | `record_param_access` | 0 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
@@ -832,6 +833,33 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Focused tests.** crates/hale-cli/tests/api_description.rs; crates/hale-types/tests/api_binding_check.rs; crates/hale-types/tests/role_rows.rs
 
 **Spec.** spec/model.md § The description; spec/semantics.md § The api binding (GH #1106); spec/types.md § Roles and `@gated` (GH #1109)
+
+### `surface` — Reserved · derivation
+
+**Answers.** The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types, the handler's pool, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; the producers land in R1 (rows, digest), R2 (serve sites) and R5 (stream rows), and the family replaces `api_surface` at R4.
+
+**Inputs.** `api` blocks and `@rpc` handlers (R1); role declarations; the payload contracts (the shape hashes the digest folds); serve sites: `api::serve(…)`, `as:`, `receivers:` (R2); topic bindings to a hub with `requires:` (R5)
+
+**Producer.** none: reserved, computes nothing.
+
+**Consumers.** check (the admission law over the rows, R1; the serve-site laws); check --api (the inventory; the descriptions per exposure, R1); the contract digest (R1); the OpenAPI, JSON Schema and MCP generators (re-homed onto the rows, R1); serve (the runtime's dispatch: Context, the digest check, requires before enqueue, decode by shape, R2 and R3); hubs (stream admission, expiry and revocation, R5); describe / call / watch / admin / mcp (over descriptions, R4); ui (reserved)
+
+**Invariants.**
+
+- one row family for both spellings: an `api` block's `rpc` line and an `@rpc` handler produce the same row, and nothing else about the locus is read
+- the digest is the FNV-1a fold of the rows in canonical order (member, request, response and error shape hashes, sorted requires) and excludes the listener, the receivers, the serve site, the surface's name, the build identity and the incarnation
+- a row whose error type is `ClosureViolation` (a handler that may violate, `fallible(ClosureViolation)` under F.42 with no exemption) fails as the server error and its description carries no error schema; a row with any other error type fails as the handler error with that type's schema; the digest's error slot folds `ClosureViolation`'s shape hash like any error type's
+- a hub that serves no surface is an exposure of its stream rows, identified `hub@<stream digest>/<name>`; the stream digest is the FNV-1a fold of the stream rows sorted by topic (topic, payload shape hash, direction, codec, bound, on_full, replay, sorted requires) and excludes the listener, the hub's name and sources, the build identity and the incarnation; its description has no surface and no member, and its outcome form is the `ws` frames
+- authorization is evaluated before enqueue: a refused request never reaches the handler's queue
+- descriptions read the rows dispatch reads: a caller's description under an exposure lists exactly the members whose `requires` that exposure's role source grants it
+- grants belong to the role-source instance a serve site names, never to a role name
+- the outcome mappings are fixed per transport (v1): no row carries a status and the digest hashes none
+
+**Missing data.** n/a
+
+**Focused tests.** crates/hale-cli/tests/api_contract_fixtures.rs
+
+**Spec.** spec/api.md; spec/api-description.schema.json
 
 ### `sealability` — Canonical · law
 
