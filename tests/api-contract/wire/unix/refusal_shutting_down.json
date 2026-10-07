@@ -1,0 +1,36 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "outcome": "refusal",
+  "kind": "shutting_down",
+  "peer": {
+    "uid": 1000,
+    "gid": 1000,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Ledger::rebalance",
+    "payload": {
+      "book": "main"
+    },
+    "id": "c-8",
+    "digest": "fnv1a64:98daa4b3e265ed98"
+  },
+  "reply": {
+    "request_id": 8,
+    "id": "c-8",
+    "ok": false,
+    "refusal": {
+      "kind": "shutting_down",
+      "reason": "the exposure is stopping"
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    }
+  }
+}

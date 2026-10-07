@@ -1,0 +1,155 @@
+// The consumer fixture of the API surface contract (GH #1417; the
+// contract is spec/api.md, the plan's § 3 program). The documents
+// beside this file were made by hand from it: what a client reads
+// (the per-exposure descriptions, the program-wide inventory), what
+// crosses each transport (wire/), and the digest worked byte for byte
+// (digest.md). They are the handoff consumers build against before
+// any transport ships.
+//
+// This file is written as the program WILL read: `api` blocks, `rpc`
+// rows with `requires:`, `api::serve(…)` sites, transport instances and
+// a topic bound to a hub with `requires:` are spec/api.md's syntax, and
+// the grammar parses them from R1 on. Today's grammar stops at the
+// first `api` block. It lexes, so `hale fmt --check .` holds it to the
+// canonical form, and no parse gate reads this directory: the corpus
+// (hale-corpus), the examples sweep and the in-language suite
+// (`tests/hale`) each walk directories of their own.
+//
+// What it exercises (spec/api.md § The witness): two surfaces sharing
+// `Orders::cancel` under different `requires`; `Public` over HTTP
+// twice, under two role sources and bound to two `Orders` instances,
+// and `Admin` over the Unix socket under a third; one fallible rpc
+// (`Orders::cancel`); two rpcs that violate on a structural limit
+// (`Orders::place`, `Ledger::rebalance`); one outward stream (`Fills`)
+// through a hub. The unbound case — a serve of `Public` naming no
+// `Orders` while two are held — is a check error and so is not here.
+
+role trader;
+role operator;
+
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+
+type PlaceOrder { symbol: String; qty: Int; limit: Money; }
+type OrderReceipt { order: OrderId; notional: Money; }
+type CancelOrder { order: OrderId; }
+type Cancelled { order: OrderId; was_open: Bool; }
+type OrderError { code: String; reason: String; }
+type Rebalance { book: String; }
+type Rebalanced { moved: Money; }
+type Fill { order: OrderId; qty: Int; price: Money; }
+
+topic Fills { payload: Fill; subject: "desk.fills"; }
+
+api Public {
+    rpc Orders::place;
+    rpc Orders::cancel requires: [trader];
+}
+
+api Admin {
+    rpc Orders::cancel requires: [operator];
+    rpc Ledger::rebalance requires: [operator];
+}
+
+// Who a bearer token is. A name the source does not know is nobody,
+// and the transport refuses the request as `unauthenticated`.
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        if token == "t-bob" { return std::api::Principal { mode: "bearer", name: "bob" }; }
+        if token == "t-carol" { return std::api::Principal { mode: "bearer", name: "carol" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+// A role source: one holder per role. Three instances are three
+// sources, and a grant in one is no grant in another, whatever the
+// role is called.
+locus Grants {
+    params {
+        trader: String = "";
+        operator: String = "";
+    }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if r == "trader" { return len(self.trader) > 0 && p.name == self.trader; }
+        if r == "operator" { return len(self.operator) > 0 && p.name == self.operator; }
+        return false;
+    }
+}
+
+locus Orders {
+    params {
+        next: Int = 41;
+        open: Int = 0;
+    }
+    bus { publish Fills; }
+    closure position_limit { captures: open; epoch inline; }
+
+    fn place(o: PlaceOrder) -> OrderReceipt {
+        if o.qty > 10000 { violate position_limit; }
+        let id = OrderId(self.next);
+        self.next = self.next + 1;
+        self.open = self.open + 1;
+        Fills <- Fill { order: id, qty: o.qty, price: o.limit };
+        return OrderReceipt { order: id, notional: o.limit * o.qty };
+    }
+
+    fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) {
+        let n = Int(c.order);
+        if n < 41 || n >= self.next {
+            fail OrderError { code: "unknown_order", reason: "no order " + to_string(n) };
+        }
+        self.open = self.open - 1;
+        return Cancelled { order: c.order, was_open: true };
+    }
+}
+
+locus Ledger {
+    params { moved: Int = 0; }
+    closure books_balanced { captures: moved; epoch inline; }
+
+    fn rebalance(r: Rebalance) -> Rebalanced {
+        if len(r.book) == 0 { violate books_balanced; }
+        self.moved = self.moved + 1500;
+        return Rebalanced { moved: 1500cent };
+    }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        public_roles: Grants = Grants { trader: "alice" };
+        partner_roles: Grants = Grants { trader: "carol" };
+        admin_roles: Grants = Grants { operator: "uid:1000" };
+        orders: Orders = Orders { };
+        partner_orders: Orders = Orders { next: 9001 };
+        ledger: Ledger = Ledger { };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.admin_roles };
+        orders_failed: Int = 0;
+        ledger_failed: Int = 0;
+    }
+    placement {
+        orders: cooperative(pool = desk) where async_io;
+        partner_orders: cooperative(pool = partner) where async_io;
+        ledger: cooperative(pool = desk) where async_io;
+    }
+    bindings {
+        Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+    }
+    on_failure(o: Orders, err: ClosureViolation) { self.orders_failed = self.orders_failed + 1; }
+    on_failure(l: Ledger, err: ClosureViolation) { self.ledger_failed = self.ledger_failed + 1; }
+
+    run() {
+        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders });
+        let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders });
+        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders });
+        while !self.draining { std::time::sleep(100ms); }
+        public.stop();
+        partner.stop();
+        admin.stop();
+    }
+}
+
+fn main() { Desk { }; }

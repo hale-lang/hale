@@ -1,0 +1,37 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "outcome": "refusal",
+  "kind": "digest_mismatch",
+  "peer": {
+    "uid": 1000,
+    "gid": 1000,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Orders::cancel",
+    "payload": {
+      "order": 41
+    },
+    "id": "c-4",
+    "digest": "fnv1a64:0123456789abcdef"
+  },
+  "reply": {
+    "request_id": 4,
+    "id": "c-4",
+    "ok": false,
+    "refusal": {
+      "kind": "digest_mismatch",
+      "reason": "the request was generated against fnv1a64:0123456789abcdef",
+      "served": "fnv1a64:98daa4b3e265ed98"
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    }
+  }
+}

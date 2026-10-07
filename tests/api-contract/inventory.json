@@ -1,0 +1,331 @@
+{
+  "inventory": 1,
+  "app": "Desk",
+  "surfaces": [
+    {
+      "name": "Admin",
+      "digest": "fnv1a64:98daa4b3e265ed98",
+      "members": [
+        {
+          "name": "Ledger::rebalance",
+          "request": {
+            "$ref": "#/schemas/Rebalance"
+          },
+          "response": {
+            "$ref": "#/schemas/Rebalanced"
+          },
+          "error": null,
+          "requires": [
+            "operator"
+          ]
+        },
+        {
+          "name": "Orders::cancel",
+          "request": {
+            "$ref": "#/schemas/CancelOrder"
+          },
+          "response": {
+            "$ref": "#/schemas/Cancelled"
+          },
+          "error": {
+            "$ref": "#/schemas/OrderError"
+          },
+          "requires": [
+            "operator"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public",
+      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "members": [
+        {
+          "name": "Orders::cancel",
+          "request": {
+            "$ref": "#/schemas/CancelOrder"
+          },
+          "response": {
+            "$ref": "#/schemas/Cancelled"
+          },
+          "error": {
+            "$ref": "#/schemas/OrderError"
+          },
+          "requires": [
+            "trader"
+          ]
+        },
+        {
+          "name": "Orders::place",
+          "request": {
+            "$ref": "#/schemas/PlaceOrder"
+          },
+          "response": {
+            "$ref": "#/schemas/OrderReceipt"
+          },
+          "error": null,
+          "requires": []
+        }
+      ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+      "name": "admin",
+      "surface": "Admin",
+      "digest": "fnv1a64:98daa4b3e265ed98",
+      "listener": {
+        "transport": "unix",
+        "address": "/run/desk/admin.sock"
+      },
+      "codec": "json",
+      "principals": {
+        "source": "kernel"
+      },
+      "roles": {
+        "source": "self.admin_roles",
+        "type": "Grants"
+      },
+      "receivers": [
+        {
+          "type": "Orders",
+          "instance": "self.orders",
+          "binding": "explicit",
+          "pool": "desk"
+        },
+        {
+          "type": "Ledger",
+          "instance": "self.ledger",
+          "binding": "inferred",
+          "pool": "desk"
+        }
+      ]
+    },
+    {
+      "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/partner",
+      "name": "partner",
+      "surface": "Public",
+      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "listener": {
+        "transport": "http",
+        "address": "127.0.0.1:8081"
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.bearer",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.partner_roles",
+        "type": "Grants"
+      },
+      "receivers": [
+        {
+          "type": "Orders",
+          "instance": "self.partner_orders",
+          "binding": "explicit",
+          "pool": "partner"
+        }
+      ]
+    },
+    {
+      "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+      "name": "public",
+      "surface": "Public",
+      "digest": "fnv1a64:fe65e6d3036ee1eb",
+      "listener": {
+        "transport": "http",
+        "address": "127.0.0.1:8080"
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.bearer",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.public_roles",
+        "type": "Grants"
+      },
+      "receivers": [
+        {
+          "type": "Orders",
+          "instance": "self.orders",
+          "binding": "explicit",
+          "pool": "desk"
+        }
+      ]
+    }
+  ],
+  "hubs": [
+    {
+      "instance": "self.hub",
+      "listener": {
+        "transport": "ws",
+        "address": "127.0.0.1:9000"
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.bearer",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.admin_roles",
+        "type": "Grants"
+      },
+      "streams": [
+        {
+          "topic": "Fills",
+          "subject": "desk.fills",
+          "direction": "out",
+          "payload": {
+            "$ref": "#/schemas/Fill"
+          },
+          "codec": "json",
+          "bound": 64,
+          "on_full": "drop_old",
+          "loss": "at most once per admitted subscriber, in publish order; drop_old sheds the oldest undelivered frame and the count shed is reported on the subscriber's next frame; a subscription invalidated by expiry or revocation loses what it had buffered",
+          "replay": false,
+          "requires": [
+            "operator"
+          ]
+        }
+      ]
+    }
+  ],
+  "schemas": {
+    "CancelOrder": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    },
+    "Cancelled": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "was_open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "order",
+        "was_open"
+      ]
+    },
+    "Fill": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "qty": {
+          "type": "integer"
+        },
+        "price": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "order",
+        "qty",
+        "price"
+      ]
+    },
+    "OrderError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "OrderReceipt": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "notional": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "order",
+        "notional"
+      ]
+    },
+    "PlaceOrder": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "qty": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "symbol",
+        "qty",
+        "limit"
+      ]
+    },
+    "Rebalance": {
+      "type": "object",
+      "properties": {
+        "book": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "book"
+      ]
+    },
+    "Rebalanced": {
+      "type": "object",
+      "properties": {
+        "moved": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "moved"
+      ]
+    }
+  },
+  "notes": {
+    "inventory": "every exposure with its listener, its sources and its receivers: a deployment inventory, never an authorization statement for any caller",
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

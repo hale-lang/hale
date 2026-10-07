@@ -1,0 +1,35 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "outcome": "result",
+  "peer": {
+    "uid": 1000,
+    "gid": 1000,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Orders::cancel",
+    "payload": {
+      "order": 41
+    },
+    "id": "c-1",
+    "digest": "fnv1a64:98daa4b3e265ed98"
+  },
+  "reply": {
+    "request_id": 1,
+    "id": "c-1",
+    "ok": true,
+    "value": {
+      "order": 41,
+      "was_open": true
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1000",
+      "uid": 1000,
+      "gid": 1000,
+      "pid": 4242
+    }
+  }
+}

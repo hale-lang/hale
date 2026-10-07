@@ -1,0 +1,33 @@
+{
+  "wire": 1,
+  "transport": "http",
+  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "outcome": "refusal",
+  "kind": "unauthenticated",
+  "request": {
+    "method": "POST",
+    "path": "/call/Orders::place",
+    "headers": {
+      "Authorization": "Bearer t-mallory",
+      "Content-Type": "application/json",
+      "Hale-Surface-Digest": "fnv1a64:fe65e6d3036ee1eb"
+    },
+    "body": {
+      "symbol": "ACME",
+      "qty": 10,
+      "limit": 12500
+    }
+  },
+  "reply": {
+    "status": 401,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "refusal": {
+        "kind": "unauthenticated",
+        "reason": "no such token"
+      }
+    }
+  }
+}

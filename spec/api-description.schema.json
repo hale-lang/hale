@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hale:api-description:1",
+  "title": "The API description and the program-wide inventory (spec/api.md, GH #1417)",
+  "$comment": "A description is one exposure's document, filtered for one caller (\"description\": 1); the inventory is the program-wide document hale check --api prints (\"inventory\": 1). The v1 outcome mappings are consts: a transport may not choose others.",
+  "oneOf": [
+    { "$ref": "#/$defs/description" },
+    { "$ref": "#/$defs/inventory" }
+  ],
+  "$defs": {
+    "description": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "exposure", "name", "surface", "digest", "listener", "codec", "caller", "members", "streams", "outcomes", "schemas", "notes"],
+      "properties": {
+        "description": { "const": 1 },
+        "exposure": { "$ref": "#/$defs/exposure_id" },
+        "name": { "$ref": "#/$defs/exposure_name" },
+        "surface": { "$ref": "#/$defs/surface_name" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "listener": { "$ref": "#/$defs/listener" },
+        "codec": { "$ref": "#/$defs/codec" },
+        "caller": { "$ref": "#/$defs/caller" },
+        "members": { "type": "array", "items": { "$ref": "#/$defs/member" } },
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/stream" } },
+        "outcomes": { "$ref": "#/$defs/outcomes" },
+        "schemas": { "$ref": "#/$defs/schemas" },
+        "notes": {
+          "type": "object",
+          "required": ["authorization", "lifecycle", "discovery"],
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inventory", "app", "surfaces", "exposures", "hubs", "schemas", "notes"],
+      "properties": {
+        "inventory": { "const": 1 },
+        "app": { "$ref": "#/$defs/identifier" },
+        "surfaces": { "type": "array", "items": { "$ref": "#/$defs/surface" } },
+        "exposures": { "type": "array", "items": { "$ref": "#/$defs/exposure" } },
+        "hubs": { "type": "array", "items": { "$ref": "#/$defs/hub" } },
+        "schemas": { "$ref": "#/$defs/schemas" },
+        "notes": {
+          "type": "object",
+          "required": ["inventory"],
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "members"],
+      "properties": {
+        "name": { "$ref": "#/$defs/surface_name" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "members": { "type": "array", "items": { "$ref": "#/$defs/member" } }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exposure", "name", "surface", "digest", "listener", "codec", "principals", "roles", "receivers"],
+      "properties": {
+        "exposure": { "$ref": "#/$defs/exposure_id" },
+        "name": { "$ref": "#/$defs/exposure_name" },
+        "surface": { "$ref": "#/$defs/surface_name" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "listener": { "$ref": "#/$defs/listener" },
+        "codec": { "$ref": "#/$defs/codec" },
+        "principals": { "$ref": "#/$defs/source" },
+        "roles": { "$ref": "#/$defs/source" },
+        "receivers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/receiver" } }
+      }
+    },
+    "receiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance", "binding", "pool"],
+      "properties": {
+        "type": { "$ref": "#/$defs/surface_name" },
+        "instance": { "type": "string" },
+        "binding": { "enum": ["explicit", "inferred"] },
+        "pool": { "type": "string" }
+      }
+    },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance", "listener", "codec", "principals", "roles", "streams"],
+      "properties": {
+        "instance": { "type": "string" },
+        "listener": { "$ref": "#/$defs/listener" },
+        "codec": { "$ref": "#/$defs/codec" },
+        "principals": { "$ref": "#/$defs/source" },
+        "roles": { "$ref": "#/$defs/source" },
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/stream" } }
+      }
+    },
+    "source": {
+      "$comment": "A bearer or role source as the program names it: the param it is (self.bearer) and its locus type; \"kernel\" for the Unix transport's peer credentials, which has no type.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "request", "response", "error", "requires"],
+      "properties": {
+        "name": { "$ref": "#/$defs/member_name" },
+        "request": { "$ref": "#/$defs/type_ref" },
+        "response": { "$ref": "#/$defs/type_ref" },
+        "error": { "$ref": "#/$defs/type_ref" },
+        "requires": { "$ref": "#/$defs/requires" }
+      }
+    },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "subject", "direction", "payload", "codec", "bound", "on_full", "loss", "replay", "requires"],
+      "properties": {
+        "topic": { "$ref": "#/$defs/surface_name" },
+        "subject": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["out", "in"] },
+        "payload": { "$ref": "#/$defs/type_ref" },
+        "codec": { "$ref": "#/$defs/codec" },
+        "bound": { "type": "integer", "minimum": 1 },
+        "on_full": { "enum": ["drop_old", "drop_new", "refuse"] },
+        "loss": { "type": "string", "minLength": 1 },
+        "replay": { "type": "boolean" },
+        "requires": { "$ref": "#/$defs/requires" }
+      }
+    },
+    "caller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal", "roles"],
+      "properties": {
+        "principal": { "$ref": "#/$defs/principal" },
+        "roles": { "$ref": "#/$defs/requires" }
+      }
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "name"],
+      "properties": {
+        "mode": { "enum": ["unix", "bearer", "local"] },
+        "name": { "type": "string" },
+        "uid": { "type": "integer" },
+        "gid": { "type": "integer" },
+        "pid": { "type": "integer" }
+      }
+    },
+    "outcomes": {
+      "oneOf": [
+        { "$ref": "#/$defs/outcomes_http" },
+        { "$ref": "#/$defs/outcomes_unix" }
+      ]
+    },
+    "outcomes_http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "result", "handler_error", "refusal", "server_error", "transport_failure"],
+      "properties": {
+        "transport": { "const": "http" },
+        "result": { "const": { "status": 200, "body": "response" } },
+        "handler_error": { "const": { "status": 422, "body": "error" } },
+        "refusal": {
+          "const": {
+            "body": "refusal",
+            "status": { "malformed": 400, "digest_mismatch": 409, "unauthenticated": 401, "unauthorized": 403, "full": 429, "shutting_down": 503 }
+          }
+        },
+        "server_error": { "const": { "status": 500, "body": "refusal" } },
+        "transport_failure": { "const": "the transport's own: the connection ends without a response" }
+      }
+    },
+    "outcomes_unix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "result", "handler_error", "refusal", "server_error", "transport_failure"],
+      "properties": {
+        "transport": { "const": "unix" },
+        "result": { "const": { "ok": true, "field": "value" } },
+        "handler_error": { "const": { "ok": false, "field": "error" } },
+        "refusal": {
+          "const": { "ok": false, "field": "refusal", "kinds": ["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down"] }
+        },
+        "server_error": { "const": { "ok": false, "field": "refusal", "kind": "server" } },
+        "transport_failure": { "const": "eof" }
+      }
+    },
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "address"],
+      "properties": {
+        "transport": { "enum": ["unix", "http", "ws", "udp", "grpc", "mcp"] },
+        "address": { "type": "string", "minLength": 1 }
+      }
+    },
+    "type_ref": {
+      "$comment": "A JSON Schema for the type: a reference into the document's schemas (#/schemas/<Type>) or an inline schema for a scalar; null when the member has none (no request, a () response, not fallible).",
+      "type": ["object", "null"]
+    },
+    "schemas": {
+      "$comment": "The JSON Schema of every type the document's members and streams name, by type name. A quantity's field carries x-hale-unit (its q(...) tag, spec/units.md); a named scalar's carries x-hale-type.",
+      "type": "object",
+      "additionalProperties": { "type": "object" }
+    },
+    "requires": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "codec": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^fnv1a64:[0-9a-f]{16}$" },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+    "surface_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*$" },
+    "member_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*::[A-Za-z_][A-Za-z0-9_]*$" },
+    "exposure_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+    "exposure_id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_:]*@fnv1a64:[0-9a-f]{16}/[A-Za-z0-9_.-]+$" }
+  }
+}

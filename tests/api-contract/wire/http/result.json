@@ -1,0 +1,30 @@
+{
+  "wire": 1,
+  "transport": "http",
+  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "outcome": "result",
+  "request": {
+    "method": "POST",
+    "path": "/call/Orders::place",
+    "headers": {
+      "Authorization": "Bearer t-alice",
+      "Content-Type": "application/json",
+      "Hale-Surface-Digest": "fnv1a64:fe65e6d3036ee1eb"
+    },
+    "body": {
+      "symbol": "ACME",
+      "qty": 10,
+      "limit": 12500
+    }
+  },
+  "reply": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "order": 41,
+      "notional": 125000
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "wire": 1,
+  "transport": "http",
+  "exposure": "Public@fnv1a64:fe65e6d3036ee1eb/public",
+  "outcome": "handler_error",
+  "request": {
+    "method": "POST",
+    "path": "/call/Orders::cancel",
+    "headers": {
+      "Authorization": "Bearer t-alice",
+      "Content-Type": "application/json",
+      "Hale-Surface-Digest": "fnv1a64:fe65e6d3036ee1eb"
+    },
+    "body": {
+      "order": 999
+    }
+  },
+  "reply": {
+    "status": 422,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "code": "unknown_order",
+      "reason": "no order 999"
+    }
+  }
+}

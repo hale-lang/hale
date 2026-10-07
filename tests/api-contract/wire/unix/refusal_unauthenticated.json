@@ -1,0 +1,35 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "outcome": "refusal",
+  "kind": "unauthenticated",
+  "peer": {
+    "uid": -1,
+    "gid": -1,
+    "pid": -1
+  },
+  "request": {
+    "call": "Ledger::rebalance",
+    "payload": {
+      "book": "main"
+    },
+    "id": "c-5"
+  },
+  "reply": {
+    "request_id": 5,
+    "id": "c-5",
+    "ok": false,
+    "refusal": {
+      "kind": "unauthenticated",
+      "reason": "the kernel did not name the peer"
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:-1",
+      "uid": -1,
+      "gid": -1,
+      "pid": -1
+    }
+  }
+}

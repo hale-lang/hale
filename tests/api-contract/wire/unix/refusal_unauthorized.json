@@ -1,0 +1,39 @@
+{
+  "wire": 1,
+  "transport": "unix",
+  "exposure": "Admin@fnv1a64:98daa4b3e265ed98/admin",
+  "outcome": "refusal",
+  "kind": "unauthorized",
+  "peer": {
+    "uid": 1001,
+    "gid": 1001,
+    "pid": 4242
+  },
+  "request": {
+    "call": "Orders::cancel",
+    "payload": {
+      "order": 41
+    },
+    "id": "c-6",
+    "digest": "fnv1a64:98daa4b3e265ed98"
+  },
+  "reply": {
+    "request_id": 6,
+    "id": "c-6",
+    "ok": false,
+    "refusal": {
+      "kind": "unauthorized",
+      "reason": "Orders::cancel requires operator",
+      "requires": [
+        "operator"
+      ]
+    },
+    "caller": {
+      "mode": "unix",
+      "name": "uid:1001",
+      "uid": 1001,
+      "gid": 1001,
+      "pid": 4242
+    }
+  }
+}
