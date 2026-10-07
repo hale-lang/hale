@@ -330,22 +330,24 @@ fn build_and_run_full(name: &str, source: &str) -> std::process::Output {
     output
 }
 
-/// A downstream handoff: `violate` in a method that returns a value.
-/// With no parent handler the violation ends the process, and the
-/// caller never observes a value: exit 1 by the violation's own exit
-/// path, the runtime's line on stderr, and no `b=` on stdout.
+/// A downstream handoff: `violate` in a method that returns a value,
+/// declared `fallible(ClosureViolation)` as F.42 requires. With no
+/// parent handler the violation ends the process before the call can
+/// fail, and the caller never observes a value or runs its `or`: exit 1
+/// by the violation's own exit path, the runtime's line on stderr, and
+/// no `b=` on stdout.
 #[test]
 fn violate_in_a_value_method_with_no_handler_ends_the_process() {
     let src = r#"
 locus Picker {
     params { k: Int = 21; }
     closure bad_pick { captures: k; epoch inline; }
-    fn pick(flag: Bool) -> Int {
+    fn pick(flag: Bool) -> Int fallible(ClosureViolation) {
         if flag { violate bad_pick; }
         return self.k * 2;
     }
     run() {
-        let b = self.pick(true);
+        let b = self.pick(true) or { println("or ran"); 7 };
         println("b=", b);
     }
 }
@@ -358,29 +360,22 @@ fn main() { Picker { }; }
         stderr.contains("runtime error: ClosureViolation: locus `Picker` closure `bad_pick` (inline, no parent handler)"),
         "{stderr}"
     );
-    assert!(!stdout.contains("b="), "the caller observed a value: {stdout:?}");
+    assert!(!stdout.contains("b=") && !stdout.contains("or ran"), "the caller observed the call: {stdout:?}");
 }
 
-/// KNOWN OPEN. When a parent's `on_failure` absorbs the violation, the
-/// violating method returns to its caller (spec/semantics.md § "Inline
-/// closure violation", step 5: "the method exits as a return does";
-/// the caller goes on, as on_failure_per_child_type_test.hl pins), and
-/// codegen hands that caller an LLVM `undef` of the declared return
-/// type (`Stmt::Violate`'s `violate.return` block). The caller reads
-/// garbage (measured `b=140727999518808`; a pointer-typed return would
-/// be dereferenced). The spec does not say what a caller observes in
-/// that case — the call diverging too, a declared fallback value, or a
-/// check-time refusal — so this pins today's behaviour: the caller
-/// continues past the call and the method's tail did not run. The
-/// value is not asserted; it is undefined. When the decision is
-/// written and implemented, this test flips to assert it.
-#[test]
-fn known_open_absorbed_violate_in_a_value_method_returns_an_undefined_value() {
-    let src = r#"
+/// The program of the downstream handoff's measurement (an `Int` result
+/// of `104616817497632` after its supervisor's `on_failure` ran, when
+/// lowering returned an `undef`), as F.42 writes it: the violating
+/// method is `fallible(ClosureViolation)`, so when the parent's
+/// `on_failure` absorbs the violation the call fails. The parent's
+/// handler runs first, then the caller's `or` with `err` the record the
+/// handler received; the method's tail does not run; the value is the
+/// fallback. A call that does not violate still returns its value.
+const ABSORBED_IN_A_FALLIBLE_METHOD: &str = r#"
 locus Picker {
     params { k: Int = 21; }
     closure bad_pick { captures: k; epoch inline; }
-    fn pick(flag: Bool) -> Int {
+    fn pick(flag: Bool) -> Int fallible(ClosureViolation) {
         if flag { violate bad_pick; }
         println("tail ran");
         return self.k * 2;
@@ -388,17 +383,104 @@ locus Picker {
 }
 main locus App {
     params { p: Picker = Picker { }; seen: Int = 0; }
-    on_failure(c: Picker, err: ClosureViolation) { self.seen = self.seen + 1; }
+    on_failure(c: Picker, err: ClosureViolation) {
+        println("on_failure ", err.closure);
+        self.seen = self.seen + 1;
+    }
     run() {
-        let b = self.p.pick(true);
-        println("b=", b, " seen=", self.seen);
+        let a = self.p.pick(false) or 0;
+        println("a=", a);
+        let b = self.p.pick(true) or { println("or seen=", self.seen, " closure=", err.closure, " locus=", err.locus); 7 };
+        println("b=", b);
+        let c = self.p.pick(true) or 7;
+        println("c=", c, " seen=", self.seen);
     }
 }
 fn main() { App { }; }
 "#;
-    let out = build_and_run_full("violate_value_absorbed", src);
+
+/// What it prints: `tail ran` once (the call that did not violate),
+/// each handler before its `or`.
+const ABSORBED_EXPECTED: &str = "tail ran\na=42\non_failure bad_pick\nor seen=1 closure=bad_pick locus=Picker\nb=7\non_failure bad_pick\nc=7 seen=2\n";
+
+#[test]
+fn absorbed_violate_in_a_fallible_method_is_the_call_s_failure() {
+    let out = build_and_run_full("violate_value_absorbed", ABSORBED_IN_A_FALLIBLE_METHOD);
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{:?}\n{stderr}", out.status);
-    assert!(!stdout.contains("tail ran"), "violate diverges in the method: {stdout:?}");
-    assert!(stdout.contains("b=") && stdout.contains(" seen=1"), "known open: the caller goes on with a value: {stdout:?}");
+    assert_eq!(stdout, ABSORBED_EXPECTED, "handler first, then the `or`, and no value: {stderr}");
+}
+
+/// The same program under AddressSanitizer, the arena's chunk pool off
+/// (GH #816): the record the handler read is copied out to the caller's
+/// error slot before the method's scratch is freed, and the `or` block
+/// reads it there.
+#[test]
+fn absorbed_violate_in_a_fallible_method_is_clean_under_asan() {
+    let bin = harness::unique_bin("lotus_test_violate_value_absorbed_asan");
+    let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(ABSORBED_IN_A_FALLIBLE_METHOD, &bin, &opts).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+    assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+    assert_eq!(stdout, ABSORBED_EXPECTED, "{stderr}");
+}
+
+/// The cross-pool case (decision L0-1; the shape of
+/// `failure_delivery/fd_pool_owner_worker.hl`): the owner is placed on
+/// pool `side` and main calls into its child, so the violation is raised
+/// off the owner's domain. The owner's handler is posted to the pool's
+/// worker and awaited (it sleeps first, so a caller that did not wait
+/// would see `heard=0`); only then does the caller's `or` run.
+#[test]
+fn cross_pool_violate_in_a_fallible_method_awaits_the_owner_s_handler() {
+    let src = r#"
+@ffi("c") fn pthread_self() -> Int;
+
+locus Kid {
+    params { n: Int = 0; }
+    closure fuse { captures: n; epoch inline; }
+    fn pick() -> Int fallible(ClosureViolation) {
+        violate fuse;
+    }
+}
+
+locus Owner {
+    params {
+        worker: Int = pthread_self();
+        kid: Kid = Kid { };
+        posted_on: Int = 0;
+        heard: Int = 0;
+    }
+    on_failure(c: Kid, err: ClosureViolation) {
+        std::time::sleep(20ms);
+        self.posted_on = pthread_self();
+        self.heard = self.heard + 1;
+    }
+}
+
+main locus App {
+    params { o: Owner = Owner { }; }
+    placement { o: cooperative(pool = side); }
+    run() {
+        let mine = pthread_self();
+        let b = self.o.kid.pick() or { println("or heard=", self.o.heard, " closure=", err.closure); 7 };
+        println("b=", b);
+        if mine != self.o.worker { println("raised off the worker"); }
+        if self.o.posted_on == self.o.worker { println("handled on the worker"); }
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let out = build_and_run_full("violate_value_cross_pool", src);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+    assert_eq!(
+        stdout,
+        "or heard=1 closure=fuse\nb=7\nraised off the worker\nhandled on the worker\n",
+        "{stderr}"
+    );
 }

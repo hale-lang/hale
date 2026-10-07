@@ -4026,13 +4026,21 @@ row	Child@main1	Child	main	default
 == crates/hale-codegen/tests/violate_build.rs#45144db2
 row	Child@main1	Child	main	default
 
-== crates/hale-codegen/tests/violate_build.rs#b964390d
+== crates/hale-codegen/tests/violate_build.rs#6e4fcdf1
 row	Picker@main1	Picker	main	default
 
-== crates/hale-codegen/tests/violate_build.rs#26f8ea21
+== crates/hale-codegen/tests/violate_build.rs#20ab3262
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.p	Picker	main	default
+
+== crates/hale-codegen/tests/violate_build.rs#c1aa6402
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+-- App@literal1.o	Owner
+row	~	Owner	pool:side	entry	off owner
+row	~.kid	Kid	pool:side	inherited
 
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
@@ -6198,6 +6206,11 @@ dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
+
+== tests/hale/violate_in_value_method_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.p	Picker	main	default
 
 == dna/acceptance/books/tests/main_test.hl
 
