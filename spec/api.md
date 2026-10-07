@@ -165,6 +165,15 @@ before anything is served:
    not; it fixes the outcome, so the description, the digest and the
    transport read one fact.
 
+7. **A handler that may violate is `fallible(ClosureViolation)`,
+   whatever it returns.** F.42 requires the declaration of a
+   value-returning method and only warns about one returning nothing,
+   whose caller inside the program continues; a remote caller cannot
+   read `self.draining`, so at the boundary the row requires it of both:
+   "rpc \`Orders::flush\` may violate (\`violate stale\`) and returns
+   nothing: an rpc handler that may violate is \`fallible(ClosureViolation)\`,
+   so its caller receives the server error instead of a result". The
+   may-violate judgment is F.42's.
 ## The contract digest
 
 A surface's **digest** is its type-level contract: the hash of its rows
