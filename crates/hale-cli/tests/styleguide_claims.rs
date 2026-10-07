@@ -275,54 +275,62 @@ fn claim_char_index_passes_check_and_fails_build() {
     );
 }
 
-/// §7 sharp edges: "Write the stdlib's time point bare: `Time`, not
-/// `std::time::Time`." The bare spelling, as a field and as a cell,
-/// must build; the qualified one passes check and fails at build.
+/// §7 sharp edges: "Write the stdlib's time types bare: `Time` and
+/// `Duration`, not `std::time::Time` or `std::time::Duration`." The
+/// bare spellings, as a field, a cell and a parameter, must build, and
+/// a qualified `let` annotation builds too; a qualified field, cell or
+/// parameter passes check and fails at build.
 #[test]
 fn claim_qualified_std_time_time_fails_build() {
     let (_, bare_failed, bare_out) = check_then_build(
-        "type Stamp { key: Int; at: Time; }\n\
+        "type Stamp { key: Int; at: Time; took: Duration; }\n\
          @form(vec)\n\
          locus Times { capacity { heap items of Time; } }\n\
+         fn show(d: Duration) { println(d); }\n\
          fn main() {\n\
-             let s = Stamp { key: 1, at: Time(7s) };\n\
+             let s = Stamp { key: 1, at: Time(7s), took: 2s };\n\
              let d: std::time::Duration = 3s;\n\
              let t = Times { };\n\
              t.push(s.at);\n\
+             show(s.took);\n\
              println(t.len(), \" \", d);\n\
          }",
         "time-bare",
     );
     assert!(
         !bare_failed,
-        "§7 tells readers to write `Time` bare (and says \
-         `std::time::Duration` builds); both must build:\n{}",
+        "§7 tells readers to write `Time` and `Duration` bare (and says \
+         a qualified `let` annotation builds); all of it must build:\n{}",
         bare_out
     );
 
     let (checked, failed, out) = check_then_build(
-        "type Stamp { key: Int; at: std::time::Time; }\n\
+        "type Stamp { key: Int; at: std::time::Time; took: std::time::Duration; }\n\
          @form(vec)\n\
          locus Times { capacity { heap items of std::time::Time; } }\n\
+         fn show(d: std::time::Duration) { println(d); }\n\
          fn main() {\n\
-             let s = Stamp { key: 1, at: Time(7s) };\n\
+             let s = Stamp { key: 1, at: Time(7s), took: 2s };\n\
              let t = Times { };\n\
              t.push(s.at);\n\
+             show(s.took);\n\
              println(t.len());\n\
          }",
         "time-qualified",
     );
     assert!(
         failed && out.contains("not in stdlib path-renames table"),
-        "spec/styleguide.md §7 says `std::time::Time` fails at build. It \
-         builds now — delete the \"Write the stdlib's time point bare\" \
+        "spec/styleguide.md §7 says a qualified `std::time::Time` or \
+         `std::time::Duration` field, cell or parameter fails at build. It \
+         builds now — delete the \"Write the stdlib's time types bare\" \
          entry and the residue in C7:\n{}",
         out
     );
     assert!(
         checked,
         "spec/styleguide.md §7 says `hale check` accepts a qualified \
-         `std::time::Time`. It refuses it now — reword the entry:\n{}",
+         `std::time::Time` and `std::time::Duration`. It refuses them now — \
+         reword the entry:\n{}",
         out
     );
 }

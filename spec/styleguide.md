@@ -746,7 +746,8 @@ only when you genuinely care about one or two classes]**
 ### C7. `@form` constraints (the sharp edges of 2.5)
 
 - Cell types: data, never a locus. A struct from another seed or
-  the stdlib qualifies; spell the stdlib's time point bare, `Time`
+  the stdlib qualifies; spell the stdlib's time types bare, `Time`
+  and `Duration`
   (§7). **[error]**
 - Hashmap iteration is bucket-order → `seq` field for order;
   no delete → tombstone. **[convention]**
@@ -1236,11 +1237,12 @@ one hands a caller a value nothing computed: know those cold.
   `std::str::cp_at` / `cp_size` / `cp_count` when you need code
   points rather than bytes. There is still no `Char` type;
   `cp_at` yields the code point as an `Int`.
-- **Write the stdlib's time point bare: `Time`, not
-  `std::time::Time`.** The qualified spelling typechecks as a field
-  or a `@form` cell type and fails at build ("qualified type
-  `std::time::Time` not in stdlib path-renames table");
-  `std::time::Duration` builds.
+- **Write the stdlib's time types bare: `Time` and `Duration`, not
+  `std::time::Time` or `std::time::Duration`.** The qualified
+  spelling typechecks as a field, a `@form` cell type or a fn
+  parameter and fails at build ("qualified type
+  `std::time::Duration` not in stdlib path-renames table"); only a
+  `let` annotation builds qualified.
 - **An `Int` returned from a `-> Float` fn** typechecks and fails
   at build ("return type mismatch: declared Float, got Int").
   Return `Float(n)`. (Fix in progress.)
