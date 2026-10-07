@@ -211,8 +211,8 @@ main locus Desk {
         ledger: Ledger = Ledger { };
     }
     run() {
-        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders });
-        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin");
+        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
         public.stop();
         admin.stop();
@@ -264,6 +264,10 @@ The laws of a serve site (R1):
    as a param".
 4. **A bound type is one the rows name.** "serve of \`Public\`:
    \`receivers:\` binds \`Ledger\`, which no row of \`Public\` names".
+5. **A serve site states its queue.** `bound:` and `on_full: refuse`
+   are required: "serve of \`Public\` as \`public\`: a serve site states
+   \`bound:\`, the requests it holds accepted and not yet answered, and
+   \`on_full: refuse\`, the one policy for a request".
 
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
@@ -622,15 +626,10 @@ exit criteria of R2, R3 and R5.
 - **A receiver binding naming a `@form` collection's element** (a
   surface over many instances of one type, keyed by the request), or
   only a single instance.
-- **The serve site's `bound` and `on_full`**: § The request lifecycle
-  holds an exposure to them; their spelling at the serve site is R2's.
-- **A hub that serves no surface**: its streams are in the inventory,
-  and a description lists a stream only for an exposure served at the
-  hub's listener, whose outcome encoding over WebSocket is R5's (the
-  table above has no WebSocket column).
-- **`on_full: refuse` on a stream**: what it does to a subscriber
-  whose queue is full (the plan's own example writes it; the watcher
-  queues of today know only `drop_old` and `drop_new`; R5).
+- **The stream digest's framing** for a hub that serves no surface (its
+  exposure is `hub@<digest of its stream rows>/<name>`, § Streams), and
+  the outcome encoding over WebSocket (the table above has no WebSocket
+  column); R5.
 - **Expiry and revision as interfaces**: the field on `Context` that
   states a credential's expiry, and how a role source announces a
   revision (R5).

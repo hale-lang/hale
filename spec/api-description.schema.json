@@ -133,7 +133,7 @@
         "payload": { "$ref": "#/$defs/type_ref" },
         "codec": { "$ref": "#/$defs/codec" },
         "bound": { "type": "integer", "minimum": 1 },
-        "on_full": { "enum": ["drop_old", "drop_new", "refuse"] },
+        "on_full": { "enum": ["drop_old", "drop_new"] },
         "loss": { "type": "string", "minLength": 1 },
         "replay": { "type": "boolean" },
         "requires": { "$ref": "#/$defs/requires" }

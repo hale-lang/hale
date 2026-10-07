@@ -44,7 +44,7 @@ order as `<field>:<tag>` joined by `;`, an identity tagged `i` as the
 `Int` it is, a quantity tagged by its denomination (`q(cent)`). Its
 hash is the 64-bit FNV-1a fold of the shape's bytes (offset basis
 `0xcbf29ce484222325`, prime `0x100000001b3`), as sixteen lowercase hex
-digits. The shapes are the compiler's: `hale check --dump-topology` on
+digits. The shapes are the compiler's: `hale check --dump-model` on
 a program publishing each type prints them in its `topics` section.
 
 <!-- shapes: type, shape, shape hash; one per line, TAB-free -->
