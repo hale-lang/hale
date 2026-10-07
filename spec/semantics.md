@@ -1972,6 +1972,10 @@ acted on. Consequences, all normative:
 
 #### The api binding (GH #1106)
 
+`spec/api.md` is the contract this section is being replaced by (GH
+#1417): surfaces, serve sites and descriptions over rows; the section
+stays the shipped behavior until step R4 retires it.
+
 One entry in the main locus's `bindings { }`, headed by the
 contextual keyword `api`, binds the program's API rather than one
 topic:
