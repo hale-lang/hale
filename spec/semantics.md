@@ -4353,9 +4353,73 @@ closure synchronously at the call site:
 4. The parent's `on_failure(child, ClosureViolation { ... })`
    handler runs — same routing as for auto-epoch closure
    violations.
-5. The method exits as a `return` does: loci it `let`-bound
-   dissolve and its per-call scratch is freed (GH #1036; `violate`
-   used to skip both).
+5. The method exits. In a `fallible(ClosureViolation)` fn the
+   violation is the call's failure: the caller's `or` disposition
+   runs, with `err` bound to the `ClosureViolation`, and no value
+   is produced. In a fn returning nothing the method exits as a
+   `return` does and the caller continues. The owner's
+   `on_failure` (step 4) runs first, posted to the owner's domain
+   and awaited when the pools differ (decision L0-1); then the
+   caller's `or` disposition runs. Either way, loci the method
+   `let`-bound dissolve and its per-call scratch is freed (GH
+   #1036; `violate` used to skip both).
+
+### A value-returning method that may violate is fallible
+
+(F.42.) A value-returning fn or locus method whose body may
+violate is declared `fallible(ClosureViolation)`, so that its
+callers say what happens when the locus fails instead of reading a
+value nothing computed:
+
+```hale,fragment
+locus Picker {
+    params { picked: Int = 0; }
+    closure exhausted { epoch inline; }
+
+    fn take() -> Int fallible(ClosureViolation) {
+        if self.picked >= 3 { violate exhausted; }
+        self.picked = self.picked + 1;
+        return self.picked;
+    }
+}
+
+// in the owner, which handles Picker's failures:
+let n = self.p.take() or 7;   // 7 once `take` has violated
+```
+
+A fn **may violate** when its own body holds a `violate`
+statement, or when it calls a value-returning fn that may violate
+and is not `fallible` (a `fallible` callee is answered at its call
+by the bare-call law, below, and once this law holds no other kind
+is left). A violation in a method that returns nothing is not the
+caller's failure: calling one does not make the caller one that
+may violate. Lifecycle bodies, bus handlers (the fns a `subscribe
+… as` names) and `fn main` are exempt: the runtime is their
+caller.
+
+- A value-returning fn that may violate and is not `fallible` is a
+  type error: "\`Picker.take\` returns a value and may violate
+  (\`violate exhausted\`): declare it
+  \`fallible(ClosureViolation)\`; its callers then say what happens
+  when the locus fails". The parenthesis names the path: the
+  closure a `violate` in the body names, or "through \`helper\`"
+  for a call; the diagnostic's notes give each location.
+- A fn that may violate and is declared `fallible(E)` with any
+  other `E` is a type error: a fn has one error type, and the
+  violation record is the one a violator carries.
+- A fn returning nothing that may violate and is not `fallible` is
+  a warning with the law's wording and "This becomes a law in a
+  later release". Nothing else changes for it.
+
+The call to a `fallible(ClosureViolation)` method follows the
+bare-call law unchanged: an `or` disposition is required, and the
+`err` that `or handler(err)`, `or { … }` and `or fail` see is the
+`ClosureViolation` the owner's `on_failure` received. `or raise`
+in a fn that is not `fallible` ends the process (§ "Process
+exit"), which is what a caller says when the activation should not
+continue past the locus's failure. The stdlib's two such methods
+are `BytesBuilder.snapshot` and `finish` (a failed allocation
+violates `alloc_failed`, F.27).
 
 ### Reading the audit state
 
@@ -4438,12 +4502,20 @@ process drains on SIGINT / SIGTERM (§ "Drain cascade
 (whole-process)") — the synthetic `self.draining` field reads
 `true` from any locus method body. The canonical uses are a
 `run()` loop that ends on it (`while !self.draining { … }`) and
-suppressing downstream sends after escalation:
+suppressing downstream sends once the locus has escalated:
 
-```hale
-let r = expr or self.handle_io(err);
-if !self.draining { Result <- r; }
+```hale,fragment
+fn on_tick(t: Tick) {
+    if self.draining { return; }   // this locus violated earlier
+    Sampled <- self.count;
+}
 ```
+
+An error-check method that substitutes a value or escalates is
+`fallible(ClosureViolation)` (§ "A value-returning method that may
+violate is fallible"), and its caller says what an escalation
+means at the call: `let r = expr or (self.handle_io(err) or {
+return; });`.
 
 `self.draining` is one of the three synthetic members exposed by
 name to user code (with `self.children` and `self.k_max`); its

@@ -1500,6 +1500,29 @@ The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one
 fallible in turn until a non-fallible value remains.
 
+### `ClosureViolation`, the error of a violating fn (F.42)
+
+A value-returning fn or locus method whose body may violate
+(`spec/semantics.md` § "A value-returning method that may violate
+is fallible": a `violate` statement in its own body, or a call to a
+value-returning fn that may violate and is not `fallible`) is
+declared `-> T fallible(ClosureViolation)`. The checker refuses it
+otherwise, at the fn's name: "\`P.take\` returns a value and may
+violate (\`violate exhausted\`): declare it
+\`fallible(ClosureViolation)\`; its callers then say what happens
+when the locus fails". A fn has one error type, so one that may
+violate declared `fallible(E)` with any other `E` is refused too.
+Lifecycle bodies, bus handlers and `fn main` are exempt; a fn
+returning nothing that may violate is warned about rather than
+refused.
+
+The violation is the call's failure. The caller's `or` runs, and
+the `err` an `or handler(err)`, an `or { … }` or an `or fail` sees
+is typed `ClosureViolation` (`err.locus`, `err.closure`,
+`err.diff`), the record the owner's `on_failure` received; at a
+stdlib method's call (`BytesBuilder.snapshot` and `finish`, the
+stdlib's two) as at a program's own.
+
 ### `fail` statement
 
 `fail <expr>;` is only valid inside a fallible fn body. It

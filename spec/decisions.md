@@ -3633,6 +3633,75 @@ since #1206. The key omits `hale-model` — as does the replay identity
 and the stale-binary hash — which is the identity-coverage gap phase 0
 closes before any producer moves.
 
+### F.42 — A value-returning fn that may violate is `fallible(ClosureViolation)`
+
+**Problem.** F.27 says `violate` exits the method "as a return does"
+and names no value. In a value-returning method whose owner's
+`on_failure` absorbed the violation, lowering returned an LLVM
+`undef` of the declared type, so the caller read garbage: a downstream
+handoff measured an `Int` result of `104616817497632` after its
+supervisor's `on_failure` ran, and a pointer-typed result would have
+been dereferenced. F.27's own canonical shape (`let r = expr or
+self.handle_io(err); if !self.draining { … }`) is that method: it is
+safe only while every caller remembers the guard.
+
+**Decision.**
+
+1. **The law.** A value-returning fn or locus method whose body may
+   violate is declared `fallible(ClosureViolation)`. A fn *may
+   violate* when its own body holds a `violate` statement, or when it
+   calls a value-returning fn that may violate and is not `fallible`.
+   A violation in a method that returns nothing is not the caller's
+   failure: a call to one does not make the caller one that may
+   violate. A fn that may violate declared `fallible(E)` with another
+   `E` is refused: a fn has one error type, and the violation record
+   is the one a violator carries. Lifecycle bodies, bus handlers and
+   `fn main` are exempt, the runtime being their caller. Callers
+   follow the bare-call law (GH #738) unchanged: an `or` disposition
+   is required, and the `err` it sees is the `ClosureViolation`.
+2. **The lint.** A fn returning nothing that may violate and is not
+   `fallible` is a warning with the law's wording and "This becomes a
+   law in a later release". Nothing else changes for it: the method
+   exits as a return does, the caller continues, and `self.draining`
+   is the violating locus's own flag, read inside that locus.
+3. **The lowering.** In a `fallible(ClosureViolation)` fn, `violate`
+   reports as before (the drain flag, the record, the owner's
+   `on_failure`, which runs in place on the owner's domain and is
+   posted there and awaited from any other, decision L0-1), then
+   stores the record in the fn's error slot and takes its failure
+   return. No `undef` is produced. A fn returning nothing that is not
+   `fallible` lowers as before.
+4. **The stdlib follows the law.** `BytesBuilder.snapshot` and
+   `finish` become `-> Bytes fallible(ClosureViolation)`, and every
+   caller gains an `or`.
+
+**F.27 stands.** Allocation failure is structural: a builder that
+cannot grow violates `alloc_failed`, and its owner's `on_failure`
+decides. What changes is that the caller of `snapshot()` now says
+what its own activation does: `or raise`, which ends the process
+from a fn that is not `fallible` (the behaviour the bare path had
+when no handler absorbed the violation), or a fallback where the
+surrounding code already handles an empty result. The error-check
+method of F.27's example is written `fn handle_io(e: DbError) -> Row
+fallible(ClosureViolation)`, and its caller says what an escalation
+means: `or (self.handle_io(err) or { return; })`.
+
+**Considered and rejected.**
+
+- *The transitive reading through methods returning nothing.* Counted
+  over the tree with `snapshot` and `finish` already fallible, it
+  refused 1,569 DNA fns (and 23 in the stdlib, `std::http::Router`'s
+  and `std::metrics`' public methods among them), reached through
+  `BytesBuilder.append*` and `std::json::Builder.begin_*`, whose
+  violations their callers never observe as a value. The direct
+  reading refuses none of them and warns on the 31 methods returning
+  nothing that hold a `violate`.
+- *A zero value instead of `undef`.* It hands the caller a value
+  nothing computed, the defect itself in a quieter form.
+- *`self.draining` as the contract.* It is the violating locus's own
+  flag; a caller in another locus cannot read it, and a caller in the
+  same one forgets to.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

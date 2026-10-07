@@ -260,7 +260,7 @@ locus DbConnection {
 
     // an error-check fn: takes the error, returns the success type,
     // and either substitutes a value or escalates.
-    fn handle_io(e: IoError) -> Row {
+    fn handle_io(e: IoError) -> Row fallible(ClosureViolation) {
         self.last_error = e.kind;
         if e.kind == "broken_pipe" {
             violate fatal_io;        // diverges — escalate structurally
@@ -269,8 +269,9 @@ locus DbConnection {
     }
 
     fn on_query(q: Query) {
-        let r = send_query(self.conn_fd, q) or self.handle_io(err);
-        if !self.draining { QueryResult <- r; }
+        let r = send_query(self.conn_fd, q)
+            or (self.handle_io(err) or { return; });
+        QueryResult <- r;
     }
 }
 ```
@@ -288,6 +289,16 @@ locus DbConnection {
   `return`. It fires on the spot: `self.draining` turns true, the
   parent's `on_failure` runs with the typed violation, and the
   method exits as a `return` would.
+- `handle_io` returns a value and can violate, so it is declared
+  `fallible(ClosureViolation)`: the checker refuses it otherwise.
+  When it violates there is no `Row` to hand back, so the call
+  fails instead, after the parent's `on_failure` has run, and the
+  caller's `or` decides what that means. Here `or { return; }`
+  ends the handler without publishing; `or Row { data: "" }`
+  would carry on with an empty row, and `or handler(err)` gets the
+  `ClosureViolation` itself. A method that returns nothing and
+  violates just exits, and the checker warns that it will need the
+  same declaration in a later release.
 - `self.draining` is a Bool every locus can read — true once it's
   decided to wind down. Use it to stop publishing after the
   decision.
