@@ -23,6 +23,30 @@
         "Int Uint Float Decimal Bool String Time Duration Bytes BytesView BytesMut StringView Unit",
     };
 
+    // A unit name is coloured as a type (GH #1076). No highlighter knows
+    // the catalogue, so the rule is positional: a quantity literal's
+    // suffix, the names of a `unit` declaration, a denomination after
+    // `in` or an `origin:`, and the target of `.in(…)` / `.split(…)`.
+    const UNIT = { className: "type", begin: "[A-Za-z_]\\w*", relevance: 0 };
+    const UNIT_LAST = hljs.inherit(UNIT, { endsParent: true });
+    // A number: a prefixed radix, a Float or Decimal (`2.5`, `1e-5`,
+    // `1.5d`), or a quantity, an integer with its unit written against
+    // it (`500ms`, `3bp`, `1_250_000USD`), the unit a nested type.
+    const NUMBER = {
+      className: "number",
+      begin:
+        "\\b(?:0[xXoObB][0-9a-fA-F_]+\\b|\\d[\\d_]*(?:(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?d?\\b|(?=[A-Za-z])))",
+      contains: [UNIT_LAST],
+    };
+    // What follows `in`, `origin:` or `.in(`: a unit, `100 ms` or
+    // `100ms`. Its unit ends the enclosing rule.
+    const DENOMINATION = [
+      hljs.inherit(NUMBER, { begin: "\\d[\\d_]*(?=[A-Za-z])", endsParent: true }),
+      { className: "number", begin: "\\d[\\d_]*" },
+      UNIT_LAST,
+    ];
+    const DENOMINATION_AHEAD = "\\s*(?:\\d[\\d_]*\\s*)?[A-Za-z_]";
+
     return {
       name: "Hale",
       aliases: ["hl"],
@@ -33,14 +57,44 @@
         hljs.QUOTE_STRING_MODE,
         // `@form`, `@locality`, `@ffi` … annotations.
         { className: "meta", begin: "@\\w+" },
-        // Prefixed-radix literals, then a number: a Float or Decimal
-        // (`2.5`, `1e-5`, `1.5d`), or a quantity, an integer with its unit
-        // written against it (`500ms`, `3bp`, `1_250_000USD`: GH #1076).
-        { className: "number", begin: "\\b0[xXoObB][0-9a-fA-F_]+\\b" },
+        // `unit USD = 100 cent;`, `unit bp = 1 / 10000;`, `unit tick;`:
+        // a declaration starts its line, which a cursor's `unit bytes;`
+        // clause inside a layout does not.
         {
-          className: "number",
-          begin: "\\b\\d[\\d_]*(?:(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?d?|[A-Za-z]\\w*)\\b",
+          begin: "^[ \\t]*unit(?=\\s+[A-Za-z_]\\w*\\s*[=;])",
+          end: ";",
+          keywords: { keyword: "unit" },
+          contains: [hljs.C_LINE_COMMENT_MODE, hljs.C_BLOCK_COMMENT_MODE, NUMBER, UNIT],
         },
+        // A denomination: `quantity Int in cent`, `Duration in 100ms`.
+        // Keyed on the type before `in`, so `for x in xs` is untouched.
+        {
+          begin: "\\b[A-Z][A-Za-z0-9_]*\\s+in\\b(?=" + DENOMINATION_AHEAD + ")",
+          returnBegin: true,
+          end: "[;{}()\\n]",
+          returnEnd: true,
+          contains: [
+            { className: "type", begin: "[A-Z][A-Za-z0-9_]*", relevance: 0 },
+            { begin: "\\bin\\b", keywords: { keyword: "in" } },
+          ].concat(DENOMINATION),
+        },
+        // `origin: 273_150 mK`, `origin: 273_150mK`.
+        {
+          begin: "\\borigin\\s*:(?=\\s*-?\\s*\\d[\\d_]*\\s*[A-Za-z_])",
+          end: "[;},\\n]",
+          returnEnd: true,
+          keywords: { keyword: "origin" },
+          contains: DENOMINATION,
+        },
+        // A conversion's target: `d.in(s)`, `d.in(100ms)`, `d.split(s)`.
+        {
+          begin: "\\.(?:in|split)\\((?=" + DENOMINATION_AHEAD + "\\w*\\s*\\))",
+          end: "\\)",
+          returnEnd: true,
+          keywords: { keyword: "in" },
+          contains: DENOMINATION,
+        },
+        NUMBER,
         // Capitalized identifiers read as type / locus / topic names.
         { className: "type", begin: "\\b[A-Z][A-Za-z0-9_]*\\b", relevance: 0 },
       ],
