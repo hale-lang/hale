@@ -939,6 +939,7 @@ crates/hale-codegen/tests/math_and_int_float.rs#0 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#1 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#2 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#3 865d341109268295
+crates/hale-codegen/tests/math_and_int_float.rs#4 5fd75484898c6868
 crates/hale-codegen/tests/math_and_int_float.rs#5 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#6 8f0d2e0879d26caf
 crates/hale-codegen/tests/math_nan_inf.rs#0 865d341109268295

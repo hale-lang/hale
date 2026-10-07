@@ -1,0 +1,44 @@
+// The four Int -> Float widening surfaces of spec/types.md § "Numeric
+// coercion" (F.23), each with a variable and a literal. The let
+// ascription and the field init were refused by the checker though
+// codegen widens at both (a downstream handoff: `let whole_f: Float =
+// whole;`). The refusals at the rule's edges are pinned in
+// crates/hale-types/tests/int_float_widening.rs.
+
+type Cfg {
+    timeout: Float;
+    scale: Float;
+}
+
+fn takes(x: Float) -> Float {
+    return x;
+}
+
+fn main() {
+    let n = 3;
+    let whole = -7;
+
+    // let-binding type ascription
+    let a: Float = 3;
+    let e: Float = n;
+    let whole_f: Float = whole;
+    std::test::assert(a == 3.0, "let a: Float = 3");
+    std::test::assert(e == 3.0, "let e: Float = n");
+    std::test::assert(whole_f == -7.0, "let whole_f: Float = whole");
+    std::test::assert(whole_f / 2.0 == -3.5, "the widened value is a Float");
+
+    // fn-arg coercion
+    std::test::assert(takes(n) == 3.0, "takes(n)");
+    std::test::assert(takes(4) == 4.0, "takes(4)");
+
+    // binary-op promotion
+    std::test::assert(n * 0.5 == 1.5, "n * 0.5");
+    std::test::assert(0.25 + 1 == 1.25, "0.25 + 1");
+    std::test::assert(n < 3.5, "n < 3.5");
+
+    // user-type field init
+    let d = Cfg { timeout: n, scale: 2 };
+    std::test::assert(d.timeout == 3.0, "Cfg { timeout: n }");
+    std::test::assert(d.scale == 2.0, "Cfg { scale: 2 }");
+    std::test::assert(d.timeout / d.scale == 1.5, "the widened fields are Floats");
+}

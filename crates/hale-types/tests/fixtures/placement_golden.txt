@@ -2854,6 +2854,9 @@ row	Noisy@main1	Noisy	main	default
 row	Noisy@main2	Noisy	main	default
 dynamic	Noisy	on main	in the seed
 
+== crates/hale-codegen/tests/math_and_int_float.rs#ed205daa
+row	Counter@main1	Counter	main	default
+
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
 
