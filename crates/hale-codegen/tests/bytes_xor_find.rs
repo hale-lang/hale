@@ -49,11 +49,11 @@ fn xor_mask_masks_and_round_trips() {
             let key = 305419896;
             let mb = std::bytes::BytesBuilder { };
             mb.xor_mask(payload, key);
-            let m = mb.finish();
+            let m = mb.finish() or raise;
             println("mask0=", std::bytes::at(m, 0) or raise);
             let ub = std::bytes::BytesBuilder { };
             ub.xor_mask(m, key);
-            let u = ub.finish();
+            let u = ub.finish() or raise;
             println("roundtrip=", std::str::from_bytes(u));
         }
     "#;

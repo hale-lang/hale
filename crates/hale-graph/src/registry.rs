@@ -254,6 +254,7 @@ const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const CLOSURE_EVENTS: &str = "crates/hale-types/src/closure_events.rs";
+const VIOLATE_FALLIBLE: &str = "crates/hale-types/src/violate_fallible.rs";
 const UNITS: &str = "crates/hale-types/src/units.rs";
 const UNIT_GRAPH: &str = "crates/hale-types/src/unit_graph.rs";
 const UNIT_QUANTITIES: &str = "crates/hale-types/src/unit_quantities.rs";
@@ -723,7 +724,7 @@ pub const FAMILIES: &[Family] = &[
             "surfaces_a_pair_without_its_conformance_row_is_refused",
             Some("no row means no interface: a name that declares none is satisfied by nothing"),
         ),
-        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs", "crates/hale-types/tests/typed_bodies.rs", "crates/hale-codegen/tests/conformance_routing_correction.rs"],
+        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/violate_fallible.rs", "crates/hale-types/tests/duplicate_member.rs", "crates/hale-types/tests/typed_bodies.rs", "crates/hale-codegen/tests/conformance_routing_correction.rs"],
         spec: &["spec/types.md", "spec/semantics.md"],
         owned: &[site(CHECK, "conformance")],
         seams: &[],
@@ -1451,6 +1452,32 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § A bare fallible call is an error", "spec/types.md"],
         owned: &[],
         seams: &[Seam { symbol: "bare_fallible_calls(", allowed: &[("crates/hale-types/src/bare_fallible.rs", 1), (SNAPSHOT, 1), (CHECK, 1)] }],
+    },
+    Family {
+        name: "violate_fallible",
+        layer: Layer::Effects,
+        state: State::Canonical,
+        kind: Kind::Law,
+        answers: "Whether a fn that may violate says so: a value-returning one is `fallible(ClosureViolation)` (F.42), and one returning nothing is warned about until a later release makes it the law.",
+        inputs: &["alloc_summary (each fn's `violates` column, the `violate` statements of its own body, and its resolved call edges)", "fn declarations (each fn's written return type and `fallible` clause, the program's and the stdlib analysis copy's)"],
+        producer: Some(site(VIOLATE_FALLIBLE, "violate_fallible_laws")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("check, verify, build, run, test, replay, bench, the LSP (the snapshot's check, with the typing diagnostics, beside the `bare_fallible` law)", SNAPSHOT, "violate_fallible_laws"),
+            consumer_at("the check of a bundle no snapshot holds (the tests' entries)", CHECK, "violate_fallible_laws"),
+        ],
+        invariants: &[
+            "may violate is the direct reading: a `violate` statement in the fn's own body, or a resolved call to a value-returning fn that may violate and is not `fallible`; a violation in a method returning nothing is not the caller's failure, so a call to one carries nothing, and a `fallible` callee is answered at its call by the `bare_fallible` law; an edge the summary cannot resolve contributes nothing",
+            "three verdicts, over the program's own fns only (the stdlib analysis copy is a callee; its fns are held to the law by `tests/violate_fallible.rs`): a value-returning fn that may violate and is not `fallible` is refused, naming the path (the closure, or the callee it goes through, with the call and the `violate` as notes); one declared `fallible(E)` with another `E` is refused; one returning nothing that is not `fallible` is warned about",
+            "lifecycle bodies (no fn declaration), bus handlers (the summary's entry kind) and `fn main` are exempt: the runtime is their caller",
+            "a stated gap: a locus method serving a perspective fn (`serves`, matched by name as conformance matches it) is exempt from the law and the lint and carries nothing to its callers, and is warned about instead, until a `fallible` perspective call lowers (the build refuses one today, and conformance matches the perspective fn's fallibility both ways, so no spelling of it both checks and runs); it keeps today's lowering",
+            "lowering agrees: in a `fallible(ClosureViolation)` fn a `violate` stores the record in the error slot and takes the failure return, after the owner's `on_failure` (in place, or posted to the owner's domain and awaited); the `undef` of the declared type is reached only by an exempt value-returning bus handler",
+        ],
+        missing: Missing::Hole,
+        tests: &["crates/hale-types/tests/violate_fallible.rs", "crates/hale-codegen/tests/violate_build.rs", "tests/hale/violate_in_value_method_test.hl"],
+        spec: &["spec/semantics.md § A value-returning method that may violate is fallible", "spec/types.md § `ClosureViolation`, the error of a violating fn (F.42)", "spec/verification.md § Structural & design rules", "spec/decisions.md F.42"],
+        owned: &[site(VIOLATE_FALLIBLE, "may_violate"), site(VIOLATE_FALLIBLE, "verdicts")],
+        seams: &[Seam { symbol: "violate_fallible_laws(", allowed: &[(VIOLATE_FALLIBLE, 1), (SNAPSHOT, 1), (CHECK, 1)] }],
     },
     Family {
         name: "nonreturning",
@@ -2349,6 +2376,56 @@ pub const RULES: &[Rule] = &[
         gist: "a `layout:`-bound topic whose payload is neither flat-shapeable nor `BytesView` (error)",
         family: "bindings",
         evaluator: Some(site(CHECK, "check_main_and_bindings")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/value-returning-violator-is-fallible",
+        title: "A value-returning violator is fallible",
+        // The summary's `violates` column and resolved call edges, against each fn's written return type and `fallible` clause.
+        reads: Reads::Rows(&["alloc_summary"]),
+        gist: "a value-returning fn or locus method that may violate and is not `fallible(ClosureViolation)` (error, at its name, naming the closure or the callee the path goes through)",
+        family: "violate_fallible",
+        evaluator: Some(site(VIOLATE_FALLIBLE, "violate_fallible_laws")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/one-error-type-for-a-violator",
+        title: "One error type for a violator",
+        // The same rows; the `fallible` clause names another error type.
+        reads: Reads::Rows(&["alloc_summary"]),
+        gist: "a fn that may violate declared `fallible(E)` with `E` other than `ClosureViolation` (error)",
+        family: "violate_fallible",
+        evaluator: Some(site(VIOLATE_FALLIBLE, "violate_fallible_laws")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/violation-in-a-method-returning-nothing",
+        title: "Violation in a method returning nothing",
+        // The same rows; the fn returns nothing and is not `fallible`.
+        reads: Reads::Rows(&["alloc_summary"]),
+        gist: "a fn returning nothing that may violate and is not `fallible` (warning; a later release makes it the law)",
+        family: "violate_fallible",
+        evaluator: Some(site(VIOLATE_FALLIBLE, "violate_fallible_laws")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/violation-in-a-perspective-served-method",
+        title: "Violation in a perspective-served method",
+        // The same rows; the method serves a perspective fn (its locus's `serves`, matched by name).
+        reads: Reads::Rows(&["alloc_summary"]),
+        gist: "a locus method serving a perspective fn that may violate and is not `fallible`, exempt from the law and the lint until a `fallible` perspective call lowers (warning)",
+        family: "violate_fallible",
+        evaluator: Some(site(VIOLATE_FALLIBLE, "violate_fallible_laws")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/perspective-fallibility-matches",
+        title: "A perspective fn's fallibility",
+        // The perspective's and the impl's method signatures, as declared.
+        reads: Reads::Declaration,
+        gist: "a method serving a perspective fn with a different fallibility, either way (error)",
+        family: "surfaces",
+        evaluator: Some(site(CHECK, "check_serves_conformance")),
         state: State::Canonical,
     },
     Rule {

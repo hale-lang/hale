@@ -264,7 +264,7 @@ locus KnowledgeAdmissionCases {
         bytes.append_str("{ \"kind\": \"knowledge\", \"text\": \"");
         let mut i = 0; while i < 30000 { bytes.append_u8(120); i = i + 1; }
         bytes.append_str("\", \"author\": \"org\", \"target\": \"org\", \"provenance\": \"native direct ratification\" }");
-        let large = "sha256:" + receipts.store(std::str::from_bytes(bytes.snapshot()));
+        let large = "sha256:" + receipts.store(std::str::from_bytes(bytes.snapshot() or raise));
         let moved = j.refresh(); self.append(j, "knowledge.ratified", large, "{\"class\":\"initiative\"}");
         let large_result = provider.submit(context, self.command(context, Endpoints { left: left, right: large }, record.head("journal").id, "large-native-receipt", RELATION));
         std::test::assert(large_result.ok, "30 KB schema-valid native receipt admits without document re-encoding: " + large_result.code);

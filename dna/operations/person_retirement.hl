@@ -60,7 +60,7 @@ locus PersonRetirementCodec {
         self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
         self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
         self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id); self.field(b, "subject_digest", c.subject_digest); self.field(b, "new_assignee", c.new_assignee);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
@@ -72,13 +72,13 @@ locus PersonRetirementCodec {
         return if self.valid(context, c) { c } else { GovernanceCommand { } };
     }
     fn move_body(from: String, to: String, by: String) -> String {
-        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"from\":"); b.append_str(common.quote(from)); self.field(b, "to", to); self.field(b, "by", by); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"from\":"); b.append_str(common.quote(from)); self.field(b, "to", to); self.field(b, "by", by); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn task(id: String, digest: String, from: String) -> String {
-        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"id\":"); b.append_str(common.quote(id)); self.field(b, "assignment_digest", digest); self.field(b, "from", from); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"id\":"); b.append_str(common.quote(id)); self.field(b, "assignment_digest", digest); self.field(b, "from", from); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn transfer(id: String, digest: String, from: String, to: String, event_id: String) -> String {
-        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"id\":"); b.append_str(common.quote(id)); self.field(b, "assignment_digest", digest); self.field(b, "from", from); self.field(b, "to", to); self.field(b, "event_id", event_id); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let common = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { }; b.append_str("{\"id\":"); b.append_str(common.quote(id)); self.field(b, "assignment_digest", digest); self.field(b, "from", from); self.field(b, "to", to); self.field(b, "event_id", event_id); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, manifest: String, transferred: Int) -> String {
         if !self.valid(context, c) || transferred < 0 || transferred > 32 { return ""; }
@@ -86,7 +86,7 @@ locus PersonRetirementCodec {
         self.field(b, "command_id", common.identity(context, c.request_id)); self.field(b, "command_payload", self.canonical(context, c)); self.field(b, "command_fingerprint", self.fingerprint(context, c));
         self.field(b, "command_authority", grant.authority); self.field(b, "command_authority_basis", grant.basis); self.field(b, "command_record_head", head);
         self.field(b, "by", context.principal_name); self.field(b, "to", c.new_assignee); b.append_str(",\"transferred\":"); b.append_str(to_string(transferred)); self.field(b, "plan_digest", c.subject_digest);
-        b.append_str(",\"manifest\":"); b.append_str(manifest); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str(",\"manifest\":"); b.append_str(manifest); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_fact(e: dna::Event, j: dna::Journal) -> PersonRetirementFact {
         let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
@@ -108,7 +108,7 @@ locus PersonRetirementCodec {
             if moved.seq != e.seq - count + index || moved.prev != previous || moved.kind != "task.reassigned" || moved.entity != id || moved.body != self.move_body(c.target_id, c.new_assignee, context.principal_name) { return PersonRetirementFact { }; }
             if index > 0 { b.append_str(","); } b.append_str(self.transfer(id, common.string(task, "assignment_digest"), c.target_id, c.new_assignee, moved.digest)); previous = moved.digest; index = index + 1; it = std::json::array_next(it);
         }
-        b.append_str("]"); if index != count || e.prev != previous || manifest != std::str::from_bytes(b.snapshot()) { return PersonRetirementFact { }; }
+        b.append_str("]"); if index != count || e.prev != previous || manifest != std::str::from_bytes(b.snapshot() or raise) { return PersonRetirementFact { }; }
         return PersonRetirementFact { valid: true, context: context, command: c, grant: grant, head: head, manifest: manifest, transferred: count, event_id: e.digest };
     }
     fn visible(j: dna::Journal, fact: PersonRetirementFact) -> Bool {
@@ -156,12 +156,12 @@ locus PersonRetirement {
                 if count >= 32 || entry.history >= 128 { return RetirementPlan { code: "person_read_limit" }; }
                 if count > 0 { tasks.append_str(","); } tasks.append_str(codec.task(row.id, row.assignment_digest, row.assignee)); count = count + 1;
             } i = i + 1;
-        } tasks.append_str("]"); let task_rows = std::str::from_bytes(tasks.snapshot());
+        } tasks.append_str("]"); let task_rows = std::str::from_bytes(tasks.snapshot() or raise);
         // Reserve the new facts under the same complete-read bounds used by lookup.
         if state == "active" && (j.revision() + count + 1 > 10000 || task_events + count > 2048) { return RetirementPlan { code: "person_read_limit" }; }
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.person-retirement-plan/1\""); codec.field(b, "person", person); codec.field(b, "authority_basis", authority_basis);
-        codec.field(b, "state", state); codec.field(b, "successor", successor); b.append_str(",\"retirement_events\":"); b.append_str(std::str::from_bytes(retired.snapshot())); b.append_str(",\"tasks\":"); b.append_str(task_rows); b.append_str("}");
-        return RetirementPlan { ok: true, code: "", person: person, state: state, successor: successor, subject_digest: dna::digest_of(std::str::from_bytes(b.snapshot())), tasks: task_rows, transferred: count, event_id: event_id };
+        codec.field(b, "state", state); codec.field(b, "successor", successor); b.append_str(",\"retirement_events\":"); b.append_str(std::str::from_bytes(retired.snapshot() or raise)); b.append_str(",\"tasks\":"); b.append_str(task_rows); b.append_str("}");
+        return RetirementPlan { ok: true, code: "", person: person, state: state, successor: successor, subject_digest: dna::digest_of(std::str::from_bytes(b.snapshot() or raise)), tasks: task_rows, transferred: count, event_id: event_id };
     }
     fn publish_retirement(batch: GovernanceBatchRecord, snapshot: GovernanceSnapshot, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, plan: RetirementPlan, sign: Bool) -> PersonRetirementPublication {
         let codec = PersonRetirementCodec { }; let common = GovernanceCommandCodec { };
@@ -187,7 +187,7 @@ locus PersonRetirement {
             if moved == "" { return PersonRetirementPublication { code: "record_unavailable" }; }
             if index > 0 { manifest.append_str(","); } manifest.append_str(codec.transfer(id, common.string(task, "assignment_digest"), c.target_id, c.new_assignee, moved));
             parent = moved; index = index + 1; it = std::json::array_next(it);
-        } manifest.append_str("]"); let body = codec.fact(context, c, grant, snapshot.head, std::str::from_bytes(manifest.snapshot()), actual.transferred);
+        } manifest.append_str("]"); let body = codec.fact(context, c, grant, snapshot.head, std::str::from_bytes(manifest.snapshot() or raise), actual.transferred);
         if len(body) > 131072 { return PersonRetirementPublication { code: "person_read_limit" }; }
         let final_row = dna::Row { kind: "person.retired", entity: c.target_id, body: body, author: context.principal_name };
         if record_bytes + len(dna::row_line(snapshot.revision + index, final_row, context.principal_name)) > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }

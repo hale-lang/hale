@@ -98,7 +98,7 @@ locus Http {
                 i = i + 1;
             }
         }
-        let text = std::str::from_bytes(out.snapshot());
+        let text = std::str::from_bytes(out.snapshot() or raise);
         return Decoded { ok: self.utf8(text), text: text };
     }
     fn integer(raw: String, maximum: Int) -> Int {

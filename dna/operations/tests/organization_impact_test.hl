@@ -140,7 +140,7 @@ locus ImpactCases {
     }
     fn limits() {
         let j = dna::MemJournal { }; let text = std::bytes::BytesBuilder { }; let mut i = 0; while i < 65537 { text.append_u8(120); i = i + 1; }
-        self.append(j, "application.observed", "app", std::str::from_bytes(text.snapshot()));
+        self.append(j, "application.observed", "app", std::str::from_bytes(text.snapshot() or raise));
         let r = self.read(j); std::test::assert(!r.available && r.details_visible && r.code == "impact_read_limit" && r.record_head == j.head(), "oversized captured fact unavailable");
     }
     fn run_cases() {

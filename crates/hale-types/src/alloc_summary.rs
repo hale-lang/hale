@@ -733,6 +733,10 @@ pub struct FnSummary {
     /// predicate over call edges alone can never see them. Today:
     /// `Topic <- value` publishes and locus instantiations.
     pub effect_sites: Vec<EffectSite>,
+    /// The `violate` statements of this fn's own body, by the closure
+    /// each names and its span: what the
+    /// may-violate inference ([`crate::violate_fallible`]) starts from.
+    pub violates: Vec<(String, Span)>,
     /// #353: names of this fn's FUNCTION-TYPED parameters.
     ///
     /// A call through one of these lands in the graph as
@@ -2485,6 +2489,7 @@ pub fn summarize_identified(
             locals: vec![params.iter().map(|p| (p.clone(), Local::Unresolved)).collect()],
             sites: Vec::new(),
             effect_sites: Vec::new(),
+            violates: Vec::new(),
             locus_types: &locus_type_names,
             calls: Vec::new(),
             skipped: Vec::new(),
@@ -2526,6 +2531,7 @@ pub fn summarize_identified(
                 calls: w.calls,
                 loops: w.loops,
                 effect_sites: w.effect_sites,
+                violates: w.violates,
                 fn_params: fn_params.to_vec(),
                 hot,
                 mode,
@@ -3810,6 +3816,8 @@ struct Walker<'a> {
     sites: Vec<AllocSite>,
     /// GH #265: syntactic effect sites (publish / spawn).
     effect_sites: Vec<EffectSite>,
+    /// The body's `violate` statements ([`FnSummary::violates`]).
+    violates: Vec<(String, Span)>,
     /// GH #265: declared locus type names — a struct literal of one
     /// of these is a locus INSTANTIATION (arena create + possibly a
     /// thread spawn / pool post), not a plain data allocation.
@@ -4494,7 +4502,8 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a, depth, Escape::Local);
                 }
             }
-            Stmt::Violate { payload, .. } => {
+            Stmt::Violate { name, payload, span } => {
+                self.violates.push((name.name.clone(), *span));
                 if let Some(p) = payload {
                     self.walk_expr(p, depth, Escape::Local);
                 }

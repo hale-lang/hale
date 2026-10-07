@@ -75,7 +75,7 @@ locus KnowledgeEdgeCodec {
         if !candidate { self.field(b, "candidate_digest", r.candidate_digest); }
     }
     fn document(r: KnowledgeEdgeRequest) -> String {
-        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-edge-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-edge-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fields(b: std::bytes::BytesBuilder, r: KnowledgeEdgeRequest) {
         b.append_str("{\"application_id\":"); b.append_str(record_json_quote(r.application_id));
@@ -93,19 +93,19 @@ locus KnowledgeEdgeCodec {
         self.field(b, "edge_basis", r.edge_basis);
         self.field(b, "candidate_digest", r.candidate_digest);
     }
-    fn started(r: KnowledgeEdgeRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot()); }
+    fn started(r: KnowledgeEdgeRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise); }
     fn proposed(r: KnowledgeEdgeRequest) -> String {
-        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn refused(r: KnowledgeEdgeRequest, reason_code: String, why: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn review_request(r: KnowledgeEdgeRequest) -> String {
         let b = std::bytes::BytesBuilder { }; b.append_str("{\"question\":");
         b.append_str(record_json_quote((if r.operation == "dna.knowledge.edge.link" { "Link " } else { "Unlink " }) + r.from_id + " to " + r.to_id + " as " + r.rel + "?"));
         self.field(b, "subject_digest", r.candidate_digest); self.field(b, "required_authority", "board"); self.field(b, "author", r.by);
         self.field(b, "knowledge_edge_digest", r.candidate_digest); self.field(b, "edge_request_id", r.request_id);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn terminal_fields(b: std::bytes::BytesBuilder, r: KnowledgeEdgeRequest, decision: String, reviewer: String) {
         b.append_str("{\"format\":\"dna.knowledge-edge-effect/1\""); self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
@@ -114,13 +114,13 @@ locus KnowledgeEdgeCodec {
         self.field(b, "edge_id", r.edge_id); self.field(b, "from_id", r.from_id); self.field(b, "to_id", r.to_id); self.field(b, "rel", r.rel); self.field(b, "edge_basis", r.edge_basis);
     }
     fn effect(r: KnowledgeEdgeRequest, decision: String, reviewer: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn declined(r: KnowledgeEdgeRequest, decision: String, reviewer: String, outcome: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn apply_refused(r: KnowledgeEdgeRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
-        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     @unbounded
     fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {

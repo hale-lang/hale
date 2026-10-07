@@ -58,7 +58,7 @@ locus KnowledgeNodeCommandCodec {
         edge.field(b, "supersedes", r.supersedes); edge.field(b, "by", r.by); edge.field(b, "because", r.because); edge.field(b, "candidate_digest", r.candidate_digest);
         edge.field(b, "command_id", edge.identity(context, c.request_id)); edge.field(b, "command_payload", edge.canonical(context, c)); edge.field(b, "command_fingerprint", edge.fingerprint(context, c));
         edge.field(b, "authority", grant.authority); edge.field(b, "authority_basis", grant.basis); edge.field(b, "record_head", c.record_head);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn decode_fact(e: dna::Event) -> KnowledgeFact {
         let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let common = GovernanceCommandCodec { }; let edge = KnowledgeCommandCodec { };

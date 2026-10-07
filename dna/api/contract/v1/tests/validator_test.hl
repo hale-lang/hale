@@ -197,7 +197,7 @@ locus Cases {
         self.custom("{\"if\":{\"properties\":{\"hidden\":{\"const\":true}}},\"then\":{\"properties\":{\"text\":{\"const\":\"\"}}}}", "{\"hidden\":false,\"text\":\"visible\"}", true, "false condition skips consequent");
         let bytes = std::bytes::BytesBuilder { };
         bytes.append_u8(34); bytes.append_u8(255); bytes.append_u8(34);
-        self.custom("{\"type\":\"string\"}", std::str::from_bytes(bytes.snapshot()), false, "invalid UTF-8");
+        self.custom("{\"type\":\"string\"}", std::str::from_bytes(bytes.snapshot() or raise), false, "invalid UTF-8");
     }
     fn knowledge_cases() {
         self.expect("KnowledgeInt64", "\"-9223372036854775808\"", true, "minimum signed native revision");

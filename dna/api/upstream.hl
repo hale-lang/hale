@@ -60,7 +60,7 @@ fn exchange(port: Int, method: String, target: String, headers: String, body: St
             if total > MAX_UPSTREAM_BYTES { reading = false; }
         }
     }
-    let raw = std::str::from_bytes(received.snapshot());
+    let raw = std::str::from_bytes(received.snapshot() or raise);
     if total == 0 { return Upstream { code: if std::time::monotonic_ns() - started >= timeout_ns { "timeout" } else { "no_response" } }; }
     if total > MAX_UPSTREAM_BYTES { return Upstream { code: "timeout" }; }
     let split = std::str::index_of(raw, "\r\n\r\n");

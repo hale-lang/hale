@@ -117,7 +117,7 @@ locus DraftProof {
     fn budgets() {
         let cat = dna::WorkflowCatalog { }; self.populate(cat); let s = self.snapshot(cat); let basis = self.basis(s); let candidate = self.candidate("");
         let b = std::bytes::BytesBuilder { }; let mut i = 0; while i < 65537 { b.append_u8(32); i = i + 1; }
-        let huge = ops::DefinitionSnapshot { supported: true, available: true, document: std::str::from_bytes(b.snapshot()), digest: "unneeded", provenance: self.provenance() };
+        let huge = ops::DefinitionSnapshot { supported: true, available: true, document: std::str::from_bytes(b.snapshot() or raise), digest: "unneeded", provenance: self.provenance() };
         std::test::assert_eq_str(self.validate(huge, basis, candidate).code, "definition_read_limit", "base byte budget before decode");
         let unsupported = ops::DefinitionDrafts { }; std::test::assert_eq_str(unsupported.validate("child@9007199254740993", basis, candidate).code, "definitions_unsupported", "unsupported never fake valid");
         let a = cat.define("inactive", 1, "record", "Inactive fields"); let l = cat.leaf("inactive", 1, 0, "leaf", dna::WorkRequest { }, 1);
@@ -125,7 +125,7 @@ locus DraftProof {
         cat.members.set(last, dna::MemberDef { workflow: original.workflow, revision: original.revision, step: original.step, key: original.key, kind: "leaf", child: "unrepresented" }) or discard;
         let noncanonical = self.snapshot(cat); std::test::assert_eq_str(self.validate(noncanonical, self.basis(noncanonical), candidate).code, "definition_export_unsupported", "do not discard inactive native fields");
     }
-    fn repeated(count: Int) -> String { let b = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { b.append_u8(120); i = i + 1; } return std::str::from_bytes(b.snapshot()); }
+    fn repeated(count: Int) -> String { let b = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { b.append_u8(120); i = i + 1; } return std::str::from_bytes(b.snapshot() or raise); }
     fn with_objective(candidate: String, raw: String) -> String {
         let codec = ops::DefinitionDraftCodec { }; let steps = std::json::array_first(codec.raw(candidate, "steps")); let members = std::json::array_first(codec.raw(steps.element, "members")); let leaf = codec.raw(members.element, "leaf");
         return std::str::replace(candidate, codec.raw(leaf, "objective"), raw);

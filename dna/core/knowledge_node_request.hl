@@ -64,16 +64,16 @@ locus KnowledgeNodeRequestCodec {
         self.field(b, "by", r.by); self.field(b, "because", r.because); self.field(b, "candidate_digest", r.candidate_digest);
     }
     fn started(r: KnowledgeNodeRequest) -> String {
-        let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn proposed(r: KnowledgeNodeRequest) -> String {
         let b = std::bytes::BytesBuilder { }; self.fields(b, r);
         self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", knowledge_review_id(r.candidate_digest));
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn refused(r: KnowledgeNodeRequest, why: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "why", why);
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn matches(body: String, r: KnowledgeNodeRequest) -> Bool { return self.started(self.decode(body)) == self.started(r); }
 }

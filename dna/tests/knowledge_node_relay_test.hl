@@ -26,7 +26,7 @@ fn relay_once(root: String) -> host::NodeRelay {
 fn controls(size: Int) -> String {
     let b = std::bytes::BytesBuilder { }; let mut i = 0;
     while i < size { b.append_u8(1); i = i + 1; }
-    return std::str::from_bytes(b.snapshot());
+    return std::str::from_bytes(b.snapshot() or raise);
 }
 fn maximum(probe: Probe) {
     let root = "/tmp/dna-node-relay-max-" + to_string(std::process::pid());
@@ -51,7 +51,7 @@ fn maximum(probe: Probe) {
     let expanded = std::bytes::BytesBuilder { };
     expanded.append_str(compact[0..(len(compact) - 1)]);
     expanded.append_str(",\"command_payload\":"); expanded.append_str(dna::record_json_quote(compact)); expanded.append_str("}");
-    let body = std::str::from_bytes(expanded.snapshot());
+    let body = std::str::from_bytes(expanded.snapshot() or raise);
     std::test::assert(len(body) > 65536, "outer fact genuinely exceeds the installed process argv bound");
     let input = j.append_exact(j.revision(), "knowledge.node.requested", r.request_id, body);
     std::test::assert(input.ok, "large transport-only request fixture is retained in Record");

@@ -43,7 +43,7 @@ fn empty_builder_finishes_to_zero_length_bytes() {
     let src = r#"
         fn main() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
-            let out = b.finish();
+            let out = b.finish() or raise;
             println("len=", len(out));
         }
     "#;
@@ -85,7 +85,7 @@ fn round_trip_preserves_embedded_nul_bytes() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
             b.append(c1);
             b.append(c2);
-            let out = b.finish();
+            let out = b.finish() or raise;
 
             println("len=", len(out));
             println("b0=", std::bytes::at(out, 0) or -1);
@@ -164,7 +164,7 @@ fn builder_len_tracks_running_count() {
             println("l2=", b.len());
             b.append(cc);
             println("l3=", b.len());
-            let out = b.finish();
+            let out = b.finish() or raise;
             println("final=", len(out));
         }
     "#;

@@ -37,7 +37,7 @@ locus TaskProjection {
         b.append_str("{\"format\":\"dna.task-assignment/1\",\"previous\":"); b.append_str(wire.quote(previous));
         b.append_str(",\"event_id\":"); b.append_str(wire.quote(e.digest)); b.append_str(",\"sequence\":"); b.append_str(to_string(e.seq));
         b.append_str(",\"kind\":"); b.append_str(wire.quote(e.kind)); b.append_str(",\"entity\":"); b.append_str(wire.quote(e.entity));
-        b.append_str(",\"body\":"); b.append_str(wire.quote(e.body)); b.append_str("}"); return dna::digest_of(std::str::from_bytes(b.snapshot()));
+        b.append_str(",\"body\":"); b.append_str(wire.quote(e.body)); b.append_str("}"); return dna::digest_of(std::str::from_bytes(b.snapshot() or raise));
     }
     fn apply(e: dna::Event) -> String {
         let wire = GovernanceCommandCodec { }; let at = self.index(e.entity);

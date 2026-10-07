@@ -49,11 +49,11 @@ fn tcp_recv_into_accumulates_across_calls() {
             let buf = std::bytes::BytesBuilder {{ initial_cap: 1024 }};
             let n1 = std::io::tcp::recv_into(conn, buf, 1024);
             println("after_first len=", buf.len(), " n=", n1);
-            let snap1 = buf.snapshot();
+            let snap1 = buf.snapshot() or raise;
             println("snap1=", std::str::from_bytes(snap1));
             let n2 = std::io::tcp::recv_into(conn, buf, 1024);
             println("after_second len=", buf.len(), " n=", n2);
-            let snap2 = buf.snapshot();
+            let snap2 = buf.snapshot() or raise;
             println("snap2=", std::str::from_bytes(snap2));
             std::io::tcp::close_fd(conn);
             std::io::tcp::close_fd(listen);

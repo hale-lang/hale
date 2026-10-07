@@ -1385,6 +1385,7 @@ crates/hale-codegen/tests/view_storage_e2.rs#3 4ea433cadf6c793a
 crates/hale-codegen/tests/view_storage_e2.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/violate_build.rs#0 9f7a676eb9c51fa7
 crates/hale-codegen/tests/violate_build.rs#1 93201b3738444ce6
+crates/hale-codegen/tests/violate_build.rs#10 27b8ee6cf38093ae
 crates/hale-codegen/tests/violate_build.rs#2 c0885950803d2d22
 crates/hale-codegen/tests/violate_build.rs#3 02f5109577c31dca
 crates/hale-codegen/tests/violate_build.rs#4 9f7a676eb9c51fa7
@@ -1392,6 +1393,7 @@ crates/hale-codegen/tests/violate_build.rs#5 ce98cb0347d3ec5d
 crates/hale-codegen/tests/violate_build.rs#6 193913768d00ce7f
 crates/hale-codegen/tests/violate_build.rs#7 ebc8940b19eb0812
 crates/hale-codegen/tests/violate_build.rs#8 61e1f45189d42de3
+crates/hale-codegen/tests/violate_build.rs#9 ecf053bd1bde23b5
 crates/hale-codegen/tests/violate_child_state_read.rs#0 233b72b88fea82fb
 crates/hale-codegen/tests/wasm_import_backstop.rs#0 7155761f6f0fa380
 crates/hale-codegen/tests/wasm_target.rs#0 03e8f21557521e65
@@ -1872,5 +1874,7 @@ crates/hale-types/tests/violate.rs#0 8bef0857136a5c1f
 crates/hale-types/tests/violate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#10 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#12 becc6f9d604aac64
+crates/hale-types/tests/violate_fallible.rs#2 98a166845d5da99c
+crates/hale-types/tests/violate_fallible.rs#8 d37e9f03a5f518ad
 crates/hale-types/tests/wasm_target_gating.rs#0 f2c1228edb650960
 crates/hale-types/tests/wasm_target_gating.rs#1 865d341109268295

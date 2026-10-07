@@ -22,7 +22,7 @@ fn review() -> ops::GovernanceCommand {
 fn repeated(count: Int) -> String {
     let b = std::bytes::BytesBuilder { }; let mut i = 0;
     while i < count { b.append_u8(120); i = i + 1; }
-    return std::str::from_bytes(b.snapshot());
+    return std::str::from_bytes(b.snapshot() or raise);
 }
 fn rejected(command: ops::GovernanceCommand, label: String) {
     let codec = ops::GovernanceCommandCodec { }; let who = context();
@@ -139,7 +139,7 @@ fn test_byte_limits() {
     owner = context(); owner.principal_name = "bad\rprincipal";
     std::test::assert(!codec.context_valid(owner), "principal controls rejected");
     let invalid = std::bytes::BytesBuilder { }; invalid.append_u8(192); invalid.append_u8(175);
-    c = practice(); c.text = std::str::from_bytes(invalid.snapshot()); rejected(c, "invalid UTF8 payload rejected");
+    c = practice(); c.text = std::str::from_bytes(invalid.snapshot() or raise); rejected(c, "invalid UTF8 payload rejected");
 }
 fn test_strict_decode() {
     let codec = ops::GovernanceCommandCodec { }; let who = context(); let document = codec.canonical(who, practice());

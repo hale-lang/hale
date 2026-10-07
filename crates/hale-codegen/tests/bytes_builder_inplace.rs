@@ -31,7 +31,7 @@ fn builder_shift_front_drops_leading_bytes() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
             b.append(std::bytes::from_string("hello world"));
             b.shift_front(6);
-            let snap = b.snapshot();
+            let snap = b.snapshot() or raise;
             println("len=", b.len());
             println("body=", std::str::from_bytes(snap));
         }
@@ -67,7 +67,7 @@ fn builder_clear_keeps_capacity_drops_len() {
             println("after_clear=", b.len());
             b.append(std::bytes::from_string("xy"));
             println("after_append=", b.len());
-            let snap = b.snapshot();
+            let snap = b.snapshot() or raise;
             println("body=", std::str::from_bytes(snap));
         }
     "#;
@@ -84,8 +84,8 @@ fn builder_snapshot_leaves_builder_unchanged() {
         fn main() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
             b.append(std::bytes::from_string("snap-me"));
-            let s1 = b.snapshot();
-            let s2 = b.snapshot();
+            let s1 = b.snapshot() or raise;
+            let s2 = b.snapshot() or raise;
             println("len_after=", b.len());
             println("s1=", std::str::from_bytes(s1));
             println("s2=", std::str::from_bytes(s2));
@@ -111,11 +111,11 @@ fn builder_append_slice_copies_range_without_intermediate_alloc() {
             let src_bytes = std::bytes::from_string("0123456789");
             b.append_slice(src_bytes, 3, 7);
             println("len=", b.len());
-            println("body=", std::str::from_bytes(b.snapshot()));
+            println("body=", std::str::from_bytes(b.snapshot() or raise));
             // Second append from a different region.
             b.append_slice(src_bytes, 0, 2);
             println("len2=", b.len());
-            println("body2=", std::str::from_bytes(b.snapshot()));
+            println("body2=", std::str::from_bytes(b.snapshot() or raise));
         }
     "#;
     let (stdout, status) = build_and_run("bb_append_slice", src);
@@ -137,7 +137,7 @@ fn builder_append_slice_empty_range_no_op() {
             let src_bytes = std::bytes::from_string("ignored");
             b.append_slice(src_bytes, 3, 3);
             println("len=", b.len());
-            println("body=", std::str::from_bytes(b.snapshot()));
+            println("body=", std::str::from_bytes(b.snapshot() or raise));
         }
     "#;
     let (stdout, status) = build_and_run("bb_append_slice_empty", src);
@@ -256,7 +256,7 @@ fn recv_loop_simulation_recycles_capacity() {
             }
             println("final_len=", b.len());
             b.append(std::bytes::from_string("done"));
-            let snap = b.snapshot();
+            let snap = b.snapshot() or raise;
             println("body=", std::str::from_bytes(snap));
         }
     "#;
@@ -278,7 +278,7 @@ fn builder_append_str_appends_string_bytes() {
             b.append_str("world");
             b.append_u8(33);
             print("s=");
-            println(std::str::from_bytes(b.snapshot()));
+            println(std::str::from_bytes(b.snapshot() or raise));
             print("len=");
             println(b.len());
         }

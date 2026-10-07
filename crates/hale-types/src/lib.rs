@@ -91,6 +91,7 @@ pub mod form_rows;
 pub mod target;
 pub mod typed_bodies;
 pub mod ty;
+pub mod violate_fallible;
 pub mod working_set;
 
 /// m94: subject wildcard matching used by the type checker

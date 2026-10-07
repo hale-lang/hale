@@ -46,7 +46,7 @@ fn exact_text() -> String {
     let b = std::bytes::BytesBuilder { };
     b.append_str("A concept — équipe 🧭 <literal>\\n\r\n");
     let mut i = 1; while i < 32 { b.append_u8(i); i = i + 1; }
-    return std::str::from_bytes(b.snapshot());
+    return std::str::from_bytes(b.snapshot() or raise);
 }
 fn request(id: String, operation: String, kind: String, text: String, old: String) -> dna::KnowledgeNodeRequest {
     let codec = dna::KnowledgeNodeRequestCodec { };

@@ -71,7 +71,7 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
         "3fc6267b90f42410",
         "transport_kind",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c", "compute_client_final"),
+    ("scram", "", "salted_password", "pq::salted_password", "ac96e8b3c6c0748f", "compute_client_final"),
     ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0", "salted_password"),
 ];
 

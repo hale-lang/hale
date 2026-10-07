@@ -31,7 +31,7 @@ locus TaskCreateCommandCodec {
         self.field(b, "outcome", c.outcome); self.field(b, "to", c.to);
         // a judgment says so; a change is the payload as it always was (GH #1144)
         if len(c.ask_kind) > 0 { self.field(b, "kind", c.ask_kind); }
-        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
     fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {

@@ -172,7 +172,7 @@ locus OrganizationSourceRequestCodec {
     }
     fn canonical(r: OrganizationSourceRequest) -> String {
         let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn pins(b: std::bytes::BytesBuilder, r: OrganizationSourceRequest) {
         b.append_str("{\"request_id\":"); b.append_str(record_json_quote(r.request_id));
@@ -183,18 +183,18 @@ locus OrganizationSourceRequestCodec {
     }
     fn started(r: OrganizationSourceRequest) -> String {
         let b = std::bytes::BytesBuilder { }; self.pins(b, r); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn proposed(r: OrganizationSourceRequest, candidate: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.pins(b, r);
         self.field(b, "candidate_commit", candidate); self.field(b, "review_id", self.mutation_id(r));
         self.field(b, "source_digest", r.source_digest); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn failed(r: OrganizationSourceRequest, stage: String, reason_code: String, why: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.pins(b, r);
         self.field(b, "stage", stage); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     fn refused(r: OrganizationSourceRequest, stage: String, reason_code: String, why: String) -> String { return self.failed(r, stage, reason_code, why); }
     fn apply_refused(r: OrganizationSourceRequest, decision_command_id: String, candidate: String, reason_code: String) -> String {
@@ -204,7 +204,7 @@ locus OrganizationSourceRequestCodec {
         self.field(b, "request_digest", digest_of(self.canonical(r))); self.field(b, "mutation_id", self.mutation_id(r));
         self.field(b, "source_owner", r.source_owner); self.field(b, "decision_command_id", decision_command_id);
         self.field(b, "candidate_commit", candidate); self.field(b, "reason_code", reason_code); b.append_str("}");
-        return std::str::from_bytes(b.snapshot());
+        return std::str::from_bytes(b.snapshot() or raise);
     }
     @unbounded
     fn fact(j: Journal, kind: String, entity: String) -> Event {
