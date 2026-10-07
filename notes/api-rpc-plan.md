@@ -196,12 +196,21 @@ idempotency and recovery are the application's.
 
 ### 2.6 Structural failure in a reply handler
 
-A handler invoked by the runtime to produce a reply is invoked through
-the fallible ABI F.42 gave `violate`: a violation lands in the error
-slot as the `ClosureViolation`, the runtime maps it to the server
-error outcome, and the owner's `on_failure` runs as it does for any
-violation. The undefined reply of today (#1426's Deferred) is gone
-without any rule on the handler.
+An RPC handler is an ordinary method under F.42: if it returns a
+value and may `violate`, it is declared `fallible(ClosureViolation)`,
+and no exemption is added for it (the exemption is for bus handlers
+and lifecycle bodies, whose caller is the runtime; an RPC handler's
+internal callers write `or`, which is what keeps those calls safe).
+The row's error type then decides the outcome: `ClosureViolation`
+means the member's failure is the server error and the description
+carries no error schema for it; any other `E` means the handler
+error with `E`'s schema; a handler is one or the other, since a fn
+has one error type. The runtime invokes the handler through the
+fallible ABI, the violation lands in the error slot, the owner's
+`on_failure` runs first as for any violation, and the undefined reply
+of today (#1426's Deferred) is gone. The error slot of such a row in
+the digest is `ClosureViolation`'s shape hash, so declaring or
+removing a violation changes the digest, as an authority fact should.
 
 ### 2.7 Streams
 
@@ -223,9 +232,15 @@ connect. A stream row's `on_full` is `drop_old` or `drop_new`, the
 two policies a watcher queue has; a stream is never `refuse`d, since
 a subscriber that cannot keep up loses events, not the subscription.
 A hub that serves no surface is still an exposure, of its stream rows
-alone, identified `hub@<digest of its stream rows>/<name>`, and a
-caller's description from its listener lists the streams the caller
-may subscribe to (R5 fixes the stream digest's framing). A subscription is authorized against the row's `requires`
+alone, identified `hub@<stream digest>/<name>`; the stream digest is
+FNV-1a/64 over `hale-api-hub 1` and one line per stream row sorted by
+topic (`topic`, payload shape hash, direction, codec, `bound`,
+`on_full`, replay, `requires`), and a caller's description from the
+hub's listener lists the streams the caller may subscribe to, with the
+`ws` outcome form: the subscribe, subscribed, refusal, event (with a
+per-subscription `seq` whose gaps are shed frames), unauthorized and
+closed frames. R0 freezes the identity, the envelope and the
+descriptions so a consumer can build against them; R5 delivers them. A subscription is authorized against the row's `requires`
 before it is admitted, from the `Context` the hub's sources
 established; a caller who may not read a stream buffers nothing. The
 description derives every stream a caller may use from the binding
@@ -386,6 +401,13 @@ descriptions a consumer built against in R0 are what R1 generates.
 18. Credential expiry and the role-source revision are fields of the
     bearer and role source interfaces, shaped in R5 with the hub that
     reads them.
+19. An RPC handler is an ordinary method under F.42, with no
+    exemption; a row whose error type is `ClosureViolation` fails as
+    the server error and carries no error schema, any other error type
+    as the handler error.
+20. The hub exposure's identity, stream digest, frame envelope and
+    caller-filtered description are part of the R0 contract; R5
+    delivers them at run time.
 
 ## 8. Open points
 
