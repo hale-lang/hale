@@ -598,6 +598,7 @@ const PINNED: &[&str] = &[
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 1 go, 0 appear; dump 1 tags, 0 reclaim, 1 verdicts",
+    "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/identities_and_ranges_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/imported_fn_value_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",

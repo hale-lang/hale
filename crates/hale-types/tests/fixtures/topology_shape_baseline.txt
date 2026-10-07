@@ -24,6 +24,7 @@ crates/hale-cli/tests/dna_ui.rs#0 f2c1228edb650960
 crates/hale-cli/tests/doc.rs#0 a9238ad19f21c0ec
 crates/hale-cli/tests/effects_manifest.rs#0 0a8481ef56eab005
 crates/hale-cli/tests/effects_manifest.rs#1 e91db4ab4aed156e
+crates/hale-cli/tests/effects_manifest.rs#2 68987e25a83ab8b0
 crates/hale-cli/tests/env_matrix.rs#0 2a2f5fd182496fe2
 crates/hale-cli/tests/env_matrix.rs#1 dca4d6b5b8aa87a0
 crates/hale-cli/tests/env_matrix.rs#2 c5dea0831abe641c
@@ -72,6 +73,7 @@ crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl 0e15724545744a1a
 crates/hale-cli/tests/fixtures/xseed-cqrs/app/main.hl 0dcc2f399e4e2cc9
 crates/hale-cli/tests/fixtures/xseed-cqrs/lib/mat/m.hl bf060e593f77f631
 crates/hale-cli/tests/fixtures/xseed-effects/app/main.hl 8d244db256d86d85
+crates/hale-cli/tests/fixtures/xseed-effects/clean/main.hl 53ebdf1203be096b
 crates/hale-cli/tests/fixtures/xseed-effects/lib/probe/p.hl 5b10837fa4f83f40
 crates/hale-cli/tests/fixtures/xseed-launderer/app/main.hl 1b4eb4af7454c528
 crates/hale-cli/tests/fixtures/xseed-launderer/lib/relay/main.hl 8b3b6f6f0290af0b
@@ -941,8 +943,10 @@ crates/hale-codegen/tests/math_and_int_float.rs#0 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#1 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#2 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#3 865d341109268295
+crates/hale-codegen/tests/math_and_int_float.rs#4 5fd75484898c6868
 crates/hale-codegen/tests/math_and_int_float.rs#5 865d341109268295
 crates/hale-codegen/tests/math_and_int_float.rs#6 8f0d2e0879d26caf
+crates/hale-codegen/tests/math_and_int_float.rs#7 6c8256c092220983
 crates/hale-codegen/tests/math_nan_inf.rs#0 865d341109268295
 crates/hale-codegen/tests/math_nan_inf.rs#1 865d341109268295
 crates/hale-codegen/tests/math_nan_inf.rs#2 865d341109268295
@@ -1135,6 +1139,7 @@ crates/hale-codegen/tests/resident_transfer.rs#9 685315f5000dbc75
 crates/hale-codegen/tests/restart_bound.rs#1 d4dabe7a57f79bfa
 crates/hale-codegen/tests/restart_bound.rs#2 e2835ba0ea5af51a
 crates/hale-codegen/tests/restart_in_place_params.rs#0 914e1d7f83215468
+crates/hale-codegen/tests/restart_in_place_params.rs#1 99ff75aafe86ddb1
 crates/hale-codegen/tests/self_containing_locus.rs#2 b9b48c565ea0f322
 crates/hale-codegen/tests/self_containing_locus.rs#3 e5e2c21efda8f602
 crates/hale-codegen/tests/self_containing_locus.rs#4 6c193ac6910a7bb4
@@ -1385,6 +1390,8 @@ crates/hale-codegen/tests/violate_build.rs#3 02f5109577c31dca
 crates/hale-codegen/tests/violate_build.rs#4 9f7a676eb9c51fa7
 crates/hale-codegen/tests/violate_build.rs#5 ce98cb0347d3ec5d
 crates/hale-codegen/tests/violate_build.rs#6 193913768d00ce7f
+crates/hale-codegen/tests/violate_build.rs#7 ebc8940b19eb0812
+crates/hale-codegen/tests/violate_build.rs#8 61e1f45189d42de3
 crates/hale-codegen/tests/violate_child_state_read.rs#0 233b72b88fea82fb
 crates/hale-codegen/tests/wasm_import_backstop.rs#0 7155761f6f0fa380
 crates/hale-codegen/tests/wasm_target.rs#0 03e8f21557521e65

@@ -698,6 +698,12 @@ row	Sink@main1	Sink	main	default
 row	Api@main2	Api	main	default
 row	Sink@main1	Sink	main	default
 
+== crates/hale-cli/tests/effects_manifest.rs#fc7aa465
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+
 == crates/hale-cli/tests/env_matrix.rs#a6058e7c
 root	A	the entry
 row	A@literal1	A	main	default
@@ -2867,6 +2873,12 @@ row	Noisy@main1	Noisy	main	default
 row	Noisy@main2	Noisy	main	default
 dynamic	Noisy	on main	in the seed
 
+== crates/hale-codegen/tests/math_and_int_float.rs#ed205daa
+row	Counter@main1	Counter	main	default
+
+== crates/hale-codegen/tests/math_and_int_float.rs#f0fd4633
+row	Scaler@main1	Scaler	main	default
+
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
 
@@ -3513,13 +3525,16 @@ dynamic	Worker	on main	in the seed
 == crates/hale-codegen/tests/restart_in_place_params.rs#437e6c79
 root	App	the entry
 row	App@literal1	App	main	default
--- App@literal1.s	Sup
-row	~	Sup	main	default
-row	~.b	Born	main	inherited
-row	~.b.t	Tries	main	inherited
+shared	App@literal1.s	Sup #20139bc1
 -- App@literal1.w	Worker
 row	~	Worker	main	default
 row	~.t	Tries	main	inherited
+
+== crates/hale-codegen/tests/restart_in_place_params.rs#07864ec4
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.bars	Bars	main	default
+shared	App@literal1.r	Ring #711a93c5
 
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
 shared	Holder@main1	Holder #5d65043f
@@ -4010,6 +4025,14 @@ row	Child@main1	Child	main	default
 
 == crates/hale-codegen/tests/violate_build.rs#45144db2
 row	Child@main1	Child	main	default
+
+== crates/hale-codegen/tests/violate_build.rs#b964390d
+row	Picker@main1	Picker	main	default
+
+== crates/hale-codegen/tests/violate_build.rs#26f8ea21
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.p	Picker	main	default
 
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
@@ -5918,6 +5941,13 @@ row	Nums@main1	Nums	main	default
 row	Nums@main3	Nums	main	default
 row	Nums@main4	Nums	main	default
 row	Tallies@main5	Tallies	main	default
+
+== tests/hale/closure_restore_inline_array_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.bars	Bars	main	default
+shared	App@literal1.r	Ring #711a93c5
+shared	App@literal1.s	Sup #20139bc1
 
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
@@ -13447,6 +13477,10 @@ row	~.j.rows	Rows	main	inherited
 row	~	Registry	main	default
 row	~.entries	EntryList	main	inherited
 
+== shared Ring #711a93c5
+row	~	Ring	main	default
+row	~.t	Tries	main	inherited
+
 == shared Roles #d44c6e0e
 row	~	Roles	main	default
 row	~.k	K	main	inherited
@@ -13458,6 +13492,11 @@ row	~.s	SessionSigner	main	inherited
 == shared Router #f7d48509
 row	~	Router	main	default
 row	~.quick	Quick	main	inherited
+
+== shared Sup #20139bc1
+row	~	Sup	main	default
+row	~.b	Born	main	inherited
+row	~.b.t	Tries	main	inherited
 
 == shared Supervisor_Int #0cce2c26
 row	~	Supervisor_Int	main	default

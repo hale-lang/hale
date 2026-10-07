@@ -10529,7 +10529,22 @@ impl<'a> Checker<'a> {
                             .two_spellings_of_one_monomorph(
                                 &want, &got, true,
                             );
-                        if !monomorph && !self.flows_into(&want, &got, value) {
+                        // F.23: an `Int` widens into a `Float`
+                        // ascription (codegen emits the `sitofp` at the
+                        // binding), as at a call. Only an `Int`: a
+                        // quantity (`5ms`) or a range is not one, and
+                        // `Decimal` never widens.
+                        let widening = matches!(
+                            (&want, &got),
+                            (
+                                Ty::Prim(PrimType::Float),
+                                Ty::Prim(PrimType::Int)
+                            )
+                        );
+                        if !monomorph
+                            && !widening
+                            && !self.flows_into(&want, &got, value)
+                        {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -17147,9 +17162,25 @@ impl<'a> Checker<'a> {
                         && self.two_spellings_of_one_monomorph(
                             want, &got, kind_label == "locus",
                         );
+                    // F.23: an `Int` widens into a `Float` field of a
+                    // data-type literal (codegen's
+                    // `populate_user_type_fields` emits the `sitofp`),
+                    // as at a call. DATA-type literals only: a locus
+                    // literal's param override has no widening in
+                    // codegen, the same as a param default (#512). A
+                    // quantity or a range is not an `Int`.
+                    let widening = kind_label == "type"
+                        && matches!(
+                            (want, &got),
+                            (
+                                Ty::Prim(PrimType::Float),
+                                Ty::Prim(PrimType::Int)
+                            )
+                        );
                     if !interface_satisfied
                         && !perspective_designated
                         && !monomorph_field
+                        && !widening
                         && !self.flows_into(want, &got, &init.value)
                     {
                         self.diags.push(Diag::ty(

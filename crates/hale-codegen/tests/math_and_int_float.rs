@@ -141,3 +141,30 @@ fn int_widens_to_float_at_user_fn_arg() {
     assert!(status.success(), "exit: {:?}", status);
     assert!(stdout.contains("s=12"), "got: {:?}", stdout);
 }
+
+#[test]
+fn int_widens_to_float_at_return() {
+    // A downstream handoff: `hale check` accepted the Int returned from
+    // a `-> Float` fn (#335's return check widens as a call does) and
+    // the build refused it, "return type mismatch: declared Float, got
+    // Int". `/ 2` divides as a Float only if the value came back widened.
+    let src = r#"
+        fn ret_f(n: Int) -> Float { return n; }
+        fn tail_f(n: Int) -> Float { n }
+        locus Scaler {
+            params { k: Int = 5; }
+            fn half() -> Float { return self.k; }
+            birth() {
+                println("m=", self.half() / 2);
+            }
+        }
+        fn main() {
+            println("r=", ret_f(3) / 2, " t=", tail_f(7) / 2);
+            Scaler { };
+        }
+    "#;
+    let (stdout, status) = build_and_run("return_widen", src);
+    assert!(status.success(), "exit: {:?}", status);
+    assert!(stdout.contains("r=1.5 t=3.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("m=2.5"), "got: {:?}", stdout);
+}

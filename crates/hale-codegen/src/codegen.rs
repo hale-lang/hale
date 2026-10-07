@@ -22305,6 +22305,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         iface,
                     )?;
                     (fat.into(), declared_ty.clone())
+                } else if declared_ty == CodegenTy::Float && got_ty == CodegenTy::Int {
+                    // Int → Float widening at a `-> Float` fn's return,
+                    // the surface the checker's return check (#335)
+                    // accepts as it accepts a call's argument.
+                    let widened = self.coerce_to_float(v, &got_ty, "return: Float")?;
+                    (widened.into(), CodegenTy::Float)
                 } else {
                     (v, got_ty)
                 };

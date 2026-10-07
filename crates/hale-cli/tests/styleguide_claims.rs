@@ -17,8 +17,8 @@
 //!
 //! Two more families live here for the same reason — `hale check`
 //! cannot see them. The sharp edges that pass a whole-seed check and
-//! fail at build (`s[i]`, a qualified `std::time::Time`, an `Int`
-//! returned as a `Float`) are pinned as build-time refusals beside a
+//! fail at build (`s[i]`, a qualified `std::time::Time` or
+//! `std::time::Duration`) are pinned as build-time refusals beside a
 //! check that passes. The retirement gaps (§7 open gaps) only show in
 //! a running program's resident set, so their tests run one and read
 //! `/proc/self/statm` per phase, with a control phase that must stay
@@ -359,31 +359,6 @@ fn claim_qualified_std_time_duration_alone_fails_build() {
         failed && out.contains("qualified type `std::time::Duration` not in stdlib path-renames table"),
         "spec/styleguide.md §7 says a qualified `std::time::Duration` field \
          fails at build. It builds now — the entry's `Duration` half goes:\n{}",
-        out
-    );
-}
-
-/// §7 sharp edges: "An `Int` returned from a `-> Float` fn typechecks
-/// and fails at build." A fix is in progress; when it lands this
-/// fails, and the entry goes.
-#[test]
-fn claim_int_returned_from_a_float_fn_fails_build() {
-    let (checked, failed, out) = check_then_build(
-        "fn ratio(n: Int) -> Float { return n; }\n\
-         fn main() { println(ratio(3)); }",
-        "float-return",
-    );
-    assert!(
-        failed && out.contains("return type mismatch"),
-        "spec/styleguide.md §7 says an `Int` returned from a `-> Float` \
-         fn fails at build. It builds now — delete that sharp edge:\n{}",
-        out
-    );
-    assert!(
-        checked,
-        "spec/styleguide.md §7 says `hale check` accepts an `Int` \
-         returned from a `-> Float` fn. It refuses it now — the edge \
-         is no longer build-only; reword or delete the entry:\n{}",
         out
     );
 }

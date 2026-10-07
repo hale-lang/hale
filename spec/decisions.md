@@ -1035,6 +1035,11 @@ surfaces:
   init time widens at the store. Lets a config bundle declare
   `timeout: Float` and accept an `Int` from the caller without
   per-field casts.
+- **return** — an `Int` returned from a non-fallible fn declared
+  `-> Float` widens at the return. The checker accepted it from
+  #335, as it accepts a call's argument; codegen lowered it later,
+  when a downstream handoff found the build refusing a program the
+  check passed.
 
 **Strictly one-way.** `Float → Int` narrowing remains explicit;
 `Decimal` never participates in implicit cross-type conversion;

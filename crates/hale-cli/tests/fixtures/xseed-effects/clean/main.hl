@@ -1,0 +1,16 @@
+// The same far side as `app/`, called with no contract to break: this
+// seed checks clean, so it has a manifest (a program whose check fails
+// has none), and its rows carry the far side's effects under the
+// app's own names.
+import "lib/probe" as p;
+
+fn reaches_far_syscall() -> Int { return p::far_syscall(); }
+
+fn reaches_far_alloc() -> Int { return p::far_alloc(); }
+
+@no_syscall
+fn control_clean() -> Int { return 7; }
+
+fn main() {
+    println(reaches_far_syscall() + reaches_far_alloc() + control_clean());
+}

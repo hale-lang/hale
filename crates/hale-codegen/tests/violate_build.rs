@@ -320,3 +320,85 @@ fn main() {
     assert!(stdout.contains("child.run"), "child.run: {:?}", stdout);
     assert!(stdout.contains("main done"), "main done: {:?}", stdout);
 }
+
+/// Build `source`, run it, and keep all of what it said.
+fn build_and_run_full(name: &str, source: &str) -> std::process::Output {
+    let bin = harness::unique_bin(&format!("lotus_test_{}", name));
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    output
+}
+
+/// A downstream handoff: `violate` in a method that returns a value.
+/// With no parent handler the violation ends the process, and the
+/// caller never observes a value: exit 1 by the violation's own exit
+/// path, the runtime's line on stderr, and no `b=` on stdout.
+#[test]
+fn violate_in_a_value_method_with_no_handler_ends_the_process() {
+    let src = r#"
+locus Picker {
+    params { k: Int = 21; }
+    closure bad_pick { captures: k; epoch inline; }
+    fn pick(flag: Bool) -> Int {
+        if flag { violate bad_pick; }
+        return self.k * 2;
+    }
+    run() {
+        let b = self.pick(true);
+        println("b=", b);
+    }
+}
+fn main() { Picker { }; }
+"#;
+    let out = build_and_run_full("violate_value_no_handler", src);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "the violation's exit, not a signal: {:?}\n{stderr}", out.status);
+    assert!(
+        stderr.contains("runtime error: ClosureViolation: locus `Picker` closure `bad_pick` (inline, no parent handler)"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("b="), "the caller observed a value: {stdout:?}");
+}
+
+/// KNOWN OPEN. When a parent's `on_failure` absorbs the violation, the
+/// violating method returns to its caller (spec/semantics.md § "Inline
+/// closure violation", step 5: "the method exits as a return does";
+/// the caller goes on, as on_failure_per_child_type_test.hl pins), and
+/// codegen hands that caller an LLVM `undef` of the declared return
+/// type (`Stmt::Violate`'s `violate.return` block). The caller reads
+/// garbage (measured `b=140727999518808`; a pointer-typed return would
+/// be dereferenced). The spec does not say what a caller observes in
+/// that case — the call diverging too, a declared fallback value, or a
+/// check-time refusal — so this pins today's behaviour: the caller
+/// continues past the call and the method's tail did not run. The
+/// value is not asserted; it is undefined. When the decision is
+/// written and implemented, this test flips to assert it.
+#[test]
+fn known_open_absorbed_violate_in_a_value_method_returns_an_undefined_value() {
+    let src = r#"
+locus Picker {
+    params { k: Int = 21; }
+    closure bad_pick { captures: k; epoch inline; }
+    fn pick(flag: Bool) -> Int {
+        if flag { violate bad_pick; }
+        println("tail ran");
+        return self.k * 2;
+    }
+}
+main locus App {
+    params { p: Picker = Picker { }; seen: Int = 0; }
+    on_failure(c: Picker, err: ClosureViolation) { self.seen = self.seen + 1; }
+    run() {
+        let b = self.p.pick(true);
+        println("b=", b, " seen=", self.seen);
+    }
+}
+fn main() { App { }; }
+"#;
+    let out = build_and_run_full("violate_value_absorbed", src);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+    assert!(!stdout.contains("tail ran"), "violate diverges in the method: {stdout:?}");
+    assert!(stdout.contains("b=") && stdout.contains(" seen=1"), "known open: the caller goes on with a value: {stdout:?}");
+}

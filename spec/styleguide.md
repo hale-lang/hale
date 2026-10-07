@@ -1145,8 +1145,9 @@ of v0.22.0 (2026-10-07); shipped-and-gone entries are removed on
 shipping — keyed String routing, match-as-expression, whole-struct
 replace reclamation, `err` in an `or fail` payload, `Duration`
 arithmetic, `return` in a lifecycle body, inline fixed-array
-payload fields and qualified `@form` cell types all lived here
-once.
+payload fields, qualified `@form` cell types, an `Int` returned
+from a `-> Float` fn and an `Int` into a `Float` let or field all
+lived here once.
 
 ### Deliberate absences — the design says no
 
@@ -1227,7 +1228,7 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Three of them pass `hale check` and fail only at `hale build`, and
+Two of them pass `hale check` and fail only at `hale build`, and
 one hands a caller a value nothing computed: know those cold.
 
 - **No char-level `s[i]`** — and the checker doesn't say so:
@@ -1245,20 +1246,14 @@ one hands a caller a value nothing computed: know those cold.
   qualified `let` annotation builds, but the binding is not the
   quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
   write it bare there too.
-- **An `Int` returned from a `-> Float` fn** typechecks and fails
-  at build ("return type mismatch: declared Float, got Int").
-  Return `Float(n)`. (Fix in progress.)
-- **An `Int` does not widen into a `Float` let or field.** `let x:
-  Float = 5;`, `= self.n;` or `= n;` and a struct literal's `Float`
-  field given an `Int` are refused ("expected `Float`, got `Int`"),
-  although `spec/types.md` § "Numeric coercion" lists both as
-  widening surfaces. A call's argument and a mixed binop do widen.
-  Write `Float(n)` or `5.0`. (Fix in progress.)
-- **`violate` inside a value-returning fn** diverges, and the
-  caller carries on with an undefined return value. Check
-  `self.draining` before using the result (2.7's guarded publish
-  is the shape), or `violate` from a fn returning nothing and let
-  the caller test `self.draining`. (Fix in progress.)
+- **`violate` inside a value-returning method, absorbed by the
+  parent's `on_failure`,** leaves the caller an undefined return
+  value; with no parent handler the process exits through the
+  violation and no value is observed. Check `self.draining` before
+  using the result (2.7's guarded publish is the shape), or
+  `violate` from a method returning nothing and let the caller test
+  `self.draining`. What the caller should observe in the absorbed
+  case is a spec decision not yet written.
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows

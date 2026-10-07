@@ -569,11 +569,21 @@ surfaces:
   store, mirroring fn-arg coercion. Lets a config bundle
   declare `timeout: Float` and accept an `Int` from the caller
   without sprinkling `Float(n)` casts.
+- **return:** a fn or method declared `-> Float` that returns an
+  `Int` — `return n;` or a block-tail `n` — widens it at the
+  return, mirroring fn-arg coercion. A `fallible` fn's success
+  return does not widen: `return n;` in a `-> Float fallible(E)`
+  fn is refused.
 
 The widening is **strictly one-way**. `Float → Int` narrowing
 remains explicit (round + cast). `Decimal` never participates
-in implicit cross-type conversion. The rule was added 2026-05-11
-as part of the float-surface-gaps friction-log resolution; see
+in implicit cross-type conversion. Only an `Int` widens: a
+quantity (`5ms` is a `Duration`, `spec/units.md`) or a range type
+is not one, so `let f: Float = 5ms;` is refused. The five surfaces
+are the whole list: a locus param's default and a locus literal's
+param override (`Worker { rate: 3 }`) take a `Float`. The rule was
+added 2026-05-11 as part of the float-surface-gaps friction-log
+resolution; see
 F.23 in `spec/decisions.md` and the Phase 2c entry in
 `spec/stdlib.md`.
 

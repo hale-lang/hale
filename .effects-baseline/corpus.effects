@@ -483,4 +483,7 @@ main  does={syscall,env,alloc}
 main  does={syscall,env,alloc}
 write_log  does={syscall}
 ### multi-file-seed
+AppL::run  does={syscall,alloc}
+greeting  does={alloc}
 main  does={alloc}
+say  does={syscall}

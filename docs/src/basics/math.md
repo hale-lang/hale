@@ -43,16 +43,23 @@ let found = cached || lookup(key);     // lookup runs only on a miss
 
 `Int` is 64-bit signed; `Float` is a 64-bit IEEE double. Hale
 widens `Int` to `Float` automatically where it's unambiguous —
-when passing an `Int` to a `Float` parameter, and when one side
-of an arithmetic or comparison operator is a `Float`:
+at a `let` with a `Float` annotation, when passing an `Int` to a
+`Float` parameter, when one side of an arithmetic or comparison
+operator is a `Float`, when a `Float` field of a `type` literal
+is given an `Int`, and when a fn declared `-> Float` returns an
+`Int` (`fn half(n: Int) -> Float { return n; }`; a `fallible` fn's
+success return does not widen):
 
 ```hale,fragment
+let n = 3;
+let x: Float = n;              // 3.0 — widened at the binding
 let r = std::math::sqrt(16);   // 4.0 — the Int argument widens
 let y = 2.0 * 3;               // 6.0 — Int 3 promoted to Float
 ```
 
-A `let` annotation does not widen: `let x: Float = 3;` is refused,
-so write `3.0` or `Float(n)`.
+Only an `Int` widens: a quantity such as `5ms` is not one, so
+`let t: Float = 5ms;` is refused, and a locus's `Float` param
+takes a `Float` (`Worker { rate: 3.0 }`).
 
 Going the other way loses information, so it's explicit:
 
