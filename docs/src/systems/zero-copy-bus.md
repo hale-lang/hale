@@ -112,11 +112,13 @@ assertion about the route, and a contract the compiler validates.
 
 A payload you can drop into a shared slot must be **flat-shapeable**:
 every leaf is a fixed-layout primitive (`Int`, `Float`, `Bool`,
-`Decimal`, `Time`, `Duration`), a fixed-size array of scalars
-(`[Int; 8]`, laid out inline), or a struct whose fields are all
-flat-shapeable. `String`, `Bytes`, views and unbounded arrays carry
-heap pointers that don't translate to a shared slot, so the
-compiler rejects them on a zero-copy topic. Carry bounded data in
+`Decimal`, `Time`, `Duration`), a fixed-size array of `Int`,
+`Float`, `Bool`, `Decimal` or `Duration` (`[Int; 8]`, laid out
+inline), or a struct whose fields are all flat-shapeable. `String`,
+`Bytes`, views, unbounded arrays and arrays of anything else (a
+struct, `Time`) carry heap pointers that don't translate to a
+shared slot, so the compiler rejects them on a zero-copy topic.
+Carry bounded data in
 a scalar array on these routes, and variable-length records as a
 [raw `BytesView` frame](#mixed-record-types-a-raw-bytesview-payload).
 
