@@ -100,14 +100,26 @@ params {
     admin_roles: std::api::Roles = …;
 }
 run() {
-    let h1 = api::serve(Public, http::Rpc { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.public_roles });
-    let h2 = api::serve(Admin, unix::Rpc { path: "/run/app.sock", principals: self.bearer, roles: self.admin_roles });
+    let h1 = api::serve(Public, http::Rpc { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.public_roles },
+                        as: "public", receivers: { Orders: self.orders });
+    let h2 = api::serve(Admin, unix::Rpc { path: "/run/app.sock", principals: self.bearer, roles: self.admin_roles },
+                        as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger });
     …
 }
 ```
 
-A serve site pairs one surface with one transport instance and
-supplies the bearer source and the role source. The transport turns a
+A serve site pairs one surface with one transport instance, names the
+exposure (`as:`), supplies the bearer source and the role source, and
+binds every receiver type the surface's rows name to one instance
+(`receivers:`). The bound instance is the destination: its pool is
+the dispatch pool and its lifetime bounds the exposure, so a receiver
+must be a param of the serving locus or a child it owns for as long
+as the handle lives (a `let`-bound child that dissolves before
+`stop()` is refused). When the serving locus holds exactly one
+instance of a receiver type the binding may be elided and is
+inferred; two instances of the type and no binding is a check error
+naming both, and two serve sites may bind the same surface to
+different instances. The transport turns a
 request into (row, bytes, correlation); the runtime establishes the
 caller's `Context` (principal and roles) from the serve site's
 sources, checks the surface digest, checks the row's `requires`
@@ -151,10 +163,15 @@ A caller sees five outcomes, and every transport encodes each:
 | outcome | meaning | HTTP | unix JSON | gRPC | MCP |
 |---|---|---|---|---|---|
 | result | the handler returned | 200, body by codec | `{"ok":true,…}` | OK | result |
-| handler error | the handler's declared `E` | 4xx class the surface maps, body = `E` by codec | `{"ok":false,"error":E}` | status the surface maps | error object with `E` |
-| refusal | digest mismatch, unauthorized, surface full, shutting down | 409 / 401 or 403 / 429 / 503 | `{"ok":false,"refusal":{kind,reason}}` | FAILED_PRECONDITION / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
+| handler error | the handler's declared `E` | 422, body = `E` by codec | `{"ok":false,"error":E}` | FAILED_PRECONDITION, `E` in details | error object with `E` |
+| refusal | undecodable request, digest mismatch, unauthenticated, unauthorized, surface full, shutting down | 400 / 409 / 401 / 403 / 429 / 503 | `{"ok":false,"refusal":{kind,reason}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
 | server error | the handler violated (F.42's structural failure) | 500 | `{"ok":false,"refusal":{"kind":"server"}}` | INTERNAL | error object |
 | transport failure | the connection or protocol broke | the transport's own | EOF | the transport's own | the transport's own |
+
+The mappings are fixed in v1 and part of the contract (`spec/api.md`
+states them; a transport may not choose others), so no row carries a
+status and the digest has nothing to hash for it; a per-variant
+mapping declared on `E` is an open point (§ 8).
 
 A request's life: received → refused (digest, authorization, bound
 `on_full`, shutting down) or accepted → queued on the handler's pool
@@ -203,14 +220,38 @@ publish contract's delivery and loss statement (F.37). There is no
 second stream declaration. A reconnect implies replay only if the
 binding provides it, and the row says whether it does.
 
+Authorization of a live subscription is not once-for-all. A bearer
+source states the credential's expiry on the `Context` it produces,
+and a role source carries a revision that changes when a grant is
+added or revoked. The hub invalidates a subscription when its
+credential expires or when, at a role-source revision, its row's
+`requires` no longer holds for the subscriber: it sends one
+`unauthorized` frame naming the subscription, removes it, and drops
+whatever that subscription had buffered and not yet delivered. No
+event is delivered under an authorization older than the role
+source's current revision or past the credential's expiry; the
+check happens at the revision event and at every delivery, whichever
+comes first. An rpc needs no such rule, each call being authorized
+on arrival.
+
 ### 2.8 The description
 
-One JSON document per deployment, versioned (`"description": 1`):
-the served surfaces (name, digest, listener, codec, members with
-request and response schemas, error schema, `requires`), the bound
-streams (topic, hub listener, direction, payload schema, bounds,
-loss statement, `requires`), and the outcome encoding of each
-transport. The generators of #1107 (OpenAPI, JSON Schema, MCP tools)
+A description is scoped to one exposure, the unit a caller can
+reach: a serve site's surface over its transport under its role
+source, identified by `surface@digest/exposure-name` (the `as:` the
+serve site declares, unique within the program). The document a
+caller fetches from a listener describes that exposure only, filtered
+by the caller's `Context` under that exposure's role source: the
+members the caller may call (request and response schemas, error
+schema, `requires`), the streams of the hubs at that listener the
+caller may subscribe to (topic, direction, payload schema, bounds,
+loss statement, `requires`), the outcome encoding of the transport,
+and the identity. The same surface served twice has one digest and
+two exposures, and a caller's description under each may differ. The
+program-wide document `hale check --api` prints lists every exposure
+with its listener and role source and is a deployment inventory, not
+an authorization statement for any caller. Versioned
+(`"description": 1`). The generators of #1107 (OpenAPI, JSON Schema, MCP tools)
 are projections of this document; `hale check --api` prints it from
 the rows without a running program (descriptions filtered by role are
 the server's, at `GET /.description` or the unix `{"describe":true}`
@@ -233,7 +274,15 @@ the server error and the owner's `on_failure` ran; `stop()` refuses
 the queued call with `shutting_down` and finishes the executing one;
 a lost connection after acceptance leaves the operation executed
 (the next read shows it); a subscriber without the role gets no
-`Fills` and one with it gets them. One DNA read and one DNA durable
+`Fills` and one with it gets them; a grant revoked while the
+connection stays open ends that subscription with one `unauthorized`
+frame and delivers nothing published after the revocation; `Public`
+served a second time under a third role source at a second listener
+has the same digest, a different exposure identity, and a description
+that differs per caller between the two; and a second `Orders`
+instance bound at the second serve site answers that exposure's calls
+while the first answers the other's (two instances of one receiver
+type, resolved by binding, with the unbound case a check error). One DNA read and one DNA durable
 command are migrated to this path in R3, before the rest of DNA.
 
 ## 4. Steps
@@ -246,14 +295,17 @@ written before the code in the same PR. Each exit criterion is a test.
 | **R0 contract** | `spec/api.md` (§ 2 as the one contract; the binding section of `semantics.md` reduced to a pointer plus what stays structural: publish contracts, codecs); the description format (§ 2.8) as a JSON Schema under `spec/`; hand-made conforming fixtures (`tests/api-contract/`: one description document for the § 3 program, one recorded request and reply per outcome, the digest algorithm worked by hand on one surface); `spec/registry.md`'s `surface` family named with its producers and consumers | `docs_snippets` green; a Rust test validates the fixture documents against the schema; the DNA and Face teams can build against the fixtures with no compiler change |
 | **R1 rows** | the `api` block and `@rpc` parsed to one row family in `hale-model`; the digest; `hale check --api` printing the description from rows; the OpenAPI, JSON Schema and MCP generators re-homed onto rows; the admission law over rows (a row whose handler, shapes or error type do not exist is refused); registry family and laws | the § 3 program's rows, digest and description match R0's fixtures byte for byte; no `shape_hash` of a program without surfaces moves |
 | **R2 serve** | the `Rpc` interface and the runtime's dispatch (`Context` from the serve site's sources, digest check, `requires` before enqueue, decode by shape, cross-pool enqueue, awaited reply, the five outcomes, `stop()` semantics); `unix::Rpc` re-homed from #1106; the reply handler invoked through the fallible ABI (§ 2.6); the serve handle | the § 3 fixture's unix half passes: refusals before the counter moves, the five outcomes on the wire, queued shutdown, lost response |
-| **R3 http and the DNA proof** | `http::Rpc` with principals; the full § 3 fixture; one DNA read and one DNA durable command migrated to surfaces | the § 3 fixture passes whole; the two DNA operations pass through the new path in the DNA suite |
+| **R3 http and the DNA proof** | `http::Rpc` with principals; the § 3 fixture's rpc half over unix and http (two exposures, two receiver instances, both role sources); one DNA read and one DNA durable command migrated to surfaces | the fixture's rpc half passes; the two DNA operations pass through the new path in the DNA suite |
+| **R5 hubs** | `ws::Hub` (streams and rpc on one connection) and `udp::Hub`; stream rows' `requires`, expiry and revocation, description derivation; the § 3 fixture's `Fills` half, so the fixture passes whole | a subscriber without the role gets nothing and buffers nothing; revocation while connected ends the subscription; the description lists `Fills` only for `operator`; the § 3 fixture passes whole |
 | **R4 cutover** | the structural path retired: `api_gen`'s synthesis, exposed reads, `@gated`, `serve:`, the api admission over locus rows, `bindings { api: … }`; the 13 sites and the two DNA apps migrated; `hale call`, `watch`, `admin`, `mcp` over descriptions; `dna/api/contract/v1` replaced by the description; the seven DNA api tests over the new path; the F.40 leftovers in this area closed (`hale check --api` is a reader; the round-trip artifacts) | `git grep 'api: unix'` finds nothing; the DNA suite green; `spec/semantics.md` has no api binding section |
-| **R5 hubs** | `ws::Hub` (streams and rpc on one connection) and `udp::Hub`; stream rows' `requires` and description derivation; the § 3 fixture's `Fills` half | a subscriber without the role gets nothing and buffers nothing; the description lists `Fills` only for `operator` |
 | **R6 transports** | `grpc::Rpc`, `mcp::Rpc` (tools are rpcs; resources over streams are an open point) | each passes the § 3 fixture's `Public` half over its protocol |
 
-R0 opens as soon as #1426 is on `main`. R1 and R2 may run as two
-panes once R0 is merged, R2 against R0's fixtures. R3 waits for R2;
-R4 for R3; R5 for R2; R6 for R3.
+Dependencies: R0 opens as soon as #1426 is on `main`. R1 follows R0.
+R2 follows R1 (the runtime dispatches over R1's rows and digest; it
+is also checked against R0's fixtures). R3 and R5 both follow R2 and
+may run in parallel. R4, which removes the old rpc and stream paths,
+follows both R3 and R5, so the fixture is complete before anything
+is deleted. R6 follows R3.
 
 ## 5. What is retired, re-homed, kept
 
@@ -302,11 +354,28 @@ descriptions a consumer built against in R0 are what R1 generates.
     and the two DNA apps migrate in the same PR.
 12. The contract (R0) ships before any transport, with fixtures
     consumers build against.
+13. A serve site binds each receiver type to one instance
+    (`receivers:`), inferred only when the serving locus holds exactly
+    one; the instance's pool and lifetime are the exposure's.
+14. A live subscription is re-authorized at the credential's expiry
+    and at every role-source revision; an invalidated subscription
+    gets one `unauthorized` frame and its undelivered buffer is
+    dropped.
+15. Discovery is per exposure (`surface@digest/exposure-name`),
+    filtered by the caller under that exposure's role source; the
+    program-wide description is an inventory.
+16. Outcome mappings are fixed per transport in v1 and stated in the
+    contract; no row or digest carries a status.
 
 ## 8. Open points
 
 - Additive compatibility of digests (a client built against a subset
   of members) after v1's equality.
+- A per-variant status mapping declared on a handler's error type,
+  which would join the rows, the description and the digest.
+- Whether a receiver binding may name a `@form` collection's element
+  (a surface over many instances of one type keyed by the request),
+  or only a single instance.
 - MCP resources over streams.
 - Whether a locus may serve two interfaces at once (the hub); if not,
   the hub is two loci sharing one listener, decided in R5.
