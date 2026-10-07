@@ -402,9 +402,12 @@ descriptions a consumer built against in R0 are what R1 generates.
     bearer and role source interfaces, shaped in R5 with the hub that
     reads them.
 19. An RPC handler is an ordinary method under F.42, with no
-    exemption; a row whose error type is `ClosureViolation` fails as
-    the server error and carries no error schema, any other error type
-    as the handler error.
+    exemption and one added requirement: a handler that may violate
+    declares `fallible(ClosureViolation)` whatever it returns, since a
+    remote caller cannot read `self.draining` (law 7); a row whose
+    error type is `ClosureViolation` fails as the server error and
+    carries no error schema, any other error type as the handler
+    error. `ClosureViolation`'s contract shape is its record's fields.
 20. The hub exposure's identity, stream digest, frame envelope and
     caller-filtered description are part of the R0 contract; R5
     delivers them at run time.
