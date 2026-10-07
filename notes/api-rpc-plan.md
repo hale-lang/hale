@@ -82,8 +82,11 @@ A surface's digest is the model's hash over its rows in canonical
 order: member name, request and response shape hashes, error type
 shape, `requires`. It changes when a member is added or removed, a
 shape or error type changes, or an authority requirement changes, and
-for nothing else: never for the listener address, the build identity
-(`exec_digest`) or the runtime incarnation. The description carries
+for nothing else: never for the listener address, the receiver
+instances a serve site binds, the serve site itself, the build identity
+(`exec_digest`) or the runtime incarnation. The digest is the
+type-level contract a client is generated against; which instance
+answers and under which role source is the exposure's (§ 2.8). The description carries
 the surface name and digest; a request may carry the digest it was
 generated against, and a mismatch is refused before anything is
 decoded or queued, with the refusal naming the digest the server
