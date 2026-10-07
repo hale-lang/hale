@@ -1228,7 +1228,7 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Three of them pass `hale check` and fail only at `hale build`, and
+Two of them pass `hale check` and fail only at `hale build`, and
 one hands a caller a value nothing computed: know those cold.
 
 - **No char-level `s[i]`** — and the checker doesn't say so:
