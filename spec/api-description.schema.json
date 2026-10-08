@@ -195,6 +195,7 @@
     "outcomes": {
       "oneOf": [
         { "$ref": "#/$defs/outcomes_http" },
+        { "$ref": "#/$defs/outcomes_mcp" },
         { "$ref": "#/$defs/outcomes_unix" }
       ]
     },
@@ -213,6 +214,25 @@
           }
         },
         "server_error": { "const": { "status": 500, "body": "refusal" } },
+        "transport_failure": { "const": "the transport's own: the connection ends without a response" }
+      }
+    },
+    "outcomes_mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "result", "handler_error", "refusal", "server_error", "transport_failure"],
+      "properties": {
+        "transport": { "const": "mcp" },
+        "result": { "const": { "field": "result", "body": "response" } },
+        "handler_error": { "const": { "field": "error", "code": -32001, "data": "error" } },
+        "refusal": {
+          "const": {
+            "field": "error",
+            "data": "refusal",
+            "code": { "malformed": -32602, "digest_mismatch": -32003, "unauthenticated": -32004, "unauthorized": -32005, "full": -32006, "shutting_down": -32007, "unavailable": -32008 }
+          }
+        },
+        "server_error": { "const": { "field": "error", "code": -32603, "data": "refusal" } },
         "transport_failure": { "const": "the transport's own: the connection ends without a response" }
       }
     },

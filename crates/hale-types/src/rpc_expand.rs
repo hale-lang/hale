@@ -364,6 +364,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "test",
     "unix",
     "http",
+    "mcp",
 ];
 
 /// Whether the programs serve a surface (`api::serve`) or spell a name of
@@ -517,7 +518,7 @@ pub fn expand(
                     let buildable = match transport {
                         Expr::Struct { path, .. } => {
                             let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                            segs.first() == Some(&"std") || is_unix_rpc(path) || is_http_rpc(path) || loci.contains_key(segs.join("::").as_str())
+                            segs.first() == Some(&"std") || is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || loci.contains_key(segs.join("::").as_str())
                         }
                         e => crate::surfaces::self_field(e).is_some(),
                     };
@@ -766,7 +767,7 @@ pub fn expand(
             let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
             let listener = match (unix_path, http_bind) {
                 (Some(path), _) => parse_unix_listener(id, path, span),
-                (None, Some(bind)) => parse_http_listener(id, bind, span),
+                (None, Some(bind)) => parse_http_listener(id, bind, is_mcp_site(l, site.transport.as_ref()), span),
                 (None, None) => None,
             };
             {
@@ -792,7 +793,7 @@ pub fn expand(
                 if let LocusMember::Params(pb) = m {
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
-                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path)) {
+                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path)) {
                                 *e = as_stdlib_unix(e, id);
                             }
                         }
@@ -866,6 +867,13 @@ pub(crate) fn is_http_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
     matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"])
 }
 
+/// Whether a transport literal's path is the stdlib's MCP transport,
+/// spelled `mcp::Rpc` (the serve site's spelling) or `std::api::mcp::Rpc`.
+pub(crate) fn is_mcp_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["mcp", "Rpc"] | ["std", "api", "mcp", "Rpc"])
+}
+
 /// The transport literal as the exposure holds it: a socket transport is
 /// spelled by its stdlib path and carries the number of the exposure it
 /// serves (`tid`), which keys the bus subjects its connections share. The
@@ -878,6 +886,8 @@ fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
             Some("unix")
         } else if is_http_rpc(path) {
             Some("http")
+        } else if is_mcp_rpc(path) {
+            Some("mcp")
         } else {
             None
         };
@@ -934,16 +944,35 @@ fn http_bind_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
         }
     };
     match lit {
-        Expr::Struct { path, inits, .. } if is_http_rpc(path) => {
+        Expr::Struct { path, inits, .. } if is_http_rpc(path) || is_mcp_rpc(path) => {
             inits.iter().find(|i| i.name.name == "bind").map(|i| fresh(&i.value))
         }
         _ => None,
     }
 }
 
+/// Whether the transport a serve site names is `mcp::Rpc`, written at the
+/// site or held as a param of the serving locus.
+fn is_mcp_site(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    let lit: Option<&Expr> = match transport {
+        Some(e @ Expr::Struct { .. }) => Some(e),
+        Some(e) => crate::surfaces::self_field(e).and_then(|f| {
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })
+        }),
+        None => None,
+    };
+    matches!(lit, Some(Expr::Struct { path, .. }) if is_mcp_rpc(path))
+}
+
 /// The listener of HTTP exposure `id` and its placement: as the Unix one,
 /// a param of the serving main locus on a pool of its own.
-fn parse_http_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+fn parse_http_listener(id: i64, bind: Expr, mcp: bool, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
     let field = format!("__rpc_h_{id}");
     let src = format!(
         "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
@@ -965,6 +994,10 @@ fn parse_http_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, ha
     let mut param = param?;
     if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
         inits.push(StructInit { name: Ident::new("bind", span), value: bind, span });
+        if mcp {
+            let what = Expr::Literal(Literal::String("mcp::Rpc".to_string()), span);
+            inits.push(StructInit { name: Ident::new("what", span), value: what, span });
+        }
     }
     Some((param, entry?))
 }

@@ -889,7 +889,7 @@ pub fn surface_rows(
     SurfaceRows { surfaces, rows, serves, hubs, app }
 }
 
-/// The socket transport a serve site names, `"unix"` or `"http"`: a
+/// The socket transport a serve site names, `"unix"`, `"http"` or `"mcp"`: a
 /// literal written at the site, or a param the locus holds (`self.rpc`)
 /// whose declared type, or whose literal default, is `unix::Rpc` or
 /// `http::Rpc`.
@@ -899,6 +899,8 @@ fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static 
             Some("unix")
         } else if crate::rpc_expand::is_http_rpc(path) {
             Some("http")
+        } else if crate::rpc_expand::is_mcp_rpc(path) {
+            Some("mcp")
         } else {
             None
         }
@@ -965,8 +967,8 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
                     site.span,
                     format!(
                         "`api::serve` over `{transport}`: this compiler serves a surface over \
-                         `std::api::test::Rpc`, the in-process transport, `unix::Rpc`, or a transport the program declares; the \
-                         other socket transports follow (spec/api.md § The `Rpc` interface)"
+                         `std::api::test::Rpc`, the in-process transport, `unix::Rpc`, `http::Rpc`, `mcp::Rpc`, or a transport the program \
+                         declares; the other transports follow (spec/api.md § The `Rpc` interface)"
                     ),
                 ));
             }

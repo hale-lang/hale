@@ -618,7 +618,7 @@ locus __StdApiExposure {
                 roles = roles + "\"" + r + "\"";
             }
         }
-        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_json(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + __api_http_outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
+        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_json(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + (if self.via == "mcp" { __api_mcp_outcomes() } else { __api_http_outcomes() }) + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
     }
     fn on_ingress(i: __StdApiRpcIngress) {
         let rid = self.next_rid;
@@ -659,7 +659,7 @@ locus __StdApiExposure {
             return;
         }
         if r.kind == 1 {
-            if self.via == "http" {
+            if self.via == "http" || self.via == "mcp" {
                 self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
             } else {
                 self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe(who)));
@@ -1607,9 +1607,11 @@ type __StdApiHttpOut {
 
 fn __api_http_phrase(status: Int) -> String {
     if status == 200 { return "OK"; }
+    if status == 202 { return "Accepted"; }
     if status == 400 { return "Bad Request"; }
     if status == 401 { return "Unauthorized"; }
     if status == 403 { return "Forbidden"; }
+    if status == 405 { return "Method Not Allowed"; }
     if status == 409 { return "Conflict"; }
     if status == 422 { return "Unprocessable Entity"; }
     if status == 429 { return "Too Many Requests"; }
@@ -1749,6 +1751,7 @@ locus __StdApiHttpPeer {
 locus __StdApiHttpListener {
     params {
         bind: String = "";
+        what: String = "http::Rpc";
         tid: Int = 0;
         fd: Int = -1;
         started: Bool = false;
@@ -1779,7 +1782,7 @@ locus __StdApiHttpListener {
         if self.fd < 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: http::Rpc could not listen on " + self.bind);
+            eprintln("api: " + self.what + " could not listen on " + self.bind);
             std::process::exit(2);
         }
     }
@@ -1897,6 +1900,314 @@ locus __StdApiHttpRpc {
     }
     // Close the listener and every connection, after the responses already
     // sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };
+    }
+}
+
+// ---- the MCP transport (spec/api.md § The MCP transport) ----
+//
+// `std::api::mcp::Rpc` serves an exposure as an MCP server over the
+// Streamable HTTP transport's plain-JSON form: a JSON-RPC 2.0 message per
+// `POST /mcp`, answered in the response (one request per connection, as
+// `http::Rpc` takes them). It borrows the HTTP transport's listener and
+// connections whole (`__StdApiHttpListener`, `__StdApiHttpPeer`, the subject
+// `__api.http.out`): what is its own is the framing (JSON-RPC in, a tool
+// call as a `Request`) and the encoding of an outcome (a JSON-RPC result or
+// error). `tools/list` is the exposure's description filtered by the caller,
+// `tools/call` is a call. The JSON-RPC `id` and the method are kept per
+// correlation between `frame` and `reply`.
+
+/// What `frame` kept of a JSON-RPC message for its `reply`. corr: the
+/// connection, -1 for a free record. kind: 0 a message refused at framing,
+/// 1 initialize, 2 ping, 3 tools/list, 4 tools/call, 5 a notification (no
+/// answer but 202), 6 a method the endpoint does not take (GET, DELETE).
+type __StdApiMcpPending {
+    corr: Int = -1;
+    kind: Int = 0;
+    id: String = "null";
+    version: String = "";
+}
+
+@form(vec)
+locus __StdApiMcpPendings {
+    capacity { heap items of __StdApiMcpPending; }
+}
+
+/// The JSON-RPC code of a refusal kind (spec/api.md § Outcomes, MCP).
+fn __api_mcp_code(kind: String, reason: String) -> Int {
+    if kind == "malformed" {
+        if std::str::starts_with(reason, "parse error") { return -32700; }
+        if std::str::starts_with(reason, "invalid request") { return -32600; }
+        if std::str::starts_with(reason, "method not found") { return -32601; }
+        return -32602;
+    }
+    if kind == "digest_mismatch" { return -32003; }
+    if kind == "unauthenticated" { return -32004; }
+    if kind == "unauthorized" { return -32005; }
+    if kind == "full" { return -32006; }
+    if kind == "shutting_down" { return -32007; }
+    if kind == "unavailable" { return -32008; }
+    return -32603;
+}
+
+/// The outcome encoding the MCP transport states in a description.
+fn __api_mcp_outcomes() -> String {
+    return "{\"transport\":\"mcp\",\"result\":{\"field\":\"result\",\"body\":\"response\"},\"handler_error\":{\"field\":\"error\",\"code\":-32001,\"data\":\"error\"},\"refusal\":{\"field\":\"error\",\"data\":\"refusal\",\"code\":{\"malformed\":-32602,\"digest_mismatch\":-32003,\"unauthenticated\":-32004,\"unauthorized\":-32005,\"full\":-32006,\"shutting_down\":-32007,\"unavailable\":-32008}},\"server_error\":{\"field\":\"error\",\"code\":-32603,\"data\":\"refusal\"},\"transport_failure\":\"the transport's own: the connection ends without a response\"}";
+}
+
+/// A JSON-RPC error answer.
+fn __api_mcp_error(id: String, code: Int, message: String, data: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + to_string(code) + ",\"message\":\"" + message + "\",\"data\":" + data + "}}";
+}
+
+/// The schema a `{"$ref": "#/schemas/X"}` names, "" for any other value.
+fn __api_mcp_ref(raw: String) -> String {
+    let r = std::json::find_string_field(raw, "$ref");
+    if std::str::starts_with(r, "#/schemas/") { return r[10..len(r)]; }
+    return "";
+}
+
+/// A type reference as a name for a tool's description: the schema it
+/// names, a scalar's JSON type, or "nothing".
+fn __api_mcp_type_name(raw: String) -> String {
+    let n = __api_mcp_ref(raw);
+    if len(n) > 0 { return n; }
+    let t = std::json::find_string_field(raw, "type");
+    if len(t) > 0 { return t; }
+    return "nothing";
+}
+
+/// The tools of a description (spec/api.md § The MCP transport): a tool per
+/// member the document lists, its input the request's schema made
+/// self-contained (a nested type's schema under `$defs`). A member whose
+/// request is not an object has no tool here.
+fn __api_mcp_tools(doc: String) -> String {
+    let surface = std::json::find_string_field(doc, "surface");
+    let schemas = std::json::find_field_raw(doc, "schemas");
+    let members = std::json::find_field_raw(doc, "members");
+    let mut tools = "";
+    let mut it = std::json::array_first_span(members);
+    while !it.done {
+        let el = std::json::iter_substring(it, members);
+        it = std::json::array_next_span(it, members);
+        let name = std::json::find_string_field(el, "name");
+        let req = std::json::find_field_raw(el, "request");
+        let rname = __api_mcp_ref(req);
+        let mut input = "{\"type\":\"object\"}";
+        let mut listed = true;
+        if len(rname) > 0 {
+            input = std::json::find_field_raw(schemas, rname);
+            if std::json::find_string_field(input, "type") != "object" { listed = false; }
+        } else if len(req) > 0 && req != "null" {
+            listed = false;
+        }
+        if listed {
+            if std::str::index_of(input, "#/schemas/") >= 0 {
+                let mut defs = "";
+                let mut o = std::json::object_first(schemas);
+                while !o.done {
+                    let k = std::json::obj_key_string(o, schemas);
+                    if k != rname {
+                        if len(defs) > 0 { defs = defs + ","; }
+                        defs = defs + "\"" + k + "\":" + std::json::obj_value_raw(o, schemas);
+                    }
+                    o = std::json::object_next(o, schemas);
+                }
+                if len(defs) > 0 {
+                    input = std::str::replace(input[0..(len(input) - 1)] + ",\"$defs\":{" + defs + "}}", "#/schemas/", "#/$defs/");
+                }
+            }
+            let err = std::json::find_field_raw(el, "error");
+            let mut fails = "";
+            if err == "\"ClosureViolation\"" {
+                fails = "; a violation is the server error";
+            } else if __api_mcp_type_name(err) != "nothing" {
+                fails = "; its failure is the handler error " + __api_mcp_type_name(err);
+            }
+            let requires = std::json::find_field_raw(el, "requires");
+            let mut roles = std::str::replace(std::str::replace(requires, "\"", ""), ",", ", ");
+            if len(roles) >= 2 { roles = roles[1..(len(roles) - 1)]; } else { roles = ""; }
+            let mut needs = "Requires no role";
+            if len(roles) > 0 { needs = "Requires " + roles + " under the exposure's role source"; }
+            let text = "rpc " + name + " of " + surface + ": returns " + __api_mcp_type_name(std::json::find_field_raw(el, "response")) + fails + ". " + needs + "; the server still authorizes every request.";
+            if len(tools) > 0 { tools = tools + ","; }
+            tools = tools + "{\"name\":\"" + std::str::replace(name, "::", "__") + "\",\"description\":\"" + std::json::escape_string(text) + "\",\"inputSchema\":" + input + ",\"x-hale-requires\":" + (if len(requires) > 0 { requires } else { "[]" }) + "}";
+        }
+    }
+    return tools;
+}
+
+/// The MCP transport (`std::api::mcp::Rpc`; `mcp::Rpc` at a serve site).
+/// `tid` is the number of the exposure it serves, written by the compiler
+/// together with the HTTP listener it pairs with. The principal is the
+/// bearer `principals` names.
+locus __StdApiMcpRpc {
+    params {
+        bind: String;
+        principals: std::api::BearerSource;
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+        pending: __StdApiMcpPendings = __StdApiMcpPendings { };
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_ask where key == self.tid;
+        publish __ApiHttpOutT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "mcp";
+    }
+    fn on_ask(o: __StdApiHttpOut) {
+        if o.kind == 4 {
+            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
+        }
+    }
+    fn note(corr: Int, kind: Int, id: String, version: String) {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiMcpPending { };
+            if p.corr == -1 || p.corr == corr {
+                self.pending.set(k, __StdApiMcpPending { corr: corr, kind: kind, id: id, version: version }) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.pending.push(__StdApiMcpPending { corr: corr, kind: kind, id: id, version: version });
+    }
+    fn take(corr: Int) -> __StdApiMcpPending {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiMcpPending { };
+            if p.corr == corr {
+                self.pending.set(k, __StdApiMcpPending { }) or discard;
+                return p;
+            }
+            k = k + 1;
+        }
+        return __StdApiMcpPending { corr: corr, kind: 4 };
+    }
+    // The raw message is the HTTP request as the client sent it.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let req = std::http::parse_request(std::str::from_bytes(raw));
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        if len(req.method) == 0 || len(req.path) == 0 {
+            self.note(correlation, 0, "null", "");
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "invalid request: not an HTTP request" };
+        }
+        let auth = std::http::header(req, "Authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        let mut path = req.path;
+        let q = std::str::index_of(path, "?");
+        if q >= 0 { path = path[0..q]; }
+        if req.method != "POST" {
+            self.note(correlation, 6, "null", "");
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "an MCP endpoint takes POST " + path };
+        }
+        if path != "/mcp" {
+            self.note(correlation, 0, "null", "");
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid request: an MCP message is POST /mcp" };
+        }
+        let body = req.body;
+        if len(body) == 0 || !std::json::valid_object(body) {
+            self.note(correlation, 0, "null", "");
+            let batch = std::str::starts_with(std::str::trim(body), "[");
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: (if batch { "invalid request: a batch is not supported" } else { "parse error: a message is one JSON-RPC object" }) };
+        }
+        let mut id = std::json::find_field_raw(body, "id");
+        let has_id = len(id) > 0;
+        if !has_id { id = "null"; }
+        let method = std::json::find_string_field(body, "method");
+        let pm = std::json::find_field_raw(body, "params");
+        if len(method) == 0 && has_id {
+            self.note(correlation, 0, id, "");
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid request: a message names its method" };
+        }
+        if !has_id {
+            // a notification, or a response to a request we never made:
+            // accepted, and answered with nothing
+            self.note(correlation, 5, id, "");
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if method == "initialize" {
+            self.note(correlation, 1, id, std::json::find_string_field(pm, "protocolVersion"));
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if method == "ping" {
+            self.note(correlation, 2, id, "");
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if method == "tools/list" {
+            self.note(correlation, 3, id, "");
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if method == "tools/call" {
+            self.note(correlation, 4, id, "");
+            let name = std::json::find_string_field(pm, "name");
+            if len(name) == 0 {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid params: a tools/call names its tool" };
+            }
+            let mut args = std::json::find_field_raw(pm, "arguments");
+            if len(args) == 0 { args = "{}"; }
+            let mut digest = std::http::header(req, "Hale-Surface-Digest");
+            if len(digest) == 0 { digest = std::json::find_string_field(std::json::find_field_raw(pm, "_meta"), "hale/digest"); }
+            return std::api::Request { kind: 0, member: std::str::replace(name, "__", "::"), bytes: std::bytes::from_string(args), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        self.note(correlation, 0, id, "");
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "method not found: " + method };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let p = self.take(correlation);
+        let mut status = 200;
+        let mut body = "";
+        match outcome {
+            __StdApiOutcome::Result(b) -> {
+                if p.kind == 1 {
+                    let mut version = p.version;
+                    if len(version) == 0 { version = "2025-06-18"; }
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"protocolVersion\":\"" + std::json::escape_string(version) + "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"" + std::json::escape_string(std::json::find_string_field(b, "surface")) + "\",\"version\":\"" + std::json::escape_string(std::json::find_string_field(b, "digest")) + "\"}}}";
+                } else if p.kind == 2 {
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{}}";
+                } else if p.kind == 3 {
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"tools\":[" + __api_mcp_tools(b) + "]}}";
+                } else if p.kind == 5 {
+                    status = 202;
+                } else {
+                    let structured = if std::str::starts_with(b, "{") { ",\"structuredContent\":" + b } else { "" };
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + std::json::escape_string(b) + "\"}]" + structured + ",\"isError\":false}}";
+                }
+            },
+            __StdApiOutcome::HandlerError(b) -> {
+                body = __api_mcp_error(p.id, -32001, "handler_error", b);
+            },
+            __StdApiOutcome::Refusal(k, r, x) -> {
+                if k == "unauthenticated" { status = 401; }
+                if p.kind == 6 {
+                    status = 405;
+                } else {
+                    body = __api_mcp_error(p.id, __api_mcp_code(k, r), k, __api_refusal_object(k, r, x));
+                }
+            },
+            __StdApiOutcome::ServerError -> {
+                body = __api_mcp_error(p.id, -32603, "server_error", "{\"kind\":\"server\"}");
+            },
+        }
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body };
+    }
+    // The request's connection is gone and its work has completed: nothing
+    // is written; whatever is left of the connection is closed.
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        let _ = self.take(correlation);
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
+    }
+    // Close the listener and every connection, after the responses already
+    // sent.
     fn stop_listening() {
         self.stops = self.stops + 1;
         __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };

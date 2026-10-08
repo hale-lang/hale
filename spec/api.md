@@ -363,11 +363,12 @@ failure and generations); and a serve site in a free fn, "\`api::serve\` in
 \`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
 param of the serving locus; serve from the locus that holds the
 receivers". A build refuses a serve site over a transport the compiler
-does not ship (\`ws::Hub\` until R5, \`grpc::Rpc\` and \`mcp::Rpc\` until R6):
+does not ship (\`ws::Hub\` until R5, \`grpc::Rpc\` until the runtime has an
+HTTP/2 primitive, § gRPC):
 "\`api::serve\` over \`grpc::Rpc\`: this compiler serves a surface over
 \`std::api::test::Rpc\`, the in-process transport, \`unix::Rpc\`, \`http::Rpc\`,
-or a transport the program declares; the other socket transports follow",
-and a serve over \`unix::Rpc\` or \`http::Rpc\` from a locus that is not the
+\`mcp::Rpc\`, or a transport the program declares; the other transports follow",
+and a serve over \`unix::Rpc\`, \`http::Rpc\` or \`mcp::Rpc\` from a locus that is not the
 main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
 runs on a pool of its own, which only the main locus places; serve from
 the main locus" (§ The Unix transport, § The HTTP transport).
@@ -504,8 +505,8 @@ shapes and error types are the model's, the codec is the binding's
 The stdlib implements `std::api::test::Rpc` (R2a: the in-process
 fixture transport, below), `unix::Rpc` (R2b: the GH #1106 binding
 re-homed), `http::Rpc` (R3, § The HTTP transport), `ws::Hub` and `udp::Hub` (R5, § Streams),
-`grpc::Rpc` and `mcp::Rpc` (R6); a program implements one the stdlib
-lacks.
+`mcp::Rpc` (R6, § The MCP transport); `grpc::Rpc` is not shipped (§ gRPC);
+a program implements one the stdlib lacks.
 
 **The fixture transport** (`std::api::test::Rpc`) is a conforming
 transport with no socket: a test hands it framed requests
@@ -658,6 +659,113 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   arrives after the listener is closed is refused by the network. As for
   the Unix socket, a program that ends without `stop()` releases its
   listener, and a caller with a request in flight sees the connection end.
+
+### The MCP transport
+
+`mcp::Rpc` (`std::api::mcp::Rpc`, R6) serves an exposure as a Model
+Context Protocol server over the Streamable HTTP transport's plain-JSON
+form: a JSON-RPC 2.0 message in the body of `POST /mcp`, its answer in the
+response, one request to a connection. It is written at a serve site, or
+held as a param and named, with the fields `bind` (`host:port`),
+`principals` (the bearer source, required) and `roles` (the role source):
+
+```hale,fragment
+let public = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+It is built on § The HTTP transport's listener and connections, whole: the
+same limits, the same bearer, the same `async_io` pool (`__api_http`), the
+same bind-at-birth (the diagnostic reads `api: mcp::Rpc could not listen
+on …`), the same refusal of a serve from a locus that is not the main
+locus, and a connection that fails alone. What is its own is the framing
+and the encoding.
+
+- **Tools are rpcs.** `tools/list` answers the tools of § The description
+  for the caller the bearer names, which is the caller's description
+  filtered by the rows and sources admission reads: a tool per member the
+  caller may call, named as the member with `::` written `__`
+  (`Orders__place`; a tool name may not contain `:`), described as `hale
+  check --api --mcp` describes it, its `inputSchema` the request's schema
+  made self-contained (a type it reaches under `$defs`), `x-hale-requires`
+  the roles. A caller holding no role sees the members that require none.
+  A member whose request is not an object (an MCP tool's input is one)
+  has no tool; the wrapped form `--mcp` prints needs the handler's
+  parameter name, which a description does not carry (R4).
+- **`tools/call` is a call.** `params.name` is the tool and
+  `params.arguments` the payload, which goes through admission exactly as
+  an HTTP body does; the digest, when the client sends one, is the header
+  `Hale-Surface-Digest` or `params._meta["hale/digest"]`.
+- **The session methods are the transport's.** `initialize` answers the
+  client's `protocolVersion` (the current one, `2025-06-18`, when it
+  names none), the capability `tools` and `serverInfo` as the surface's
+  name and digest; `ping` answers `{}`; a notification (a message with no
+  `id`) is answered `202` with no body; any other method is `-32601`. All
+  of them need a caller the bearer names, as every request does. There is
+  no session id, no batch (`-32600`), no server-initiated message and no
+  event stream: `GET` and `DELETE` on `/mcp` are `405`.
+- **Outcomes** are § Outcomes' MCP column. A result is a JSON-RPC result
+  `{"content": [{"type": "text", "text": <the response, as text>}],
+  "structuredContent": <the response, when it is an object>, "isError":
+  false}`. Every other outcome is a JSON-RPC **error object** `{"code": C,
+  "message": K, "data": D}`: a handler error is `-32001`, `"handler_error"`
+  and `D` = `E` by codec; a refusal is `K` = its kind and `D` = the
+  refusal object of § Outcomes (`kind`, `reason`, and `served` or
+  `requires`) with the code `malformed` `-32602` (a message that is not a
+  JSON-RPC request is `-32700` parse error or `-32600` invalid request, an
+  unknown method `-32601`, and an unknown tool or a payload that does not
+  decode `-32602`), `digest_mismatch` `-32003`, `unauthenticated` `-32004`,
+  `unauthorized` `-32005`, `full` `-32006`, `shutting_down` `-32007`,
+  `unavailable` `-32008`; the server error is `-32603`, `"server_error"`,
+  `D` = `{"kind": "server"}`. The answer carries the request's `id`
+  verbatim (`null` when the message had none that could be read) and is
+  HTTP `200`, except `unauthenticated`, which is `401` as MCP's
+  authorization requires. A transport failure is the connection ending
+  without a response.
+- **The description** an MCP exposure serves has `listener.transport`
+  `"mcp"` and the outcome encoding above under `outcomes` (`hale check
+  --api --exposure NAME --caller NAME` prints it); it is not reachable
+  over the wire, where `tools/list` is the discovery.
+
+**Resources over streams** are not served, and the capability `resources`
+is not advertised. A subscription (`resources/subscribe`, then
+`notifications/resources/updated`) is a server-initiated message on a
+connection that outlives a request: it needs the event stream of the
+Streamable HTTP transport (or a WebSocket), a hub (R5) to carry the
+stream, and the session identity MCP gives with `Mcp-Session-Id` so a
+notification finds its client; none of the three exists in `mcp::Rpc`, which
+holds no connection past its answer. The streams of a surface are in its
+description (`streams`) for a client that knows another door.
+
+**What `hale mcp` is.** The existing `hale mcp` (`crates/hale-cli/src/mcp.rs`)
+is an MCP *server* on stdio, a bridge from a host to the toolchain, or
+with `--app` to the older structural binding's Unix socket; it is not a
+client of `mcp::Rpc`, and a host that only speaks stdio cannot reach an HTTP
+endpoint without one. The retarget (R4) is what makes it a bridge from
+stdio to an exposure: `tools/list` from the exposure's description
+(`mcp::Rpc` or any other transport, over its own wire), `tools/call` as a
+call, and the wrapped-input tools above, which need the parameter name in
+the description. R6 does not touch it. `mcp::Rpc` with `stdio` in place
+of `bind` is not shipped: the runtime has
+no primitive to read the process's own standard input as a stream (a
+`std::io::tcp::Stream` over descriptor 0 is a `recv(2)` on a pipe), and
+`hale mcp` already owns that framing for the toolchain's server.
+
+### gRPC
+
+`grpc::Rpc` is not shipped. It needs HTTP/2 (frames, HPACK, flow control,
+streams multiplexed on one connection) and trailers, and the runtime has
+none: the stdlib's HTTP is HTTP/1.1 over `std::io::tcp` (`std::http`,
+the client, and `http::Rpc` here), with no HTTP/2 or TLS ALPN primitive
+anywhere in `crates/hale-stdlib/hl/` or the runtime's C. What the runtime
+would need is (1) an HTTP/2 connection primitive beside `std::io::tcp`
+(server preface, SETTINGS, HEADERS with HPACK in both directions, DATA with
+flow-control windows, trailers, GOAWAY), parked on the `async_io` pool like
+a read, and (2) per-stream correlation in the transport, since a gRPC
+connection carries many calls. Given those, the transport is `http::Rpc`'s
+shape with the mapping of § Outcomes' gRPC column (status codes, `E` in a
+`google.rpc.Status` detail, the digest in request metadata
+`hale-surface-digest`, the reflection answer being the description). A
+serve over `grpc::Rpc` is refused by the build until then.
 
 ## The runtime boundaries
 
@@ -933,7 +1041,15 @@ digest, when the client sends one, in the header `Hale-Surface-Digest`.
 response's status and body are the table's; a request that is neither
 is `malformed`.
 
-Every recorded exchange of both transports is under
+**The MCP transport** (`mcp::Rpc`, R6; § The MCP transport) takes the
+same recorded calls as `tools/call` messages in `POST /mcp`, and answers
+each outcome as a JSON-RPC message: a result for the response, an error
+object (`code`, `message`, `data`) for the handler's error, a refusal and
+the server error, with the codes of § The MCP transport; `tests/api-contract/
+wire/http/*.json` supply the payloads, so the `data` of each error is
+the recorded body.
+
+Every recorded exchange of the HTTP and Unix transports is under
 `tests/api-contract/wire/<transport>/<outcome>.json`.
 
 ## The request lifecycle
@@ -1418,8 +1534,10 @@ in-process transport (`tests/hale/api/`: the witness's own `Orders`,
 `Ledger`, rows and role sources served by `std::api::test::Rpc`,
 each refusal leaving the handler's counter where it was, the five
 outcomes, the lifecycle guarantees of § The request lifecycle); R2b
-runs the same assertions over a Unix socket, R3 over HTTP, R5 adds the
-stream half.
+runs the same assertions over a Unix socket, R3 over HTTP, R6 holds the
+`Public` half over MCP (the recorded calls as `tools/call`, `tools/list`
+against `Public.mcp.json`; `gRPC` has none, § gRPC), R5 adds the stream
+half.
 
 ## Open points
 
@@ -1441,7 +1559,11 @@ stream half.
 - **The hub's use of expiry and revision** (R5): the interfaces are
   § Identity sources'; a hub's invalidation of a live subscription from
   them is R5's.
-- **MCP resources over streams.**
+- **MCP resources over streams**, and MCP over stdio: a subscription
+  needs an event stream, a hub and a session identity, and stdio needs a
+  runtime primitive to read the process's own standard input (§ The MCP
+  transport).
+- **`grpc::Rpc`**: it needs an HTTP/2 primitive in the runtime (§ gRPC).
 - **Whether a locus may implement two interfaces at once** (the hub);
   if not, the hub is two loci sharing one listener (R5).
 - **A surface-level `requires` default** that rows inherit.
