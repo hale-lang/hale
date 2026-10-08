@@ -487,8 +487,8 @@ one. The contract is `spec/api.md` § Streams.
 
 ## The clients
 
-You never write a client for a Hale program, because a served exposure
-describes itself. `{"describe": true}` on the socket, `GET /.description`
+You never write a client for a Hale program by hand, because a served
+exposure describes itself and a surface generates its clients. `{"describe": true}` on the socket, `GET /.description`
 over HTTP and on a hub's address return the same kind of document: the
 exposure's identity and digest, where it listens, who the caller is and
 which roles it holds, the members it may call with their schemas, the
@@ -525,6 +525,45 @@ rows, with no program running, and the forms a client is generated from
 (`--surface Public --openapi`, `--json-schema`, `--mcp`). The description
 carries what the exposure was given (its address) and what it
 established (the caller), and nothing of the deployment beyond that.
+
+### Generated specs and clients
+
+The rows carry everything a client needs (the shapes, the five outcomes,
+the digest, the roles of each member, the stream rows), so a surface's
+specs and clients are generated from them:
+
+```sh
+hale api export --surface Public --out api/public desk.hl
+hale api client --surface Public --lang hale --out client/desk.hl desk.hl
+hale api client --surface Public --lang ts   --out client/desk.ts desk.hl
+hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exit 1 on drift
+```
+
+`export` writes a bundle: `Public.description.json` (every member with its
+roles, the exposures that serve it, the hubs, the schemas),
+`Public.openapi.json`, `Public.json-schema.json`, `Public.mcp.json` and
+`DIGEST` (the digest and the compiler's version). Every file is a function
+of the rows alone, so two runs and two checkouts write the same bytes, and
+an imported type is named by its path under the import alias (`lib::Item`),
+never by a path of the machine. `--check DIR` writes nothing and exits 1,
+naming the digest that moved and the files that differ, so a committed
+bundle cannot go stale unnoticed.
+
+A client is typed by the rows. The Hale one is a module with a fn per member
+(`orders_place(endpoint, bearer, request)`), whose answer is an enum of the
+outcomes (`Result`, `HandlerError` when the row declares an error, `Refusal`
+with its kind, reason and the roles it names, `ServerError`, `Lost`), and a
+subscription locus per stream (`start`, then `next` yields each `Event(seq,
+payload)` until `Expired`, `Revoked` or `Closed`). The TypeScript one is a
+single file that needs only `fetch` and `WebSocket`: an async function per
+member answering a tagged union (`result`, `handler_error`, `refusal`,
+`server_error`; a connection that never answered is thrown as a
+`TransportError`, because that request may have run) and an async iterable
+per stream. Both send the surface's digest on every call, so a program that
+changed under a client refuses it `digest_mismatch`; both name the digest in
+a constant, and `--check` refuses a committed copy made against another one.
+A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
+`ws://` (both); TLS and gRPC are not spoken yet.
 
 ## When it says no
 

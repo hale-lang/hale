@@ -38,6 +38,7 @@ mod fleet;
 mod dna;
 mod iris;
 mod api_client;
+mod api_gen;
 use hale_types::surface_doc;
 mod mcp;
 mod pkg;
@@ -147,6 +148,12 @@ fn main() -> ExitCode {
     // directly.
     if cmd == "mcp" {
         return verbs::misc::run_mcp_cmd(&args);
+    }
+
+    // GH #1417 (R8a): the generated forms of a surface: its bundle and its clients.
+    if cmd == "api" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return verbs::api::run_api(&rest);
     }
 
     // GH #1107: the generic clients of an api binding. They read the

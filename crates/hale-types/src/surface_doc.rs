@@ -523,16 +523,37 @@ fn serve_exposure(rows: &SurfaceRows, serve: &Serve) -> J {
 /// listener, sources and receivers, every hub with its stream rows, the
 /// schemas of every type they name.
 pub fn inventory(rows: &SurfaceRows, schemas: &Schemas<'_>) -> J {
+    inventory_of(rows, schemas, None)
+}
+
+/// One surface's slice of the inventory (GH #1417, R8a), the document a
+/// bundle's `<Surface>.description.json` holds: the surface with its
+/// digest and every member, the exposures that serve it, and every hub
+/// of the program (a stream belongs to a hub, not to a surface, and a
+/// client of the surface subscribes through the hub), the schemas of
+/// the types those name. The same `"inventory": 1` format, so the
+/// description schema holds it.
+pub fn surface_description(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J, String> {
+    surface_members(rows, surface)?;
+    Ok(inventory_of(rows, schemas, Some(surface)))
+}
+
+fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -> J {
     let mut book = Book::new(schemas);
     let surfaces = rows
         .surfaces
         .iter()
+        .filter(|sf| only.is_none_or(|o| o == sf.name))
         .map(|sf| {
             let members: Vec<J> = rows.rows_of(&sf.name).map(|r| member(r, &mut book, DOC_REFS)).collect();
             o(vec![("name", s(&sf.name)), ("digest", s(&digest_text(sf.digest))), ("members", J::Arr(members))])
         })
         .collect();
-    let exposures = serves_by_name(rows).into_iter().map(|sv| serve_exposure(rows, sv)).collect();
+    let exposures = serves_by_name(rows)
+        .into_iter()
+        .filter(|sv| only.is_none_or(|o| sv.surface.as_deref() == Some(o)))
+        .map(|sv| serve_exposure(rows, sv))
+        .collect();
     let hubs = hubs_by_name(rows)
         .into_iter()
         .map(|h| {
@@ -861,7 +882,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
             let schema = field_schema(&book.type_ref(&e.te), REFS);
             responses.push((
                 "422".to_string(),
-                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", e.display))), content(schema)]),
+                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema)]),
             ));
         }
         responses.push(("429".to_string(), refusal("refusal: full")));
@@ -1015,10 +1036,10 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
             },
             None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
         };
-        let returns = h.response.as_ref().map_or("nothing".to_string(), |t| t.display.clone());
+        let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
         let fails = match (&h.error, h.server_error) {
             (_, true) => "; a violation is the server error".to_string(),
-            (Some(e), false) => format!("; its failure is the handler error {}", e.display),
+            (Some(e), false) => format!("; its failure is the handler error {}", schemas.show(e)),
             (None, false) => String::new(),
         };
         tools.push(o(vec![
@@ -1041,6 +1062,93 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
         ("tools", J::Arr(tools)),
         ("notes", o(vec![("authorization", s(NOTE_AUTHORIZATION)), ("lifecycle", s(NOTE_LIFECYCLE))])),
     ]))
+}
+
+// ---- the client model (GH #1417, R8a) ----
+
+/// What a member's failure is, as a client types it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientError {
+    /// The handler declares no error type.
+    None,
+    /// `ClosureViolation`: a violation is the server error, and the
+    /// handler error has no schema.
+    Server,
+    /// The handler error's schema.
+    Type(FieldSchema),
+}
+
+/// One member as a generated client sees it: the row's shapes, nothing
+/// of the locus behind it.
+#[derive(Debug, Clone)]
+pub struct ClientMember {
+    pub name: String,
+    pub request: Option<FieldSchema>,
+    pub response: Option<FieldSchema>,
+    pub error: ClientError,
+    pub requires: Vec<String>,
+}
+
+/// One stream row of a hub, as a generated client subscribes to it.
+#[derive(Debug, Clone)]
+pub struct ClientStream {
+    pub topic: String,
+    pub payload: Option<FieldSchema>,
+    pub requires: Vec<String>,
+    /// The hub's exposure name.
+    pub hub: String,
+    /// The hub's stream digest.
+    pub hub_digest: String,
+}
+
+/// The rows of one surface and the streams of the program's hubs: what
+/// both client generators read. A generator is a pure function of this
+/// value, so two runs, and two checkouts of one program, generate the
+/// same bytes.
+#[derive(Debug, Clone)]
+pub struct ClientModel {
+    pub surface: String,
+    pub digest: String,
+    pub members: Vec<ClientMember>,
+    /// Every struct a member or stream names, by its document name.
+    pub types: BTreeMap<String, TypeSchema>,
+    pub streams: Vec<ClientStream>,
+}
+
+pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<ClientModel, String> {
+    let (digest, members) = surface_members(rows, surface)?;
+    let mut book = Book::new(schemas);
+    let mut out = Vec::new();
+    for row in members {
+        let Handled::Fn(h) = &row.handler else { continue };
+        let request = h.request.as_ref().map(|t| book.type_ref(&t.te));
+        let response = h.response.as_ref().map(|t| book.type_ref(&t.te));
+        let error = match (&h.error, h.server_error) {
+            (_, true) => ClientError::Server,
+            (Some(e), false) => ClientError::Type(book.type_ref(&e.te)),
+            (None, false) => ClientError::None,
+        };
+        out.push(ClientMember {
+            name: row.member.clone(),
+            request,
+            response,
+            error,
+            requires: row.requires.iter().map(|(r, _)| r.clone()).collect(),
+        });
+    }
+    let mut streams = Vec::new();
+    for hub in hubs_by_name(rows) {
+        for st in hub.streams.iter().filter(|st| st.direction == "out") {
+            streams.push(ClientStream {
+                topic: st.topic.clone(),
+                payload: st.payload.as_ref().map(|p| book.type_ref(&p.te)),
+                requires: st.requires.iter().map(|(r, _)| r.clone()).collect(),
+                hub: hub.transport.name.clone().unwrap_or_default(),
+                hub_digest: digest_text(hub.digest()),
+            });
+        }
+    }
+    Ok(ClientModel { surface: surface.to_string(), digest: digest_text(digest), members: out, types: book.types, streams })
 }
 
 #[cfg(test)]

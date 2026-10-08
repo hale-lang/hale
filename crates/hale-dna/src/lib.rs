@@ -249,6 +249,7 @@ pub const POND_FILES: &[EmbeddedFile] = at![
 pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/client.hl",
     "dna/core/legs/hands.hl",
+    "dna/core/legs/head_commands/client.hl",
     "dna/core/legs/model.hl",
     "dna/core/legs/performer.hl",
     "dna/core/legs/render.hl",
@@ -342,6 +343,9 @@ mod tests {
         // the legs: every .hl under dna/core/legs
         let legs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/legs");
         let mut legs_on_disk: Vec<String> = std::fs::read_dir(&legs_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).map(|n| format!("dna/core/legs/{n}")).collect();
+        // and the generated client of the head's surface in its own directory
+        let head_commands_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/legs/head_commands");
+        legs_on_disk.extend(std::fs::read_dir(&head_commands_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).map(|n| format!("dna/core/legs/head_commands/{n}")));
         legs_on_disk.sort();
         let mut legs_embedded: Vec<String> = LEGS_FILES.iter().map(|f| f.path.to_string()).collect();
         legs_embedded.sort();

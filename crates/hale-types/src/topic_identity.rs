@@ -338,6 +338,25 @@ impl<'a> Shapes<'a> {
         Shapes { types, ints, quantities }
     }
 
+    /// The name a document gives the declared type `name` (GH #1417, R8a):
+    /// the author's spelling of an imported type (`lib::Orders`, its
+    /// declared path under the import alias) where the cross-seed rename
+    /// recorded one, and the name itself otherwise. A mangled name embeds
+    /// the library's path, which is the checkout's, so a document that
+    /// named it would differ between two checkouts of one program.
+    pub fn display_name(&self, name: &str) -> String {
+        match self.types.get(name).and_then(|t| t.display.as_deref()) {
+            Some(d) => d.to_string(),
+            None => name.to_string(),
+        }
+    }
+
+    /// `te` as a document spells it: [`Shapes::display_name`] of a bare
+    /// name, `None` for any other type expression.
+    pub fn display_of(&self, te: &TypeExpr) -> Option<String> {
+        Self::bare_name(te).map(|n| self.display_name(n))
+    }
+
     /// The shape of the type `name` names, in `form`: `None` for a name
     /// with no observation shape (anything but a bare struct).
     pub fn named(&self, name: &str, form: ShapeForm) -> Option<String> {

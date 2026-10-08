@@ -1,0 +1,281 @@
+// GH #1417 (R8a) — the server a generated client is held to.
+//
+// It replays the contract's recordings (`tests/api-contract/wire/`): for
+// each step it accepts one connection, reads the request the client sent,
+// compares it to the recorded request, and answers with the recorded reply.
+// What it reports (to the file named on the command line, one line a step) is
+// `ok <step>` or `MISMATCH <step>: <what differed>`; `client_test.hl` reads it
+// after the client has made its calls. The wire id of a socket request is the
+// client's to choose (`c-1`: one request per connection), so the recorded id
+// is replaced by it in the expectation; so is a stale digest, when the recorded
+// reply is the refusal for it (the client under test holds the current one and
+// the recording names it as the digest `served`); and a step named `~name` is
+// replied to without comparing its request, for the two recordings a typed
+// client cannot produce (a payload of the wrong type, one missing a field) and
+// the one a peer with no credentials sent.
+//
+//   replay http <wire dir> <port> <report> <recording>...
+//   replay unix <wire dir> <path> <report> <recording>...
+//   replay ws <port> <report> <scenario>...
+//
+// The `ws` scenarios speak the frames of spec/api.md § Streams: `closed`
+// (two events, then the hub's closed frame), `revoked` and `expired` (one
+// event, then the unauthorized frame), `refused` (a refusal frame),
+// `abort` (an event, then the connection ends with no closed frame) and
+// `late` (the first event comes after a pause, then closed).
+
+const SUBSCRIBE: String = "{\"type\":\"subscribe\",\"topic\":\"Fills\"}";
+
+// The document with its whitespace outside strings removed: a recording is
+// written pretty, the wire is compact.
+fn compact(j: String) -> String {
+    let b = std::bytes::BytesBuilder { };
+    let n = len(j);
+    let mut i = 0;
+    let mut in_str = false;
+    while i < n {
+        let c = std::str::byte_at_unchecked(j, i);
+        if in_str {
+            b.append_u8(c);
+            if c == 92 {
+                i = i + 1;
+                b.append_u8(std::str::byte_at_unchecked(j, i));
+            } else if c == 34 {
+                in_str = false;
+            }
+        } else if c == 34 {
+            in_str = true;
+            b.append_u8(c);
+        } else if c != 32 && c != 10 && c != 13 && c != 9 {
+            b.append_u8(c);
+        }
+        i = i + 1;
+    }
+    return std::str::from_bytes(b.finish() or std::bytes::from_string(""));
+}
+
+fn recording(wire: String, transport: String, name: String) -> String {
+    return std::io::fs::read_file(wire + "/" + transport + "/" + name + ".json") or "";
+}
+
+// What the connection holds up to the end of the request: its head and, by
+// Content-Length, its body.
+@unbounded
+fn read_http(s: std::io::tcp::Stream) -> String {
+    let mut buf = "";
+    let mut tries = 0;
+    while std::str::index_of(buf, "\r\n\r\n") < 0 && tries < 100 {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = buf + chunk; }
+    }
+    let at = std::str::index_of(buf, "\r\n\r\n");
+    if at < 0 { return buf; }
+    let head = buf[0..at];
+    let cl = std::str::index_of(head, "Content-Length:");
+    let mut want = 0;
+    if cl >= 0 {
+        let rest = head[(cl + 15)..len(head)];
+        let eol = std::str::index_of(rest, "\r\n");
+        want = std::str::parse_int(std::str::trim(if eol >= 0 { rest[0..eol] } else { rest })) or 0;
+    }
+    while len(buf) - (at + 4) < want && tries < 100 {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = buf + chunk; }
+    }
+    return buf;
+}
+
+fn header_ok(head: String, headers: String, name: String) -> String {
+    let want = std::json::find_string_field(headers, name);
+    if len(want) == 0 { return ""; }
+    if std::str::contains(head, "\r\n" + name + ": " + want) { return ""; }
+    return " header " + name + " is not " + want + " in " + head;
+}
+
+fn http_step(listen_fd: Int, wire: String, arg: String) -> String {
+    let only = std::str::starts_with(arg, "~");
+    let name = if only { arg[1..len(arg)] } else { arg };
+    let rec = recording(wire, "http", name);
+    let want = std::json::find_field_raw(rec, "request");
+    let reply = std::json::find_field_raw(rec, "reply");
+    let conn = std::io::tcp::__accept_one(listen_fd);
+    if conn < 0 { return "MISMATCH " + name + ": no connection\n"; }
+    std::io::tcp::__set_recv_timeout_ns(conn, 200000000);
+    let s = std::io::tcp::Stream { conn_fd: conn, owns_fd: true };
+    let got = read_http(s);
+    let at = std::str::index_of(got, "\r\n\r\n");
+    let head = if at >= 0 { got[0..at] } else { got };
+    let body = if at >= 0 { got[(at + 4)..len(got)] } else { "" };
+    let mut bad = "";
+    let line = std::json::find_string_field(want, "method") + " " + std::json::find_string_field(want, "path") + " HTTP/1.1";
+    if !std::str::starts_with(head, line) { bad = bad + " request line is not " + line + " in " + head; }
+    let reply_refusal = std::json::find_field_raw(std::json::find_field_raw(reply, "body"), "refusal");
+    let mut headers = std::json::find_field_raw(want, "headers");
+    if std::json::find_string_field(reply_refusal, "kind") == "digest_mismatch" {
+        headers = std::str::replace(headers, std::json::find_string_field(headers, "Hale-Surface-Digest"), std::json::find_string_field(reply_refusal, "served"));
+    }
+    bad = bad + header_ok(head, headers, "Authorization") + header_ok(head, headers, "Content-Type") + header_ok(head, headers, "Hale-Surface-Digest");
+    let expect = compact(std::json::find_field_raw(want, "body"));
+    if body != expect { bad = bad + " body is " + body + " not " + expect; }
+    if only { bad = ""; }
+    let out = compact(std::json::find_field_raw(reply, "body"));
+    s.send("HTTP/1.1 " + to_string(std::json::find_int_field(reply, "status")) + " Recorded\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(out)) + "\r\nConnection: close\r\n\r\n" + out) or discard;
+    if len(bad) > 0 { return "MISMATCH " + name + ":" + bad + "\n"; }
+    return "ok " + name + "\n";
+}
+
+@unbounded
+fn read_line(s: std::io::tcp::Stream) -> String {
+    let mut buf = "";
+    let mut tries = 0;
+    while std::str::index_of(buf, "\n") < 0 && tries < 100 {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = buf + chunk; }
+    }
+    let nl = std::str::index_of(buf, "\n");
+    if nl < 0 { return buf; }
+    return buf[0..nl];
+}
+
+fn unix_step(listen_fd: Int, wire: String, arg: String) -> String {
+    let only = std::str::starts_with(arg, "~");
+    let name = if only { arg[1..len(arg)] } else { arg };
+    let rec = recording(wire, "unix", name);
+    let want = std::json::find_field_raw(rec, "request");
+    let reply = std::json::find_field_raw(rec, "reply");
+    let conn = std::io::tcp::__accept_one(listen_fd);
+    if conn < 0 { return "MISMATCH " + name + ": no connection\n"; }
+    std::io::tcp::__set_recv_timeout_ns(conn, 200000000);
+    let s = std::io::tcp::Stream { conn_fd: conn, owns_fd: true };
+    let got = read_line(s);
+    let recorded_id = "\"id\":\"" + std::json::find_string_field(want, "id") + "\"";
+    let mut expect = std::str::replace(compact(want), recorded_id, "\"id\":\"c-1\"");
+    let reply_refusal = std::json::find_field_raw(reply, "refusal");
+    if std::json::find_string_field(reply_refusal, "kind") == "digest_mismatch" {
+        expect = std::str::replace(expect, std::json::find_string_field(want, "digest"), std::json::find_string_field(reply_refusal, "served"));
+    }
+    s.send(compact(reply) + "\n") or discard;
+    if got != expect && !only { return "MISMATCH " + name + ": the line is " + got + " not " + expect + "\n"; }
+    return "ok " + name + "\n";
+}
+
+// One server frame, unmasked.
+fn ws_frame(op: Int, text: String) -> Bytes {
+    let mb = std::bytes::BytesBuilder { };
+    mb.append_u8(128 + op);
+    if len(text) < 126 {
+        mb.append_u8(len(text));
+    } else {
+        mb.append_u8(126);
+        mb.append_u16_be(len(text));
+    }
+    mb.append_str(text);
+    return mb.finish() or std::bytes::from_string("");
+}
+
+fn ws_send(s: std::io::tcp::Stream, text: String) {
+    s.send_bytes(ws_frame(1, text)) or discard;
+}
+
+// The one masked text frame the client writes, unmasked: its text.
+@unbounded
+fn ws_read_text(s: std::io::tcp::Stream, pending: Bytes) -> String {
+    let mut buf = pending;
+    let mut tries = 0;
+    while len(buf) < 6 && tries < 100 {
+        let chunk = s.recv_bytes(65536) or std::bytes::from_string("");
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = std::bytes::concat(buf, chunk); }
+    }
+    let plen = (std::bytes::at(buf, 1) or 0) % 128;
+    let key = std::bytes::read_u32_le(buf, 2) or 0;
+    while len(buf) < 6 + plen && tries < 100 {
+        let chunk = s.recv_bytes(65536) or std::bytes::from_string("");
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = std::bytes::concat(buf, chunk); }
+    }
+    let mb = std::bytes::BytesBuilder { };
+    mb.xor_mask(std::bytes::slice(buf, 6, 6 + plen), key);
+    return std::str::from_bytes(mb.finish() or std::bytes::from_string(""));
+}
+
+fn ws_step(listen_fd: Int, scenario: String) -> String {
+    let conn = std::io::tcp::__accept_one(listen_fd);
+    if conn < 0 { return "MISMATCH " + scenario + ": no connection\n"; }
+    std::io::tcp::__set_recv_timeout_ns(conn, 200000000);
+    let s = std::io::tcp::Stream { conn_fd: conn, owns_fd: true };
+    let mut buf = "";
+    let mut tries = 0;
+    while std::str::index_of(buf, "\r\n\r\n") < 0 && tries < 100 {
+        let chunk = s.recv(1) or "";
+        if len(chunk) == 0 { tries = tries + 1; } else { buf = buf + chunk; }
+    }
+    let mut bad = "";
+    // the credential rides the upgrade as a bearer header or as `?access_token=`
+    let by_header = std::str::starts_with(buf, "GET / HTTP/1.1") && std::str::contains(buf, "\r\nAuthorization: Bearer t-dave\r\n");
+    let by_query = std::str::starts_with(buf, "GET /?access_token=t-dave HTTP/1.1");
+    if !by_header && !by_query { bad = bad + " the credential t-dave is in neither form in " + buf; }
+    let kp = if std::str::index_of(buf, "Sec-WebSocket-Key: ") >= 0 { std::str::index_of(buf, "Sec-WebSocket-Key: ") } else { std::str::index_of(buf, "sec-websocket-key: ") };
+    let rest = buf[(kp + 19)..len(buf)];
+    let key = rest[0..std::str::index_of(rest, "\r\n")];
+    let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+    s.send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + answer + "\r\n\r\n") or discard;
+    let sub = ws_read_text(s, std::bytes::from_string(""));
+    if sub != SUBSCRIBE { bad = bad + " the subscribe frame is " + sub + " not " + SUBSCRIBE; }
+    if scenario == "refused" {
+        ws_send(s, "{\"type\":\"refusal\",\"topic\":\"Fills\",\"refusal\":{\"kind\":\"unauthorized\",\"reason\":\"Fills requires operator\",\"requires\":[\"operator\"]}}");
+    } else {
+        ws_send(s, "{\"type\":\"subscribed\",\"topic\":\"Fills\"}");
+        if scenario == "late" { std::time::sleep(400ms); }
+        ws_send(s, "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":1,\"payload\":{\"order\":41,\"qty\":10,\"price\":12500}}");
+        if scenario == "closed" {
+            ws_send(s, "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":3,\"payload\":{\"order\":42,\"qty\":5,\"price\":12400}}");
+            ws_send(s, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}");
+        }
+        if scenario == "late" { ws_send(s, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}"); }
+        if scenario == "revoked" { ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"revoked\"}"); }
+        if scenario == "expired" { ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"expired\"}"); }
+    }
+    std::time::sleep(100ms);
+    if len(bad) > 0 { return "MISMATCH " + scenario + ":" + bad + "\n"; }
+    return "ok " + scenario + "\n";
+}
+
+fn main() {
+    let transport = std::env::arg(1);
+    let mut report = "";
+    if transport == "http" {
+        let wire = std::env::arg(2);
+        let fd = std::io::tcp::__listen_socket("127.0.0.1", std::str::parse_int(std::env::arg(3)) or 0);
+        std::io::fs::write_file(std::env::arg(4) + ".ready", "listening") or discard;
+        let mut i = 5;
+        while i < std::env::args_count() {
+            report = report + http_step(fd, wire, std::env::arg(i));
+            i = i + 1;
+        }
+        std::io::tcp::__close_fd(fd);
+        std::io::fs::write_file(std::env::arg(4), report) or discard;
+    } else if transport == "unix" {
+        let wire = std::env::arg(2);
+        let path = std::env::arg(3);
+        std::io::fs::unlink(path) or discard;
+        let fd = std::io::unix::listen_socket(path) or - 1;
+        std::io::fs::write_file(std::env::arg(4) + ".ready", "listening") or discard;
+        let mut i = 5;
+        while i < std::env::args_count() {
+            report = report + unix_step(fd, wire, std::env::arg(i));
+            i = i + 1;
+        }
+        std::io::tcp::__close_fd(fd);
+        std::io::fs::unlink(path) or discard;
+        std::io::fs::write_file(std::env::arg(4), report) or discard;
+    } else {
+        let fd = std::io::tcp::__listen_socket("127.0.0.1", std::str::parse_int(std::env::arg(2)) or 0);
+        std::io::fs::write_file(std::env::arg(3) + ".ready", "listening") or discard;
+        let mut i = 4;
+        while i < std::env::args_count() {
+            report = report + ws_step(fd, std::env::arg(i));
+            i = i + 1;
+        }
+        std::io::tcp::__close_fd(fd);
+        std::io::fs::write_file(std::env::arg(3), report) or discard;
+    }
+}

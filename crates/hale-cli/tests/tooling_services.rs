@@ -1,4 +1,4 @@
-//! The `tooling_services` integration-test binary: 15 test files of this area, kept
+//! The `tooling_services` integration-test binary: 17 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "api_clients.rs"]
 mod api_clients;
+#[path = "api_clients_current.rs"]
+mod api_clients_current;
 #[path = "api_contract_fixtures.rs"]
 mod api_contract_fixtures;
 #[path = "api_serve_build.rs"]
@@ -37,3 +39,5 @@ mod obs_model_hash;
 mod observe_session_lifetime;
 #[path = "stale_dna_warning.rs"]
 mod stale_dna_warning;
+#[path = "ts_client.rs"]
+mod ts_client;

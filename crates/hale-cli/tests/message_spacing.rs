@@ -50,6 +50,17 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          program is readable in a dump",
     ),
     (
+        "crates/hale-cli/src/api_gen/hale_client.rs",
+        "stream_decl",
+        "generated Hale source keeps its indentation so the generated \
+         client is readable",
+    ),
+    (
+        "crates/hale-cli/src/verbs/api.rs",
+        "api_usage",
+        "a usage text aligns its continuation lines",
+    ),
+    (
         "crates/hale-types/src/unit_report.rs",
         "render",
         "`hale check --units`: the `kind         : …` field column of \

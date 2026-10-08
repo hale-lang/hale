@@ -1257,6 +1257,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("build (a hub binding the expansion could not serve, and a serve site over a transport this compiler does not ship, are refused)", TLIB, "unserved_sites"),
             consumer_at("check --api (the inventory; one exposure's description for a caller holding `--holds` under its role source; law 6's notes on stderr)", V_CHECK, "api_document"),
             consumer_at("the OpenAPI, JSON Schema and MCP forms of one surface (`check --api --surface`), projections of its rows", SURFACE_DOC, "openapi"),
+            consumer_at("api export (R8a: a surface's bundle, its description, OpenAPI, JSON Schema, MCP and digest files, generated from its rows and checkable against a committed copy; `hale api export`)", SURFACE_DOC, "surface_description"),
+            consumer_at("api client (R8a: a typed client of one surface in Hale or TypeScript, generated from its rows and held current by `--check`; `hale api client`, `crates/hale-cli/src/api_gen/`)", SURFACE_DOC, "client_model"),
             consumer_at("serve (R2a: a serve site's exposure, its rows adapter, its receivers' plumbing and the codecs of what the rows carry, written before the check by the desugar sequence)", RPC_EXPAND, "expand"),
             consumer("serve (R2a: lowering reads the call as its exposure's handle, a read of the serving locus's param the expansion wrote; it reads no row)"),
             consumer("serve (the runtime's dispatch over a socket: Context, the digest check, requires before enqueue, decode by shape, R2b and R3)"),

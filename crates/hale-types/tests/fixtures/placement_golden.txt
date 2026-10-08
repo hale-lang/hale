@@ -5997,6 +5997,22 @@ row	Desk@literal1.echo	__lib_tests__hale__api__surface_lib___main__Echo	main	def
 row	Desk@literal1.local	Local	main	default
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/client_test.hl
+dynamic	__StdProcessChild	on main	in the seed
+shared	Proc@main1	Proc #b18b3dc0
+shared	Proc@main2	Proc #b18b3dc0
+shared	Proc@main3	Proc #b18b3dc0
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main10	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main4	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main5	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main6	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main7	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main8	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+shared	__lib_tests__hale__api__client__public___client__FillsSubscription@main9	__lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+-- dynamic	sites in client/public
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdIoTcpStream	on main|unknown (no caller)
+
 == tests/hale/api/combo_test.hl
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
@@ -8986,7 +9002,6 @@ dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/dogfood_voice_test.hl
-dynamic	__StdIoTcpStream	on main	in dna/core/legs
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in dna/operations
 shared	App@main1	App #0e5afafb
 -- dynamic	sites in dna/core
@@ -9040,7 +9055,6 @@ dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
-dynamic	__lib_dna__core__legs___client__Wire	on main
 dynamic	__lib_dna__host___host__NodeRelay	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #c3a51769
@@ -9315,9 +9329,7 @@ row	App@main1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
 shared	dynamic	sites in core #a15dee02
 -- dynamic	sites in tests
-dynamic	Api	on main
 dynamic	Proc	on main
-dynamic	__StdIoTcpStream	on main
 dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
@@ -14668,6 +14680,11 @@ row	~	__lib_dna__ui___main__Ui	main	default
 row	~.exchange	__lib_dna__ui___main__CodeExchange	main	inherited
 row	~.pending	__lib_dna__ui___main__PendingSignIns	main	inherited
 row	~.sessions	__lib_dna__ui___main__Sessions	main	inherited
+
+== shared __lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
+row	~	__lib_tests__hale__api__client__public___client__FillsSubscription	main	default
+row	~.ws	__lib_tests__hale__api__client__public___client__ApiWs	main	inherited
+row	~.ws.stream	__StdIoTcpStream	main	inherited
 
 == shared sites in api #540b0960
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`

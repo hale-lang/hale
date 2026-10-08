@@ -1,6 +1,7 @@
 //! One module per verb (C5 of the refactor review). Each is a pure move of
 //! the functions `main.rs` used to hold for it; `main.rs` keeps the dispatch.
 
+pub(crate) mod api;
 pub(crate) mod bench;
 pub(crate) mod build;
 pub(crate) mod check;

@@ -66,6 +66,8 @@ diagnostic's meaning, go there.
 | `hale call <endpoint> <member> [json]` | call one member of a served exposure naming the digest read, print the response — see [Build an API](./services/build-an-api.md) |
 | `hale watch <ws://hub> <topic>` | subscribe to a hub's stream, one JSON line per frame |
 | `hale admin <endpoint>` | a local page over an exposure's description |
+| `hale api export --surface <S> [--out <dir> \| --check <dir>]` | a surface's bundle from its rows: description, OpenAPI, JSON Schema, MCP and the digest; `--check` refuses a stale copy |
+| `hale api client --surface <S> --lang hale\|ts [--out <file> \| --check <file>]` | a typed client of a surface (the five outcomes, the digest sent, a subscription per stream), generated from its rows |
 
 Every one of them answers `--help` (or `-h`) as its first argument with
 its own flags, its input shape and where its output goes. `hale build
