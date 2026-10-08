@@ -79,6 +79,10 @@ pub const AP_SOURCE: &str = concat!(
     // Two types and one fn; order is free.
     include_str!("../hl/api.hl"),
     "\n",
+    // GH #1417 (R2a): the runtime of `api::serve` and its in-process
+    // transport; references api.hl's types, so it lands after.
+    include_str!("../hl/api_rpc.hl"),
+    "\n",
     include_str!("../hl/test.hl"),
     "\n",
     include_str!("../hl/log.hl"),
@@ -353,6 +357,25 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // GH #1135: who a bearer on the binding's HTTP transport is.
     (&["std", "api", "BearerSource"], "__StdApiBearerSource"),
     (&["std", "api", "NoBearer"], "__StdApiNoBearer"),
+    // GH #1417 (R2a): the runtime of `api::serve` (api_rpc.hl) and a role
+    // source's and a bearer source's optional extensions (api.hl).
+    (&["std", "api", "Grants"], "__StdApiGrants"),
+    (&["std", "api", "RevisedRoleSource"], "__StdApiRevisedRoleSource"),
+    (&["std", "api", "Revision"], "__StdApiRevision"),
+    (&["std", "api", "ExpiringBearerSource"], "__StdApiExpiringBearerSource"),
+    (&["std", "api", "Request"], "__StdApiRequest"),
+    (&["std", "api", "Outcome"], "__StdApiOutcome"),
+    (&["std", "api", "Rpc"], "__StdApiRpc"),
+    (&["std", "api", "Handle"], "__StdApiHandle"),
+    (&["std", "api", "Surface"], "__StdApiSurface"),
+    (&["std", "api", "Exposure"], "__StdApiExposure"),
+    (&["std", "api", "RpcIngress"], "__StdApiRpcIngress"),
+    (&["std", "api", "RpcLost"], "__StdApiRpcLost"),
+    (&["std", "api", "RpcCall"], "__StdApiRpcCall"),
+    (&["std", "api", "RpcHello"], "__StdApiRpcHello"),
+    (&["std", "api", "RpcEvent"], "__StdApiRpcEvent"),
+    (&["std", "api", "test", "Rpc"], "__StdApiTestRpc"),
+    (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // GH #989: the local vault directory, exported so a caller that

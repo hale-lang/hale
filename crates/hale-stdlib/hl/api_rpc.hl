@@ -1,0 +1,802 @@
+// std::api — the runtime of `api::serve` (GH #1417, R2a).
+//
+// spec/api.md § The runtime boundaries. A serve site makes an
+// `Exposure`: the locus that admits a framed request against its
+// sources, hands an accepted call to its receiver's pool over the bus,
+// keeps the call as pending state until the receiver's pool publishes
+// the outcome back, and completes it exactly once. A transport is a
+// locus that implements `Rpc`; `std::api::test::Rpc`, at the end of this
+// file, is the in-process one.
+//
+// Nothing here waits on a receiver. The call travels on a keyed topic
+// ("__api.rpc.call", keyed by the receiver's number), the receiver's
+// synthesized subscription runs the handler through the fallible ABI and
+// publishes the outcome on "__api.rpc.event" (keyed by the exposure),
+// and the exposure's handler for that event completes the request. A
+// receiver announces each incarnation (`kind` 5, with its stamp) and its
+// dissolve (`kind` 6), so the exposure keeps a generation per receiver
+// and a call is never run by an incarnation other than the one it was
+// handed to. The exposure hands a receiver one call at a time and holds
+// the rest itself, so what `stop()` and a receiver's failure refuse is
+// exactly what has not been handed over.
+
+/// The framed request a transport hands the runtime.
+type __StdApiRequest {
+    // 0 a call, 1 a describe, 2 malformed
+    kind: Int = 0;
+    member: String = "";
+    bytes: Bytes;
+    digest: String = "";
+    correlation: Int = 0;
+    credential: String = "";
+    peer: std::api::Principal = std::api::Principal { mode: "unix", name: "", uid: -1 };
+    reason: String = "";
+}
+
+/// The outcome the runtime hands a transport to encode.
+type __StdApiOutcome = enum {
+    Result(String),
+    HandlerError(String),
+    Refusal(String, String, String),
+    ServerError,
+};
+
+/// What a transport implements (spec/api.md § The `Rpc` interface).
+interface __StdApiRpc {
+    fn attach(exposure: Int) -> String;
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request;
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome);
+    fn close_connection(correlation: Int);
+    fn stop_listening();
+}
+
+/// What an exposure's holder stops.
+interface __StdApiHandle {
+    fn stop();
+}
+
+/// The rows an exposure reads, generated per surface by the compiler.
+interface __StdApiSurface {
+    fn count() -> Int;
+    fn slots() -> Int;
+    fn member(name: String) -> Int;
+    fn name_of(i: Int) -> String;
+    fn requires(i: Int) -> String;
+    fn receiver(i: Int) -> Int;
+    fn check(i: Int, body: String) -> String;
+    fn grants(role: String) -> String;
+}
+
+// ---- the topics a transport, an exposure and a receiver share ----
+//
+// Five wire subjects, by string: "__api.rpc.ingress" and "__api.rpc.lost"
+// (keyed by `exposure`), "__api.rpc.call" and "__api.rpc.hello" (keyed by
+// `key`, `on_unmatched: fail`, so a delivery no subscriber took is the
+// publisher's to settle) and "__api.rpc.event" (keyed by `exposure`). The
+// bundled stdlib declares no `topic`: a program that serves a surface
+// declares these five beside its exposures (the compiler writes them,
+// `hale_types::rpc_expand`), because a keyed topic's routing belongs to
+// the program's topic rows. A program that serves nothing never sends on
+// them.
+
+/// A transport's raw message, published for the exposure it was attached to.
+type __StdApiRpcIngress {
+    exposure: Int;
+    correlation: Int;
+    raw: Bytes;
+}
+
+/// A transport's lost connection.
+type __StdApiRpcLost {
+    exposure: Int;
+    correlation: Int;
+}
+
+/// An accepted call, handed to the receiver whose number is `key`.
+type __StdApiRpcCall {
+    key: Int;
+    exposure: Int;
+    exposure_name: String;
+    member: Int;
+    rid: Int;
+    stamp: Int;
+    generation: Int;
+    via: String;
+    body: String;
+    caller: std::api::Principal;
+    role: String;
+}
+
+/// The exposure asks the receiver whose number is `key` to announce itself.
+type __StdApiRpcHello {
+    key: Int;
+    exposure: Int;
+    slot: Int;
+}
+
+/// A receiver's word to the exposure. kind: 0 result, 1 handler error,
+/// 2 server error, 3 refused by the receiver (a stale handover), 4 started,
+/// 5 an incarnation is up (with its stamp), 6 the receiver is gone.
+type __StdApiRpcEvent {
+    exposure: Int;
+    rid: Int;
+    slot: Int;
+    kind: Int;
+    stamp: Int;
+    body: String;
+}
+
+// ---- the exposure ----
+
+/// One accepted request: the pending table's record. state: 0 free,
+/// 1 queued, 2 handed over, 3 started.
+type __StdApiRpcEntry {
+    rid: Int = 0;
+    state: Int = 0;
+    slot: Int = 0;
+    member: Int = 0;
+    gen: Int = 0;
+    correlation: Int = 0;
+    lost: Bool = false;
+    body: String = "";
+    caller: std::api::Principal = std::api::Principal { };
+    role: String = "";
+}
+
+fn __api_rpc_entry_state(e: __StdApiRpcEntry, st: Int) -> __StdApiRpcEntry {
+    return __StdApiRpcEntry { rid: e.rid, state: st, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: e.lost, body: e.body, caller: e.caller, role: e.role };
+}
+
+fn __api_rpc_entry_gen(e: __StdApiRpcEntry, g: Int) -> __StdApiRpcEntry {
+    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: g, correlation: e.correlation, lost: e.lost, body: e.body, caller: e.caller, role: e.role };
+}
+
+fn __api_rpc_entry_lost(e: __StdApiRpcEntry) -> __StdApiRpcEntry {
+    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: true, body: e.body, caller: e.caller, role: e.role };
+}
+
+/// The first role of a comma-joined list.
+fn __api_rpc_first(csv: String) -> String {
+    let comma = std::str::index_of(csv, ",");
+    if comma >= 0 {
+        return csv[0..comma];
+    }
+    return csv;
+}
+
+/// Whether `role` is one of a comma-joined list.
+fn __api_rpc_has(csv: String, role: String) -> Bool {
+    return std::str::contains("," + csv + ",", "," + role + ",");
+}
+
+@form(vec)
+locus __StdApiRpcEntries {
+    capacity { heap items of __StdApiRpcEntry; }
+}
+
+/// A transport that does nothing: the default of an exposure's transport.
+locus __StdApiNoRpc {
+    fn attach(exposure: Int) -> String { return ""; }
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, reason: "no transport" };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) { }
+    fn close_connection(correlation: Int) { }
+    fn stop_listening() { }
+}
+
+/// Rows with no member: the default of an exposure's surface.
+locus __StdApiNoSurface {
+    fn count() -> Int { return 0; }
+    fn slots() -> Int { return 0; }
+    fn member(name: String) -> Int { return -1; }
+    fn name_of(i: Int) -> String { return ""; }
+    fn requires(i: Int) -> String { return ""; }
+    fn receiver(i: Int) -> Int { return 0; }
+    fn check(i: Int, body: String) -> String { return ""; }
+    fn grants(role: String) -> String { return role; }
+}
+
+/// A role source that holds nobody: the default of an exposure's.
+locus __StdApiNoRoles {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+}
+
+/// A bearer source with no expiry: the default of an exposure's.
+locus __StdApiNoExpiry {
+    fn expiry(token: String) -> Int { return 0; }
+}
+
+/// A role source that states no revision: the default of an exposure's.
+locus __StdApiNoRevision {
+    fn grants(p: std::api::Principal) -> std::api::Grants { return std::api::Grants { roles: "", revision: 0 }; }
+}
+
+/// The locus the runtime builds per serve site. Everything here is the
+/// compiler's: a program names an exposure only as the handle `api::serve`
+/// returns, and calls `stop()` on it.
+locus __StdApiExposure {
+    params {
+        id: Int = 0;
+        name: String = "";
+        surface: String = "";
+        digest: String = "";
+        bound: Int = 0;
+        transport: std::api::Rpc = __StdApiNoRpc { };
+        rows: std::api::Surface = __StdApiNoSurface { };
+        bearer: std::api::BearerSource = std::api::NoBearer { };
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        expiring: std::api::ExpiringBearerSource = __StdApiNoExpiry { };
+        revised: std::api::RevisedRoleSource = __StdApiNoRevision { };
+        has_expiry: Bool = false;
+        has_revised: Bool = false;
+        via: String = "";
+        accepting: Bool = true;
+        stopped: Bool = false;
+        next_rid: Int = 1;
+        inflight: Int = 0;
+        entries: __StdApiRpcEntries = __StdApiRpcEntries { };
+        slot_state: [Int; 16] = [0; 16];
+        slot_stamp: [Int; 16] = [0; 16];
+        slot_gen: [Int; 16] = [0; 16];
+        slot_busy: [Int; 16] = [0; 16];
+        hello_sent: [Int; 16] = [0; 16];
+    }
+    bus {
+        subscribe "__api.rpc.ingress" as on_ingress of type __StdApiRpcIngress where key == self.id;
+        subscribe "__api.rpc.lost" as on_lost of type __StdApiRpcLost where key == self.id;
+        subscribe "__api.rpc.event" as on_event of type __StdApiRpcEvent where key == self.id;
+        publish "__api.rpc.call" of type __StdApiRpcCall;
+        publish "__api.rpc.hello" of type __StdApiRpcHello;
+    }
+    birth() {
+        self.via = self.transport.attach(self.id);
+        let n = self.rows.slots();
+        let mut s = 0;
+        while s < n {
+            self.hello(s);
+            s = s + 1;
+        }
+    }
+    dissolve() {
+        self.stop();
+    }
+    fn key_of(slot: Int) -> Int {
+        return self.id * 100 + slot;
+    }
+    fn hello(slot: Int) {
+        self.hello_sent[slot] = 1;
+        "__api.rpc.hello" <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.gone(slot);
+    }
+    fn refuse(corr: Int, rid: Int, who: std::api::Principal, kind: String, reason: String, extra: String) {
+        self.transport.reply(corr, rid, who, __StdApiOutcome::Refusal(kind, reason, extra));
+    }
+    // Whether the caller holds `role` under this exposure's role source:
+    // directly or through a role that includes it (`grants` of the rows).
+    fn holds_role(held: String, p: std::api::Principal, role: String) -> Bool {
+        let mut rest = self.rows.grants(role);
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut g = rest;
+            if comma >= 0 {
+                g = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if self.has_revised {
+                if __api_rpc_has(held, g) { return true; }
+            } else {
+                if self.roles.holds(p, g) { return true; }
+            }
+        }
+        return false;
+    }
+    fn missing_role(p: std::api::Principal, requires: String) -> String {
+        let mut held = "";
+        if self.has_revised {
+            held = self.revised.grants(p).roles;
+        }
+        let mut rest = requires;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut r = rest;
+            if comma >= 0 {
+                r = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if !self.holds_role(held, p, r) { return r; }
+        }
+        return "";
+    }
+    fn principal_json(p: std::api::Principal) -> String {
+        return "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\"}";
+    }
+    // spec/api.md § The runtime boundaries, describing: the members the
+    // caller may call, by the rows admission reads.
+    fn describe(p: std::api::Principal) -> String {
+        let mut held = "";
+        if self.has_revised {
+            held = self.revised.grants(p).roles;
+        }
+        let n = self.rows.count();
+        let mut members = "";
+        let mut i = 0;
+        while i < n {
+            let req = self.rows.requires(i);
+            if len(self.missing_role(p, req)) == 0 {
+                if len(members) > 0 { members = members + ","; }
+                members = members + "{\"name\":\"" + self.rows.name_of(i) + "\",\"requires\":[";
+                let mut rest = req;
+                let mut first = true;
+                while len(rest) > 0 {
+                    let comma = std::str::index_of(rest, ",");
+                    let mut r = rest;
+                    if comma >= 0 {
+                        r = rest[0..comma];
+                        rest = rest[(comma + 1)..len(rest)];
+                    } else {
+                        rest = "";
+                    }
+                    if !first { members = members + ","; }
+                    members = members + "\"" + r + "\"";
+                    first = false;
+                }
+                members = members + "]}";
+            }
+            i = i + 1;
+        }
+        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"caller\":" + self.principal_json(p) + ",\"members\":[" + members + "]}";
+    }
+    fn on_ingress(i: __StdApiRpcIngress) {
+        let rid = self.next_rid;
+        self.next_rid = rid + 1;
+        let r = self.transport.frame(i.raw, i.correlation);
+        let nobody = std::api::Principal { mode: r.peer.mode, name: "", via: self.via };
+        if r.kind == 2 {
+            self.refuse(i.correlation, rid, nobody, "malformed", r.reason, "");
+            return;
+        }
+        // the caller's Context, from the exposure's sources: a bearer token
+        // the bearer source names, or the peer the transport vouches for
+        let mut who = r.peer;
+        let mut named = false;
+        if len(r.credential) > 0 {
+            let p = self.bearer.principal(r.credential);
+            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.via };
+            named = len(p.name) > 0;
+            if !named {
+                let why = self.bearer.refused();
+                self.refuse(i.correlation, rid, who, "unauthenticated", "the bearer token is refused" + (if len(why) > 0 { ": " + why } else { "" }), "");
+                return;
+            }
+            if self.has_expiry {
+                let at = self.expiring.expiry(r.credential);
+                if at != 0 && at < std::time::nanos(std::time::current()) {
+                    self.refuse(i.correlation, rid, who, "unauthenticated", "the bearer token is refused: expired", "");
+                    return;
+                }
+            }
+        } else {
+            named = who.uid >= 0 && len(who.name) > 0;
+        }
+        if !named {
+            self.refuse(i.correlation, rid, who, "unauthenticated", "the sources name nobody", "");
+            return;
+        }
+        if r.kind == 1 {
+            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe(who)));
+            return;
+        }
+        if len(r.digest) > 0 && r.digest != self.digest {
+            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was built against another digest of this surface", self.digest);
+            return;
+        }
+        let m = self.rows.member(r.member);
+        if m < 0 {
+            self.refuse(i.correlation, rid, who, "malformed", "unknown_member: " + r.member, "");
+            return;
+        }
+        let req = self.rows.requires(m);
+        let miss = self.missing_role(who, req);
+        if len(miss) > 0 {
+            self.refuse(i.correlation, rid, who, "unauthorized", "needs role " + miss, req);
+            return;
+        }
+        let body = std::str::from_bytes(r.bytes);
+        let why = self.rows.check(m, body);
+        if len(why) > 0 {
+            self.refuse(i.correlation, rid, who, "malformed", why, "");
+            return;
+        }
+        if !self.accepting {
+            self.refuse(i.correlation, rid, who, "shutting_down", "the exposure is stopping", "");
+            return;
+        }
+        if self.inflight >= self.bound {
+            self.refuse(i.correlation, rid, who, "full", "the exposure holds " + to_string(self.bound) + " requests accepted and not yet answered", "");
+            return;
+        }
+        let slot = self.rows.receiver(m);
+        if self.slot_state[slot] == 2 {
+            self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + r.member + " is unavailable; the call did not run", "");
+            return;
+        }
+        self.inflight = self.inflight + 1;
+        self.entries.push(__StdApiRpcEntry { rid: rid, state: 1, slot: slot, member: m, gen: self.slot_gen[slot], correlation: i.correlation, lost: false, body: body, caller: who, role: __api_rpc_first(req) });
+        self.pump(slot);
+    }
+    fn on_lost(l: __StdApiRpcLost) {
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state != 0 && e.correlation == l.correlation && !e.lost {
+                self.entries.set(k, __api_rpc_entry_lost(e)) or discard;
+            }
+            k = k + 1;
+        }
+    }
+    fn index_of(rid: Int) -> Int {
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state != 0 && e.rid == rid { return k; }
+            k = k + 1;
+        }
+        return -1;
+    }
+    // Completion's one owner: the record is removed, the unit of the
+    // bound released and the outcome delivered (or dropped, the connection
+    // being lost) here and nowhere else.
+    fn finish(k: Int, outcome: std::api::Outcome) {
+        let e = self.entries.get(k) or __StdApiRpcEntry { };
+        if e.state == 0 { return; }
+        self.entries.set(k, __StdApiRpcEntry { }) or discard;
+        self.inflight = self.inflight - 1;
+        if self.slot_busy[e.slot] == e.rid {
+            self.slot_busy[e.slot] = 0;
+        }
+        if e.lost {
+            self.transport.close_connection(e.correlation);
+        } else {
+            self.transport.reply(e.correlation, e.rid, e.caller, outcome);
+        }
+    }
+    fn unavailable(k: Int) {
+        self.finish(k, __StdApiOutcome::Refusal("unavailable", "the receiver is unavailable; the call did not run", ""));
+    }
+    fn settle_slot(slot: Int, state: Int) {
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state == state && e.slot == slot { self.unavailable(k); }
+            k = k + 1;
+        }
+    }
+    fn gone(slot: Int) {
+        self.slot_state[slot] = 2;
+        self.settle_slot(slot, 1);
+    }
+    // Hand the oldest queued call of `slot` to its receiver, if the
+    // receiver is free and known.
+    fn pump(slot: Int) {
+        if self.slot_busy[slot] != 0 { return; }
+        let n = self.entries.len();
+        let mut best = -1;
+        let mut best_rid = 0;
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state == 1 && e.slot == slot && (best < 0 || e.rid < best_rid) {
+                best = k;
+                best_rid = e.rid;
+            }
+            k = k + 1;
+        }
+        if best < 0 { return; }
+        if self.slot_state[slot] == 0 {
+            if self.hello_sent[slot] == 0 { self.hello(slot); }
+            return;
+        }
+        if self.slot_state[slot] == 2 {
+            self.unavailable(best);
+            self.pump(slot);
+            return;
+        }
+        let e = self.entries.get(best) or __StdApiRpcEntry { };
+        if e.gen != self.slot_gen[slot] {
+            self.unavailable(best);
+            self.pump(slot);
+            return;
+        }
+        self.entries.set(best, __api_rpc_entry_state(e, 2)) or discard;
+        self.slot_busy[slot] = e.rid;
+        "__api.rpc.call" <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: e.caller, role: e.role } or self.gone_dispatch(slot);
+    }
+    // The bus found no subscriber to hand the call to: the receiver is
+    // draining or gone. The call, and every call queued behind it, did not run.
+    fn gone_dispatch(slot: Int) {
+        self.slot_busy[slot] = 0;
+        self.slot_state[slot] = 2;
+        self.settle_slot(slot, 2);
+        self.settle_slot(slot, 1);
+    }
+    fn on_event(ev: __StdApiRpcEvent) {
+        if ev.kind == 5 {
+            // an incarnation of the receiver is up
+            let was = self.slot_state[ev.slot];
+            self.slot_stamp[ev.slot] = ev.stamp;
+            self.slot_state[ev.slot] = 1;
+            self.slot_gen[ev.slot] = self.slot_gen[ev.slot] + 1;
+            if was == 0 {
+                // the first word: calls admitted before it adopt its generation
+                let n = self.entries.len();
+                let mut k = 0;
+                while k < n {
+                    let e = self.entries.get(k) or __StdApiRpcEntry { };
+                    if e.state == 1 && e.slot == ev.slot {
+                        self.entries.set(k, __api_rpc_entry_gen(e, self.slot_gen[ev.slot])) or discard;
+                    }
+                    k = k + 1;
+                }
+            } else {
+                // handed over, not started: the incarnation it was handed to
+                // is gone and its successor refuses the stale stamp
+                self.settle_slot(ev.slot, 2);
+            }
+            self.pump(ev.slot);
+            return;
+        }
+        if ev.kind == 6 {
+            self.slot_state[ev.slot] = 2;
+            self.settle_slot(ev.slot, 2);
+            self.settle_slot(ev.slot, 1);
+            return;
+        }
+        let k = self.index_of(ev.rid);
+        if k < 0 { return; }
+        if ev.kind == 4 {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            self.entries.set(k, __api_rpc_entry_state(e, 3)) or discard;
+            return;
+        }
+        let e = self.entries.get(k) or __StdApiRpcEntry { };
+        let slot = e.slot;
+        if ev.kind == 0 { self.finish(k, __StdApiOutcome::Result(ev.body)); }
+        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(ev.body)); }
+        if ev.kind == 2 { self.finish(k, __StdApiOutcome::ServerError); }
+        if ev.kind == 3 { self.unavailable(k); }
+        self.pump(slot);
+    }
+    fn executing() -> Int {
+        let n = self.entries.len();
+        let mut k = 0;
+        let mut c = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state == 2 || e.state == 3 { c = c + 1; }
+            k = k + 1;
+        }
+        return c;
+    }
+    /// Close admission, refuse the queue, let the executing finish,
+    /// release the listener. Idempotent; the handle's dissolution runs it.
+    fn stop() {
+        if self.stopped { return; }
+        self.stopped = true;
+        self.accepting = false;
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state == 1 {
+                self.finish(k, __StdApiOutcome::Refusal("shutting_down", "the exposure is stopping; the call did not run", ""));
+            }
+            k = k + 1;
+        }
+        // the executing calls finish: a sleep yields to the scheduler, so
+        // the pool delivers their outcomes while this waits
+        let started = std::time::monotonic_ns();
+        while self.executing() > 0 && std::time::monotonic_ns() - started < 10000000000 {
+            std::time::sleep(1ms);
+        }
+        self.transport.stop_listening();
+    }
+}
+
+// ---- the in-process transport ----
+
+/// One outcome the fixture transport was asked to deliver.
+type __StdApiTestRecord {
+    correlation: Int = 0;
+    request_id: Int = 0;
+    kind: String = "";
+    line: String = "";
+}
+
+@form(vec)
+locus __StdApiTestRecords {
+    capacity { heap items of __StdApiTestRecord; }
+}
+
+/// The nth tab-separated field of `s` ("" past the end).
+fn __api_test_field(s: String, n: Int) -> String {
+    let mut rest = s;
+    let mut i = 0;
+    while i < n {
+        let tab = std::str::index_of(rest, "\t");
+        if tab < 0 { return ""; }
+        rest = rest[(tab + 1)..len(rest)];
+        i = i + 1;
+    }
+    let tab = std::str::index_of(rest, "\t");
+    if tab < 0 { return rest; }
+    return rest[0..tab];
+}
+
+/// The fixture transport (`std::api::test::Rpc`): no socket. A test hands
+/// it requests and reads what the runtime asked it to deliver, each as the
+/// Unix JSON reply line of spec/api.md § Outcomes.
+locus __StdApiTestRpc {
+    params {
+        principals: std::api::BearerSource = std::api::NoBearer { };
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        exposure: Int = 0;
+        records: __StdApiTestRecords = __StdApiTestRecords { };
+        closed: Int = 0;
+        listening: Bool = true;
+        stops: Int = 0;
+        lines: String = "";
+    }
+    bus {
+        publish "__api.rpc.ingress" of type __StdApiRpcIngress;
+        publish "__api.rpc.lost" of type __StdApiRpcLost;
+    }
+    fn attach(id: Int) -> String {
+        self.exposure = id;
+        return "test";
+    }
+    // The fixture's raw message is the tab-separated line `call` and
+    // `describe` build: kind, member, digest, credential, peer mode, peer
+    // name, peer uid, payload. Anything else is not a request.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let text = std::str::from_bytes(raw);
+        let kind = __api_test_field(text, 0);
+        let mut k = 2;
+        if kind == "call" { k = 0; }
+        if kind == "describe" { k = 1; }
+        if k == 2 {
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, reason: "not a request: a line is call or describe" };
+        }
+        let uid = std::str::parse_int(__api_test_field(text, 6)) or - 1;
+        let peer = std::api::Principal { mode: __api_test_field(text, 4), name: __api_test_field(text, 5), uid: uid, gid: uid, pid: 4242 };
+        let payload = __api_test_field(text, 7);
+        return std::api::Request { kind: k, member: __api_test_field(text, 1), bytes: std::bytes::from_string(payload), digest: __api_test_field(text, 2), correlation: correlation, credential: __api_test_field(text, 3), peer: peer, reason: "" };
+    }
+    fn caller_json(p: std::api::Principal) -> String {
+        let mut j = "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\",\"uid\":" + to_string(p.uid) + ",\"gid\":" + to_string(p.gid) + ",\"pid\":" + to_string(p.pid);
+        if len(p.via) > 0 { j = j + ",\"via\":\"" + p.via + "\""; }
+        return j + "}";
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let mut kind = "";
+        let mut answer = "";
+        match outcome {
+            __StdApiOutcome::Result(b) -> {
+                kind = "result";
+                answer = "\"ok\":true,\"value\":" + b;
+            },
+            __StdApiOutcome::HandlerError(b) -> {
+                kind = "handler_error";
+                answer = "\"ok\":false,\"error\":" + b;
+            },
+            __StdApiOutcome::Refusal(k, r, x) -> {
+                kind = "refusal:" + k;
+                let mut extra = "";
+                if k == "digest_mismatch" { extra = ",\"served\":\"" + x + "\""; }
+                if k == "unauthorized" {
+                    let mut arr = "";
+                    let mut rest = x;
+                    while len(rest) > 0 {
+                        let comma = std::str::index_of(rest, ",");
+                        let mut one = rest;
+                        if comma >= 0 {
+                            one = rest[0..comma];
+                            rest = rest[(comma + 1)..len(rest)];
+                        } else {
+                            rest = "";
+                        }
+                        if len(arr) > 0 { arr = arr + ","; }
+                        arr = arr + "\"" + one + "\"";
+                    }
+                    extra = ",\"requires\":[" + arr + "]";
+                }
+                answer = "\"ok\":false,\"refusal\":{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
+            },
+            __StdApiOutcome::ServerError -> {
+                kind = "server_error";
+                answer = "\"ok\":false,\"refusal\":{\"kind\":\"server\"}";
+            },
+        }
+        let line = "{\"request_id\":" + to_string(request_id) + ",\"id\":" + to_string(correlation) + "," + answer + ",\"caller\":" + self.caller_json(caller) + "}";
+        self.records.push(__StdApiTestRecord { correlation: correlation, request_id: request_id, kind: kind, line: line });
+    }
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+    }
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        self.listening = false;
+    }
+    // ---- what a test drives ----
+    fn send(correlation: Int, line: String) {
+        "__api.rpc.ingress" <- __StdApiRpcIngress { exposure: self.exposure, correlation: correlation, raw: std::bytes::from_string(line) };
+    }
+    /// A call as a bearer (`credential`) or a Unix peer (`credential` ""
+    /// and `uid` ≥ 0 under the name `uid:<n>`), with the digest the client
+    /// built against ("" for none).
+    fn call(correlation: Int, member: String, payload: String, credential: String) {
+        self.send(correlation, "call\t" + member + "\t\t" + credential + "\tunix\tnobody\t-1\t" + payload);
+    }
+    fn call_as_peer(correlation: Int, member: String, payload: String, uid: Int) {
+        self.send(correlation, "call\t" + member + "\t\t\tunix\tuid:" + to_string(uid) + "\t" + to_string(uid) + "\t" + payload);
+    }
+    fn call_digest(correlation: Int, member: String, payload: String, credential: String, digest: String) {
+        self.send(correlation, "call\t" + member + "\t" + digest + "\t" + credential + "\tunix\tnobody\t-1\t" + payload);
+    }
+    fn describe(correlation: Int, credential: String) {
+        self.send(correlation, "describe\t\t\t" + credential + "\tunix\tnobody\t-1\t");
+    }
+    fn lose(correlation: Int) {
+        "__api.rpc.lost" <- __StdApiRpcLost { exposure: self.exposure, correlation: correlation };
+    }
+    // ---- what a test reads ----
+    fn outcomes_of(correlation: Int) -> Int {
+        let n = self.records.len();
+        let mut k = 0;
+        let mut c = 0;
+        while k < n {
+            let r = self.records.get(k) or __StdApiTestRecord { };
+            if r.correlation == correlation { c = c + 1; }
+            k = k + 1;
+        }
+        return c;
+    }
+    fn record_of(correlation: Int) -> __StdApiTestRecord {
+        let n = self.records.len();
+        let mut k = 0;
+        while k < n {
+            let r = self.records.get(k) or __StdApiTestRecord { };
+            if r.correlation == correlation { return r; }
+            k = k + 1;
+        }
+        return __StdApiTestRecord { };
+    }
+    /// The kind of the outcome delivered to `correlation`: `result`,
+    /// `handler_error`, `server_error`, `refusal:<kind>`, or "" when none yet.
+    fn outcome(correlation: Int) -> String {
+        return self.record_of(correlation).kind;
+    }
+    /// The Unix JSON reply line delivered to `correlation`.
+    fn line(correlation: Int) -> String {
+        return self.record_of(correlation).line;
+    }
+    fn request_id(correlation: Int) -> Int {
+        return self.record_of(correlation).request_id;
+    }
+    /// Wait (yielding to the scheduler) for an outcome to `correlation`
+    /// and return its kind; "" if none came within `ms` milliseconds.
+    fn await_outcome(correlation: Int, ms: Int) -> String {
+        let mut i = 0;
+        while i < ms && self.outcomes_of(correlation) == 0 {
+            std::time::sleep(1ms);
+            i = i + 1;
+        }
+        return self.outcome(correlation);
+    }
+}

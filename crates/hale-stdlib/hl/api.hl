@@ -42,6 +42,12 @@ type __StdApiContext {
     role: String = "";
     request_id: Int = 0;
     via: String = "local";
+    // GH #1417 (R2a): through an exposure (`api::serve`), the name of the
+    // exposure the call came through and the execution generation of the
+    // receiver it was admitted under (spec/api.md § Receiver failure and
+    // generations); "" and 0 for a call that never crossed one.
+    exposure: String = "";
+    generation: Int = 0;
 }
 
 /// The context of a message that never crossed a binding.
@@ -77,6 +83,36 @@ interface __StdApiRoleSource {
     fn holds(p: std::api::Principal, r: String) -> Bool;
 }
 
+// GH #1417 (R2a, spec/api.md § Identity sources): a role source may also
+// answer with a principal's grants and its own revision as ONE pair, so a
+// check never reads grants from one revision and the number from another.
+// `roles` are the roles the principal holds directly, comma-joined; the
+// revision changes when a grant is added or removed, and the source
+// announces the new one on `std::api::RoleRevisions` (R5 reads it to
+// invalidate live subscriptions). A source that answers only `holds` is
+// asked `holds`, once per role a check needs, with the revision unstated
+// (0).
+
+/// A principal's direct grants and the source's revision, as one pair.
+type __StdApiGrants {
+    roles: String = "";
+    revision: Int = 0;
+}
+
+/// A role source that states its revision.
+interface __StdApiRevisedRoleSource {
+    fn grants(p: std::api::Principal) -> std::api::Grants;
+}
+
+/// A role source's announcement that its revision changed, published on
+/// the wire subject `__api.roles.revision` (`publish "__api.roles.revision"
+/// of type std::api::Revision`; the stdlib declares no `topic`, see
+/// api_rpc.hl).
+type __StdApiRevision {
+    source: String = "";
+    revision: Int = 0;
+}
+
 // GH #1135: who a bearer token on the binding's HTTP transport is.
 //
 // The binding hands a request's `Authorization: Bearer <token>` to the
@@ -93,6 +129,19 @@ interface __StdApiBearerSource {
     fn refused() -> String;
 }
 
+// GH #1417 (R2a, spec/api.md § Identity sources): a bearer source may also
+// state a credential's validity, the instant it expires as nanoseconds
+// since the Unix epoch (`std::time::nanos` of a `Time`; 0 for no expiry),
+// read against the runtime's clock; an exposure refuses `unauthenticated`
+// (reason `expired`) a credential past it. A source that states none
+// (every source written before this existed) answers no expiry. (An `Int`,
+// not a `Time`: a locus method that returns a `Time` does not lower yet.)
+
+/// A bearer source that states a credential's expiry.
+interface __StdApiExpiringBearerSource {
+    fn expiry(token: String) -> Int;
+}
+
 /// The source an HTTP transport has when the entry names none: every
 /// token is nobody, so every request is refused.
 locus __StdApiNoBearer {
@@ -100,6 +149,7 @@ locus __StdApiNoBearer {
         return std::api::Principal { mode: "bearer", name: "" };
     }
     fn refused() -> String { return "the program names no bearer source"; }
+    fn expiry(token: String) -> Int { return 0; }
 }
 
 /// The static table, from the environment's `roles` section. Its birth
@@ -147,6 +197,33 @@ locus __StdApiStaticRoles {
             }
         }
         return false;
+    }
+    // The roles of the table the principal holds directly, with the
+    // table's revision: fixed for the process, so 0.
+    fn grants(p: std::api::Principal) -> std::api::Grants {
+        let mut held = "";
+        if !__api_authenticated(p) {
+            return std::api::Grants { roles: "", revision: 0 };
+        }
+        let mut rest = self.table;
+        while len(rest) > 0 {
+            let semi = std::str::index_of(rest, ";");
+            let mut seg = rest;
+            if semi >= 0 {
+                seg = rest[0..semi];
+                rest = rest[(semi + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            let eq = std::str::index_of(seg, "=");
+            if eq > 0 && __api_role_members_match(p, seg[(eq + 1)..len(seg)]) {
+                if len(held) > 0 {
+                    held = held + ",";
+                }
+                held = held + std::str::trim(seg[0..eq]);
+            }
+        }
+        return std::api::Grants { roles: held, revision: 0 };
     }
 }
 

@@ -1,0 +1,126 @@
+// GH #1417 (R2a, spec/api.md § The runtime boundaries, § Identity
+// sources) — the runtime's types are ordinary values, and the identity
+// interfaces answer what the contract says.
+//
+// Constructed here: the framed `Request` a transport hands the runtime
+// (its defaults are a call from nobody), the `Context` a handler
+// receives (it names the exposure and the generation it was admitted
+// under; a call that never crossed an exposure names neither), a role
+// source's `Grants` pair and a role source's `Revision`. Answered here:
+// the stdlib's two static sources (`StaticRoles` states the roles of its
+// table a principal holds, with its revision; `NoBearer` states no
+// expiry), a program's own bearer source stating an expiry through the
+// optional `ExpiringBearerSource`, and a program's own role source
+// stating its revision through `RevisedRoleSource`. A source written
+// before these existed satisfies neither and is asked what it always was.
+
+// A bearer source that states when a credential expires: `t-short` is
+// past it, `t-long` is far from it, `t-open` states none.
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-short" || token == "t-long" || token == "t-open" {
+            return std::api::Principal { mode: "bearer", name: token };
+        }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+    fn expiry(token: String) -> Int {
+        if token == "t-short" { return 5; }
+        if token == "t-long" { return std::time::nanos(std::time::current()) + 3600000000000; }
+        return 0;
+    }
+}
+
+// A role source that states its revision with every answer.
+locus Revised {
+    params { revision: Int = 7; }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        return r == "trader" && p.name == "alice";
+    }
+    fn grants(p: std::api::Principal) -> std::api::Grants {
+        if p.name == "alice" { return std::api::Grants { roles: "trader", revision: self.revision }; }
+        return std::api::Grants { roles: "", revision: self.revision };
+    }
+}
+
+// A role source as they were: only `holds`.
+locus Plain {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return r == "trader"; }
+}
+
+locus Probe {
+    params {
+        expiring: std::api::ExpiringBearerSource = Tokens { };
+        revised: std::api::RevisedRoleSource = Revised { };
+        plain: std::api::RoleSource = Plain { };
+    }
+    fn expired(token: String) -> Bool {
+        let at = self.expiring.expiry(token);
+        return at != 0 && at < std::time::nanos(std::time::current());
+    }
+}
+
+main locus App {
+    params { probe: Probe = Probe { }; }
+    run() {
+        // the framed request: a call from nobody until a transport says more
+        let r = std::api::Request { bytes: std::bytes::from_string("{\"qty\":1}"), member: "Orders::place", correlation: 9 };
+        std::test::assert_eq_int(r.kind, 0, "a request is a call unless its transport says otherwise");
+        std::test::assert_eq_str(r.member, "Orders::place", "the member as a caller names it");
+        std::test::assert_eq_int(r.correlation, 9, "the transport's correlation is the transport's");
+        std::test::assert_eq_str(r.digest, "", "a request that carries no digest is not checked");
+        std::test::assert_eq_str(r.credential, "", "no bearer token");
+        std::test::assert_eq_int(r.peer.uid, -1, "the peer is nobody until a transport vouches for one");
+        std::test::assert_eq_str(std::str::from_bytes(r.bytes), "{\"qty\":1}", "the payload bytes");
+
+        // the Context: the exposure and the generation, or neither
+        let local = std::api::local_context();
+        std::test::assert_eq_str(local.exposure, "", "a call inside the program crossed no exposure");
+        std::test::assert_eq_int(local.generation, 0, "and ran under no generation");
+        std::test::assert_eq_str(local.via, "local", "the existing fields are unchanged");
+        let served = std::api::Context { request_id: 4, via: "test", exposure: "public", generation: 3 };
+        std::test::assert_eq_str(served.exposure, "public", "the exposure a call came through");
+        std::test::assert_eq_int(served.generation, 3, "the generation it was admitted under");
+        std::test::assert_eq_int(served.request_id, 4, "and the server's request id");
+
+        // a role source's pair, and its announcement
+        let g = std::api::Grants { roles: "trader,operator", revision: 12 };
+        std::test::assert_eq_str(g.roles, "trader,operator", "the roles held directly, comma-joined");
+        std::test::assert_eq_int(g.revision, 12, "the source's revision, in the same value");
+        let v = std::api::Revision { source: "public_roles", revision: 13 };
+        std::test::assert_eq_int(v.revision, 13, "a revision announcement");
+
+        // the static table answers the pair
+        let table = std::api::StaticRoles { table: "trader=bearer:alice;operator=uid:1000,bearer:dave", known: "trader operator" };
+        let alice = std::api::Principal { mode: "bearer", name: "alice" };
+        let dave = std::api::Principal { mode: "bearer", name: "dave" };
+        let peer = std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000 };
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        std::test::assert_eq_str(table.grants(alice).roles, "trader", "alice holds trader");
+        std::test::assert_eq_str(table.grants(dave).roles, "operator", "dave holds operator");
+        std::test::assert_eq_str(table.grants(peer).roles, "operator", "the peer uid:1000 holds operator");
+        std::test::assert_eq_str(table.grants(nobody).roles, "", "nobody holds nothing");
+        std::test::assert_eq_int(table.grants(alice).revision, 0, "a table fixed for the process states revision 0");
+        std::test::assert(table.holds(alice, "trader") && !table.holds(alice, "operator"), "holds and grants agree");
+        std::test::assert(table.holds(peer, "operator") && !table.holds(peer, "trader"), "for a socket peer too");
+
+        // NoBearer states no expiry
+        let none = std::api::NoBearer { };
+        std::test::assert_eq_int(none.expiry("anything"), 0, "0 is no expiry");
+        std::test::assert_eq_str(none.principal("anything").name, "", "and names nobody");
+
+        // a bearer source that states one
+        std::test::assert(self.probe.expired("t-short"), "a credential past its expiry is expired");
+        std::test::assert(!self.probe.expired("t-long"), "one before it is not");
+        std::test::assert(!self.probe.expired("t-open"), "and one that states none never is");
+
+        // a role source that states its revision, and one that does not
+        let alice2 = self.probe.revised.grants(alice);
+        std::test::assert_eq_str(alice2.roles, "trader", "the stated pair's roles");
+        std::test::assert_eq_int(alice2.revision, 7, "the stated pair's revision");
+        std::test::assert_eq_int(self.probe.revised.grants(nobody).revision, 7, "the revision is the source's, whoever asks");
+        std::test::assert(self.probe.plain.holds(nobody, "trader"), "a source written before the pair is asked holds");
+    }
+}
+
+fn main() { App { }; }

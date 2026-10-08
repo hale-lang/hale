@@ -5845,6 +5845,18 @@ row	App@literal1.b	Holder	main	default
 dynamic	Holder	on main
 dynamic	Zub	on main
 
+== tests/hale/api/rpc_types_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.probe	Probe
+row	~	Probe	main	default
+row	~.expiring	Tokens	main	inherited
+row	~.plain	Plain	main	inherited
+row	~.revised	Revised	main	inherited
+-- dynamic	sites in the seed
+dynamic	__StdApiNoBearer	on main
+dynamic	__StdApiStaticRoles	on main
+
 == tests/hale/api_bearer_roles_test.hl
 shared	Api@main2	Api #a23e2495
 shared	Api@main4	Api #a23e2495

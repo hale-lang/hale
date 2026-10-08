@@ -459,11 +459,12 @@ interface std::api::Rpc {
 ```
 
 The transport reaches the runtime over the bus, from its own receive
-path: it publishes the raw message with its correlation and the
-peer's credentials (`std::api::RpcIngress`, keyed by the exposure it
-was attached to), and a lost connection (`std::api::RpcLost`). A
-transport never decodes a payload, never reads a role and never holds
-policy.
+path: it publishes the raw message with its correlation
+(`std::api::RpcIngress` on the wire subject `__api.rpc.ingress`, keyed
+by the exposure it was attached to), and a lost connection
+(`std::api::RpcLost` on `__api.rpc.lost`). A transport never decodes a
+payload, never reads a role and never holds policy; the peer's
+credentials travel in the `Request` its `frame` builds.
 
 Its methods are infallible: a failure at the boundary is structural (a
 dead listener is a birth failure, a broken connection the transport
@@ -612,11 +613,16 @@ The interfaces for credential validity and grant revision are R2's;
 their use for live subscriptions (invalidation, delivery) stays R5's.
 
 - A **bearer source** answers a credential with the principal and its
-  validity: `Principal.expires`, a `Time`, or the zero `Time` for no
-  expiry, read against the runtime's clock (`std::time::current()`); the
-  exposure refuses `unauthenticated`, reason `expired`, a credential
-  past its expiry. A source written before the field existed answers the
-  zero `Time`, which is no expiry.
+  validity: `fn expiry(token: String) -> Int` of
+  `std::api::ExpiringBearerSource`, the instant the credential expires
+  as nanoseconds since the Unix epoch (`std::time::nanos` of a `Time`),
+  0 for no expiry, read against the runtime's clock
+  (`std::time::current()`); the exposure refuses `unauthenticated`,
+  reason `expired`, a credential past its expiry. A source written
+  before the interface existed satisfies only `BearerSource` and is
+  asked nothing about expiry: its credentials do not expire. (The
+  answer is an `Int`, not a `Time`, because a locus method that returns
+  a `Time` does not lower yet; the unit is the one `Time` is.)
 - A **role source** answers a principal with its grants and the
   source's current revision as one pair, `std::api::Grants { roles:
   String, revision: Int }` (`roles` the comma-joined roles the principal
@@ -624,9 +630,11 @@ their use for live subscriptions (invalidation, delivery) stays R5's.
   `std::api::RevisedRoleSource`, so a check never reads grants from one
   revision and the number from another. A revision changes when a grant
   is added or removed, and the source publishes the new revision on the
-  topic `std::api::RoleRevisions` (a `std::api::Revision { source:
-  String, revision: Int }`) for a subscriber to learn of it; R5 reads it
-  to invalidate live subscriptions. `holds(p, r)` of
+  wire subject `__api.roles.revision` (a `std::api::Revision { source:
+  String, revision: Int }`; the standard library declares no `topic`, so
+  a publisher writes `publish "__api.roles.revision" of type
+  std::api::Revision;`) for a subscriber to learn of it; R5 reads it to
+  invalidate live subscriptions. `holds(p, r)` of
   `std::api::RoleSource` stays the direct question: a source that
   implements `grants` as well is asked it once per request, one that does
   not is asked `holds` once per role the check needs, with the revision
@@ -644,7 +652,13 @@ their use for live subscriptions (invalidation, delivery) stays R5's.
 
 The stdlib's two sources are updated: `StaticRoles` implements `grants`
 (the roles of its table the principal holds, revision 0, the table being
-fixed for the process) and `NoBearer` states no expiry.
+fixed for the process) and `NoBearer` implements `expiry` (none).
+
+The optional interfaces change no existing program: `Principal` and the
+two source interfaces keep the layout and the methods they had, so a
+source written for the structural path is a source here, and the
+exposure asks the extension only of a source whose declaration states
+it (the compiler wires `expiry` and `grants` from the source's type).
 
 ## Outcomes
 
