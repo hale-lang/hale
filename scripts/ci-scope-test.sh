@@ -18,7 +18,7 @@ case_() {
   git checkout -q "$base" && git checkout -q -B "t-$name"
   for f in "$@"; do mkdir -p "$(dirname "$f")"; echo "$RANDOM" >> "$f"; done
   git add -A && git commit -qm "$name"
-  got=$("$here/ci-scope.sh" "$base" HEAD 2>/dev/null | tr '\n' ' ')
+  got=$(bash "$here/ci-scope.sh" "$base" HEAD 2>/dev/null | tr '\n' ' ')
   want="prose=$ep dna=$ed "
   if [ "$got" = "$want" ]; then echo "ok   $name: $got"; else echo "FAIL $name: got '$got' want '$want'"; fail=1; fi
 }
@@ -31,8 +31,8 @@ case_ dna-edit    false true  dna/a.hl
 case_ workflow    false true  .github/workflows/tests.yml
 case_ dna-suite   false true  crates/hale-cli/tests/dna_native_suite.rs
 
-got=$("$here/ci-scope.sh" "" HEAD 2>/dev/null | tr '\n' ' ')
+got=$(bash "$here/ci-scope.sh" "" HEAD 2>/dev/null | tr '\n' ' ')
 if [ "$got" = "prose=false dna=true " ]; then echo "ok   no-base: $got"; else echo "FAIL no-base: $got"; fail=1; fi
-got=$("$here/ci-scope.sh" "$base" "$base" 2>/dev/null | tr '\n' ' ')
+got=$(bash "$here/ci-scope.sh" "$base" "$base" 2>/dev/null | tr '\n' ' ')
 if [ "$got" = "prose=false dna=true " ]; then echo "ok   empty: $got"; else echo "FAIL empty: $got"; fail=1; fi
 exit $fail
