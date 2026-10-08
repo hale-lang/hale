@@ -291,3 +291,59 @@ fn a_listener_that_cannot_bind_fails_the_boot() {
     let done = server.wait(Duration::from_secs(30));
     assert_eq!(done.status.code(), Some(2), "{:?}\n{}", done.status, done.stderr);
 }
+
+/// A serving locus whose receiver is built where the locus is constructed
+/// (`Desk { echoer: Echoer { base: 100 } }`, not in the param's default),
+/// and whose listener address is one of its own params.
+const CONSTRUCTED: &str = r#"
+type Ping { n: Int; }
+type Pong { n: Int; }
+api Echo { rpc Echoer::echo; }
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Nobody {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+}
+
+locus Echoer {
+    params { base: Int = 0; }
+    fn echo(p: Ping) -> Pong { return Pong { n: self.base + p.n }; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        roles: Nobody = Nobody { };
+        echoer: Echoer = Echoer { };
+        bind: String = "";
+    }
+    run() {
+        let h = api::serve(Echo, http::Rpc { bind: self.bind, codec: json, principals: self.bearer, roles: self.roles }, as: "echo", bound: 4, on_full: refuse);
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
+            std::time::sleep(10ms);
+        }
+        h.stop();
+    }
+}
+
+fn main() { Desk { echoer: Echoer { base: 100 }, bind: std::env::var("BIND") }; }
+"#;
+
+#[test]
+fn a_receiver_built_where_the_serving_locus_is_constructed_serves_and_the_address_may_be_a_param() {
+    let bin = harness::unique_bin("api_http_constructed");
+    build_opts::build_source(CONSTRUCTED, &bin, &build_opts::options()).expect("build the program");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice")], Some("{\"n\":5}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the instance the literal at the construction site builds answers");
+    assert!(server.finish().status.success());
+}

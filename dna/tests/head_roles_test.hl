@@ -14,6 +14,14 @@
 // owner's and a position's after the board, the reviewer's after that
 // seat); a call through an open gate reaches the handler, one through a
 // closed gate is `unknown` to this caller.
+//
+// The head also serves the first two of its operations as a surface
+// (GH #1417 R3: `HeadCommands`, `lookup` and `file_friction requires:
+// [position]`, over `unix::Rpc` on a socket of its own, beside the binding's).
+// The same fixture drives it: the surface answers the record's seats as the
+// binding does (the exposure's own `dna::RecordRoles` reads the same record),
+// a call through it reaches the very handler the binding's topic does, and
+// the binding's description is untouched.
 
 import "../core" as dna;
 import "../operations" as ops;
@@ -115,6 +123,26 @@ fn commands_of(receipt: String) -> String {
     return out;
 }
 
+// The member names a surface's served description lists, space-separated.
+@unbounded
+fn members_of(line: String) -> String {
+    let value = std::json::find_field_raw(line, "value");
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(value, "members"));
+    while !it.done {
+        let name = std::json::find_string_field(it.element, "name");
+        out = out + (if len(out) > 0 { " " } else { "" }) + name;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// A friction entry on the surface's wire: the attempt it is about is the
+// caller's to name (the standalone head files nothing, whatever it names).
+fn friction(id: String) -> String {
+    return "{\"id\":\"" + id + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"f-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"attempt-1\",\"text\":\"the hat named no tool grant for a judgment\"}}";
+}
+
 // Whether a tool list names `name` (compact or pretty JSON).
 fn named(out: String, name: String) -> Bool {
     return has(out, "\"name\":\"" + name + "\"") || has(out, "\"name\": \"" + name + "\"");
@@ -174,11 +202,14 @@ locus App {
         self.append(j, "graph.node", ops::graph_node_id("position", "reviewer"), ops::graph_node_body("position", "reviewer", "", ""));
 
         let sock = scratch + "/head.sock";
+        let rpc = scratch + "/head.rpc";
         let port = dna::free_port(0);
         let head = Proc { };
-        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
+        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_RPC_SOCKET=" + rpc + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
         let api = Api { };
         std::test::assert(api.connect(sock), "connected to the head's socket");
+        let surface = Api { };
+        std::test::assert(surface.connect(rpc), "connected to the head's surface");
 
         // Seated nowhere, a principal may raise work and look a command
         // up — the two ungated commands — and nothing else; the full
@@ -186,6 +217,18 @@ locus App {
         let none = api.ask("{\"id\":1,\"describe\":true}");
         std::test::assert(has(none, "\"ok\":true") && has(none, "\"app\":\"Head\""), "the head serves its description: " + none);
         std::test::assert_eq_str(commands_of(none), "CommandLookup KnowledgeLookup TaskCreate", "seated nowhere: the ungated commands only");
+        // The surface, seated nowhere: the read (`lookup` takes only an
+        // authenticated peer) is the caller's and the durable command
+        // (`file_friction`, a position's) is not. The call reaches the
+        // handler the binding's topic reaches: the standalone head composes
+        // no provider, and the handler answers the provider's refusal.
+        std::test::assert_eq_str(members_of(surface.ask("{\"describe\":true}")), "Commands::lookup", "seated nowhere: the surface lists the read only");
+        let looked = surface.ask("{\"id\":\"s-1\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"look-1\"}}");
+        std::test::assert(has(looked, "\"id\":\"s-1\",\"ok\":true") && has(looked, "\"code\":\"commands_unsupported\""), "lookup on the surface reaches the handler: " + looked);
+        let looked_on_binding = api.ask("{\"id\":11,\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"look-1\"}}");
+        std::test::assert(has(looked_on_binding, "\"ok\":true") && has(looked_on_binding, "\"code\":\"commands_unsupported\""), "and the binding's topic reaches the same one: " + looked_on_binding);
+        let denied = surface.ask(friction("s-2"));
+        std::test::assert(has(denied, "\"id\":\"s-2\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "a friction entry needs a position: " + denied);
         let locked = api.ask("{\"id\":2,\"describe\":\"full\"}");
         std::test::assert(has(locked, "\"kind\":\"unauthorized\"") && has(locked, "\"role\":\"owner\""), "the full description is the board's: " + locked);
 
@@ -194,6 +237,19 @@ locus App {
         let ada_board = self.holds(j, "board", "ada");
         let seated = self.slice_with(api, 3, "TaskReassign");
         std::test::assert_eq_str(commands_of(seated), "AttemptAllowance AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise OrganizationPropose PersonRetire PracticePropose TaskCreate TaskReassign", "the board's slice: the owner's and a position's commands, not the reviewer's");
+        // The surface follows the record: once ada holds a seat the exposure's
+        // own source says so (it reads the record within its one-second bound)
+        // and the friction entry reaches the handler.
+        let mut filed = surface.ask(friction("s-3"));
+        let mut tries = 0;
+        while tries < 40 && has(filed, "\"kind\":\"unauthorized\"") {
+            std::time::sleep(100ms);
+            std::time::sleep(100ms);
+            filed = surface.ask(friction("s-3"));
+            tries = tries + 1;
+        }
+        std::test::assert(has(filed, "\"id\":\"s-3\",\"ok\":true") && has(filed, "\"code\":\"commands_unsupported\""), "the position's friction entry reaches the handler: " + filed);
+        std::test::assert_eq_str(members_of(surface.ask("{\"describe\":true}")), "Commands::file_friction Commands::lookup", "the surface lists the position's command now");
         let full = api.ask("{\"id\":4,\"describe\":\"full\"}");
         std::test::assert(has(full, "\"ok\":true"), "the board's holder reads the full description, by the record: " + full);
         std::test::assert_eq_str(std::json::find_field_raw(full, "value"), description, "and it is the emitted document");
@@ -240,6 +296,7 @@ locus App {
 
         head.stop();
         std::io::fs::unlink(sock) or discard;
+        std::io::fs::unlink(rpc) or discard;
         dna::scratch_done(scratch);
     }
 }

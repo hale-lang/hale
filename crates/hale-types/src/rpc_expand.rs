@@ -761,14 +761,20 @@ pub fn expand(
         // first (so it is subscribed when the exposure attaches), placed on a
         // pool of its own
         if l.is_main {
-            let listener = match unix_path_of(l, site.transport.as_ref()) {
-                Some(path) => parse_unix_listener(id, path, span),
-                None => http_bind_of(l, site.transport.as_ref()).and_then(|bind| parse_http_listener(id, bind, span)),
+            let unix_path = unix_path_of(l, site.transport.as_ref());
+            let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
+            // the listener is born first, after the params its address reads
+            let reads = self_reads(unix_path.as_ref().or(http_bind.as_ref()));
+            let listener = match (unix_path, http_bind) {
+                (Some(path), _) => parse_unix_listener(id, path, span),
+                (None, Some(bind)) => parse_http_listener(id, bind, span),
+                (None, None) => None,
             };
             {
                 if let Some((lp, entry)) = listener {
                     if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        pb.params.insert(0, lp);
+                        let at = pb.params.iter().rposition(|p| reads.contains(&p.name.name)).map_or(0, |i| i + 1);
+                        pb.params.insert(at, lp);
                     }
                     if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                         pl.entries.push(entry);
@@ -798,6 +804,18 @@ pub fn expand(
             let key = id * 100 + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             inject_key(l, field, &key_param, key, span);
+        }
+    }
+
+    // ---- the receivers, numbered where a literal of the serving locus builds them ----
+    for (i, plan) in plans.iter().enumerate() {
+        let id = i as i64 + 1;
+        for (slot, field) in plan.fields.iter().enumerate() {
+            let key = id * 100 + slot as i64;
+            let key_param = format!("__rpc_s_{id}");
+            for p in programs.iter_mut() {
+                number_constructions(&mut p.items, &plan.site.serving, field, &key_param, key);
+            }
         }
     }
 
@@ -1402,3 +1420,176 @@ fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
     s
 }
 
+
+// ---- the literals that build a serving locus (a construction site) ----
+
+/// Every expression of `e`, pre-order, `f` first on each.
+fn walk_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    f(e);
+    match e {
+        Expr::Binary { left, right, .. } => {
+            walk_expr_mut(left, f);
+            walk_expr_mut(right, f);
+        }
+        Expr::Unary { operand, .. } => walk_expr_mut(operand, f),
+        Expr::Call { callee, args, .. } => {
+            walk_expr_mut(callee, f);
+            args.iter_mut().for_each(|a| walk_expr_mut(a, f));
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => walk_expr_mut(receiver, f),
+        Expr::Index { receiver, index, .. } => {
+            walk_expr_mut(receiver, f);
+            walk_expr_mut(index, f);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter_mut().for_each(|a| walk_expr_mut(a, f)),
+        Expr::Struct { inits, .. } => inits.iter_mut().for_each(|i| walk_expr_mut(&mut i.value, f)),
+        Expr::Block(b) => walk_block_mut(b, f),
+        Expr::If(i) => walk_if_mut(i, f),
+        Expr::Match(m) => walk_match_mut(m, f),
+        Expr::Sum(a, _) | Expr::Prod(a, _) => walk_expr_mut(a, f),
+        Expr::Approx { left, right, tolerance, .. } => {
+            walk_expr_mut(left, f);
+            walk_expr_mut(right, f);
+            walk_expr_mut(tolerance, f);
+        }
+        Expr::Range { lo, hi, .. } => {
+            walk_expr_mut(lo, f);
+            walk_expr_mut(hi, f);
+        }
+        Expr::ArrayRepeat { val, .. } => walk_expr_mut(val, f),
+        Expr::Or { inner, disposition, .. } => {
+            walk_expr_mut(inner, f);
+            match disposition {
+                hale_syntax::ast::OrDisposition::Substitute(s) | hale_syntax::ast::OrDisposition::Fail(s, _) => walk_expr_mut(s, f),
+                _ => {}
+            }
+        }
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
+fn walk_if_mut(i: &mut hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&mut Expr)) {
+    walk_expr_mut(&mut i.cond, f);
+    walk_block_mut(&mut i.then_block, f);
+    match i.else_block.as_deref_mut() {
+        Some(hale_syntax::ast::ElseBranch::Else(b)) => walk_block_mut(b, f),
+        Some(hale_syntax::ast::ElseBranch::ElseIf(e)) => walk_if_mut(e, f),
+        None => {}
+    }
+}
+
+fn walk_match_mut(m: &mut hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&mut Expr)) {
+    walk_expr_mut(&mut m.scrutinee, f);
+    for arm in &mut m.arms {
+        if let Some(g) = &mut arm.guard {
+            walk_expr_mut(g, f);
+        }
+        match &mut arm.body {
+            hale_syntax::ast::MatchArmBody::Expr(e) => walk_expr_mut(e, f),
+            hale_syntax::ast::MatchArmBody::Block(b) => walk_block_mut(b, f),
+        }
+    }
+}
+
+fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+    for s in &mut b.stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => walk_expr_mut(value, f),
+            Stmt::If(i) => walk_if_mut(i, f),
+            Stmt::Match(m) => walk_match_mut(m, f),
+            Stmt::For { iter, body, .. } => {
+                walk_expr_mut(iter, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_expr_mut(cond, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::Return(Some(e), _) => walk_expr_mut(e, f),
+            Stmt::Fail { value, .. } => walk_expr_mut(value, f),
+            Stmt::Block(b) => walk_block_mut(b, f),
+            Stmt::Recovery { args, .. } => args.iter_mut().for_each(|a| walk_expr_mut(a, f)),
+            Stmt::Violate { payload: Some(p), .. } => walk_expr_mut(p, f),
+            Stmt::Send { subject, value, .. } => {
+                walk_expr_mut(subject, f);
+                walk_expr_mut(value, f);
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                walk_expr_mut(max, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::Expr(e) => walk_expr_mut(e, f),
+            _ => {}
+        }
+    }
+    if let Some(t) = &mut b.tail {
+        walk_expr_mut(t, f);
+    }
+}
+
+fn walk_items_exprs_mut(items: &mut [TopDecl], f: &mut dyn FnMut(&mut Expr)) {
+    for d in items {
+        match d {
+            TopDecl::Fn(func) => walk_block_mut(&mut func.body, f),
+            TopDecl::Const(c) => walk_expr_mut(&mut c.value, f),
+            TopDecl::Module(m) => walk_items_exprs_mut(&mut m.items, f),
+            TopDecl::Locus(l) => {
+                for m in &mut l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            for p in &mut pb.params {
+                                if let ParamInit::Value(e) = &mut p.init {
+                                    walk_expr_mut(e, f);
+                                }
+                            }
+                        }
+                        LocusMember::Lifecycle(lc) => walk_block_mut(&mut lc.body, f),
+                        LocusMember::Failure(fd) => walk_block_mut(&mut fd.body, f),
+                        LocusMember::Mode(md) => walk_block_mut(&mut md.body, f),
+                        LocusMember::Fn(func) => walk_block_mut(&mut func.body, f),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Write `key_param: key` into the literal that builds `field` wherever a
+/// literal of the serving locus `serving` is written: a program that
+/// builds its serving locus from another fn (`Head { commands: Commands {
+/// … } }`) overrides the param's default literal, and the instance is
+/// numbered in the one that builds it.
+fn number_constructions(items: &mut [TopDecl], serving: &str, field: &str, key_param: &str, key: i64) {
+    walk_items_exprs_mut(items, &mut |e| {
+        let Expr::Struct { path, inits, .. } = e else { return };
+        if path.segments.last().map(|s| s.name.as_str()) != Some(serving) {
+            return;
+        }
+        for i in inits.iter_mut().filter(|i| i.name.name == field) {
+            if let Expr::Struct { inits: inner, span, .. } = &mut i.value {
+                if !inner.iter().any(|x| x.name.name == key_param) {
+                    let sp = *span;
+                    inner.push(StructInit { name: Ident::new(key_param, sp), value: lit_int(key, sp), span: sp });
+                }
+            }
+        }
+    });
+}
+
+/// The params of the serving locus an expression reads (`self.<param>`).
+fn self_reads(e: Option<&Expr>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(e) = e {
+        let mut probe = e.clone();
+        walk_expr_mut(&mut probe, &mut |x| {
+            if let Expr::Field { receiver, name, .. } = x {
+                if matches!(**receiver, Expr::KwSelf(_)) {
+                    out.push(name.name.clone());
+                }
+            }
+        });
+    }
+    out
+}
