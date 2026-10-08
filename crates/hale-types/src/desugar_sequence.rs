@@ -97,7 +97,7 @@ pub fn desugar_before_check(
     let surface = hale_syntax::api_gen::generate_api(programs, root, seq.api_roles);
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
-    crate::rpc_expand::expand(programs);
+    crate::rpc_expand::expand(programs, seq.import_renames);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
     // not parse is reported where it is appended (`resolve_rewritten`);

@@ -106,18 +106,28 @@ fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The rows of `surface`: its `api` blocks' rows, or, when no block is
-/// named so, the `@rpc` handlers of the program's loci (the seed's default
-/// surface). In canonical order: member as bytes, then as written.
-fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
+/// The rows of `surface`, as `surfaces::surface_rows` resolves them: the
+/// rows of its `api` blocks, and the `@rpc` handlers that feed it. An
+/// imported seed's loci (`renames` names them) feed that seed's default
+/// surface, named by its import alias, and a member there is spelled with
+/// the alias path (`toy::Echo::echo`); the seed's own loci feed its own
+/// default surface (the one name that is no alias and no `api` block).
+/// In canonical order: member as bytes, then as written.
+fn rows_of_surface(programs: &[&Program], surface: &str, renames: &[(Vec<String>, String)]) -> Vec<Row> {
     let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    let mut block_named = false;
     for p in programs {
         for d in flat_decls(&p.items) {
-            if let TopDecl::Locus(l) = d {
-                loci.insert(l.name.name.as_str(), l);
+            match d {
+                TopDecl::Locus(l) => {
+                    loci.insert(l.name.name.as_str(), l);
+                }
+                TopDecl::Api(a) if a.name.name == surface => block_named = true,
+                _ => {}
             }
         }
     }
+    let is_alias = renames.iter().any(|(path, _)| path[0] == surface);
     let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize| -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
@@ -153,49 +163,51 @@ fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
         })
     };
     let mut rows: Vec<Row> = Vec::new();
-    let mut named = false;
     for p in programs {
         for d in flat_decls(&p.items) {
-            if let TopDecl::Api(a) = d {
-                if a.name.name != surface {
-                    continue;
-                }
-                named = true;
-                for r in &a.rows {
-                    if let Some(row) = row_of(
-                        format!("{}::{}", r.written, r.method.name),
-                        &r.locus.name,
-                        &r.method.name,
-                        r.requires.iter().map(|i| i.name.clone()).collect(),
-                        rows.len(),
-                    ) {
-                        rows.push(row);
-                    } else {
-                        // a row the pass cannot read: the admission law
-                        // reports it, and the surface is not expanded
-                        return Vec::new();
+            match d {
+                TopDecl::Api(a) if a.name.name == surface => {
+                    for r in &a.rows {
+                        if let Some(row) = row_of(
+                            format!("{}::{}", r.written, r.method.name),
+                            &r.locus.name,
+                            &r.method.name,
+                            r.requires.iter().map(|i| i.name.clone()).collect(),
+                            rows.len(),
+                        ) {
+                            rows.push(row);
+                        } else {
+                            // a row the pass cannot read: the admission law
+                            // reports it, and the surface is not expanded
+                            return Vec::new();
+                        }
                     }
                 }
-            }
-        }
-    }
-    if !named {
-        for p in programs {
-            for d in flat_decls(&p.items) {
-                let TopDecl::Locus(l) = d else { continue };
-                for m in &l.members {
-                    let LocusMember::Fn(f) = m else { continue };
-                    let Some(attr) = &f.rpc else { continue };
-                    if let Some(row) = row_of(
-                        format!("{}::{}", l.name.name, f.name.name),
-                        &l.name.name,
-                        &f.name.name,
-                        attr.requires.iter().map(|i| i.name.clone()).collect(),
-                        rows.len(),
-                    ) {
-                        rows.push(row);
+                TopDecl::Locus(l) => {
+                    // an imported seed's locus feeds the seed's surface, by
+                    // alias; the seed's own feed its default surface, unless
+                    // an `api` block already is that name
+                    let written = match renames.iter().find(|(_, m)| *m == l.name.name) {
+                        Some((path, _)) if path[0] == surface => path.join("::"),
+                        Some(_) => continue,
+                        None if !is_alias && !block_named => l.name.name.clone(),
+                        None => continue,
+                    };
+                    for m in &l.members {
+                        let LocusMember::Fn(f) = m else { continue };
+                        let Some(attr) = &f.rpc else { continue };
+                        if let Some(row) = row_of(
+                            format!("{written}::{}", f.name.name),
+                            &l.name.name,
+                            &f.name.name,
+                            attr.requires.iter().map(|i| i.name.clone()).collect(),
+                            rows.len(),
+                        ) {
+                            rows.push(row);
+                        }
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -424,7 +436,7 @@ fn inject_topics(programs: &mut [&mut Program]) {
 }
 
 /// Run the pass over a bundle's programs.
-pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
+pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) -> Vec<Expansion> {
     if !mentions_runtime(programs) {
         return Vec::new();
     }
@@ -502,7 +514,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
                     }) {
                         continue;
                     }
-                    let rows = rows_of_surface(&ro, &surface);
+                    let rows = rows_of_surface(&ro, &surface, renames);
                     if rows.is_empty() {
                         continue;
                     }

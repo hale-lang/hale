@@ -1,0 +1,8 @@
+// A library seed with an `@rpc` handler: imported as `toy`, its default
+// surface is `toy` and its member `toy::Echo::echo`.
+locus Echo {
+    @rpc
+    fn echo(x: Int) -> Int { return x + 1; }
+}
+
+fn main() { }
