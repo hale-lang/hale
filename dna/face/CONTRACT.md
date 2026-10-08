@@ -5,7 +5,7 @@ This document proposes the browser/service boundary; it does **not** describe
 implemented HTTP routes or freeze DNA's internal types. The issue defines
 the broader product scope.
 Implemented reads are documented in [dna/api](../api/README.md), with
-executable schemas in `dna/api/contract/v1`; the [browser documentation](README.md)
+field-by-field tests; the [browser documentation](README.md)
 describes their presentation. Broader routes and commands below are design
 requirements, not a declaration that a service exposes them.
 

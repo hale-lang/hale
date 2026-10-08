@@ -30,7 +30,7 @@ type Msg { v: Int; }
 topic LibTopic { payload: Msg; subject: "lib.msg"; }
 main locus LibHead {
     bus { publish LibTopic; }
-    bindings { LibTopic: unix("/tmp/lib.sock", role: listen); api: unix("/tmp/lib-api.sock", bound: 8, on_full: refuse); }
+    bindings { LibTopic: unix("/tmp/lib.sock", role: listen); }
 }
 fn main() { LibHead { }; }
 "#;

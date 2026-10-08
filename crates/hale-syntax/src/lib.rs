@@ -8,7 +8,7 @@
 //! - [`Span`] — source-position type.
 //! - [`Diag`] — diagnostic type for errors.
 
-pub mod api_gen;
+pub mod api_names;
 pub mod ast;
 pub mod chains;
 pub mod desugar;

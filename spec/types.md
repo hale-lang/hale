@@ -95,7 +95,7 @@ The same rule holds for a locus's or a perspective's `params`, for
 the named members of a `contract`, and for an `interface`'s methods.
 Before it, the second declaration passed `hale check` and one of the
 two won the slot, with nothing in the source to say which — while
-the json codecs and the api binding's description assume one slot
+the json codecs and a surface's description assume one slot
 per name.
 
 ### A struct binding is a copy (GH #713)
@@ -1387,12 +1387,9 @@ that have no caller frame to address the error channel:
   decl (one fn may be referenced by zero subscriptions; the
   subscription is what fails to typecheck).
   A subscribed handler MAY declare a return type (GH #1106):
-  bus dispatch ignores the value, and through an `api` binding
-  it is the reply to the caller (`spec/semantics.md` § "The api
-  binding"). At most one subscriber of a topic may declare one
-  when the program carries an api binding; the return type must
-  have a JSON form there, or the topic is left out of the API
-  with a warning.
+  bus dispatch ignores the value. A reply to a caller is a served
+  `rpc` row's response (`spec/api.md` § Surfaces and their rows),
+  not a bus handler's return.
 
 The narrowing from "no fallible on locus methods" to
 "substrate-facing surfaces only" preserves the two-channel
@@ -1565,7 +1562,7 @@ The `IoError` payload is the unified shape for the
 fallible I/O surface — see `spec/stdlib.md` § "IoError" for the
 errno → kind tag taxonomy.
 
-## Roles and `@gated` (GH #1109)
+## Roles (GH #1109, #1417)
 
 `role NAME;` at top level declares a **role**: authorization
 vocabulary, the way `group` declares claim vocabulary and `effect`
@@ -1575,42 +1572,27 @@ A, B;` is the hierarchy: whoever holds `NAME` holds `A` and `B`, and
 whatever they include, transitively. Composition is **grant-only and
 union-only** (the constitutions rule): `includes` can only widen what
 a holder may do, so a cycle says nothing and is an error, and a name
-declared twice is an error rather than a merge. `owner` is the one
-role that needs no declaration — the full api description is a read
-gated on it — and a program declares it only to give it `includes`.
+declared twice is an error rather than a merge. A role an `includes`
+names must be declared; no role is implicit (`owner` is a role only a
+program that declares it has).
 Role names are deployment vocabulary (the keys of
 `[environments.<env>.roles]`, the word a refusal names) and are never
 mangled: an imported seed's `role x;` and the entrypoint's are one
 `x`, and declaring it in both is the duplicate error.
 
-`@gated(role: R)` goes on exactly three sites: a **subscribed
-handler** (a locus fn some `subscribe … as` line of the same locus
-names), an **`expose`** contract member, or a **`publish`** bus
-member. `R` must be declared (or be `owner`). It means one thing: a
-message on that subject, a read of that member or an external
-subscription to that stream, arriving through the api binding, is
-refused unless the caller holds `R` (`spec/semantics.md` § "The
-gate"); a stream whose `publish` member states no gate follows the
-gate the topic's subscribers state. It is a boundary check, named so — the way `@secret` is a
-lint and not a containment proof — and says nothing about the
-program's own call paths; a guarantee about those is a later,
-opt-in claim. So `@gated` on a plain method, on a `consume`, or on
-the `subscribe` line itself is an error: nothing there is reached
-from the binding, and an annotation must not promise a check that
-does not run — a free fn included, and a perspective's fn, a
-signature the loci that serve it answer. Two more rules keep the gate on
-the message rather than the handler: every subscriber of one topic
-(and every publisher of one stream) states the same gate, each
-subscription of a handler that subscribes several topics being its
-own site, and a gated handler's topic cannot also be bound to a
-transport in `bindings { }`, which has no gate. A `@gated` in a program without an api binding is inert and
-legal: the requirement is form, true in every deployment; who holds
-the role is params.
+A role is named by a requirement: a surface row's `requires: [R, …]`
+(`rpc Orders::cancel requires: [operator];`, or `@rpc(requires: [R])` on
+the handler) or a hub binding's `requires:` (`spec/api.md` § Surfaces
+and their rows, § Streams). `R` must be declared (surface law 4). The
+requirement is a property of the surface row, never of the handler, so
+one handler shared by two surfaces meets each surface's; it is a
+boundary check, named so, and says nothing about the program's own call
+paths; who holds the role is the serve site's role source (`spec/api.md`
+§ Identity sources).
 
-`spec/api.md` replaces `@gated` with a row's `requires: [R, …]` (GH
-#1417): the requirement is a property of the surface row, never of the
-handler, so one handler shared by two surfaces meets each surface's.
-`role` declarations and `includes` stay the vocabulary both read.
+`@gated(role: R)`, which gated a subscribed handler, an `expose` member
+or a `publish` through the retired api binding, is refused by the parser
+with the replacement (`requires` on an `rpc` row, `spec/api.md`).
 
 ## Recovery-primitive typing
 

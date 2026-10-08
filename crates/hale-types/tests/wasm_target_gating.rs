@@ -22,9 +22,8 @@ fn check_for(src: &str, triple: &str) -> Vec<String> {
     let mut program = parse_source(src).expect("parse failed");
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
-    )
-    .unwrap();
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
     let ids = hale_types::snapshot::mint([("", &mut program)], &[]);
     let mut programs = std::collections::BTreeMap::new();
     programs.insert(String::new(), &program);

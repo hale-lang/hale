@@ -967,7 +967,7 @@ fn tool_ident(id: &str) -> String {
 }
 
 /// A tool name: the member with `::` spelled `__`.
-fn tool_name(member: &str) -> String {
+pub fn tool_name(member: &str) -> String {
     match member.split_once("::") {
         Some((recv, method)) => format!("{}__{}", tool_ident(recv), tool_ident(method)),
         None => member.to_string(),

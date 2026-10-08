@@ -168,8 +168,8 @@ export async function startKnowledgeService(options = {}) {
     // The session's slice: the calls the head's describe line lists for it.
     async slice() {
       const described = await request('/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: '{"describe":true}' });
-      if (described.status !== 200 || !described.body.ok) throw new Error('describe failed ' + JSON.stringify(described));
-      return described.body.value.commands.map(entry => entry.name);
+      if (described.status !== 200 || !Array.isArray(described.body.commands)) throw new Error('describe failed ' + JSON.stringify(described));
+      return described.body.commands.map(entry => entry.name);
     },
     // An admission moves the Record; the spine's tick follows it.
     async post(command) {

@@ -87,12 +87,10 @@ fn rpc_stacks_with_the_contract_decorators() {
 }
 
 /// `api` stays an identifier everywhere but the declaration's head: a
-/// local, a fn, the structural path's `bindings { api: … }` entry.
+/// local, a fn.
 #[test]
 fn api_is_contextual() {
     parse_source("fn api() -> Int { let api = 1; return api; }").expect("an identifier named api");
-    parse_source("main locus M { bindings { api: unix(\"/tmp/a.sock\", bound: 4, on_full: refuse); } }")
-        .expect("the structural path's entry");
 }
 
 #[test]

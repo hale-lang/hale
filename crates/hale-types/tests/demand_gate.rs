@@ -335,7 +335,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 // (F.40 phase 4, A2).
                 "law_selection",
                 // The role rows the check's role rules read (A4).
-                "api_surface",
+                "role_rows",
                 "alloc_summary",
                 "effects",
                 "model",
@@ -570,7 +570,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "handler_routing",
         "flows",
         "law_selection",
-        "api_surface",
+        "role_rows",
         "ownership",
         "bus_graph",
         "alloc_summary",
@@ -788,7 +788,7 @@ const GATE: &[GateRow] = &[
     row("handler_routing", 1, 1, |s| { let _ = s.demand_handlers(); }),
     row("flows", 1, 1, |s| { let _ = s.demand_flows(); }),
     row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
-    row("api_surface", 1, 1, |s| { let _ = s.demand_role_rows(); }),
+    row("role_rows", 1, 1, |s| { let _ = s.demand_role_rows(); }),
     row("surface", 1, 1, |s| { let _ = s.demand_surface_rows(); }),
     row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
     row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),

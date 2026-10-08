@@ -157,13 +157,9 @@ pub struct LoweringView {
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
     pub resolved_in: std::time::Duration,
-    /// The inputs the program was resolved with: the cross-seed rename
-    /// table, the `--api` path and the roles the environment binds.
-    /// Lowering reads the renames from here, and refuses options whose
-    /// api disagrees with the envelope's.
+    /// The input the program was resolved with: the cross-seed rename
+    /// table, which lowering reads from here.
     pub import_renames: Vec<(Vec<String>, String)>,
-    pub api: Option<String>,
-    pub api_roles: Option<String>,
     /// The top-level scope: the snapshot's (F.40 phase 3, C5), which
     /// holds the stdlib's declarations beside the checked programs'. The
     /// stdlib's bus rows and typed-body pairs answer over it, and
@@ -357,11 +353,7 @@ pub fn rewrite_intra_locus(
 /// its span falls in, as the bundle's does. A caller with no source
 /// map passes `&[]`, and the user program is then seed 0 by ordinal.
 /// `import_renames` is the per-build path-rename table for cross-seed
-/// imports (see `hale_frontend::snapshot::Snapshot::from_program`); `api`
-/// and `api_roles` are the build's `--api` path and the roles its
-/// environment binds, the ones the sequence shaped the api surface
-/// with, recorded on the envelope for lowering to hold its options
-/// to. `bindings` is the snapshot's binding rows (`Snapshot::demand_bindings`);
+/// imports (see `hale_frontend::snapshot::Snapshot::from_program`). `bindings` is the snapshot's binding rows (`Snapshot::demand_bindings`);
 /// a caller with none passes `&BindingRows::default()`, and a program
 /// with a `bindings { }` entry then has no row for lowering to read.
 /// `placement` is the snapshot's placement table
@@ -406,8 +398,6 @@ pub fn resolve_rewritten(
     checked: &Snapshot,
     sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
-    api: Option<&str>,
-    api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
     bindings: &crate::binding_rows::BindingRows,
     placement: &crate::placement::PlacementTable,
@@ -659,8 +649,6 @@ pub fn resolve_rewritten(
         topic_rewrites,
         resolved_in: stage.rewritten_in + t_start.elapsed(),
         import_renames: import_renames.to_vec(),
-        api: api.map(str::to_string),
-        api_roles: api_roles.map(str::to_string),
         top: top.clone(),
         alloc_routing,
         route_anchors,

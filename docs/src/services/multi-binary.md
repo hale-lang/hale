@@ -54,10 +54,10 @@ adapter hands to `std::bus::__local_dispatch`: they carry no key,
 so the runtime decodes them once — through the binding's codec,
 when it has one — and routes by the key the payload holds.
 
-A `bindings { }` block can also carry one `api:` entry, which binds
-the whole program for a CLI, a dashboard or an MCP host rather than
-one topic for another binary; that is its own chapter,
-[The API binding](./api.md).
+A topic can also be bound to a **hub**, a listener that streams it to
+subscribers (a CLI, a dashboard) rather than to another binary, and a
+program offers operations to the same callers with `api::serve`; that is
+its own chapter, [The API surface](./api.md).
 
 `bindings { }` is legal only on a `main` locus. The publisher's
 `MatchReady <- m;` and the subscriber's `subscribe MatchReady

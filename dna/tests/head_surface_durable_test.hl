@@ -4,8 +4,8 @@
 // The standalone head composes no provider, so its surface answers
 // `commands_unsupported` (head_roles_test shows the handler is reached). The
 // practice_review head composes the shared native Governance service and
-// serves the same two operations as `HeadCommands` over `unix::Rpc` on a
-// socket of its own (`HALE_DNA_RPC_SOCKET`), beside the structural binding.
+// serves `HeadCommands` over `unix::Rpc` on a
+// socket (`HALE_DNA_RPC_SOCKET`).
 // This fixture builds that head, gives it a record whose graph names the
 // positions and nobody holds one, and maps this process's uid to ada:
 //
@@ -176,11 +176,10 @@ locus App {
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
 
-        let sock = scratch + "/head.sock";
-        let rpc = scratch + "/head.rpc";
+        let rpc = scratch + "/head.sock";
         let port = dna::free_port(0);
         let head = Proc { };
-        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" LOTUS_API=\"$4\" HALE_DNA_RPC_SOCKET=\"$5\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + sock + "\n" + rpc;
+        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_RPC_SOCKET=\"$4\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + rpc;
         std::test::assert(head.start(argv), "the composed head started");
         let first = Api { };
         let up = first.connect(rpc);
@@ -204,7 +203,7 @@ locus App {
             probes = probes + 1;
         }
         std::test::assert(len(d0) > 0, "unseated: the surface answered a describe: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
-        std::test::assert_eq_str(members_of(d0), "Commands::lookup", "unseated: the surface lists the read only: " + d0);
+        std::test::assert_eq_str(members_of(d0), "Commands::create_task Commands::lookup Commands::lookup_knowledge", "unseated: the surface lists the ungated rows only: " + d0);
         // the calls below go over a connection made once the head answers
         let surface = Api { };
         std::test::assert(surface.connect(rpc), "connected to the answering surface");
@@ -225,7 +224,7 @@ locus App {
             listed = surface.ask("{\"describe\":true}");
             tries = tries + 1;
         }
-        std::test::assert_eq_str(members_of(listed), "Commands::file_friction Commands::lookup", "seated: the description follows the record");
+        std::test::assert_eq_str(members_of(listed), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "seated: the description follows the record");
 
         // ---- seated: the durable command goes through the surface
         let filed = surface.ask(friction("s-1", "f-seated", "the hat named no tool grant"));
@@ -245,7 +244,6 @@ locus App {
         std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 1, "and files nothing more");
 
         head.stop();
-        std::io::fs::unlink(sock) or discard;
         std::io::fs::unlink(rpc) or discard;
         dna::scratch_done(scratch);
     }

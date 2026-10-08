@@ -5,7 +5,6 @@
 import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;
-import "../contract/v1/validator" as wire_contract;
 import "../../ui" as ui;
 import "./fixture" as fixture;
 
@@ -79,8 +78,6 @@ locus KnowledgeCases {
         let body = self.host.document(request);
         let success = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body });
         std::test::assert_eq_int(success.status, 200, success.body);
-        let checked = self.f.validator.validate("KnowledgeNodesResponse", success.body);
-        std::test::assert(checked.ok, checked.error);
         let data = wire.raw(body, "data"); let page = wire.raw(data, "page"); let basis = wire.raw(data, "basis"); let items = std::json::array_first(wire.raw(data, "items"));
         std::test::assert_eq_str(wire.string(items.element, "text"), "Native a é 🧭", "strict shared Unicode decoder");
         std::test::assert_eq_str(wire.string(items.element, "revision"), "-9223372036854775808", "minimum Int64 stays exact");
@@ -218,7 +215,6 @@ fn memory_get(service: api::Api, prefix: String, suffix: String, status: Int) ->
 // The child half of `MemoryCases`: only HALE_DNA_MEMORY_DSN_HEAD is set.
 fn memory_read(root: String, phase: String, current: String, earlier: String, hidden: String) {
     let wire = api::KnowledgeWire { };
-    let validator = wire_contract::Validator { root: std::env::var("HALE_API_CONTRACT_ROOT") };
     let record = dna::GitRecord { repo: root };
     let prefix = "/api/hale/v1/applications/" + record.identity();
     let service = api::Api { root: root, local_name: "alice", knowledge: api::LocalKnowledge { root: root } };
@@ -230,8 +226,6 @@ fn memory_read(root: String, phase: String, current: String, earlier: String, hi
         return;
     }
     let nodes = memory_get(service, prefix, "/dna/knowledge/nodes", 200);
-    let checked = validator.validate("KnowledgeNodesResponse", nodes);
-    std::test::assert(checked.ok, checked.error);
     std::test::assert(std::str::contains(nodes, current) && std::str::contains(nodes, earlier), "ratified knowledge is listed");
     std::test::assert(!std::str::contains(nodes, hidden) && !std::str::contains(nodes, "Protected knowledge"), "protected knowledge is not listed");
     let node = memory_get(service, prefix, "/dna/knowledge/nodes?id=" + current, 200);
@@ -242,13 +236,9 @@ fn memory_read(root: String, phase: String, current: String, earlier: String, hi
     let protected = memory_get(service, prefix, "/dna/knowledge/nodes?id=" + hidden, 404);
     std::test::assert_eq_str(wire.raw(protected, "error"), wire.raw(missing, "error"), "protected and missing share one 404");
     let edges = memory_get(service, prefix, "/dna/knowledge/edges?id=" + current, 200);
-    let edge_check = validator.validate("KnowledgeEdgesResponse", edges);
-    std::test::assert(edge_check.ok, edge_check.error);
     std::test::assert(std::str::contains(edges, "supports <stored relationship>"), "a stored relationship is read");
     std::test::assert(!std::str::contains(edges, hidden) && !std::str::contains(edges, "protected-endpoint relationship"), "a relationship to protected knowledge is not read");
     let bindings = memory_get(service, prefix, "/dna/knowledge/bindings?id=" + current + "&target=org/support/intake", 200);
-    let binding_check = validator.validate("KnowledgeBindingsResponse", bindings);
-    std::test::assert(binding_check.ok, binding_check.error);
     std::test::assert(std::str::contains(bindings, "\"ancestor\""), "the binding applies to a descendant target");
 }
 

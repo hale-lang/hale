@@ -62,7 +62,7 @@ verb's id. Every verb takes `--api`.
 
 | verb | what it does | its flags |
 | --- | --- | --- |
-| `next` | claims the next attempt for a position (`AttemptClaim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `public internal`), `--orgs`, `--ttl` (600), `--effect`, `--worker` |
+| `next` | claims the next attempt for a position (`Commands::claim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `public internal`), `--orgs`, `--ttl` (600), `--effect`, `--worker` |
 | `brief` | reads the hat, or renders it | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
 | `renew` | extends the lease and keeps the token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (1, 2, … per renewal) |
 | `allowance` | asks the spine for the attempt's spend, and waits (`AttemptAllowance`) | `--as`, `--attempt`, `--token`, `--wait` (60) |
@@ -352,7 +352,7 @@ attempt `failed`, naming the overrun.
 
 ## How it breaks
 
-- **``the head's socket lists no `dna.commands.attempt.claim` for <person>``**:
+- **``the head's socket lists no `Commands::claim` for <person>``**:
   your uid maps to no person, or the person holds no position. Map the
   uid with `dna.unix.member`, and fill a position (`hale dna fill`).
 - **`the model performer declares no effect class`** (exit 2): add

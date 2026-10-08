@@ -1,30 +1,36 @@
-// dna/api/bearer.hl — who a bearer on the head's api binding is (GH #1135).
+// dna/api/bearer.hl — who a bearer on the head's commands port is (GH #1135;
+// GH #1417 R4: the port is the HTTP exposure of the head's surface).
 //
-// The head's commands are its api binding's gated topics, served over the
-// binding's socket and over its own HTTP transport (`http(…)` on the
-// entry): a POSTed line of the wire under `Authorization: Bearer <token>`.
-// No program forwards a line anywhere. The binding asks the source here
-// who a token is and gates that principal exactly as a socket peer's:
+// The head's commands are the rows of its surface `HeadCommands`
+// (commands.hl), served over the head's socket (`unix::Rpc`) and over its
+// commands port (`http::Rpc`): `POST /call/<member>` under
+// `Authorization: Bearer <token>`. No program forwards a call anywhere. The
+// exposure asks the source here who a token is and holds that principal to
+// each row's `requires` exactly as a socket peer:
 //
 //   - under OIDC (GH #989) the token is an ID token or a service's
 //     `client_credentials` token (#1200), verified as the head verifies
 //     every token (ES256 under the issuer's keys, the issuer, this client,
 //     unexpired); its principal is `oidc:<subject>`, which the record's
 //     roles map through `dna.oidc.member` — a service maps to no person,
-//     so no gate names it and admission refuses its commands;
+//     so no row's role is held by it and admission refuses its commands;
 //   - under a fixture's trusted-local session the token is the head's
 //     launch token, and its principal is the head's own account,
 //     `uid:<n>`, which `dna.unix.member` maps like any socket peer.
 //
-// A token neither names is nobody: the binding refuses the request.
+// A token neither names is nobody: the exposure refuses the request.
 //
 // A browser holds a session, not a bearer: the head that serves it (the
 // project head's proxy, or this head for the face it serves itself)
-// relays its `POST …/commands` to the binding with the session's token
-// as the bearer — its ID token under OIDC, the launch token in a
-// trusted-local session — after the CSRF guard a cookie needs
-// (`command_guard`, `relay_command`).
+// relays the face's `POST …/commands` to the commands port with the
+// session's token as the bearer — its ID token under OIDC, the launch
+// token in a trusted-local session — after the CSRF guard a cookie needs
+// (`command_guard`, `relay_upstream`). The face names a command as its
+// topic was named before the surface (`PracticePropose`); the relay says
+// which member that is (`command_member`) and answers the face what the
+// exposure answered.
 import "../core" as dna;
+import "../operations" as ops;
 import "../ui" as ui;
 
 locus OidcBearer {
@@ -59,8 +65,8 @@ fn commands_port() -> Int {
     return n;
 }
 
-// The binding waits up to 30 s for a handler's reply; a relay waits a
-// little longer, so the binding's own 504 is the one the caller sees.
+// The exposure waits up to 30 s for a handler's reply; a relay waits a
+// little longer.
 const COMMAND_RELAY_TIMEOUT_NS: Int = 35000000000;
 
 // The CSRF discipline a command riding an ambient credential keeps — a
@@ -78,18 +84,94 @@ fn command_guard(req: std::http::Request, origin: String) -> String {
     return "";
 }
 
-// A session's command, relayed to this head's own binding on `port`
-// under `bearer`: the line and the binding's answer, byte for byte. The
-// binding authenticates the bearer and gates the call; the relay adds
-// no principal of its own.
+// The face's call names, and the members of `HeadCommands` they stand for.
+const COMMAND_CALLS: String = "PracticePropose ReviewVerdict OrganizationPropose TaskCreate TaskReassign PersonRetire AttemptClaim AttemptOutcome AttemptRenew AttemptRelease AttemptAllowance FrictionFile CommandLookup KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeNodePropose KnowledgeNodeRevise KnowledgeNodeRetire KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeLookup";
+
+fn command_member(call: String) -> String {
+    if call == "PracticePropose" { return "Commands::propose"; }
+    if call == "ReviewVerdict" { return "Commands::verdict"; }
+    if call == "OrganizationPropose" { return "Commands::propose_organization"; }
+    if call == "TaskCreate" { return "Commands::create_task"; }
+    if call == "TaskReassign" { return "Commands::reassign_task"; }
+    if call == "PersonRetire" { return "Commands::retire_person"; }
+    if call == "AttemptClaim" { return "Commands::claim"; }
+    if call == "AttemptOutcome" { return "Commands::outcome"; }
+    if call == "AttemptRenew" { return "Commands::renew"; }
+    if call == "AttemptRelease" { return "Commands::release_attempt"; }
+    if call == "AttemptAllowance" { return "Commands::ask_allowance"; }
+    if call == "FrictionFile" { return "Commands::file_friction"; }
+    if call == "CommandLookup" { return "Commands::lookup"; }
+    if call == "KnowledgeEdgeLink" { return "Commands::link_knowledge"; }
+    if call == "KnowledgeEdgeUnlink" { return "Commands::unlink_knowledge"; }
+    if call == "KnowledgeNodePropose" { return "Commands::propose_knowledge"; }
+    if call == "KnowledgeNodeRevise" { return "Commands::revise_knowledge"; }
+    if call == "KnowledgeNodeRetire" { return "Commands::retire_knowledge"; }
+    if call == "KnowledgeBindingBind" { return "Commands::bind_knowledge"; }
+    if call == "KnowledgeBindingUnbind" { return "Commands::unbind_knowledge"; }
+    if call == "KnowledgeLookup" { return "Commands::lookup_knowledge"; }
+    return "";
+}
+
+// The calls a description lists, as the face's slice names them: the
+// exposure's members the caller may call, by the face's names.
+@unbounded
+fn listed_commands(description: String) -> String {
+    let mut out = "";
+    let mut rest = COMMAND_CALLS;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let call = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if std::str::contains(description, "\"name\":\"" + command_member(call) + "\"") {
+            out = out + (if len(out) > 0 { "," } else { "" }) + "{\"name\":\"" + call + "\"}";
+        }
+    }
+    return "{\"commands\":[" + out + "]}";
+}
+
+// The exposure's own refusal shape for a line the relay cannot make a call
+// of (spec/api.md § Outcomes): the face reads it as it reads the exposure's.
+fn relay_malformed(reason: String) -> Upstream {
+    return Upstream { ok: true, status: 400, headers: "Content-Type: application/json\r\n", body: "{\"refusal\":{\"kind\":\"malformed\",\"reason\":\"" + reason + "\"}}" };
+}
+
+// The face's line on the commands port. A line is one strict JSON object:
+// `{"call": <the face's name>, "payload": {…}}`, which is `POST
+// /call/<member>` with the payload as the body, or `{"describe": true}`,
+// which is `GET /.description`. Anything else is not a call, and nothing is
+// sent. The answer is the exposure's, byte for byte (a description as the
+// face's slice, `{"commands": [{"name": …}]}`), under the caller's bearer.
+fn relay_upstream(line: String, port: Int, bearer: String) -> Upstream {
+    let wire = CommandWire { };
+    let syntax = ops::OrganizationJson { };
+    let auth = "Authorization: Bearer " + bearer + "\r\n";
+    if !syntax.valid(line) { return relay_malformed("not_json"); }
+    if wire.fields(line, "describe", 1) {
+        if wire.raw(line, "describe") != "true" { return relay_malformed("not_a_call"); }
+        let up = exchange(port, "GET", "/.description", auth, "", COMMAND_RELAY_TIMEOUT_NS);
+        if up.ok && up.status == 200 { return Upstream { ok: true, status: 200, headers: "Content-Type: application/json\r\n", body: listed_commands(up.body) }; }
+        return up;
+    }
+    if !wire.fields(line, "call payload", 2) { return relay_malformed("not_a_call"); }
+    let member = command_member(wire.text(line, "call"));
+    if len(member) == 0 { return relay_malformed("unknown_member"); }
+    let payload = std::json::find_field_raw(line, "payload");
+    if !std::str::starts_with(payload, "{") { return relay_malformed("not_a_call"); }
+    let headers = "Content-Type: application/json\r\n" + auth + "Content-Length: " + to_string(len(payload)) + "\r\n";
+    return exchange(port, "POST", "/call/" + member, headers, payload, COMMAND_RELAY_TIMEOUT_NS);
+}
+
+// A session's command, relayed to this head's own commands port under
+// `bearer`: what the exposure answered. The exposure authenticates the
+// bearer and holds the call to its row; the relay adds no principal of its
+// own.
 fn relay_command(req: std::http::Request, port: Int, bearer: String) -> std::http::Response {
     let http = Http { };
     if port <= 0 { return http.error(503, "commands_unavailable", "this head serves no commands over HTTP: its launcher gave it no HALE_DNA_COMMANDS_PORT", false); }
-    let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer + "\r\nContent-Length: " + to_string(len(req.body)) + "\r\n";
-    let up = exchange(port, "POST", req.path, headers, req.body, COMMAND_RELAY_TIMEOUT_NS);
+    let up = relay_upstream(req.body, port, bearer);
     if !up.ok {
-        if up.code == "timeout" { return http.error(504, "upstream_timeout", "this head's api binding did not answer in time", true); }
-        return http.error(503, "commands_unavailable", "this head's api binding is not answering; nothing was sent", true);
+        if up.code == "timeout" { return http.error(504, "upstream_timeout", "this head's commands port did not answer in time", true); }
+        return http.error(503, "commands_unavailable", "this head's commands port is not answering; nothing was sent", true);
     }
     let content_type = upstream_header(up.headers, "Content-Type");
     return std::http::Response { status: up.status, content_type: if len(content_type) > 0 { content_type } else { "application/json" }, body: up.body };

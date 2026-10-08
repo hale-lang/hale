@@ -234,18 +234,6 @@ pub fn bundle_law_selection(bundle: &Bundle<'_>) -> claims::LawSelection {
     claims::select_laws(&programs, &bundle.import_renames, &claims::EnvBinding::default())
 }
 
-/// The served surface of a bundle no snapshot holds: the api entry of
-/// the entry row's root (`entry`), over the bundle's programs as they
-/// stand, which the sequence has already generated the binding into, or
-/// not (a test that generated it itself). What [`check::check_bundle`]
-/// reads; every
-/// verb reads its snapshot's, the surface its sequence generated the
-/// binding from (`Snapshot::api_surface`).
-pub fn bundle_api_surface(bundle: &Bundle<'_>, entry: &entry::EntryRow) -> Option<hale_syntax::api_gen::ApiSurface> {
-    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    hale_syntax::api_gen::api_surface(&programs, entry.root().and_then(|m| m.decl(bundle)))
-}
-
 /// The handler rows of a bundle no snapshot holds, in the bundle's
 /// order (a row's position is its authored ordinal): what
 /// [`check::check_bundle`] reads. Every verb

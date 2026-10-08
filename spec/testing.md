@@ -190,11 +190,11 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale verify` | Layer-2 discipline gate: `check`'s full analysis, ANY finding fails (no execution) |
 | `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
 | `hale doc` | API reference from `///` doc comments (Markdown / `--json`; see below) |
-| `hale describe <socket \| file>` | An api binding's description (GH #1107): commands, reads, streams and schemas; `--openapi` / `--mcp` for the derived forms; from a source it is `hale check --dump-api`, from a socket what the binding serves — the caller's slice, or with `--full` the whole document, a read gated on `owner` (GH #1109) — and the full form is the same bytes |
-| `hale call <socket> <name> [json]` | Send one command (its JSON payload) or one read to a running api binding; prints the answer, a refusal on stderr with exit 1 |
-| `hale watch <socket> <stream>` | Attach to a stream of a running api binding; one JSON line per frame |
-| `hale admin <socket> [--port n]` | A local page over the description, every action one request to the binding |
-| `hale mcp --app <socket>` | A running api binding as an MCP server: commands as tools, reads as resources |
+| `hale describe <endpoint \| file>` | A served exposure's description (GH #1417, `spec/api.md` § The description): members, streams, schemas, the caller and the roles it holds; an endpoint is a socket path, `http://host:port` (the caller named by `--token`) or `ws://host:port` (a hub), and the document is the bytes the exposure serves; from a program it is `hale check --api` (the inventory, or one exposure for `--exposure NAME --caller P`) |
+| `hale call <endpoint> <member> [json]` | Read the description, call one member naming its digest, print the response; a handler error or a refusal on stderr with exit 1, `--receipt` for the answer as the exposure wrote it |
+| `hale watch <ws://hub> <topic>` | Subscribe to a stream of a hub; one JSON line per frame (`subscribed`, `event` with its `seq`) |
+| `hale admin <endpoint> [--port n]` | A local page over the description, every action one request to the endpoint |
+| `hale mcp --app <endpoint>` | A served exposure as an MCP server: the members the caller may call as tools; an `mcp://host:port` endpoint (an `mcp::Rpc` listener) is forwarded |
 
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` runs
 Layer 3's single-language half.

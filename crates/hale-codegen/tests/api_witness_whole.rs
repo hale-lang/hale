@@ -143,6 +143,7 @@ fn start(bin: &std::path::Path, hub: u16, mcp: u16, grpc: u16, env: &[(&str, &st
     let server = Server::start(bin, &all);
     server.ready();
     wait_listening(server.port2);
+    wait_accepting_unix(&server.sock());
     wait_listening(hub);
     wait_listening(mcp);
     wait_listening(grpc);

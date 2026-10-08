@@ -4025,6 +4025,7 @@ build.
 | `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
 | `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
 | `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
+| `HALE_API_TOKEN` | none | The bearer `hale describe`, `call`, `watch`, `admin` and `mcp --app` present to an HTTP or hub exposure when `--token` is not given; empty is unset. | no bearer |
 | `HALE_BIN` | none | The `hale` binary a child process runs as its toolchain: `hale dna` sets it, to the binary it is running as, for the hosts and fixtures it starts. | the running binary |
 | `HALE_IMPORT_DEBUG` (*set*) | none | Trace import resolution on stderr, per call. | off |
 | `HALE_MCP_ROOT` | none | `hale mcp`: every path a tool call names must resolve under this directory. | unset: no restriction |
@@ -4091,8 +4092,7 @@ its behavior as described in this document.
 | `LOTUS_REPLAY_AT=<n>` | unset | Stop the replayed run (SIGSTOP) at the n'th consume; `hale replay --at <n>`. |
 | `LOTUS_REPLAY_AT_CONSUMER=<id>` | unset | With `LOTUS_REPLAY_AT`, count the n'th consume of that consumer instead of the process-wide n'th; `--at <consumer-id>:<n>`. |
 | `LOTUS_REPLAY_FD=<fd>` | unset | An already-open, validated descriptor for the recording, passed by `hale replay` so no path is re-resolved between admission and replay. |
-| `LOTUS_API=<path>` | the baked path | Overrides the unix socket path of the program's `api` binding at run time. |
-| `LOTUS_API_ROLES=<table>` | the baked `[environments.<env>.roles]` | Overrides the api binding's roles table at run time; with no table baked in, every gate refuses until this says otherwise. |
+| `LOTUS_API_ROLES=<table>` | the `table` param of the program's `std::api::StaticRoles` | Overrides a `StaticRoles` source's table at run time (`spec/stdlib.md` § `std::api`); with no table, every `requires` refuses until this says otherwise. |
 | `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |

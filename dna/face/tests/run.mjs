@@ -77,7 +77,6 @@ try {
     ...(memoryOwner() ? { HALE_DNA_MEMORY_DSN_OWNER: memoryOwner() } : {}),
     ...(workflows ? { HALE_FACE_WORKFLOWS_BIN: workflows } : {}),
     ...(commands ? { HALE_FACE_COMMAND_BIN: commands } : {}),
-    HALE_API_CONTRACT_ROOT: path.join(repo, 'dna/api/contract/v1'),
   });
 } catch (error) {
   console.error(error.message);

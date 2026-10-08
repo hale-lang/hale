@@ -24,9 +24,9 @@
 //!   after the sequence, for the configuration's environment: the check
 //!   reports its diagnostics, the laws stage lowers its clauses, and the
 //!   artifact projects its adoption to the constitution identities.
-//! - [`Snapshot::demand_role_rows`]: the role declarations, `@gated`
-//!   sites and role source over the programs after the sequence, which
-//!   the check's role rules read.
+//! - [`Snapshot::demand_role_rows`]: the role declarations over the
+//!   programs after the sequence, which the check's role rules and the
+//!   surface laws read.
 //! - [`Snapshot::demand_units`]: the unit-dialect declarations and the
 //!   catalogue closed from them, which the check's unit laws read.
 //! - [`Snapshot::demand_alloc_summary`]: the allocation summary, one
@@ -84,7 +84,6 @@ use std::sync::Arc;
 use hale_graph::ids::SiteId;
 use hale_model::dispatch_plan::DispatchPlan;
 use hale_model::ApplicationModel;
-use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
@@ -126,9 +125,8 @@ use crate::source::SourceProvider;
 /// the model's inputs; `flows` the flow rows, which the check, the
 /// lifecycle plan and the lowering view read; `law_selection` law
 /// selection, which the check, the laws stage and the artifact read
-/// ([`Snapshot::demand_law_selection`]); `api_surface` the role rows,
-/// which the check reads ([`Snapshot::demand_role_rows`]: the surface
-/// itself is the desugar sequence's product); `surface` the surface
+/// ([`Snapshot::demand_law_selection`]); `role_rows` the role rows,
+/// which the check reads ([`Snapshot::demand_role_rows`]); `surface` the surface
 /// rows of `api` blocks and `@rpc` handlers, which the check, the model
 /// and `hale check --api` read ([`Snapshot::demand_surface_rows`]);
 /// `arrangement` the
@@ -168,7 +166,7 @@ pub const FAMILIES: [&str; 28] = [
     "handler_routing",
     "flows",
     "law_selection",
-    "api_surface",
+    "role_rows",
     "surface",
     "alloc_summary",
     "effects",
@@ -209,10 +207,6 @@ pub struct Environment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub target: Target,
-    /// The `--api` entry the desugar sequence injects, if any.
-    pub api: Option<String>,
-    /// The roles the environment binds, baked into the api binding.
-    pub api_roles: Option<String>,
     pub environment: Option<Environment>,
     /// The whole-program rules (F.18, GH #721): a bare callee or
     /// identifier nothing binds is an error. On for a whole seed, off
@@ -246,8 +240,6 @@ impl Config {
     pub fn check(whole_program: bool, allow_unowned_subscriber: bool) -> Self {
         Config {
             target: Target::host(),
-            api: None,
-            api_roles: None,
             environment: None,
             whole_program,
             allow_unowned_subscriber,
@@ -265,8 +257,6 @@ impl Config {
     pub fn build(target: Target) -> Self {
         Config {
             target,
-            api: None,
-            api_roles: None,
             environment: None,
             whole_program: true,
             allow_unowned_subscriber: false,
@@ -313,8 +303,6 @@ impl Config {
         // Whether `--target` named it: an explicit target overrides a
         // source declaration, the host fallback does not (T1(b)).
         d.flag(self.target.explicit);
-        d.option(self.api.as_deref());
-        d.option(self.api_roles.as_deref());
         match &self.environment {
             None => d.flag(false),
             Some(env) => {
@@ -390,8 +378,7 @@ pub enum LoadError {
     /// Rendered by [`CheckableFailure::report`].
     Load(CheckableFailure),
     /// The config asks for what the program cannot carry: an
-    /// environment for a seed with no main locus, an `--api` entry with
-    /// nowhere to go.
+    /// environment for a seed with no main locus.
     Refused(String),
 }
 
@@ -452,8 +439,6 @@ pub struct Snapshot {
     entry_imports: Vec<Import>,
     source_map: Vec<SourceFile>,
     identities: hale_types::snapshot::Snapshot,
-    /// The api surface the sequence generated a binding for, if any.
-    api_surface: Option<ApiSurface>,
     /// The files that did not parse, with their diagnostics (bundle-
     /// global spans). A load that leaves any blocks the scope.
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
@@ -656,7 +641,6 @@ impl Snapshot {
             entry_imports: loaded.entry_imports,
             source_map: Vec::new(),
             identities: hale_types::snapshot::Snapshot::default(),
-            api_surface: None,
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
             unlinked: loaded.unlinked,
@@ -727,10 +711,10 @@ impl Snapshot {
         // Sync inference writes nothing into the program: its pick is
         // the form rows' effective discipline (`demand_forms`), which
         // the check, the model and lowering read.
-        let sequenced = {
+        {
             // F.40 phase 2.1b: the desugar sequence, the one every
             // entry point runs before its check: JSON Tier 2's parsers,
-            // the api binding (GH #1106, bundle-wide), then the passes
+            // the serve sites (GH #1417, bundle-wide), then the passes
             // that shape a declaration.
             let keys: std::collections::BTreeSet<String> =
                 snap.programs.keys().map(|p| p.display().to_string()).collect();
@@ -741,20 +725,11 @@ impl Snapshot {
                 &mut refs,
                 &hale_types::desugar_sequence::Sequence {
                     import_renames: &snap.import_renames,
-                    api: snap.config.api.as_deref(),
-                    api_roles: snap.config.api_roles.as_deref(),
                     default_surface: &default_surface,
                 },
-            )
-        };
-        let refused = match sequenced {
-            Ok(surface) => {
-                snap.api_surface = surface;
-                snap.count("desugar_sequence");
-                None
-            }
-            Err(msg) => Some(msg),
-        };
+            );
+            snap.count("desugar_sequence");
+        }
         // GH #408 Phase 0: the source map, then the identities minted
         // with it (F.40 phase 1.1b-iii), so each site's seed is the
         // file its span falls in.
@@ -775,9 +750,7 @@ impl Snapshot {
             // an environment with nothing to inject checked nothing,
             // and a matrix counted a library path as a covered pair.
             // The entry row answers (an imported or a module-nested
-            // `main locus` is not the entry), before the sequence's own
-            // refusal: an `--api` entry with no main locus to go on is
-            // the same missing entry, and the environment names it.
+            // `main locus` is not the entry).
             if !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
                 return Err(LoadError::Refused(format!(
                     "{}: `--env` names a deployment target, and a \
@@ -787,10 +760,7 @@ impl Snapshot {
                 )));
             }
         }
-        match refused {
-            Some(msg) => Err(LoadError::Refused(msg)),
-            None => Ok(snap),
-        }
+        Ok(snap)
     }
 
     pub fn key(&self) -> &SnapshotKey {
@@ -865,12 +835,6 @@ impl Snapshot {
     /// whose imports are not followed.
     pub fn entry_imports(&self) -> &[Import] {
         &self.entry_imports
-    }
-
-    /// The api surface the desugar sequence generated a binding for,
-    /// if the program (or `--api`) declared an entry.
-    pub fn api_surface(&self) -> Option<&ApiSurface> {
-        self.api_surface.as_ref()
     }
 
     /// The whole seed's program: a load that read the whole seed holds
@@ -1197,7 +1161,6 @@ impl Snapshot {
             uses: self.demand_capability_uses().map_err(Clone::clone)?,
             laws: self.demand_law_selection().map_err(Clone::clone)?,
             roles: self.demand_role_rows().map_err(Clone::clone)?,
-            api_surface: self.api_surface(),
             surfaces: self.demand_surface_rows().map_err(Clone::clone)?,
             units: self.demand_units().map_err(Clone::clone)?,
         };
@@ -1440,23 +1403,19 @@ impl Snapshot {
     }
 
     /// The role rows ([`hale_types::roles::role_rows`], F.40 phase 4, A4):
-    /// every `role` declaration (duplicates kept), every `@gated` site by
-    /// kind and the api entry's role source, over the programs after the
-    /// sequence, with or without an `api:` entry. Counted as the
-    /// `api_surface` family, whose rows they are; the surface itself is
-    /// the sequence's ([`Snapshot::api_surface`]). The check's role rules
-    /// read them (`CheckInputs::roles`). Not gated on the typing: they
+    /// every `role` declaration (duplicates kept), over the programs after
+    /// the sequence. Counted as the `role_rows` family. The check's role
+    /// rules and the surface laws read them (`CheckInputs::roles`). Not gated on the typing: they
     /// read declarations only. A seed with a hole is not a program, and
     /// its rows are blocked with its scope.
     pub fn demand_role_rows(&self) -> Result<&RoleRows, &Blocked> {
         self.role_rows
             .get_or_init(|| {
                 if self.has_hole() {
-                    return Err(Blocked { family: "api_surface", ..self.hole_blocked() });
+                    return Err(Blocked { family: "role_rows", ..self.hole_blocked() });
                 }
-                let entry = self.demand_entry().map_err(Clone::clone)?;
-                self.count("api_surface");
-                Ok(hale_types::roles::role_rows(&self.bundle(), entry))
+                self.count("role_rows");
+                Ok(hale_types::roles::role_rows(&self.bundle()))
             })
             .as_ref()
     }
@@ -1782,11 +1741,11 @@ impl Snapshot {
                 let surfaces = self.demand_surface_rows().map_err(Clone::clone)?;
                 let roles = self.demand_role_rows().map_err(Clone::clone)?;
                 diags.extend(hale_types::surfaces::surface_laws(&self.bundle(), surfaces, roles, summary));
-                diags.extend(hale_types::surfaces::serve_laws(&self.bundle(), surfaces));
-                // So does the closures' reach law: whether a recovery
-                // reaches a locus is the typed receivers' answer.
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
+                diags.extend(hale_types::surfaces::serve_laws(&self.bundle(), surfaces, entry));
+                // So does the closures' reach law: whether a recovery
+                // reaches a locus is the typed receivers' answer.
                 diags.extend(hale_types::closure_events::unreached_event_laws(&self.bundle(), handlers, entry, typed));
                 hale_types::finish_check_diags(&mut diags);
                 let own = diags.len();
@@ -1981,8 +1940,6 @@ impl Snapshot {
                     &self.identities,
                     &self.source_map,
                     &self.import_renames,
-                    self.config.api.as_deref(),
-                    self.config.api_roles.as_deref(),
                     forms,
                     bindings,
                     placement,
@@ -2209,16 +2166,6 @@ impl Digest {
 
     fn flag(&mut self, b: bool) {
         self.bytes(&[b as u8]);
-    }
-
-    fn option(&mut self, s: Option<&str>) {
-        match s {
-            None => self.flag(false),
-            Some(s) => {
-                self.flag(true);
-                self.field(s.as_bytes());
-            }
-        }
     }
 
     pub(crate) fn finish(&self) -> u64 {

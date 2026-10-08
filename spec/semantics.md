@@ -1880,7 +1880,7 @@ handle under that binding's guarantee. Per binding:
 | `udp://...`        | handed to the local IP stack; lossy from there **by declaration**       |
 | `shm_ring(...)`    | slot claimed + committed, under the declared `on_overflow` policy       |
 | adapter locus      | whatever the adapter's own contract says (it owns delivery)             |
-| `api: unix(...)`   | a command: dispatched to every born subscriber, or answered by the one handler that declares a return type; a read: answered from the locus's own pool; a stream: forwarded to every attached watcher under its bound (§ "The api binding") |
+| hub (`Topic: self.hub`)  | a stream: handed to every admitted subscriber's queue under the row's `bound` and `on_full` (`spec/api.md` § Streams)
 
 This contract is what lets `<-` be an infallible statement: the
 error channel isn't missing, it's relocated to where it can be
@@ -1970,376 +1970,36 @@ acted on. Consequences, all normative:
   *opened* fails the boot like a `bindings { }` entry.
 
 
-#### The api binding (GH #1106)
+#### The api binding (retired)
 
-`spec/api.md` is the contract this section is being replaced by (GH
-#1417): surfaces, serve sites and descriptions over rows; the section
-stays the shipped behavior until step R4 retires it.
+A program's API is no longer an entry in the main locus's `bindings { }`.
+`bindings { api: … }`, `@gated`, `serve:` and an `expose` member read as an
+API are refused with one diagnostic that names the replacement, and the
+compiler carries no code to accept them. `spec/api.md` is the contract:
 
-One entry in the main locus's `bindings { }`, headed by the
-contextual keyword `api`, binds the program's API rather than one
-topic:
+- what the program offers is a **surface**: an `api NAME { rpc Locus::handler
+  requires: [role]; … }` block, or `@rpc` on a handler (§ Surfaces and their
+  rows). A call is a call of the handler, authorized against the row's
+  `requires`; a read is an `rpc` whose handler returns the value;
+- where and how it is offered is a **serve site**,
+  `api::serve(Surface, unix::Rpc { … } | http::Rpc { … } | mcp::Rpc { … },
+  as: "name", bound: N, on_full: refuse)`, in the main locus (§ Serving), over
+  a transport that is a locus with lifecycle (§ The `Rpc` interface), under a
+  role source and a bearer source the program supplies (§ Identity sources);
+- a stream is a **topic bound to a hub**, `bindings { Topic: self.hub
+  requires: [role], bound: N, on_full: drop_old; }` over a `ws::Hub` or a
+  `udp::Hub` (§ Streams);
+- what a client reads is the **description** of one exposure for the caller
+  (§ The description): `{"describe": true}` over the socket, `GET
+  /.description` over HTTP, `hale check --api` from the rows. `hale describe`,
+  `call`, `watch`, `admin` and `mcp --app` are clients of it.
 
-```hale
-main locus App {
-    bindings {
-        api: unix("/run/app.sock", bound: 64, on_full: refuse);
-    }
-}
-```
-
-Nothing else in the source changes. **The surface is one rule
-(GH #1137): the loci of the entrypoint's own seed, plus the loci the
-entry names in `serve:`, and nothing else.** The entry binds **every
-topic such a locus subscribes** (a *command*), **every topic such a
-locus publishes** (a *stream*), and **every `expose` member of the
-main locus or of a param-default child of the seed's own whose type
-appears once among main's params** (a *read*, named `member` on main
-and `param.member` on the child). `serve: [p, …]` follows the
-transport and names params of the main locus whose type is a locus
-another seed declared:
-
-```hale
-bindings {
-    api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), serve: [commands];
-}
-```
-
-puts the locus `commands` holds (`api::Commands`) on the surface — its
-subscriptions are commands, its publishes streams, its gates gates, as
-if the seed had declared them; its `expose` members are not reads,
-which stay the seed's own. The binding serves a locus *type*: every
-instance of it subscribes, so a served type main also holds under
-another param is refused. A locus that came in through `import` and is not named
-is not part of the surface, however much of it the entrypoint holds
-or composes (GH #1104 piece 5): a library's internal bus is not the
-application's API, and a head holding its core's loci as params does
-not serve the core's topics as commands. Holding a locus never serves
-it; naming it does. A `serve:` name that is not a param of main, whose
-type is not a locus, whose locus is the seed's own (already on the
-surface), that names a locus twice or whose type main holds under
-another param too is an error at the name. The
-description carries what `serve:` named, `"serve": [{"param":
-"commands", "locus": "api::Commands"}]` (empty when nothing is), so
-`hale check --dump-api` shows a composer exactly what it serves. An
-imported *topic* a seed's own locus subscribes or publishes is served
-as any other, under its qualified name. An imported seed's `main locus` is not the entrypoint
-either: renamed with its seed, it does not count toward the one-main
-rule, its `placement { }` places nothing here, and an `api:` entry
-it carries is inert — a composed head that
-imports the standalone head declares its own entry to get a socket.
-The binding is generated from the entry of the `main locus` the build
-deploys, whose param it becomes (with a second `main locus`, rule 1's
-error, the first: a second one's entry binds nothing). A subscription by literal subject
-(`subscribe "log.**" ...`) names no topic and is not part of the
-API; a command reaches the loci that subscribe the topic by name,
-not those hearing it through a parent topic. `hale run --api
-<path>` (and `hale build --api <path>`, flags before the target)
-synthesizes the entry above with the dev defaults, `bound: 64,
-on_full: refuse`, and needs a `main locus` of the seed's own to put
-it on: a bare `fn main` program is refused with the rule, and so is a
-seed whose only `main locus` is an imported library's ("the only
-`main locus` here is an imported library's, whose bindings are
-inert"). The path is an expression
-the main locus evaluates as a param default — a literal, or
-`self.<param>` the program computed, so a head may listen at one
-socket per record under `XDG_RUNTIME_DIR` rather than at a fixed
-path two projects would steal from each other. `LOTUS_API=<path>` at
-run time overrides the socket path of an entry the program
-carries and never creates one, so a binary built without the entry
-pays nothing. A stale socket file (nobody answers on it: a crashed
-predecessor's) is unlinked when the listener binds, and the file is
-unlinked again at dissolve; a path a live process holds is refused,
-never stolen. A binding that cannot listen does not take the program
-with it: it says so on stderr and the rest of the program serves
-without its socket. The
-listener is born as the last param of the main locus, so it
-appears once every earlier param is born; a caller that races the
-boot connects with a wait.
-
-**The two knobs.** `bound: N` and `on_full: refuse` are required
-and describe the request side: at most N commands and reads
-awaiting a handler's answer per binding; the N+1th caller receives
-an `over_bound` receipt and nothing inside the program is touched.
-`refuse` is the only request policy: a caller waiting for an answer
-cannot be shed silently, and `wait` is left for when its disposition
-has a consumer. Each attached watcher has a queue of its own,
-`watch_bound: M` frames with `on_watch_full: drop_old | drop_new`;
-the two go together, and when both are omitted a watcher gets
-`bound` frames and `drop_old`. Frames a watcher's queue sheds are
-counted and reported on the next frame it does receive. The third
-knob is the gate's: `on_unauthorized: refuse` (the default: a
-receipt, `unknown` for an item outside the caller's slice) or `drop`
-(no answer), and `roles: <expr>` names the membership source (GH
-#1109, below).
-
-**The wire.** A Unix domain stream socket carrying one JSON object
-per line. A request is one of
-
-```text
-{"call": "Verdict", "payload": {...}}     a command, the payload the topic's type
-{"read": "billing.ledger"}                a snapshot of an exposed member
-{"watch": "PriceMoved"}                   attach to a stream
-{"describe": true}                        the description, the slice this caller's roles show (spec/model.md § "The description")
-{"describe": "full"}                      the whole description: a read gated on `owner` (GH #1109)
-```
-
-each with an optional `"id"` the client chooses (any JSON value,
-echoed verbatim). Every answer carries `"request_id"`, an integer
-the binding assigns, unique for the binding's lifetime and
-increasing; a line that is not a request at all is refused with
-`request_id` 0, since no request was admitted. The answers:
-
-```text
-{"request_id": 7, "id": ..., "ok": true, "value": {...}}                  a command whose handler declares a return type
-{"request_id": 7, "id": ..., "ok": true, "accepted": true}                a command no subscriber answers: dispatched
-{"request_id": 7, "id": ..., "ok": true, "value": {...}, "as_of": "..."}  a read
-{"request_id": 7, "id": ..., "ok": true, "attached": "PriceMoved"}        a watch
-{"request_id": 7, "id": ..., "ok": false, "refusal": {"kind": "...", "reason": "..."}}
-{"stream": "PriceMoved", "value": {...}}                                  a frame, after an attach
-{"stream": "PriceMoved", "dropped": 3}                                    frames the watcher's queue shed since its last frame
-```
-
-A describe answers `{"ok": true, "value": <description>}`: the
-document `hale check --dump-api` emits for the same program, byte
-for byte, so a client learns the whole surface from the binding and
-needs no topic name in advance. `hale describe`, `hale call`, `hale
-watch`, `hale admin` and `hale mcp --app` are those clients.
-
-The refusal kinds are `malformed` (not a JSON object, no verb, no
-`payload` object on a call, or a payload that does not decode: the
-reason names `missing_field` or `wrong_type` and the field),
-`unknown` (no such topic or read), `not_a_command` (a stream named
-in a call), `not_a_stream` (a command named in a watch),
-`over_bound`, `unauthenticated` (GH #1109: the kernel would not say
-who the peer is; such a peer is refused every request, gated or not,
-since the binding vouches for who is calling and -1 is nobody), and
-`unauthorized` (the caller lacks `owner` for `{"describe": "full"}`;
-the refusal carries `"role"`). A gated command, read or stream a
-caller may not use is refused as `unknown`, exactly as a name that
-does not exist: what lies outside a caller's slice is not disclosed
-to it, and only `full`, whose existence every caller knows, names
-the role it needs. `on_unauthorized: drop` turns either refusal into
-no answer at all. A refusal is a value-channel answer, never a
-failure of the program. Answers arrive in the order the program produces
-them, so a refusal the socket side issues itself may precede the
-answer to an earlier request still with its handler; a client
-correlates by `id`.
-
-**The reply is the return type.** A subscribed handler may declare
-a return type. Through the binding, the value it returns is the
-reply, encoded as JSON; among the subscribers of one topic at most
-one may declare a return type, else the entry is an error naming
-both handlers; a command no subscriber answers is answered
-`accepted` by the binding itself once dispatched. An intra-process
-publish of the same topic calls the handler as before and ignores
-the return, so a topic that never crosses the binding pays nothing.
-
-**The binding authenticates; nothing else does (GH #1108).** Who is
-calling is established at the api binding and nowhere else: a peer
-on its Unix socket is the principal its kernel credentials name
-(`mode: "unix"`, `name: "uid:<n>"`, with `uid`, `gid` and `pid` as
-`SO_PEERCRED` / `getpeereid` report them; credentials the kernel
-would not give are `-1`, and such a peer is **unauthenticated**,
-never anyone). A message that did not come through the api binding
-carries the **local principal** (`mode: "local"`, `name: "local"`,
-credentials -1): a publish inside the program, and also a cell an
-env-routed `LOTUS_BUS_CONFIG` transport delivered, which the program
-cannot tell apart. `local` is therefore never a statement of trust,
-only of provenance; a topic bound to a transport in `bindings { }`
-refuses a `Context` handler outright, since a cell from another
-process would reach it as `local`. A bearer token on the binding's
-HTTP transport is the third mode (`mode: "bearer"`), below. Every
-answer the binding writes, refusals included, carries the principal
-it established:
-
-```text
-{"request_id": 7, "id": ..., "ok": true, "value": {...},
- "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
-```
-
-**The HTTP transport (GH #1135).** A clause after the socket,
-`http(host, port, principals: <source>)`, gives the binding a second
-transport of its own, and no program writes one:
-
-```hale
-bindings {
-    api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles),
-        http("127.0.0.1", self.http_port, principals: self.bearer);
-}
-```
-
-`host` and `port` are expressions the main locus evaluates as param
-defaults, as the socket path is. The binding listens there and takes
-one request per connection: a `POST` (any path) whose body is one line
-of the wire — `{"call"}`, `{"read"}` or `{"describe"}`; a watch is the
-socket's — under `Authorization: Bearer <token>`. It asks the program's
-`principals:` source, a locus satisfying `std::api::BearerSource`
-(`fn principal(token: String) -> Principal`, `fn refused() -> String`),
-who the token is. The principal is `mode: "bearer"`, its `name` the
-source's, and `via: "http"`. A token the source names nobody (an empty
-`name`), or a request with no bearer, is refused as `unauthenticated`
-with the source's reason, gated or not. From there the request is any
-socket peer's: the same surface, gates, bound, description, receipts
-and replies. The response carries the reply line as its body and the
-refusal's kind as its status: 200 answered, 401 `unauthenticated`,
-403 `unauthorized`, 404 `unknown`, 503 `over_bound`, 400 otherwise,
-405 for anything but a POST, and 504 when the program does not answer
-within 30 s. The whole request arrives within 10 s or is refused. A
-port the transport cannot hold stops the program at start: a live
-program always owns its port. An `http(…)` without `principals:` is an
-error at the clause, since every token would be nobody.
-
-`Principal.via` is set by the binding and never by a caller: `"http"`
-for the HTTP transport, empty for the socket. A `Context` handler reads
-the transport as `ctx.via`: `api` through the socket, `http` through
-the HTTP transport, `local` in-process. A request line carries no mark
-of how it arrived: a `"via"` in a line is not read.
-
-**Names on the wire.** A call, a read or a watch names an item as the
-description spells it; an item another seed declared is spelled
-qualified (`api::Claim`). A caller that knows the program, not its
-seeds, may write the unqualified tail (`Claim`): the binding accepts
-it when exactly one item of the surface bears that tail and no item is
-spelled bare by it, and answers `unknown` otherwise, as for any name it
-does not serve. The description keeps the qualified spelling.
-A client that reads the description to learn its slice reads a
-qualified name by that same tail when exactly one item of the
-description bears it, and keeps the qualified spelling where two do —
-so a head composed of several seeds offers a caller the commands it
-may write bare.
-
-**The gate (GH #1109).** A role is declared vocabulary
-(`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a
-subscribed handler, an `expose` member or a `publish` member says
-that a call on the topic, a read of the member or a watch of the
-stream **arriving through the api binding** is refused unless the
-caller's principal holds R. Commands and reads are checked per
-message at the binding; a stream is checked once, when the watcher
-attaches, and a stream follows the same gate as the topic's
-subscribers unless its `publish` member states its own. Holding R
-means the membership source answers yes for R
-itself or for any role whose `includes` chain reaches R; the first
-that answers is the **authorizing role**, and it is written on the
-receipt as `"role"` and handed to a `Context`-taking handler as
-`ctx.role` (empty for an ungated operation, and for anything that did
-not cross the binding). The source is a locus satisfying
-`std::api::RoleSource` (`fn holds(p: Principal, r: String) ->
-Bool`, the direct question only): the one the entry names with
-`roles: <expr>` — an expression the main locus evaluates as a param
-default, a locus literal or one of main's own params (`self.roles`),
-so the program builds its source with its own state and keeps a
-handle to it, and the binding holds it as a `std::api::RoleSource`
-(a borrow) — or the stdlib's `std::api::StaticRoles`, whose table
-`hale build --env <name>` / `hale run --env <name>` bakes from
-`[environments.<name>.roles]` in `hale.toml` (and `hale check --env
-<name>` checks the binding with the same table) and `LOTUS_API_ROLES`
-overrides at run time. The table travels as one line the binding
-re-splits, so it is held to one rule at check, at build and at
-birth: a key is a role the program declares (an identifier), a
-member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`,
-`bearer:<name>` (the name the bearer source answers, an OIDC subject
-say: 1 to 255 printable ASCII characters other than a blank and the
-table's own `,`, `;` and `=`) or `*`; a table outside that rule is a manifest error, and at birth the
-binding refuses to start, saying which entry. `*` is any
-authenticated caller on either transport: a socket peer the kernel
-vouches for (uid ≥ 0), or a bearer principal its source named (a
-non-empty `name`). `bearer:<name>` matches a bearer principal whose
-`name` is exactly `<name>`, as the bearer source spells it (it is
-never resolved against the account database), and never a socket
-peer; `uid:`, `gid:`, `user:` and `group:` match socket peers and
-never a bearer principal, even one whose `name` or `uid` reads the
-same: a Unix account and a token subject are different identities.
-A `gid:` member matches the peer's primary group or one of the
-supplementary groups the kernel holds for the connection
-(`SO_PEERGROUPS`; nothing is looked up per request); `user:` and
-`group:` resolve once, at birth, per the host's account database.
-Without a table every gate refuses, and the build says so once. A
-principal the binding could not authenticate (a socket peer with
-uid -1, a bearer principal with an empty `name`) holds no role
-whatever the table says, and is refused every request. Deferred:
-bearer groups — a member matching a group the bearer source reports
-for the principal (an OIDC `groups` claim); today a bearer principal
-is granted by its own name or by `*`. The description the
-binding serves is the caller's slice: the commands, reads and
-streams it may use (an ungated item always), with the schemas those
-items reference; the whole document is itself a read gated on the
-built-in role `owner` (`{"describe": "full"}`), and it is the
-document `hale check --dump-api` emits, byte for byte. The gate is a
-boundary check at ⋈ and nothing more: it says nothing about the
-program's internal call paths (the description's `notes.gates` says
-the same), and a `@gated` anywhere but those three sites is an error
-so that no annotation promises a check that does not run. A gated
-handler's topic cannot also be bound to a transport in `bindings
-{ }`, for the same reason. Every subscriber of one topic, and every
-publisher of one stream, states the same gate, because the binding
-refuses the message, not the handler.
-
-**The handler signature rule.** As with `Drain<T>`, the `subscribe`
-line never changes; the handler's parameter list declares what the
-substrate hands it. Three independent axes: the payload shape (`T`
-or `Drain<T>`), identity-awareness (with or without a second
-parameter `ctx: std::api::Context`), and the reply (with or without
-a return type); any combination is a handler, and a parameter list
-of any other shape is refused at the subscribe site. Bus dispatch
-hands a handler one payload, so codegen registers a wrapper for a
-handler that takes a `Context`: the handler itself stays the
-subscriber by name in every analysis, the model and the manifest,
-and the wrapper adds `std::api::local_context()` (the local
-principal, `via: "local"`, request id 0, no role), built for that
-delivery in a subregion of the locus's own arena and released when
-the handler returns. Through the api binding the synthesized
-subscription passes the caller the binding established, `via:
-"api"` through the socket or `"http"` through its HTTP transport, the
-request id, and the authorizing role. A handler never asks whether it was reached
-from outside; it reads `via`. `Context` and `Principal` are
-ordinary structs (`spec/stdlib.md` § `std::api`): constructible in
-a test, forwardable in a payload; provenance in `via` is what tells
-a binding-produced one apart, not restricted spelling.
-A batch handler (`Drain<T>`) is not reached through the binding:
-the cooperative queue has no batch delivery yet, so a topic one
-subscribes is left out (with a warning) and bulk requests wait on
-that substrate.
-
-**Reads are snapshots.** A binding never reads a field across
-pools. An exposed member lowers to a synthesized read subject
-whose handler runs on the locus's own pool and answers a JSON copy
-of the member (a field, or a no-argument infallible fn's result),
-so the answer is the state at that instant on that thread and a
-later write does not touch it. Every read reply carries `as_of`:
-the runtime keeps no per-locus sequence, so v1 defines it as
-`sha256:` plus the hex digest of the answered JSON, which two reads
-compare equal on exactly when the snapshot did not change and a
-later command can fence on. A live view is what a stream is for.
-
-**Codecs.** The JSON codec for every payload, return and read type
-that reaches the binding is generated from the type, without
-`json:` tags: `Int`, `Float`, `Bool`, `String`, and nested structs
-of the same; a `json:"key"` tag renames a key here as it does for
-`T::from_json`. Decoding is strict: a value of the wrong JSON kind
-is `wrong_type`, a missing field without a literal default is
-`missing_field`, and a handler only ever sees a decoded value. A
-topic or member whose type has a field of another kind (`Decimal`,
-`Time`, `Duration`, `Bytes`, arrays, enums, loci) is left out of
-the API with a warning at the `api:` entry naming the field, so
-adding the entry never breaks a build.
-
-**The lowering, and what it costs.** The entry is pre-check
-synthesis, no runtime change: per command an envelope type and
-topic (`__api.call.<topic>`) carrying the peer, the request id and
-the payload (and the topic's key, so a keyed command routes as its
-topic does), and on every subscribing locus a synthesized
-subscription whose handler calls the author's and publishes the
-reply on `__api.reply`, keyed by peer; per read a subject
-(`__api.read.<name>`) answered on the locus's pool; per stream a
-forwarder into `__api.frame`. Two synthesized loci on their own
-`async_io` pool own the socket: the binding (listener, request
-ids, the bound, stream forwarding) and one accepted child per
-connection (line reader, reply writer, watcher queue). All of it
-is typechecked like the author's code, and it shows in `hale
-topology` under `__api.*` subjects. The correlation store has the
-shape DNA's requests have (#684): the request row exists before dispatch,
-an answer is written once, and a request is admitted once.
+What stays here, because it is not the API's: the publish contract (§ "The
+publish contract", above) and the bus codec clause `codec(…)` of a binding
+(F.36) apply to every `bindings { }` entry, a topic bound to a hub among them.
+A message that did not come through a transport is not a call: `std::api::Context`
+(`spec/stdlib.md` § `std::api`) is built by the exposure for a handler that
+declares it, and a handler called any other way gets the caller it names.
 
 Transport surface:
 
@@ -3517,13 +3177,10 @@ main locus App {
    implies a cross-process peer), a **wildcard** subscriber/publisher
    covering the subject (`log.**` covers `log.app`), a **cross-seed**
    reference (`alias::Foo` — the other seed owns the other half), or
-   the same locus being both publisher and subscriber. The rule does
-   not fire at all when the entry carries an `api:` binding (GH
-   #1106: every subscribed topic is a command a caller may publish,
-   every published one a stream a caller may subscribe); the binding
-   is the entry's, so an imported `main locus`'s `api:` entry, which
-   is inert (GH #1104 piece 5), lifts nothing (F.40 phase 3, the
-   entry's consumers). The closed-
+   the same locus being both publisher and subscriber. (A topic is
+   no longer reachable by a caller because a locus subscribes it: the
+   retired api binding's lift of this rule went with it, and a served
+   surface reaches handlers, not topics.) The closed-
    world gate is why this is skipped for library seeds (no `main`):
    their consumers are downstream, out of the bundle. (GH #18 #4.)
    Rules 9 and 10 and the dead-receiver rule (7) are judged over

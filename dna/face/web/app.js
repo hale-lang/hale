@@ -627,9 +627,11 @@
     assert(o.application_state === "refused" ? refusals.includes(o.application_reason_code) : o.application_state === "failed" ? o.application_reason_code === "native_apply_failed" : o.application_reason_code === "");
   }
   function commandPath(appId) { return API + "/" + encodeURIComponent(appId) + "/commands"; }
-  // One exchange with the api binding's HTTP transport, which the head
-  // serves at this path (GH #1135): a line of the api wire POSTed under the
-  // command headers; a lookup is the `CommandLookup` call.
+  // One exchange with the head's commands route (GH #1135, #1417): the
+  // face's line POSTed under the command headers (`{call, payload}`, the call
+  // named as the face names it, or `{describe: true}`; a lookup is the
+  // `CommandLookup` call). The head relays it to the surface's HTTP exposure
+  // and answers what the exposure answered.
   async function commandExchange(appId, line, signal) {
     const pending = new AbortController();
     const cancel = () => pending.abort();
@@ -640,27 +642,29 @@
       const response = await fetch(commandPath(appId), { method: "POST", signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Hale-Command": "1" }, body: JSON.stringify(line) });
       let body = null;
       try { body = await response.json(); } catch { body = null; }
-      return { status: response.status, body };
+      return { status: response.status, body: commandLine(response.status, body) };
     } finally {
       clearTimeout(timeout);
       signal.removeEventListener("abort", cancel);
     }
   }
-  const REFUSAL_STATUS = { unauthenticated: 401, unauthorized: 403, unknown: 404, over_bound: 503 };
-  // The binding's receipt line for this session: its answer or its refusal,
-  // under the caller the binding's HTTP transport established for the
-  // session's bearer. The HTTP status is the line's.
-  function isReceiptLine(body) { return body !== null && typeof body === "object" && !Array.isArray(body) && Object.hasOwn(body, "request_id") && typeof body.ok === "boolean"; }
+  // The statuses of the exposure's refusals (spec/api.md § Outcomes).
+  const REFUSAL_STATUS = { malformed: 400, digest_mismatch: 409, unauthenticated: 401, unauthorized: 403, full: 429, shutting_down: 503, unavailable: 503, server: 500 };
+  // The exposure's reply as the page reads it: a result is `{ok: true,
+  // value}`, a refusal `{ok: false, refusal}`. The route's own envelope
+  // (`api_version`, `error`) and anything else stay as they came.
+  function commandLine(status, body) {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+    if (Object.hasOwn(body, "refusal")) return { ok: false, refusal: body.refusal };
+    if (status === 200 && !Object.hasOwn(body, "api_version") && !Object.hasOwn(body, "error")) return { ok: true, value: body };
+    return body;
+  }
+  function isReceiptLine(body) { return body !== null && typeof body === "object" && !Array.isArray(body) && typeof body.ok === "boolean" && Object.hasOwn(body, body.ok ? "value" : "refusal"); }
   function validReceiptLine(body, status) {
-    const optional = ["id", "role"].filter(key => Object.hasOwn(body, key));
-    assert(closedObject(body, ["request_id", "ok", body.ok ? "value" : "refusal", "caller", ...optional]) && Number.isSafeInteger(body.request_id) && body.request_id >= 0);
-    const c = body.caller;
-    assert(closedObject(c, ["mode", "name", "uid", "gid", "pid", "via"]) && c.mode === "bearer" && unicodeText(c.name) && c.name.length > 0 && [c.uid, c.gid, c.pid].every(Number.isSafeInteger) && c.via === "http");
-    assert(!Object.hasOwn(body, "role") || body.ok && commandID(body.role));
-    assert(!Object.hasOwn(body, "id"), "The head answered a line this page did not send.");
+    assert(closedObject(body, ["ok", body.ok ? "value" : "refusal"]));
     if (!body.ok) {
       const r = body.refusal;
-      assert(closedObject(r, ["kind", "reason", ...(Object.hasOwn(r || {}, "role") ? ["role"] : [])]) && commandID(r.kind) && unicodeText(r.reason));
+      assert(r !== null && typeof r === "object" && commandID(r.kind) && (!Object.hasOwn(r, "reason") || unicodeText(r.reason)));
     }
     assert(status === (body.ok ? 200 : REFUSAL_STATUS[body.refusal.kind] || 400), "The receipt and its HTTP status disagree.");
     return body;
@@ -789,7 +793,7 @@
     }
     validReceiptLine(body, status);
     // A call outside this caller's slice is not theirs to send, gate or no gate.
-    if (!body.ok) throw new ReadError(["unknown", "unauthorized"].includes(body.refusal.kind) ? 403 : REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : "command_unconfirmed", "The request outcome could not be confirmed.");
+    if (!body.ok) throw new ReadError(REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : "command_unconfirmed", "The request outcome could not be confirmed.");
     const reply = validCommandReply(body.value);
     if (!reply.ok) {
       if (reply.code === "command_context_changed") throw new ReadError(409, "command_context_changed", "The signed-in identity changed before submission.");
@@ -1235,7 +1239,7 @@
     }
     validReceiptLine(body, status);
     // A call outside this session's slice is not its to send.
-    if (!body.ok) throw new ReadError(["unknown", "unauthorized"].includes(body.refusal.kind) ? 403 : REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : ["unknown", "unauthorized"].includes(body.refusal.kind) ? "forbidden" : "command_unconfirmed", "This session may not send this Knowledge request.");
+    if (!body.ok) throw new ReadError(REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : ["unknown", "unauthorized"].includes(body.refusal.kind) ? "forbidden" : "command_unconfirmed", "This session may not send this Knowledge request.");
     const reply = body.value;
     if (reply?.ok === false) {
       assert(closedObject(reply, ["ok", "code", "application_id", "head", "revision", "receipt"]) && commandID(reply.code));

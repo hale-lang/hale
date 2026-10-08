@@ -779,7 +779,7 @@ fn register_top_decls(
             }
             TopDecl::Role(_) => {
                 // GH #1109: authorization vocabulary, named only by
-                // `@gated(role:)` and `includes`; never a value or a
+                // `requires` and `includes`; never a value or a
                 // type.
             }
             TopDecl::Claims(_) | TopDecl::Constitution(_) => {

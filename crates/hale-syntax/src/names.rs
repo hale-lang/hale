@@ -320,13 +320,12 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                 ContractKind::Inferred => {}
                 ContractKind::Members(ms) => {
                     for cm in ms {
-                        let ContractMember { direction: _, name: cn, ty: t, gated, span: _ } = cm;
+                        let ContractMember { direction: _, name: cn, ty: t, span: _ } = cm;
                         match cn {
                             ContractName::Named(i) => name(i, f),
                             ContractName::Inferred => {}
                         }
                         opt_ty(t, f);
-                        opt_name(gated, f);
                     }
                 }
             }
@@ -391,7 +390,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             }
         }
         LocusMember::Bindings(bb) => {
-            let BindingsBlock { entries, api, hubs, span: _ } = bb;
+            let BindingsBlock { entries, hubs, span: _ } = bb;
             for h in hubs {
                 let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
                 name(topic, f);
@@ -423,32 +422,6 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                 if let Some(CodecSpec { locus: l, inits, span: _ }) = codec {
                     name(l, f);
                     struct_inits(inits, f);
-                }
-            }
-            if let Some(a) = api {
-                let ApiBinding {
-                    transport,
-                    roles,
-                    bound: _,
-                    on_full: _,
-                    watch_bound: _,
-                    on_watch_full: _,
-                    on_unauthorized: _,
-                    serve,
-                    http,
-                    span: _,
-                } = a;
-                match transport {
-                    ApiTransport::Unix { path, span: _ } => expr(path, f),
-                }
-                if let Some(ApiRoles { expr: e, span: _ }) = roles {
-                    expr(e, f);
-                }
-                names(serve, f);
-                if let Some(ApiHttp { host, port, principals, span: _ }) = http {
-                    expr(host, f);
-                    expr(port, f);
-                    opt_expr(principals, f);
                 }
             }
         }
@@ -521,11 +494,10 @@ fn bus<'a>(bb: &'a BusBlock, f: &mut Visit<'_, 'a>) {
                     }
                 }
             }
-            BusMember::Publish { subject, ty: t, alias, gated, span: _, id: _ } => {
+            BusMember::Publish { subject, ty: t, alias, span: _, id: _ } => {
                 bus_subject(subject, f);
                 opt_ty(t, f);
                 opt_name(alias, f);
-                opt_name(gated, f);
             }
         }
     }
@@ -553,7 +525,6 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         hot: _,
         effects,
         quantities: _,
-        gated,
         rpc,
         decorators,
         body,
@@ -582,7 +553,6 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
             | EffectAssert::NoPanic => {}
         }
     }
-    opt_name(gated, f);
     if let Some(RpcAttr { requires, span: _ }) = rpc {
         names(requires, f);
     }

@@ -1,8 +1,9 @@
-// GH #1129 (the macOS red of head_roles_test): replies that overfill
+// GH #1129 (the macOS red of head_roles_test), retargeted in R4 (GH #1417):
+// replies that overfill
 // the socket's send buffer reach the client whole; and GH #1155: a
 // reply past the bus's wire buffer crosses the bus whole.
 //
-// The binding's peer shares one socket between two coroutines of its
+// The transport's peer shares one socket between two coroutines of its
 // async_io pool: run() sits parked on the fd for the next request line
 // while a reply handler writes the answer. The poller holds one
 // registration per fd, so the writer could not park on EAGAIN — on
@@ -18,9 +19,7 @@
 fn app_source(sock: String) -> String {
     return "type Ask { doublings: Int; }\n"
         + "type Blob { text: String; }\n"
-        + "topic Asks { payload: Ask; subject: \"t.ask\"; }\n"
         + "locus Head {\n"
-        + "    bus { subscribe Asks as on_ask; }\n"
         + "    fn on_ask(a: Ask) -> Blob {\n"
         + "        let mut t = \"0123456789abcdef\";\n"
         + "        let mut i = 0;\n"
@@ -28,11 +27,15 @@ fn app_source(sock: String) -> String {
         + "        return Blob { text: t };\n"
         + "    }\n"
         + "}\n"
+        + "api Public { rpc Head::on_ask; }\n"
         + "main locus App {\n"
         + "    params { head: Head = Head { }; }\n"
         + "    placement { head: cooperative(pool = work) where async_io; }\n"
-        + "    bindings { api: unix(\"" + sock + "\", bound: 4, on_full: refuse); }\n"
-        + "    run() { std::time::sleep(20s); }\n"
+        + "    run() {\n"
+        + "        let h = api::serve(Public, unix::Rpc { path: \"" + sock + "\" }, as: \"public\", receivers: { Head: self.head }, bound: 4, on_full: refuse);\n"
+        + "        std::time::sleep(20s);\n"
+        + "        h.stop();\n"
+        + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
 }
@@ -127,14 +130,14 @@ fn main() {
     // the server's writes would-block for certain.
     let mut i = 1;
     while i <= 4 {
-        api.send("{\"id\":" + to_string(i) + ",\"call\":\"Asks\",\"payload\":{\"doublings\":12}}");
+        api.send("{\"call\":\"Head::on_ask\",\"payload\":{\"doublings\":12},\"id\":\"c-" + to_string(i) + "\"}");
         i = i + 1;
     }
     std::time::sleep(1500ms);
     let mut k = 1;
     while k <= 4 {
         let reply = api.next_line();
-        std::test::assert(std::str::starts_with(reply, "{\"request_id\":" + to_string(k) + ",\"id\":" + to_string(k) + ","), "reply " + to_string(k) + " arrived, in order: " + reply[0..80]);
+        std::test::assert(std::str::starts_with(reply, "{\"request_id\":" + to_string(k) + ",\"id\":\"c-" + to_string(k) + "\","), "reply " + to_string(k) + " arrived, in order: " + reply[0..80]);
         std::test::assert(std::str::contains(reply, "\"ok\":true"), "and it is the handler's answer");
         let value = std::json::find_field_raw(reply, "value");
         std::test::assert_eq_int(len(value), 65536 + len("{\"text\":\"\"}"), "the whole 64 KB value arrived");
@@ -145,9 +148,9 @@ fn main() {
     // GH #1155: a reply past the bus's 64 KB wire buffer — sixteen
     // doublings, a 1 MiB value — used to die in the reply cell's
     // serializer; it crosses the bus whole now.
-    api.send("{\"id\":5,\"call\":\"Asks\",\"payload\":{\"doublings\":16}}");
+    api.send("{\"call\":\"Head::on_ask\",\"payload\":{\"doublings\":16},\"id\":\"c-5\"}");
     let big = api.next_line();
-    std::test::assert(std::str::starts_with(big, "{\"request_id\":5,\"id\":5,"), "the 1 MiB reply arrived: " + big[0..80]);
+    std::test::assert(std::str::starts_with(big, "{\"request_id\":5,\"id\":\"c-5\","), "the 1 MiB reply arrived: " + big[0..80]);
     std::test::assert_eq_int(len(std::json::find_field_raw(big, "value")), 1048576 + len("{\"text\":\"\"}"), "the whole 1 MiB value arrived");
     std::test::assert(std::str::ends_with(big, "}"), "the line is closed");
 

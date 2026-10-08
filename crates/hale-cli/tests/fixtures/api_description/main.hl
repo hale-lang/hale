@@ -1,10 +1,9 @@
-// The conformance fixture for the api description (GH #1107): a
-// command with a reply, a command with none, a keyed command, a
-// read on the main locus and one on a default child, a stream, and
-// a nested payload, and (GH #1109) a gated command, read and stream
-// under a declared role with a hierarchy.
-// `crates/hale-cli/tests/api_description.rs` holds the emitted
-// description, OpenAPI and MCP forms beside it.
+// The conformance fixture for the api description (GH #1107, rows in
+// GH #1417): an rpc with a reply, an rpc with none, a scalar reply, a
+// nested payload, and (GH #1109) a gated rpc under a declared role with a
+// hierarchy, on a surface served over the Unix socket.
+// `crates/hale-cli/tests/api_description.rs` holds the inventory, the
+// per-exposure description, the OpenAPI and MCP forms beside it.
 
 role auditor;
 role owner includes auditor;
@@ -13,61 +12,43 @@ type Money { amount: Int; currency: String = "USD"; }
 type Refund { order_id: Int; money: Money; }
 type RefundResult { ok: Bool; note: String; }
 type Audit { line: String; }
-type Tick { order_id: Int; n: Int; }
 type Ledger { balance: Int; entries: Int; }
-type Uptime { seconds: Int; }
+type Query { who: String = ""; }
 type Count { by: Int; }
 
-topic Refunds { payload: Refund; subject: "shop.refund"; }
-topic Audits { payload: Audit; subject: "shop.audit"; }
-topic Ticks { payload: Tick; subject: "shop.tick"; keyed_by order_id; }
-topic Moved { payload: Ledger; subject: "shop.moved"; }
-topic Counts { payload: Count; subject: "shop.count"; }
-
 locus Billing {
-    contract { @gated(role: auditor) expose ledger: Ledger; }
     params { ledger: Ledger = Ledger { balance: 100, entries: 0 }; }
-    bus {
-        subscribe Refunds as on_refund;
-        subscribe Audits as on_audit;
-        subscribe Ticks as on_tick where key == 7;
-        subscribe Counts as on_count;
-        @gated(role: auditor) publish Moved;
-    }
     fn on_refund(r: Refund) -> RefundResult {
         self.ledger.balance = self.ledger.balance - r.money.amount;
         self.ledger.entries = self.ledger.entries + 1;
-        Moved <- self.ledger;
         return RefundResult { ok: true, note: "refunded " + to_string(r.order_id) };
     }
-    @gated(role: auditor)
     fn on_audit(a: Audit) { println(a.line); }
-    fn on_tick(t: Tick) { self.ledger.entries = self.ledger.entries + t.n; }
     // A scalar reply: the description inlines its schema.
     fn on_count(c: Count) -> Int {
         self.ledger.entries = self.ledger.entries + c.by;
         return self.ledger.entries;
     }
+    fn read_ledger(q: Query) -> Ledger { return self.ledger; }
+}
+
+api Books {
+    rpc Billing::on_refund;
+    rpc Billing::on_audit requires: [auditor];
+    rpc Billing::on_count;
+    rpc Billing::read_ledger requires: [auditor];
 }
 
 main locus Shop {
-    contract {
-        expose uptime: Uptime;
-        expose ticks: Int;
-    }
     params {
-        uptime: Uptime = Uptime { seconds: 0 };
-        ticks: Int = 0;
         billing: Billing = Billing { };
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "auditor owner" };
     }
     placement { billing: cooperative(pool = work) where async_io; }
-    bindings { api: unix("/tmp/hale-api-description-fixture.sock", bound: 8, on_full: refuse); }
     run() {
-        while !self.draining && self.uptime.seconds < 30 {
-            std::time::sleep(1s);
-            self.uptime.seconds = self.uptime.seconds + 1;
-            self.ticks = self.ticks + 1;
-        }
+        let books = api::serve(Books, unix::Rpc { path: "/tmp/hale-api-description-fixture.sock", roles: self.staff }, as: "books", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        books.stop();
     }
 }
 

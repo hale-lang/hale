@@ -190,7 +190,7 @@ and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. A site in code
-the compiler generated (the api binding, a `json:` parser) has no
+the compiler generated (a serve site's exposure, a `json:` parser) has no
 place in your source to report it, so it is left out; a site in
 your own code is reported wherever it is called from. It is advisory:
 the warnings print and never fail the build. A separate

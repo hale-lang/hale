@@ -1,46 +1,50 @@
-// GH #1137 — the entry's `serve:` puts an imported locus on the surface.
+// GH #1137, retargeted in R4 (GH #1417) — an imported seed's handlers are
+// a surface the app serves, and nothing it merely holds.
 //
-// spec/semantics.md § "The api binding": the surface is the entrypoint
-// seed's own loci plus the loci its entry names in `serve:`, whichever
-// seed declared them, and nothing else. The fixture builds a library
-// seed with two loci — `Handlers`, whose gated handler answers a command,
-// and `Internal`, which subscribes the library's own bus — and an app
-// that holds both as params and names only `Handlers`. The served
-// locus's command answers through the socket; the held-but-unnamed
-// locus's topic is on no surface; `--dump-api` shows exactly what
-// `serve:` names; and a name that is no param of main is refused.
+// spec/api.md § Serving: an imported seed's `@rpc` handlers are the default
+// surface its import alias names; the app serves that surface with
+// `api::serve(lib, …, receivers: { lib::Handlers: self.handlers })`, and a
+// locus of the library the app holds but no row names is on no surface.
+// The structural binding put an imported locus on the surface with its
+// serve clause; a served surface is named by its rows, and its
+// receivers are the instances the serve site binds. The fixture builds a
+// library seed with two loci — `Handlers`, whose `@rpc` handler answers a
+// command, and `Internal`, which has none — and an app that holds both as
+// params and serves the library's surface. The served locus's handler
+// answers through the socket; the held-but-unserved locus is no member;
+// `hale check --api` shows exactly the rows; and a receiver bound to a
+// name that is no param of main is refused.
 
 fn lib_source() -> String {
     return "type Order { id: Int; }\n"
         + "type Taken { id: Int; by: String; }\n"
         + "type Tick { n: Int; }\n"
-        + "topic Orders { payload: Order; subject: \"lib.orders\"; }\n"
-        + "topic Ticks { payload: Tick; subject: \"lib.internal.tick\"; }\n"
         + "role clerk;\n"
         + "locus Handlers {\n"
-        + "    bus { subscribe Orders as on_order; }\n"
-        + "    @gated(role: clerk)\n"
+        + "    @rpc(requires: [clerk])\n"
         + "    fn on_order(o: Order, ctx: std::api::Context) -> Taken { return Taken { id: o.id, by: ctx.caller.name }; }\n"
         + "}\n"
         + "locus Internal {\n"
-        + "    bus { subscribe Ticks as on_tick; }\n"
         + "    fn on_tick(t: Tick) -> Tick { return t; }\n"
         + "}\n";
 }
 
-fn app_source(sock: String, me: String, serve: String) -> String {
-    return app_with("handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { };", sock, me, serve);
+fn app_source(sock: String, me: String, receivers: String) -> String {
+    return app_with("handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { };", sock, me, receivers);
 }
 
-fn app_with(held: String, sock: String, me: String, serve: String) -> String {
+fn app_with(held: String, sock: String, me: String, receivers: String) -> String {
     return "import \"../lib\" as lib;\n"
         + "locus Table {\n"
         + "    fn holds(p: std::api::Principal, r: String) -> Bool { return p.name == \"uid:" + me + "\"; }\n"
         + "}\n"
         + "main locus App {\n"
         + "    params { " + held + " }\n"
-        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse, roles: Table { })" + serve + "; }\n"
-        + "    run() { std::time::sleep(8s); }\n"
+        + "    run() {\n"
+        + "        let h = api::serve(lib, unix::Rpc { path: \"" + sock + "\", roles: Table { } }, as: \"lib\"" + receivers + ", bound: 8, on_full: refuse);\n"
+        + "        std::time::sleep(8s);\n"
+        + "        h.stop();\n"
+        + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
 }
@@ -108,33 +112,22 @@ fn main() {
     std::io::fs::mkdir(root + "/app") or discard;
     std::io::fs::write_file(root + "/lib/lib.hl", lib_source()) or discard;
 
-    // ---- a name that is no param of main is refused, located
-    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, ", serve: [nobody]")) or discard;
+    // ---- a receiver bound to a locus no row names is refused, located
+    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, ", receivers: { Nobody: self.handlers }")) or discard;
     let wrong = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert(wrong.code != 0 && std::str::contains(wrong.stderr, "`serve:` names `nobody`, which is not a param of the main locus"), "a serve name must be a param of main: " + wrong.stderr);
+    std::test::assert(wrong.code != 0 && std::str::contains(wrong.stderr, "binds `Nobody`, which no row of `lib` names"), "a receiver must be a locus the surface's rows name: " + wrong.stderr);
 
-    // ---- the binding serves a locus type: one main holds twice is refused
-    std::io::fs::write_file(root + "/app/main.hl", app_with("handlers: lib::Handlers = lib::Handlers { }; spare: lib::Handlers = lib::Handlers { };", sock, me, ", serve: [handlers]")) or discard;
+    // ---- a served type held twice, with no receiver chosen, would answer for both: refused
+    std::io::fs::write_file(root + "/app/main.hl", app_with("handlers: lib::Handlers = lib::Handlers { }; spare: lib::Handlers = lib::Handlers { };", sock, me, "")) or discard;
     let twice = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert(twice.code != 0 && std::str::contains(twice.stderr, "but the main locus also holds `lib::Handlers` as `spare`"), "a served type held twice would answer for both: " + twice.stderr);
-    // ---- and the seed's own locus is on the surface already
-    std::io::fs::write_file(root + "/app/main.hl", app_with("mine: Table = Table { };", sock, me, ", serve: [mine]")) or discard;
-    let own = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert(own.code != 0 && std::str::contains(own.stderr, "is the entrypoint seed's own and on the surface already"), "naming the seed's own locus is refused: " + own.stderr);
+    std::test::assert(twice.code != 0 && std::str::contains(twice.stderr, "Handlers"), "a served type held twice names no receiver: " + twice.stderr);
 
-    // ---- without serve, holding the locus serves nothing of it
+    // ---- holding the library's other locus serves nothing of it
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, "")) or discard;
-    let unserved = run_tool(hale + "\ncheck\n--dump-api\n" + root + "/app");
-    std::test::assert_eq_int(unserved.code, 0, "the app checks: " + unserved.stderr);
-    std::test::assert(!std::str::contains(unserved.stdout, "lib::Orders") && !std::str::contains(unserved.stdout, "lib::Ticks") && std::str::contains(unserved.stdout, "\"serve\":[]"), "a held imported locus is not on the surface: " + unserved.stdout);
-
-    // ---- serve: [handlers] — exactly that locus, and --dump-api says so
-    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, ", serve: [handlers]")) or discard;
-    let served = run_tool(hale + "\ncheck\n--dump-api\n" + root + "/app");
-    std::test::assert_eq_int(served.code, 0, "the app with serve checks: " + served.stderr);
-    std::test::assert(std::str::contains(served.stdout, "\"serve\":[{\"param\":\"handlers\",\"locus\":\"lib::Handlers\"}]"), "the description names what serve names: " + served.stdout);
-    std::test::assert(std::str::contains(served.stdout, "\"name\":\"lib::Orders\"") && std::str::contains(served.stdout, "\"role\":\"clerk\""), "the served locus's gated command is on the surface: " + served.stdout);
-    std::test::assert(!std::str::contains(served.stdout, "lib::Ticks") && !std::str::contains(served.stdout, "lib.internal"), "the held, unnamed locus's bus is not: " + served.stdout);
+    let served = run_tool(hale + "\ncheck\n--api\n" + root + "/app");
+    std::test::assert_eq_int(served.code, 0, "the app checks: " + served.stderr);
+    std::test::assert(std::str::contains(served.stdout, "lib::Handlers::on_order") && std::str::contains(served.stdout, "\"clerk\""), "the served locus's gated handler is on the surface: " + served.stdout);
+    std::test::assert(!std::str::contains(served.stdout, "Internal") && !std::str::contains(served.stdout, "on_tick"), "the held, unserved locus is not: " + served.stdout);
 
     let built = run_tool(hale + "\nbuild\n" + root + "/app");
     std::test::assert_eq_int(built.code, 0, "and builds: " + built.stderr);
@@ -142,10 +135,10 @@ fn main() {
     std::test::assert(p.start(root + "/app/app"), "the app started");
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
-    let r = api.ask("{\"id\":1,\"call\":\"Orders\",\"payload\":{\"id\":7}}");
+    let r = api.ask("{\"call\":\"lib::Handlers::on_order\",\"payload\":{\"id\":7},\"id\":\"c-1\"}");
     std::test::assert(std::str::contains(r, "\"ok\":true") && std::str::contains(r, "\"id\":7") && std::str::contains(r, "\"by\":\"uid:" + me + "\""), "the imported handler answers through the socket, gated: " + r);
-    let t = api.ask("{\"id\":2,\"call\":\"lib::Ticks\",\"payload\":{\"n\":1}}");
-    std::test::assert(std::str::contains(t, "\"kind\":\"unknown\""), "the internal topic is unknown to the binding: " + t);
+    let t = api.ask("{\"call\":\"lib::Internal::on_tick\",\"payload\":{\"n\":1},\"id\":\"c-2\"}");
+    std::test::assert(std::str::contains(t, "\"kind\":\"malformed\"") && std::str::contains(t, "unknown_member"), "the internal locus is no member of the surface: " + t);
     p.stop();
     std::io::fs::unlink(sock) or discard;
     let _rm = run_tool("rm\n-rf\n" + root);

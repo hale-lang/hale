@@ -339,7 +339,7 @@ remains separately available without displaying its old document content.
 
 The native provider must supply durable admission and recoverable domain
 progression. The adapter and browser conformance fixtures do not establish those
-guarantees. See the [service contract](../../dna/api/contract/v1/README.md).
+guarantees. See the [service contract](service/README.md).
 
 ## Exact-candidate Review decisions
 

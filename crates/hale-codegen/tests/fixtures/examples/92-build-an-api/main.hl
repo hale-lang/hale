@@ -1,33 +1,25 @@
 // Build an API (docs/src/services/build-an-api.md): one program grown a
 // step at a time. A shop takes orders and answers each with a reply,
-// streams its shipments, exposes its stock as a read, knows who is
-// calling, gates what only staff may do, and answers over HTTP as well
-// as on its socket.
+// streams its shipments, answers a stock query, knows who is calling,
+// gates what only staff may do, and answers over HTTP as well as on its
+// socket.
 
 type Order { item: String; qty: Int; }
 type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
+type StockQuery { item: String = ""; }
 type Restock { qty: Int; }
 type Restocked { on_hand: Int; by: String; role: String; }
 
-topic Orders { payload: Order; subject: "shop.order"; }
-topic Restocks { payload: Restock; subject: "shop.restock"; }
 topic Shipments { payload: Shipment; subject: "shop.shipment"; }
 
 role clerk;
 role manager includes clerk;
 
 locus Shop {
-    contract {
-        @gated(role: clerk) expose stock: Stock;
-    }
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
-    bus {
-        subscribe Orders as on_order;
-        subscribe Restocks as on_restock;
-        @gated(role: clerk) publish Shipments;
-    }
+    bus { publish Shipments; }
 
     fn on_order(o: Order, ctx: std::api::Context) -> Placed {
         if o.qty <= 0 || o.qty > self.stock.on_hand {
@@ -40,11 +32,19 @@ locus Shop {
         return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
     }
 
-    @gated(role: manager)
     fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
         self.stock.on_hand = self.stock.on_hand + r.qty;
         return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
     }
+
+    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+}
+
+// The shop's operations: who may call each is the row's `requires`.
+api Counter {
+    rpc Shop::on_order;
+    rpc Shop::stock_now requires: [clerk];
+    rpc Shop::on_restock requires: [manager];
 }
 
 // Who a bearer token on the HTTP transport is (a std::api::BearerSource).
@@ -59,16 +59,23 @@ locus Tokens {
 }
 
 main locus App {
-    params { shop: Shop = Shop { }; }
+    params {
+        shop: Shop = Shop { };
+        tokens: Tokens = Tokens { };
+        // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+    }
     placement { shop: cooperative(pool = work) where async_io; }
-    bus { publish Orders; }
     bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse),
-        http("127.0.0.1", 8794, principals: Tokens { });
+        Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        Orders <- Order { item: "window display", qty: 1 };
+        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
+        sock.stop();
+        web.stop();
     }
 }
 

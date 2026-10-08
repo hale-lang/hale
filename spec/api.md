@@ -11,20 +11,19 @@ filtered by the caller's roles, read from the same rows dispatch reads.
 Exposure is an intent about the boundary held in rows the model hashes,
 never a property of a locus's structure.
 
-GH #1417. This document is the contract, stated before any of it ships
-(step R0 of the plan): the `api` block and `@rpc` parse to rows in R1,
-which also computes the digest and prints descriptions; R2a ships the
-runtime (the interfaces of § The runtime boundaries, the identity
-sources, receiver failure, `api::serve` checked and lowered) over an
-in-process fixture transport, `std::api::test::Rpc`; `unix::Rpc` proves
-the same runtime over a socket in R2b and `http::Rpc` over HTTP in R3;
-hubs and stream authorization are R5's (`ws::Hub`, `udp::Hub`: § Streams); R4 retires the structural
-path (§ What this replaces). Each section names the step that ships it.
-Until R1, the
-fixtures under `tests/api-contract/` are what a consumer builds against:
-the consumer program of § The witness, its descriptions per exposure
-and caller, the program-wide inventory, one recorded request and reply
-per outcome per transport, and the digest worked byte for byte. The
+GH #1417. This document is the contract. The `api` block and `@rpc`
+parse to rows (R1), which also compute the digest and print descriptions;
+the runtime (the interfaces of § The runtime boundaries, the identity
+sources, receiver failure, `api::serve` checked and lowered) runs over an
+in-process fixture transport, `std::api::test::Rpc` (R2a), `unix::Rpc` (R2b)
+and `http::Rpc` (R3); hubs and stream authorization are `ws::Hub` and
+`udp::Hub` (R5: § Streams); `mcp::Rpc` is the MCP transport (R6); and the
+structural path is retired (R4: § What this replaced), the clients reading
+descriptions (§ The clients). Each section names the step that ships it.
+The fixtures under `tests/api-contract/` are what a consumer builds
+against: the consumer program of § The witness, its descriptions per
+exposure and caller, the program-wide inventory, one recorded request and
+reply per outcome per transport, and the digest worked byte for byte. The
 description format is `spec/api-description.schema.json` (JSON Schema,
 draft 2020-12).
 
@@ -372,6 +371,17 @@ main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
 runs on a pool of its own, which only the main locus places; serve from
 the main locus" (§ The Unix transport, § The HTTP transport).
 
+Only the entry program's main locus serves: the serve expansion builds
+the exposure's listener on it, and a `main locus` that arrives through
+`import` is constructed by nobody. A serve site in an imported main locus
+that the program also writes the name of (`lib::Head { }` as a part of its
+own main locus, or as its `fn main`) would build and check and serve
+nothing, so it is refused: "`api::serve` in `lib::Head`, a main locus
+the program imports: only the entry program's main locus serves; serve
+from the entry's main locus or hold the exposure there". A library whose
+main locus is only imported for its types, as an application's tests
+import the application, never runs its serve sites and is not refused.
+
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
 interface). The runtime then holds it to these checks in this order,
@@ -569,12 +579,15 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   (a reader that does not read for 5 seconds) end that connection: the
   requests it still has with the exposure are lost (§ The request
   lifecycle), and the listener and every other connection go on.
-- **`describe`** answers `{"ok": true, "value": <description>}`: the
-  exposure's identity, the caller the exposure established, and the members
-  that caller may call under the exposure's role source, from the same
-  rows and the same sources admission reads, so the two agree for the same
-  caller. (The listener, schemas and notes of the full document of § The
-  description are not in the live document yet.)
+- **`describe`** answers `{"ok": true, "value": <description>}`: the whole
+  document of § The description for the caller the exposure established
+  (the peer's kernel credentials, `mode: "unix"`), the document HTTP
+  answers: the exposure's identity, its listener (`unix` and the `path:`
+  text), the roles that caller holds, the members it may call under the
+  exposure's role source with their schemas, the outcome encoding of this
+  section and the notes, built from the same rows and the same sources
+  admission reads, so the two agree for the same caller. The in-process
+  fixture transport answers the same document, its listener `test`.
 - **`stop()`** closes the listener and every connection after the replies
   already sent: the queued requests are refused `shutting_down` and the
   executing ones are answered first, as § The request lifecycle states.
@@ -692,7 +705,8 @@ and the encoding.
   the roles. A caller holding no role sees the members that require none.
   A member whose request is not an object (an MCP tool's input is one)
   has no tool; the wrapped form `--mcp` prints needs the handler's
-  parameter name, which a description does not carry (R4).
+  parameter name, which a description does not carry, so `hale mcp --app`
+  over a description lists the same tools (§ The clients, Open points).
 - **`tools/call` is a call.** `params.name` is the tool and
   `params.arguments` the payload, which goes through admission exactly as
   an HTTP body does; the digest, when the client sends one, is the header
@@ -740,15 +754,14 @@ notification finds its client; none of the three exists in `mcp::Rpc`, which
 holds no connection past its answer. The streams of a surface are in its
 description (`streams`) for a client that knows another door.
 
-**What `hale mcp` is.** The existing `hale mcp` (`crates/hale-cli/src/mcp.rs`)
-is an MCP *server* on stdio, a bridge from a host to the toolchain, or
-with `--app` to the older structural binding's Unix socket; it is not a
-client of `mcp::Rpc`, and a host that only speaks stdio cannot reach an HTTP
-endpoint without one. The retarget (R4) is what makes it a bridge from
-stdio to an exposure: `tools/list` from the exposure's description
-(`mcp::Rpc` or any other transport, over its own wire), `tools/call` as a
-call, and the wrapped-input tools above, which need the parameter name in
-the description. R6 does not touch it. `mcp::Rpc` with `stdio` in place
+**What `hale mcp` is.** `hale mcp` (`crates/hale-cli/src/mcp.rs`) is an MCP
+*server* on stdio: a bridge from a host to the toolchain, or with `--app
+ENDPOINT` to a served exposure (§ The clients): `tools/list` is the
+description's members for the caller the endpoint names (over a socket, over
+HTTP, over a hub's listener), `tools/call` a call naming the digest read, and
+for an `mcp://host:port` endpoint (an `mcp::Rpc` listener) the JSON-RPC is
+forwarded, since that listener's own `tools/list` is its discovery. A host
+that only speaks stdio reaches an HTTP exposure this way. `mcp::Rpc` with `stdio` in place
 of `bind` is not shipped: the runtime has
 no primitive to read the process's own standard input as a stream (a
 `std::io::tcp::Stream` over descriptor 0 is a `recv(2)` on a pipe), and
@@ -997,10 +1010,11 @@ failure, never a refusal (it may have run).
 exposure's live sources: the members the caller's `Context` may call
 (`requires` held under this exposure's role source), by the rows the
 admission checks read, so a description and an admission of the same
-caller agree. The full document of § The description is what
-`hale check --api` prints from the rows; the exposure's live answer
-carries the identity, the caller and the members, and the schemas stay
-the document's.
+caller agree. The exposure's live answer is the full document of § The
+description for that caller, on every transport: the one the exposure
+builds from its rows, filtered by the sources; `hale check --api
+--exposure NAME --caller P --holds R` prints the same document from the
+rows alone.
 
 ## Identity sources
 
@@ -1702,27 +1716,87 @@ fields, under its name; every component a form adds that is not a user
 type is namespaced `hale.` (`hale.Refusal`), a name no Hale identifier
 can spell, so none collides with the program's types; the fixture
 program's are pinned beside the R0 documents
-(`<Surface>.<form>.json`). The structural path's forms (`hale describe
---openapi`, `--mcp`) are unchanged until R4.
+(`<Surface>.<form>.json`).
 
-## What this replaces
+## The clients
 
-Today a program's API is a structural fact: one entry, `bindings { api:
-unix(…) }` on the main locus, puts on the surface every topic the
-seed's loci (and the loci `serve:` names) subscribe or publish and
-every `expose` member of main and its default children, gated by
-`@gated` on handlers and members; the entry is desugared before the
-check into envelope types, topics, synthesized subscriptions and two
-loci that own the socket, and the admission law reads locus rows. That
-path is `spec/semantics.md` § The api binding (GH #1106), and it stays
-the shipped behavior until R4 retires it: the entry, the synthesis, the
-exposed reads, `@gated` and `serve:` go, the thirteen sites and the DNA
-applications that declare the entry move to surfaces, and `hale call`,
-`watch`, `admin` and `mcp` read descriptions. What carries over is
+`hale describe`, `hale call`, `hale watch`, `hale admin` and `hale mcp
+--app` are clients of a served exposure, and read only its description
+(R4 C; `crates/hale-cli/src/api_client.rs`, `mcp.rs`). None knows a
+member's or a stream's name in advance. An **endpoint** is a Unix socket
+path (or `unix:PATH`), `http://host:port` (an `http::Rpc` listener, the
+caller named by `--token T` or `HALE_API_TOKEN` as the bearer), `ws://host:port`
+(a hub's listener) or, for `hale mcp --app` only, `mcp://host:port`; a
+TLS scheme is refused, saying so.
+
+- **`hale describe ENDPOINT`** prints the exposure's description for the
+  caller the endpoint names, the bytes it served (`{"describe": true}`
+  over the socket, `GET /.description` over HTTP and a hub's listener),
+  never re-serialized. `hale describe FILE.hl` is `hale check --api`: the
+  inventory, or with `--exposure NAME --caller P [--holds R,…]` one
+  exposure, or with `--surface NAME --openapi | --json-schema | --mcp` one
+  surface's projection, all from the rows and without running the
+  program. The projections are the compiler's alone; an endpoint does
+  not print them.
+- **`hale call ENDPOINT MEMBER [JSON]`** reads the description, refuses a
+  member the caller may not call (the description does not list it) with
+  the members it does list, and calls it naming the **digest** it read in
+  the transport's own place (`digest` in the line, `Hale-Surface-Digest`
+  over HTTP): a program that changed under the client refuses with
+  `digest_mismatch` and the served digest, instead of running a
+  different contract. The response is printed on stdout; a handler error
+  or a refusal on stderr with its kind and reason (a role's refusal names
+  what the row `requires`) and exit 1. `--receipt` prints the answer as
+  the exposure wrote it (the reply line over a socket, `{"status",
+  "body"}` over HTTP). Over a hub's `ws://` listener a call is the `call`
+  frame of § Rpcs on a hub.
+- **`hale watch WS-ENDPOINT TOPIC`** reads the hub's description, refuses a
+  topic the caller may not subscribe to (it is not listed), subscribes
+  and prints each frame as one JSON line (`subscribed`, then `event`s
+  with their `seq`) until the hub closes the connection (`closed`, exit
+  0); a refusal or an `unauthorized` frame ends it with exit 1. A stream
+  is the hub's: a socket or an HTTP endpoint is refused, saying `ws://`.
+- **`hale admin ENDPOINT`** serves a page on `127.0.0.1` (`--port`, 7473
+  by default) listing the description's members and streams, a form per
+  member and a live tail per stream; every action is one request to the
+  endpoint. The page is served only to the holder of the launch token the
+  process printed, a request whose `Host` or `Origin` is not the page's
+  is refused, and a call carries the digest of the description read at
+  that moment.
+- **`hale mcp --app ENDPOINT`** is the MCP bridge of § The MCP transport.
+
+The clients speak the R0 wire and nothing else: there is no read verb, no
+`as_of`, no owner-only full form, and no reply to a call that carries more
+than the transport's outcome (§ Outcomes). `tests/api-contract/` is what
+they are held to, and `crates/hale-cli/tests/api_clients.rs` runs them
+against one program served over a socket, HTTP, MCP and a hub.
+
+## What this replaced
+
+Before R4 a program's API was a structural fact: one entry, `bindings {
+api: unix(…) }` on the main locus, put on the surface every topic the
+seed's loci (and the loci its `serve:` clause named) subscribed or
+published and every `expose` member of main and its default children,
+gated by `@gated` on handlers and members; the entry was desugared before
+the check into envelope types, topics, synthesized subscriptions and two
+loci that owned the socket, and an admission law read locus rows
+(GH #1106). That path is retired in one cutover (R4), with no adapter, no
+dual route and no flag: the parser refuses `bindings { api: … }` and
+`@gated` with one diagnostic that names the replacement (an `api` block
+or `@rpc` with `requires`, `api::serve(…)`, a topic binding to a hub), the
+synthesis, the admission law over locus rows, the exposed reads, the
+`--api <path>` build flag and `hale check --dump-api` are gone, and the
+programs that declared the entry serve surfaces. A read is an `rpc` row
+whose handler returns the value (it carries no `as_of` digest); a stream
+is a topic bound to a hub; a call through a surface is a call of the
+row's handler, not a publish on a topic, so the topic's other
+subscribers never hear it; a caller lacking a role is refused
+`unauthorized` and told what the row requires. What carries over is
 restated above in these terms: the Unix wire's line framing,
 correlation and principal (§ Outcomes), the codec (§ Codecs), the
 publish contract's bearing on streams (§ Streams), `std::api::Context`
-and the two source interfaces (§ Serving).
+and the two source interfaces (§ Serving). `hale call`, `watch`, `admin`
+and `mcp` read per-exposure descriptions (§ The clients).
 
 ## The witness
 
@@ -1806,6 +1880,24 @@ values).
   needs an event stream, a hub and a session identity, and stdio needs a
   runtime primitive to read the process's own standard input (§ The MCP
   transport).
+- **The wrapped MCP input over a description**: an rpc whose request is
+  not an object has no tool in `hale mcp --app` (as over `mcp::Rpc`),
+  because the tool's wrapping property is the handler's parameter name,
+  which neither a description nor a row carries; carrying it would add a
+  field to every description, which the R0 documents a consumer built
+  against do not have.
+- **The roles manifest**: `[environments.<env>.roles]` and the `--matrix`
+  coverage check have no consumer at run time since the compiler stopped
+  baking the table (`StaticRoles` takes a `table` param or
+  `LOTUS_API_ROLES`); `hale replay --env` is no consumer either, since
+  the table no longer reaches the binary's identity; either the manifest is retired or it becomes the
+  default of a `StaticRoles` table.
+- **A description over `hale call` for a hub that also serves a
+  surface**: the hub's live document lists streams only (above), so `hale
+  call ws://…` does not check the member against it.
+- **Imported schema names**: the schema name of a type an imported seed
+  declares embeds the import path, so a description is not stable across
+  checkout directories for such a type.
 - **A surface-level `requires` default** that rows inherit.
 - **The wire framing of rpcs over UDP** (a correlation id field, the
   largest datagram; R6). Over WebSocket they are framed (§ Streams).

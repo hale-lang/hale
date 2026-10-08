@@ -617,16 +617,9 @@ impl From<hale_types::capability::MissingCell> for CodegenError {
 /// `--link` and `--csrc` flags.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
-    /// GH #1106: `--api <path>` binds the program's API to a Unix
-    /// socket with the dev defaults, as if the main locus spelled
-    /// `api: unix(path, bound: 64, on_full: refuse)`. Part of the
-    /// execution identity (`hale run` fingerprints it).
-    pub api: Option<String>,
     /// GH #1109: `--env <name>` — the deployment target whose
-    /// constitution is adopted and whose `roles` table is baked into
-    /// the api binding (`api_roles`, the resolved table).
+    /// constitution is adopted.
     pub env: Option<String>,
-    pub api_roles: Option<String>,
     /// #8 dev profile (2026-07-02): trade runtime speed for build
     /// latency — O1 module pipeline + Less machine codegen instead
     /// of the O3/Aggressive release default. The 97%-of-build-time
@@ -773,9 +766,7 @@ impl BuildOptions {
     pub fn new(cache_dir: std::path::PathBuf) -> BuildOptions {
         BuildOptions {
             cache_dir,
-            api: Default::default(),
             env: Default::default(),
-            api_roles: Default::default(),
             dev_profile: Default::default(),
             link_libs: Default::default(),
             csrc_files: Default::default(),
@@ -1186,13 +1177,6 @@ pub fn build_resolved(
     output_path: &Path,
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
-    if options.api != resolved.api || options.api_roles != resolved.api_roles {
-        return Err(CodegenError::Unsupported(format!(
-            "the build options name api {:?} with roles {:?}, but the program was \
-             resolved with api {:?} and roles {:?}",
-            options.api, options.api_roles, resolved.api, resolved.api_roles
-        )));
-    }
     // The view's cells are its effective target's: lowering for another
     // class would emit what that target's cells never selected.
     if hale_types::capability::TargetClass::of(&options.target.spec()) != Some(resolved.cells.class) {
@@ -8465,7 +8449,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ffi: None,
                     export: false,
                     unbounded: false,
-                    gated: None,
                     rpc: None,
                     budget: None,
                     hot: false,
@@ -12044,14 +12027,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 id: *id,
                             }
                         }
-                        BusMember::Publish { subject, ty, alias, gated, span, id } => {
+                        BusMember::Publish { subject, ty, alias, span, id } => {
                             BusMember::Publish {
                                 subject: subject.clone(),
                                 ty: ty.as_ref().map(|t| {
                                     Self::substitute_type_expr(t, subst)
                                 }),
                                 alias: alias.clone(),
-                                gated: gated.clone(),
                                 span: span.clone(),
                                 id: *id,
                             }
@@ -12115,8 +12097,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ffi: fd.ffi.clone(),
                 export: fd.export,
                 unbounded: fd.unbounded,
-                gated: fd.gated.clone(),
-                rpc: fd.rpc.clone(),
+                    rpc: fd.rpc.clone(),
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
@@ -12334,7 +12315,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ffi: template.ffi.clone(),
             export: template.export,
             unbounded: template.unbounded,
-            gated: template.gated.clone(),
             rpc: template.rpc.clone(),
             budget: template.budget,
             hot: template.hot,

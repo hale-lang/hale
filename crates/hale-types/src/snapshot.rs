@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 
 use hale_graph::ids::{SeedId, SiteId};
 use hale_syntax::ast::{
-    ApiTransport, Block, BusMember, ClosureClause, ElseBranch, EpochSpec, Expr, IfStmt, KeyFilter,
+    Block, BusMember, ClosureClause, ElseBranch, EpochSpec, Expr, IfStmt, KeyFilter,
     LValueSeg, LocusMember, MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, Pattern,
     PerspectiveMember, Program, RecoveryModifier, Stmt, TopDecl, TransportSpec, TypeDeclBody,
 };
@@ -461,20 +461,6 @@ impl<'p> UseScopes<'p, '_> {
                         }
                     }
                 }
-                if let Some(api) = &bb.api {
-                    let ApiTransport::Unix { path, .. } = &api.transport;
-                    self.detached(path);
-                    if let Some(r) = &api.roles {
-                        self.detached(&r.expr);
-                    }
-                    if let Some(h) = &api.http {
-                        self.detached(&h.host);
-                        self.detached(&h.port);
-                        if let Some(p) = &h.principals {
-                            self.detached(p);
-                        }
-                    }
-                }
             }
             LocusMember::Contract(_)
             | LocusMember::Capacity(_)
@@ -762,7 +748,7 @@ fn origins_of(p: &Program, out: &mut BTreeMap<u32, Origin>) {
     let mut synthesized = std::collections::BTreeSet::new();
     synthesized_hooks(&p.items, &mut synthesized);
     for_each_named_site(p, &mut |kind, span, name, id| {
-        let origin = if span.start.0 >= hale_syntax::api_gen::API_SYNTH_BASE {
+        let origin = if span.start.0 >= hale_syntax::api_names::API_SYNTH_BASE {
             Some(Origin::ApiSurface)
         } else {
             match kind {

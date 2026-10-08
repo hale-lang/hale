@@ -26,10 +26,9 @@ test('scripted native provider: real origin-checked submit and exact-key reload 
   const submitted = await submit(page, service);
   expect(submitted.status()).toBe(200);
   const accepted = await submitted.json();
-  expect(accepted.caller).toMatchObject({ mode: 'bearer', via: 'http' }); expect(accepted.role).toBe('position');
-  expect(accepted.value.ok).toBe(true); expect(accepted.value.receipt.state).toBe('recorded');
-  expect(accepted.value.receipt.subject_digest).toBe(service.practice);
-  const requestID = accepted.value.receipt.request_id;
+  expect(accepted.ok).toBe(true); expect(accepted.receipt.state).toBe('recorded');
+  expect(accepted.receipt.subject_digest).toBe(service.practice);
+  const requestID = accepted.receipt.request_id;
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(/recorded/i);
   const recovered = page.waitForResponse(result => lookupOf(result.request()) === requestID);
   await page.reload();
@@ -56,7 +55,7 @@ test('scripted native provider: approval, adoption refusal and malformed-provide
   await service.changeCommandMode('malformed');
   const malformed = page.waitForResponse(result => lookupOf(result.request()) !== '');
   await page.getByRole('button', { name: 'Check request status', exact: true }).click();
-  expect((await (await malformed).json()).value.receipt.application_id).toBe('another-application');
+  expect((await (await malformed).json()).receipt.application_id).toBe('another-application');
   await expect(panel).toContainText('could not be verified');
   await expect(panel).not.toContainText('Approved');
 });
@@ -79,8 +78,7 @@ test('scripted native provider: verdict submission and reload preserve distinct 
   const response = await submitVerdict(page, service, 'Request revision');
   expect(response.status()).toBe(200);
   const line = await response.json();
-  expect(line.role).toBe('reviewer');
-  const receipt = line.value.receipt;
+  const receipt = line.receipt;
   expect(receipt.operation).toBe('dna.review.verdict');
   expect(receipt.target_id).toBe(service.pending_review);
   expect(receipt.subject_digest).toBe(service.pending_practice);
@@ -133,24 +131,24 @@ test('scripted native provider: one recovery namespace rejects a request key reu
   // The binding answered; the provider refused the reused key.
   expect(response.status()).toBe(200);
   const refused = await response.json();
-  expect(refused.value).toMatchObject({ ok: false, code: 'request_conflict' });
+  expect(refused).toMatchObject({ ok: false, code: 'request_conflict' });
   const lookup = await page.request.post(service.origin + service.apiPath + '/commands', {
     headers: { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json' },
     data: { call: 'CommandLookup', payload: { request_id: original.payload.request_id } },
   });
   expect(lookup.status()).toBe(200);
-  expect((await lookup.json()).value.receipt.operation).toBe('dna.practice.propose');
+  expect((await lookup.json()).receipt.operation).toBe('dna.practice.propose');
 });
 
-test('scripted native provider: a lookup is a line, and a via mark names no one', async ({ page, service }) => {
+test('scripted native provider: a lookup is a line, and a via mark in it is no part of the call', async ({ page, service }) => {
   // GH #1135: there is no GET lookup and no forwarder to name; a line that
-  // still carries the old mark is the session's, over HTTP, like any other.
+  // still carries the old mark is no strict call line, and nothing is sent.
   const get = await page.request.get(service.origin + service.apiPath + '/commands?request_id=x');
   expect(get.status()).toBe(405);
   const response = await page.request.post(service.origin + service.apiPath + '/commands', {
-    headers: { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json' },
+    headers: { Origin: service.origin, 'X-Hale-Command': '1', 'X-Hale-Token': service.token, 'Content-Type': 'application/json' },
     data: { call: 'CommandLookup', payload: { request_id: 'x' }, via: 'http-session' },
   });
-  const line = await response.json();
-  expect(line.caller).toMatchObject({ mode: 'bearer', via: 'http' });
+  expect(response.status(), await response.text()).toBe(400);
+  expect((await response.json()).refusal.kind).toBe('malformed');
 });

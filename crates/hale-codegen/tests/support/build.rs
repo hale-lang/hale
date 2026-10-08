@@ -63,10 +63,7 @@ pub fn harness_config(options: &BuildOptions) -> Config {
         spec,
         explicit: true,
     };
-    let mut config = Config::harness(target);
-    config.api = options.api.clone();
-    config.api_roles = options.api_roles.clone();
-    config
+    Config::harness(target)
 }
 
 /// Load `source` as `hale build main.hl` loads a seed of one file

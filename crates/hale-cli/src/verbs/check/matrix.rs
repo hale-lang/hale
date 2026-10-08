@@ -3,7 +3,6 @@ use std::process::ExitCode;
 use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
-use crate::shared::options::env_roles;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
 use hale_frontend::snapshot::Snapshot;
@@ -119,9 +118,6 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
                     adopt.push(c.clone());
                 }
             }
-            // The pair's role table too, as `check --env` and `build
-            // --env` resolve it (F.40 phase 4, A1).
-            let roles = env_roles(spec);
             // One snapshot per pair (F.40 phase 4, A3): the check reads
             // it, and so do the role coverage and the identity
             // comparison below, so a pair loads its seed once. A load
@@ -131,7 +127,7 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // has no entrypoint for an environment's roles to map, and a
             // constitution it can never deploy under takes no part in
             // the comparison.
-            let snap = match load_for_check(&target, &adopt, Some(env), Some(&roles)) {
+            let snap = match load_for_check(&target, &adopt, Some(env)) {
                 Ok(s) => s,
                 Err(_) => {
                     failed.push(format!("{} @ {}", ep, env));
@@ -220,8 +216,8 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
 }
 
 /// GH #1109: the role-coverage rule of `--matrix`, per (entrypoint,
-/// environment): the roles the entrypoint declares (plus `owner`
-/// when it has an api binding), the pair's role rows' projection
+/// environment): the roles the entrypoint declares, the pair's role
+/// rows' projection
 /// (`RoleRows::declared_roles`), against the environment's `roles`
 /// table. A declared role the table omits is a failure — an omission
 /// is indistinguishable from a mistake, and `[]` says "nobody" on
@@ -418,9 +414,9 @@ mod tests {
         );
         let healthy = "[claims]\nno_base = true\n\n\
              [environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
-             [environments.dev.roles]\nsupport = []\nowner = []\n\n\
+             [environments.dev.roles]\nsupport = []\n\n\
              [environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
-             [environments.prod.roles]\nsupport = []\nowner = []\n";
+             [environments.prod.roles]\nsupport = []\n";
         let loads_of = |manifest: &str| {
             write("hale.toml", manifest);
             let before = seed_loads_on_this_thread();

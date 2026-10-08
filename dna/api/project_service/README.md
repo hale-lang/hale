@@ -21,7 +21,7 @@ HALE_BIN="$(command -v hale)" \
 `dna/face/start.sh [PROJECT]` does the build and the launch. The
 routes, envelopes and operations are described in
 [`dna/api/README.md`](../README.md#head-project-service) and pinned by
-[`dna/api/contract/v1`](../contract/v1/README.md#head).
+and by the tests under `dna/api/project_service/tests`.
 
 ## Files
 
@@ -53,7 +53,7 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/<NAME>  operator-written secr
 ## Tests
 
 ```sh
-export HALE_BIN=/abs/hale HALE_API_CONTRACT_ROOT=$PWD/dna/api/contract/v1
+export HALE_BIN=/abs/hale
 HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_API_BIN=$PWD/target/seeds/api/api \
   hale test dna/api/project_service/tests
 ```

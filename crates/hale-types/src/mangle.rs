@@ -1854,13 +1854,6 @@ impl<'a> Mangler<'a> {
                         self.rewrite_ident(&mut codec.locus.name);
                     }
                 }
-                // GH #1109: and the api entry's role source, an
-                // expression the main locus evaluates.
-                if let Some(api) = &mut bb.api {
-                    if let Some(r) = &mut api.roles {
-                        self.walk_expr(&mut r.expr);
-                    }
-                }
             }
             LocusMember::Placement(pb) => {
                 // F.31: placement entries key on main-locus params
