@@ -155,6 +155,16 @@ interface __StdApiSurface {
     fn receiver(i: Int) -> Int;
     fn check(i: Int, body: String) -> String;
     fn grants(role: String) -> String;
+    // The static parts of a description (spec/api.md § The description),
+    // written by the compiler from the rows: member `i` as a JSON object,
+    // the names of the schemas it reaches, the schemas of the surface in
+    // name order, and the roles its rows require, in name order.
+    fn member_doc(i: Int) -> String;
+    fn refs(i: Int) -> String;
+    fn schema_count() -> Int;
+    fn schema_name(k: Int) -> String;
+    fn schema_doc(k: Int) -> String;
+    fn roles() -> String;
 }
 
 // ---- the topics a transport, an exposure and a receiver share ----
@@ -388,6 +398,12 @@ locus __StdApiNoSurface {
     fn receiver(i: Int) -> Int { return 0; }
     fn check(i: Int, body: String) -> String { return ""; }
     fn grants(role: String) -> String { return role; }
+    fn member_doc(i: Int) -> String { return ""; }
+    fn refs(i: Int) -> String { return ""; }
+    fn schema_count() -> Int { return 0; }
+    fn schema_name(k: Int) -> String { return ""; }
+    fn schema_doc(k: Int) -> String { return ""; }
+    fn roles() -> String { return ""; }
 }
 
 /// A role source that holds nobody: the default of an exposure's.
@@ -424,6 +440,8 @@ locus __StdApiExposure {
         has_expiry: Bool = false;
         has_revised: Bool = false;
         via: String = "";
+        // the listener's address, as the description states it (`bind:`)
+        address: String = "";
         accepting: Bool = true;
         stopped: Bool = false;
         next_rid: Int = 1;
@@ -552,6 +570,56 @@ locus __StdApiExposure {
         }
         return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"caller\":" + self.principal_json(p) + ",\"members\":[" + members + "]}";
     }
+    // The full document of spec/api.md § The description, for a transport
+    // that serves it whole (`http`): the caller's members and the schemas
+    // they reach, from the compiler's static parts, filtered by the same
+    // rows and sources admission reads.
+    fn describe_full(p: std::api::Principal) -> String {
+        let mut held = "";
+        if self.has_revised {
+            held = self.revised.grants(p).roles;
+        }
+        let n = self.rows.count();
+        let mut members = "";
+        let mut reached = ",";
+        let mut i = 0;
+        while i < n {
+            if len(self.missing_role(p, self.rows.requires(i))) == 0 {
+                if len(members) > 0 { members = members + ","; }
+                members = members + self.rows.member_doc(i);
+                reached = reached + self.rows.refs(i) + ",";
+            }
+            i = i + 1;
+        }
+        let mut schemas = "";
+        let sc = self.rows.schema_count();
+        let mut k = 0;
+        while k < sc {
+            let name = self.rows.schema_name(k);
+            if std::str::index_of(reached, "," + name + ",") >= 0 {
+                if len(schemas) > 0 { schemas = schemas + ","; }
+                schemas = schemas + "\"" + name + "\":" + self.rows.schema_doc(k);
+            }
+            k = k + 1;
+        }
+        let mut roles = "";
+        let mut rest = self.rows.roles();
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut r = rest;
+            if comma >= 0 {
+                r = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if self.holds_role(held, p, r) {
+                if len(roles) > 0 { roles = roles + ","; }
+                roles = roles + "\"" + r + "\"";
+            }
+        }
+        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_json(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + __api_http_outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
+    }
     fn on_ingress(i: __StdApiRpcIngress) {
         let rid = self.next_rid;
         self.next_rid = rid + 1;
@@ -571,13 +639,13 @@ locus __StdApiExposure {
             named = len(p.name) > 0;
             if !named {
                 let why = self.bearer.refused();
-                self.refuse(i.correlation, rid, who, "unauthenticated", "the bearer token is refused" + (if len(why) > 0 { ": " + why } else { "" }), "");
+                self.refuse(i.correlation, rid, who, "unauthenticated", (if len(why) > 0 { why } else { "the bearer token is refused" }), "");
                 return;
             }
             if self.has_expiry {
                 let at = self.expiring.expiry(r.credential);
                 if at != 0 && at < std::time::nanos(std::time::current()) {
-                    self.refuse(i.correlation, rid, who, "unauthenticated", "the bearer token is refused: expired", "");
+                    self.refuse(i.correlation, rid, who, "unauthenticated", "expired", "");
                     return;
                 }
             }
@@ -591,7 +659,11 @@ locus __StdApiExposure {
             return;
         }
         if r.kind == 1 {
-            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe(who)));
+            if self.via == "http" {
+                self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
+            } else {
+                self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe(who)));
+            }
             return;
         }
         if len(r.digest) > 0 && r.digest != self.digest {
@@ -908,6 +980,43 @@ fn __api_outcome_kind(outcome: std::api::Outcome) -> String {
     return kind;
 }
 
+/// A refusal as its object: `{"kind":…,"reason":…}`, plus `"served"` on
+/// `digest_mismatch` and `"requires"` on `unauthorized` (`x` is the served
+/// digest, or the comma-separated roles).
+fn __api_refusal_object(k: String, r: String, x: String) -> String {
+    let mut extra = "";
+    if k == "digest_mismatch" { extra = ",\"served\":\"" + x + "\""; }
+    if k == "unauthorized" {
+        let mut arr = "";
+        let mut rest = x;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut one = rest;
+            if comma >= 0 {
+                one = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if len(arr) > 0 { arr = arr + ","; }
+            arr = arr + "\"" + one + "\"";
+        }
+        extra = ",\"requires\":[" + arr + "]";
+    }
+    return "{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
+}
+
+/// The outcome encoding the HTTP transport states in a description
+/// (spec/api.md § Outcomes).
+fn __api_http_outcomes() -> String {
+    return "{\"transport\":\"http\",\"result\":{\"status\":200,\"body\":\"response\"},\"handler_error\":{\"status\":422,\"body\":\"error\"},\"refusal\":{\"body\":\"refusal\",\"status\":{\"malformed\":400,\"digest_mismatch\":409,\"unauthenticated\":401,\"unauthorized\":403,\"full\":429,\"shutting_down\":503,\"unavailable\":503}},\"server_error\":{\"status\":500,\"body\":\"refusal\"},\"transport_failure\":\"the transport's own: the connection ends without a response\"}";
+}
+
+/// The notes of a description, in the document's own text.
+fn __api_notes() -> String {
+    return "{\"authorization\":\"requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths\",\"lifecycle\":\"a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back\",\"discovery\":\"this document lists what this caller may use under this exposure's role source; the server still authorizes every request\"}";
+}
+
 /// What an outcome says, as the members of a reply object: `"ok":true,
 /// "value":…`, `"ok":false,"error":…` or `"ok":false,"refusal":{…}`.
 fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
@@ -920,26 +1029,7 @@ fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
             answer = "\"ok\":false,\"error\":" + b;
         },
         __StdApiOutcome::Refusal(k, r, x) -> {
-            let mut extra = "";
-            if k == "digest_mismatch" { extra = ",\"served\":\"" + x + "\""; }
-            if k == "unauthorized" {
-                let mut arr = "";
-                let mut rest = x;
-                while len(rest) > 0 {
-                    let comma = std::str::index_of(rest, ",");
-                    let mut one = rest;
-                    if comma >= 0 {
-                        one = rest[0..comma];
-                        rest = rest[(comma + 1)..len(rest)];
-                    } else {
-                        rest = "";
-                    }
-                    if len(arr) > 0 { arr = arr + ","; }
-                    arr = arr + "\"" + one + "\"";
-                }
-                extra = ",\"requires\":[" + arr + "]";
-            }
-            answer = "\"ok\":false,\"refusal\":{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
+            answer = "\"ok\":false,\"refusal\":" + __api_refusal_object(k, r, x);
         },
         __StdApiOutcome::ServerError -> {
             answer = "\"ok\":false,\"refusal\":{\"kind\":\"server\"}";
@@ -1359,7 +1449,10 @@ locus __StdApiUnixListener {
         publish __ApiUnixOutT;
     }
     birth() {
-        self.fd = std::io::unix::listen_socket(self.path) or -1;
+        // no path, no socket: a program that finds the path is another
+        // process's to hold hands the transport none, and serves nowhere
+        if len(self.path) == 0 { return; }
+        self.fd = std::io::unix::listen_socket(self.path) or - 1;
         if self.fd < 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
@@ -1369,6 +1462,7 @@ locus __StdApiUnixListener {
     }
     @unbounded
     run() {
+        if self.fd < 0 { return; }
         // The path is held from birth, and a client that connects before the
         // exposure is subscribed waits in the socket's backlog: a line read
         // earlier would be published to nobody. The transport answers the
@@ -1395,7 +1489,7 @@ locus __StdApiUnixListener {
         }
     }
     accept(c: __StdApiUnixPeer) { }
-    release(c: __StdApiUnixPeer) { }
+    release (c: __StdApiUnixPeer) { }
     fn on_ctl(o: __StdApiUnixOut) {
         if o.kind == 3 { self.started = true; }
         if o.kind == 1 {
@@ -1482,5 +1576,329 @@ locus __StdApiUnixRpc {
     fn stop_listening() {
         self.stops = self.stops + 1;
         __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 1, seq: 0, request_id: 0, answer: "", caller: "" };
+    }
+}
+
+// ---- the HTTP transport (spec/api.md § The HTTP transport) ----
+//
+// `std::api::http::Rpc` serves an exposure over HTTP/1.1, one request per
+// connection (`Connection: close`). It is built as the Unix transport is,
+// from the stdlib's own primitives (the listen and accept of `std::io::tcp`,
+// `std::http::parse_request` and `std::http::header`): the listener
+// (`__StdApiHttpListener`) binds at birth and accepts on a pool of its own;
+// a connection (`__StdApiHttpPeer`) per accepted socket reads one request
+// and publishes its text, whole, as the exposure's ingress (the transport's
+// `frame` parses it); the transport (`__StdApiHttpRpc`) frames a request and
+// encodes an outcome as a status and a body. The correlation is the
+// connection. A connection that fails (a request cut short, a write that
+// fails, a client that goes away) ends that connection and nothing else.
+
+/// What the transport says to the listener and the connections. kind: 0 a
+/// response for the connection `key` names, 1 close (the connection, or,
+/// keyed by the exposure, the listener and every connection, after the
+/// responses sent before it), 4 and 3 the listener's asking and the
+/// transport's answer that the exposure is there.
+type __StdApiHttpOut {
+    key: Int;
+    kind: Int;
+    status: Int;
+    body: String;
+}
+
+fn __api_http_phrase(status: Int) -> String {
+    if status == 200 { return "OK"; }
+    if status == 400 { return "Bad Request"; }
+    if status == 401 { return "Unauthorized"; }
+    if status == 403 { return "Forbidden"; }
+    if status == 409 { return "Conflict"; }
+    if status == 422 { return "Unprocessable Entity"; }
+    if status == 429 { return "Too Many Requests"; }
+    if status == 503 { return "Service Unavailable"; }
+    return "Internal Server Error";
+}
+
+/// The status a refusal kind has (spec/api.md § Outcomes).
+fn __api_http_refusal_status(kind: String) -> Int {
+    if kind == "malformed" { return 400; }
+    if kind == "digest_mismatch" { return 409; }
+    if kind == "unauthenticated" { return 401; }
+    if kind == "unauthorized" { return 403; }
+    if kind == "full" { return 429; }
+    if kind == "shutting_down" { return 503; }
+    if kind == "unavailable" { return 503; }
+    return 500;
+}
+
+/// One accepted connection: one request in, one response out.
+locus __StdApiHttpPeer {
+    params {
+        conn: Int = 0;
+        tid: Int = 0;
+        route: Int = 0;
+        fd: Int = -1;
+        open: Bool = true;
+        published: Bool = false;
+        answered: Bool = false;
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_out where key == self.route;
+        subscribe __ApiHttpOutT as on_group where key == self.tid;
+        publish __ApiRpcIngressT;
+        publish __ApiRpcLostT;
+    }
+    birth() {
+        self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        // a client that stalls cannot hold this connection's reader for long
+        let _ = std::io::tcp::__set_recv_timeout_ns(self.fd, 5000000000);
+        std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
+    }
+    @unbounded
+    run() {
+        // the whole request within 10 s, however slowly it trickles
+        let deadline = std::time::monotonic_ns() + 10000000000;
+        let mut buf = "";
+        let mut head_end = -1;
+        while self.open && head_end < 0 && len(buf) < 65536 && std::time::monotonic_ns() < deadline && !self.draining {
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                self.open = false;
+            } else {
+                buf = buf + chunk;
+                head_end = std::str::index_of(buf, "\r\n\r\n");
+            }
+        }
+        if self.open && ((head_end < 0 && len(buf) >= 65536) || head_end > 65536) {
+            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}");
+            self.open = false;
+        }
+        if self.open && head_end >= 0 {
+            let head = std::http::parse_request(buf[0..(head_end + 4)]);
+            let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
+            if want > 1048576 {
+                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}");
+                self.open = false;
+            } else {
+                let mut have = len(buf) - (head_end + 4);
+                while self.open && have < want && std::time::monotonic_ns() < deadline && !self.draining {
+                    let chunk = self.stream.recv(65536) or "";
+                    if len(chunk) == 0 {
+                        self.open = false;
+                    } else {
+                        buf = buf + chunk;
+                        have = len(buf) - (head_end + 4);
+                    }
+                }
+                if self.open && have >= want {
+                    // the request is whole: the exposure answers it, and the
+                    // wait for the answer is not on the clock of a read
+                    let _ = std::io::tcp::__set_recv_timeout_ns(self.fd, 0);
+                    self.published = true;
+                    __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn, raw: std::bytes::from_string(buf[0..(head_end + 4 + want)]) };
+                    // what the client sends meanwhile is not read as a request;
+                    // its end of the stream is the connection lost
+                    while self.open && !self.draining {
+                        let more = self.stream.recv(4096) or "";
+                        if len(more) == 0 { self.open = false; }
+                    }
+                }
+            }
+        }
+        // the connection is over: a request the exposure has not answered is
+        // lost, and the descriptor is released
+        if self.published && !self.answered {
+            self.answered = true;
+            __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: self.conn };
+        }
+        self.release_fd();
+    }
+    fn on_out(o: __StdApiHttpOut) {
+        if o.kind == 1 {
+            self.hangup();
+            return;
+        }
+        if o.kind != 0 || !self.open || self.answered { return; }
+        self.answered = true;
+        self.respond(o.status, o.body);
+        self.hangup();
+    }
+    fn on_group(o: __StdApiHttpOut) {
+        if o.kind == 1 { self.hangup(); }
+    }
+    fn respond(status: Int, body: String) {
+        if self.fd < 0 { return; }
+        // a write that fails closes this connection, and only this one
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __api_http_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+    }
+    // Stop reading: the shutdown wakes the reader, which ends the connection.
+    fn hangup() {
+        self.open = false;
+        if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
+    }
+    fn release_fd() {
+        if self.fd >= 0 {
+            std::io::tcp::__close_fd(self.fd);
+            self.fd = -1;
+        }
+    }
+}
+
+/// The listening socket, on its own pool (`std::api::http::Listener`; the
+/// compiler adds one to the main locus per `http::Rpc` serve site, carrying
+/// the transport's `bind` and the exposure's number).
+locus __StdApiHttpListener {
+    params {
+        bind: String = "";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_ctl where key == self.tid;
+        publish __ApiHttpOutT;
+    }
+    birth() {
+        // `host:port`; the port is what follows the last colon
+        let mut colon = -1;
+        let mut k = 0;
+        while k < len(self.bind) {
+            if self.bind[k..(k + 1)] == ":" { colon = k; }
+            k = k + 1;
+        }
+        let mut host = "127.0.0.1";
+        let mut port = -1;
+        if colon >= 0 {
+            if colon > 0 { host = self.bind[0..colon]; }
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or - 1;
+        }
+        if port >= 0 && port <= 65535 {
+            self.fd = std::io::tcp::__listen_socket(host, port);
+        }
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            // (spec/semantics.md): the diagnostic and a non-zero exit
+            eprintln("api: http::Rpc could not listen on " + self.bind);
+            std::process::exit(2);
+        }
+    }
+    @unbounded
+    run() {
+        // see the Unix listener: nothing is accepted before the exposure is
+        // subscribed, and the asking repeats until the transport answers
+        while !self.started && !self.stopped && !self.draining {
+            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 4, status: 0, body: "" };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let conn = std::io::tcp::__accept_one(self.fd);
+            if conn < 0 {
+                if self.stopped || self.draining { break; }
+                // a failed accept (out of descriptors, an aborted
+                // connection) ends one connection, never the listener
+                std::time::sleep(20ms);
+                continue;
+            }
+            let n = self.next_conn;
+            self.next_conn = (n % 16777215) + 1;
+            __StdApiHttpPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        }
+    }
+    accept(c: __StdApiHttpPeer) { }
+    release (c: __StdApiHttpPeer) { }
+    fn on_ctl(o: __StdApiHttpOut) {
+        if o.kind == 3 { self.started = true; }
+        if o.kind == 1 {
+            self.stopped = true;
+            self.release_socket();
+        }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        std::io::tcp::__shutdown_listen_socket(self.fd);
+        std::io::tcp::__close_fd(self.fd);
+        self.fd = -1;
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}
+
+/// The HTTP transport (`std::api::http::Rpc`; `http::Rpc` at a serve site).
+/// `tid` is the number of the exposure it serves, which the compiler writes
+/// into the literal, together with the listener it pairs with. The principal
+/// is the bearer `principals` names; the codec is JSON, the one v1 has.
+locus __StdApiHttpRpc {
+    params {
+        bind: String;
+        principals: std::api::BearerSource;
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_ask where key == self.tid;
+        publish __ApiHttpOutT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "http";
+    }
+    fn on_ask(o: __StdApiHttpOut) {
+        if o.kind == 4 {
+            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
+        }
+    }
+    // The raw message is the request as the client sent it.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let req = std::http::parse_request(std::str::from_bytes(raw));
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        if len(req.method) == 0 || len(req.path) == 0 {
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "not an HTTP request" };
+        }
+        let auth = std::http::header(req, "Authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        let mut path = req.path;
+        let q = std::str::index_of(path, "?");
+        if q >= 0 { path = path[0..q]; }
+        if req.method == "GET" && path == "/.description" {
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if req.method == "POST" && std::str::starts_with(path, "/call/") {
+            let member = std::str::replace(std::str::replace(path[6..len(path)], "%3A", ":"), "%3a", ":");
+            if len(req.body) == 0 {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a call carries a body" };
+            }
+            return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(req.body), digest: std::http::header(req, "Hale-Surface-Digest"), correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a request is POST /call/<member> or GET /.description" };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let mut status = 500;
+        let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
+        match outcome {
+            __StdApiOutcome::Result(b) -> { status = 200; body = b; },
+            __StdApiOutcome::HandlerError(b) -> { status = 422; body = b; },
+            __StdApiOutcome::Refusal(k, r, x) -> {
+                status = __api_http_refusal_status(k);
+                body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
+            },
+            __StdApiOutcome::ServerError -> { },
+        }
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body };
+    }
+    // The request's connection is gone and its work has completed: nothing
+    // is written; whatever is left of the connection is closed.
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
+    }
+    // Close the listener and every connection, after the responses already
+    // sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };
     }
 }

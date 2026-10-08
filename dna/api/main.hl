@@ -634,6 +634,9 @@ main locus Head {
         // GH #1135: the binding's HTTP transport, and who its bearers are
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
+        // GH #1417 (R3): where the head's surface (`HeadCommands`) is served
+        // beside the binding's socket
+        rpc_socket: String = "";
     }
     // The server off the main pool (a server born as a param on main's
     // pool would hold its birth thread before the binding is born), a
@@ -650,8 +653,38 @@ main locus Head {
         // birth. So this line is the process's own word that its commands
         // port answers, and a launcher waits for it rather than guessing.
         if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
+        // the surface: `lookup` and `file_friction` as rows (commands.hl),
+        // under the same record's roles, on a socket of its own
+        let rpc = api::serve(HeadCommands, unix::Rpc { path: self.rpc_socket, roles: dna::RecordRoles { root: self.root } }, as: "head", bound: 16, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
+        rpc.stop();
     }
+}
+
+// The surface's socket, beside the binding's: `HALE_DNA_RPC_SOCKET`, else
+// the binding's name with `.rpc` for `.sock` (never longer than it). The
+// surface is served by the process that holds the binding's socket: when
+// another live process holds it (a second API for the same record, whose
+// binding runs without its socket), the surface has no socket here either,
+// and "" is what the transport is given (it listens nowhere).
+fn rpc_socket_of(socket: String) -> String {
+    let given = std::env::var("HALE_DNA_RPC_SOCKET");
+    if len(given) > 0 { return given; }
+    if held_elsewhere(socket) { return ""; }
+    if len(socket) == 0 { return "/tmp/hale-" + to_string(std::process::uid()) + "-head.rpc"; }
+    if std::str::ends_with(socket, ".sock") { return socket[0..(len(socket) - 5)] + ".rpc"; }
+    return socket + ".rpc";
+}
+
+// Whether a live process other than this one answers on `socket`: asked
+// before this process binds anything, so any answer is another's.
+fn held_elsewhere(socket: String) -> Bool {
+    if len(socket) == 0 { return false; }
+    let fd = std::io::unix::connect(socket) or - 1;
+    if fd < 0 { return false; }
+    let other = std::io::unix::peer_pid(fd) != std::process::pid();
+    std::io::tcp::__close_fd(fd);
+    return other;
 }
 
 fn main() {
@@ -730,7 +763,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         let auth = oidc_ui(record, port, "hale dna api");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
         Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
-            http_port: commands_port(), bearer: OidcBearer { auth: oidc_ui(record, port, "hale dna api") },
+            http_port: commands_port(), bearer: OidcBearer { auth: oidc_ui(record, port, "hale dna api") }, rpc_socket: rpc_socket_of(socket),
             srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, commands_port: commands_port(), web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root } } } };
         return;
     }
@@ -748,6 +781,6 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     let token = launch_token(root + "/.hale/dna");
     println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; ", command_label, "; the token is in ", root, "/.hale/dna/head.token)");
     Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
-        http_port: commands_port(), bearer: LaunchBearer { token: token },
+        http_port: commands_port(), bearer: LaunchBearer { token: token }, rpc_socket: rpc_socket_of(socket),
         srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, commands_port: commands_port(), web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: user, token: token } } };
 }

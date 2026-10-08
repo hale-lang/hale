@@ -12,9 +12,10 @@
 //!   (`std::api::ws::Hub`), carrying the hub's number (`tid`), the rows
 //!   adapter below, and the optional extensions of its sources (the
 //!   bearer's `expiry`, the role source's `grants`);
-//! - a listener param (`__StdApiWsListener`) first in the main locus's
-//!   params, placed on the shared `async_io` pool `__api_ws`, so it is
-//!   born (and binds its socket, or fails the boot) before the hub;
+//! - a listener param (`__StdApiWsListener`) after every authored param of
+//!   the main locus (its `bind:` may read one), placed on the shared
+//!   `async_io` pool `__api_ws`, and before the exposure of a serve over the
+//!   hub (`rpc_expand` pushes it later), as a socket transport's;
 //! - for each stream, an adapter binding in the main locus's `bindings`
 //!   block (`Topic: __StdApiHubStream { hub: N, stream: I } codec(…)`), so
 //!   the publish fanout reaches the hub as it reaches any adapter, and the
@@ -438,10 +439,11 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                 }
             }
         }
-        // the listener: a param born first, on a pool of its own
+        // the listener: a param born after the authored ones (the address may
+        // read one), on a pool of its own
         if let Some((lp, entry)) = parse_listener(plan.id, plan.kind, fresh(&plan.bind), span) {
             if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                pb.params.insert(0, lp);
+                pb.params.push(lp);
             }
             if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                 pl.entries.push(entry);

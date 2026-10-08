@@ -4957,6 +4957,7 @@ otherwise.
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |
 | `HALE_DNA_ORGANIZATION_POLICY=<path>` | unset | An optional, independent policy for organization-source proposals and Review writes; configuring evidence reads does not enable them. |
 | `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
+| `HALE_DNA_RPC_SOCKET=<path>` | the binding's socket with `.rpc` for `.sock` | Where the head serves its surface (`HeadCommands`: `lookup` and `file_friction`, GH #1417), beside the api binding's socket. |
 | `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
 | `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |

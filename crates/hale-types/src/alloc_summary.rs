@@ -1191,6 +1191,17 @@ impl AllocSummary {
                 }
             }
         }
+        // The appended runtime's bodies sit among the program's in walk
+        // order; the program alone has no place for them, so a row's
+        // `decl_index` closes up over the runtime rows left out.
+        if !runtime_own {
+            let mut gone: Vec<usize> =
+                self.fns.values().filter(|f| self.appended_runtime.contains(&f.key)).map(|f| f.decl_index).collect();
+            gone.sort_unstable();
+            for f in fns.values_mut() {
+                f.decl_index -= gone.partition_point(|g| *g < f.decl_index);
+            }
+        }
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {

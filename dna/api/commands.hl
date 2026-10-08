@@ -578,6 +578,21 @@ locus Commands {
     fn lookup_knowledge(l: KnowledgeRecovery, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.lookup(l, ctx); }
 }
 
+// GH #1417 (R3): the first two of the head's operations on a surface, beside
+// the structural binding above (both are served until R4 moves the rest; no
+// adapter stands between them). `lookup` is the one read the binding has
+// (a command by the request id its caller minted: the head's reads are HTTP
+// routes, and `lookup` is the only read-only member of the binding), and
+// `file_friction` a durable command (it writes a `friction.filed` row on the
+// attempt through the composed provider). Each is the handler the structural
+// path already runs, unchanged: its `std::api::Context` is the exposure's,
+// and `file_friction` needs the same `position` the structural gate does,
+// from the same record (`dna::RecordRoles`, named at the serve site).
+api HeadCommands {
+    rpc Commands::lookup;
+    rpc Commands::file_friction requires: [position];
+}
+
 // A leased command's subject: the lease it settles under.
 fn lease_of(holder: String, token: Int) -> String {
     return "lease:" + holder + "@" + to_string(token);

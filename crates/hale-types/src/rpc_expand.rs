@@ -367,6 +367,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "RpcEvent",
     "test",
     "unix",
+    "http",
 ];
 
 /// Whether the programs serve a surface (`api::serve`) or spell a name of
@@ -563,7 +564,7 @@ pub fn expand(
                     let buildable = match transport {
                         Expr::Struct { path, .. } => {
                             let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                            segs.first() == Some(&"std") || is_unix_rpc(path) || loci.contains_key(segs.join("::").as_str())
+                            segs.first() == Some(&"std") || is_unix_rpc(path) || is_http_rpc(path) || loci.contains_key(segs.join("::").as_str())
                         }
                         e => crate::surfaces::self_field(e).is_some(),
                     };
@@ -726,10 +727,11 @@ pub fn expand(
     let slices: Vec<&[TopDecl]> = ro_refs.iter().map(|p| p.items.as_slice()).collect();
     let shapes = Shapes::of_all(&slices);
     let codec = Codec { shapes: &shapes, convs: &convs };
+    let schemas = crate::surfaces::Schemas::of(&ro_refs);
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         let site = &plan.site;
-        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec));
+        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, &schemas));
         for (slot, ty) in plan.slots.iter().enumerate() {
             let members: Vec<(usize, &Row)> = plan
                 .rows
@@ -778,6 +780,9 @@ pub fn expand(
             };
             if let Some(t) = &site.transport {
                 push("transport", as_stdlib_unix(t, id));
+                if let Some(addr) = http_bind_of(l, site.transport.as_ref()) {
+                    push("address", addr);
+                }
             }
             if let Some(p) = &plan.principals {
                 push("bearer", p.clone());
@@ -800,13 +805,24 @@ pub fn expand(
             l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
         }
         // a Unix transport's listener: a param of the serving locus born
-        // first (so it is subscribed when the exposure attaches), placed on a
+        // after the authored params its path may read, and before the
+        // exposure (so it is subscribed when the exposure attaches), placed on a
         // pool of its own
         if l.is_main {
-            if let Some(path) = unix_path_of(l, site.transport.as_ref()) {
-                if let Some((lp, entry)) = parse_unix_listener(id, path, span) {
+            let unix_path = unix_path_of(l, site.transport.as_ref());
+            let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
+            let listener = match (unix_path, http_bind) {
+                (Some(path), _) => parse_unix_listener(id, path, span),
+                (None, Some(bind)) => parse_http_listener(id, bind, span),
+                (None, None) => None,
+            };
+            {
+                if let Some((lp, entry)) = listener {
                     if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        pb.params.insert(0, lp);
+                        // after every authored param (the address may read one),
+                        // before the exposure just pushed
+                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
+                        pb.params.insert(at, lp);
                     }
                     if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                         pl.entries.push(entry);
@@ -823,7 +839,7 @@ pub fn expand(
                 if let LocusMember::Params(pb) = m {
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
-                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path)) {
+                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path)) {
                                 *e = as_stdlib_unix(e, id);
                             }
                         }
@@ -836,6 +852,18 @@ pub fn expand(
             let key = id * 100 + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             inject_key(l, field, &key_param, key, span);
+        }
+    }
+
+    // ---- the receivers, numbered where a literal of the serving locus builds them ----
+    for (i, plan) in plans.iter().enumerate() {
+        let id = i as i64 + 1;
+        for (slot, field) in plan.fields.iter().enumerate() {
+            let key = id * 100 + slot as i64;
+            let key_param = format!("__rpc_s_{id}");
+            for p in programs.iter_mut() {
+                number_constructions(&mut p.items, &plan.site.serving, field, &key_param, key);
+            }
         }
     }
 
@@ -878,16 +906,34 @@ pub(crate) fn is_unix_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
     matches!(segs.as_slice(), ["unix", "Rpc"] | ["std", "api", "unix", "Rpc"])
 }
 
-/// The transport literal as the exposure holds it: a Unix transport is
+/// Whether a transport literal's path is the stdlib's HTTP transport,
+/// spelled `http::Rpc` (the serve site's spelling) or `std::api::http::Rpc`.
+pub(crate) fn is_http_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"])
+}
+
+/// The transport literal as the exposure holds it: a socket transport is
 /// spelled by its stdlib path and carries the number of the exposure it
-/// serves (`tid`), which keys the bus subjects its connections share.
+/// serves (`tid`), which keys the bus subjects its connections share. The
+/// HTTP transport's `codec: json` is the one codec v1 has, and is not a
+/// field of the locus.
 fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
     let mut e = fresh(t);
     if let Expr::Struct { path, inits, span, .. } = &mut e {
-        if is_unix_rpc(path) {
+        let kind = if is_unix_rpc(path) {
+            Some("unix")
+        } else if is_http_rpc(path) {
+            Some("http")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
             let sp = *span;
-            path.segments = ["std", "api", "unix", "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
-            inits.retain(|i| i.name.name != "tid");
+            path.segments = ["std", "api", kind, "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
+            inits.retain(|i| {
+                i.name.name != "tid" && !(kind == "http" && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
+            });
             inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
         }
     }
@@ -916,6 +962,58 @@ fn unix_path_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
         }
         _ => None,
     }
+}
+
+/// The `bind:` an HTTP transport is built with, at a serve site or in the
+/// param the site names; `None` for any other transport.
+fn http_bind_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_http_rpc(path) => {
+            inits.iter().find(|i| i.name.name == "bind").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
+}
+
+/// The listener of HTTP exposure `id` and its placement: as the Unix one,
+/// a param of the serving main locus on a pool of its own.
+fn parse_http_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+    let field = format!("__rpc_h_{id}");
+    let src = format!(
+        "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
+    );
+    let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0700_0000 + id as u32 * 0x100).ok()?;
+    let mut param = None;
+    let mut entry = None;
+    for item in prog.items {
+        if let TopDecl::Locus(l) = item {
+            for m in l.members {
+                match m {
+                    LocusMember::Params(pb) => param = pb.params.into_iter().next(),
+                    LocusMember::Placement(pl) => entry = pl.entries.into_iter().next(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut param = param?;
+    if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
+        inits.push(StructInit { name: Ident::new("bind", span), value: bind, span });
+    }
+    Some((param, entry?))
 }
 
 /// The listener of Unix exposure `id` and its placement: a param of the
@@ -1061,10 +1159,18 @@ topic __ApiRpcCallT { payload: __StdApiRpcCall; subject: \"__api.rpc.call\"; key
 topic __ApiRpcHelloT { payload: __StdApiRpcHello; subject: \"__api.rpc.hello\"; keyed_by key; on_unmatched: fail; }
 topic __ApiRpcEventT { payload: __StdApiRpcEvent; subject: \"__api.rpc.event\"; keyed_by exposure; }
 topic __ApiUnixOutT { payload: __StdApiUnixOut; subject: \"__api.unix.out\"; keyed_by key; }
+topic __ApiHttpOutT { payload: __StdApiHttpOut; subject: \"__api.http.out\"; keyed_by key; }
 ";
 
 /// The rows adapter of exposure `id`.
-fn surface_src(id: i64, rows: &[Row], slots: &[String], confer: &BTreeMap<String, Vec<String>>, codec: &Codec<'_>) -> String {
+fn surface_src(
+    id: i64,
+    rows: &[Row],
+    slots: &[String],
+    confer: &BTreeMap<String, Vec<String>>,
+    codec: &Codec<'_>,
+    schemas: &crate::surfaces::Schemas<'_>,
+) -> String {
     let mut s = String::new();
     s.push_str(&format!("locus __RpcSurface_{id} {{\n"));
     s.push_str(&format!("    fn count() -> Int {{ return {}; }}\n", rows.len()));
@@ -1111,7 +1217,104 @@ fn surface_src(id: i64, rows: &[Row], slots: &[String], confer: &BTreeMap<String
             s.push_str(&format!("        if role == {} {{ return {}; }}\n", q(role), q(&who.join(","))));
         }
     }
-    s.push_str("        return role;\n    }\n}\n");
+    s.push_str("        return role;\n    }\n");
+    s.push_str(&description_src(rows, schemas));
+    s.push_str("}\n");
+    s
+}
+
+/// A string as a JSON string, compact.
+fn jstr(v: &str) -> String {
+    let mut o = String::from("\"");
+    for c in v.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// A schema as compact JSON (the form `hale check --api` prints, pretty).
+fn field_json(f: &crate::surfaces::FieldSchema) -> String {
+    use crate::surfaces::FieldSchema;
+    match f {
+        FieldSchema::Scalar { json, hale_type, unit } => {
+            let mut o = format!("{{\"type\":{}", jstr(json));
+            if let Some(t) = hale_type {
+                o.push_str(&format!(",\"x-hale-type\":{}", jstr(t)));
+            }
+            if let Some(u) = unit {
+                o.push_str(&format!(",\"x-hale-unit\":{}", jstr(u)));
+            }
+            o.push('}');
+            o
+        }
+        FieldSchema::Ref(name) => format!("{{\"$ref\":{}}}", jstr(&format!("#/schemas/{name}"))),
+        FieldSchema::Unformed => "{}".to_string(),
+    }
+}
+
+fn type_json(t: &crate::surfaces::TypeSchema) -> String {
+    let props: Vec<String> = t.properties.iter().map(|(k, f)| format!("{}:{}", jstr(k), field_json(f))).collect();
+    let req: Vec<String> = t.required.iter().map(|r| jstr(r)).collect();
+    format!("{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}", props.join(","), req.join(","))
+}
+
+/// The static parts of a description (the rows adapter's `member_doc`,
+/// `refs`, `schema_*` and `roles`): each member as a JSON object, the
+/// schemas it reaches by name, the schemas of the surface in name order and
+/// the roles its rows require. The runtime filters these by caller.
+fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> String {
+    let mut all: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
+    let mut docs: Vec<String> = Vec::new();
+    let mut refs: Vec<String> = Vec::new();
+    for r in rows {
+        let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
+        let mut ty = |t: &Option<TypeExpr>| match t {
+            Some(te) => field_json(&schemas.type_ref(te, &mut mine)),
+            None => "null".to_string(),
+        };
+        let request = ty(&r.request);
+        let response = ty(&r.response);
+        let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
+        let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
+        docs.push(format!(
+            "{{\"name\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]}}",
+            jstr(&r.member),
+            req.join(",")
+        ));
+        refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));
+        all.extend(mine);
+    }
+    let roles: BTreeSet<&str> = rows.iter().flat_map(|r| r.requires.iter().map(String::as_str)).collect();
+    let mut s = String::new();
+    s.push_str("    fn member_doc(i: Int) -> String {\n");
+    for (i, d) in docs.iter().enumerate() {
+        s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
+    }
+    s.push_str("        return \"\";\n    }\n    fn refs(i: Int) -> String {\n");
+    for (i, r) in refs.iter().enumerate() {
+        if !r.is_empty() {
+            s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(r)));
+        }
+    }
+    s.push_str(&format!("        return \"\";\n    }}\n    fn schema_count() -> Int {{ return {}; }}\n", all.len()));
+    s.push_str("    fn schema_name(k: Int) -> String {\n");
+    for (k, name) in all.keys().enumerate() {
+        s.push_str(&format!("        if k == {k} {{ return {}; }}\n", q(name)));
+    }
+    s.push_str("        return \"\";\n    }\n    fn schema_doc(k: Int) -> String {\n");
+    for (k, t) in all.values().enumerate() {
+        s.push_str(&format!("        if k == {k} {{ return {}; }}\n", q(&type_json(t))));
+    }
+    s.push_str(&format!(
+        "        return \"\";\n    }}\n    fn roles() -> String {{ return {}; }}\n",
+        q(&roles.into_iter().collect::<Vec<_>>().join(","))
+    ));
     s
 }
 
@@ -1265,3 +1468,160 @@ fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
     s
 }
 
+
+// ---- the literals that build a serving locus (a construction site) ----
+
+/// Every expression of `e`, pre-order, `f` first on each.
+fn walk_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    f(e);
+    match e {
+        Expr::Binary { left, right, .. } => {
+            walk_expr_mut(left, f);
+            walk_expr_mut(right, f);
+        }
+        Expr::Unary { operand, .. } => walk_expr_mut(operand, f),
+        Expr::Call { callee, args, .. } => {
+            walk_expr_mut(callee, f);
+            args.iter_mut().for_each(|a| walk_expr_mut(a, f));
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => walk_expr_mut(receiver, f),
+        Expr::Index { receiver, index, .. } => {
+            walk_expr_mut(receiver, f);
+            walk_expr_mut(index, f);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter_mut().for_each(|a| walk_expr_mut(a, f)),
+        Expr::Struct { inits, .. } => inits.iter_mut().for_each(|i| walk_expr_mut(&mut i.value, f)),
+        Expr::Block(b) => walk_block_mut(b, f),
+        Expr::If(i) => walk_if_mut(i, f),
+        Expr::Match(m) => walk_match_mut(m, f),
+        Expr::Sum(a, _) | Expr::Prod(a, _) => walk_expr_mut(a, f),
+        Expr::Approx { left, right, tolerance, .. } => {
+            walk_expr_mut(left, f);
+            walk_expr_mut(right, f);
+            walk_expr_mut(tolerance, f);
+        }
+        Expr::Range { lo, hi, .. } => {
+            walk_expr_mut(lo, f);
+            walk_expr_mut(hi, f);
+        }
+        Expr::ArrayRepeat { val, .. } => walk_expr_mut(val, f),
+        Expr::Or { inner, disposition, .. } => {
+            walk_expr_mut(inner, f);
+            match disposition {
+                hale_syntax::ast::OrDisposition::Substitute(s) | hale_syntax::ast::OrDisposition::Fail(s, _) => walk_expr_mut(s, f),
+                _ => {}
+            }
+        }
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
+fn walk_if_mut(i: &mut hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&mut Expr)) {
+    walk_expr_mut(&mut i.cond, f);
+    walk_block_mut(&mut i.then_block, f);
+    match i.else_block.as_deref_mut() {
+        Some(hale_syntax::ast::ElseBranch::Else(b)) => walk_block_mut(b, f),
+        Some(hale_syntax::ast::ElseBranch::ElseIf(e)) => walk_if_mut(e, f),
+        None => {}
+    }
+}
+
+fn walk_match_mut(m: &mut hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&mut Expr)) {
+    walk_expr_mut(&mut m.scrutinee, f);
+    for arm in &mut m.arms {
+        if let Some(g) = &mut arm.guard {
+            walk_expr_mut(g, f);
+        }
+        match &mut arm.body {
+            hale_syntax::ast::MatchArmBody::Expr(e) => walk_expr_mut(e, f),
+            hale_syntax::ast::MatchArmBody::Block(b) => walk_block_mut(b, f),
+        }
+    }
+}
+
+fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+    for s in &mut b.stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => walk_expr_mut(value, f),
+            Stmt::If(i) => walk_if_mut(i, f),
+            Stmt::Match(m) => walk_match_mut(m, f),
+            Stmt::For { iter, body, .. } => {
+                walk_expr_mut(iter, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_expr_mut(cond, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::Return(Some(e), _) => walk_expr_mut(e, f),
+            Stmt::Fail { value, .. } => walk_expr_mut(value, f),
+            Stmt::Block(b) => walk_block_mut(b, f),
+            Stmt::Recovery { args, .. } => args.iter_mut().for_each(|a| walk_expr_mut(a, f)),
+            Stmt::Violate { payload: Some(p), .. } => walk_expr_mut(p, f),
+            Stmt::Send { subject, value, .. } => {
+                walk_expr_mut(subject, f);
+                walk_expr_mut(value, f);
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                walk_expr_mut(max, f);
+                walk_block_mut(body, f);
+            }
+            Stmt::Expr(e) => walk_expr_mut(e, f),
+            _ => {}
+        }
+    }
+    if let Some(t) = &mut b.tail {
+        walk_expr_mut(t, f);
+    }
+}
+
+fn walk_items_exprs_mut(items: &mut [TopDecl], f: &mut dyn FnMut(&mut Expr)) {
+    for d in items {
+        match d {
+            TopDecl::Fn(func) => walk_block_mut(&mut func.body, f),
+            TopDecl::Const(c) => walk_expr_mut(&mut c.value, f),
+            TopDecl::Module(m) => walk_items_exprs_mut(&mut m.items, f),
+            TopDecl::Locus(l) => {
+                for m in &mut l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            for p in &mut pb.params {
+                                if let ParamInit::Value(e) = &mut p.init {
+                                    walk_expr_mut(e, f);
+                                }
+                            }
+                        }
+                        LocusMember::Lifecycle(lc) => walk_block_mut(&mut lc.body, f),
+                        LocusMember::Failure(fd) => walk_block_mut(&mut fd.body, f),
+                        LocusMember::Mode(md) => walk_block_mut(&mut md.body, f),
+                        LocusMember::Fn(func) => walk_block_mut(&mut func.body, f),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Write `key_param: key` into the literal that builds `field` wherever a
+/// literal of the serving locus `serving` is written: a program that
+/// builds its serving locus from another fn (`Head { commands: Commands {
+/// … } }`) overrides the param's default literal, and the instance is
+/// numbered in the one that builds it.
+fn number_constructions(items: &mut [TopDecl], serving: &str, field: &str, key_param: &str, key: i64) {
+    walk_items_exprs_mut(items, &mut |e| {
+        let Expr::Struct { path, inits, .. } = e else { return };
+        if path.segments.last().map(|s| s.name.as_str()) != Some(serving) {
+            return;
+        }
+        for i in inits.iter_mut().filter(|i| i.name.name == field) {
+            if let Expr::Struct { inits: inner, span, .. } = &mut i.value {
+                if !inner.iter().any(|x| x.name.name == key_param) {
+                    let sp = *span;
+                    inner.push(StructInit { name: Ident::new(key_param, sp), value: lit_int(key, sp), span: sp });
+                }
+            }
+        }
+    });
+}

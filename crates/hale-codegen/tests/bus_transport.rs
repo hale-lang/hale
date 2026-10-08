@@ -13,6 +13,10 @@ mod api_hub_desk;
 mod api_hub_streams;
 #[path = "api_hub_udp.rs"]
 mod api_hub_udp;
+#[path = "api_http.rs"]
+mod api_http;
+#[path = "api_http_witness.rs"]
+mod api_http_witness;
 #[path = "api_runtime.rs"]
 mod api_runtime;
 #[path = "api_serve_build.rs"]

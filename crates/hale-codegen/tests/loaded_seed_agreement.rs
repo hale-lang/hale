@@ -299,3 +299,26 @@ fn a_program_that_does_not_parse_is_refused_with_the_parsers_diagnostics() {
         "the refusal names the line in the virtual main.hl: {err:?}"
     );
 }
+
+/// A subscribed handler that is fallible is refused by the check, but a
+/// build skips the check. The reclaim wrapper called it with two of its
+/// four parameters, and LLVM's IPSCCP crashed (SIGSEGV) on the short call
+/// when the sample reached the program. The lowering refuses it instead.
+/// (A plain literal, not a raw string, so the corpus harvester does not
+/// take it in.)
+#[test]
+fn a_fallible_bus_handler_is_refused_by_the_build_not_miscompiled() {
+    let source = "type Tick { n: Int; }\n\
+                  type E { code: Int; }\n\
+                  locus L {\n\
+                      bus { subscribe \"tick\" as on_tick of type Tick; }\n\
+                      fn on_tick(t: Tick) -> Int fallible(E) { return 1; }\n\
+                  }\n\
+                  fn main() { L { }; }\n";
+    let bin = harness::unique_bin("fallible_handler");
+    let err = build_opts::build_source(source, &bin, &build_opts::options()).unwrap_err();
+    assert!(
+        matches!(&err, CodegenError::Unsupported(t) if t.contains("cannot be fallible")),
+        "{err:?}"
+    );
+}

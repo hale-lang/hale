@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
+use hale_syntax::ast::{Program, TopDecl};
+use hale_types::rpc_expand::is_runtime_pos;
 use hale_types::alloc_summary::{summarize_identified, AllocSummary, Callee};
 
 fn root() -> PathBuf {
@@ -88,6 +90,19 @@ fn fields(s: &AllocSummary) -> Vec<(String, String)> {
     v
 }
 
+/// `p` without the appended api runtime's fns, loci and interfaces: what
+/// the program declares itself.
+fn without_runtime(p: &Program) -> Program {
+    let mut p = p.clone();
+    p.items.retain(|i| match i {
+        TopDecl::Fn(f) => !is_runtime_pos(f.name.span.start.0),
+        TopDecl::Locus(l) => !is_runtime_pos(l.name.span.start.0),
+        TopDecl::Interface(n) => !is_runtime_pos(n.name.span.start.0),
+        _ => true,
+    });
+    p
+}
+
 /// The target's own rows and its program-alone summary, and how many of
 /// the program's edges reach into the copy. `None` when the target does
 /// not load or its scope is blocked. On a thread of its own: a whole DNA
@@ -102,7 +117,11 @@ fn measure(target: &str) -> Option<(Vec<(String, String)>, Vec<(String, String)>
                 let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, config).ok()?;
                 let summary = snap.demand_alloc_summary().ok()?;
                 let bundle = snap.bundle();
-                let alone: Vec<_> = bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+                // The program alone: a serving program carries the api
+                // runtime appended to it (`rpc_expand`), which is not the
+                // program's own, so it is taken back out.
+                let bare: Vec<Program> = bundle.programs.values().map(|p| without_runtime(p)).collect();
+                let alone: Vec<_> = bare.iter().map(|p| (p, &bundle.snapshot)).collect();
                 let alone = summarize_identified(&alone, &bundle.import_renames);
                 let into_copy = summary
                     .fns
@@ -233,4 +252,23 @@ fn the_appended_runtime_is_not_the_programs_own() {
     let own = summary.own_rows();
     assert!(own.fns.keys().all(|k| !k.locus.as_deref().is_some_and(|l| l.starts_with("__StdApi"))), "no runtime row among the own rows");
     assert!(own.fns.keys().any(|k| k.locus.as_deref() == Some("__RpcSurface_2")), "the program's own surfaces are rows");
+}
+
+/// The hub's source (`api_hub.hl`) is appended the same way to a program
+/// that binds a topic to a hub, and is runtime too: the contract's program
+/// carries both, and neither is among its own rows, though both are in the
+/// full summary the coverage law reads.
+#[test]
+fn the_appended_hub_is_not_the_programs_own_either() {
+    let path = root().join("tests/api-contract/program.hl");
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("the contract's program loads");
+    let summary = snap.demand_alloc_summary().expect("the contract's program has a summary");
+    for locus in ["__StdApiHub", "__StdApiWsPeer", "__StdApiExposure"] {
+        assert!(summary.fns.keys().any(|k| k.locus.as_deref() == Some(locus)), "{locus} is in the full summary");
+        assert!(!summary.is_own_locus(locus), "{locus} is the copy's");
+        assert!(summary.fns.keys().filter(|k| k.locus.as_deref() == Some(locus)).all(|k| !summary.is_own(k)), "every {locus} fn is the copy's");
+    }
+    let own = summary.own_rows();
+    assert!(own.fns.keys().all(|k| !k.locus.as_deref().is_some_and(|l| l.starts_with("__StdApi"))), "no runtime row among the own rows");
+    assert!(own.fns.keys().any(|k| k.locus.as_deref() == Some("Orders")), "the program's own loci are rows");
 }

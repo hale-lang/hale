@@ -17,7 +17,7 @@ which also computes the digest and prints descriptions; R2a ships the
 runtime (the interfaces of § The runtime boundaries, the identity
 sources, receiver failure, `api::serve` checked and lowered) over an
 in-process fixture transport, `std::api::test::Rpc`; `unix::Rpc` proves
-the same runtime over a socket in R2b and `http::Rpc` follows in R3;
+the same runtime over a socket in R2b and `http::Rpc` over HTTP in R3;
 hubs and stream authorization are R5's (`ws::Hub`, `udp::Hub`: § Streams); R4 retires the structural
 path (§ What this replaces). Each section names the step that ships it.
 Until R1, the
@@ -363,13 +363,14 @@ failure and generations); and a serve site in a free fn, "\`api::serve\` in
 \`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
 param of the serving locus; serve from the locus that holds the
 receivers". A build refuses a serve site over a transport the compiler
-does not ship (R3 adds \`http::Rpc\`): "\`api::serve\` over \`http::Rpc\`: this
-compiler serves a surface over \`std::api::test::Rpc\`, the in-process
-transport, \`unix::Rpc\`, or a transport the program declares; the other
-socket transports follow", and a serve over \`unix::Rpc\` from a locus that
-is not the main locus: "\`api::serve\` over \`unix::Rpc\` in \`Desk\`: a socket's
-listener runs on a pool of its own, which only the main locus places; serve
-from the main locus" (§ The Unix transport).
+does not ship (\`grpc::Rpc\` and \`mcp::Rpc\` until R6):
+"\`api::serve\` over \`grpc::Rpc\`: this compiler serves a surface over
+\`std::api::test::Rpc\`, the in-process transport, \`unix::Rpc\`, \`http::Rpc\`,
+or a transport the program declares; the other socket transports follow",
+and a serve over \`unix::Rpc\`, \`http::Rpc\`, \`ws::Hub\` or \`udp::Hub\` from a locus that is not the
+main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
+runs on a pool of its own, which only the main locus places; serve from
+the main locus" (§ The Unix transport, § The HTTP transport).
 
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
@@ -502,7 +503,7 @@ shapes and error types are the model's, the codec is the binding's
 
 The stdlib implements `std::api::test::Rpc` (R2a: the in-process
 fixture transport, below), `unix::Rpc` (R2b: the GH #1106 binding
-re-homed), `http::Rpc` (R3), `ws::Hub` and `udp::Hub` (R5, § Streams),
+re-homed), `http::Rpc` (R3, § The HTTP transport), `ws::Hub` and `udp::Hub` (R5, § Streams),
 `grpc::Rpc` and `mcp::Rpc` (R6); a program implements one the stdlib
 lacks.
 
@@ -535,7 +536,10 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 - **The listener is bound at birth.** A path it cannot bind (a missing
   directory, a path a live process holds) fails the program's boot: the
   diagnostic on stderr and exit code 2, the root failure shape of a binding
-  that cannot open; a stale socket file is replaced. The path is held
+  that cannot open; a stale socket file is replaced. An empty `path`
+  binds nothing and is not a failure: the exposure has no socket, and the
+  program boots (a program that computes the path at run time hands the
+  transport none when the path is another process's to hold). The path is held
   from birth, but nothing is accepted until the exposure is attached to
   the bus (a client that connects earlier waits in the socket's backlog), so
   a request read is never published to an exposure that is not there yet.
@@ -545,7 +549,8 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   locus places: the serve expansion adds the listener to the serving main
   locus as a param, placed on the pool `__api_unix`, which every Unix
   exposure of the program shares. A serve over `unix::Rpc` from a locus
-  that is not the main locus is refused. The transport itself, and the
+  that is not the main locus is refused, whether the transport is written at
+  the serve site or held as a param of that locus. The transport itself, and the
   exposure, stay on the serving locus's pool; the two meet on the bus
   only (the subject `__api.unix.out`, keyed by exposure and connection).
 - **Framing is a line.** A request is one JSON object on one line of at
@@ -578,6 +583,81 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   are stopped before the exposure's shutdown can write to them, so a
   caller with a request in flight sees the connection end, which is the
   transport failure outcome, never a refusal: `stop()` is the orderly path.
+
+### The HTTP transport
+
+`http::Rpc` (`std::api::http::Rpc`, R3) serves an exposure over HTTP/1.1,
+one request to a connection (`Connection: close`: no keep-alive, no
+chunked bodies). It is written at a serve site, or held as a param and
+named, with the fields `bind` (`host:port`), `codec` (`json`, the one codec
+v1 has), `principals` (the bearer source, required) and `roles` (the role
+source):
+
+```hale,fragment
+let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+- **The principal is the bearer.** The request's `Authorization: Bearer
+  <token>` goes to the bearer source, which names the caller
+  (`mode: "bearer"`, its `name`, the other fields the source sets); a
+  token the source names nobody for, a missing header or a header that is
+  not a bearer is refused `unauthenticated` before anything else is looked
+  at, with the source's own reason (`refused()`, as the contract records:
+  "no such token") or, when it states none, "the sources name nobody"; a
+  credential past its `expiry` is refused with the reason `expired`. The
+  role source is then asked what the caller holds (§ Identity sources).
+- **The listener is bound at birth.** An address it cannot bind (a port a
+  live program holds, a string that is not `host:port`) fails the
+  program's boot: the diagnostic on stderr and exit code 2, as for the Unix
+  socket. Nothing is accepted until the exposure is attached to the bus
+  (a client that connects earlier waits in the listen backlog). The
+  listener runs on the `async_io` pool `__api_http`, which every HTTP
+  exposure of the program shares, and each connection is a locus of that
+  pool; only the main locus places, so a serve over `http::Rpc` from a
+  locus that is not the main locus is refused, written at the site or held
+  as a param. The transport and the
+  exposure stay on the serving locus's pool; the two meet on the bus
+  (the subject `__api.http.out`, keyed by exposure and connection).
+- **Framing is the request.** `POST /call/<member>` carries the payload as
+  its body (the member's `::` may be sent as `%3A%3A`), the client's
+  digest, when it sends one, in `Hale-Surface-Digest`, and the connection
+  is the correlation. `GET /.description` asks for the caller's
+  description. A request line, method or path that is neither, an empty
+  body on a call, a head over 65536 bytes or a body over 1 MiB is
+  `malformed` (400); a request read gets 5 seconds of silence and 10 in
+  all.
+- **The reply is the contract's.** Status and body are § Outcomes' HTTP
+  column and nothing else: 200 with the response, 422 with `E`, 400, 409,
+  401, 403, 429 and 503 with `{"refusal": {"kind": …, "reason": …}}` (a
+  digest mismatch adds `"served"`, an unauthorized call `"requires"`), 500
+  with `{"refusal": {"kind": "server"}}`. Every reply is
+  `Content-Type: application/json`, `Cache-Control: no-store` and
+  `Content-Length`d; it carries no request id (the exposure's ids are the
+  Unix wire's).
+- **`describe` is the whole document.** `GET /.description` answers 200
+  with the document of § The description for the caller the bearer names:
+  identity, the listener (`http` and the `bind:` text) and the codec, the
+  caller and the roles of the rows it holds, the members it may call with
+  their schemas, the HTTP outcome encoding, the schemas those members
+  reach, and the notes. It is built from the rows and the sources admission
+  reads, so what it lists is what the next call admits. A request that
+  names nobody gets the same 401 as a call.
+- **A connection fails alone.** A request cut off before it is whole, a
+  head that never ends, a write that fails (a reader that does not read for
+  5 seconds) and a client that goes away end that connection: nothing is
+  written to it, and the listener and every other connection go on. A
+  client that goes away after its request was published is a lost
+  connection of the runtime (§ The request lifecycle): the work still
+  runs, once, and holds its place against the bound until it completes. An
+  EOF is the whole signal, so a client that half-closes its end after
+  sending is taken to have gone.
+- **`stop()`** answers the executing calls, refuses the queued ones
+  `shutting_down` (503), and closes the listener and every connection
+  after the replies already sent. A request that arrives while `stop()`
+  waits for an executing call is refused `shutting_down` as well; one that
+  arrives after the listener is closed is refused by the network. As for
+  the Unix socket, a program that ends without `stop()` releases its
+  listener, and a caller with a request in flight sees the connection end.
 
 ## The runtime boundaries
 
@@ -845,7 +925,7 @@ arrive in the order the program produces them, so a refusal may precede
 the answer to an earlier request still with its handler; a client
 correlates by `id`.
 
-**The HTTP transport** (`http::Rpc`, R3) takes one request per
+**The HTTP transport** (`http::Rpc`, R3; § The HTTP transport) takes one request per
 connection: `POST /call/<member>` (`/call/Orders::place`) whose body is
 the payload by codec, under `Authorization: Bearer <token>`, with the
 digest, when the client sends one, in the header `Hale-Surface-Digest`.
@@ -1051,7 +1131,8 @@ runs, and a program that cannot bind it does not boot (a diagnostic and
 exit status 2, as for a socket transport). A hub is a main-locus param
 for the reason a socket transport's listener is: its accept and read loops
 run on a pool of their own (`__api_ws`), which only the main locus places,
-and the compiler adds the listener to the main locus, born before the hub.
+and the compiler adds the listener to the main locus, born after every
+param the program declares (so the hub's `bind:` may read one).
 Each stream is a thread of its own for the publish fanout to write
 through (an adapter binding's), so a hub with many streams costs that many
 threads.

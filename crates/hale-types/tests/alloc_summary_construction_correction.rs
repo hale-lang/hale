@@ -737,13 +737,25 @@ fn program_declaration_stdlib_files_checked_as_themselves() {
                 let loops: Vec<_> = f.loops.iter().map(|l| (l.span.start.0, l.span.end.0)).collect();
                 (sites, loops)
             };
-            // A file that names the api runtime (`api_hub.hl`) has it appended
-            // before the check (`rpc_expand`), as a program that serves does;
-            // what the runtime declares is the stdlib's, never the file's own.
-            let runtime = top_level_names(&hale_syntax::parse_source(hale_stdlib::API_RUNTIME_SOURCE).expect("the runtime parses"));
+            // What the appended api runtime declares (`rpc_expand`: a file that
+            // names it has it appended, as a program that serves does) is the
+            // stdlib's, never the file's own: `is_runtime_pos` says which.
+            let runtime: Vec<String> = bundle
+                .programs
+                .values()
+                .flat_map(|p| p.items.iter())
+                .filter_map(|i| match i {
+                    hale_syntax::ast::TopDecl::Fn(f) => Some(&f.name),
+                    hale_syntax::ast::TopDecl::Locus(l) => Some(&l.name),
+                    hale_syntax::ast::TopDecl::Interface(n) => Some(&n.name),
+                    _ => None,
+                })
+                .filter(|n| hale_types::rpc_expand::is_runtime_pos(n.span.start.0))
+                .map(|n| n.name.clone())
+                .collect();
             for (k, f) in &alone.fns {
                 let shown = k.display();
-                if runtime.iter().any(|n| shown == *n || shown.starts_with(&format!("{n}::"))) && t.ends_with("api_hub.hl") {
+                if runtime.iter().any(|n| shown == *n || shown.starts_with(&format!("{n}::"))) {
                     continue;
                 }
                 let row = now.fns.get(k).unwrap_or_else(|| panic!("{t}: {} has no row", k.display()));
