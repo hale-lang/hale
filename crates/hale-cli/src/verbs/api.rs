@@ -19,6 +19,7 @@ use crate::verbs::check::run_impl::load_for_check;
 pub(crate) fn api_usage() -> &'static str {
     "\
 usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
+       hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE] [file.hl | dir]
 
 `export` writes a surface's bundle into DIR (the current directory by default):
   NAME.description.json   the surface-wide document: every member with its
@@ -31,6 +32,16 @@ usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
 The files are rendered from the surface's rows alone, so two runs and two
 checkouts of one program write the same bytes. `--check DIR` writes nothing:
 it compares a committed bundle to the surface and exits 1 naming the drift.
+
+`client` generates a client of the surface from its rows: one function per
+member, typed by the row's request and response, returning the five outcomes
+(result, handler error, refusal, server error, lost), the surface's digest sent
+on every call, and a subscription per stream row of the program's hubs. `--lang
+hale` is a Hale module, `--lang ts` one TypeScript module with no dependency
+beyond `fetch` and `WebSocket`. The module names the surface's digest in a
+constant; `--check FILE` writes nothing and exits 1 when the committed client
+is not what the surface now generates, naming the digest it was made against.
+The output is on stdout unless `--out FILE` names a file.
 "
 }
 
@@ -44,6 +55,7 @@ fn value(rest: &[String], flag: &str) -> Result<Option<String>, ExitCode> {
 
 /// The flags of `export` that take a value, and the ones that do not.
 const EXPORT_VALUED: [&str; 3] = ["--surface", "--out", "--check"];
+const CLIENT_VALUED: [&str; 4] = ["--surface", "--lang", "--out", "--check"];
 
 /// The positional arguments of `rest`: everything that is neither a
 /// flag nor a valued flag's value.
@@ -75,6 +87,7 @@ pub(crate) fn run_api(rest: &[String]) -> ExitCode {
     }
     match rest.first().map(String::as_str) {
         Some("export") => run_export(&rest[1..]),
+        Some("client") => run_client(&rest[1..]),
         _ => {
             eprint!("{}", api_usage());
             ExitCode::from(2)
@@ -227,4 +240,102 @@ fn check_bundle(dir: &Path, surface: &str, files: &[(String, String)]) -> ExitCo
     }
     eprintln!("regenerate it: hale api export --surface {surface} --out {} <target>", dir.display());
     ExitCode::from(1)
+}
+
+/// The digest a generated client names in its `SURFACE_DIGEST` constant.
+fn digest_in_client(text: &str) -> Option<&str> {
+    let line = text.lines().find(|l| l.contains("SURFACE_DIGEST") && l.contains('='))?;
+    let after = &line[line.find('=')? + 1..];
+    let open = after.find('"')? + 1;
+    let close = open + after[open..].find('"')?;
+    Some(&after[open..close])
+}
+
+fn run_client(rest: &[String]) -> ExitCode {
+    let (surface, lang, out, check) =
+        match (value(rest, "--surface"), value(rest, "--lang"), value(rest, "--out"), value(rest, "--check")) {
+            (Ok(s), Ok(l), Ok(o), Ok(c)) => (s, l, o, c),
+            (Err(code), ..) | (_, Err(code), ..) | (_, _, Err(code), _) | (_, _, _, Err(code)) => return code,
+        };
+    let Some(surface) = surface else {
+        eprintln!("hale api client needs --surface NAME: the surface the client is generated for");
+        return ExitCode::from(2);
+    };
+    let Some(lang) = lang else {
+        eprintln!("hale api client needs --lang hale or --lang ts");
+        return ExitCode::from(2);
+    };
+    if out.is_some() && check.is_some() {
+        eprintln!("hale api client: --check writes nothing; give --out or --check, not both");
+        return ExitCode::from(2);
+    }
+    let pos = match positionals(rest, &CLIENT_VALUED) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    if pos.len() > 1 {
+        eprintln!("hale api client takes ONE target, got {}: {}", pos.len(), pos.join(" "));
+        return ExitCode::from(2);
+    }
+    let generate: fn(&surface_doc::ClientModel) -> Result<String, String> = match lang.as_str() {
+        "hale" => crate::api_gen::hale_client::generate,
+        other => {
+            eprintln!("hale api client: no `{other}` client; the languages are `hale` and `ts`");
+            return ExitCode::from(2);
+        }
+    };
+    let target = PathBuf::from(pos.first().map_or(".", String::as_str));
+    let snap = match load_checked(&target) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let (digest, text) = match with_rows(&snap, |rows, schemas| {
+        let model = surface_doc::client_model(rows, schemas, &surface)?;
+        let text = generate(&model)?;
+        Ok((model.digest, text))
+    }) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    if let Some(file) = check {
+        let path = PathBuf::from(&file);
+        return match std::fs::read_to_string(&path) {
+            Ok(have) if have == text => {
+                eprintln!("the {lang} client {file} is current: {surface} {digest}");
+                ExitCode::SUCCESS
+            }
+            Ok(have) => {
+                match digest_in_client(&have) {
+                    Some(made) if made != digest => eprintln!(
+                        "the {lang} client {file} has drifted: it was made against {surface} {made}, and the surface is now {digest}"
+                    ),
+                    _ => eprintln!(
+                        "the {lang} client {file} has drifted: it names the surface's current digest {digest} but is not what it generates"
+                    ),
+                }
+                eprintln!("regenerate it: hale api client --surface {surface} --lang {lang} --out {file} <target>");
+                ExitCode::from(1)
+            }
+            Err(e) => {
+                eprintln!("the {lang} client {file} cannot be read: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
+    match out {
+        Some(file) => match std::fs::write(&file, &text) {
+            Ok(()) => {
+                eprintln!("wrote {file}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("hale api client: cannot write {file}: {e}");
+                ExitCode::from(2)
+            }
+        },
+        None => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+    }
 }

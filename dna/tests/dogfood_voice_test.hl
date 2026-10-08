@@ -35,6 +35,7 @@
 
 import "../core" as dna;
 import "../core/legs" as legs;
+import "../core/legs/head_commands" as hc;
 import "../host" as host;
 import "../operations" as ops;
 
@@ -106,9 +107,7 @@ locus App {
     }
     // Whether the socket lists the leg's claim to this peer.
     fn claim_listed() -> Bool {
-        let wire = legs::Wire { };
-        if !wire.connect(self.socket()) { return false; }
-        return std::str::contains(wire.describe(), "\"name\":\"Commands::claim\"");
+        return hc::api_lists(self.socket(), "", "Commands::claim");
     }
     // Ratify every proposal `author` made, as the review path writes it.
     @unbounded

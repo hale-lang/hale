@@ -1,0 +1,248 @@
+// GH #1417 (R8a) — the generated Hale client speaks the contract's wire.
+//
+// `client/public` and `client/admin` are `hale api client --lang hale` of the
+// witness's two surfaces (`tests/api-contract/program.hl`), committed and
+// held current by `scripts/api-clients.sh`. They are run here against
+// `client/replay`, a server that replays the recordings under
+// `tests/api-contract/wire/`: it takes each request the client sends and
+// compares it to the recorded one (the method, path and headers over HTTP,
+// the body or the line byte for byte), then answers with the recorded reply.
+//
+// What this holds the generated client to:
+//
+//   * every outcome of both recordings' transports is read as its variant of
+//     the member's enum, with its content: the result, the handler's own
+//     error, each refusal with its kind, reason, required roles and served
+//     digest, the server error, and a connection that was lost;
+//   * the request it writes is the recorded one (the report the server writes
+//     says `ok <step>` for each; a step named `~name` is replied to without
+//     the comparison, for the two recorded payloads a typed client cannot
+//     produce and the one a peer with no credentials sent);
+//   * the digest it sends is the surface's, and a refusal for a stale one
+//     names the digest served;
+//   * a stream over the hub: the subscription answered, events with their
+//     seq (a gap kept), and each way it ends: the hub's closed frame, a
+//     revocation, an expiry, a refusal, a connection that ends with no
+//     closed frame, and a wait that came to nothing.
+
+import "./client/public" as pubc;
+import "./client/admin" as adm;
+
+locus Proc {
+    params { child: std::process::Child = std::process::Child { }; }
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+fn run_tool(argv: String) -> std::process::ProcessOutput {
+    return std::process::run(argv) or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+// A port, bound and closed here, so it is free.
+fn free_port(start: Int) -> Int {
+    let mut port = 30000 + (std::process::pid() * 11 + start) % 17000;
+    let mut probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    while probe < 0 {
+        port = port + 1;
+        probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    }
+    std::io::tcp::__close_fd(probe);
+    return port;
+}
+
+@unbounded
+fn wait_for(path: String) -> Bool {
+    let mut i = 0;
+    while i < 500 {
+        if std::io::fs::file_exists(path) { return true; }
+        std::time::sleep(20ms);
+        i = i + 1;
+    }
+    return false;
+}
+
+fn report_of(path: String) -> String {
+    if !wait_for(path) { return "no report"; }
+    return std::io::fs::read_file(path) or "unreadable";
+}
+
+fn refusal_text(f: pubc::ApiRefusal) -> String {
+    return "refusal:" + f.kind + ":" + f.reason + ":" + f.requires + ":" + f.served;
+}
+
+fn place_text(o: pubc::OrdersPlaceOutcome) -> String {
+    return match o {
+        pubc::OrdersPlaceOutcome::Result(r) -> "result:" + to_string(r.order) + ":" + to_string(r.notional),
+        pubc::OrdersPlaceOutcome::Refusal(f) -> refusal_text(f),
+        pubc::OrdersPlaceOutcome::ServerError -> "server_error",
+        pubc::OrdersPlaceOutcome::Lost(why) -> "lost",
+    };
+}
+
+fn cancel_text(o: pubc::OrdersCancelOutcome) -> String {
+    return match o {
+        pubc::OrdersCancelOutcome::Result(r) -> "result:" + to_string(r.order) + ":" + to_string(r.was_open),
+        pubc::OrdersCancelOutcome::HandlerError(e) -> "handler_error:" + e.code + ":" + e.reason,
+        pubc::OrdersCancelOutcome::Refusal(f) -> refusal_text(f),
+        pubc::OrdersCancelOutcome::ServerError -> "server_error",
+        pubc::OrdersCancelOutcome::Lost(why) -> "lost",
+    };
+}
+
+fn admin_refusal_text(f: adm::ApiRefusal) -> String {
+    return "refusal:" + f.kind + ":" + f.reason + ":" + f.requires + ":" + f.served;
+}
+
+fn admin_cancel_text(o: adm::OrdersCancelOutcome) -> String {
+    return match o {
+        adm::OrdersCancelOutcome::Result(r) -> "result:" + to_string(r.order) + ":" + to_string(r.was_open),
+        adm::OrdersCancelOutcome::HandlerError(e) -> "handler_error:" + e.code + ":" + e.reason,
+        adm::OrdersCancelOutcome::Refusal(f) -> admin_refusal_text(f),
+        adm::OrdersCancelOutcome::ServerError -> "server_error",
+        adm::OrdersCancelOutcome::Lost(why) -> "lost",
+    };
+}
+
+fn rebalance_text(o: adm::LedgerRebalanceOutcome) -> String {
+    return match o {
+        adm::LedgerRebalanceOutcome::Result(r) -> "result:" + to_string(r.moved),
+        adm::LedgerRebalanceOutcome::Refusal(f) -> admin_refusal_text(f),
+        adm::LedgerRebalanceOutcome::ServerError -> "server_error",
+        adm::LedgerRebalanceOutcome::Lost(why) -> "lost",
+    };
+}
+
+fn event_text(e: pubc::FillsEvent) -> String {
+    return match e {
+        pubc::FillsEvent::Subscribed -> "subscribed",
+        pubc::FillsEvent::Event(seq, f) -> "event:" + to_string(seq) + ":" + to_string(f.order) + ":" + to_string(f.qty) + ":" + to_string(f.price),
+        pubc::FillsEvent::Refusal(f) -> refusal_text(f),
+        pubc::FillsEvent::Expired -> "expired",
+        pubc::FillsEvent::Revoked -> "revoked",
+        pubc::FillsEvent::Closed -> "closed",
+        pubc::FillsEvent::Idle -> "idle",
+        pubc::FillsEvent::Lost(why) -> "lost",
+    };
+}
+
+fn order(symbol: String, qty: Int) -> pubc::PlaceOrder {
+    return pubc::PlaceOrder { symbol: symbol, qty: qty, limit: 12500 };
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let root = "/tmp/hale-r8a-client-" + to_string(std::process::pid());
+    let wire = "tests/api-contract/wire";
+    std::io::fs::mkdir(root) or discard;
+    std::io::fs::mkdir(root + "/replay") or discard;
+    std::io::fs::write_file(root + "/replay/main.hl", std::io::fs::read_file("tests/hale/api/client/replay/main.hl") or "") or discard;
+    let built = run_tool(hale + "\nbuild\n" + root + "/replay");
+    std::test::assert_eq_int(built.code, 0, "the replay server builds: " + built.stderr);
+    let replay = root + "/replay/replay";
+
+    // the digests the clients name are the surfaces' (digest.md)
+    std::test::assert_eq_str(pubc::SURFACE_DIGEST, "fnv1a64:a8930d6e7998e986", "Public's digest is the constant");
+    std::test::assert_eq_str(adm::SURFACE_DIGEST, "fnv1a64:40381db6685c9f75", "Admin's digest is the constant");
+
+    // ---- HTTP: Public, every outcome of wire/http ----
+    let port = free_port(0);
+    let http_report = root + "/http.report";
+    let http = Proc { };
+    std::test::assert(http.start(replay + "\nhttp\n" + wire + "\n" + to_string(port) + "\n" + http_report + "\nresult\nhandler_error\nserver_error\nrefusal_digest_mismatch\nrefusal_full\n~refusal_malformed\nrefusal_shutting_down\nrefusal_unauthenticated\nrefusal_unauthorized\nrefusal_unavailable"), "the HTTP replay server started");
+    std::test::assert(wait_for(http_report + ".ready"), "and is listening");
+    let ep = "http://127.0.0.1:" + to_string(port);
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "result:41:125000", "http result");
+    std::test::assert_eq_str(cancel_text(pubc::orders_cancel(ep, "t-alice", pubc::CancelOrder { order: 999 })), "handler_error:unknown_order:no order 999", "http handler error");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 50000))), "server_error", "http server error");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "refusal:digest_mismatch:the request was generated against fnv1a64:0123456789abcdef::fnv1a64:a8930d6e7998e986", "http refusal for a stale digest names the digest served");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "refusal:full:the exposure holds its bound of requests accepted and not yet answered::", "http refusal: full");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "refusal:malformed:missing_field: qty::", "http refusal: malformed");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "refusal:shutting_down:the exposure is stopping::", "http refusal: shutting_down");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-mallory", order("ACME", 10))), "refusal:unauthenticated:no such token::", "http refusal: unauthenticated");
+    std::test::assert_eq_str(cancel_text(pubc::orders_cancel(ep, "t-bob", pubc::CancelOrder { order: 41 })), "refusal:unauthorized:Orders::cancel requires trader:trader:", "http refusal: unauthorized names the roles the row requires");
+    std::test::assert_eq_str(place_text(pubc::orders_place(ep, "t-alice", order("ACME", 10))), "refusal:unavailable:the receiver of Orders::place is unavailable; the call did not run::", "http refusal: unavailable");
+    std::test::assert_eq_str(report_of(http_report), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", "every request the client wrote is the recorded one");
+    http.stop();
+    // a connection that is not answered is lost, never a refusal
+    std::test::assert_eq_str(place_text(pubc::orders_place("http://127.0.0.1:" + to_string(free_port(7)), "t-alice", order("ACME", 10))), "lost", "http: nothing listening is lost");
+
+    // ---- Unix: Admin, every outcome of wire/unix ----
+    let sock = root + "/admin.sock";
+    let unix_report = root + "/unix.report";
+    let unix = Proc { };
+    std::test::assert(unix.start(replay + "\nunix\n" + wire + "\n" + sock + "\n" + unix_report + "\nresult\nhandler_error\nserver_error\nrefusal_digest_mismatch\nrefusal_full\n~refusal_malformed\nrefusal_shutting_down\n~refusal_unauthenticated\nrefusal_unauthorized\nrefusal_unavailable"), "the socket replay server started");
+    std::test::assert(wait_for(unix_report + ".ready"), "and is listening");
+    let at = "unix:" + sock;
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel(at, "", adm::CancelOrder { order: 41 })), "result:41:true", "unix result");
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel(at, "", adm::CancelOrder { order: 999 })), "handler_error:unknown_order:no order 999", "unix handler error");
+    std::test::assert_eq_str(rebalance_text(adm::ledger_rebalance(at, "", adm::Rebalance { book: "" })), "server_error", "unix server error");
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel(at, "", adm::CancelOrder { order: 41 })), "refusal:digest_mismatch:the request was generated against fnv1a64:0123456789abcdef::fnv1a64:40381db6685c9f75", "unix refusal for a stale digest names the digest served");
+    std::test::assert_eq_str(rebalance_text(adm::ledger_rebalance(at, "", adm::Rebalance { book: "main" })), "refusal:full:the exposure holds its bound of requests accepted and not yet answered::", "unix refusal: full");
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel(at, "", adm::CancelOrder { order: 41 })), "refusal:malformed:wrong_type: order::", "unix refusal: malformed");
+    std::test::assert_eq_str(rebalance_text(adm::ledger_rebalance(at, "", adm::Rebalance { book: "main" })), "refusal:shutting_down:the exposure is stopping::", "unix refusal: shutting_down");
+    std::test::assert_eq_str(rebalance_text(adm::ledger_rebalance(at, "", adm::Rebalance { book: "main" })), "refusal:unauthenticated:the kernel did not name the peer::", "unix refusal: unauthenticated");
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel(at, "", adm::CancelOrder { order: 41 })), "refusal:unauthorized:Orders::cancel requires operator:operator:", "unix refusal: unauthorized");
+    std::test::assert_eq_str(rebalance_text(adm::ledger_rebalance(at, "", adm::Rebalance { book: "main" })), "refusal:unavailable:the receiver of Ledger::rebalance is unavailable; the call did not run::", "unix refusal: unavailable");
+    std::test::assert_eq_str(report_of(unix_report), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", "every line the client wrote is the recorded one");
+    unix.stop();
+    std::test::assert_eq_str(admin_cancel_text(adm::orders_cancel("unix:" + root + "/nobody.sock", "", adm::CancelOrder { order: 41 })), "lost", "unix: no socket is lost");
+
+    // ---- the hub: Fills, each way a subscription ends ----
+    let hub_port = free_port(3);
+    let ws_report = root + "/ws.report";
+    let hub = Proc { };
+    std::test::assert(hub.start(replay + "\nws\n" + to_string(hub_port) + "\n" + ws_report + "\nclosed\nrevoked\nexpired\nrefused\nabort\nlate"), "the hub replay server started");
+    std::test::assert(wait_for(ws_report + ".ready"), "and is listening");
+    let hub_ep = "ws://127.0.0.1:" + to_string(hub_port);
+
+    let closed = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(closed.start(hub_ep, "t-dave")), "subscribed", "the subscription is answered");
+    std::test::assert_eq_str(event_text(closed.next()), "event:1:41:10:12500", "an event with its seq and its typed payload");
+    std::test::assert_eq_str(event_text(closed.next()), "event:3:42:5:12400", "a gap in seq is kept: the frames shed");
+    std::test::assert_eq_str(event_text(closed.next()), "closed", "the hub's closed frame ends it");
+    std::test::assert_eq_str(event_text(closed.next()), "closed", "and it stays ended");
+
+    let revoked = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(revoked.start(hub_ep, "t-dave")), "subscribed", "second subscription");
+    std::test::assert_eq_str(event_text(revoked.next()), "event:1:41:10:12500", "an event");
+    std::test::assert_eq_str(event_text(revoked.next()), "revoked", "a revoked frame ends it");
+
+    let expired = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(expired.start(hub_ep, "t-dave")), "subscribed", "third subscription");
+    std::test::assert_eq_str(event_text(expired.next()), "event:1:41:10:12500", "an event");
+    std::test::assert_eq_str(event_text(expired.next()), "expired", "an expired frame ends it");
+
+    let refused = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(refused.start(hub_ep, "t-dave")), "refusal:unauthorized:Fills requires operator:operator:", "a subscription the caller may not have is refused, naming the role");
+
+    let abort = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(abort.start(hub_ep, "t-dave")), "subscribed", "fifth subscription");
+    std::test::assert_eq_str(event_text(abort.next()), "event:1:41:10:12500", "an event");
+    std::test::assert_eq_str(event_text(abort.next()), "lost", "a connection that ends with no closed frame is lost");
+
+    let late = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(late.start(hub_ep, "t-dave")), "subscribed", "sixth subscription");
+    std::test::assert_eq_str(event_text(late.next_for(50)), "idle", "a wait that came to nothing is idle");
+    std::test::assert_eq_str(event_text(late.next()), "event:1:41:10:12500", "and the event comes when it comes");
+    std::test::assert_eq_str(event_text(late.next()), "closed", "then closed");
+
+    std::test::assert_eq_str(report_of(ws_report), "ok closed\nok revoked\nok expired\nok refused\nok abort\nok late\n", "every subscribe frame and credential the client wrote is the contract's");
+    hub.stop();
+    let nobody = pubc::FillsSubscription { };
+    std::test::assert_eq_str(event_text(nobody.start("ws://127.0.0.1:" + to_string(free_port(9)), "t-dave")), "lost", "no hub is lost");
+    let _rm = run_tool("rm\n-rf\n" + root);
+}

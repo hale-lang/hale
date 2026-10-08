@@ -13,8 +13,14 @@
 // caller holds reaches the handler, one through a row it does not is refused
 // `unauthorized`, naming what the row requires. The description is the
 // rows' (`hale check --api` prints the same members).
+//
+// The fixture is a client of the surface through the generated one
+// (`dna/core/legs/head_commands`, `hale api client --lang hale`): every call
+// is a typed fn returning the five outcomes, and the description is the one
+// the client reads from the socket (`hc::api_describe`).
 
 import "../core" as dna;
+import "../core/legs/head_commands" as hc;
 import "../operations" as ops;
 
 fn toolchain() -> String {
@@ -55,44 +61,14 @@ locus Proc {
     }
 }
 
-locus Api {
-    params {
-        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
-        buf: String = "";
+// The socket, once something listens on it.
+fn wait_socket(sock: String) -> Bool {
+    let fd = std::io::unix::connect_wait(sock, 20s) or - 1;
+    if fd < 0 {
+        return false;
     }
-
-    fn connect(sock: String) -> Bool {
-        let fd = std::io::unix::connect_wait(sock, 20s) or - 1;
-        if fd < 0 {
-            return false;
-        }
-        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
-        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
-        return true;
-    }
-
-    // A reply line, waited for up to a minute: the full description is
-    // the largest answer, and a slower box (macOS in CI) needs more than
-    // the ten seconds the slice needs.
-    fn ask(line: String) -> String {
-        self.stream.send(line + "\n") or discard;
-        let mut i = 0;
-        while i < 300 {
-            let nl = std::str::index_of(self.buf, "\n");
-            if nl >= 0 {
-                let got = self.buf[0..nl];
-                self.buf = self.buf[(nl + 1)..len(self.buf)];
-                return got;
-            }
-            let chunk = self.stream.recv(65536) or "";
-            if len(chunk) == 0 {
-                i = i + 1;
-            } else {
-                self.buf = self.buf + chunk;
-            }
-        }
-        return "";
-    }
+    std::io::tcp::__close_fd(fd);
+    return true;
 }
 
 fn has(s: String, needle: String) -> Bool {
@@ -101,10 +77,9 @@ fn has(s: String, needle: String) -> Bool {
 
 // The member names a surface's served description lists, space-separated.
 @unbounded
-fn members_of(line: String) -> String {
-    let value = std::json::find_field_raw(line, "value");
+fn members_of(description: String) -> String {
     let mut out = "";
-    let mut it = std::json::array_first(std::json::find_field_raw(value, "members"));
+    let mut it = std::json::array_first(std::json::find_field_raw(description, "members"));
     while !it.done {
         let name = std::json::find_string_field(it.element, "name");
         out = out + (if len(out) > 0 { " " } else { "" }) + name;
@@ -113,10 +88,61 @@ fn members_of(line: String) -> String {
     return out;
 }
 
-// A friction entry on the surface's wire: the attempt it is about is the
-// caller's to name (the standalone head files nothing, whatever it names).
-fn friction(id: String) -> String {
-    return "{\"id\":\"" + id + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"f-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"attempt-1\",\"text\":\"the hat named no tool grant for a judgment\"}}";
+// What a call answered, as text: `result:<code>` (the handler's own reply),
+// `refusal:<kind>:<reason>:<roles>`, the server error, or lost.
+fn refused(f: hc::ApiRefusal) -> String {
+    return "refusal:" + f.kind + ":" + f.reason + ":" + f.requires;
+}
+
+fn lookup_text(o: hc::CommandsLookupOutcome) -> String {
+    return match o {
+        hc::CommandsLookupOutcome::Result(r) -> "result:" + r.code,
+        hc::CommandsLookupOutcome::Refusal(f) -> refused(f),
+        hc::CommandsLookupOutcome::ServerError -> "server_error",
+        hc::CommandsLookupOutcome::Lost(why) -> "lost:" + why,
+    };
+}
+
+fn friction_text(o: hc::CommandsFileFrictionOutcome) -> String {
+    return match o {
+        hc::CommandsFileFrictionOutcome::Result(r) -> "result:" + r.code,
+        hc::CommandsFileFrictionOutcome::Refusal(f) -> refused(f),
+        hc::CommandsFileFrictionOutcome::ServerError -> "server_error",
+        hc::CommandsFileFrictionOutcome::Lost(why) -> "lost:" + why,
+    };
+}
+
+fn create_task_text(o: hc::CommandsCreateTaskOutcome) -> String {
+    return match o {
+        hc::CommandsCreateTaskOutcome::Result(r) -> "result:" + r.code,
+        hc::CommandsCreateTaskOutcome::Refusal(f) -> refused(f),
+        hc::CommandsCreateTaskOutcome::ServerError -> "server_error",
+        hc::CommandsCreateTaskOutcome::Lost(why) -> "lost:" + why,
+    };
+}
+
+fn verdict_text(o: hc::CommandsVerdictOutcome) -> String {
+    return match o {
+        hc::CommandsVerdictOutcome::Result(r) -> "result:" + r.code,
+        hc::CommandsVerdictOutcome::Refusal(f) -> refused(f),
+        hc::CommandsVerdictOutcome::ServerError -> "server_error",
+        hc::CommandsVerdictOutcome::Lost(why) -> "lost:" + why,
+    };
+}
+
+fn retire_person_text(o: hc::CommandsRetirePersonOutcome) -> String {
+    return match o {
+        hc::CommandsRetirePersonOutcome::Result(r) -> "result:" + r.code,
+        hc::CommandsRetirePersonOutcome::Refusal(f) -> refused(f),
+        hc::CommandsRetirePersonOutcome::ServerError -> "server_error",
+        hc::CommandsRetirePersonOutcome::Lost(why) -> "lost:" + why,
+    };
+}
+
+// A friction entry on the surface: the attempt it is about is the caller's to
+// name (the standalone head files nothing, whatever it names).
+fn friction(sock: String) -> String {
+    return friction_text(hc::commands_file_friction(sock, "", hc::Friction { request_id: "f-1", record_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", position: "position:agent", attempt_id: "attempt-1", text: "the hat named no tool grant for a judgment" }));
 }
 
 locus App {
@@ -133,13 +159,13 @@ locus App {
     }
     // The slice once it lists `name` — the record moved, and the source
     // re-reads it within its one-second bound.
-    fn slice_with(api: Api, id: Int, name: String) -> String {
-        let mut d = api.ask("{\"id\":" + to_string(id) + ",\"describe\":true}");
+    fn slice_with(sock: String, name: String) -> String {
+        let mut d = hc::api_describe(sock, "");
         let mut tries = 0;
         while tries < 40 && !has(d, "\"name\":\"" + name + "\"") {
             std::time::sleep(100ms);
             std::time::sleep(100ms);
-            d = api.ask("{\"id\":" + to_string(id) + ",\"describe\":true}");
+            d = hc::api_describe(sock, "");
             tries = tries + 1;
         }
         return d;
@@ -175,15 +201,14 @@ locus App {
         let port = dna::free_port(0);
         let head = Proc { };
         std::test::assert(head.start("env\nHALE_DNA_RPC_SOCKET=" + sock + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
-        let api = Api { };
-        std::test::assert(api.connect(sock), "connected to the head's surface");
+        std::test::assert(wait_socket(sock), "the head's surface is listening");
 
         // Seated nowhere, a principal may raise work and look a command
         // up — the ungated rows — and nothing else. The call reaches the
         // handler: the standalone head composes no provider, and the
         // handler answers the provider's refusal.
-        let none = api.ask("{\"id\":1,\"describe\":true}");
-        std::test::assert(has(none, "\"ok\":true") && has(none, "\"surface\":\"HeadCommands\""), "the head serves its description: " + none);
+        let none = hc::api_describe(sock, "");
+        std::test::assert(has(none, "\"surface\":\"HeadCommands\""), "the head serves its description: " + none);
         std::test::assert_eq_str(members_of(none), "Commands::create_task Commands::lookup Commands::lookup_knowledge", "seated nowhere: the ungated rows only");
         // the served description is the surface `hale check --api` printed:
         // one digest
@@ -191,54 +216,55 @@ locus App {
         let after = if at < 0 { "" } else { emitted.stdout[(at + 11)..len(emitted.stdout)] };
         let checked_digest = if at < 0 { "" } else { after[0..std::str::index_of(after, "\"")] };
         std::test::assert(std::str::starts_with(checked_digest, "fnv1a64:"), "the check prints the surface's digest: " + emitted.stdout);
-        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(none, "value"), "digest"), checked_digest, "and the head serves that digest");
-        let looked = api.ask("{\"id\":\"s-1\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"look-1\"}}");
-        std::test::assert(has(looked, "\"id\":\"s-1\",\"ok\":true") && has(looked, "\"code\":\"commands_unsupported\""), "lookup reaches the handler: " + looked);
-        let denied = api.ask(friction("s-2"));
-        std::test::assert(has(denied, "\"id\":\"s-2\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "a friction entry needs a position: " + denied);
+        std::test::assert_eq_str(std::json::find_string_field(none, "digest"), checked_digest, "and the head serves that digest");
+        std::test::assert_eq_str(hc::SURFACE_DIGEST, checked_digest, "which is the digest the generated client names and sends");
+        let looked = lookup_text(hc::commands_lookup(sock, "", hc::Lookup { request_id: "look-1" }));
+        std::test::assert_eq_str(looked, "result:commands_unsupported", "lookup reaches the handler");
+        let denied = friction(sock);
+        std::test::assert(has(denied, "refusal:unauthorized:Commands::file_friction requires position") && has(denied, ":position"), "a friction entry needs a position: " + denied);
 
         // ada takes the board: owner, and thereby a position — every
         // row but the reviewer's, listed the moment the record says so.
         let ada_board = self.holds(j, "board", "ada");
-        let seated = self.slice_with(api, 3, "Commands::reassign_task");
+        let seated = self.slice_with(sock, "Commands::reassign_task");
         std::test::assert_eq_str(members_of(seated), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "the board's slice: the owner's and a position's rows, not the reviewer's");
         // The exposure follows the record: once ada holds a seat the role
         // source says so (it reads the record within its one-second bound)
         // and the friction entry reaches the handler.
-        let mut filed = api.ask(friction("s-3"));
+        let mut filed = friction(sock);
         let mut tries = 0;
-        while tries < 40 && has(filed, "\"kind\":\"unauthorized\"") {
+        while tries < 40 && has(filed, "refusal:unauthorized") {
             std::time::sleep(100ms);
             std::time::sleep(100ms);
-            filed = api.ask(friction("s-3"));
+            filed = friction(sock);
             tries = tries + 1;
         }
-        std::test::assert(has(filed, "\"id\":\"s-3\",\"ok\":true") && has(filed, "\"code\":\"commands_unsupported\""), "the position's friction entry reaches the handler: " + filed);
-        let raised = api.ask("{\"id\":5,\"call\":\"Commands::create_task\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}");
-        std::test::assert(has(raised, "\"ok\":true") && has(raised, "\"code\":\"commands_unsupported\""), "the handler ran and the provider answered: " + raised);
-        let not_reviewer = api.ask("{\"id\":6,\"call\":\"Commands::verdict\",\"payload\":{\"request_id\":\"v-1\",\"review_id\":\"r1\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict\":\"approve\",\"comment\":\"\"}}");
-        std::test::assert(has(not_reviewer, "\"kind\":\"unauthorized\"") && has(not_reviewer, "\"requires\":[\"reviewer\"]"), "a verdict needs the reviewer position: " + not_reviewer);
+        std::test::assert_eq_str(filed, "result:commands_unsupported", "the position's friction entry reaches the handler");
+        let raised = create_task_text(hc::commands_create_task(sock, "", hc::TaskCreation { request_id: "ask-1", record_head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", outcome: "ship it", to: "org", kind: "" }));
+        std::test::assert_eq_str(raised, "result:commands_unsupported", "the handler ran and the provider answered");
+        let not_reviewer = verdict_text(hc::commands_verdict(sock, "", hc::ReviewDecision { request_id: "v-1", review_id: "r1", subject_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", verdict: "approve", comment: "" }));
+        std::test::assert(has(not_reviewer, "refusal:unauthorized") && has(not_reviewer, ":reviewer"), "a verdict needs the reviewer position: " + not_reviewer);
 
         // ada is seated as reviewer too: the verdict joins the slice.
         self.holds(j, "reviewer", "ada");
-        let reviewing = self.slice_with(api, 7, "Commands::verdict");
+        let reviewing = self.slice_with(sock, "Commands::verdict");
         std::test::assert_eq_str(members_of(reviewing), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "every row");
 
         // The record moves: the board's edge is taken out, and the source
         // reads it fresh — it asks the git record whether it moved at
         // most once a second, so the answer changes within that bound.
         self.append(j, "graph.retired", ada_board, "{}");
-        let mut gone = api.ask("{\"id\":8,\"describe\":true}");
+        let mut gone = hc::api_describe(sock, "");
         tries = 0;
         while tries < 40 && has(gone, "\"name\":\"Commands::retire_person\"") {
             std::time::sleep(100ms);
             std::time::sleep(100ms);
-            gone = api.ask("{\"id\":8,\"describe\":true}");
+            gone = hc::api_describe(sock, "");
             tries = tries + 1;
         }
         std::test::assert_eq_str(members_of(gone), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "the reviewer's seat still holds a position: the owner's three rows are gone, the rest stay");
-        let not_owner = api.ask("{\"id\":10,\"call\":\"Commands::retire_person\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"grace\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}");
-        std::test::assert(has(not_owner, "\"kind\":\"unauthorized\"") && has(not_owner, "\"requires\":[\"owner\"]"), "retiring a person is the board's: " + not_owner);
+        let not_owner = retire_person_text(hc::commands_retire_person(sock, "", hc::PersonRetirement { request_id: "p-1", person: "grace", subject_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", to: "" }));
+        std::test::assert(has(not_owner, "refusal:unauthorized") && has(not_owner, ":owner"), "retiring a person is the board's: " + not_owner);
 
         head.stop();
         std::io::fs::unlink(sock) or discard;
