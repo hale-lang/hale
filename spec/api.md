@@ -546,7 +546,8 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   locus places: the serve expansion adds the listener to the serving main
   locus as a param, placed on the pool `__api_unix`, which every Unix
   exposure of the program shares. A serve over `unix::Rpc` from a locus
-  that is not the main locus is refused. The transport itself, and the
+  that is not the main locus is refused, whether the transport is written at
+  the serve site or held as a param of that locus. The transport itself, and the
   exposure, stay on the serving locus's pool; the two meet on the bus
   only (the subject `__api.unix.out`, keyed by exposure and connection).
 - **Framing is a line.** A request is one JSON object on one line of at
@@ -610,7 +611,8 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   listener runs on the `async_io` pool `__api_http`, which every HTTP
   exposure of the program shares, and each connection is a locus of that
   pool; only the main locus places, so a serve over `http::Rpc` from a
-  locus that is not the main locus is refused. The transport and the
+  locus that is not the main locus is refused, written at the site or held
+  as a param. The transport and the
   exposure stay on the serving locus's pool; the two meet on the bus
   (the subject `__api.http.out`, keyed by exposure and connection).
 - **Framing is the request.** `POST /call/<member>` carries the payload as

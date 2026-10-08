@@ -1449,7 +1449,7 @@ locus __StdApiUnixListener {
         publish __ApiUnixOutT;
     }
     birth() {
-        self.fd = std::io::unix::listen_socket(self.path) or -1;
+        self.fd = std::io::unix::listen_socket(self.path) or - 1;
         if self.fd < 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
@@ -1485,7 +1485,7 @@ locus __StdApiUnixListener {
         }
     }
     accept(c: __StdApiUnixPeer) { }
-    release(c: __StdApiUnixPeer) { }
+    release (c: __StdApiUnixPeer) { }
     fn on_ctl(o: __StdApiUnixOut) {
         if o.kind == 3 { self.started = true; }
         if o.kind == 1 {

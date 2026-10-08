@@ -889,6 +889,37 @@ pub fn surface_rows(
     SurfaceRows { surfaces, rows, serves, hubs, app }
 }
 
+/// The socket transport a serve site names, `"unix"` or `"http"`: a
+/// literal written at the site, or a param the locus holds (`self.rpc`)
+/// whose declared type, or whose literal default, is `unix::Rpc` or
+/// `http::Rpc`.
+fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static str> {
+    let kind_of = |path: &hale_syntax::ast::QualifiedName| {
+        if crate::rpc_expand::is_unix_rpc(path) {
+            Some("unix")
+        } else if crate::rpc_expand::is_http_rpc(path) {
+            Some("http")
+        } else {
+            None
+        }
+    };
+    let t = transport?;
+    if let Expr::Struct { path, .. } = t {
+        return kind_of(path);
+    }
+    let f = self_field(t)?;
+    l.members.iter().find_map(|m| match m {
+        LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == f).and_then(|p| {
+            match (&p.ty, &p.init) {
+                (Some(TypeExpr::Named { path, .. }), _) if kind_of(path).is_some() => kind_of(path),
+                (_, ParamInit::Value(Expr::Struct { path, .. })) => kind_of(path),
+                _ => None,
+            }
+        }),
+        _ => None,
+    })
+}
+
 /// What a build refuses: a topic bound to a hub is named and described
 /// (spec/api.md § Streams) and served by nothing until R5, so a build that
 /// lowered the program would drop it silently. (A serve site is served
@@ -903,11 +934,7 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             // over a transport this compiler does not ship yet.
             for site in locus_serve_sites(l) {
                 let Some(Expr::Literal(hale_syntax::ast::Literal::String(name), _)) = site.option("as") else { continue };
-                if !l.is_main && matches!(site.transport, Some(Expr::Struct { path, .. }) if crate::rpc_expand::is_unix_rpc(path) || crate::rpc_expand::is_http_rpc(path)) {
-                    let kind = match site.transport {
-                        Some(Expr::Struct { path, .. }) if crate::rpc_expand::is_http_rpc(path) => "http",
-                        _ => "unix",
-                    };
+                if let (false, Some(kind)) = (l.is_main, socket_transport(l, site.transport)) {
                     diags.push(Diag::ty(
                         site.span,
                         format!(

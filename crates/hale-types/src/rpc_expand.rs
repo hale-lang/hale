@@ -733,9 +733,9 @@ pub fn expand(
             };
             if let Some(t) = &site.transport {
                 push("transport", as_stdlib_unix(t, id));
-            if let Some(addr) = http_bind_of(l, site.transport.as_ref()) {
-                push("address", addr);
-            }
+                if let Some(addr) = http_bind_of(l, site.transport.as_ref()) {
+                    push("address", addr);
+                }
             }
             if let Some(p) = &plan.principals {
                 push("bearer", p.clone());
@@ -758,13 +758,12 @@ pub fn expand(
             l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
         }
         // a Unix transport's listener: a param of the serving locus born
-        // first (so it is subscribed when the exposure attaches), placed on a
+        // after the authored params its path may read, and before the
+        // exposure (so it is subscribed when the exposure attaches), placed on a
         // pool of its own
         if l.is_main {
             let unix_path = unix_path_of(l, site.transport.as_ref());
             let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
-            // the listener is born first, after the params its address reads
-            let reads = self_reads(unix_path.as_ref().or(http_bind.as_ref()));
             let listener = match (unix_path, http_bind) {
                 (Some(path), _) => parse_unix_listener(id, path, span),
                 (None, Some(bind)) => parse_http_listener(id, bind, span),
@@ -773,7 +772,9 @@ pub fn expand(
             {
                 if let Some((lp, entry)) = listener {
                     if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        let at = pb.params.iter().rposition(|p| reads.contains(&p.name.name)).map_or(0, |i| i + 1);
+                        // after every authored param (the address may read one),
+                        // before the exposure just pushed
+                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
                         pb.params.insert(at, lp);
                     }
                     if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
@@ -1576,20 +1577,4 @@ fn number_constructions(items: &mut [TopDecl], serving: &str, field: &str, key_p
             }
         }
     });
-}
-
-/// The params of the serving locus an expression reads (`self.<param>`).
-fn self_reads(e: Option<&Expr>) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(e) = e {
-        let mut probe = e.clone();
-        walk_expr_mut(&mut probe, &mut |x| {
-            if let Expr::Field { receiver, name, .. } = x {
-                if matches!(**receiver, Expr::KwSelf(_)) {
-                    out.push(name.name.clone());
-                }
-            }
-        });
-    }
-    out
 }

@@ -580,7 +580,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#bd81d62b
+== crates/hale-stdlib/hl/api_rpc.hl#1abb5d25
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1232,11 +1232,11 @@ dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved decla
 
 == crates/hale-codegen/tests/api_unix_lifecycle.rs#1348f54a
 root	Desk	the entry
-domain	pool:__api_unix	async_io
 domain	pool:desk	async_io
 domain	pool:partner	async_io
 domain	pool:work	async_io
 domain	pool:work2	async_io
+domain	pool:__api_unix	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Desk@literal1.__rpc_u_2	__StdApiUnixListener	pool:__api_unix	entry	off owner
@@ -11540,8 +11540,8 @@ template	Head@literal1	unbounded (built in a locus body, which can run any numbe
 template	Head@literal2	unbounded (built in a locus body, which can run any number of times)
 domain	pool:io
 domain	pool:commands
-domain	pool:__api_unix	async_io
 domain	pool:__api_io	async_io
+domain	pool:__api_unix	async_io
 hole	Head@literal1.srv.handler.web	reuse `web`
 hole	Head@literal1.srv.handler.definitions	reuse `definitions`
 hole	Head@literal1.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
