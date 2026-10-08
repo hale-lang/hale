@@ -15,6 +15,12 @@ name: macos
 #   (d) builds + RUNS a `where async_io` .hl — the kqueue backend,
 #   and then cross-builds a Linux binary and runs the whole DNA suite.
 #
+# A pull request runs the job only when its diff can reach DNA
+# (`scope`, from scripts/ci-scope.sh, the same rule tests.yml applies
+# to its DNA and face jobs); a push to main runs it always. The plan
+# runs two macOS jobs at a time, and every PR run was queueing behind
+# the others for an hour on 2026-09-26.
+#
 # Kept in its own workflow so it runs on push/PR without gating the
 # Linux-only required checks in tests.yml.
 
@@ -27,31 +33,8 @@ name: macos
 on:
   push:
     branches: [main]
-    # A prose change cannot alter what the macOS build produces. This
-    # is a whole-workflow filter rather than the `scope` job
-    # `tests.yml` uses, because there is one job here and nothing to
-    # gate selectively.
-    paths-ignore: &prose
-      - '**.md'
-      - 'docs/**'
-      - 'spec/**'
-      - 'notes/**'
-      - 'agents/**'
-      - 'LICENSE'
   pull_request:
     branches: [main]
-    # A PR runs the macOS validator only when what it validates can
-    # change: the crates (compiler, runtime, CLI), the language tests
-    # and this workflow. DNA, docs and spec changes are checked on
-    # Linux and by main's own macOS run after they merge; the plan
-    # runs two macOS jobs at a time, and every PR run was queueing
-    # behind the others for an hour on 2026-09-26.
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'tests/hale/**'
-      - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 concurrency:
@@ -62,8 +45,29 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    name: scope (macos)
+    runs-on: ubuntu-latest
+    outputs:
+      dna: ${{ steps.classify.outputs.dna }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          # No base (or an unusable one) classifies as everything.
+          bash scripts/ci-scope.sh "$base" HEAD | grep '^dna=' | tee -a "$GITHUB_OUTPUT"
+
   macos:
     name: build + run (macos-14, Apple Silicon, ${{ matrix.part }}/4)
+    needs: scope
+    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     runs-on: macos-14
     strategy:
       fail-fast: false
