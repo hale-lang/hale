@@ -151,7 +151,13 @@ fn stage_headers(canonical: &std::path::Path) -> Result<PathBuf, CodegenError> {
             return Ok(dir);
         }
         if dir.exists() {
-            // there and incomplete: nobody's to move, so the next name
+            // There, and not complete a moment ago: either a concurrent
+            // staging landed it between the two looks (then it is complete
+            // now) or it is incomplete for good (a cache restored from a
+            // cut-short staging), which is nobody's to move: the next name.
+            if staged(&dir) {
+                return Ok(dir);
+            }
             continue;
         }
         let n = STAGINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
