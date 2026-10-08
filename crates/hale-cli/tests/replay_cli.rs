@@ -2579,25 +2579,21 @@ no_base = true
 source_only = true
 entrypoints = ["."]
 
-[environments.a.roles]
-ops = ["uid:1000"]
-
 [environments.b]
 source_only = true
 entrypoints = ["."]
-
-[environments.b.roles]
-ops = ["uid:2000"]
 "#;
 
 /// F.40 phase 4, I2: `hale replay --env` resolves the environment as
-/// `hale run --env` does. Its role table is part of the binary and of
-/// the identity; `replay` accepted the flag and never resolved it, so a
-/// recording made under an environment was refused by the replay that
-/// named it. Under another environment's roles, or none, the identity
-/// refuses it.
+/// `hale run --env` does. `replay` accepted the flag and never resolved
+/// it, so a recording made under an environment was refused by the
+/// replay that named it. (This test also held that another
+/// environment's role table, or none, was refused by the identity; the
+/// compiler no longer bakes an environment's roles into the binary
+/// (R4), so no role of an environment reaches the identity and the
+/// recording carries no environment name to refuse by.)
 #[test]
-fn a_recording_made_under_an_environment_replays_under_it_alone() {
+fn a_recording_made_under_an_environment_is_admitted_by_the_replay_that_names_it() {
     let dir = workdir("env_identity");
     std::fs::write(dir.join("hale.toml"), TWO_ENVIRONMENTS).unwrap();
     // An environment deploys an entrypoint: a `main locus`.
@@ -2616,28 +2612,11 @@ fn a_recording_made_under_an_environment_replays_under_it_alone() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let replay = |env: Option<&str>| {
-        let mut cmd = hale();
-        cmd.arg("replay");
-        if let Some(e) = env {
-            cmd.args(["--env", e]);
-        }
-        let out = cmd.arg(&rec).arg(&prog).output().expect("hale replay");
-        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
-    };
-    let (code, stderr) = replay(Some("a"));
+    let out = hale().args(["replay", "--env", "a"]).arg(&rec).arg(&prog).output().expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        code == Some(0) && !stderr.contains("different build inputs"),
-        "the environment it was recorded under admits it: {}",
-        stderr
+        out.status.code() == Some(0) && !stderr.contains("different build inputs"),
+        "the environment it was recorded under admits it: {stderr}"
     );
-    for other in [Some("b"), None] {
-        let (code, stderr) = replay(other);
-        assert!(
-            code == Some(1) && stderr.contains("different build inputs"),
-            "{other:?}'s roles are not the recording's: {}",
-            stderr
-        );
-    }
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ =std::fs::remove_dir_all(&dir);
 }

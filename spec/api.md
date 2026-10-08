@@ -1799,7 +1799,8 @@ values).
 - **The roles manifest**: `[environments.<env>.roles]` and the `--matrix`
   coverage check have no consumer at run time since the compiler stopped
   baking the table (`StaticRoles` takes a `table` param or
-  `LOTUS_API_ROLES`); either the manifest is retired or it becomes the
+  `LOTUS_API_ROLES`); `hale replay --env` is no consumer either, since
+  the table no longer reaches the binary's identity; either the manifest is retired or it becomes the
   default of a `StaticRoles` table.
 - **A description over `hale call` for a hub that also serves a
   surface**: the hub's live document lists streams only (above), so `hale

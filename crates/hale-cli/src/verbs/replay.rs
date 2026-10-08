@@ -214,9 +214,9 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    // `--env` as `hale run --env` resolves it (I2): its role table is
-    // part of the binary and of the identity, and its constitution is
-    // adopted by the load. `replay` accepted the flag and bound nothing,
+    // `--env` as `hale run --env` resolves it (I2): its constitution is
+    // adopted by the load (its role table is no longer part of the
+    // binary or the identity). `replay` accepted the flag and bound nothing,
     // so a recording made under an environment was refused by the
     // replay that named it.
     let env_spec = match resolve_build_env(&prog, &build_options) {
