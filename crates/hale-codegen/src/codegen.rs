@@ -26034,7 +26034,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             StdCallPos::Value if NO_VALUE_BODIES.contains(&body) => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
-            StdCallPos::Statement | StdCallPos::Value => {
+            // A body that returns nothing is a statement's whole call
+            // (`std::api::run_until_stopped(h);`); a value position needs
+            // a value back.
+            StdCallPos::Statement => {
+                let result = self.lower_user_fn_call(body, args, scope)?;
+                Ok(result)
+            }
+            StdCallPos::Value => {
                 let result = self.lower_user_fn_call(body, args, scope)?;
                 result.map(Some).ok_or_else(|| {
                     CodegenError::Unsupported(format!(
