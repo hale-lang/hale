@@ -1320,6 +1320,7 @@ crates/hale-codegen/tests/time_now.rs#1 4ce9fd6bf298c03e
 crates/hale-codegen/tests/time_now.rs#2 4ce9fd6bf298c03e
 crates/hale-codegen/tests/time_now.rs#3 865d341109268295
 crates/hale-codegen/tests/time_now.rs#4 4ce9fd6bf298c03e
+crates/hale-codegen/tests/time_return.rs#0 3f7e4e467fa2908c
 crates/hale-codegen/tests/tls_fast_io.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/tls_fast_io.rs#1 b7eb68b082a688ff
 crates/hale-codegen/tests/top_level_const.rs#0 865d341109268295

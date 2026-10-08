@@ -286,6 +286,79 @@ the rows without a running program (descriptions filtered by role are
 the server's, at `GET /.description` or the unix `{"describe":true}`
 request); generated clients are one per surface and carry the digest.
 
+### 2.9 The runtime boundaries (R2)
+
+The `Rpc` responsibility list of § 2.4 is a set of concrete types and
+methods, published before any transport-specific dispatch so that
+transports, hubs, DNA and Face build against one contract:
+
+| boundary | the contract |
+|---|---|
+| **framed request** | what a transport hands the runtime: the member's identity, the payload bytes, the client's digest if it sent one, and the transport's correlation; distinct from the server's request identity, which the runtime assigns on acceptance |
+| **exposure** | the surface, the bound receiver instances, the codec, the bearer source, the role source, the queue bound and the serve handle, built by `api::serve` |
+| **admission** | the ordered checks of § 2.3, run before enqueue against the exposure's actual sources; R1's offline `--holds` flag is a description input, never a runtime authority |
+| **dispatch** | enqueue on the bound instance's pool and await its typed outcome without blocking the scheduler work the handler, its owner's `on_failure` or the wait itself needs |
+| **completion** | one owner of pending request state, reply storage and terminal completion, disconnected clients included |
+| **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural (§ 2.4) |
+| **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
+
+A conforming in-process fixture transport ships with the interfaces
+and exercises the same path as `unix::Rpc`.
+
+### 2.10 Identity sources
+
+The interfaces for credential validity and grant revision are R2's;
+their use for live subscriptions (invalidation, delivery) stays R5's.
+
+- A **bearer source** answers a credential with the principal and its
+  validity: an expiry `Time` or none (no expiry), read against the
+  runtime's clock; the exposure refuses `unauthenticated` past expiry.
+- A **role source** answers a principal with its grants and the
+  source's current revision as one pair, so a check never reads grants
+  from one revision and the number from another; a revision changes
+  when a grant is added or removed, and a subscriber of the source's
+  revision topic learns of it (R5 reads it to invalidate live
+  subscriptions).
+- The runtime queries both on the exposure's own pool under Hale's
+  cross-pool rules (a source is a locus the serving locus holds, placed
+  with it or `sync = serialized`); a transport never holds policy.
+- The interfaces are provider-independent: local bootstrap, a human
+  identity federation and internal agent credentials are all sources.
+- RPC authorization stays an admission-time check: expiry and
+  revision add no re-authorization of queued calls and no cancellation
+  of accepted work.
+
+### 2.11 Receiver failure and execution generations
+
+A bound receiver can become unavailable while its owner and the serve
+handle live: draining after a violation, dissolved, or restarting.
+
+- Unavailability is **per receiver**: the members bound to it are
+  refused `unavailable` (503 / `UNAVAILABLE`); the exposure's other
+  members serve on. Requests queued for that receiver settle
+  `unavailable` too, a refusal the caller may read as "not executed".
+- Each bound instance has an **execution generation**, advanced by a
+  restart in place or a replacement in the owner's field. A call
+  accepted under one generation never executes under the next: still
+  queued, it is refused `unavailable`; executing, it completes under
+  the generation that ran it. The binding follows the owner's field,
+  so a replacement is served without re-establishing the exposure.
+- A **lost connection after acceptance is uncertain**: the work
+  executes once and its reply is dropped; the client is never told it
+  was refused. Only `unavailable` and `shutting_down` on queued work
+  mean "did not execute".
+- Listener failure, receiver failure, disconnect and repeated `stop()`
+  compose without duplicate completion or premature destruction:
+  completion has one owner (§ 2.9), and each accepted request reaches
+  one terminal outcome and releases its capacity exactly once.
+- F.42 stands: a violating handler's owner runs `on_failure` first;
+  when supervision lets execution return, the runtime reads the
+  fallible result and answers the server error without exposing the
+  record; when supervision exits the process, the caller observes a
+  transport failure, never a swallowed structural failure.
+- No implicit rollback or retry anywhere; durable idempotency,
+  receipts and application retry are DNA's and the application's.
+
 ## 3. The witness: the consumer fixture
 
 `tests/hale/api/consumer_fixture/` (built as one program, served in
@@ -323,18 +396,20 @@ written before the code in the same PR. Each exit criterion is a test.
 |---|---|---|
 | **R0 contract** | `spec/api.md` (§ 2 as the one contract; the binding section of `semantics.md` reduced to a pointer plus what stays structural: publish contracts, codecs); the description format (§ 2.8) as a JSON Schema under `spec/`; hand-made conforming fixtures (`tests/api-contract/`: one description document for the § 3 program, one recorded request and reply per outcome, the digest algorithm worked by hand on one surface); `spec/registry.md`'s `surface` family named with its producers and consumers | `docs_snippets` green; a Rust test validates the fixture documents against the schema; the DNA and Face teams can build against the fixtures with no compiler change |
 | **R1 rows** | the `api` block and `@rpc` parsed to one row family in `hale-model`; the digest; `hale check --api` printing the description from rows; the OpenAPI, JSON Schema and MCP generators re-homed onto rows; the admission law over rows (a row whose handler, shapes or error type do not exist is refused); registry family and laws | the § 3 program's rows, digest and description match R0's fixtures byte for byte; no `shape_hash` of a program without surfaces moves |
-| **R2 serve** | the `Rpc` interface and the runtime's dispatch (`Context` from the serve site's sources, digest check, `requires` before enqueue, decode by shape, cross-pool enqueue, awaited reply, the five outcomes, `stop()` semantics); `unix::Rpc` re-homed from #1106; the reply handler invoked through the fallible ABI (§ 2.6); the serve handle | the § 3 fixture's unix half passes: refusals before the counter moves, the five outcomes on the wire, queued shutdown, lost response |
+| **R2a interfaces** | § 2.9's boundaries as concrete stdlib types and the `Rpc` interface's methods, § 2.10's identity interfaces, § 2.11's semantics, all in `spec/api.md` first; `api::serve` checked by the serve-site laws and lowered to build the exposure; the runtime's admission, dispatch and completion over the bound instance's pool; a conforming in-process fixture transport; the reply handler through the fallible ABI (§ 2.6) | the § 3 fixture's rpc half passes over the in-process transport: refusals before the counter moves, the five outcomes, two instances of one receiver type reaching their own exposures, a violating call answered as the server error with the owner's `on_failure` first, same-pool and cross-pool placement without a blocked scheduler; R3 and R5 can build against the published interfaces |
+| **R2b unix** | `unix::Rpc` on the R2a runtime (the #1106 socket and codec primitives reused, its binding synthesis not); the lifecycle evidence of § 4a over real sockets | § 4a's table passes over unix |
 | **R3 http and the DNA proof** | `http::Rpc` with principals; the § 3 fixture's rpc half over unix and http (two exposures, two receiver instances, both role sources); one DNA read and one DNA durable command migrated to surfaces | the fixture's rpc half passes; the two DNA operations pass through the new path in the DNA suite |
 | **R5 hubs** | `ws::Hub` (streams and rpc on one connection) and `udp::Hub`; stream rows' `requires`, expiry and revocation, description derivation; the § 3 fixture's `Fills` half, so the fixture passes whole | a subscriber without the role gets nothing and buffers nothing; revocation while connected ends the subscription; the description lists `Fills` only for `operator`; the § 3 fixture passes whole |
-| **R4 cutover** | the structural path retired: `api_gen`'s synthesis, exposed reads, `@gated`, `serve:`, the api admission over locus rows, `bindings { api: … }`; the 13 sites and the two DNA apps migrated; `hale call`, `watch`, `admin`, `mcp` over descriptions; `dna/api/contract/v1` replaced by the description; the seven DNA api tests over the new path; the F.40 leftovers in this area closed (`hale check --api` is a reader; the round-trip artifacts) | `git grep 'api: unix'` finds nothing; the DNA suite green; `spec/semantics.md` has no api binding section |
+| **R4 cutover** | one coordinated replacement with the cleanup included (decision 21): every affected consumer on the new path (the 13 sites, the two DNA apps, DNA's verbs and reads, voice) and the superseded machinery deleted in the same cutover: `api_gen`'s synthesis, exposed reads, `@gated`, `serve:`, the api admission over locus rows, `bindings { api: … }`, the old description and client paths (`hale call`, `watch`, `admin`, `mcp` move to descriptions), `dna/api/contract/v1`, their fixtures, generators, commands and documentation; meaningful behaviour tests retargeted to the final path; forward migrations for any persisted state that changes; the F.40 leftovers in this area closed | `git grep 'api: unix'` and `git grep '@gated'` find nothing; no compatibility adapter, dual route or fallback exists; the DNA suite green; `spec/semantics.md` has no api binding section |
 | **R6 transports** | `grpc::Rpc`, `mcp::Rpc` (tools are rpcs; resources over streams are an open point) | each passes the § 3 fixture's `Public` half over its protocol |
 
 Dependencies: R0 opens as soon as #1426 is on `main`. R1 follows R0.
-R2 follows R1 (the runtime dispatches over R1's rows and digest; it
-is also checked against R0's fixtures). R3 and R5 both follow R2 and
-may run in parallel. R4, which removes the old rpc and stream paths,
-follows both R3 and R5, so the fixture is complete before anything
-is deleted. R6 follows R3.
+R2a follows R1 and is the first R2 handoff: R3 (HTTP) and R5 (hubs)
+build against its published interfaces and fixture transport while
+R2b (unix) finishes, and integrate on the verified R2b runtime. R4
+follows R2b, R3 and R5: it is one cutover, not a separately supported
+generation, and the packages before it establish none either. R6
+follows R3 and keeps its own scope, as does the habitat product.
 
 ## 5. What is retired, re-homed, kept
 
@@ -411,6 +486,30 @@ descriptions a consumer built against in R0 are what R1 generates.
 20. The hub exposure's identity, stream digest, frame envelope and
     caller-filtered description are part of the R0 contract; R5
     delivers them at run time.
+21. The cutover is one coordinated replacement with the cleanup
+    included: no compatibility adapters, dual serving, fallback routes
+    or legacy clients; every affected consumer migrates and the old
+    machinery, fixtures, generators, commands and docs are deleted in
+    the same cutover; persisted state that changes gets a forward
+    migration (the owner's direction, 2026-10-08).
+22. R2 publishes § 2.9's concrete interfaces and a conforming
+    in-process fixture transport first (R2a), then proves them over
+    unix (R2b); every transport goes through the shared admission,
+    dispatch and completion path.
+23. The identity interfaces (§ 2.10: a bearer source's validity, a
+    role source's grants-and-revision pair, the cross-pool rule) are
+    R2's; live-subscription invalidation stays R5's; RPC authorization
+    stays admission-time only.
+24. Receiver unavailability is per receiver (`unavailable`, 503);
+    queued calls to it settle `unavailable`; each bound instance has an
+    execution generation advanced by a restart or replacement, and a
+    call never moves to the next generation; the binding follows the
+    owner's field.
+25. A lost connection after acceptance is uncertain and is never
+    reported as a refusal; only `unavailable` and `shutting_down` on
+    queued work mean "did not execute"; no implicit rollback or retry.
+26. Serve-handle dissolution or owner teardown drives shutdown; an
+    ordinary connection failure is local to its connection.
 
 ## 8. Open points
 
