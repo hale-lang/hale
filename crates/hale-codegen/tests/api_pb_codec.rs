@@ -180,3 +180,142 @@ fn the_corpus_surfaces_build_over_grpc_with_their_codecs() {
         build_opts::build_source(&swapped(path), &bin, &build_opts::options()).unwrap_or_else(|e| panic!("{path}: {e:?}"));
     }
 }
+
+// ---- a message field sent twice is merged ----
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PPart {
+    #[prost(int64, tag = "1")]
+    a: i64,
+    #[prost(int64, tag = "2")]
+    b: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PWhole {
+    #[prost(message, optional, tag = "1")]
+    part: Option<PPart>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PTop {
+    #[prost(message, optional, tag = "1")]
+    whole: Option<PWhole>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PNeed {
+    #[prost(int64, tag = "1")]
+    x: i64,
+    #[prost(int64, tag = "2")]
+    y: i64,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PNeeds {
+    #[prost(message, optional, tag = "1")]
+    need: Option<PNeed>,
+}
+
+/// The Hale expression for `bytes`: one byte at a time, concatenated.
+fn bytes_expr(bytes: &[u8]) -> String {
+    let mut e = "std::bytes::from_string(\"\")".to_string();
+    for b in bytes {
+        e = format!("std::bytes::concat({e}, std::bytes::from_int({b}))");
+    }
+    e
+}
+
+/// A `Part` occurrence: only the fields it names.
+fn part(a: Option<u8>, b: Option<u8>) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(a) = a {
+        out.extend([0x08, a]);
+    }
+    if let Some(b) = b {
+        out.extend([0x10, b]);
+    }
+    out
+}
+
+/// `body` as an occurrence of field 1.
+fn occurrence(body: Vec<u8>) -> Vec<u8> {
+    let mut out = vec![0x0a, body.len() as u8];
+    out.extend(body);
+    out
+}
+
+/// The messages' fields are numbered by declaration, and `prost` merges what
+/// it decodes the way the wire format says. The generated decoder is held to
+/// it on the same bytes: the reviewer's `0a0208070a021009`, three occurrences
+/// whose scalars overwrite, two levels, and fields with no default split
+/// between occurrences.
+#[test]
+fn a_message_sent_twice_decodes_as_prost_merges_it() {
+    use prost::Message;
+    let reviewer = [occurrence(part(Some(7), None)), occurrence(part(None, Some(9)))].concat();
+    assert_eq!(reviewer, [0x0a, 0x02, 0x08, 0x07, 0x0a, 0x02, 0x10, 0x09]);
+    let overwrite = [occurrence(part(Some(1), Some(5))), occurrence(part(None, Some(9))), occurrence(part(Some(3), None))].concat();
+    let deep = [occurrence(occurrence(part(Some(7), None))), occurrence(occurrence(part(None, Some(9))))].concat();
+    let split = [occurrence(part(Some(4), None)), occurrence(part(None, Some(6)))].concat();
+
+    let pair = |p: Option<PPart>| {
+        let p = p.expect("the part");
+        format!("{},{}", p.a, p.b)
+    };
+    let need = PNeeds::decode(split.as_slice()).unwrap().need.unwrap();
+    let expect = [
+        ("whole", pair(PWhole::decode(reviewer.as_slice()).unwrap().part)),
+        ("overwrite", pair(PWhole::decode(overwrite.as_slice()).unwrap().part)),
+        ("deep", pair(PTop::decode(deep.as_slice()).unwrap().whole.unwrap().part)),
+        ("needs", format!("{},{}", need.x, need.y)),
+    ];
+    assert_eq!(expect.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(), ["7,9", "3,9", "7,9", "4,6"], "what prost merges");
+
+    let program = format!(
+        r#"
+type Part {{ a: Int = 0; b: Int = 0; }}
+type Whole {{ part: Part; }}
+type Top {{ whole: Whole; }}
+type Need {{ x: Int; y: Int; }}
+type Needs {{ need: Need; }}
+api Pb {{ rpc Probe::whole; rpc Probe::top; rpc Probe::needs; }}
+locus Probe {{
+    fn whole(w: Whole) -> Whole {{ return w; }}
+    fn top(t: Top) -> Top {{ return t; }}
+    fn needs(n: Needs) -> Needs {{ return n; }}
+}}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: "" }}; }}
+    fn refused() -> String {{ return "no"; }}
+}}
+main locus Desk {{
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; }}
+    fn serving() {{
+        let h = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse);
+        h.stop();
+    }}
+    run() {{
+        let w = __api_pb_decode_Whole({reviewer}) or {{ println("whole refused " + err.kind); return; }};
+        println("whole " + to_string(w.part.a) + "," + to_string(w.part.b));
+        let o = __api_pb_decode_Whole({overwrite}) or {{ println("overwrite refused " + err.kind); return; }};
+        println("overwrite " + to_string(o.part.a) + "," + to_string(o.part.b));
+        let t = __api_pb_decode_Top({deep}) or {{ println("deep refused " + err.kind); return; }};
+        println("deep " + to_string(t.whole.part.a) + "," + to_string(t.whole.part.b));
+        let n = __api_pb_decode_Needs({split}) or {{ println("needs refused " + err.kind + " " + err.field); return; }};
+        println("needs " + to_string(n.need.x) + "," + to_string(n.need.y));
+    }}
+}}
+fn main() {{ Desk {{ }}; }}
+"#,
+        reviewer = bytes_expr(&reviewer),
+        overwrite = bytes_expr(&overwrite),
+        deep = bytes_expr(&deep),
+        split = bytes_expr(&split),
+    );
+    let bin = harness::unique_bin("api_pb_codec_merge");
+    build_opts::build_source(&program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    let want: Vec<String> = expect.iter().map(|(k, v)| format!("{k} {v}")).collect();
+    assert_eq!(got.lines().collect::<Vec<_>>(), want.iter().map(String::as_str).collect::<Vec<_>>(), "the generated decoder and prost agree");
+}

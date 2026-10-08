@@ -543,7 +543,9 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
 /// that is absent is `missing_field`, one of the wrong wire type is
 /// `wrong_type`, the value of a unit-dialect scalar passes through its
 /// conversion), by field number; an unknown field is skipped by its wire
-/// type; the last of a field sent twice wins. The helpers (`__api_pb_vend`,
+/// type; the last of a scalar field sent twice wins, and a nested message sent
+/// twice is merged (the occurrences are concatenated and decoded once, which is
+/// the merge, recursively). The helpers (`__api_pb_vend`,
 /// `__api_pb_vval`, `__api_pb_skip`) are `api_grpc.hl`'s.
 fn generate_pb_parser_src(t: &JsonType) -> String {
     let mut b = String::new();
@@ -597,7 +599,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 b.push_str(&format!("            if __l < 0 || __e + __l > __n {{ {bad} }}\n"));
                 match &f.kind {
                     FieldKind::Nested(_) => {
-                        b.push_str(&format!("            __raw_{} = std::bytes::slice(__b, __e, __e + __l);\n", f.name));
+                        b.push_str(&format!("            __raw_{0} = std::bytes::concat(__raw_{0}, std::bytes::slice(__b, __e, __e + __l));\n", f.name));
                     }
                     _ => {
                         b.push_str("            let __s = std::str::from_bytes(std::bytes::slice(__b, __e, __e + __l));\n");
