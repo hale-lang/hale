@@ -272,6 +272,27 @@ impl Pending {
         parse_response(&raw)
     }
 
+    /// Go away with a reset (RST, not FIN): the server's read of this
+    /// connection fails ECONNRESET.
+    pub fn reset(self) {
+        let l = libc::linger { l_onoff: 1, l_linger: 0 };
+        let r = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&self.s),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &l as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(r, 0, "SO_LINGER");
+    }
+
+    /// Send more of the request.
+    pub fn more(&mut self, text: &str) {
+        self.s.write_all(text.as_bytes()).expect("write the rest");
+    }
+
     /// Go away: close the connection without reading.
     pub fn close(self) {
         let _ = self.s.shutdown(std::net::Shutdown::Both);
