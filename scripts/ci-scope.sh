@@ -23,7 +23,7 @@ if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null \
   verdict false true; exit 0
 fi
 
-if ! changed=$(git diff --name-only "$base"..."$head"); then
+if ! changed=$(git diff --name-only --no-renames "$base"..."$head"); then
   echo "ci-scope: diff failed, classifying as everything" >&2
   verdict false true; exit 0
 fi
@@ -40,11 +40,11 @@ prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|note
 # iris tree it embeds; every crate (all of them build in
 # `--workspace`); the workspace manifests; the workflows; and the
 # scripts those jobs call.
-dna='^(dna|iris|\.github/workflows)/|^Cargo\.(toml|lock)$|^scripts/(warm-and-build|warm-dna-cache|warm-dna-fixtures-cache|target-sysroot|ci-scope)\.sh$|^crates/'
+dna='^(dna|iris|\.github/workflows|\.config|scripts)/|^Cargo\.(toml|lock)$|^crates/'
 # ...except test files nothing in DNA runs. The DNA suite itself
 # (hale-cli's dna_native_suite and its support code) is the exception.
 dna_not='^crates/[^/]+/tests/'
-dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/)'
+dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/|fixtures/)'
 
 nonprose=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
 hit=$(printf '%s\n' "$changed" | grep -E "$dna" | grep -vE "$dna_not" | grep -c . || true)

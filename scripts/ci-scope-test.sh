@@ -31,6 +31,16 @@ case_ dna-edit    false true  dna/a.hl
 case_ workflow    false true  .github/workflows/tests.yml
 case_ dna-suite   false true  crates/hale-cli/tests/dna_native_suite.rs
 
+case_ nextest-cfg false true  .config/nextest.toml
+case_ ts-fixture  false true  crates/hale-cli/tests/fixtures/ts-client/run.mjs
+case_ script      false true  scripts/other.sh
+
+# a rename out of dna/ removes a source the fixtures import: both sides count
+git checkout -q "$base" && git checkout -q -B t-rename
+mkdir -p experiments && git mv dna/a.hl experiments/a.hl && git commit -qm rename
+got=$(bash "$here/ci-scope.sh" "$base" HEAD 2>/dev/null | tr '\n' ' ')
+if [ "$got" = "prose=false dna=true " ]; then echo "ok   rename-out-of-dna: $got"; else echo "FAIL rename-out-of-dna: got '$got'"; fail=1; fi
+
 got=$(bash "$here/ci-scope.sh" "" HEAD 2>/dev/null | tr '\n' ' ')
 if [ "$got" = "prose=false dna=true " ]; then echo "ok   no-base: $got"; else echo "FAIL no-base: $got"; fail=1; fi
 got=$(bash "$here/ci-scope.sh" "$base" "$base" 2>/dev/null | tr '\n' ' ')
