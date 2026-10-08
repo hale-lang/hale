@@ -179,3 +179,20 @@ fn a_udp_hub_is_a_hub_and_carries_streams_only() {
         "{e:?}"
     );
 }
+
+#[test]
+fn a_construction_cannot_supply_the_hub_a_stream_is_bound_to() {
+    // the default is numbered and given its rows; a hub supplied at a
+    // construction would be neither, and the listener would wait on a key
+    // the hub does not answer on (downstream handoff review of R5)
+    let src = program(HUB, ROW).replace(
+        "fn main() { Desk { }; }",
+        "fn main() { Desk { hub: ws::Hub { bind: \"127.0.0.1:9001\", principals: Tokens { }, roles: Grants { }, name: \"fills\" } }; }",
+    );
+    let e = errors(&src);
+    assert!(
+        e.iter().any(|m| m.contains("locus `Desk`: param `hub` is a hub that streams are bound to; its default is the hub, and a construction cannot supply another")),
+        "{e:?}"
+    );
+    assert!(errors(&program(HUB, ROW)).is_empty());
+}

@@ -1027,7 +1027,11 @@ binding row: `requires`, `bound`, `on_full`. A **hub** is a transport
 instance built by a literal in the main locus's `params`: `ws::Hub`
 (WebSocket) or `udp::Hub` (datagrams, § Over datagrams), with `bind:`
 the address it listens on, `principals:` and `roles:` its two sources and
-`as:` its name. It is two kinds of locus sharing one listener, so that no
+`as:` its name. The literal is the param's default and the only hub:
+the compiler numbers it and gives it its rows there, so a construction
+that supplies the param is refused ("param `hub` is a hub that streams
+are bound to; its default is the hub, and a construction cannot supply
+another"). It is two kinds of locus sharing one listener, so that no
 locus has to serve two interfaces: the hub itself holds the sources,
 admits subscriptions and is the `Rpc` a surface may be served over
 (`api::serve(S, self.hub, …)`: one listener carries rpcs and streams over

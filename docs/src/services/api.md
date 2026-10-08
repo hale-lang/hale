@@ -277,6 +277,9 @@ main locus Desk {
 ```
 
 The hub is a param: `ws::Hub` speaks WebSocket and `udp::Hub` datagrams.
+Its default is the hub (the compiler numbers it and gives it its rows
+there), so a construction that supplies the param, `Desk { hub: … }`, is
+refused.
 Its `bind:` address is bound when the program boots (one it cannot bind
 stops the program with a diagnostic), `principals:` and `roles:` are the
 two sources, and `as:` names the exposure, once among the program's. The
