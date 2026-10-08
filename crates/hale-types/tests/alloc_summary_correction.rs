@@ -551,11 +551,11 @@ fn verdict_changes() {
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
-            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1711495..1711574 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1712207..1712275 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @2517280..2517383 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::discovered StringConcat @2512581..2512656 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::token_subject StringConcat @2514914..2514973 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1711481..1711560 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1712193..1712261 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @2517266..2517369 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::discovered StringConcat @2512567..2512642 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::token_subject StringConcat @2514900..2514959 InvokedUnboundedly",
         ],
     );
     pinned(

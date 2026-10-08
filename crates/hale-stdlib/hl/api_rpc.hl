@@ -143,6 +143,13 @@ interface __StdApiRpc {
 /// What an exposure's holder stops.
 interface __StdApiHandle {
     fn stop();
+    fn wait();
+}
+
+/// `api::run_until_stopped(h)`: a serving `main locus`'s `run()` parks here
+/// until the exposure stops or the process drains.
+fn __std_api_run_until_stopped(h: __StdApiHandle) {
+    h.wait();
 }
 
 /// The rows an exposure reads, generated per surface by the compiler.
@@ -910,6 +917,17 @@ locus __StdApiExposure {
     /// owner's teardown run it.
     fn stop() {
         self.shutdown(self.stop_wait_ms);
+    }
+    /// Park until `stop()` or the drain ends the exposure. The wait is a
+    /// bounded slice that a call arriving for the holder's pool ends at once
+    /// (`std::time::__idle_wait`), so a served program's `run()` need not
+    /// poll with a `sleep` and answers in the time the work takes, not the
+    /// time its sleep slice takes. A holder with periodic work of its own
+    /// keeps its loop.
+    fn wait() {
+        while !self.stopped && !self.draining {
+            std::time::__idle_wait(100ms);
+        }
     }
     // A call whose receiver cannot finish it (its pool was shut down under
     // it, which a process teardown does) is not waited for forever: past

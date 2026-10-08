@@ -168,6 +168,7 @@ ns std::io::stdout open_prefixes=[]
   write_bytes syscall
 ns std::api open_prefixes=[]
   local_context alloc
+  run_until_stopped syscall|block|time
 ns std::io::unix open_prefixes=[]
   connect syscall|block
   connect_wait syscall|block
@@ -476,6 +477,7 @@ ns std::time open_prefixes=[]
   monotonic_ns time
   now time
   sleep syscall|block|time
+  __idle_wait syscall|block|time
   time_from_unix pure
 
 ## answers
@@ -515,6 +517,7 @@ std::api::http::Listener | lookup=- | locus=false | effects=- | sig=- | parks=fa
 std::api::http::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
 std::api::mcp::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::mcp` — did you mean `std::io::tcp`?
+std::api::run_until_stopped | lookup=api@2 | locus=false | effects=syscall|block|time | sig=(Named(__StdApiHandle)) -> Unit | ret_ty=() | or=- | parks=true | holds=false | unknown=- | suggest=run_until_stopped
 std::api::test::Record | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
 std::api::test::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
 std::api::udp::Endpoint | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::udp` — did you mean `std::io::udp`?
@@ -1044,6 +1047,7 @@ std::text::is_whitespace | lookup=text@2 | locus=false | effects=pure | sig=(Int
 std::text::is_word_char | lookup=text@2 | locus=false | effects=pure | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_word_char
 std::text::md_to_html | lookup=text@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=md_to_html
 std::text::tokenize_words_into | lookup=text@2 | locus=false | effects=pure | sig=(Str, Any) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=tokenize_words_into
+std::time::__idle_wait | lookup=time@2 | locus=false | effects=syscall|block|time | sig=(Duration) -> Unit | ret_ty=() | or=- | parks=true | holds=false | unknown=- | suggest=__idle_wait
 std::time::can_parse_iso8601 | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=can_parse_iso8601
 std::time::current | lookup=time@2 | locus=false | effects=time | sig=() -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=current
 std::time::from_nanos | lookup=time@2 | locus=false | effects=pure | sig=(Int) -> Time | ret_ty=Time | or=- | parks=false | holds=false | unknown=- | suggest=from_nanos

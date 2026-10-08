@@ -26034,7 +26034,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             StdCallPos::Value if NO_VALUE_BODIES.contains(&body) => {
                 self.lower_std_unarmed(segs, args, scope, pos)
             }
-            StdCallPos::Statement | StdCallPos::Value => {
+            // A body that returns nothing is a statement's whole call
+            // (`std::api::run_until_stopped(h);`); a value position needs
+            // a value back.
+            StdCallPos::Statement => {
+                let result = self.lower_user_fn_call(body, args, scope)?;
+                Ok(result)
+            }
+            StdCallPos::Value => {
                 let result = self.lower_user_fn_call(body, args, scope)?;
                 result.map(Some).ok_or_else(|| {
                     CodegenError::Unsupported(format!(
@@ -26866,6 +26873,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::TimeSleep => match pos {
                 StdCallPos::Statement => {
                     self.lower_time_sleep(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
+            Id::TimeIdleWaitRaw => match pos {
+                StdCallPos::Statement => {
+                    self.lower_time_idle_wait(args, scope)?;
                     return Ok(None);
                 }
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
@@ -27714,6 +27728,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TimeNanos
             | Id::TimeNow
             | Id::TimeSleep
+            | Id::TimeIdleWaitRaw
             | Id::TimeTimeFromUnix
             | Id::TimeUnix
             | Id::TsNodeChild
