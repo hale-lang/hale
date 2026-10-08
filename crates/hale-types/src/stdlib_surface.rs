@@ -317,6 +317,11 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "Server"],
     &["std", "io", "MirrorRing"],
     &["std", "io", "file", "File"],
+    // R7: the HTTP/2 server's loci and its two messages (io_h2.hl)
+    &["std", "io", "h2", "Cmd"],
+    &["std", "io", "h2", "Conn"],
+    &["std", "io", "h2", "Event"],
+    &["std", "io", "h2", "Listener"],
     &["std", "io", "tcp", "Listener"],
     &["std", "io", "tcp", "LogEvent"],
     &["std", "io", "tcp", "Stream"],
@@ -873,6 +878,30 @@ pub const SURFACES: &[NsSurface] = &[
             row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetRecvTimeout)),
             row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetRxTimestamps)),
             row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetSendTimeout)),
+        ],
+        open_prefixes: &[],
+    },
+    // The HTTP/2 server session (`runtime/lotus_h2.c`, nghttp2 inside): bytes
+    // in, bytes out, a queue of events, every one a computation on the
+    // caller's thread. The handle is the session's pointer as an Int, as the
+    // BytesBuilder's is. Nothing here touches a socket: `std::io::h2`'s loci
+    // read and write the descriptor with `std::io::tcp` and hand the bytes
+    // across.
+    NsSurface {
+        ns: &["io", "h2"],
+        fns: &[
+            row!("__alive", ALLOC, [Int] -> Int, Intrinsic(IoH2AliveRaw)),
+            row!("__close", ALLOC, [Int] -> Int, Intrinsic(IoH2CloseRaw)),
+            row!("__drain", ALLOC, [Int] -> Bytes, Intrinsic(IoH2DrainRaw)),
+            row!("__ev_bytes", ALLOC, [Int] -> Bytes, Intrinsic(IoH2EvBytesRaw)),
+            row!("__ev_code", ALLOC, [Int] -> Int, Intrinsic(IoH2EvCodeRaw)),
+            row!("__ev_stream", ALLOC, [Int] -> Int, Intrinsic(IoH2EvStreamRaw)),
+            row!("__feed", ALLOC, [Int, Any] -> Int, Intrinsic(IoH2FeedRaw)),
+            row!("__goaway", ALLOC, [Int, Int] -> Int, Intrinsic(IoH2GoawayRaw)),
+            row!("__open", ALLOC, [] -> Int, Intrinsic(IoH2OpenRaw)),
+            row!("__poll", ALLOC, [Int] -> Int, Intrinsic(IoH2PollRaw)),
+            row!("__reset", ALLOC, [Int, Int, Int] -> Int, Intrinsic(IoH2ResetRaw)),
+            row!("__respond", ALLOC, [Int, Int, Bytes, Bytes, Bytes] -> Int, Intrinsic(IoH2RespondRaw)),
         ],
         open_prefixes: &[],
     },
@@ -1475,6 +1504,18 @@ pub enum IntrinsicId {
     IoFsWriteFile,
     IoFsWritePrivateRaw,
     IoFsWriteFileAppend,
+    IoH2AliveRaw,
+    IoH2CloseRaw,
+    IoH2DrainRaw,
+    IoH2EvBytesRaw,
+    IoH2EvCodeRaw,
+    IoH2EvStreamRaw,
+    IoH2FeedRaw,
+    IoH2GoawayRaw,
+    IoH2OpenRaw,
+    IoH2PollRaw,
+    IoH2ResetRaw,
+    IoH2RespondRaw,
     IoStdinReadByte,
     IoStdinReadLine,
     IoStdinReadLineStatus,

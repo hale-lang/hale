@@ -40,6 +40,19 @@ pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
 /// them.
 pub const API_HUB_SOURCE: &str = include_str!("../hl/api_hub.hl");
 
+/// The HTTP/2 server's loci (`io_h2.hl`, GH #1417 R7): the listener and the
+/// connection of `std::io::h2`, over the sans-I/O session the runtime builds
+/// in (`std::io::h2::__*`). Appended after [`API_RUNTIME_SOURCE`], and only
+/// to a program that serves over `grpc::Rpc` or names one of its types, for
+/// the reason the hub's is: every stdlib declaration is lowered into every
+/// program, and a program with no server carries no HTTP/2.
+pub const API_H2_SOURCE: &str = include_str!("../hl/io_h2.hl");
+
+/// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
+/// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
+/// to a program that names `grpc::Rpc`.
+pub const API_GRPC_SOURCE: &str = include_str!("../hl/api_grpc.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -403,6 +416,12 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "http", "Rpc"], "__StdApiHttpRpc"),
     (&["std", "api", "http", "Listener"], "__StdApiHttpListener"),
     (&["std", "api", "mcp", "Rpc"], "__StdApiMcpRpc"),
+    // GH #1417 (R7): the HTTP/2 server (io_h2.hl).
+    (&["std", "io", "h2", "Listener"], "__StdIoH2Listener"),
+    (&["std", "io", "h2", "Conn"], "__StdIoH2Conn"),
+    (&["std", "io", "h2", "Event"], "__StdIoH2Event"),
+    (&["std", "io", "h2", "Cmd"], "__StdIoH2Cmd"),
+    (&["std", "api", "grpc", "Rpc"], "__StdApiGrpcRpc"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),

@@ -100,6 +100,7 @@ compiler consults, with the reasons it gives.
 | `std::io::udp` | raw UDP sockets don't exist in the browser | (no raw UDP in the browser) |
 | `std::io::tls` | raw TLS isn't available; the browser performs TLS transparently for `wss://` / `https://` | the browser does TLS transparently for `wss://` / `https://` |
 | `std::io::fs`, `std::io::file` | filesystem access isn't available in the browser sandbox; use `fetch` (via an `@ffi("js")` host import) or a bus message | `fetch` via an `@ffi("js")` host import, or a bus message |
+| `std::io::h2` | the HTTP/2 server is nghttp2 and a TCP listener, neither of which the wasm link reaches | a WebSocket bus adapter (`ws://`), or an `@ffi("js")` host import |
 | `std::io::stdin`, `std::io::stdout` | raw terminal I/O isn't available; use `println(...)` (the loader routes it to the host console) | `println(...)` (the loader routes it to the host console) |
 | `std::term` | terminal control (`std::term`) isn't available in the browser | (no terminal in the browser) |
 | `std::process` | OS process control (`std::process`) isn't available in the browser | (no OS process control) |

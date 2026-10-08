@@ -49,6 +49,7 @@ pub(crate) const LATCH_FAILED: u64 = 2;
 pub mod deployment;
 pub(crate) mod channels;
 pub mod codegen;
+pub(crate) mod h2_runtime;
 pub(crate) mod conversion;
 pub(crate) mod form;
 pub(crate) mod locus;

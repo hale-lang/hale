@@ -73,6 +73,9 @@ impl Endpoint {
         if s.starts_with("https://") || s.starts_with("wss://") {
             return Err(format!("`{}`: these clients do not speak TLS; name the plain listener", s));
         }
+        if s.starts_with("grpc://") {
+            return Err(format!("`{}`: these clients do not speak gRPC (spec/api.md, Open points); call it with any gRPC client, or read its description with `hale check --api`", s));
+        }
         if s.contains("://") {
             return Err(format!("`{}`: an endpoint is a socket path, or http://, ws:// or mcp:// host:port", s));
         }

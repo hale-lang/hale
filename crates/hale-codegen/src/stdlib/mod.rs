@@ -18,6 +18,7 @@ pub(crate) mod decimal;
 pub(crate) mod diag;
 pub(crate) mod env;
 pub(crate) mod io_file;
+pub(crate) mod io_h2;
 pub(crate) mod io_fs;
 pub(crate) mod io_stdin;
 pub(crate) mod io_tcp;

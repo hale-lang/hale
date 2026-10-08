@@ -1034,7 +1034,7 @@ fn compile_cached_runtime_object(
 /// key — the same source and flags through a different compiler, or a
 /// different release of one, is a different object, and one for a
 /// different machine when the compiler targets one.
-fn compile_cached_runtime_object_with(
+pub(crate) fn compile_cached_runtime_object_with(
     options: &BuildOptions,
     cc: &[String],
     cc_version: &str,
@@ -2308,6 +2308,13 @@ pub fn build_resolved(
         let _ = std::fs::remove_file(&main_input);
         return Err(CodegenError::MissingTsShim(msg, cx.ts_call_span));
     }
+    // nghttp2 and its glue: compiled, and linked, only into a program that
+    // reaches `lotus_h2_*` (`std::io::h2`), so every other build is as it was.
+    let h2_objs = if module_references_h2(&cx.module) {
+        crate::h2_runtime::h2_objects(options, &["clang".to_string()], "", &rt_cflags)?
+    } else {
+        Vec::new()
+    };
     let mut clang = Command::new("clang");
     clang
         .arg(&main_input)
@@ -2315,7 +2322,8 @@ pub fn build_resolved(
         .arg(&tls_o)
         .arg(&shm_ring_o)
         .arg(&compress_o)
-        .arg(&obs_o);
+        .arg(&obs_o)
+        .args(&h2_objs);
     if lto_active {
         // Full-LTO link: -flto pulls the Hale bitcode + the runtime
         // bitcode TUs through the LTO backend at -O3, inlining the arena
@@ -2805,6 +2813,10 @@ fn link_cross(
         )?);
     }
 
+    if module_references_h2(module) {
+        rt_objs.extend(crate::h2_runtime::h2_objects(options, &cc, &cc_version, &rt_cflags)?);
+    }
+
     let ts_shim = locate_cross_ts_shim(target, &sysroot, options);
     if ts_shim.is_none() && module_references_ts_shim(module) {
         return Err(CodegenError::MissingTsShim(
@@ -3156,6 +3168,19 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 /// unoptimized build (`LOTUS_ASAN=1` skips the pipeline) keeps the
 /// dead bodies and therefore answers yes; that is also correct,
 /// since its object really does carry the undefined symbols.
+fn module_references_h2(module: &inkwell::module::Module<'_>) -> bool {
+    use inkwell::values::BasicValue;
+    let mut f = module.get_first_function();
+    while let Some(func) = f {
+        let is_h2_symbol = func.get_name().to_str().map(crate::h2_runtime::is_h2_symbol).unwrap_or(false);
+        if is_h2_symbol && func.as_global_value().get_first_use().is_some() {
+            return true;
+        }
+        f = func.get_next_function();
+    }
+    false
+}
+
 fn module_references_ts_shim(module: &inkwell::module::Module<'_>) -> bool {
     use inkwell::values::BasicValue;
     let mut f = module.get_first_function();
@@ -26595,6 +26620,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoUnixGroupId => self.lower_std_io_unix_name_id("group_id", args, scope),
             Id::IoUnixPeerGroupsCount => self.lower_std_io_unix_peer("groups_count", args, scope),
             Id::IoUnixPeerGroupAt => self.lower_std_io_unix_peer_group_at(args, scope),
+            Id::IoH2AliveRaw
+            | Id::IoH2CloseRaw
+            | Id::IoH2DrainRaw
+            | Id::IoH2EvBytesRaw
+            | Id::IoH2EvCodeRaw
+            | Id::IoH2EvStreamRaw
+            | Id::IoH2FeedRaw
+            | Id::IoH2GoawayRaw
+            | Id::IoH2OpenRaw
+            | Id::IoH2PollRaw
+            | Id::IoH2ResetRaw
+            | Id::IoH2RespondRaw => self.lower_std_io_h2(id, args, scope),
             Id::IoTcpListenSocketRaw => {
                 self.lower_std_io_tcp_listen_socket(args, scope)
             }
@@ -27532,6 +27569,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoStdinReadLine
             | Id::IoStdinReadLineStatus
             | Id::IoStdoutWriteBytes
+            | Id::IoH2AliveRaw
+            | Id::IoH2CloseRaw
+            | Id::IoH2DrainRaw
+            | Id::IoH2EvBytesRaw
+            | Id::IoH2EvCodeRaw
+            | Id::IoH2EvStreamRaw
+            | Id::IoH2FeedRaw
+            | Id::IoH2GoawayRaw
+            | Id::IoH2OpenRaw
+            | Id::IoH2PollRaw
+            | Id::IoH2ResetRaw
+            | Id::IoH2RespondRaw
             | Id::IoTcpAcceptOneRaw
             | Id::IoTcpCloseFd
             | Id::IoTcpCloseFdRaw

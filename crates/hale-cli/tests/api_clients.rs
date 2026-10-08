@@ -291,6 +291,11 @@ fn call_speaks_each_transports_wire_and_names_the_digest_it_read() {
     assert!(!r.ok && r.stderr.contains("could not connect"), "{}", r.stderr);
     let r = run(&["call", "https://127.0.0.1:1", "Counter::peek"]);
     assert!(!r.ok && r.stderr.contains("TLS"), "{}", r.stderr);
+    // gRPC has no client here (spec/api.md, Open points): a grpc:// endpoint says so, for describe too
+    for verb in ["call", "describe"] {
+        let r = run(&[verb, "grpc://127.0.0.1:1", "Counter::peek"]);
+        assert!(!r.ok && r.stderr.contains("do not speak gRPC"), "{verb}: {}", r.stderr);
+    }
 }
 
 // ---- watch ----------------------------------------------------------------------------------
