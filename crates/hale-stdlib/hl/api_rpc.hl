@@ -261,6 +261,107 @@ fn __api_rpc_has(csv: String, role: String) -> Bool {
     return std::str::contains("," + csv + ",", "," + role + ",");
 }
 
+// ---- the JSON tokens of a scalar payload ----
+//
+// A payload that is one scalar is that scalar's complete JSON token and
+// nothing else (spec/api.md § Payloads): the generated decoders ask these
+// first, so a token of the wrong kind is refused `malformed` before it is
+// converted, never read as the type's zero or as its first characters.
+
+fn __api_json_digit(c: Int) -> Bool {
+    return c >= 48 && c <= 57;
+}
+
+fn __api_json_hex(c: Int) -> Bool {
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+}
+
+/// The index past the run of one or more digits at `i`, or -1.
+fn __api_json_run(t: String, i: Int) -> Int {
+    let n = len(t);
+    if i >= n { return -1; }
+    if !__api_json_digit(std::str::byte_at_unchecked(t, i)) { return -1; }
+    let mut j = i + 1;
+    while j < n && __api_json_digit(std::str::byte_at_unchecked(t, j)) { j = j + 1; }
+    return j;
+}
+
+/// The index past a JSON number's integer part at `i` (`-`, then `0` or a
+/// digit run without a leading zero), or -1.
+fn __api_json_whole(t: String, i: Int) -> Int {
+    let n = len(t);
+    let mut at = i;
+    if at < n && std::str::byte_at_unchecked(t, at) == 45 { at = at + 1; }
+    if at >= n { return -1; }
+    let c = std::str::byte_at_unchecked(t, at);
+    if c == 48 { return at + 1; }
+    if c < 49 || c > 57 { return -1; }
+    return __api_json_run(t, at);
+}
+
+/// Whether the trimmed token is `true` or `false`.
+fn __api_json_is_bool(t: String) -> Bool {
+    return t == "true" || t == "false";
+}
+
+/// Whether the trimmed token is a JSON number with no fraction and no
+/// exponent.
+fn __api_json_is_int(t: String) -> Bool {
+    return __api_json_whole(t, 0) == len(t);
+}
+
+/// Whether the trimmed token is a JSON number (an integer is one).
+fn __api_json_is_float(t: String) -> Bool {
+    let n = len(t);
+    let mut at = __api_json_whole(t, 0);
+    if at < 0 { return false; }
+    if at < n && std::str::byte_at_unchecked(t, at) == 46 {
+        at = __api_json_run(t, at + 1);
+        if at < 0 { return false; }
+    }
+    if at < n && (std::str::byte_at_unchecked(t, at) == 101 || std::str::byte_at_unchecked(t, at) == 69) {
+        at = at + 1;
+        if at < n && (std::str::byte_at_unchecked(t, at) == 43 || std::str::byte_at_unchecked(t, at) == 45) { at = at + 1; }
+        at = __api_json_run(t, at);
+        if at < 0 { return false; }
+    }
+    return at == n;
+}
+
+/// Whether the trimmed token is one JSON string: quoted, no raw quote or
+/// control character inside, every escape one JSON defines.
+fn __api_json_is_string(t: String) -> Bool {
+    let n = len(t);
+    if n < 2 { return false; }
+    if std::str::byte_at_unchecked(t, 0) != 34 || std::str::byte_at_unchecked(t, n - 1) != 34 { return false; }
+    let last = n - 1;
+    let mut i = 1;
+    while i < last {
+        let c = std::str::byte_at_unchecked(t, i);
+        if c == 34 || c < 32 { return false; }
+        if c == 92 {
+            if i + 1 >= last { return false; }
+            let e = std::str::byte_at_unchecked(t, i + 1);
+            if e == 117 {
+                if i + 5 >= last { return false; }
+                let mut k = 2;
+                while k <= 5 {
+                    if !__api_json_hex(std::str::byte_at_unchecked(t, i + k)) { return false; }
+                    k = k + 1;
+                }
+                i = i + 6;
+            } else if e == 34 || e == 92 || e == 47 || e == 98 || e == 102 || e == 110 || e == 114 || e == 116 {
+                i = i + 2;
+            } else {
+                return false;
+            }
+        } else {
+            i = i + 1;
+        }
+    }
+    return true;
+}
+
 @form(vec)
 locus __StdApiRpcEntries {
     capacity { heap items of __StdApiRpcEntry; }

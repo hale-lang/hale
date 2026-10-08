@@ -1069,7 +1069,12 @@ wire: read as an `Int` and converted, a quantity by its denomination,
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
 refused by law 5. Decoding is strict: a value of the wrong JSON kind is
-`wrong_type`, a
+`wrong_type`
+(a payload that is one scalar is that scalar's complete JSON token: `true`
+or `false` for a `Bool`, one quoted and correctly escaped string for a
+`String`, a number for a `Float`, a number with no fraction or exponent for
+an `Int` and for the integer a unit scalar counts; anything else is
+refused before the request is queued), a
 missing field without a literal default is `missing_field`, and a
 handler only ever sees a decoded value. A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),

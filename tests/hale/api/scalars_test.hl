@@ -1,0 +1,113 @@
+// GH #1417 (R2a) — a scalar payload is its complete JSON token.
+//
+// The generated decoder of a scalar handler (`Bool`, `String`, `Int`,
+// `Float`, a quantity or an identity of the unit dialect) checks the kind of
+// the whole token before it converts it, and the same decoder is the check
+// that runs before a request is queued. A token of another kind is refused
+// `malformed` with the reason `wrong_type`, and the handler never runs; a
+// valid token, with the whitespace JSON allows round it, still runs.
+
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+
+api Scalars {
+    rpc Sink::flag;
+    rpc Sink::text;
+    rpc Sink::count;
+    rpc Sink::ratio;
+    rpc Sink::price;
+    rpc Sink::order;
+}
+
+locus Sink {
+    params { entered: Int = 0; last: String = ""; }
+    fn flag(b: Bool) -> Bool {
+        self.entered = self.entered + 1;
+        return b;
+    }
+    fn text(s: String) -> String {
+        self.entered = self.entered + 1;
+        self.last = s;
+        return s;
+    }
+    fn count(n: Int) -> Int {
+        self.entered = self.entered + 1;
+        return n;
+    }
+    fn ratio(x: Float) -> Float {
+        self.entered = self.entered + 1;
+        return x;
+    }
+    fn price(m: Money) -> Money {
+        self.entered = self.entered + 1;
+        return m;
+    }
+    fn order(o: OrderId) -> OrderId {
+        self.entered = self.entered + 1;
+        return o;
+    }
+}
+
+main locus Desk {
+    params {
+        sink: Sink = Sink { };
+        f: std::api::test::Rpc = std::api::test::Rpc { };
+    }
+
+    fn refused(id: Int, member: String, body: String, what: String) {
+        let before = self.sink.entered;
+        self.f.call_as_peer(id, member, body, 1000);
+        std::test::assert_eq_str(self.f.await_outcome(id, 2000), "refusal:malformed", what);
+        std::test::assert(std::str::contains(self.f.line(id), "wrong_type"), what + ": by its reason");
+        std::time::sleep(5ms);
+        std::test::assert_eq_int(self.sink.entered, before, what + ": the handler never ran");
+    }
+
+    fn ran(id: Int, member: String, body: String, value: String, what: String) {
+        let before = self.sink.entered;
+        self.f.call_as_peer(id, member, body, 1000);
+        std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
+        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value");
+        std::test::assert_eq_int(self.sink.entered, before + 1, what + ": the handler ran once");
+    }
+
+    run() {
+        let h = api::serve(Scalars, self.f, as: "scalars", receivers: { Sink: self.sink }, bound: 8, on_full: refuse);
+
+        // ---- the wrong kind is refused before the handler ----
+        self.refused(1, "Sink::flag", "123", "a number to a Bool");
+        self.refused(2, "Sink::flag", "\"true\"", "a string to a Bool");
+        self.refused(3, "Sink::flag", "tru", "a word that is not a Bool");
+        self.refused(4, "Sink::text", "123", "a number to a String");
+        self.refused(5, "Sink::text", "true", "a Bool to a String");
+        self.refused(6, "Sink::text", "\"open", "a string left open");
+        self.refused(7, "Sink::text", "\"a\" \"b\"", "two strings");
+        self.refused(8, "Sink::text", "\"bad \\q escape\"", "an escape JSON does not define");
+        self.refused(9, "Sink::count", "\"7\"", "a string to an Int");
+        self.refused(10, "Sink::count", "1.5", "a float to an Int");
+        self.refused(11, "Sink::count", "1e3", "an exponent to an Int");
+        self.refused(12, "Sink::count", "007", "a leading zero");
+        self.refused(13, "Sink::ratio", "\"1.5\"", "a string to a Float");
+        self.refused(14, "Sink::ratio", "1.", "a number with no fraction digits");
+        self.refused(15, "Sink::price", "true", "a Bool to a quantity");
+        self.refused(16, "Sink::price", "2.5", "a float to a quantity");
+        self.refused(17, "Sink::order", "\"41\"", "a string to an identity");
+
+        // ---- the valid controls run ----
+        self.ran(20, "Sink::flag", "true", "true", "true");
+        self.ran(21, "Sink::flag", " false ", "false", "false with the whitespace JSON allows");
+        self.ran(22, "Sink::text", "\"hello\"", "\"hello\"", "a String");
+        self.ran(23, "Sink::text", "\"a\\nb\\u0041\"", "\"a\\nbA\"", "a String with its escapes");
+        std::test::assert_eq_str(self.sink.last, "a\nbA", "and the handler saw them unescaped");
+        self.ran(24, "Sink::text", "\"\"", "\"\"", "the empty String");
+        self.ran(25, "Sink::count", "-17", "-17", "an Int");
+        self.ran(26, "Sink::ratio", "1.5", "1.5", "a Float");
+        self.ran(27, "Sink::ratio", "2", "2", "an integer is a number, so a Float");
+        self.ran(28, "Sink::ratio", "-2.5e1", "-25", "a Float with an exponent");
+        self.ran(29, "Sink::price", "250", "250", "a quantity by its count");
+        self.ran(30, "Sink::order", "41", "41", "an identity by its count");
+    }
+}
+
+fn main() { Desk { }; }

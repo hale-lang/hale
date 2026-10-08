@@ -305,20 +305,26 @@ impl Codec<'_> {
             TypeClass::Struct { name, .. } => {
                 format!("let {var} = __api_decode_{name}({body}) or {{ {bail} }};\n")
             }
-            TypeClass::Prim(PrimType::Int) => {
-                format!("let {var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n")
-            }
-            TypeClass::Prim(PrimType::Float) => {
-                format!("let {var} = std::str::parse_float(std::str::trim({body})) or {{ {bail} }};\n")
-            }
-            TypeClass::Prim(PrimType::Bool) => format!("let {var} = std::str::trim({body}) == \"true\";\n"),
+            // a scalar payload is its complete JSON token of the type's kind
+            // (the runtime's `__api_json_is_*`), checked before it is converted
+            TypeClass::Prim(PrimType::Int) => format!(
+                "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
+            ),
+            TypeClass::Prim(PrimType::Float) => format!(
+                "if !__api_json_is_float(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::parse_float(std::str::trim({body})) or {{ {bail} }};\n"
+            ),
+            TypeClass::Prim(PrimType::Bool) => format!(
+                "if !__api_json_is_bool(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::trim({body}) == \"true\";\n"
+            ),
             TypeClass::Prim(PrimType::String) => format!(
-                "let __t_{var} = std::str::trim({body});\nlet {var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\n"
+                "let __t_{var} = std::str::trim({body});\nif !__api_json_is_string(__t_{var}) {{ {bail} }}\nlet {var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\n"
             ),
             TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
                 let c = &self.convs[name];
                 let n = format!("__n_{var}");
-                let ins = format!("let {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n");
+                let ins = format!(
+                    "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
+                );
                 match c {
                     Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
