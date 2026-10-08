@@ -58,9 +58,14 @@ locus Api {
 
     // A reply line, waited for up to a minute.
     fn ask(line: String) -> String {
+        return self.ask_for(line, 300);
+    }
+
+    // A reply line, waited for `ticks` receive timeouts (200 ms each).
+    fn ask_for(line: String, ticks: Int) -> String {
         self.stream.send(line + "\n") or discard;
         let mut i = 0;
-        while i < 300 {
+        while i < ticks {
             let nl = std::str::index_of(self.buf, "\n");
             if nl >= 0 {
                 let got = self.buf[0..nl];
@@ -177,13 +182,32 @@ locus App {
         let head = Proc { };
         let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" LOTUS_API=\"$4\" HALE_DNA_RPC_SOCKET=\"$5\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + sock + "\n" + rpc;
         std::test::assert(head.start(argv), "the composed head started");
-        let surface = Api { };
-        let up = surface.connect(rpc);
+        let first = Api { };
+        let up = first.connect(rpc);
         std::test::assert(up, "connected to the composed head's surface: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
 
         // ---- unseated: the read is ada's, the durable command is not
-        let d0 = surface.ask("{\"describe\":true}");
+        // The first describe waits for the head to answer, as the seated one
+        // below waits for the record: a head that is still booting (a loaded
+        // runner) has taken the connection but answers nothing yet, and a
+        // question put to it then may never be answered. Each probe is a
+        // connection of its own, bounded, so a late answer to an abandoned
+        // probe cannot be read as the next call's; the first non-empty
+        // description is the one asserted.
+        let mut d0 = "";
+        let mut probes = 0;
+        while len(d0) == 0 && probes < 12 {
+            let probe = Api { };
+            if probe.connect(rpc) {
+                d0 = probe.ask_for("{\"describe\":true}", 50);
+            }
+            probes = probes + 1;
+        }
+        std::test::assert(len(d0) > 0, "unseated: the surface answered a describe: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
         std::test::assert_eq_str(members_of(d0), "Commands::lookup", "unseated: the surface lists the read only: " + d0);
+        // the calls below go over a connection made once the head answers
+        let surface = Api { };
+        std::test::assert(surface.connect(rpc), "connected to the answering surface");
         let denied = surface.ask(friction("u-1", "f-unseated", "the hat named no tool grant"));
         std::test::assert(has(denied, "\"id\":\"u-1\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "unseated: a friction entry is refused, naming position: " + denied);
         std::time::sleep(1200ms);
