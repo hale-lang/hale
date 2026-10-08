@@ -1,7 +1,11 @@
 name: tests
 
-# Runs the full workspace test suite on every pull request targeting
-# main and on every push to main. Linux-only at v1; the macos
+# Runs the workspace test suite on every pull request targeting
+# main and on every push to main. A pull request runs the DNA and
+# face jobs only when its diff can reach DNA (`scope.dna`, from
+# scripts/ci-scope.sh); the merge group runs every job, and a push to
+# main runs the DNA and face jobs whatever its diff, so a stack is
+# tested as the combination it becomes. Linux-only at v1; the macos
 # workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
@@ -50,6 +54,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests the combination a stack becomes, with
+  # every job: the scope outputs are forced true on this event.
+  merge_group:
   workflow_dispatch:
 
 # Cancel an in-flight run on the same branch when a new push lands;
@@ -110,6 +117,10 @@ jobs:
       # those tests live in hale-syntax, hale-types and one hale-cli
       # binary, and `quick` + `docs` run exactly those.
       code: ${{ steps.classify.outputs.substrate }}
+      # Whether the diff can reach what the DNA and face jobs run
+      # (scripts/ci-scope.sh lists the paths). Those jobs run on a
+      # pull request only when this is true.
+      dna: ${{ steps.classify.outputs.dna }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -117,6 +128,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "merge group: every job runs"
+            { echo "substrate=true"; echo "dna=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           base=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
@@ -136,26 +152,18 @@ jobs:
             base="$(git merge-base "$default" HEAD 2>/dev/null || true)"
             [ -n "$base" ] && echo "no before-sha; using merge-base with $default: $base"
           fi
-          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "no usable base — running everything"
-            echo "substrate=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          changed=$(git diff --name-only "$base"...HEAD)
-          echo "changed files:"; echo "$changed"
-          # Paths that cannot reach the runtime, the models, or codegen.
-          prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents|unreleased)/|\.md$'
-          # Counted, not `grep -q`: an empty match makes grep exit 1,
-          # so the exit code alone cannot distinguish "no code files"
-          # from "grep failed" — and getting that backwards would skip
-          # the substrate jobs on a runtime change.
-          code=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
-          echo "non-prose files: ${code:-unknown}"
-          if [ "${code:-1}" -gt 0 ]; then
-            echo "substrate=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prose-only diff — skipping sanitizer + model-checker jobs"
+          # scripts/ci-scope.sh does the classifying (run it by hand:
+          # `scripts/ci-scope.sh <base> HEAD`); an unusable base or an
+          # empty diff comes back as everything-true.
+          verdict="$(bash scripts/ci-scope.sh "$base" HEAD)"
+          echo "$verdict"
+          if printf '%s\n' "$verdict" | grep -qx 'prose=true'; then
+            echo "prose-only diff, skipping sanitizer + model-checker jobs"
             echo "substrate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "substrate=true" >> "$GITHUB_OUTPUT"
           fi
+          printf '%s\n' "$verdict" | grep '^dna=' >> "$GITHUB_OUTPUT"
 
   # The fast lane: everything that needs no LLVM, in about two
   # minutes. hale-syntax, hale-types, hale-model, hale-stdlib and
@@ -212,7 +220,7 @@ jobs:
   docs:
     name: docs (embedded spec)
     needs: scope
-    if: needs.scope.outputs.code != 'true'
+    if: github.event_name == 'merge_group' || needs.scope.outputs.code != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -609,7 +617,7 @@ jobs:
   dna:
     name: dna ${{ matrix.part }}/4
     needs: scope
-    if: needs.scope.outputs.code == 'true'
+    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-latest
@@ -770,7 +778,7 @@ jobs:
   face-api:
     name: face (DNA API + head)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
+    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     runs-on: ubuntu-latest
     # GH #985: the API's Knowledge tests migrate a record into this
     # Postgres with the owner's DSN and read it as the head; without it
@@ -920,7 +928,7 @@ jobs:
   face-browser:
     name: face (browser, ${{ matrix.shard }}/2)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
+    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
