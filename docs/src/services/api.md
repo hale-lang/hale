@@ -177,10 +177,10 @@ let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders:
 
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
-standard library ships two today. `std::api::test::Rpc` has no socket: a
+standard library ships three today. `std::api::test::Rpc` has no socket: a
 test hands it requests and reads the answers, through the same
 admission, dispatch and completion every transport uses. `unix::Rpc` is
-a Unix socket (`http::Rpc` follows). The sources are fields of the
+a Unix socket and `http::Rpc` an HTTP listener. The sources are fields of the
 transport's literal, `principals:` for who a bearer token is and
 `roles:` for who holds a role; grants belong to the source the serve
 site names, never to a role's name, so one program can serve a surface
@@ -254,6 +254,77 @@ failed. A receiver that is draining, restarting or replaced is
 handler that wants to know which exposure a call came through, and which
 generation of its receiver admitted it, declares `ctx:
 std::api::ServedContext` where it would declare `std::api::Context`.
+
+### Serving over HTTP
+
+`http::Rpc` takes a `bind:` (`host:port`), a `codec:` (`json`, the one v1
+has), a `principals:` and a `roles:`. A caller is a bearer: the request
+carries `Authorization: Bearer <token>`, the `principals:` source says who
+the token is (a name it does not know is nobody, and the request is
+refused `unauthenticated`), and the `roles:` source says what that name
+holds. The witness serves `Public` this way, twice, to two sets of people
+on two ports:
+
+```hale,fragment
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        public_roles: Grants = Grants { trader: "alice" };
+        partner_roles: Grants = Grants { trader: "carol" };
+        orders: Orders = Orders { };
+        partner_orders: Orders = Orders { next: 9001 };
+    }
+    run() {
+        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+        let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        public.stop();
+        partner.stop();
+    }
+}
+```
+
+The listener is bound when the program boots (an address it cannot bind
+stops the program with a diagnostic) and, like the Unix socket's, runs on
+a pool of its own, so the serving locus is the main locus. A call is
+`POST /call/<member>` whose body is the payload, with the surface digest
+you generated against in `Hale-Surface-Digest` (it is optional); the
+outcome is the status and the body of the contract, one request to a
+connection:
+
+```text
+POST /call/Orders::place HTTP/1.1
+Authorization: Bearer t-alice
+Content-Type: application/json
+Hale-Surface-Digest: fnv1a64:a8930d6e7998e986
+
+{"symbol": "ACME", "qty": 10, "limit": 12500}
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"order":41,"notional":125000}
+```
+
+A handler's own error is `422` with the error as the body; a refusal is
+`400`, `401`, `403`, `409`, `429` or `503` with `{"refusal": {"kind": …,
+"reason": …}}` (a digest mismatch also carries the `served` digest and an
+unauthorized call the roles it `requires`); a handler that violated is
+`500` and `{"refusal": {"kind": "server"}}`. `GET /.description` answers
+the caller's whole description, from the same rows and the same sources the
+next call is checked against. A request that is neither is refused
+`malformed`; one that is cut off, or whose client goes away, ends its
+connection alone, and the listener and the other connections go on.
+`public.stop()` refuses what is queued, answers what is executing and
+closes the listener after the replies.
 
 The `bindings { api: … }` entry below is the structural path to a socket
 and still works as it did; `api::serve` is the new one.
