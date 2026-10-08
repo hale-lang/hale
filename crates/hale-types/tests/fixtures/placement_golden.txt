@@ -580,7 +580,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#5a0c3dee
+== crates/hale-stdlib/hl/api_rpc.hl#bd81d62b
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1240,7 +1240,7 @@ row	Desk@literal1.svc	Restarter	pool:work	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	Poisoned	on main
 dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on pool:__api_unix
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
