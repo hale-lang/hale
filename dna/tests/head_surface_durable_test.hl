@@ -1,0 +1,232 @@
+// dna/tests/head_surface_durable_test.hl — the durable command runs through
+// the composed head's surface (GH #1417 R3).
+//
+// The standalone head composes no provider, so its surface answers
+// `commands_unsupported` (head_roles_test shows the handler is reached). The
+// practice_review head composes the shared native Governance service and
+// serves the same two operations as `HeadCommands` over `unix::Rpc` on a
+// socket of its own (`HALE_DNA_RPC_SOCKET`), beside the structural binding.
+// This fixture builds that head, gives it a record whose graph names the
+// positions and nobody holds one, and maps this process's uid to ada:
+//
+//   * unseated, ada is listed the read only, and a friction entry is refused
+//     `unauthorized` naming `position`; nothing lands in the record;
+//   * once the record seats ada at `position:agent` the description follows
+//     (the exposure's roles read the record) and the same friction entry
+//     goes through: the surface answers it, a `friction.filed` row is in the
+//     record (read back through the journal), and the surface's `lookup`
+//     returns the command by the request id the caller minted.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The composed head's binary: the one the suite names, else built from the
+// source tree here, out of the tree, into the fixture's scratch.
+fn head_binary(scratch: String) -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
+    let out = scratch + "/practice_review";
+    let built = dna::run_tool_timeout(600, toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out);
+    std::test::assert_eq_int(built.code, 0, "the composed head builds: " + built.stderr);
+    return out;
+}
+
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 30s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+
+    // A reply line, waited for up to a minute.
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 300 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+}
+
+fn has(s: String, needle: String) -> Bool {
+    return std::str::contains(s, needle);
+}
+
+// The member names a surface's served description lists, space-separated.
+@unbounded
+fn members_of(line: String) -> String {
+    let value = std::json::find_field_raw(line, "value");
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(value, "members"));
+    while !it.done {
+        let name = std::json::find_string_field(it.element, "name");
+        out = out + (if len(out) > 0 { " " } else { "" }) + name;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// A friction entry on the surface's wire, filed as `position:agent`.
+fn friction(id: String, request: String, text: String) -> String {
+    return "{\"id\":\"" + id + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"" + request + "\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"\",\"text\":\"" + text + "\"}}";
+}
+
+// The `friction.filed` rows of the record whose body names `text`.
+@unbounded
+fn filed_rows(repo: String, text: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let moved = j.refresh();
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "friction.filed" && has(e.body, text) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        argv: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        self.argv = argv;
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn alive() -> Bool {
+        return (std::process::try_wait(self.child) or - 3) == -2;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+locus App {
+    params { repo: String = ""; }
+    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+        std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
+    }
+    run() {
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let scratch = dna::scratch_root("head-surface-durable");
+        // whatever this fixture starts under its scratch stops when it does
+        // — on a failed assertion too
+        dna::reap_on_exit(scratch);
+        let binary = head_binary(scratch);
+
+        // A record: the positions named, nobody seated, no local trust; this
+        // uid is ada.
+        self.repo = scratch + "/rec";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/dna\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git config --add dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
+        std::test::assert_eq_int(made.code, 0, "a record of its own: " + made.stderr);
+        let j = dna::GitJournal { repo: self.repo };
+        self.append(j, "graph.node", ops::graph_node_id("position", "agent"), ops::graph_node_body("position", "agent", "", ""));
+        self.append(j, "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
+        let record = dna::GitRecord { repo: self.repo };
+        let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+        std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
+
+        let sock = scratch + "/head.sock";
+        let rpc = scratch + "/head.rpc";
+        let port = dna::free_port(0);
+        let head = Proc { };
+        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" LOTUS_API=\"$4\" HALE_DNA_RPC_SOCKET=\"$5\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + sock + "\n" + rpc;
+        std::test::assert(head.start(argv), "the composed head started");
+        let surface = Api { };
+        let up = surface.connect(rpc);
+        std::test::assert(up, "connected to the composed head's surface: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
+
+        // ---- unseated: the read is ada's, the durable command is not
+        let d0 = surface.ask("{\"describe\":true}");
+        std::test::assert_eq_str(members_of(d0), "Commands::lookup", "unseated: the surface lists the read only: " + d0);
+        let denied = surface.ask(friction("u-1", "f-unseated", "the hat named no tool grant"));
+        std::test::assert(has(denied, "\"id\":\"u-1\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "unseated: a friction entry is refused, naming position: " + denied);
+        std::time::sleep(1200ms);
+        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 0, "and nothing landed in the record");
+
+        // ---- the record seats ada; the surface follows it
+        let e = ops::GraphEdge { kind: "holds" };
+        e.member("position", ops::graph_node_id("position", "agent"));
+        e.member("holder", "ada");
+        self.append(j, "graph.edge", e.id(), e.body());
+        let mut listed = surface.ask("{\"describe\":true}");
+        let mut tries = 0;
+        while tries < 40 && !has(listed, "Commands::file_friction") {
+            std::time::sleep(200ms);
+            listed = surface.ask("{\"describe\":true}");
+            tries = tries + 1;
+        }
+        std::test::assert_eq_str(members_of(listed), "Commands::file_friction Commands::lookup", "seated: the description follows the record");
+
+        // ---- seated: the durable command goes through the surface
+        let filed = surface.ask(friction("s-1", "f-seated", "the hat named no tool grant"));
+        std::test::assert(has(filed, "\"id\":\"s-1\",\"ok\":true"), "seated: the friction entry is answered: " + filed);
+        std::test::assert(!has(filed, "commands_unsupported") && !has(filed, "\"kind\":\"unauthorized\""), "by the composed provider, not the standalone one: " + filed);
+        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 1, "and it is in the record: one friction.filed row");
+
+        // the surface's own read finds the command by the request id
+        let looked = surface.ask("{\"id\":\"s-2\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-seated\"}}");
+        std::test::assert(has(looked, "\"id\":\"s-2\",\"ok\":true") && has(looked, "f-seated") && !has(looked, "commands_unsupported"), "lookup returns the command by its request id: " + looked);
+        let missing = surface.ask("{\"id\":\"s-3\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-never\"}}");
+        std::test::assert(!has(missing, "f-seated") && !has(missing, "commands_unsupported"), "and not a request that was never made: " + missing);
+
+        // filing it again by the same request id is the same command, not a second row
+        let again = surface.ask(friction("s-4", "f-seated", "the hat named no tool grant"));
+        std::test::assert(has(again, "\"id\":\"s-4\",\"ok\":true"), "the same request again is answered: " + again);
+        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 1, "and files nothing more");
+
+        head.stop();
+        std::io::fs::unlink(sock) or discard;
+        std::io::fs::unlink(rpc) or discard;
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() {
+    App { };
+}

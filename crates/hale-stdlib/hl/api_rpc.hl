@@ -1767,7 +1767,7 @@ locus __StdApiHttpListener {
         let mut port = -1;
         if colon >= 0 {
             if colon > 0 { host = self.bind[0..colon]; }
-            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or -1;
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or - 1;
         }
         if port >= 0 && port <= 65535 {
             self.fd = std::io::tcp::__listen_socket(host, port);
@@ -1802,7 +1802,7 @@ locus __StdApiHttpListener {
         }
     }
     accept(c: __StdApiHttpPeer) { }
-    release(c: __StdApiHttpPeer) { }
+    release (c: __StdApiHttpPeer) { }
     fn on_ctl(o: __StdApiHttpOut) {
         if o.kind == 3 { self.started = true; }
         if o.kind == 1 {
