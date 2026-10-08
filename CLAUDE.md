@@ -86,6 +86,16 @@ so two shapes are invisible to it and land on whoever types
   `ignore` only for real Rust that cannot stand alone, with the
   reason beside it.
 
+**A pull request runs the DNA and face jobs only when its diff can
+reach DNA.** `scripts/ci-scope.sh <base> <head>` prints `prose=` and
+`dna=`; `dna` is true for a change under `dna/`, `iris/`, any crate
+(its tests apart, except the DNA suite), `Cargo.toml`/`Cargo.lock`,
+the workflows or the scripts those jobs run, and also when the base is
+unknown or the diff empty. `scripts/ci-scope-test.sh` pins it on
+synthetic diffs. A PR's checks are that scoped suite; the merge queue
+runs the full suite on the merge group before anything reaches `main`,
+and `main`'s own push run is the full suite as well.
+
 The `parity` job in `.github/workflows/tests.yml` gates both:
 the workspace doctests, plus the test binaries that share
 process-wide state, run under libtest's threads.
