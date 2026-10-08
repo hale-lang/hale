@@ -106,7 +106,7 @@
             }
           },
           "503": {
-            "description": "refusal: shutting_down",
+            "description": "refusal: shutting_down, unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -224,7 +224,7 @@
             }
           },
           "503": {
-            "description": "refusal: shutting_down",
+            "description": "refusal: shutting_down, unavailable",
             "content": {
               "application/json": {
                 "schema": {

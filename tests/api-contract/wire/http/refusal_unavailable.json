@@ -1,0 +1,33 @@
+{
+  "wire": 1,
+  "transport": "http",
+  "exposure": "Public@fnv1a64:a8930d6e7998e986/public",
+  "outcome": "refusal",
+  "kind": "unavailable",
+  "request": {
+    "method": "POST",
+    "path": "/call/Orders::place",
+    "headers": {
+      "Authorization": "Bearer t-alice",
+      "Content-Type": "application/json",
+      "Hale-Surface-Digest": "fnv1a64:a8930d6e7998e986"
+    },
+    "body": {
+      "symbol": "ACME",
+      "qty": 10,
+      "limit": 12500
+    }
+  },
+  "reply": {
+    "status": 503,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "refusal": {
+        "kind": "unavailable",
+        "reason": "the receiver of Orders::place is unavailable; the call did not run"
+      }
+    }
+  }
+}

@@ -71,7 +71,8 @@
         "unauthenticated",
         "unauthorized",
         "full",
-        "shutting_down"
+        "shutting_down",
+        "unavailable"
       ]
     },
     "server_error": {

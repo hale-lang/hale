@@ -9,11 +9,12 @@ A program says what it exposes in rows: a **surface** is a table of
 operations, each naming a handler and the roles a caller must hold
 (`spec/api.md`). The compiler checks the rows, folds each surface into
 a contract digest and prints what a caller can learn, without running
-anything. Serving a surface on a transport is the next step of the
-track (`api::serve`, described below and not yet built); until then the
-older path, one `api:` binding entry that puts everything a program
-declares on its bus on a Unix socket, is how a program is served, and
-the rest of this chapter documents it. It is the path the surfaces
+anything. Serving a surface is `api::serve`, described below: it runs
+today over an in-process test transport, and the Unix socket and HTTP
+transports are the next steps of the track. Until they land, the older
+path, one `api:` binding entry that puts everything a program declares
+on its bus on a Unix socket, is how a program is served over a socket,
+and the rest of this chapter documents it. It is the path the surfaces
 retire (step R4 of GH #1417).
 
 ## Surfaces
@@ -165,19 +166,47 @@ $ hale check --api desk.hl --surface Public --json-schema
 $ hale check --api desk.hl --surface Public --mcp
 ```
 
-### Serving, next
+### Serving
 
 A serve site puts one surface on one transport for the instances that
 answer it:
 
 ```hale,fragment
-let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
-Today the check reads a serve site as far as a description names it,
-the surface, the listener, the sources, the receivers and the queue,
-and a build refuses the program: nothing serves it yet. Until it does,
-the binding below is how a program is served.
+The transport is a locus that implements `std::api::Rpc`: it listens,
+frames a request, and writes each outcome in its protocol's terms. The
+one the standard library ships today is `std::api::test::Rpc`, which
+has no socket: a test hands it requests and reads the answers, through
+the same admission, dispatch and completion every transport uses
+(`http::Rpc` and `unix::Rpc` follow). The sources are fields of the
+transport's literal, `principals:` for who a bearer token is and
+`roles:` for who holds a role; grants belong to the source the serve
+site names, never to a role's name, so one program can serve a surface
+twice under two sources.
+
+The serve site makes an *exposure* when its locus is born, and the
+call is the handle: `public.stop()` stops accepting, refuses what is
+queued, lets what is executing finish and releases the listener, and
+the locus's own teardown does the same if you never call it.
+`receivers:` names the instance of each locus the surface's rows
+call; when the serving locus holds exactly one instance of a type, it
+is inferred, and two with no binding is an error naming both. A
+request is checked in a fixed order before the handler's state can tell
+it arrived (who is calling, the surface digest, the member, the roles
+the row requires, the shape of the payload, then the exposure's
+bound), and the caller sees one of five outcomes: the result, the
+handler's own error, a refusal (which says whether the call ran: only
+`unavailable` and `shutting_down` mean it did not), a server error when
+a handler that may violate did, or a broken connection. A handler that
+may violate is declared `fallible(ClosureViolation)`; the owner's
+`on_failure` runs first and the caller is told only that the server
+failed. A receiver that is draining, restarting or replaced is
+`unavailable`, per receiver: the exposure's other members serve on.
+
+Until the socket transports land, the binding below is how a program is
+served over a socket.
 
 ## The structural path
 
