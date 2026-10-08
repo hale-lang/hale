@@ -890,15 +890,17 @@ pub fn surface_rows(
 }
 
 /// The socket transport a serve site names (`"unix::Rpc"`, `"http::Rpc"`,
-/// `"ws::Hub"` or `"udp::Hub"`): a literal written at the site, or a param
-/// the locus holds (`self.rpc`) whose declared type, or whose literal
-/// default, is one of them.
+/// `"mcp::Rpc"`, `"ws::Hub"` or `"udp::Hub"`): a literal written at the
+/// site, or a param the locus holds (`self.rpc`) whose declared type, or
+/// whose literal default, is one of them.
 fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static str> {
     let kind_of = |path: &hale_syntax::ast::QualifiedName| {
         if crate::rpc_expand::is_unix_rpc(path) {
             Some("unix::Rpc")
         } else if crate::rpc_expand::is_http_rpc(path) {
             Some("http::Rpc")
+        } else if crate::rpc_expand::is_mcp_rpc(path) {
+            Some("mcp::Rpc")
         } else if crate::hub_expand::is_ws_hub(path) {
             Some("ws::Hub")
         } else if crate::hub_expand::is_udp_hub(path) {
@@ -969,8 +971,8 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
                     site.span,
                     format!(
                         "`api::serve` over `{transport}`: this compiler serves a surface over \
-                         `std::api::test::Rpc`, the in-process transport, `unix::Rpc`, or a transport the program declares; the \
-                         other socket transports follow (spec/api.md § The `Rpc` interface)"
+                         `std::api::test::Rpc`, the in-process transport, `unix::Rpc`, `http::Rpc`, `mcp::Rpc`, `ws::Hub`, `udp::Hub`, or a \
+                         transport the program declares; the other transports follow (spec/api.md § The `Rpc` interface)"
                     ),
                 ));
             }
