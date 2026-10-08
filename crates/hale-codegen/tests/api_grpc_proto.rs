@@ -29,7 +29,7 @@ use super::api_grpc::h2_client::Client;
 use super::api_grpc::{b64, call, code_of, description_over_grpc, digest_of, field, pct, start, token_of, varint, DIGEST, JSON, WAIT};
 use super::api_grpc::http_rpc::{contract_dir, recording, Recording};
 
-const PROTO: &str = "application/grpc+proto";
+pub(crate) const PROTO: &str = "application/grpc+proto";
 const BARE: &str = "application/grpc";
 
 // ---- protobuf, written out ----
@@ -81,7 +81,7 @@ fn layout(message: &str) -> Vec<(&'static str, u32, Kind)> {
 
 /// A flat JSON object as the message `message`: the fields it holds, in
 /// number order, each as its wire type.
-fn encode(json: &str, message: &str) -> Vec<u8> {
+pub(crate) fn encode(json: &str, message: &str) -> Vec<u8> {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or_else(|e| panic!("{json}: {e}"));
     let mut out = Vec::new();
     for (name, no, kind) in layout(message) {
@@ -96,7 +96,7 @@ fn encode(json: &str, message: &str) -> Vec<u8> {
 }
 
 /// A gRPC message of bytes.
-fn framed(body: &[u8]) -> Vec<u8> {
+pub(crate) fn framed(body: &[u8]) -> Vec<u8> {
     let mut m = vec![0];
     m.extend((body.len() as u32).to_be_bytes());
     m.extend_from_slice(body);
@@ -104,7 +104,7 @@ fn framed(body: &[u8]) -> Vec<u8> {
 }
 
 /// `google.rpc.Status { code, message, details: [Any { type_url, value }] }`, base64.
-fn status_details(code: usize, message: &str, type_url: &str, value: &[u8]) -> String {
+pub(crate) fn status_details(code: usize, message: &str, type_url: &str, value: &[u8]) -> String {
     let mut any = field(0x0a, type_url.as_bytes());
     any.extend(field(0x12, value));
     let mut status = vec![0x08];
@@ -478,6 +478,21 @@ const REFLECTION: &str = "/grpc.reflection.v1.ServerReflection/ServerReflectionI
 
 fn ask(kind: request::Kind) -> ReflectionRequest {
     ReflectionRequest { host: String::new(), kind: Some(kind) }
+}
+
+/// The services the reflection service lists.
+pub(crate) fn reflected_services(c: &mut Client, stream: u32, token: &str) -> Vec<String> {
+    let got = reflect(c, stream, Some(token), &[ask(request::Kind::ListServices(String::new()))], true);
+    match &got[0].kind {
+        Some(response::Kind::ListServicesResponse(s)) => s.service.iter().map(|s| s.name.clone()).collect(),
+        other => panic!("not a service list: {other:?}"),
+    }
+}
+
+/// One protobuf call: `json` (a flat object) as the message `request`, framed.
+pub(crate) fn unary_pb(c: &mut Client, stream: u32, path: &str, token: Option<&str>, json: &str, request: &str) -> super::api_grpc::h2_client::Response {
+    call(c, stream, path, token, Some(DIGEST), PROTO, &framed(&encode(json, request)));
+    c.response(stream, WAIT)
 }
 
 /// The messages of a response body, whole.

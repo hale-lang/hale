@@ -1348,6 +1348,29 @@ fn an_imported_type_is_named_by_its_path_under_the_alias() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The corpus's own served surface, the DNA's head commands, exports a
+/// `.proto` (every shape its rows name has a proto3 encoding), the same bytes
+/// twice, with a message for each of its records and an rpc for each member.
+#[test]
+fn the_dna_head_commands_surface_exports_a_proto() {
+    let program = contract_dir().join("../../dna/api");
+    let (a, b) = (scratch("dna_proto_a"), scratch("dna_proto_b"));
+    export_to(&program, "HeadCommands", &a);
+    export_to(&program, "HeadCommands", &b);
+    let proto = std::fs::read_to_string(a.join("HeadCommands.proto")).unwrap();
+    assert_eq!(proto, std::fs::read_to_string(b.join("HeadCommands.proto")).unwrap(), "two runs, the same bytes");
+    assert!(proto.contains("service HeadCommands {"), "{proto}");
+    let json: Value = serde_json::from_str(&std::fs::read_to_string(a.join("HeadCommands.json-schema.json")).unwrap()).unwrap();
+    for name in json["$defs"].as_object().unwrap().keys() {
+        assert!(proto.contains(&format!("\nmessage {} {{", name.replace("::", "_"))), "a message for {name}");
+    }
+    for name in json["x-hale-members"].as_object().unwrap().keys() {
+        assert!(proto.contains(&format!("  rpc {}(", name.replace("::", "__"))), "an rpc for {name}");
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
 /// The rules of the protobuf form over shapes the witness does not use: a
 /// scalar request, response and error (carried in one-field messages), a row
 /// that takes and returns nothing, a field with a default, a `json:` tag, a

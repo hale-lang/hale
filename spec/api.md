@@ -772,7 +772,10 @@ no primitive to read the process's own standard input as a stream (a
 `grpc::Rpc` (`std::api::grpc::Rpc`, R7) serves an exposure over gRPC, unary
 calls only, on cleartext HTTP/2 (prior knowledge: no TLS, no ALPN, no
 upgrade). It is written at a serve site, or held as a param and named, with
-the fields `bind` (`host:port`), `codec` (`json`, the one codec v1 has),
+the fields `bind` (`host:port`), `codec` (`json`, the one value v1 has: the
+row's JSON codec, which `application/grpc+json` speaks; protobuf is the
+transport's own second codec, served beside it and chosen per request by the
+content type, § The protobuf codec),
 `principals` (the bearer source, required) and `roles` (the role source):
 
 ```hale,fragment
@@ -807,20 +810,23 @@ listen on …`, exit code 2), nothing is accepted until the exposure is attached
 to the bus, and a serve over `grpc::Rpc` from a locus that is not the main
 locus is refused, written at the site or held as a param.
 
-- **Framing is a call.** `POST /<Surface>/<member>`, the member written
-  `Orders.place` (the `::` as `.`; `Orders::place`, or `Orders%3A%3Aplace`,
-  is the same member). The first segment is the exposure's surface: another
+- **Framing is a call.** `POST /<Surface>/<rpc>`, the rpc the generated
+  `.proto` names (§ The protobuf codec): the member written as an MCP tool is,
+  `Orders__place` for `Orders::place`. The older spellings name the same
+  member: `Orders.place` (the `::` as `.`), `Orders::place` and
+  `Orders%3A%3Aplace`. The first segment is the exposure's surface: another
   service is `malformed`. `content-type` is `application/grpc` or
-  `application/grpc+json`, and the response is answered in the one it was
-  asked in. The messages are the codec's, which is JSON, so a request in
-  `application/grpc+proto` (or any other suffix, or another media type) is
-  refused `malformed` with the reason, and a bare `application/grpc` is
-  taken as JSON; a client that sends protobuf there gets the decode's
-  refusal. A call is one message: a compression flag (0), four bytes of
-  length and the JSON. A flag of 1, a `grpc-encoding` other than `identity`,
-  a prefix that is cut off, an empty message, no message or more than one, a
-  message of more than 1048576 bytes and text that is not text are `malformed`
-  (`INVALID_ARGUMENT`), and the stream is answered. The bearer is the
+  `application/grpc+proto` (protobuf) or `application/grpc+json` (the row's
+  JSON), and the response is answered in the codec it was asked in, under the
+  same content type. Any other suffix, or another media type, is refused
+  `malformed` with the reason. A call is one message: a compression flag (0),
+  four bytes of length and the message. A flag of 1, a `grpc-encoding` other
+  than `identity`, a prefix that is cut off, no message or more than one, a
+  message of more than 1048576 bytes, and an empty or non-text JSON message
+  (one that begins `pb:`, which the exposure holds a protobuf call as, is not
+  JSON text either) are `malformed` (`INVALID_ARGUMENT`), and the stream is
+  answered; an empty message is a valid protobuf message, whose absent fields
+  the codec then reports. The bearer is the
   `authorization: Bearer <token>` metadata, refused as `http::Rpc` refuses it,
   and the digest, when sent, is the `hale-surface-digest` metadata.
 - **The reply is the contract's.** A result is a `HEADERS` frame (`:status 200`,
@@ -837,20 +843,79 @@ locus is refused, written at the site or held as a param.
   violated. `grpc-message` is percent-encoded as gRPC states (a byte outside
   printable ASCII, and `%`, as `%XX`). `grpc-status-details-bin` is the
   base64 of a `google.rpc.Status` carrying the same code and message and one
-  `Any` detail: for a handler error, type `type.hale.dev/hale.api.HandlerError`
-  and the value `E` by codec (JSON bytes); for a refusal or the server error,
-  type `type.hale.dev/hale.api.Refusal` and the refusal object of
-  § Outcomes (`kind`, `reason`, and `served` or `requires`; the server
-  error's `{"kind": "server"}`). A transport failure is the stream reset or
-  the connection ended without a status.
+  `Any` detail. Under `application/grpc+json`: for a handler error, type
+  `type.hale.dev/hale.api.HandlerError` and the value `E` by codec (JSON
+  bytes); for a refusal or the server error, type
+  `type.hale.dev/hale.api.Refusal` and the refusal object of § Outcomes
+  (`kind`, `reason`, and `served` or `requires`; the server error's
+  `{"kind": "server"}`). Under protobuf the detail is a generated message:
+  for a handler error, type `type.hale.dev/<the message of E>` and its value
+  the encoded `E` (`OrderError` for `Orders::cancel`); for a refusal or the
+  server error, type `type.hale.dev/HaleRefusal` and its value the encoded
+  `HaleRefusal` (`kind`, `reason`, one `requires` a role and `served`, those
+  the kind carries; the server error is `kind: "server"` alone). A transport
+  failure is the stream reset or the connection ended without a status.
 - **`describe` is a reserved method.** `POST /hale.api.Description/Describe`
   (service `hale.api.Description`, which no surface can be named) answers, as
   one message, the whole document of § The description for the caller the
   bearer names, with the listener `grpc` and the outcome encoding above; the
-  request message is ignored. A caller nobody names gets the same
-  `UNAUTHENTICATED` as a call. It is a plain unary method rather than gRPC's
-  own reflection service, whose request and reply are protobuf messages the
-  json codec does not carry.
+  request message is ignored. Under `application/grpc+json` the message is the
+  document; under protobuf it is `hale.api.DescriptionDocument { string json
+  = 1; }`, the document as that field. A caller nobody names gets the same
+  `UNAUTHENTICATED` as a call.
+- **The protobuf codec.** A program that serves over `grpc::Rpc` carries,
+  beside the JSON codec of each record its rows name, a protobuf codec
+  generated from the same declaration: proto3's wire format (varints,
+  length-delimited fields, `double` as eight bytes little endian), the
+  fields numbered `1, 2, …` in the order the struct declares them. Decoding
+  is as strict as the JSON codec's, in its words: a field of the wrong wire
+  type is `wrong_type` (named by the field), a field with no default that is
+  absent is `missing_field`, a message that is not protobuf (a cut field, a
+  varint of more than ten bytes) is `wrong_type: payload`, an unknown field is
+  skipped by its wire type, and the last of a field sent twice wins. Every
+  scalar is written whether or not it equals its default (the `.proto` marks it
+  `optional`), so a zero is a value. The codec joins a program only with a
+  `grpc::Rpc` exposure; a non-gRPC exposure's generated code is unchanged. The
+  exposure holds a protobuf call as the text `pb:` + a message name + `:` +
+  the base64 of the message (a String ends at its first NUL, a message does
+  not); the adapters of a gRPC exposure branch on the prefix and run the same
+  steps with the other codec.
+- **The `.proto`** is generated from the rows (§ Generated specs and
+  clients): `hale api export` writes `NAME.proto` and `hale check --api
+  --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
+  `service NAME` (the surface) with a unary rpc per member, named as above; a
+  message per record the rows reach, named as the schema document names the
+  type with the `::` of an imported type as `_`; a field of record type is a
+  field of that message, and every scalar field is `optional`
+  (`Int`, an identity, a range and a quantity `int64`, `Float` `double`, `Bool`
+  `bool`, `String` `string`; a comment names the Hale type). A row whose
+  request, response or error is a scalar is carried in a one-field message
+  `<rpc>Request`, `<rpc>Response` or `<rpc>Error` (`value = 1`), a row with no
+  request or response in `HaleEmpty`, and a refusal in `HaleRefusal`. The file's
+  header states the five outcomes and these rules. A shape the codec does not
+  carry has no encoding and is refused naming the row and the field, never
+  approximated, and so is a name two types would share. The field numbers are
+  held by the surface digest: it folds each struct's fields in declaration
+  order, so a reorder or an insertion moves the digest, and no number moves
+  while the digest holds.
+- **Server reflection.** `grpc.reflection.v1.ServerReflection/ServerReflectionInfo`
+  is served, for a caller the bearer source names (as the description is, a
+  surface names its members): it lists the services (the surface,
+  `hale.api.Description` and the reflection service) and answers the
+  `FileDescriptorProto` of the file that declares a symbol or has a name: the
+  surface's `.proto` (`NAME.proto`), the description method's
+  (`hale/api/description.proto`) and the service's own
+  (`grpc/reflection/v1/reflection.proto`), each built from the same model as
+  the text, so it is the file a compiler makes of the `.proto`. A symbol or a
+  file no one has is an `error_response` (`NOT_FOUND`, 5), and so is a request
+  for extensions, which the server has none of. The service is
+  bidirectional, and a client such as `grpcurl` waits for the answer to a
+  request before it ends its side of the stream, so each whole message is
+  answered as it arrives (several in one stream are answered in order) and the
+  stream ends with `grpc-status: 0`. The descriptor is the surface's, not
+  the caller's: the roles are checked when a call is made, as the description
+  filters by them and the `.proto` does not. `grpc.reflection.v1alpha` is not
+  served.
 - **A stream fails alone.** A client that resets a stream, or goes away, after
   its request was published is a lost connection of the runtime (§ The request
   lifecycle): the work still runs, once, and holds its place against the bound
@@ -1149,14 +1214,20 @@ the server error, with the codes of § The MCP transport; `tests/api-contract/
 wire/http/*.json` supply the payloads, so the `data` of each error is
 the recorded body.
 
-**The gRPC transport** (`grpc::Rpc`, R7; § gRPC) takes the same recorded
-calls as unary gRPC calls, `POST /Public/Orders.place` with the recorded
-body as the one request message, and answers each outcome as the gRPC column
-says: the recorded response body as the response message under
-`grpc-status: 0`, or a trailers-only response whose `grpc-status-details-bin`
-carries the recorded error or refusal body as the value of its `Any` detail;
+**The gRPC transport** (`grpc::Rpc`, R7, R8b; § gRPC) takes the same recorded
+calls as unary gRPC calls, `POST /Public/Orders.place` (or `/Public/Orders__place`,
+the rpc of the `.proto`) with the recorded body as the one request message,
+and answers each outcome as the gRPC column says: the recorded response body
+as the response message under `grpc-status: 0`, or a trailers-only response
+whose `grpc-status-details-bin` carries the recorded error or refusal body as
+the value of its `Any` detail. Under `application/grpc+json` those bodies are
+the recorded JSON; under `application/grpc` and `application/grpc+proto` each is
+the same value as the message of the generated `.proto` (the recorded
+`{"order": 41, "notional": 125000}` is an `OrderReceipt`: field 1, 41, field 2,
+125000), the details' `Any` carrying `OrderError` or `HaleRefusal`.
 `tests/api-contract/wire/http/*.json` supply the bodies, so nothing is
-recorded twice.
+recorded twice, and `tests/api-contract/Public.proto` and `Admin.proto` are the
+files the messages are held to.
 
 Every recorded exchange of the HTTP and Unix transports is under
 `tests/api-contract/wire/<transport>/<outcome>.json`.
@@ -1603,6 +1674,17 @@ handler only ever sees a decoded value. A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),
 never left out.
 
+**Protobuf** (R8b) is the second codec of a `grpc::Rpc` exposure, generated
+from the same declaration: the same set of shapes and the same strictness,
+carried as proto3 (§ gRPC, The protobuf codec). A field is numbered by its
+place among the struct's declared fields, from 1, and a `json:"key"` tag
+names the proto field as it names the JSON key. The set of shapes is the
+JSON codec's, so there is no shape without a proto3 encoding: a list, a map,
+an `optional` and an enum are shapes the codec does not carry, and law 5
+refuses the row before a `.proto` could be asked of it. The `.proto`
+generator refuses all the same, by row, so that were the codec to carry one it
+would not be approximated.
+
 ## The description
 
 A description is scoped to one **exposure**, the unit a caller can
@@ -1788,6 +1870,7 @@ the surface's bundle:
 |---|---|
 | `NAME.description.json` | the surface-wide document: `"inventory": 1` (the description schema's inventory form) restricted to the surface: its digest and every member with its `requires`, the exposures that serve it, every hub of the program with its stream rows, and the schemas they name |
 | `NAME.openapi.json`, `NAME.json-schema.json`, `NAME.mcp.json` | the forms of § The description, as `check --api --surface NAME --openapi`, `--json-schema` and `--mcp` print them |
+| `NAME.proto` | the protobuf form (§ gRPC, The `.proto`), as `check --api --surface NAME --proto` prints it: the messages and the service the gRPC transport speaks |
 | `DIGEST` | two lines: the surface's digest (`fnv1a64:` and sixteen hex digits) and `hale <version>`, the compiler that wrote it |
 
 `--check DIR` writes nothing and exits 1 when the committed bundle is not what
@@ -1838,7 +1921,15 @@ spoken, `fetch` has none): an async function per member answering
 `{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
 `TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
 of events; the credential rides a hub upgrade as `?access_token=`. TLS is not
-spoken by either, and gRPC is the transport R8b adds.
+spoken by either. **Neither speaks gRPC, and that is by decision**: a gRPC call
+needs HTTP/2 with trailers, which `fetch` does not give a script and which a
+generated Hale client has no stack for (nghttp2 is linked into served programs,
+not into a program that calls), so a gRPC mode would need a library beyond the
+client's own. The client path of a `grpc::Rpc` exposure is its `.proto`
+(`hale api export` writes it) and the stub generator of the caller's language
+(`protoc`, `buf`, `grpc-tools`), or `grpcurl`, which finds the surface through
+server reflection without the file; the stubs call `Orders__place` and send the
+digest in the `hale-surface-digest` metadata and the bearer in `authorization`.
 
 `--check FILE` writes nothing and exits 1 when the committed client is not what
 the surface now generates, naming the digest it was made against when that is
@@ -1942,7 +2033,17 @@ values).
   frames); a client would need HTTP/2 framing, HPACK, flow control and the
   gRPC message framing, and the `Describe` method would be its discovery.
   Until then a gRPC exposure's description is the program's
-  (`hale check --api`) and the stdlib's `hale.api.Description/Describe`.
+  (`hale check --api`) and the stdlib's `hale.api.Description/Describe`,
+  and its schema, for `grpcurl` or a generated stub, is the `.proto` and server
+  reflection.
+- **`grpc.reflection.v1alpha`**, the older name of the reflection service older
+  tools ask for first: v1 is served, the messages are wire-identical, and only
+  the package is another; a tool that speaks nothing newer is refused
+  `malformed` (`no such service`) until it is added.
+- **Reflection is for the caller the bearer names, and the descriptor is the
+  surface's**: it is not filtered by the roles a caller holds, as a description
+  is. A surface whose member names are themselves confidential to a role needs
+  a filtered descriptor, which the `.proto` the digest names cannot be.
 - **Additive compatibility**: a client built against a subset of a
   surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,
