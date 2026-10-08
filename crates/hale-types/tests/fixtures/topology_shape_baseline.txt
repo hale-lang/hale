@@ -857,6 +857,7 @@ crates/hale-codegen/tests/io_error_fallible.rs#12 865d341109268295
 crates/hale-codegen/tests/io_error_fallible.rs#2 865d341109268295
 crates/hale-codegen/tests/io_error_fallible.rs#3 dd75dd154acf19a1
 crates/hale-codegen/tests/io_error_fallible.rs#7 865d341109268295
+crates/hale-codegen/tests/io_h2_session.rs#0 0829a14d288ef85f
 crates/hale-codegen/tests/io_tcp_recv_timeout.rs#0 14adc3b285b22ece
 crates/hale-codegen/tests/io_tls.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/io_tls.rs#1 b7eb68b082a688ff

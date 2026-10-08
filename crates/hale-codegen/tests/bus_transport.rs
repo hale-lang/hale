@@ -29,6 +29,8 @@ mod api_unix;
 mod api_unix_lifecycle;
 #[path = "api_witness_whole.rs"]
 mod api_witness_whole;
+#[path = "io_h2_session.rs"]
+mod io_h2_session;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]
