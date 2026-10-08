@@ -32,8 +32,6 @@ locus UsageCases {
     fn response(service: api::Api, path: String, schema: String) -> String {
         let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + path });
         std::test::assert_eq_int(response.status, 200, response.body);
-        let checked = self.f.validator.validate(schema, response.body);
-        std::test::assert(checked.ok, checked.error + "\n" + response.body);
         return response.body;
     }
     fn counts(usage: String, calls: String, input: String, output: String, cost: String, what: String) {

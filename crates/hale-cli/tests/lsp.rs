@@ -1431,19 +1431,21 @@ locus Desk {\n\
         return Ack { id: o.id };\n\
     }\n\
 }\n\
+api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; }\n\
-    bindings { api: unix(\"/tmp/hale-lsp-parity-generated.sock\", bound: 4, on_full: refuse); }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
     run() {\n\
+        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         let o = Order::from_json(\"{}\");\n\
         println(o.id);\n\
+        h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n",
 )];
 
 /// The author's-leak parity seed
-/// (`lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls`).
+/// (`lsp_and_check_report_an_authors_leak_in_a_handler_a_served_surface_calls`).
 const AUTHOR_LEAK_APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
 type Ack { id: Int; }\n\
 type Seen { ids: [Int; 2]; }\n\
@@ -1456,11 +1458,13 @@ locus Desk {\n\
         return Ack { id: o.id };\n\
     }\n\
 }\n\
+api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; }\n\
-    bindings { api: unix(\"/tmp/hale-lsp-parity-author-leak.sock\", bound: 4, on_full: refuse); }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
     run() {\n\
+        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         println(\"up\");\n\
+        h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n";
@@ -2163,10 +2167,10 @@ fn lsp_and_check_agree_over_a_seed_that_imports() {
 
 /// The overlay parity fixture over a seed with generated source (F.40
 /// phase 2.4): a `json:`-tagged type, whose parser the sequence
-/// synthesizes, and an api binding, whose envelope types, topics and
-/// socket loci it synthesizes. Both channels run the same sequence, so
+/// synthesizes, and a serve site, whose exposure, adapter and receiver
+/// plumbing it generates. Both channels run the same sequence, so
 /// the author's errors beside the generated declarations (a mismatch
-/// in the handler the binding calls, a bare fallible `from_json`) land
+/// in the handler the surface calls, a bare fallible `from_json`) land
 /// at the same author positions, and nothing is reported at a position
 /// inside generated code.
 #[test]
@@ -2176,7 +2180,7 @@ fn lsp_and_check_agree_over_a_seed_with_generated_source() {
         check.iter().all(|(file, ..)| file == "main.hl"),
         "a finding positioned outside the author's file (inside generated source?): {check:?}"
     );
-    for line in [7u64, 15u64] {
+    for line in [7u64, 16u64] {
         assert!(
             check.iter().any(|(_, l, ..)| *l == line),
             "no finding at main.hl:{line}: {check:?}"
@@ -2186,13 +2190,13 @@ fn lsp_and_check_agree_over_a_seed_with_generated_source() {
 
 /// The generated-source fixture's positive (F.40 phase 2 review F1): a
 /// bound-solver finding is dropped only when its site has no author
-/// position, so a leak the author wrote in the handler the api binding
+/// position, so a leak the author wrote in the handler a served surface
 /// calls — a whole-value replace of a stored struct, per message — is
 /// reported at the author's line by all three channels, and
 /// `hale/allocSummary` lists that site and none in the binding's own
 /// generated code.
 #[test]
-fn lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls() {
+fn lsp_and_check_report_an_authors_leak_in_a_handler_a_served_surface_calls() {
     const APP: &str = AUTHOR_LEAK_APP;
     let check = agree_three_ways("author-leak", AUTHOR_LEAK, &[]);
     assert!(

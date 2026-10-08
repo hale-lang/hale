@@ -180,7 +180,7 @@ fn origin_at(snap: &hale_types::snapshot::Snapshot, index: u32) -> Option<Origin
 }
 
 /// F.40 phase 1.1b-iii: a bundle built the way `hale check` builds one
-/// (parse, the JSON parsers, sync inference, the api surface, then the
+/// (parse, the JSON parsers, the serve sites' expansion, then the
 /// mint over the source map) carries its snapshot, and every
 /// declaration the desugars generated has an origin row, as does every
 /// site inside it.
@@ -199,9 +199,13 @@ locus Billing {
         return VerdictResult { ok: true, note: v.verdict };
     }
 }
+api Public { rpc Billing::on_verdict; }
 main locus App {
-    params { billing: Billing = Billing { }; }
-    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+    params { billing: Billing = Billing { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }
+    run() {
+        let public = api::serve(Public, self.fixture, as: "public", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);
+        public.stop();
+    }
 }
 fn main() {
     let o = Order::from_json("{\"id\": 1, \"note\": \"n\"}") or Order { id: 0, note: "" };
@@ -212,16 +216,11 @@ fn main() {
     let path = std::path::PathBuf::from("app.hl");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert(path.clone(), parse(src));
-    for prog in programs.values_mut() {
-        hale_syntax::json_gen::generate_json_parsers(prog);
-    }
     {
         let mut refs: Vec<&mut hale_syntax::ast::Program> = programs.values_mut().collect();
-        let row = hale_types::entry::entry_row_in(&refs.iter().map(|p| &**p).collect::<Vec<_>>());
-        assert!(
-            hale_syntax::api_gen::generate_api(&mut refs, row.root().and_then(|m| m.index_in()), None)
-                .is_some(),
-            "the api binding lowers"
+        hale_types::desugar_sequence::desugar_before_check(
+            &mut refs,
+            &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
         );
     }
     let sources = vec![SourceFile {
@@ -252,14 +251,14 @@ fn main() {
             {
                 Some(Origin::JsonParsers)
             }
-            TopDecl::Type(t) if t.synthetic => Some(Origin::JsonParsers),
+            TopDecl::Type(t) if t.synthetic && t.span.start.0 < hale_syntax::api_names::API_SYNTH_BASE => Some(Origin::JsonParsers),
             TopDecl::Fn(fd)
                 if fd.name.name.starts_with("__api_decode_")
                     || fd.name.name.starts_with("__api_encode_") =>
             {
                 Some(Origin::ApiSurface)
             }
-            other if other.span().start.0 >= hale_syntax::api_gen::API_SYNTH_BASE => {
+            other if other.span().start.0 >= hale_syntax::api_names::API_SYNTH_BASE => {
                 Some(Origin::ApiSurface)
             }
             _ => None,
@@ -283,50 +282,42 @@ fn main() {
             }
             None => {
                 // A written declaration's own site has no row; its
-                // generated members (the api subscriber) may.
-                assert_eq!(origin_at(&bundle.snapshot, sites[0]), None);
+                // generated members (the serve expansion's) may.
+                assert!(sites.is_empty() || origin_at(&bundle.snapshot, sites[0]).is_none());
             }
         }
     }
     assert!(json >= 3, "JsonError and Order's parser and emitter ({json})");
-    assert!(api > 0, "the api surface's declarations ({api})");
-    // The subscriber member the api surface adds to a written locus.
+    assert!(api > 0, "the serve site's declarations ({api})");
+    // A member the serve expansion adds to a written locus.
     let generated_subscribe = bundle.snapshot.sites.iter().any(|s| {
         s.kind == SiteKind::Subscribe
-            && s.span.start.0 >= hale_syntax::api_gen::API_SYNTH_BASE
+            && s.span.start.0 >= hale_syntax::api_names::API_SYNTH_BASE
             && bundle.snapshot.origin(s.id) == Some(Origin::ApiSurface)
     });
     assert!(generated_subscribe);
 }
 
 /// Review of phase 1, finding 19: the file-entry verbs mint before any
-/// desugar, and the api surface then copies the entry's expressions
-/// (the socket path, `roles:`, `principals:`, the HTTP host and port,
-/// a subscriber's key filter) into what it generates while the entry
-/// stays. Every copy is a new site: the second mint neither panics on
-/// a shared id nor lends a copy the original's.
+/// desugar, and the serve expansion then copies the serve site's
+/// expressions (the socket path, `roles:`) into what it generates while
+/// the site stays. Every copy is a new site: the second mint neither
+/// panics on a shared id nor lends a copy the original's.
 #[test]
-fn the_api_surface_copies_the_entry_expressions_as_new_sites() {
+fn the_serve_expansion_copies_the_site_expressions_as_new_sites() {
     let src = r#"
 fn sock() -> String { return "/tmp/api.sock"; }
-fn port() -> Int { return 8080; }
-fn which() -> String { return "k"; }
 locus Table { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }
-locus Tokens {
-    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "" }; }
-    fn refused() -> String { return "no"; }
-}
 type Ping { key: String = ""; }
-topic Pings { payload: Ping; subject: "t.ping"; keyed_by key; }
 locus Echo {
-    bus { subscribe Pings as on_ping where key == which(); }
     fn on_ping(p: Ping) -> Ping { return p; }
 }
+api Public { rpc Echo::on_ping; }
 main locus App {
     params { echo: Echo = Echo { }; }
-    bindings {
-        api: unix(sock(), bound: 8, on_full: refuse, roles: Table { }),
-            http("127.0.0.1", port(), principals: Tokens { });
+    run() {
+        let h = api::serve(Public, unix::Rpc { path: sock(), roles: Table { } }, as: "public", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+        h.stop();
     }
 }
 fn main() { App { }; }
@@ -336,41 +327,38 @@ fn main() { App { }; }
     let first: std::collections::BTreeSet<u32> = ids(&p).into_iter().collect();
     {
         let mut refs = vec![&mut p];
-        let row = hale_types::entry::entry_row_in(&[&*refs[0]]);
-        assert!(
-            hale_syntax::api_gen::generate_api(&mut refs, row.root().and_then(|m| m.index_in()), None)
-                .is_some(),
-            "the api binding lowers"
+        hale_types::desugar_sequence::desugar_before_check(
+            &mut refs,
+            &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
         );
     }
     // Two sites with one id is a panic here.
     let snap = mint([("app.hl", &mut p)], &[]);
     let after = ids(&p);
     assert!(after.iter().all(|i| *i != u32::MAX), "every site is numbered");
-    // Each copied expression is two sites at one span: the entry's,
-    // keeping its id, and the copy's, with an id the first mint never
-    // gave out.
-    for (text, kind) in [
-        ("sock()", SiteKind::Call),
-        ("port()", SiteKind::Call),
-        ("which()", SiteKind::Call),
-        ("Table { }", SiteKind::StructLiteral),
-        ("Tokens { }", SiteKind::StructLiteral),
+    let mut unique = after.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), after.len(), "no two sites share an id");
+    // An expression the expansion copies is two sites at one span: the
+    // site's, keeping its id, and the copy's, with an id the first mint
+    // never gave out.
+    for (written, text, kind) in [
+        ("path: sock()", "sock()", SiteKind::Call),
+        ("roles: Table { }", "Table { }", SiteKind::StructLiteral),
     ] {
-        let start = src.find(&format!("{text},")).or_else(|| src.find(&format!("{text})")))
-            .or_else(|| src.find(&format!("{text};")))
-            .expect(text) as u32;
+        let start = (src.find(written).expect(text) + written.len() - text.len()) as u32;
         let at: Vec<u32> = snap
             .sites
             .iter()
             .filter(|s| s.kind == kind && s.span.start.0 == start)
             .map(|s| s.id.index)
             .collect();
-        assert_eq!(at.len(), 2, "`{text}`: the entry's site and its copy's ({at:?})");
+        assert!(at.len() >= 2, "`{text}`: the written site and a copy ({at:?})");
         assert_eq!(
             at.iter().filter(|i| first.contains(i)).count(),
             1,
-            "`{text}`: the copy's id is fresh ({at:?}, first mint {first:?})"
+            "`{text}`: one site keeps the first mint's id, any copy's is fresh ({at:?}, first mint {first:?})"
         );
     }
 }

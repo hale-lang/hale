@@ -104,14 +104,6 @@ pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
     if !o.link_libs.is_empty() {
         fp.push_str(&format!(";link={}", o.link_libs.join(",")));
     }
-    // GH #1106: an api binding is part of the program the binary is.
-    if let Some(api) = &o.api {
-        fp.push_str(&format!(";api={}", api));
-    }
-    // GH #1109: the role table is part of the binary too.
-    if let Some(t) = &o.api_roles {
-        fp.push_str(&format!(";roles={}", t));
-    }
     if !o.csrc_files.is_empty() {
         let files: Vec<String> = o
             .csrc_files
@@ -305,7 +297,7 @@ mod tests {
     }
 
     /// The options half's covered changes each move the identity (I2):
-    /// the target, `dev`, an environment's role table, a link library.
+    /// the target, `dev`, a link library.
     #[test]
     fn a_covered_option_moves_the_identity() {
         let plain = options_fingerprint(&base());
@@ -316,7 +308,6 @@ mod tests {
         };
         assert!(moved(&|o| o.target = hale_codegen::CompileTarget::Wasm32), "the target");
         assert!(moved(&|o| o.dev_profile = true), "dev");
-        assert!(moved(&|o| o.api_roles = Some("ops=uid:1000".into())), "a role table");
         assert!(moved(&|o| o.link_libs.push("m".into())), "a link library");
     }
 

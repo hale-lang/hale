@@ -188,7 +188,7 @@ pub struct EnvSpec {
     /// GH #1109: `[environments.<name>.roles]` — who holds which
     /// role here, `role = ["uid:1000", "group:ops", "user:riley",
     /// "bearer:front-desk"]`.
-    /// The requirement is form (`@gated(role:)` on the operation);
+    /// The requirement is form (`requires` on the operation's row);
     /// this is the params half. A role mapped to `[]` is explicitly
     /// nobody, which `--matrix` accepts; an absent role it does not.
     #[serde(default)]
@@ -270,16 +270,6 @@ pub fn role_key_ok(s: &str) -> bool {
         _ => return false,
     }
     cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// GH #1109: the table the api binding bakes in, one line the stdlib's
-/// `std::api::StaticRoles` parses: `role=member,member;role=`.
-pub fn roles_table(roles: &BTreeMap<String, Vec<String>>) -> String {
-    roles
-        .iter()
-        .map(|(r, ms)| format!("{}={}", r, ms.join(",")))
-        .collect::<Vec<_>>()
-        .join(";")
 }
 
 /// `[ffi]` section of `hale.toml`. Paths in `csrc` are resolved

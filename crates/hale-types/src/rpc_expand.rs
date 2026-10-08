@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::api_gen::API_SYNTH_BASE;
+use hale_syntax::api_names::API_SYNTH_BASE;
 use hale_syntax::ast::{
     flat_decls, Block, Expr, Ident, LifecycleKind, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit,
     Program, Stmt, StructInit, TopDecl, TypeExpr,
@@ -135,8 +135,8 @@ fn rows_of_surface(
             LocusMember::Fn(f) if f.name.name == method => Some(f),
             _ => None,
         })?;
-        let served_ctx = f.params.last().is_some_and(|p| hale_syntax::api_gen::is_served_context_type(&p.ty));
-        let takes_ctx = served_ctx || f.params.last().is_some_and(|p| hale_syntax::api_gen::is_context_type(&p.ty));
+        let served_ctx = f.params.last().is_some_and(|p| hale_syntax::api_names::is_served_context_type(&p.ty));
+        let takes_ctx = served_ctx || f.params.last().is_some_and(|p| hale_syntax::api_names::is_context_type(&p.ty));
         let value: Vec<&hale_syntax::ast::Param> =
             f.params.iter().take(f.params.len() - usize::from(takes_ctx)).collect();
         if value.len() > 1 {
@@ -781,7 +781,7 @@ pub fn expand(
             };
             if let Some(t) = &site.transport {
                 push("transport", as_stdlib_unix(t, id));
-                if let Some(addr) = http_bind_of(l, site.transport.as_ref()) {
+                if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
                     push("address", addr);
                 }
             }

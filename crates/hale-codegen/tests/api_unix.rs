@@ -333,3 +333,46 @@ fn a_connection_that_fails_ends_that_connection_and_the_listener_serves_on() {
     let done = server.finish();
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
 }
+
+fn contract_fixture(name: &str) -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/api-contract").join(name);
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).expect("json")
+}
+
+/// The description a Unix exposure serves, as a value.
+fn served_description(server: &Server) -> serde_json::Value {
+    let line = server.connect().ask("{\"describe\":true}");
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+    assert_eq!(reply["ok"], true, "{line}");
+    reply["value"].clone()
+}
+
+/// The fixture once its listener address and its peer stand for this
+/// test's own.
+fn fixture_for_me(name: &str, server: &Server, uid: u32) -> serde_json::Value {
+    let (_, gid, pid) = me();
+    let mut want = contract_fixture(name);
+    want["listener"]["address"] = serde_json::Value::String(server.sock.display().to_string());
+    want["caller"]["principal"] = serde_json::json!({ "mode": "unix", "name": format!("uid:{uid}"), "uid": uid, "gid": gid, "pid": pid });
+    want
+}
+
+#[test]
+fn the_live_describe_is_the_whole_document_of_the_fixtures() {
+    // R4 C: a Unix exposure answers `{"describe": true}` with the document
+    // HTTP answers, not the members alone: the listener, the roles the
+    // caller holds, the members with their schemas, the outcome encoding,
+    // the schemas they reach and the notes. The operator holds both rows;
+    // the peer who holds nothing is shown none, and none of their schemas.
+    let (uid, _, _) = me();
+    let operator = me_operator();
+    let server = Server::start(&admin(16), &[("OPERATOR", &operator)]);
+    assert_eq!(served_description(&server), fixture_for_me("admin.uid-1000.description.json", &server, uid), "the operator's description");
+    assert!(server.finish().status.success());
+
+    let someone_else = format!("uid:{}", uid + 1);
+    let server = Server::start(&admin(16), &[("OPERATOR", &someone_else)]);
+    let want = fixture_for_me("admin.uid-1001.description.json", &server, uid);
+    assert_eq!(served_description(&server), want, "a peer who holds nothing");
+    assert!(server.finish().status.success());
+}

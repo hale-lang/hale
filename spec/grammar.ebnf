@@ -76,7 +76,7 @@ group_decl        = "group" , IDENTIFIER , "=" , "{" ,
 group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
 
 (* GH #1109 — `role NAME [includes A, B];` declares authorization
-   vocabulary (spec/types.md § "Roles and `@gated`"). `role` and
+   vocabulary (spec/types.md § "Roles"). `role` and
    `includes` are contextual: at top level `role` followed by a name
    is the declaration (it is also the `unix(..., role: listen)`
    kwarg). `includes` is grant-only and union-only; `owner` needs no
@@ -517,7 +517,10 @@ birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
    gives a qualified bus subject, so a binding and a subscribe compare
    like with like) and the cross-seed rename pass collapses it to the
    mangled declaration. *)
-bindings_block    = "bindings" , "{" , { binding_entry | api_entry | hub_entry } , "}" ;
+bindings_block    = "bindings" , "{" , { binding_entry | hub_entry } , "}" ;
+(* GH #1417 (R4): the `api: …` entry of GH #1106 is retired; the parser
+   refuses it with the replacement (`api` surfaces served by
+   `api::serve`, a stream as a hub binding). *)
 (* GH #1417 — a topic bound to a hub, a transport INSTANCE the locus
    holds as a param, with the stream row's exposure fields on the
    binding (spec/api.md § Streams). Each clause at most once, in any
@@ -531,45 +534,6 @@ hub_clause        = requires_clause
 binding_entry     = qualified_name , ":" , transport_spec ,
                     [ codec_spec ] ,
                     [ binding_where ] , ";" ;
-
-(* GH #1106: the api binding. `api` is a contextual keyword in the
-   entry-head position, told from a topic name by the `:` after it
-   and the lowercase transport head; at most one per block. It binds
-   the program's API (every subscribed topic a command, every
-   published topic a stream, every expose a read) over one JSON
-   object per line on a Unix domain stream socket. `bound` and
-   `on_full` are required by the checker; `watch_bound` and
-   `on_watch_full` go together and default to `bound` / `drop_old`.
-   See spec/semantics.md § "The api binding". *)
-api_entry         = "api" , ":" , api_transport , { "," , api_clause } , ";" ;
-(* The path is an expression the main locus evaluates as a param
-   default (GH #1109 review): a string literal, or `self.<param>` the
-   program computed — a per-record path under XDG_RUNTIME_DIR, say.
-   `LOTUS_API` overrides it at run time. *)
-api_transport     = "unix" , "(" , expression , { "," , api_kwarg } , ")" ;
-api_kwarg         = ( "bound" , ":" , INT_LIT )
-                  | ( "on_full" , ":" , "refuse" )
-                  | ( "watch_bound" , ":" , INT_LIT )
-                  | ( "on_watch_full" , ":" , shed_policy )
-                  | ( "on_unauthorized" , ":" , ( "refuse" | "drop" ) )   (* #1109 *)
-                  | ( "roles" , ":" , expression ) ;
-(* GH #1135, #1137: clauses after the transport, each at most once.
-   `http(host, port, principals: <source>)` adds the binding's HTTP
-   transport: one POST per request carrying one line of the same wire
-   under `Authorization: Bearer <token>`; `principals:` is an expression
-   the main locus evaluates as a param default, a locus satisfying
-   `std::api::BearerSource`. `serve: [param, …]` names params of the
-   main locus whose type is a locus another seed declared; the
-   binding puts that locus's commands, streams and reads on the
-   surface beside its own seed's.
-   See spec/semantics.md § "The api binding". *)
-api_clause        = ( "http" , "(" , expression , "," , expression ,
-                      [ "," , "principals" , ":" , expression ] , [ "," ] , ")" )
-                  | ( "serve" , ":" , "[" , [ IDENT , { "," , IDENT } , [ "," ] ] , "]" ) ;
-(* `roles:` takes an expression the main locus evaluates as a param
-   default: a locus literal (`RecordRoles { }`, `lib::RecordRoles { }`)
-   or one of main's params (`self.roles`), so the program builds its
-   source with its own state and keeps a handle to it. *)
 
 (* F.36 Slice 2 (2026-05-28): optional codec(L { ... }) clause
    on a binding entry. Pluggable encode/decode for cross-binary
@@ -738,8 +702,7 @@ contract_block    = "contract" ,
                     ( ":" , "inferred" , ";"
                     | "{" , { contract_member } "}"
                     ) ;
-contract_member   = [ gated_annotation ] ,          (* #1109: on `expose` only *)
-                    ( "expose" | "consume" ) ,
+contract_member   = ( "expose" | "consume" ) ,
                     ( contract_name , ":" , type_expr , ";"
                     | "inferred" , ";"
                     ) ;
@@ -760,7 +723,7 @@ contract_name     = IDENTIFIER | "bulk" | "harmonic" | "resolution" ;
 
 bus_block         = "bus" , "{" , { bus_member } , "}" ;
 bus_member        = bus_subscribe
-                  | [ gated_annotation ] , bus_publish   (* #1109 *)
+                  | bus_publish
                   ;
 (* The subject is either a literal string (legacy form, requires
    `of type T`) or a named topic decl (no `of type T` allowed —
@@ -1172,10 +1135,8 @@ unbounded_annotation = "@" , "unbounded" ;
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
-(* GH #1109 — on a subscribed handler (a fn decorator), an `expose`
-   member or a `publish` member: the role a caller through the api
-   binding must hold. spec/types.md § "Roles and `@gated`". *)
-gated_annotation  = "@" , "gated" , "(" , "role" , ":" , IDENTIFIER , ")" ;
+(* GH #1109, retired in R4 (GH #1417): `@gated(role: R)` is refused by the
+   parser; a role requirement is a row's `requires`. *)
 (* GH #1417 — on a locus fn: the row it contributes to its seed's
    default surface, named after the seed, with the roles a caller must
    hold (spec/api.md § Surfaces and their rows). *)

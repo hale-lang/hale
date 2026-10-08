@@ -255,8 +255,8 @@ locus Supervisor {
 TERM→KILL escalation of `kill` is more than you want.
 
 Other process self-introspection: `std::process::pid()`,
-`std::process::uid()` (the real uid; the api binding uses it to know
-a peer is the program itself), `std::process::exit(code)`, and
+`std::process::uid()` (the real uid; a `unix::Rpc` peer is named `uid:<n>`,
+so it is what a program compares a caller's name against), `std::process::exit(code)`, and
 `std::process::rss_bytes()` (peak
 RSS — see [Memory](#memory-my-rss-is-growing) above).
 

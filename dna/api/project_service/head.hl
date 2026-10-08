@@ -803,15 +803,16 @@ locus Head {
         // a service's own bearer (verified in `handle`), else the session's
         let given = dna::bearer_token(std::http::header(req, "Authorization"));
         let bearer = if self.cfg.principal_mode != "oidc" { "" } else if len(given) > 0 { given } else { self.auth.session_token(req) };
-        // GH #1135: a command is the child's api binding's, on its own HTTP
-        // transport at the commands port the head gave it — the same wire line, under the
+        // GH #1135: a command is a call on the child's surface, over its
+        // HTTP exposure at the commands port the head gave it, under the
         // caller's bearer (in a fixture's trusted-local session, the child's
-        // launch token, which the binding names as the head's own account).
-        // Nobody forwards a line: the binding authenticates and gates it.
+        // launch token, which the exposure names as the head's own account).
+        // Nobody forwards a call unauthenticated: the exposure authenticates
+        // it and holds it to its row.
         let cut = std::str::index_of(req.path, "?");
         let bare = if cut < 0 { req.path } else { req.path[0..cut] };
         if std::str::ends_with(bare, "/commands") {
-            if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed line of the api wire; a lookup is a `CommandLookup` call", false); }
+            if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed call line; a lookup is a `CommandLookup` call", false); }
             // a session is an ambient credential: its line keeps the CSRF
             // guard before it becomes a bearer; only an OIDC caller's own
             // bearer is not asked (a local session's bearer is always the
@@ -820,10 +821,9 @@ locus Head {
                 let guard = api::command_guard(req, head_origin(self.cfg));
                 if len(guard) > 0 { return self.command_error(guard); }
             }
-            // the binding waits 30 s for a handler; the relay outlasts it
+            // the exposure waits 30 s for a handler; the relay outlasts it
             if self.cfg.commands_port <= 0 { return self.error(503, "commands_unavailable", "this head gives its API child no commands port (HALE_DNA_COMMANDS_PORT)", false); }
-            let port = self.cfg.commands_port;
-            let up = api::exchange(port, "POST", req.path, proxied_headers(req, port, head_origin(self.cfg), "", if self.cfg.principal_mode == "local" { child_token } else { bearer }), req.body, api::COMMAND_RELAY_TIMEOUT_NS);
+            let up = api::relay_upstream(req.body, self.cfg.commands_port, if self.cfg.principal_mode == "local" { child_token } else { bearer });
             if up.ok { self.api_ready_pid = child.pid; }
             return proxied_response(up);
         }

@@ -32,10 +32,10 @@ export async function startEdgeReviewService(options = {}) {
     let result;
     for (let attempt = 0; attempt < 5; attempt++) {
       result = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
-      if (result.body.value?.ok === true || !['command_busy', 'snapshot_changed'].includes(result.body.value?.code)) break;
+      if (result.body.ok === true || !['command_busy', 'snapshot_changed'].includes(result.body.code)) break;
       await service.quiesce();
     }
-    assert.equal(result.status, 200, JSON.stringify(result)); assert.equal(result.body.value?.ok, true, JSON.stringify(result)); await service.waitCommand(command.request_id, receipt => receipt.verdict.state === 'accepted'); await asActor('alice');
+    assert.equal(result.status, 200, JSON.stringify(result)); assert.equal(result.body.ok, true, JSON.stringify(result)); await service.waitCommand(command.request_id, receipt => receipt.verdict.state === 'accepted'); await asActor('alice');
   }
   async function createItem() {
     const command = await service.command('node.propose', { kind: 'idea', name: 'Relationship endpoint', text: 'The second exact endpoint remains independent of its relationships.', author: 'org', target: 'org', rationale: 'Prepare a real second endpoint.' }, 'org');

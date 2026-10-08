@@ -61,11 +61,11 @@ diagnostic's meaning, go there.
 | `hale inputs <seed>` | every file a build of the seed reads, imports followed |
 | `hale targets` | the targets this compiler can name, and which of them it can build |
 | `hale lsp` | the language server, in the compiler binary |
-| `hale mcp [--app <socket>]` | the MCP server, in the compiler binary; `--app` serves a running program's api binding as tools and resources |
-| `hale describe <socket \| file>` | an api binding's description: commands, reads, streams, schemas; `--openapi`, `--mcp`; from a socket the caller's slice, `--full` the whole (a read gated on `owner`) |
-| `hale call <socket> <name> [json]` | send a command or a read to a running api binding, print the answer — see [Build an API](./services/build-an-api.md) |
-| `hale watch <socket> <stream>` | tail a stream of a running api binding |
-| `hale admin <socket>` | a local page over an api binding's description |
+| `hale mcp [--app <endpoint>]` | the MCP server, in the compiler binary; `--app` serves a running program's exposure as tools (the members its description lists for the caller) |
+| `hale describe <endpoint \| file>` | a served exposure's description (members, streams, schemas, the caller and its roles), or from a program `hale check --api` |
+| `hale call <endpoint> <member> [json]` | call one member of a served exposure naming the digest read, print the response — see [Build an API](./services/build-an-api.md) |
+| `hale watch <ws://hub> <topic>` | subscribe to a hub's stream, one JSON line per frame |
+| `hale admin <endpoint>` | a local page over an exposure's description |
 
 Every one of them answers `--help` (or `-h`) as its first argument with
 its own flags, its input shape and where its output goes. `hale build

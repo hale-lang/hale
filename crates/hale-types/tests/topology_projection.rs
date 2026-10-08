@@ -914,13 +914,9 @@ fn the_omitted_run_moves_no_diagnostic() {
         };
         let seq = hale_types::desugar_sequence::Sequence {
             import_renames: &[],
-            api: None,
-            api_roles: None,
             default_surface: "",
         };
-        if hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq).is_err() {
-            continue;
-        }
+        hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq);
         if !synthesized(&program.items) {
             continue;
         }

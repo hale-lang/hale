@@ -178,19 +178,6 @@ impl Walk<'_> {
                         self.struct_inits(&codec.inits);
                     }
                 }
-                if let Some(api) = &bb.api {
-                    match &api.transport {
-                        ApiTransport::Unix { path, .. } => self.expr(path),
-                    }
-                    if let Some(roles) = &api.roles {
-                        self.expr(&roles.expr);
-                    }
-                    if let Some(http) = &api.http {
-                        self.expr(&http.host);
-                        self.expr(&http.port);
-                        self.opt_expr(&http.principals);
-                    }
-                }
             }
             LocusMember::BirthCheck(bc) => {
                 self.expr(&bc.cond);

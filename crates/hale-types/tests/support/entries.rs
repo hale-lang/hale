@@ -228,16 +228,12 @@ pub fn resolve_program(
     program: &Program,
     _sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
-    api: Option<&str>,
-    api_roles: Option<&str>,
     _forms: &hale_types::form_rows::FormRows,
     _bindings: &hale_types::binding_rows::BindingRows,
     _placement: &hale_types::placement::PlacementTable,
     _typed: &hale_types::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
-    let mut config = Config::harness(Target::host());
-    config.api = api.map(str::to_string);
-    config.api_roles = api_roles.map(str::to_string);
+    let config = Config::harness(Target::host());
     let snap = from_program(program.clone(), import_renames.to_vec(), config);
     match snap.demand_lowering() {
         Ok(view) => Ok(view.clone()),

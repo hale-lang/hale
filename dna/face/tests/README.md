@@ -148,27 +148,32 @@ and compares its full catalog encoding. Browser export alone does not establish
 that a source fragment compiles. Draft validation/export does not prove original
 source roundtrip, governed publication, activation or real DNA command recovery.
 
-## Record commands over the binding's HTTP transport
+## Record commands over the surface's HTTP exposure
 
-Every record command is a gated topic on the head's api binding (GH #1104
-piece 5), served over the binding's own HTTP transport (GH #1135); the head
-serving the face relays the session's line there with the session's token as
-the bearer (`dna/api/bearer.hl`). The face POSTs `{"call", "payload"}` — the operation's
-call (`PracticePropose`, `ReviewVerdict`, `OrganizationPropose`, `TaskCreate`,
-`TaskReassign`, `PersonRetire`) and its flat payload — to
+Every record command is a row of the head's surface `HeadCommands` (GH #1417;
+`dna/api/commands.hl`), served over the surface's HTTP exposure (GH #1135); the
+head serving the face relays the session's line there with the session's token
+as the bearer (`dna/api/bearer.hl`). The face POSTs `{"call", "payload"}` — the
+operation's call as the face names it (`PracticePropose`, `ReviewVerdict`,
+`OrganizationPropose`, `TaskCreate`, `TaskReassign`, `PersonRetire`; the relay
+says which member that is) and its flat payload — to
 `…/applications/{id}/commands` under the same `Origin`, JSON and
-`X-Hale-Command: 1` headers, recovers with a `CommandLookup` line, and
-reads back the binding's receipt line verbatim: `{request_id, ok, value, caller,
-role}` with the `CommandReply` (`ok`, `code`, `application_id`, `head`,
-`revision`, the typed `receipt`) as `value`, or `{ok:false, refusal}`. A
+`X-Hale-Command: 1` headers, recovers with a `CommandLookup` line, and reads
+back the exposure's reply as it came (`spec/api.md` § Outcomes): the
+`CommandReply` (`ok`, `code`, `application_id`, `head`, `revision`, the typed
+`receipt`) itself under a 200, or `{"refusal": {kind, reason}}` under the
+status the kind earns (`unauthenticated` 401, `unauthorized` 403,
+`malformed` 400). The page reads a result as `{ok: true, value}` and a refusal
+as `{ok: false, refusal}` (`commandLine` in `web/app.js`). A
 recorded-but-unsettled command is a 200 whose `receipt.state` says so; a
-provider's refusal is `value.ok:false` with its `code`. `/capabilities` names the
+provider's refusal is `ok:false` with its `code`. `/capabilities` names the
 route as `api.http` (`""` when the head has no commands port); what this session may send is the
-`{"describe": true}` slice, fetched once after the capabilities, and a command is
-offered exactly when its call is in it. The describe line is a read, so lanes
-that watch for writes use `command-wire.mjs`'s `isWrite` (a lookup is a read
-too). A head's reads and its binding's commands (`HALE_DNA_COMMANDS_PORT`) each
-take a port of their own from `freePort()`; neither is derived from the other.
+`{"describe": true}` slice, `{"commands": [{"name": …}]}`, fetched once after the
+capabilities, and a command is offered exactly when its call is in it. The
+describe line is a read, so lanes that watch for writes use `command-wire.mjs`'s
+`isWrite` (a lookup is a read too). A head's reads and its commands port
+(`HALE_DNA_COMMANDS_PORT`) each take a port of their own from `freePort()`;
+neither is derived from the other.
 
 The session's caller is the launch token's account, the head's own uid, which
 the record maps to a person
@@ -221,7 +226,7 @@ establish native authorization or durability.
 forwarding route to its socket, with an explicitly scripted `CommandProvider`
 and the head's person seated at the board and the reviewer position. Build
 `dna/api/tests/commands` explicitly and supply its executable to enable this
-lane (it needs a head whose api binding is live — see below):
+lane (it needs a head whose surface is live — see below):
 
 ```sh
 HALE_FACE_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
@@ -232,9 +237,8 @@ The harness starts it as `COMMAND_BIN ROOT PORT WEBROOT` with
 `HALE_FACE_SCRIPTED_COMMANDS=1`. It uses native Record reads and the real
 Origin checks, forwarding, gates and receipt lines for both operations,
 including cross-operation request-key conflict and a line that names its own
-forwarder. A composed head builds `api::Head` as an imported main locus, whose
-binding is inert, so this lane answers `commands_unavailable` until the
-composed head carries the api binding on its own main locus. The provider stores
+forwarder. A program serves its surface from its own main locus (a library's main locus
+serves nothing), so this fixture declares one, as `practice_review` does. The provider stores
 request metadata in memory and reads `ROOT/command-mode` for scripted results;
 its candidate and Review references are synthetic. Browser reload recovery is
 tested while that process stays alive. These cases prove adapter composition,

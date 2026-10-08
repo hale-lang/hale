@@ -40,7 +40,7 @@
 - [When things fail](./services/failure.md)
 - [Across binaries](./services/multi-binary.md)
 - [Build an API](./services/build-an-api.md)
-- [The API binding](./services/api.md)
+- [The API surface](./services/api.md)
 - [Composition patterns](./services/patterns.md)
 - [The model](./the-model.md)
 

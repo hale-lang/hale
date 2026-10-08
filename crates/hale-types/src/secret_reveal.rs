@@ -62,17 +62,17 @@ use hale_syntax::Span;
 /// fns refuses it until the pin is updated here, so the exemption covers
 /// the reviewed code and nothing added to it.
 const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
-    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333", "role_vault_name"),
+    ("memory_schema", "", "role_password", "dna::role_password", "75012dd83047a962", "role_vault_name"),
     (
         "infra",
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
-        "3fc6267b90f42410",
+        "d4409560c6deee83",
         "transport_kind",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "ac96e8b3c6c0748f", "compute_client_final"),
-    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0", "salted_password"),
+    ("scram", "", "salted_password", "pq::salted_password", "6ba4677d29db543e", "compute_client_final"),
+    ("scram", "", "compute_client_final", "pq::compute_client_final", "b409e482cb423d0f", "salted_password"),
 ];
 
 const DEFERRED_LINE: &str = "Deferred: `pq` takes a `std::secret::Credential`";

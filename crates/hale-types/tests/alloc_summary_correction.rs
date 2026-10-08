@@ -323,7 +323,7 @@ fn verdict_changes() {
     );
     pinned(
         "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
-        13,
+        0,
         &[
             "Tokens::principal",
             "Tokens::refused",
@@ -336,7 +336,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/api",
-        3031,
+        3005,
         &[
             "__lib_dna__core___hat__effect_class_ok",
             "__lib_dna__core___hat__hat_effects_of",
@@ -382,8 +382,11 @@ fn verdict_changes() {
             "definitions_over",
             "exchange",
             "graph_read",
+            "listed_commands",
             "query_token",
             "relay_command",
+            "relay_malformed",
+            "relay_upstream",
             "socket_live",
             "token_matches",
             "upstream_header",
@@ -544,15 +547,15 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 8),
-            ("once-per-invocation -> per-iteration-reclaim", 139),
+            ("once-per-invocation -> per-iteration-reclaim", 143),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
-            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1709698..1709777 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1710410..1710478 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @1850179..1850282 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::discovered StringConcat @1845480..1845555 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::token_subject StringConcat @1847813..1847872 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1711495..1711574 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1712207..1712275 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @2517280..2517383 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::discovered StringConcat @2512581..2512656 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::token_subject StringConcat @2514914..2514973 InvokedUnboundedly",
         ],
     );
     pinned(
@@ -749,7 +752,7 @@ fn verdict_changes() {
     );
     pinned(
         "tests/hale/api_binding_run_test.hl",
-        13,
+        2,
         &[
             "Table::holds",
             "Tokens::principal",

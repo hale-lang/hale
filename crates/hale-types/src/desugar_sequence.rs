@@ -11,11 +11,9 @@
 //!
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
 //!    rewrites `T::from_json` (per program).
-//! 2. the api surface: `--api` injects the main locus's `api:` entry,
-//!    and `generate_api` synthesizes the binding for any entry the
-//!    source or the flag spelled, with the roles the caller binds
-//!    (bundle-wide: the main locus in one file, subscribers in
-//!    another).
+//! 2. serve sites: `rpc_expand` turns an `api::serve` into an exposure,
+//!    its surface's rows into an adapter and its receivers' plumbing
+//!    (bundle-wide).
 //! 3. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
 //! 4. construction aliases: a struct literal, variant path or
@@ -42,7 +40,7 @@
 //! The first two generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
 //! shape a declaration (3 onward, [`bundled_stdlib`]) before the
-//! resolved program appends it; it spells no `from_json` and no api.
+//! resolved program appends it; it spells no `from_json` and no serve.
 
 use std::sync::OnceLock;
 
@@ -53,11 +51,6 @@ use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 pub struct Sequence<'a> {
     /// The build's cross-seed rename table (`alias::Name` → mangled).
     pub import_renames: &'a [(Vec<String>, String)],
-    /// The build's `--api` path, if any: the entry the api pass injects.
-    pub api: Option<&'a str>,
-    /// The roles the build's environment binds, if any: what the api
-    /// pass bakes into the binding.
-    pub api_roles: Option<&'a str>,
     /// The seed's default surface name (`surfaces::default_surface_name`
     /// over the bundle's files): the surface the seed's own `@rpc`
     /// handlers feed, which a serve site's rows are selected for.
@@ -68,37 +61,11 @@ pub struct Sequence<'a> {
 ///
 /// Idempotent: a program the sequence already shaped comes back
 /// unchanged, so a caller that cannot tell whether its program went
-/// through it (the test harness), or that ran a pass itself first (a
-/// verb that reports a refused `--api` in its own words), may run it
-/// again. The value is the api surface the sequence generated a binding
-/// for, if it generated one (a second run finds the binding and
-/// generates none). The error is a refused `--api` injection: no main
-/// locus to carry the entry.
-pub fn desugar_before_check(
-    programs: &mut [&mut Program],
-    seq: &Sequence<'_>,
-) -> Result<Option<hale_syntax::api_gen::ApiSurface>, String> {
+/// through it (the test harness) may run it again.
+pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     for p in programs.iter_mut() {
         hale_syntax::json_gen::generate_json_parsers(p);
     }
-    // The api binding joins the root lowering deploys as a param on a
-    // pool of its own, so it is that root's: the entry row's lowering
-    // root, read over the programs as they stand (F.40 phase 3), never
-    // an imported library's `main locus`, and the entry once lowering
-    // deploys the entry (L4). `--api` puts its entry there, and a seed
-    // with no root is refused, saying why.
-    let row = {
-        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
-        crate::entry::entry_row_in(&ro)
-    };
-    let root = row.root().and_then(|m| m.index_in());
-    if let Some(path) = seq.api {
-        let (at, item) = root.ok_or_else(|| api_refusal(row.no_entry()))?;
-        let l = hale_syntax::ast::locus_at_mut(&mut programs[at].items, item)
-            .expect("the entry row names a locus of these programs");
-        hale_syntax::api_gen::inject_api_entry(l, path);
-    }
-    let surface = hale_syntax::api_gen::generate_api(programs, root, seq.api_roles);
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
     crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
@@ -108,21 +75,6 @@ pub fn desugar_before_check(
     // here the passes run without it.
     let stdlib = bundled_stdlib().ok();
     shape(programs, seq, stdlib.as_slice());
-    Ok(surface)
-}
-
-/// Why `--api` has nowhere to put its entry: lowering deploys no `main
-/// locus` of the seed's own (`why` is the row's account of the entry).
-fn api_refusal(why: Option<crate::entry::NoEntry>) -> String {
-    match why {
-        Some(crate::entry::NoEntry::NoMain) => "--api needs a `main locus` to bind: the api entry lives in its \
-                                               `bindings { }` block, and this program has only a bare `fn main`"
-            .to_string(),
-        _ => "--api needs the seed's own `main locus` to bind: the api entry lives in its \
-              `bindings { }` block, and the only `main locus` here is an imported library's, \
-              whose bindings are inert"
-            .to_string(),
-    }
 }
 
 /// The passes that shape a declaration, in order. `context` is read and
@@ -160,7 +112,7 @@ pub fn bundled_stdlib() -> Result<&'static Program, String> {
                         .join("; ");
                     format!("stdlib parse: {}", summary)
                 })?;
-            let seq = Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" };
+            let seq = Sequence { import_renames: &[], default_surface: "" };
             shape(&mut [&mut stdlib], &seq, &[]);
             Ok(stdlib)
         })

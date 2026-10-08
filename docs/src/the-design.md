@@ -82,7 +82,7 @@ records what it cannot see as a hole, never as an assumption.
 | `@effects`, `@no_*`, `causes:`, `depends:`, `@budget` | effect classes per fn and locus, and a DAG between classes | a lattice plus a DAG over the call graph | the seed |
 | `claims { }`, `constitution`, `adopt` | named laws over the graphs above | a law hypergraph over the model | the adopting `main` |
 | `closure { }` | cyclic-closure assertions over lifecycle events | a clause set per locus | the locus |
-| `@export`, `@sealed`, `@gated`, the api binding | the served surface and who may reach it | a subset of the tower's surface with role labels | `main` |
+| `@export`, `@sealed`, `api` blocks and `@rpc` | the served surface and who may reach it | a subset of the tower's surface with role labels | `main` |
 
 The compiler's job is three verbs over those graphs: **close** each
 at its horizon, **relate** what you declared to what it derives

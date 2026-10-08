@@ -418,9 +418,10 @@ their rows), each recognized in its positions and an ordinary `Ident`
 everywhere else:
 
 - **`api`** — at top level, when a name and then `{` follow it: `api
-  Public { … }` declares a surface. It stays the `bindings { api: … }`
-  entry head of the structural path (spec/semantics.md § The api
-  binding) and the `api::serve` path head.
+  Public { … }` declares a surface. It stays an ordinary identifier
+  elsewhere, as the `api::serve` path head (the `bindings { api: … }`
+  entry head of the retired structural path is refused, spec/semantics.md
+  § The api binding).
 - **`rpc`** — at the head of a row inside an `api` block (`rpc
   Orders::place;`), and as the annotation `@rpc` on a locus fn.
 - **`requires`** — after a row's handler, inside `@rpc( … )`, and

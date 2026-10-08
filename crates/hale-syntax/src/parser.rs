@@ -65,8 +65,6 @@ struct FnDecorators {
     unbounded: bool,
     hot: bool,
     budget: Option<u32>,
-    /// GH #1109: `@gated(role: R)`.
-    gated: Option<Ident>,
     /// GH #1417: `@rpc` / `@rpc(requires: [R, …])`.
     rpc: Option<RpcAttr>,
     quantities: Vec<(QuantDim, u64)>,
@@ -122,9 +120,6 @@ impl FnDecorators {
         }
         if self.budget.is_some() {
             fn_decl.budget = self.budget;
-        }
-        if self.gated.is_some() {
-            fn_decl.gated = self.gated;
         }
         if self.rpc.is_some() {
             fn_decl.rpc = self.rpc;
@@ -1359,26 +1354,14 @@ impl Parser {
     /// declared set, not a pattern language (mirrors the trailing
     /// `**` rule for bus subjects). Membership resolution (unknown
     /// name = error, vacuity) lives in `hale-types::claims`.
-    /// GH #1109: `@gated(role: NAME)`, on a locus fn, an `expose` or a
-    /// `publish`. Returns the role and the annotation's span.
-    fn parse_gated_annotation(&mut self) -> Result<(Ident, Span), Diag> {
-        let at = self.expect(TokenKind::At, "@")?;
-        let kw = self.expect_ident("gated")?;
-        if kw.name != "gated" {
-            return Err(Diag::parse(kw.span, "expected `gated`"));
-        }
-        self.expect(TokenKind::LParen, "(")?;
-        let key = self.expect_ident("`role`")?;
-        if key.name != "role" {
-            return Err(Diag::parse(
-                key.span,
-                format!("`@gated` takes `role: <name>`, got `{}`", key.name),
-            ));
-        }
-        self.expect(TokenKind::Colon, ":")?;
-        let role = self.expect_ident("role name")?;
-        let close = self.expect(TokenKind::RParen, ")")?;
-        Ok((role, at.span.merge(close.span)))
+    /// GH #1417 (R4): `@gated(role: R)` is retired; the diagnostic sits on
+    /// the `@` and names the replacement.
+    fn gated_refusal(&self) -> Diag {
+        Diag::parse(self.peek_token().span, RETIRED_GATED)
+    }
+
+    fn at_gated(&self) -> bool {
+        self.at(&TokenKind::At) && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "gated")
     }
 
     /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn.
@@ -3083,10 +3066,7 @@ impl Parser {
                 break;
             }
             if name == "gated" {
-                let (role, gspan) = self.parse_gated_annotation()?;
-                out.gated = Some(role);
-                out.note("gated", gspan);
-                continue;
+                return Err(self.gated_refusal());
             }
             if name == "rpc" {
                 let attr = self.parse_rpc_annotation()?;
@@ -3802,9 +3782,8 @@ impl Parser {
                          `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
                          allocation contract), `@hot` (on a `fn` — \
                          hot-path certification, promotes the hot-path lint \
-                         to errors), `@gated(role: R)` (on a subscribed \
-                         handler, an `expose` or a `publish` — the role a \
-                         caller through the api binding must hold), and the \
+                         to errors), `@rpc` (on a handler — a row of its \
+                         seed's default surface), and the \
                          effect assertions (`@no_syscall` … / `@effects(...)`, \
                          on a `fn`)",
                     ));
@@ -3987,26 +3966,16 @@ impl Parser {
         self.bump(); // consume `bindings` ident
         self.expect(TokenKind::LBrace, "{")?;
         let mut entries = Vec::new();
-        let mut api: Option<ApiBinding> = None;
         let mut hubs = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
-            // GH #1106: `api: unix(...)` binds the program's API, not
-            // one topic. `api` is a contextual keyword in this head
-            // position only, told from a topic name by the `:` that
-            // follows it and the lowercase transport head after that.
+            // GH #1417 (R4): `api: …` bound the program's API from the
+            // `bindings` block; it is retired, and refused here with the
+            // replacement. `api` is told from a topic name by the `:`
+            // that follows it, as it was.
             if matches!(self.peek(), TokenKind::Ident(s) if s == "api")
                 && matches!(self.peek_at(1), TokenKind::Colon)
             {
-                let entry = self.parse_api_binding()?;
-                if let Some(prev) = &api {
-                    return Err(Diag::parse(
-                        entry.span,
-                        "a `bindings { }` block carries one `api:` entry",
-                    )
-                    .with_related(prev.span, "first `api:` entry"));
-                }
-                api = Some(entry);
-                continue;
+                return Err(Diag::parse(self.peek_token().span, RETIRED_API_BINDING));
             }
             // GH #527 B6: a binding may name an IMPORTED topic,
             // `alias::Topic`. The entry keeps its `Ident` shape with
@@ -4042,7 +4011,6 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(BindingsBlock {
             entries,
-            api,
             hubs,
             span: kw_tok.span.merge(close.span),
         })
@@ -4121,213 +4089,6 @@ impl Parser {
             requires: requires.unwrap_or_default(),
             bound,
             on_full,
-        })
-    }
-
-    /// GH #1106: `api: unix("/path", bound: N, on_full: refuse,
-    /// watch_bound: M, on_watch_full: drop_old | drop_new);`. Every
-    /// kwarg is optional here; the checker requires `bound` and
-    /// `on_full` and pairs `watch_bound` with `on_watch_full`, so
-    /// a half-written entry still formats and still gets a located
-    /// diagnostic instead of a parse error.
-    fn parse_api_binding(&mut self) -> Result<ApiBinding, Diag> {
-        let api_tok = self.peek_token().clone();
-        self.bump(); // `api`
-        self.expect(TokenKind::Colon, ":")?;
-        let head = self.expect_ident("api transport (`unix`)")?;
-        if head.name != "unix" {
-            return Err(Diag::parse(
-                head.span,
-                format!(
-                    "expected api transport `unix`, got `{}` (HTTP is a later \
-                     transport)",
-                    head.name
-                ),
-            ));
-        }
-        self.expect(TokenKind::LParen, "(")?;
-        let path_tok = self.peek_token().clone();
-        // The path is an expression on the main locus (review B3): a
-        // literal, or a param the program computed.
-        let path = self.parse_expr()?;
-        let mut bound: Option<(i64, Span)> = None;
-        let mut on_full: Option<(ApiFullPolicy, Span)> = None;
-        let mut watch_bound: Option<(i64, Span)> = None;
-        let mut on_watch_full: Option<(ShedPolicy, Span)> = None;
-        let mut roles: Option<ApiRoles> = None;
-        let mut on_unauthorized: Option<(ApiUnauthorizedPolicy, Span)> = None;
-        while self.eat(&TokenKind::Comma) {
-            if self.at(&TokenKind::RParen) {
-                break;
-            }
-            let key = self.expect_ident("api kwarg name")?;
-            self.expect(TokenKind::Colon, ":")?;
-            match key.name.as_str() {
-                // GH #1109: the membership source the program provides —
-                // an expression on the main locus: a locus literal, or
-                // `self.<param>` (review F6).
-                "roles" => {
-                    let expr = self.parse_expr()?;
-                    roles = Some(ApiRoles {
-                        span: expr.span(),
-                        expr,
-                    });
-                }
-                // GH #1109: the refusal policy at the gate.
-                "on_unauthorized" => {
-                    let p = self.expect_ident("on_unauthorized policy")?;
-                    let policy = match p.name.as_str() {
-                        "refuse" => ApiUnauthorizedPolicy::Refuse,
-                        "drop" => ApiUnauthorizedPolicy::Drop,
-                        other => {
-                            return Err(Diag::parse(
-                                p.span,
-                                format!(
-                                    "unknown on_unauthorized policy `{}` (a caller \
-                                     lacking the role is `refuse`d with a receipt, \
-                                     or the request is `drop`ped)",
-                                    other
-                                ),
-                            ));
-                        }
-                    };
-                    on_unauthorized = Some((policy, key.span.merge(p.span)));
-                }
-                "bound" | "watch_bound" => {
-                    let tok = self.peek_token().clone();
-                    let n = match tok.kind {
-                        TokenKind::IntLit(n) if n > 0 => n,
-                        _ => {
-                            return Err(Diag::parse(
-                                tok.span,
-                                format!(
-                                    "api `{}:` takes a positive integer",
-                                    key.name
-                                ),
-                            ));
-                        }
-                    };
-                    self.bump();
-                    let v = Some((n, key.span.merge(tok.span)));
-                    if key.name == "bound" {
-                        bound = v;
-                    } else {
-                        watch_bound = v;
-                    }
-                }
-                "on_full" => {
-                    let tok = self.expect_ident("api `on_full:` policy")?;
-                    if tok.name != "refuse" {
-                        return Err(Diag::parse(
-                            tok.span,
-                            format!(
-                                "api `on_full:` policy is `refuse` (a caller \
-                                 waiting for an answer cannot be shed), got `{}`",
-                                tok.name
-                            ),
-                        ));
-                    }
-                    on_full = Some((ApiFullPolicy::Refuse, key.span.merge(tok.span)));
-                }
-                "on_watch_full" => {
-                    let tok = self.expect_ident("api `on_watch_full:` policy")?;
-                    let policy = match tok.name.as_str() {
-                        "drop_old" => ShedPolicy::DropOld,
-                        "drop_new" => ShedPolicy::DropNew,
-                        other => {
-                            return Err(Diag::parse(
-                                tok.span,
-                                format!(
-                                    "api `on_watch_full:` policy is `drop_old` or \
-                                     `drop_new`, got `{}`",
-                                    other
-                                ),
-                            ));
-                        }
-                    };
-                    on_watch_full = Some((policy, key.span.merge(tok.span)));
-                }
-                other => {
-                    return Err(Diag::parse(
-                        key.span,
-                        format!(
-                            "unknown api kwarg `{}` (recognized: `bound`, `on_full`, \
-                             `watch_bound`, `on_watch_full`, `on_unauthorized`, `roles`)",
-                            other
-                        ),
-                    ));
-                }
-            }
-        }
-        self.expect(TokenKind::RParen, ")")?;
-        // GH #1137, #1135: clauses after the transport — `serve: [param,
-        // …]` and `http(host, port, principals: <source>)`.
-        let mut serve: Vec<Ident> = Vec::new();
-        let mut http: Option<crate::ast::ApiHttp> = None;
-        while self.eat(&TokenKind::Comma) {
-            let clause = self.expect_ident("api clause (`serve`, `http`)")?;
-            match clause.name.as_str() {
-                "http" => {
-                    self.expect(TokenKind::LParen, "(")?;
-                    let host = self.parse_expr()?;
-                    self.expect(TokenKind::Comma, ",")?;
-                    let port = self.parse_expr()?;
-                    let mut principals = None;
-                    while self.eat(&TokenKind::Comma) {
-                        if self.at(&TokenKind::RParen) {
-                            break;
-                        }
-                        let key = self.expect_ident("http kwarg name (`principals`)")?;
-                        self.expect(TokenKind::Colon, ":")?;
-                        if key.name != "principals" {
-                            return Err(Diag::parse(
-                                key.span,
-                                format!("unknown http kwarg `{}` (recognized: `principals`)", key.name),
-                            ));
-                        }
-                        principals = Some(self.parse_expr()?);
-                    }
-                    let close = self.expect(TokenKind::RParen, ")")?;
-                    http = Some(crate::ast::ApiHttp { host, port, principals, span: clause.span.merge(close.span) });
-                }
-                "serve" => {
-                    self.expect(TokenKind::Colon, ":")?;
-                    self.expect(TokenKind::LBracket, "[")?;
-                    while !self.at(&TokenKind::RBracket) {
-                        serve.push(self.expect_ident("a param of the main locus")?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RBracket, "]")?;
-                }
-                other => {
-                    return Err(Diag::parse(
-                        clause.span,
-                        format!(
-                            "unknown api clause `{}` (after the transport: `serve: \
-                             [param, …]` or `http(host, port, principals: …)`)",
-                            other
-                        ),
-                    ));
-                }
-            }
-        }
-        let semi = self.expect(TokenKind::Semi, ";")?;
-        Ok(ApiBinding {
-            transport: ApiTransport::Unix {
-                path,
-                span: path_tok.span,
-            },
-            roles,
-            bound,
-            on_full,
-            watch_bound,
-            on_unauthorized,
-            on_watch_full,
-            serve,
-            http,
-            span: api_tok.span.merge(semi.span),
         })
     }
 
@@ -5433,24 +5194,10 @@ impl Parser {
         self.expect(TokenKind::LBrace, "{")?;
         let mut members = Vec::new();
         while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
-            // GH #1109: `@gated(role: R) expose x: T;`.
-            let gated = if self.at(&TokenKind::At) {
-                Some(self.parse_gated_annotation()?)
-            } else {
-                None
-            };
-            let mut member = self.parse_contract_member()?;
-            if let Some((role, gspan)) = gated {
-                if member.direction != ContractDirection::Expose {
-                    return Err(Diag::parse(
-                        gspan,
-                        "`@gated` goes on an `expose` member: a `consume` is \
-                         the parent's read of its child, never a caller's",
-                    ));
-                }
-                member.span = gspan.merge(member.span);
-                member.gated = Some(role);
+            if self.at_gated() {
+                return Err(self.gated_refusal());
             }
+            let member = self.parse_contract_member()?;
             members.push(member);
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
@@ -5479,8 +5226,7 @@ impl Parser {
                 direction,
                 name: ContractName::Inferred,
                 ty: None,
-                gated: None,
-                span: direction_tok.span.merge(semi.span),
+                                span: direction_tok.span.merge(semi.span),
             });
         }
         // Mode keywords are admitted as contract names per the
@@ -5493,8 +5239,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ContractMember {
-            gated: None,
-            direction,
+                        direction,
             name: ContractName::Named(name),
             ty: Some(ty),
             span: direction_tok.span.merge(semi.span),
@@ -5506,29 +5251,10 @@ impl Parser {
         self.expect(TokenKind::LBrace, "{")?;
         let mut members = Vec::new();
         while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
-            // GH #1109: `@gated(role: R) publish T;`.
-            let gated = if self.at(&TokenKind::At) {
-                Some(self.parse_gated_annotation()?)
-            } else {
-                None
-            };
-            let mut member = self.parse_bus_member()?;
-            if let Some((role, gspan)) = gated {
-                match &mut member {
-                    BusMember::Publish { gated, span, .. } => {
-                        *gated = Some(role);
-                        *span = gspan.merge(*span);
-                    }
-                    BusMember::Subscribe { .. } => {
-                        return Err(Diag::parse(
-                            gspan,
-                            "`@gated` goes on the handler a `subscribe` names, \
-                             not on the `subscribe` line (or on a `publish`, \
-                             to gate the stream)",
-                        ));
-                    }
-                }
+            if self.at_gated() {
+                return Err(self.gated_refusal());
             }
+            let member = self.parse_bus_member()?;
             members.push(member);
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
@@ -5688,8 +5414,7 @@ impl Parser {
                     subject,
                     ty,
                     alias,
-                    gated: None,
-                    span: kw.span.merge(semi.span),
+                                        span: kw.span.merge(semi.span),
                     id: NodeId::NONE,
                 })
             }
@@ -6161,19 +5886,7 @@ impl Parser {
                 Ok(PerspectiveMember::SerializeAs(ty))
             }
             TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
-            // A `@gated(role:)` before a perspective's fn is taken onto
-            // the fn so the role law refuses it by its rule (a
-            // perspective's fns are not gated) rather than as a stray
-            // token; no other annotation is a perspective member.
-            TokenKind::At if matches!(self.peek_at(1), TokenKind::Ident(s) if s == "gated") => {
-                let mut decos = FnDecorators::default();
-                let (role, gspan) = self.parse_gated_annotation()?;
-                decos.gated = Some(role);
-                decos.note("gated", gspan);
-                let mut f = self.parse_contract_fn()?;
-                decos.apply_to_fn(&mut f);
-                Ok(PerspectiveMember::Fn(f))
-            }
+            TokenKind::At if self.at_gated() => Err(self.gated_refusal()),
             // Phase 2c: the perspective contract's bus surface.
             TokenKind::Bus => self.parse_bus_block().map(PerspectiveMember::Bus),
             other => Err(Diag::parse(
@@ -6643,8 +6356,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
-                gated: None,
-                rpc: None,
+                                rpc: None,
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
@@ -6675,8 +6387,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
-                gated: None,
-                rpc: None,
+                                rpc: None,
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
@@ -6703,8 +6414,7 @@ impl Parser {
             ffi,
             export: false,
             unbounded: false,
-            gated: None,
-            rpc: None,
+                        rpc: None,
             budget: None,
             hot: false,
             effects: Vec::new(),
@@ -8722,6 +8432,22 @@ fn reserved_name_message(kw: &str, what: &str) -> String {
 
 /// Why the four printers are claimed — shared, because the reason is
 /// the same sentence for all of them and it is not the usual one.
+/// GH #1417 (R4): the refusal of `@gated(role: R)`, which gated a handler,
+/// an `expose` or a `publish` through the api binding.
+const RETIRED_GATED: &str = "`@gated` is retired: a role requirement is `requires` on the \
+     operation's row, `api NAME { rpc Locus::handler requires: [role]; }` or \
+     `@rpc(requires: [role])` on the handler, and on a stream the topic binding's \
+     `Topic: self.hub requires: [role];` (spec/api.md)";
+
+/// GH #1417 (R4): the refusal of `bindings { api: … }`, with its `roles:`,
+/// `serve:`, `http(…)` and the exposed reads it made of `expose` members.
+const RETIRED_API_BINDING: &str = "`bindings { api: … }` is retired: a program serves a surface. \
+     Declare the operations as `api NAME { rpc Locus::handler requires: [role]; }` \
+     (or `@rpc` on the handler) and serve them with `api::serve(NAME, unix::Rpc { … })` \
+     or `http::Rpc { … }`, the role sources being the transport's `roles:` and \
+     `principals:`; a stream is a topic binding to a hub, `Topic: self.hub requires: \
+     [role];`; a read is an `rpc` row whose handler returns the value (spec/api.md)";
+
 const PRINTER_CLAIM: &str =
     "the printers are variadic over every printable type, and the \
      Hale-source standard library is merged into this same global fn \

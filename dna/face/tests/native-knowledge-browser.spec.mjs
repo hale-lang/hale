@@ -135,7 +135,7 @@ test('native Knowledge: lost POST reply and API restart recover by GET only afte
   await page.unroute('**/commands'); await service.restart();
   const recovered = responseFor(page, service, 'GET'); await page.reload();
   const response = await recovered; expect(response.status()).toBe(200);
-  expect((await response.json()).value.receipt.command_id).toBe(delivered.receipt.command_id);
+  expect((await response.json()).receipt.command_id).toBe(delivered.receipt.command_id);
   await observed(page); expect(posts).toHaveLength(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-recovered-mobile.png') });

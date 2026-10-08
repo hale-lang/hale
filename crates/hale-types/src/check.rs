@@ -540,19 +540,14 @@ pub struct CheckInputs<'a> {
     /// text, adoption and membership, never types, so it is total over a
     /// program that does not typecheck.
     pub laws: &'a crate::claims::LawSelection,
-    /// The role rows (the snapshot's `api_surface` cell, F.40 phase 4,
-    /// A4): every `role` declaration, `@gated` site and the api entry's
-    /// role source, which the role rules read. Like law selection they
-    /// read declarations only, so they are total over a program that does
-    /// not typecheck.
+    /// The role rows (the snapshot's `role_rows` cell, F.40 phase 4,
+    /// A4): every `role` declaration, which the role rules read. Like law
+    /// selection they read declarations only, so they are total over a
+    /// program that does not typecheck.
     pub roles: &'a crate::roles::RoleRows,
-    /// The served surface the api binding was generated from, if the
-    /// program has an `api:` entry (`Snapshot::api_surface`, the desugar
-    /// sequence's): the api entry's rules read it.
-    pub api_surface: Option<&'a hale_syntax::api_gen::ApiSurface>,
     /// The surface rows (GH #1417, the snapshot's `surface` cell): the
     /// `api` blocks' and `@rpc` handlers' rows, which the surface laws
-    /// read beside the api entry's rules. They read declarations, the
+    /// read. They read declarations, the
     /// placement table's pools and the topic rows, so they are total
     /// over a program that does not typecheck.
     pub surfaces: &'a crate::surfaces::SurfaceRows,
@@ -573,7 +568,7 @@ pub struct CheckInputs<'a> {
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
 /// [`crate::bundle_law_selection`], [`crate::roles::role_rows`],
-/// [`crate::bundle_api_surface`], the bus and ownership graphs, by the snapshot's producers; the effect rows when
+/// the bus and ownership graphs, by the snapshot's producers; the effect rows when
 /// a rule asks), over the bundle [`crate::with_identities`] numbers. `top`
 /// is read beside the numbered copy: a scope names declarations, not
 /// sites, so the one built over `bundle` is the copy's.
@@ -610,8 +605,7 @@ fn check_numbered_bundle(
     let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
-    let roles = crate::roles::role_rows(bundle, &entry);
-    let api_surface = crate::bundle_api_surface(bundle, &entry);
+    let roles = crate::roles::role_rows(bundle);
     let surfaces = crate::surfaces::surface_rows(bundle, &entry, &placement, &top.topics);
     let units = crate::units::derive_unit_rows(bundle);
     let inputs = CheckInputs {
@@ -631,7 +625,6 @@ fn check_numbered_bundle(
         uses: &uses,
         laws: &laws,
         roles: &roles,
-        api_surface: api_surface.as_ref(),
         surfaces: &surfaces,
         units: &units,
     };
@@ -685,7 +678,7 @@ pub fn check_bundle_reporting(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
-    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces));
+    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
@@ -4826,10 +4819,7 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
         // codegen handles both publish-only
         // and subscribe-bearing programs.
                         }
-    if let Some(surface) = inputs.api_surface {
-        check_api_binding(surface, diags);
-    }
-    diags.extend(crate::roles::role_laws(inputs.roles, inputs.bus, &top.topics, bindings));
+    diags.extend(crate::roles::role_laws(inputs.roles));
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -4842,77 +4832,6 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                 ),
             ));
         }
-    }
-}
-
-/// GH #1106: the `api:` entry. The knobs the entry must carry, the
-/// one-replier rule, and what the api leaves out. The surface is the
-/// one `api_gen` emitted from (`CheckInputs::api_surface`: the
-/// snapshot's, the desugar sequence's), so a warning here names exactly
-/// what the binding will not serve.
-fn check_api_binding(surface: &hale_syntax::api_gen::ApiSurface, diags: &mut Vec<Diag>) {
-    let b = &surface.binding;
-    if b.bound.is_none() || b.on_full.is_none() {
-        diags.push(Diag::ty(
-            b.span,
-            format!(
-                "api binding: `bound:` and `on_full: refuse` are required — the \
-                 request side of the binding needs a bound and a policy (the dev \
-                 default `hale run --api` uses is `bound: {}, on_full: refuse`)",
-                hale_syntax::api_gen::DEV_BOUND
-            ),
-        ));
-    }
-    if b.watch_bound.is_some() != b.on_watch_full.is_some() {
-        diags.push(Diag::ty(
-            b.watch_bound
-                .map(|(_, s)| s)
-                .or(b.on_watch_full.map(|(_, s)| s))
-                .unwrap_or(b.span),
-            "api binding: `watch_bound:` and `on_watch_full:` go together — a \
-             watcher's queue needs a bound and a policy (`drop_old` or \
-             `drop_new`); omit both to reuse `bound` with `drop_old`"
-                .to_string(),
-        ));
-    }
-    // GH #1135: an HTTP transport says who its bearers are; without a
-    // source every token is nobody and every request is refused.
-    if let Some(h) = &b.http {
-        if h.principals.is_none() {
-            diags.push(Diag::ty(
-                h.span,
-                "api binding: `http(…)` needs `principals: <source>` — a locus \
-                 satisfying `std::api::BearerSource` that says who a bearer token \
-                 is; without one the transport refuses every request"
-                    .to_string(),
-            ));
-        }
-    }
-    for (span, why) in &surface.serve_errors {
-        diags.push(Diag::ty(*span, format!("api binding: {}", why)));
-    }
-    for (topic, first, second) in &surface.ambiguous_replies {
-        diags.push(
-            Diag::ty(
-                *second,
-                format!(
-                    "api binding: topic `{}` has two subscribers that declare a \
-                     return type, so the reply through the binding would be \
-                     ambiguous; at most one subscriber of a topic answers",
-                    topic
-                ),
-            )
-            .with_related(*first, "the first replying handler"),
-        );
-    }
-    for ex in &surface.excluded {
-        diags.push(Diag::warn(
-            b.span,
-            format!(
-                "api binding: {} is not served through the binding — {}",
-                ex.what, ex.reason
-            ),
-        ));
     }
 }
 
@@ -5074,15 +4993,6 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     // A subject has a publisher if some locus publishes it (exactly
     // or via wildcard), it is bound to a transport (external peer),
     // or it's referenced cross-seed. Same for subscriber.
-    // GH #1106: an api binding makes every subscribed topic a command a
-    // caller may publish and every published topic a stream a caller
-    // may subscribe, so neither half of this lint applies under one.
-    // The binding that binds is the entry's: an imported `main`'s api
-    // entry is inert (GH #1104 piece 5), and a module-nested `main` is
-    // not the entry (F.40 phase 3, E0).
-    let api_bound = entry.entry().and_then(|m| m.decl(bundle)).is_some_and(|l| {
-        l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some()))
-    });
     let hub_bound: BTreeSet<&str> = entry
         .entry()
         .and_then(|m| m.decl(bundle))
@@ -5095,16 +5005,14 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         .flatten()
         .collect();
     let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
-        api_bound
-            || row.is_some_and(|r| {
-                r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
-            })
+        row.is_some_and(|r| {
+            r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
+        })
     };
     let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
-        api_bound
-            || row.is_some_and(|r| {
-                r.subscribed.is_some() || r.subscribed_by_pattern || r.bound || r.cross_seed
-            })
+        row.is_some_and(|r| {
+            r.subscribed.is_some() || r.subscribed_by_pattern || r.bound || r.cross_seed
+        })
     };
 
     // 1) Declared topics — the row of their wire subject.
@@ -7583,7 +7491,7 @@ impl<'a> Checker<'a> {
                 // handler from another process as `local`, which must
                 // never read as trust, so that combination is refused.
                 let ctx_param = match handler_fn.params.as_slice() {
-                    [_, c] if hale_syntax::api_gen::is_context_type(&c.ty) => Some(c),
+                    [_, c] if hale_syntax::api_names::is_context_type(&c.ty) => Some(c),
                     _ => None,
                 };
                 if let Some(c) = ctx_param {

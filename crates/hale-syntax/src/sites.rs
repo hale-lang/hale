@@ -294,19 +294,6 @@ macro_rules! walk {
                                 struct_inits(& $($m)? codec.inits, f);
                             }
                         }
-                        if let Some(api) = & $($m)? bb.api {
-                            match & $($m)? api.transport {
-                                ApiTransport::Unix { path, .. } => expr(path, f),
-                            }
-                            if let Some(roles) = & $($m)? api.roles {
-                                expr(& $($m)? roles.expr, f);
-                            }
-                            if let Some(http) = & $($m)? api.http {
-                                expr(& $($m)? http.host, f);
-                                expr(& $($m)? http.port, f);
-                                opt_expr(& $($m)? http.principals, f);
-                            }
-                        }
                     }
                     LocusMember::Placement(pb) => {
                         for entry in & $($m)? pb.entries {

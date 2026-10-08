@@ -122,14 +122,14 @@ pub(crate) fn run_inputs(args: &[String]) -> ExitCode {
 
 /// The dispatch arm `main` held inline for this verb, moved out verbatim (C5 step 8).
 pub(crate) fn run_mcp_cmd(args: &[String]) -> ExitCode {
-    // GH #1107: `hale mcp --app <socket>` serves a running api
-    // binding's commands as tools and its reads as resources.
+    // GH #1107, #1417: `hale mcp --app <endpoint>` serves a served
+    // exposure's members as tools, read from its description.
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
     return match rest.as_slice() {
         [] => mcp::run_mcp(),
-        [flag, sock] if flag == "--app" => mcp::run_mcp_app(sock),
+        [flag, tail @ ..] if flag == "--app" => mcp::run_mcp_app(tail),
         _ => {
-            eprintln!("usage: hale mcp [--app <socket>]");
+            eprintln!("usage: hale mcp [--app <endpoint> [--token T]]");
             ExitCode::from(2)
         }
     };

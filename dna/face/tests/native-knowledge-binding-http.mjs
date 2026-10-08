@@ -58,7 +58,7 @@ async function decide(receipt) {
   await service.quiesce(); await asActor('bob');
   const command = verdict(receipt, 'bob');
   const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(command)) });
-  assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response));
+  assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.ok, true, JSON.stringify(response));
   const decided = await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted');
   assert.equal(decided.activation.state, 'unknown', 'Review receipt must not claim node adoption for a binding change');
   await service.quiesce(); await asActor('alice'); return decided;
@@ -94,7 +94,7 @@ try {
     assert.equal(exact.review.state, 'pending'); assert.equal(admissions(command.request_id).length, 1);
     // The binding answers; the provider refuses the proposer's own verdict.
     const self = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(verdict(created, 'alice'))) });
-    assert.equal(self.status, 200, JSON.stringify(self)); assert.equal(self.body.value?.code, 'forbidden', JSON.stringify(self));
+    assert.equal(self.status, 200, JSON.stringify(self)); assert.equal(self.body.code, 'forbidden', JSON.stringify(self));
     await save('candidate-read.json', exact.response); await save('created-receipt.json', created);
     return { request_id: command.request_id, candidate: created.binding.candidate_digest, rationale_bytes: bytes(rationale), rationale_digest: digest(rationale), encoded_request_bytes: bytes(JSON.stringify(command)) };
   });

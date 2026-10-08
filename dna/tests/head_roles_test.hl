@@ -1,27 +1,18 @@
-// dna/tests/head_roles_test.hl — the head is the binding, and the record
-// answers who holds which position (GH #1109, #1104 piece 5).
+// dna/tests/head_roles_test.hl — the head serves its commands as a surface, and
+// the record answers who holds which position (GH #1109, #1104 piece 5;
+// GH #1417 R4).
 //
-// `dna/api` carries an api entry on its main locus with
-// `dna::RecordRoles` as the membership source. The fixture builds the
-// head from a copy of the tree, gives it a record whose graph says ada
-// holds the board and maps this process's uid to ada, and drives the
-// socket: the description is served; the full description — a read
-// gated on `owner`, which the source answers as `position:board` — is
-// this caller's while the record says so, refused naming `owner` once a
-// `graph.retired` row takes the holds edge out (read fresh: the record
-// moved); the served slice and `hale mcp --app`'s tool list are exactly
-// the commands the record's seats open (nothing before a seat, the
-// owner's and a position's after the board, the reviewer's after that
-// seat); a call through an open gate reaches the handler, one through a
-// closed gate is `unknown` to this caller.
-//
-// The head also serves the first two of its operations as a surface
-// (GH #1417 R3: `HeadCommands`, `lookup` and `file_friction requires:
-// [position]`, over `unix::Rpc` on a socket of its own, beside the binding's).
-// The same fixture drives it: the surface answers the record's seats as the
-// binding does (the exposure's own `dna::RecordRoles` reads the same record),
-// a call through it reaches the very handler the binding's topic does, and
-// the binding's description is untouched.
+// `dna/api` serves the surface `HeadCommands` over `unix::Rpc` with
+// `dna::RecordRoles` as the role source. The fixture builds the head from a
+// copy of the tree, gives it a record whose graph says ada holds the board
+// and maps this process's uid to ada, and drives the socket: the served
+// description lists exactly the members the record's seats open (the two
+// ungated ones before a seat, the owner's and a position's after the board,
+// the reviewer's after that seat, and fewer again once the board's edge is
+// retired: read fresh, the record moved); a call through a row whose role the
+// caller holds reaches the handler, one through a row it does not is refused
+// `unauthorized`, naming what the row requires. The description is the
+// rows' (`hale check --api` prints the same members).
 
 import "../core" as dna;
 import "../operations" as ops;
@@ -108,21 +99,6 @@ fn has(s: String, needle: String) -> Bool {
     return std::str::contains(s, needle);
 }
 
-// The command names a served description lists, space-separated, in
-// the description's own order.
-@unbounded
-fn commands_of(receipt: String) -> String {
-    let value = std::json::find_field_raw(receipt, "value");
-    let mut out = "";
-    let mut it = std::json::array_first(std::json::find_field_raw(value, "commands"));
-    while !it.done {
-        let name = std::json::find_string_field(it.element, "name");
-        out = out + (if len(out) > 0 { " " } else { "" }) + name;
-        it = std::json::array_next(it);
-    }
-    return out;
-}
-
 // The member names a surface's served description lists, space-separated.
 @unbounded
 fn members_of(line: String) -> String {
@@ -141,11 +117,6 @@ fn members_of(line: String) -> String {
 // caller's to name (the standalone head files nothing, whatever it names).
 fn friction(id: String) -> String {
     return "{\"id\":\"" + id + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"f-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"attempt-1\",\"text\":\"the hat named no tool grant for a judgment\"}}";
-}
-
-// Whether a tool list names `name` (compact or pretty JSON).
-fn named(out: String, name: String) -> Bool {
-    return has(out, "\"name\":\"" + name + "\"") || has(out, "\"name\": \"" + name + "\"");
 }
 
 locus App {
@@ -186,11 +157,10 @@ locus App {
         let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna\" \"$1/dna\" && rm -rf \"$1/dna/tests\"\nsh\n" + scratch + "\n" + source());
         std::test::assert_eq_int(copied.code, 0, "the tree is copied: " + copied.stderr);
         let built = dna::run_tool_timeout(600, hale + "\nbuild\n" + scratch + "/dna/api");
-        std::test::assert_eq_int(built.code, 0, "the head builds with its api entry: " + built.stderr);
-        let emitted = dna::run_tool_timeout(300, hale + "\ncheck\n--dump-api\n" + scratch + "/dna/api");
+        std::test::assert_eq_int(built.code, 0, "the head builds with its surface: " + built.stderr);
+        let emitted = dna::run_tool_timeout(300, hale + "\ncheck\n--api\n" + scratch + "/dna/api");
         std::test::assert_eq_int(emitted.code, 0, "the head describes itself: " + emitted.stderr);
-        let description = std::str::trim(emitted.stdout);
-        std::test::assert(has(description, "\"app\":\"Head\""), "the description names the head: " + description);
+        std::test::assert(has(emitted.stdout, "\"app\": \"Head\"") && has(emitted.stdout, "\"name\": \"HeadCommands\""), "the description names the head's surface: " + emitted.stdout);
 
         // A record: three positions and nobody seated; this uid is ada.
         self.repo = scratch + "/rec";
@@ -202,101 +172,76 @@ locus App {
         self.append(j, "graph.node", ops::graph_node_id("position", "reviewer"), ops::graph_node_body("position", "reviewer", "", ""));
 
         let sock = scratch + "/head.sock";
-        let rpc = scratch + "/head.rpc";
         let port = dna::free_port(0);
         let head = Proc { };
-        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_RPC_SOCKET=" + rpc + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
+        std::test::assert(head.start("env\nHALE_DNA_RPC_SOCKET=" + sock + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
         let api = Api { };
-        std::test::assert(api.connect(sock), "connected to the head's socket");
-        let surface = Api { };
-        std::test::assert(surface.connect(rpc), "connected to the head's surface");
+        std::test::assert(api.connect(sock), "connected to the head's surface");
 
         // Seated nowhere, a principal may raise work and look a command
-        // up — the two ungated commands — and nothing else; the full
-        // description is not theirs.
+        // up — the ungated rows — and nothing else. The call reaches the
+        // handler: the standalone head composes no provider, and the
+        // handler answers the provider's refusal.
         let none = api.ask("{\"id\":1,\"describe\":true}");
-        std::test::assert(has(none, "\"ok\":true") && has(none, "\"app\":\"Head\""), "the head serves its description: " + none);
-        std::test::assert_eq_str(commands_of(none), "CommandLookup KnowledgeLookup TaskCreate", "seated nowhere: the ungated commands only");
-        // The surface, seated nowhere: the read (`lookup` takes only an
-        // authenticated peer) is the caller's and the durable command
-        // (`file_friction`, a position's) is not. The call reaches the
-        // handler the binding's topic reaches: the standalone head composes
-        // no provider, and the handler answers the provider's refusal.
-        std::test::assert_eq_str(members_of(surface.ask("{\"describe\":true}")), "Commands::lookup", "seated nowhere: the surface lists the read only");
-        let looked = surface.ask("{\"id\":\"s-1\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"look-1\"}}");
-        std::test::assert(has(looked, "\"id\":\"s-1\",\"ok\":true") && has(looked, "\"code\":\"commands_unsupported\""), "lookup on the surface reaches the handler: " + looked);
-        let looked_on_binding = api.ask("{\"id\":11,\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"look-1\"}}");
-        std::test::assert(has(looked_on_binding, "\"ok\":true") && has(looked_on_binding, "\"code\":\"commands_unsupported\""), "and the binding's topic reaches the same one: " + looked_on_binding);
-        let denied = surface.ask(friction("s-2"));
+        std::test::assert(has(none, "\"ok\":true") && has(none, "\"surface\":\"HeadCommands\""), "the head serves its description: " + none);
+        std::test::assert_eq_str(members_of(none), "Commands::create_task Commands::lookup Commands::lookup_knowledge", "seated nowhere: the ungated rows only");
+        // the served description is the surface `hale check --api` printed:
+        // one digest
+        let at = std::str::index_of(emitted.stdout, "\"digest\": \"");
+        let after = if at < 0 { "" } else { emitted.stdout[(at + 11)..len(emitted.stdout)] };
+        let checked_digest = if at < 0 { "" } else { after[0..std::str::index_of(after, "\"")] };
+        std::test::assert(std::str::starts_with(checked_digest, "fnv1a64:"), "the check prints the surface's digest: " + emitted.stdout);
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(none, "value"), "digest"), checked_digest, "and the head serves that digest");
+        let looked = api.ask("{\"id\":\"s-1\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"look-1\"}}");
+        std::test::assert(has(looked, "\"id\":\"s-1\",\"ok\":true") && has(looked, "\"code\":\"commands_unsupported\""), "lookup reaches the handler: " + looked);
+        let denied = api.ask(friction("s-2"));
         std::test::assert(has(denied, "\"id\":\"s-2\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "a friction entry needs a position: " + denied);
-        let locked = api.ask("{\"id\":2,\"describe\":\"full\"}");
-        std::test::assert(has(locked, "\"kind\":\"unauthorized\"") && has(locked, "\"role\":\"owner\""), "the full description is the board's: " + locked);
 
         // ada takes the board: owner, and thereby a position — every
-        // command but the reviewer's, listed the moment the record says so.
+        // row but the reviewer's, listed the moment the record says so.
         let ada_board = self.holds(j, "board", "ada");
-        let seated = self.slice_with(api, 3, "TaskReassign");
-        std::test::assert_eq_str(commands_of(seated), "AttemptAllowance AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise OrganizationPropose PersonRetire PracticePropose TaskCreate TaskReassign", "the board's slice: the owner's and a position's commands, not the reviewer's");
-        // The surface follows the record: once ada holds a seat the exposure's
-        // own source says so (it reads the record within its one-second bound)
+        let seated = self.slice_with(api, 3, "Commands::reassign_task");
+        std::test::assert_eq_str(members_of(seated), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "the board's slice: the owner's and a position's rows, not the reviewer's");
+        // The exposure follows the record: once ada holds a seat the role
+        // source says so (it reads the record within its one-second bound)
         // and the friction entry reaches the handler.
-        let mut filed = surface.ask(friction("s-3"));
+        let mut filed = api.ask(friction("s-3"));
         let mut tries = 0;
         while tries < 40 && has(filed, "\"kind\":\"unauthorized\"") {
             std::time::sleep(100ms);
             std::time::sleep(100ms);
-            filed = surface.ask(friction("s-3"));
+            filed = api.ask(friction("s-3"));
             tries = tries + 1;
         }
         std::test::assert(has(filed, "\"id\":\"s-3\",\"ok\":true") && has(filed, "\"code\":\"commands_unsupported\""), "the position's friction entry reaches the handler: " + filed);
-        std::test::assert_eq_str(members_of(surface.ask("{\"describe\":true}")), "Commands::file_friction Commands::lookup", "the surface lists the position's command now");
-        let full = api.ask("{\"id\":4,\"describe\":\"full\"}");
-        std::test::assert(has(full, "\"ok\":true"), "the board's holder reads the full description, by the record: " + full);
-        std::test::assert_eq_str(std::json::find_field_raw(full, "value"), description, "and it is the emitted document");
-        std::test::assert(has(full, ",\"role\":\"owner\"}"), "authorized as owner: " + full);
-
-        // hale mcp --app lists exactly that slice as tools (M3).
-        let mcp = dna::run_tool_timeout(60, "sh\n-c\nprintf '%s\\n%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' | \"$1\" mcp --app \"$2\"\nsh\n" + hale + "\n" + sock);
-        std::test::assert_eq_int(mcp.code, 0, "hale mcp --app over the head: " + mcp.stderr);
-        std::test::assert(named(mcp.stdout, "TaskReassign") && named(mcp.stdout, "AttemptClaim") && named(mcp.stdout, "TaskCreate"), "the tools are the slice's commands: " + mcp.stdout);
-        std::test::assert(!named(mcp.stdout, "ReviewVerdict"), "and not the reviewer's: " + mcp.stdout);
-
-        // A command through the gate runs the handler: the standalone head
-        // composes no provider, so the typed path answers the provider's
-        // refusal in a CommandReply; a gate the record does not open is
-        // outside this caller's slice — `unknown`, naming the command,
-        // never a hint of what the role would be.
-        let raised = api.ask("{\"id\":5,\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}");
+        let raised = api.ask("{\"id\":5,\"call\":\"Commands::create_task\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}");
         std::test::assert(has(raised, "\"ok\":true") && has(raised, "\"code\":\"commands_unsupported\""), "the handler ran and the provider answered: " + raised);
-        let not_reviewer = api.ask("{\"id\":6,\"call\":\"ReviewVerdict\",\"payload\":{\"request_id\":\"v-1\",\"review_id\":\"r1\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict\":\"approve\",\"comment\":\"\"}}");
-        std::test::assert(has(not_reviewer, "\"kind\":\"unknown\"") && has(not_reviewer, "\"reason\":\"ReviewVerdict\""), "a verdict needs the reviewer position: " + not_reviewer);
+        let not_reviewer = api.ask("{\"id\":6,\"call\":\"Commands::verdict\",\"payload\":{\"request_id\":\"v-1\",\"review_id\":\"r1\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verdict\":\"approve\",\"comment\":\"\"}}");
+        std::test::assert(has(not_reviewer, "\"kind\":\"unauthorized\"") && has(not_reviewer, "\"requires\":[\"reviewer\"]"), "a verdict needs the reviewer position: " + not_reviewer);
 
         // ada is seated as reviewer too: the verdict joins the slice.
         self.holds(j, "reviewer", "ada");
-        let reviewing = self.slice_with(api, 7, "ReviewVerdict");
-        std::test::assert_eq_str(commands_of(reviewing), "AttemptAllowance AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise OrganizationPropose PersonRetire PracticePropose ReviewVerdict TaskCreate TaskReassign", "every command");
+        let reviewing = self.slice_with(api, 7, "Commands::verdict");
+        std::test::assert_eq_str(members_of(reviewing), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "every row");
 
         // The record moves: the board's edge is taken out, and the source
         // reads it fresh — it asks the git record whether it moved at
         // most once a second, so the answer changes within that bound.
         self.append(j, "graph.retired", ada_board, "{}");
-        let mut gone = api.ask("{\"id\":8,\"describe\":\"full\"}");
-        let mut tries = 0;
-        while tries < 40 && !has(gone, "\"ok\":false") {
+        let mut gone = api.ask("{\"id\":8,\"describe\":true}");
+        tries = 0;
+        while tries < 40 && has(gone, "\"name\":\"Commands::retire_person\"") {
             std::time::sleep(100ms);
             std::time::sleep(100ms);
-            gone = api.ask("{\"id\":8,\"describe\":\"full\"}");
+            gone = api.ask("{\"id\":8,\"describe\":true}");
             tries = tries + 1;
         }
-        std::test::assert(has(gone, "\"kind\":\"unauthorized\"") && has(gone, "\"role\":\"owner\""), "once the record no longer says so, the full description is refused: " + gone);
-        let still = api.ask("{\"id\":9,\"describe\":true}");
-        std::test::assert_eq_str(commands_of(still), "AttemptAllowance AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise PracticePropose ReviewVerdict TaskCreate", "the reviewer's seat still holds a position: the owner's three are gone, the rest stay");
-        let not_owner = api.ask("{\"id\":10,\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"grace\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}");
-        std::test::assert(has(not_owner, "\"kind\":\"unknown\"") && has(not_owner, "\"reason\":\"PersonRetire\""), "retiring a person is the board's: " + not_owner);
+        std::test::assert_eq_str(members_of(gone), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "the reviewer's seat still holds a position: the owner's three rows are gone, the rest stay");
+        let not_owner = api.ask("{\"id\":10,\"call\":\"Commands::retire_person\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"grace\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}");
+        std::test::assert(has(not_owner, "\"kind\":\"unauthorized\"") && has(not_owner, "\"requires\":[\"owner\"]"), "retiring a person is the board's: " + not_owner);
 
         head.stop();
         std::io::fs::unlink(sock) or discard;
-        std::io::fs::unlink(rpc) or discard;
         dna::scratch_done(scratch);
     }
 }

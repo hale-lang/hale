@@ -322,7 +322,7 @@ pub fn default_surface_name(keys: &[&str]) -> String {
 fn value_params(f: &FnDecl) -> Vec<(String, TypeExpr, Span)> {
     let mut ps: Vec<(String, TypeExpr, Span)> =
         f.params.iter().map(|p| (p.name.name.clone(), p.ty.clone(), p.span)).collect();
-    if ps.last().is_some_and(|(_, t, _)| hale_syntax::api_gen::is_context_type(t) || hale_syntax::api_gen::is_served_context_type(t)) {
+    if ps.last().is_some_and(|(_, t, _)| hale_syntax::api_names::is_context_type(t) || hale_syntax::api_names::is_served_context_type(t)) {
         ps.pop();
     }
     ps
@@ -1296,7 +1296,7 @@ fn let_handles(b: &Block, out: &mut BTreeMap<usize, String>) {
 ///
 /// And what a site needs to be served at all: a surface that is declared,
 /// a name (`as:`), a transport instance, a place in a locus's body.
-pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows) -> Vec<Diag> {
+pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows, entry: &crate::entry::EntryRow) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let mut diags = Vec::new();
     let mut first_named: BTreeMap<String, Span> = BTreeMap::new();
@@ -1340,7 +1340,7 @@ pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows) -> Vec<Diag> {
                     }
                 }
                 TopDecl::Locus(l) => {
-                    serve_laws_of(l, rows, &surface_names, &mut first_named, &mut diags);
+                    serve_laws_of(bundle, entry, l, rows, &surface_names, &mut first_named, &mut diags);
                     hub_laws_of(l, &published, &mut first_named, &mut diags);
                 }
                 _ => {}
@@ -1442,7 +1442,47 @@ fn hub_laws_of(l: &LocusDecl, published: &BTreeSet<String>, first_named: &mut BT
     }
 }
 
+/// Whether `l` is a `main locus` the program imports and writes the name
+/// of somewhere outside its declaration (`lib::Head { }`): the program
+/// means it to run, and it does not. The import table says which spellings
+/// name it; a program that only imports its seed's types never spells it.
+fn imported_main_is_built(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, l: &LocusDecl) -> bool {
+    if !entry.mains.iter().any(|m| m.imported && m.name == l.name.name) {
+        return false;
+    }
+    let spellings: Vec<&Vec<String>> =
+        bundle.import_renames.iter().filter(|(_, mangled)| *mangled == l.name.name).map(|(path, _)| path).collect();
+    if spellings.is_empty() {
+        return false;
+    }
+    let mut found = false;
+    for p in bundle.programs.values() {
+        for item in &p.items {
+            if matches!(item, TopDecl::Locus(x) if x.name.name == l.name.name) {
+                continue;
+            }
+            let mut last: Option<&str> = None;
+            hale_syntax::names::for_each_spelled_in_item(item, &mut |sp| {
+                if let hale_syntax::names::Spelled::Name(n) = sp {
+                    if let Some(prev) = last {
+                        if spellings.iter().any(|path| path.len() == 2 && path[0] == prev && path[1] == n) {
+                            found = true;
+                        }
+                    }
+                    last = Some(n);
+                }
+            });
+            if found {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn serve_laws_of(
+    bundle: &Bundle<'_>,
+    entry: &crate::entry::EntryRow,
     l: &LocusDecl,
     rows: &SurfaceRows,
     surface_names: &[&str],
@@ -1451,6 +1491,25 @@ fn serve_laws_of(
 ) {
     let sites = locus_serve_sites(l);
     if sites.is_empty() {
+        return;
+    }
+    // Only the entry program's main locus is deployed: a `main locus` that
+    // arrives through `import` is constructed by nobody unless the program
+    // writes its name, and a serve site in one the program does construct
+    // would build, check and serve nothing (`rpc_expand` adds listeners to
+    // the entry's main only). A library whose main locus is merely imported
+    // for its types has serve sites that never run, and says nothing here.
+    if l.is_main && imported_main_is_built(bundle, entry, l) {
+        for site in &sites {
+            diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "`api::serve` in `{}`, a main locus the program imports: only the entry program's main locus \
+                     serves; serve from the entry's main locus or hold the exposure there (spec/api.md § Serving)",
+                    l.name.name
+                ),
+            ));
+        }
         return;
     }
     let mut handles: BTreeMap<usize, String> = BTreeMap::new();

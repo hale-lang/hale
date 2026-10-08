@@ -152,6 +152,23 @@ pub fn wait_listening(port: u16) {
     }
 }
 
+/// Wait until a Unix socket exists and accepts a connection: the listener
+/// binds its path at birth, on a loaded machine after the TCP listeners
+/// answer, so a client that connects at once may find no path yet. Bounded;
+/// the probe is a connection that sends nothing and closes.
+pub fn wait_accepting_unix(path: &Path) {
+    let start = Instant::now();
+    loop {
+        if std::os::unix::net::UnixStream::connect(path).is_ok() {
+            return;
+        }
+        if start.elapsed() > Duration::from_secs(20) {
+            panic!("nothing accepts on {}", path.display());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// One line out and one line back over a Unix socket: the unix transport's
 /// wire, for the exposures a program serves over both.
 pub fn unix_ask(sock: &Path, line: &str) -> String {

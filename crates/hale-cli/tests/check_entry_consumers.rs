@@ -7,9 +7,8 @@
 //! first of the seed's own, a module-nested one included). Each test
 //! here pins one reader's answer on one of those shapes, beside a
 //! control that shows the reading still fires where it should. Section
-//! 1 is the checker's readers; section 2 the api binding, `--api` and
-//! the roles `--matrix` maps, which read the lowering root: the `main
-//! locus` the binding joins.
+//! 1 is the checker's readers; section 2 the retired `--api` flag and
+//! the roles `--matrix` maps.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,43 +38,6 @@ fn check(seed: &Path) -> String {
 }
 
 // ---------------------------------------------------------------- 1 of 4
-
-/// A seed that publishes `Out` and subscribes nothing: rule 9's orphan.
-const PUBLISHER: &str = "\
-type Msg { v: Int = 0; }
-
-topic Out { payload: Msg; subject: \"consumers.out\"; }
-
-main locus App {
-    bus { publish Out; }
-    run() { Out <- Msg { v: 1 }; }
-}
-
-fn main() { App { }; }
-";
-
-const ORPHAN: &str = "bus topic `Out` is published but has no subscriber";
-
-/// The orphan lint is lifted under an api binding (GH #1106), and the
-/// binding that binds is the entry's: an imported `main locus`'s `api:`
-/// entry is inert (GH #1104 piece 5), so it lifts nothing. Before the
-/// entry row, any `main locus` carrying one lifted the lint.
-#[test]
-fn an_imported_mains_api_entry_does_not_lift_the_orphan_lint() {
-    let root = scratch("api_bound");
-    seed(
-        &root,
-        "lib",
-        "main locus Head {\n    bindings { api: unix(\"/tmp/hale-entry-consumers-lib.sock\", bound: 8, on_full: refuse); }\n}\n\nfn main() { Head { }; }\n",
-    );
-    // The control: no api anywhere, the orphan is reported.
-    let plain = check(&seed(&root, "plain", PUBLISHER));
-    assert!(plain.contains(ORPHAN), "{plain}");
-    // The importer's own entry carries no api: the library's is inert.
-    let out = check(&seed(&root, "app", &format!("import \"../lib\" as lib;\n\n{PUBLISHER}")));
-    assert!(out.contains(ORPHAN), "an imported main's api entry lifts nothing: {out}");
-    let _ = std::fs::remove_dir_all(&root);
-}
 
 /// A handler that blocks, for a locus placed on an async_io pool.
 const BLOCKING_WORKER: &str = "\
@@ -145,70 +107,51 @@ fn hale(args: &[&std::ffi::OsStr]) -> String {
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
-/// `--api` puts its entry on the `main locus` the binding joins, the
-/// seed's own; an imported library's bindings are inert, so a seed whose
-/// only `main` is imported has nowhere to put it and is refused, saying
-/// why. Before the row, the entry went on the library's `main locus`,
-/// no binding was generated from it, and the build succeeded with no
-/// api.
+/// `build --api <path>` injected an `api:` entry into the seed's `main
+/// locus`; the entry is retired, and the flag is refused with the
+/// replacement, whatever the seed.
 #[test]
-fn api_refuses_a_seed_whose_only_main_is_imported() {
+fn the_api_flag_is_retired() {
     let root = scratch("api_flag");
-    seed(&root, "lib", "main locus Head { }\nfn main() { Head { }; }\n");
     let out_bin = root.join("out.bin");
-    let build = |dir: &Path| {
-        hale(&[
-            "build".as_ref(),
-            "--api".as_ref(),
-            "/tmp/hale-entry-consumers-api.sock".as_ref(),
-            dir.as_os_str(),
-            "-o".as_ref(),
-            out_bin.as_os_str(),
-        ])
-    };
-    // The control: a bare `fn main` is refused as before.
-    let bare = build(&seed(&root, "bare", "fn main() { println(\"hi\"); }\n"));
-    assert!(bare.contains("--api needs a `main locus` to bind"), "{bare}");
-    let out = build(&seed(&root, "app", "import \"../lib\" as lib;\nfn main() { println(\"hi\"); }\n"));
-    assert!(
-        out.contains(
-            "--api needs the seed's own `main locus` to bind: the api entry lives in its `bindings { }` block, \
-             and the only `main locus` here is an imported library's, whose bindings are inert"
-        ),
-        "{out}"
-    );
+    let app = seed(&root, "app", "main locus App { }\nfn main() { App { }; }\n");
+    let out = hale(&[
+        "build".as_ref(),
+        "--api".as_ref(),
+        "/tmp/hale-entry-consumers-api.sock".as_ref(),
+        app.as_os_str(),
+        "-o".as_ref(),
+        out_bin.as_os_str(),
+    ]);
+    assert!(out.contains("`--api <path>` is retired") && out.contains("api::serve("), "{out}");
     assert!(!out.contains("built:"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
-const OWNER_UNMAPPED: &str = "role(s) `owner` are not mapped";
+const SUPPORT_UNMAPPED: &str = "role(s) `support` are not mapped";
 
-/// `owner` joins the roles `--matrix` asks an environment to map when
-/// the program has an api binding, and the binding is the one generated
-/// into the `main locus` lowering deploys (the row's root, the entry
-/// since L4): with two (rule 1's error), the last, as the row takes the
-/// entry, and the other one's `api:` entry binds nothing and gates
-/// nothing. Before the row, any `main locus` of the seed's own carrying
-/// one declared `owner`.
+/// The roles `--matrix` asks an environment to map are the `role`
+/// declarations of the entrypoint's bundle (a served program no longer
+/// adds an implicit `owner`): an unmapped one is reported, a mapped one,
+/// `[]` included, is not.
 #[test]
-fn the_matrix_roles_read_the_deployed_roots_binding() {
-    let api = "    bindings { api: unix(\"/tmp/hale-entry-consumers-roles.sock\", bound: 8, on_full: refuse); }\n";
-    let manifest =
-        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"two\"]\n\n[environments.dev.roles]\n";
-    let matrix = |tag: &str, program: String| {
+fn the_matrix_roles_are_the_declared_roles() {
+    let manifest = |roles: &str| {
+        format!("[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"two\"]\n\n[environments.dev.roles]\n{roles}")
+    };
+    let matrix = |tag: &str, roles: &str| {
         let root = scratch(tag);
-        seed(&root, "two", &program);
-        std::fs::write(root.join("hale.toml"), manifest).unwrap();
+        seed(&root, "two", "role support;\nmain locus App { }\nfn main() { App { }; }\n");
+        std::fs::write(root.join("hale.toml"), manifest(roles)).unwrap();
         let out = hale(&["check".as_ref(), "--matrix".as_ref(), root.as_os_str()]);
         let _ = std::fs::remove_dir_all(&root);
         out
     };
-    // The control: the deployed root carries the entry.
-    let deployed = matrix("roles_deployed", format!("main locus Other {{ }}\nmain locus App {{\n{api}}}\nfn main() {{ App {{ }}; }}\n"));
-    assert!(deployed.contains(OWNER_UNMAPPED), "{deployed}");
-    let other = matrix("roles_other", format!("main locus Other {{\n{api}}}\nmain locus App {{ }}\nfn main() {{ App {{ }}; }}\n"));
-    assert!(other.contains("more than one `main` locus declared"), "{other}");
-    assert!(!other.contains(OWNER_UNMAPPED), "the other main's entry binds nothing: {other}");
+    let unmapped = matrix("roles_unmapped", "");
+    assert!(unmapped.contains(SUPPORT_UNMAPPED), "{unmapped}");
+    let mapped = matrix("roles_mapped", "support = []\n");
+    assert!(!mapped.contains(SUPPORT_UNMAPPED), "{mapped}");
+    assert!(!mapped.contains("owner"), "no implicit `owner` is asked for: {mapped}");
 }
 
 // ---------------------------------------------------------------- 3 of 4

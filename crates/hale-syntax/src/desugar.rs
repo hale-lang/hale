@@ -920,7 +920,7 @@ fn context_handlers(items: &[TopDecl]) -> BTreeSet<(String, String)> {
         let TopDecl::Locus(l) = item else { continue };
         for m in &l.members {
             if let LocusMember::Fn(f) = m {
-                if f.params.len() == 2 && crate::api_gen::is_context_type(&f.params[1].ty) {
+                if f.params.len() == 2 && crate::api_names::is_context_type(&f.params[1].ty) {
                     out.insert((l.name.name.clone(), f.name.name.clone()));
                 }
             }

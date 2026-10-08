@@ -82,7 +82,7 @@ locus HeadLease {
         if len(self.attempt) == 0 { return HandResult { error: "no lease is held, so no spend can be asked for" }; }
         let head = Head { api: self.api };
         if !head.attach() { return HandResult { error: head.error }; }
-        if len(head.allowance_topic) == 0 { return HandResult { error: "the head lists no `dna.commands.attempt.allowance`: its toolchain predates the budget gate (GH #1131)" }; }
+        if len(head.allowance_member) == 0 { return HandResult { error: "the head lists no `Commands::ask_allowance`: its toolchain predates the budget gate (GH #1131)" }; }
         let request = "work-allowance:" + self.attempt + ":" + to_string(self.token);
         let asked = head.allowance(request, self.attempt, self.holder, self.token);
         if !asked.ok { return HandResult { error: asked.error }; }

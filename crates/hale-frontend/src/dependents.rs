@@ -25,6 +25,15 @@
 //!   (one in a position no summary body covers: a closure's clauses, a
 //!   type's field defaults) makes the declaration holding it a dependent
 //!   of every declaration.
+//! - **The surface's codecs**: the expansion of a surface's serve sites
+//!   (and of a hub's bindings) generates, from the types the rows carry,
+//!   a decoder and an encoder fn per type (`__api_decode_<T>`,
+//!   `__api_encode_<T>`), and adds a param (`__rpc_x_<as>`, `__rpc_w_<n>`)
+//!   to the locus the site sits in. A codec exists because some locus
+//!   holds such a site, and no call edge says so (the client-side halves
+//!   are called by nothing), so each codec is the neighbour of every
+//!   locus carrying one of those params: an edit that takes the site out
+//!   re-derives them.
 //! - **The ownership graph**: a locus and the loci it instantiates,
 //!   accepts or is instantiated by.
 //! - **The bus graph**: every publisher and subscriber of one subject,
@@ -65,7 +74,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use hale_graph::ids::SiteId;
-use hale_syntax::ast::{Program, TopDecl};
+use hale_syntax::ast::{LocusMember, Program, TopDecl};
 use hale_syntax::sites::{for_each_site_in_item, SiteKind};
 use hale_syntax::Span;
 use hale_types::alloc_summary::{AllocSummary, CallEdge, Callee, FnKey};
@@ -223,6 +232,27 @@ impl DependencyIndex {
                 }
             });
         }
+        // The loci carrying a param an expansion added, and the codecs
+        // it generated (see the module docs).
+        let (mut surfaced, mut codecs): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+        for (i, d) in f.decls.iter().enumerate() {
+            match &f.programs[&d.program].items[d.index] {
+                TopDecl::Locus(l) => {
+                    let carries = l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| {
+                            p.name.name.starts_with("__rpc_x_") || p.name.name.starts_with("__rpc_w_")
+                        }))
+                    });
+                    if carries {
+                        surfaced.push(i);
+                    }
+                }
+                TopDecl::Fn(fd) if fd.name.name.starts_with("__api_decode_") || fd.name.name.starts_with("__api_encode_") => {
+                    codecs.push(i)
+                }
+                _ => {}
+            }
+        }
         let named = |map: &BTreeMap<String, BTreeSet<usize>>, name: &str| -> Vec<usize> {
             map.get(name).map(|s| s.iter().copied().collect()).unwrap_or_default()
         };
@@ -281,6 +311,7 @@ impl DependencyIndex {
                 }
             }
         };
+        join(&surfaced, &codecs);
         // The ownership graph: births, accepts, instantiations.
         for site in &f.ownership.sites {
             join(&named(&loci, &site.enclosing_locus), &named(&loci, &site.child_ty));

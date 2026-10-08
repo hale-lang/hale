@@ -47,15 +47,15 @@ pub(crate) fn usage() {
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!("    hale mcp                      stdio Model Context Protocol server (agent tools)");
-    eprintln!("        [--app <socket>: a running api binding's commands as tools, reads as resources]");
+    eprintln!("        [--app <endpoint>: a served exposure's members as tools, read from its description]");
     eprintln!();
-    eprintln!("    hale describe <socket|file>   an api binding's description: commands, reads, streams, schemas");
-    eprintln!("        [--openapi | --mcp] [-o <path>]");
-    eprintln!("    hale call  <socket> <name>    send a command (with a JSON payload) or a read, print the answer");
-    eprintln!("        [<json>]");
-    eprintln!("    hale watch <socket> <stream>  attach to a stream, print frames as they arrive");
-    eprintln!("    hale admin <socket>           a local page over the description, calling through the socket");
-    eprintln!("        [--port <n>]");
+    eprintln!("    hale describe <endpoint|file> a served exposure's description: members, streams, schemas");
+    eprintln!("        [--token <t>] [-o <path>]");
+    eprintln!("    hale call  <endpoint> <member> send a member (with a JSON payload), print the answer");
+    eprintln!("        [<json>] [--token <t>]");
+    eprintln!("    hale watch <ws://hub> <topic>  subscribe to a stream, print frames as they arrive");
+    eprintln!("    hale admin <endpoint>         a local page over the description, calling through the endpoint");
+    eprintln!("        [--port <n>] [--token <t>]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
@@ -183,16 +183,9 @@ recorded under `--dev` replays only under `hale replay --dev`.
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
-  --api <path>                     bind the program's API to a Unix
-                                   socket at <path>: every subscribed
-                                   topic a command, every published
-                                   topic a stream, every expose a read
-                                   (dev defaults: bound 64, refuse)
   --env <name>                     the deployment target: adopt the
                                    constitution [environments.<name>]
-                                   binds and bake its `roles` table
-                                   into the api binding (LOTUS_API_ROLES
-                                   overrides it at run time)
+                                   binds
   --target <native>                `run` execs what it builds, so a
                                    target this host cannot execute
                                    (wasm32) is refused; build it
@@ -242,16 +235,9 @@ that is not a flag is the target, as in `hale check`:
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
-  --api <path>                     bind the program's API to a Unix
-                                   socket at <path>: every subscribed
-                                   topic a command, every published
-                                   topic a stream, every expose a read
-                                   (dev defaults: bound 64, refuse)
   --env <name>                     the deployment target: adopt the
                                    constitution [environments.<name>]
-                                   binds and bake its `roles` table
-                                   into the api binding (LOTUS_API_ROLES
-                                   overrides it at run time)
+                                   binds
   --wrap-main                      synthesize the wasm @export entry
                                    from `fn main` (--target wasm32)
   --locality-report                the per-locus working-set table,
@@ -358,53 +344,62 @@ to check is derived per document from the client's `textDocument`
 URIs. Not meant to be run by hand — point an editor at `hale lsp`.
 ",
         "mcp" => "\
-hale mcp [--app <socket>]     stdio Model Context Protocol server (agent tools)
+hale mcp [--app <endpoint>]   stdio Model Context Protocol server (agent tools)
 
 Speaks MCP over stdin and stdout, exposing the toolchain to a host
 without a shell. No target. Its tools self-exec this binary, so the
 compiler an agent drives is the one it is talking to.
 
-`--app <socket>` serves a RUNNING program instead: every command of
-its api binding is a tool (the payload schema is the tool's input
-schema) and every read is a resource (`hale://read/<name>`), read
-from the description the binding serves. `claude mcp add app -- hale
-mcp --app /run/app.sock` is the whole setup.
+`--app <endpoint>` serves a RUNNING program instead: every member of
+the exposure's description (for the caller the endpoint names, `--token`
+for a bearer) is a tool, its request schema the tool's input schema,
+read from the description the exposure serves; a call names the digest
+read. An `mcp://host:port` endpoint is an `mcp::Rpc` listener, whose own
+`tools/list` is forwarded. `claude mcp add app -- hale mcp --app
+/run/app.sock` is the whole setup.
 ",
         "describe" => "\
-hale describe <socket | file.hl | dir> [--openapi | --mcp] [--full] [-o <path>]
+hale describe <endpoint | file.hl | dir> [--token <t>] [-o <path>]
 
-The description of an api binding: its commands (subscribed topics,
-with the payload schema and the reply type), reads (exposed members,
-snapshots with an as_of digest) and streams (published topics), plus
-the JSON Schema of every type they carry. From a socket it is what the
-running binding serves; from a source it is what `hale check
---dump-api` emits, and the two are the same bytes. `--openapi` prints
-the OpenAPI 3.1 form, `--mcp` the MCP tool and resource shapes.
+The description of a served exposure (spec/api.md § The description):
+its identity and digest, its listener, the caller it established and the
+roles that caller holds, the members it may call with their schemas, the
+streams it may subscribe to, the outcome encoding and the notes. An
+endpoint is a socket path, `http://host:port` (the caller is named by
+`--token` or HALE_API_TOKEN, a bearer) or `ws://host:port` (a hub), and
+the document is the bytes the exposure serves. From a program it is
+`hale check --api`: the inventory of every surface and exposure, or with
+`--exposure NAME --caller P [--holds R,...]` one exposure's description,
+or with `--surface NAME --openapi | --json-schema | --mcp` one surface's
+projection, all from the rows without running the program.
 ",
         "call" => "\
-hale call <socket> <command-or-read> [<json payload>]
+hale call <endpoint> <member> [<json payload>] [--token <t>] [--receipt]
 
-Sends one command (its payload is the JSON argument, `{}` when
-omitted) or one read to a running api binding and prints the answer:
-the handler's return value, `{\"accepted\": true}` for a command no
-handler answers, or a read's value with its as_of. A refusal is
-printed on stderr with its kind and the exit code is 1. The name is
-looked up in the description the binding serves.
+Calls one member of a served exposure and prints the response. The
+description is read first: a member the caller may not call is not
+listed, and the call names the digest read, so a program that changed
+refuses it (`digest_mismatch`). A handler error or a refusal is printed
+on stderr with its kind and reason (a refusal for a role names what the
+row requires) and the exit code is 1. `--receipt` prints the answer as
+the exposure wrote it: the reply line over a socket (request_id, the
+echoed id, the caller), `{status, body}` over HTTP.
 ",
         "watch" => "\
-hale watch <socket> <stream>
+hale watch <ws://host:port> <topic> [--token <t>]
 
-Attaches to a published topic of a running api binding and prints
-every frame as one JSON line until the binding closes the connection.
-A refusal to attach is printed on stderr with exit code 1.
+Subscribes to a stream of a hub and prints every frame as one JSON line
+(`subscribed`, then `event`s with their `seq`) until the hub closes the
+connection. A refusal, or a subscription that expires or is revoked, is
+printed on stderr and the exit code is 1.
 ",
         "admin" => "\
-hale admin <socket> [--port <n>]
+hale admin <endpoint> [--port <n>] [--token <t>]
 
-Serves a page on 127.0.0.1 (port 7473 by default) over a running api
-binding's description: a form per command, a button per read, a live
-tail per stream, every action one request to the binding. Nothing is
-configured; the description is the page.
+Serves a page on 127.0.0.1 (port 7473 by default) over a served
+exposure's description: a form per member, a live tail per stream, every
+action one request to the endpoint. Nothing is configured; the
+description is the page.
 ",
         _ => return false,
     };
@@ -434,10 +429,8 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 NOT connect seeds to each other.");
     println!("  --env <name>                   also adopt the constitution that");
     println!("                                 `[environments.<name>]` in hale.toml");
-    println!("                                 requires, and check the api binding");
-    println!("                                 with its roles table, as build bakes");
-    println!("                                 it. One entrypoint deployed to two");
-    println!("                                 environments is checked twice.");
+    println!("                                 requires. One entrypoint deployed to");
+    println!("                                 two environments is checked twice.");
     println!("  --matrix                       check every (entrypoint, environment)");
     println!("                                 pair the manifest declares. An");
     println!("                                 entrypoint listed in NO environment");

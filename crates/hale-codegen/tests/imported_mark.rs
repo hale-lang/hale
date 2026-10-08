@@ -1,9 +1,9 @@
 //! GH #1104 piece 5: the cross-seed rename pass marks the loci it
 //! renamed — the ones another seed declared — `imported`, and leaves
-//! the entrypoint's own alone. The api surface reads that mark: an
-//! imported `main locus` is inert and an imported locus serves no
-//! command (the end-to-end half is `tests/hale/api_roles_xseed_test.hl`,
-//! whose library carries an api entry of its own that never binds).
+//! the entrypoint's own alone. The checks read that mark: an imported
+//! `main locus` is inert and is not the entry (the end-to-end half is
+//! `tests/hale/api_roles_xseed_test.hl`, whose library has a main locus of
+//! its own that the app's exposures do not serve).
 
 use hale_codegen::mangle::apply_qualified_path_renames;
 use hale_syntax::ast::TopDecl;
@@ -19,14 +19,12 @@ topic __lib_lib_roles_Pings { payload: Ping; subject: "lib.ping"; }
 main locus __lib_lib_roles_LibHead {
     bus { subscribe __lib_lib_roles_Pings as on_ping; }
     fn on_ping(p: Ping) { }
-    bindings { api: unix("/tmp/lib.sock", bound: 8, on_full: refuse); }
 }
 locus __lib_lib_roles_TableRoles {
     fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
 }
 main locus App {
     params { roles: __lib_lib_roles_TableRoles = __lib_lib_roles_TableRoles { }; }
-    bindings { api: unix("/tmp/app.sock", bound: 8, on_full: refuse, roles: self.roles); }
 }
 fn main() { App { }; }
 "#;

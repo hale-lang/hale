@@ -1,29 +1,22 @@
 # Build an API
 
 This page builds one program from an empty file to a working API with
-roles: a socket that `hale call` and `hale watch` drive, a read, a
-handler that knows who called it, gates on what only staff may do, an
-HTTP transport, and the generated tools on top. Each step adds one
-thing and then exercises it from outside the program. The concepts
-behind each piece are in [The API binding](./api.md); this page shows
-how they fit together.
+roles: a surface served on a socket that `hale call` drives, a handler
+that knows who called it, rows that name what only staff may do, an HTTP
+transport, a stream through a hub, and the tools that read the
+description on top. Each step adds one thing and then exercises it from
+outside the program. The concepts behind each piece are in
+[The API surface](./api.md); this page shows how they fit together.
 
 The program is a small shop. It takes orders, ships what it has, and
 keeps a count of its stock. Every output below is what the commands
 printed, trimmed where marked `…`. The example's socket is
 `/tmp/shop.sock`, and the peer on it is uid 1000.
 
-This page builds the API on the structural path, the `api:` binding.
-Surfaces (`api` blocks and `@rpc`, [The API binding](./api.md#surfaces))
-are the rows that replace it: the compiler checks them and describes
-them today, and when they are served the binding is retired (step R4
-of GH #1417), and this page with it.
-
 ## 1. The domain
 
-Start with the shop itself: a payload type for each message, a topic
-for each kind of message, and a locus that handles one and publishes
-the other.
+Start with the shop itself: a payload type for each message, a topic for
+what it publishes, and a locus with the one handler that takes an order.
 
 ```hale
 type Order { item: String; qty: Int; }
@@ -31,15 +24,11 @@ type Placed { order_id: Int; on_hand: Int; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
 
-topic Orders { payload: Order; subject: "shop.order"; }
 topic Shipments { payload: Shipment; subject: "shop.shipment"; }
 
 locus Shop {
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
-    bus {
-        subscribe Orders as on_order;
-        publish Shipments;
-    }
+    bus { publish Shipments; }
 
     fn on_order(o: Order) -> Placed {
         if o.qty <= 0 || o.qty > self.stock.on_hand {
@@ -68,92 +57,119 @@ fn main() {
 
 Two shapes here become the API later:
 
-- `on_order` **returns** a `Placed`. Once there is a binding, a caller
-  sending an `Order` gets that value back as the reply, so `Orders` is
-  a command with a reply. An order the shop cannot fill still gets an
-  answer, `order_id: 0`. A refusal that belongs to your domain is a
-  value you return.
-- `Shipments` is **published**. Once there is a binding, a caller can
-  attach to it and see every shipment, so it is a stream.
+- `on_order` **returns** a `Placed`. Once the handler is a row of a
+  surface, a caller sending an `Order` gets that value back as the
+  response. An order the shop cannot fill still gets an answer,
+  `order_id: 0`. A refusal that belongs to your domain is a value you
+  return (or an error type you declare: [the chapter](./api.md#surfaces)).
+- `Shipments` is **published**. Once it is bound to a hub, a caller can
+  subscribe to it and see every shipment, so it is a stream.
 
-`App` places the shop on a pool of its own (`work`, an `async_io`
-pool) and keeps the process up with its `run()` loop until it is told
-to stop. An `async_io` pool does not keep the process open by itself.
+`App` places the shop on a pool of its own (`work`, an `async_io` pool)
+and keeps the process up with its `run()` loop until it is told to stop.
+An `async_io` pool does not keep the process open by itself.
 
-The checker accepts the program. It also says that nothing can reach
-it yet:
+The checker accepts the program. It also says that nothing can reach the
+published topic yet:
 
 ```sh
 hale check shop.hl
 ```
 
 ```text
-…/shop.hl:12:9: warning: bus topic `Orders` is subscribed but never published — its handler can't fire. Add a `publish` for it, bind it to a transport, or drop the subscription.
-            subscribe Orders as on_order;
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-…/shop.hl:13:9: warning: bus topic `Shipments` is published but has no subscriber — the cells go nowhere. Add a `subscribe` for it, bind it to a transport, or drop the publish.
-            publish Shipments;
-            ^^^^^^^^^^^^^^^^^^
+…/shop.hl:10:11: warning: bus topic `Shipments` is published but has no subscriber — the cells go nowhere. Add a `subscribe` for it, bind it to a transport, or drop the publish.
+        bus { publish Shipments; }
+              ^^^^^^^^^^^^^^^^^^
 ok: 1 file(s) typechecked
 ```
 
-The next step binds both topics.
+The next step offers the handler.
 
-## 2. The binding
+## 2. A surface, served
 
-Add one entry to the main locus:
+A **surface** is a table of operations: one `rpc` row per handler. A
+**serve site** puts it on a transport. Add both:
 
 ```hale,fragment
+api Counter {
+    rpc Shop::on_order;
+}
+
 main locus App {
     params { shop: Shop = Shop { }; }
     placement { shop: cooperative(pool = work) where async_io; }
-    bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse);
+    run() {
+        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock" }, as: "counter", bound: 64, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        sock.stop();
     }
-    // run() as before
 }
 ```
 
-Nothing else changes. The entry serves every topic your seed's loci
-subscribe, as a command, and every topic they publish, as a stream.
-The checker requires both knobs. `bound: 64` allows at most 64
-requests to wait on a handler at once. `on_full: refuse` answers the
-65th caller `over_bound` instead of queueing it. The two warnings
-from step 1 are gone, because both topics are now bound.
+Nothing else in the source changes: the handler is an operation because
+a row says so, not because of what it subscribes. `unix::Rpc` is a Unix
+stream socket; `as:` names this exposure of the surface; `bound: 64` is
+the most requests it will hold accepted and not yet answered, and
+`on_full: refuse` the one policy for the next (a caller waiting for an
+answer cannot be shed silently). The socket is bound when the program
+boots, so a path it cannot bind stops the program with a diagnostic.
+`sock.stop()` answers what is executing, refuses what is queued, and
+closes the socket after the replies; a program that ends without it
+releases the socket too.
 
-Build it and start it:
+Without running anything, `hale check --api` prints what the program
+offers, from the rows:
 
 ```sh
-hale build shop.hl
-./shop
+hale check --api shop.hl
 ```
 
 ```text
-built: shop
+{
+  "inventory": 1,
+  "app": "App",
+  "surfaces": [
+    {
+      "name": "Counter",
+      "digest": "fnv1a64:3c6a301bd526600d",
+      "members": [ … ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposure": "Counter@fnv1a64:3c6a301bd526600d/counter",
+      "listener": { "transport": "unix", "address": "/tmp/shop.sock" },
+      …
+    }
+  ],
+  …
+}
 ```
 
-From a second terminal, ask the running program what it serves. You
-did not write this document. The binding generates it from the
-program:
+The **digest** is the surface's contract: it moves when a member, a
+shape or a role changes, and for nothing else. A client that names it
+is refused, not run, if the program moved under it.
+
+Run the program, and a client needs no code: it reads the exposure's
+description and calls what the description lists.
 
 ```sh
+hale run shop.hl &
 hale describe /tmp/shop.sock
 ```
 
 ```text
-{"hale_api":1,"app":"App","serve":[],"notes":{…},"commands":[{"name":"Orders","subject":"shop.order","payload":"Order","reply":"Placed","keyed_by":null,"role":null}],"reads":[],"streams":[{"name":"Shipments","subject":"shop.shipment","payload":"Shipment","role":null}],"schemas":{"Order":{"type":"object","properties":{"item":{"type":"string"},"qty":{"type":"integer"}},"required":["item","qty"]},…}}
+{"description":1,"exposure":"Counter@fnv1a64:3c6a301bd526600d/counter","name":"counter","surface":"Counter","digest":"fnv1a64:3c6a301bd526600d","listener":{"transport":"unix","address":"/tmp/shop.sock"},"codec":"json","caller":{"principal":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981721},"roles":[]},"members":[{"name":"Shop::on_order","request":{"$ref":"#/schemas/Order"},"response":{"$ref":"#/schemas/Placed"},"error":null,"requires":[]}],"streams":[],"outcomes":{…},"schemas":{…},"notes":{…}}
 ```
 
-In a third terminal, attach to the stream:
+That is the whole document for the caller the socket established (the
+peer's kernel credentials, `uid:1000`): the exposure's identity, where it
+listens, who the caller is and what it holds, the members it may call
+with their schemas, how an outcome is encoded, and two notes that say
+what a role check is and is not. `hale call` sends a member:
 
 ```sh
-hale watch /tmp/shop.sock Shipments
-```
-
-Now place an order:
-
-```sh
-hale call /tmp/shop.sock Orders '{"item": "lamp", "qty": 2}'
+hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'
 ```
 
 ```text
@@ -163,385 +179,207 @@ hale call /tmp/shop.sock Orders '{"item": "lamp", "qty": 2}'
 }
 ```
 
-That is `on_order`'s return value. The watcher prints the shipment it
-published:
-
-```text
-{"stream":"Shipments","value":{"item":"lamp","order_id":1,"qty":2}}
-```
-
-and the shop's own terminal shows the `println`:
-
-```text
-order 1: 2 lamp
-```
-
-The binding decodes a payload before any handler sees it. A field of
-the wrong type is refused at the edge: `hale call` prints the receipt
-on stderr and exits 1.
+and the program's own output shows the handler ran:
+`order 1: 2 lamp`. The payload is decoded before the handler sees it,
+strictly: a string where an `Int` is declared is refused at the edge, and
+the handler never runs.
 
 ```sh
-hale call /tmp/shop.sock Orders '{"item": "lamp", "qty": "two"}'
+hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": "two"}'
 ```
 
 ```text
 hale call: refused: malformed: wrong_type: qty
-{"request_id":6,"id":2,"ok":false,"refusal":{"kind":"malformed","reason":"wrong_type: qty"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3093368}}
 ```
 
-An order the shop cannot fill reaches the handler, and the handler's
-answer comes back as an ordinary value with exit 0:
-
-```sh
-hale call /tmp/shop.sock Orders '{"item": "chair", "qty": 50}'
-```
-
-```text
-{
-  "on_hand": 8,
-  "order_id": 0
-}
-```
+(The exit code is 1, so a script can branch on it.) An order the shop
+cannot fill is not a refusal: it is the value `on_order` returned,
+`{"on_hand": 8, "order_id": 0}`.
 
 ## 3. A read
 
-Callers want to see the stock without placing an order. Expose the
-field in the shop's contract:
+A read is an operation whose handler returns the value. There is no
+second kind of row: add a handler and a row.
 
 ```hale,fragment
+type StockQuery { item: String = ""; }
+
 locus Shop {
-    contract {
-        expose stock: Stock;
-    }
-    // params, bus and on_order as before
+    // …
+    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+}
+
+api Counter {
+    rpc Shop::on_order;
+    rpc Shop::stock_now;
 }
 ```
 
-An exposed member of a param-default child is a read, named
-`<param>.<member>`, here `shop.stock`. `hale call` reads it as well:
-
 ```sh
-hale call /tmp/shop.sock shop.stock
-```
-
-```text
-{
-  "as_of": "sha256:b3e031a99621c97a9e7c731070a1231dcee3463cdd3af0b6e01ef1265435e3d0",
-  "value": {
-    "on_hand": 10,
-    "orders": 0
-  }
-}
-```
-
-The shop's own pool takes a copy of the field, so the answer is a
-snapshot of that instant. `as_of` is a digest of the answered value.
-Place an order and read twice:
-
-```sh
-hale call /tmp/shop.sock Orders '{"item": "lamp", "qty": 2}'
-hale call /tmp/shop.sock shop.stock
-hale call /tmp/shop.sock shop.stock
+hale call /tmp/shop.sock Shop::stock_now
 ```
 
 ```text
 {
   "on_hand": 8,
-  "order_id": 1
-}
-{
-  "as_of": "sha256:51e6be009957dab2267c3f5e3b7786a4016d1acdf414ce5e7315627f3aa42bec",
-  "value": {
-    "on_hand": 8,
-    "orders": 1
-  }
-}
-{
-  "as_of": "sha256:51e6be009957dab2267c3f5e3b7786a4016d1acdf414ce5e7315627f3aa42bec",
-  "value": {
-    "on_hand": 8,
-    "orders": 1
-  }
+  "orders": 1
 }
 ```
 
-The digest changed when the stock changed and stayed the same while it
-did not. Two reads that agree on `as_of` saw the same state. For a live
-view, use a stream: `hale watch` follows changes as they happen.
+(A call with no payload sends `{}`, which `StockQuery` accepts because
+its one field has a default.) The answer is a copy taken on the shop's
+own pool, so it is the state at that instant, and a later write does not
+touch it. A live view is what a stream is for (step 7).
 
 ## 4. Who is calling
 
-To know who called, a handler takes a second parameter,
-`ctx: std::api::Context`. The `subscribe` line does not change. Have
-the reply say who placed the order and how it arrived:
+The exposure knows who is calling, and a handler can ask. Declare a
+second parameter, `ctx: std::api::Context`; it is not part of the
+request:
 
 ```hale,fragment
 type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
 
-locus Shop {
-    // contract, params and bus as before
-
-    fn on_order(o: Order, ctx: std::api::Context) -> Placed {
-        if o.qty <= 0 || o.qty > self.stock.on_hand {
-            return Placed { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
-        }
-        self.stock.on_hand = self.stock.on_hand - o.qty;
-        self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(o.qty) + " " + o.item + " for " + ctx.caller.name + " via " + ctx.via);
-        Shipments <- Shipment { order_id: self.stock.orders, item: o.item, qty: o.qty };
-        return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
-    }
+fn on_order(o: Order, ctx: std::api::Context) -> Placed {
+    // ctx.caller.name is who; ctx.via is the door it came through
+    …
+    return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
 }
 ```
 
-To compare an outside caller with a local one, have the program place
-one order itself when it starts:
-
-```hale,fragment
-main locus App {
-    params { shop: Shop = Shop { }; }
-    placement { shop: cooperative(pool = work) where async_io; }
-    bus { publish Orders; }
-    bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse);
-    }
-    run() {
-        Orders <- Order { item: "window display", qty: 1 };
-        while !self.draining { std::time::sleep(100ms); }
-    }
-}
-```
-
-`App` now publishes `Orders`, so `Orders` is also a stream:
-`hale watch /tmp/shop.sock Orders` shows every order as it is placed.
-Rebuild, restart, and call:
+Over the socket the caller is the peer's kernel credentials, as the
+kernel vouches for them:
 
 ```sh
-hale call /tmp/shop.sock Orders '{"item": "lamp", "qty": 2}'
-hale call --receipt /tmp/shop.sock Orders '{"item": "lamp", "qty": 1}'
+hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'
 ```
 
 ```text
 {
   "by": "uid:1000",
-  "on_hand": 7,
-  "order_id": 2,
-  "via": "api"
+  "on_hand": 8,
+  "order_id": 1,
+  "via": "unix"
 }
-{"request_id":4,"id":2,"ok":true,"value":{"order_id":3,"on_hand":6,"by":"uid:1000","via":"api"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3093565}}
 ```
 
-The shop's terminal shows both kinds of caller:
+`--receipt` prints the answer as the exposure wrote it, with the
+`request_id` it assigned and the `caller` it established:
 
 ```text
-order 1: 1 window display for local via local
-order 2: 2 lamp for uid:1000 via api
-order 3: 1 lamp for uid:1000 via api
+{"request_id":13,"id":1,"ok":true,"value":{"on_hand":13,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981229}}
 ```
 
-For a peer on the socket, `ctx.caller` is the principal the kernel
-vouches for: `mode: "unix"` and `name: "uid:<n>"`, with the uid, gid
-and pid. `ctx.via` is `"api"`. For the program's own publish,
-`ctx.caller` is the local principal (`name: "local"`, credentials
--1), `via` is `"local"`, and the request id is 0. `ctx.role` is empty
-in both cases, because nothing here is gated yet. `--receipt` prints
-the whole answer line, which carries the same `caller`. A handler
-never asks whether it was reached from outside; it reads `via`. A
-return value from a local publish is ignored, so the opening order's
-`Placed` goes nowhere.
+`via` says which door a call came through (`unix`, `http`, `ws`, `mcp`),
+and a call that never crossed a transport gets the local caller, so a
+handler never asks whether it was reached from outside: it reads `via`.
+`Context` and `Principal` are ordinary structs, so a test builds one.
 
 ## 5. Roles
 
-Anyone on the socket may place an order. Restocking is for managers,
-and the stock count and the shipment feed are for staff. Declare the
-roles, then gate the three operations:
+That the operation needs a role is part of the program, true wherever it
+runs; who holds the role here is a deployment fact. So the requirement
+is written once, on the row, and who holds it is a source the serve site
+names.
 
 ```hale,fragment
-type Restock { qty: Int; }
-type Restocked { on_hand: Int; by: String; role: String; }
-
-topic Restocks { payload: Restock; subject: "shop.restock"; }
-
 role clerk;
 role manager includes clerk;
 
-locus Shop {
-    contract {
-        @gated(role: clerk) expose stock: Stock;
-    }
-    params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
-    bus {
-        subscribe Orders as on_order;
-        subscribe Restocks as on_restock;
-        @gated(role: clerk) publish Shipments;
-    }
+api Counter {
+    rpc Shop::on_order;
+    rpc Shop::stock_now requires: [clerk];
+    rpc Shop::on_restock requires: [manager];
+}
 
-    // on_order as before
-
-    @gated(role: manager)
-    fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
-        self.stock.on_hand = self.stock.on_hand + r.qty;
-        return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
+main locus App {
+    params {
+        shop: Shop = Shop { };
+        // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+    }
+    placement { shop: cooperative(pool = work) where async_io; }
+    run() {
+        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        // …
     }
 }
 ```
 
-A `role` is declared vocabulary, so a misspelled name is an error.
-`manager includes clerk` means a manager may do whatever a clerk may.
-`@gated(role: R)` is allowed in three places: a subscribed handler
-(checked on every call), an `expose` (checked on every read), and a
-`publish` (checked once, when a watcher attaches). It gates what
-arrives through the binding, and nothing else. A call to `on_restock`
-from inside the program is not checked.
+A role is declared vocabulary: a name nothing declares is an error at the
+row, and `manager includes clerk` means whoever is a manager may do what
+a clerk may. `std::api::StaticRoles` is the standard library's source: a
+table `role=member,member;…`, passed as its `table` param or set at run
+time in `LOTUS_API_ROLES`. A member is `uid:<n>`, `gid:<n>`,
+`user:<name>`, `group:<name>`, `bearer:<name>` or `*` (any caller the
+exposure authenticates); `known` lists the roles the program declares so
+a table naming another is refused at start. Any locus satisfying
+`std::api::RoleSource` (`fn holds(p: std::api::Principal, r: String) ->
+Bool`) works as well, and is how a program whose positions are roles
+answers from its own record.
 
-The program says which operation needs which role. Which accounts hold
-each role depends on the deployment, so that mapping goes in
-`hale.toml`, per environment:
-
-```toml
-[claims]
-no_base = true
-
-[environments.dev]
-source_only = true
-entrypoints = ["."]
-
-[environments.dev.roles]
-clerk   = ["*"]
-manager = ["uid:1000"]
-owner   = []
-```
-
-A member names a socket peer by its account (`uid:<n>`, `gid:<n>`,
-`user:<name>`, `group:<name>`), a bearer caller by the name its
-source gives it (`bearer:<name>`, step 6), or is `*`: any caller the
-binding authenticates, on either transport. `owner` is built in, and
-`[]` says that nobody holds it here. `hale check --matrix` holds the
-table to the program: every role is declared, and every declared role
-is mapped:
+Started with no table, nobody holds anything, and the description
+says so: the rows this caller may not call are not listed.
 
 ```sh
-hale check --matrix .
+hale describe /tmp/shop.sock      # members: Shop::on_order only
+hale call /tmp/shop.sock Shop::stock_now '{}'
 ```
 
 ```text
-=== ./. @ dev ===
-ok: 1 file(s) typechecked
-
-ok: 1 (entrypoint, environment) pair(s) checked
+hale call: `Shop::stock_now` is not a member this caller may call (the exposure describes the slice the caller's roles show)
+  members: Shop::on_order
 ```
 
-`hale build --env dev` bakes the table into the binary. Built that
-way, uid 1000 is a manager:
-
-```sh
-hale build --env dev shop.hl
-./shop
-hale call --receipt /tmp/shop.sock Restocks '{"qty": 5}'
-```
-
-```text
-{"request_id":2,"id":2,"ok":true,"value":{"on_hand":14,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3096860},"role":"manager"}
-```
-
-The receipt's `"role"` is the role that authorized the call, and the
-handler received the same value in `ctx.role`.
-
-Without `--env` there is no table, and the build says so:
-
-```text
-note: 3 gated operation(s) and no role table: pass `--env <name>` to bake `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run time; until then every gate refuses
-built: shop
-```
-
-To try other tables without editing `hale.toml`, set `LOTUS_API_ROLES`
-at run time. It overrides the table, in the form
-`role=member,member;role=member`. Make uid 1000 a clerk but not a
-manager:
+Make uid 1000 a clerk and the read appears; the restock still does not:
 
 ```sh
 LOTUS_API_ROLES='clerk=uid:1000;manager=' ./shop
 ```
 
-Restocking is now outside this caller's slice:
+```text
+$ hale call /tmp/shop.sock Shop::stock_now '{}'
+{
+  "on_hand": 10,
+  "orders": 0
+}
+$ hale call /tmp/shop.sock Shop::on_restock '{"qty": 5}'
+hale call: `Shop::on_restock` is not a member this caller may call (the exposure describes the slice the caller's roles show)
+  members: Shop::on_order, Shop::stock_now
+```
+
+And as the manager, the restock is in the description and the handler
+sees the row's role in `ctx.role`:
 
 ```sh
-hale call /tmp/shop.sock Restocks '{"qty": 5}'
+LOTUS_API_ROLES='clerk=;manager=uid:1000' ./shop
+hale call --receipt /tmp/shop.sock Shop::on_restock '{"qty": 5}'
 ```
 
 ```text
-hale call: `Restocks` is neither a command nor a read this caller may use (the binding describes the slice your roles show)
-  commands: Orders
-  reads: shop.stock
-  streams (use `hale watch`): Orders, Shipments
+{"request_id":13,"id":1,"ok":true,"value":{"on_hand":13,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981229}}
 ```
 
-That is a refused call. The binding serves each caller only the part
-of the description that caller may use, so `hale call` does not find
-`Restocks` and does not send the request. A client that sends it anyway
-gets a refusal of kind `unknown`, the same answer as for a name that
-does not exist (step 6 shows one). A caller is not told that an
-operation it may not use exists. The clerk can read the stock, and the
-receipt names the role that authorized the read:
+The client refuses what the description does not list, but the *server*
+authorizes every request: a request for the restock from a caller who
+does not hold `manager` is refused `unauthorized`, naming what the row
+requires, before the handler is touched (the refusal is the exposure's,
+which the client's own check merely spares you). The check is a
+boundary check at the serve site; it says nothing about the program's
+own call paths, and the description says so in its `notes`.
 
-```sh
-hale call --receipt /tmp/shop.sock shop.stock
-```
-
-```text
-{"request_id":4,"id":2,"ok":true,"value":{"on_hand":9,"orders":1},"as_of":"sha256:bec792543f45001d67a7bb112af81762706f3d776405c27d140259ccbdffe3ca","caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3093613},"role":"clerk"}
-```
-
-The one refusal that names a role is the full description, a read
-gated on `owner`:
-
-```sh
-hale describe --full /tmp/shop.sock
-```
-
-```text
-hale describe: refused: unauthorized: needs role owner
-```
-
-Make uid 1000 a manager and nothing else
-(`LOTUS_API_ROLES='clerk=;manager=uid:1000'`). The clerk-gated read
-now answers too, authorized by `manager` through `includes`:
-
-```sh
-hale call --receipt /tmp/shop.sock Restocks '{"qty": 5}'
-hale call --receipt /tmp/shop.sock shop.stock
-```
-
-```text
-{"request_id":3,"id":2,"ok":true,"value":{"on_hand":14,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3093627},"role":"manager"}
-{"request_id":5,"id":2,"ok":true,"value":{"on_hand":14,"orders":1},"as_of":"sha256:34b10f1467c4a84d855d27c56ea331fdbddf10a16599a46e4b947d26ab3af06b","caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3093628},"role":"manager"}
-```
-
-and the manager's `hale watch /tmp/shop.sock Shipments` attaches and
-receives frames. With no table at all, every gate refuses:
-
-```sh
-./shop      # built without --env, no LOTUS_API_ROLES
-hale call /tmp/shop.sock shop.stock
-```
-
-```text
-hale call: `shop.stock` is neither a command nor a read this caller may use (the binding describes the slice your roles show)
-  commands: Orders
-  reads: 
-  streams (use `hale watch`): Orders
-```
+A peer the kernel cannot vouch for, or a bearer token the source names
+nobody for, is refused everything, whatever the roles: the exposure's
+whole claim is that it knows who is calling.
 
 ## 6. HTTP
 
-A caller that is not on your machine reaches the same API over the
-binding's HTTP transport. Add an `http(…)` clause after the socket. It
-needs a locus that says who a bearer token is. That locus satisfies
-`std::api::BearerSource`: `principal(token)` returns the caller, and
-`refused()` returns the reason given when a token names nobody.
+A caller that is not on the machine's socket reaches the same surface
+over a second serve site. A bearer token is who a caller is on HTTP: a
+locus satisfying `std::api::BearerSource` says (`principal(token)`
+answers the caller, `refused()` the reason a token naming nobody gets):
 
 ```hale,fragment
-// Who a bearer token on the HTTP transport is (a std::api::BearerSource).
 locus Tokens {
     fn principal(token: String) -> std::api::Principal {
         if token == "t-front-desk" {
@@ -553,211 +391,132 @@ locus Tokens {
 }
 
 main locus App {
-    // params, placement and bus as before
-    bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse),
-        http("127.0.0.1", 8794, principals: Tokens { });
+    params {
+        shop: Shop = Shop { };
+        tokens: Tokens = Tokens { };
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
     }
-    // run() as before
-}
-```
-
-Rebuild with the table from step 5 (`hale build --env dev shop.hl`)
-and restart. Each HTTP request is one `POST` whose body is one line of
-the socket's wire format (`{"call": …}`, `{"read": …}` or
-`{"describe": …}`), under `Authorization: Bearer <token>`:
-
-```sh
-curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
-    --data '{"call":"Orders","payload":{"item":"lamp","qty":2}}' http://127.0.0.1:8794/
-```
-
-```text
-{"request_id":1,"ok":true,"value":{"order_id":2,"on_hand":7,"by":"front-desk","via":"http"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"}}
-200
-```
-
-The handler is unchanged. Its context names the bearer principal, and
-`via` is `"http"`. The response body is the reply line, and the
-status code is the refusal kind:
-
-| status | when |
-|---|---|
-| 200 | answered |
-| 400 | `malformed` (and any other refusal not listed here) |
-| 401 | `unauthenticated`: no bearer, or a token the source names nobody |
-| 403 | `unauthorized`: the full description without `owner` |
-| 404 | `unknown`: no such item, or one outside the caller's slice |
-| 405 | anything but a `POST` |
-| 503 | `over_bound` |
-| 504 | the program did not answer within 30 s |
-
-A token `Tokens` does not know gets a 401:
-
-```text
-{"request_id":0,"ok":false,"refusal":{"kind":"unauthenticated","reason":"the bearer token is refused: no such token"},"caller":{"mode":"bearer","name":"","uid":-1,"gid":-1,"pid":-1,"via":"http"}}
-401
-```
-
-The gates are the same gates, and the table from step 5 grants roles
-to bearer callers too. `clerk = ["*"]` covers every caller the binding
-authenticates, so front-desk, named by `Tokens`, holds `clerk` and may
-read the stock. The receipt names the role:
-
-```sh
-curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
-    --data '{"read":"shop.stock"}' http://127.0.0.1:8794/
-```
-
-```text
-{"request_id":2,"ok":true,"value":{"on_hand":7,"orders":2},"as_of":"sha256:c0975c1f95dde12247d8944610c4a1d0573e9aed0aac69c059c25014c0de269c","caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"},"role":"clerk"}
-200
-```
-
-Restocking needs `manager`, which only uid 1000 holds, so it is
-outside front-desk's slice:
-
-```sh
-curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
-    --data '{"call":"Restocks","payload":{"qty":5}}' http://127.0.0.1:8794/
-```
-
-```text
-{"request_id":3,"ok":false,"refusal":{"kind":"unknown","reason":"Restocks"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"}}
-404
-```
-
-To name one bearer caller in the table, write `bearer:` and the name
-your source answers for the token. Make front-desk a manager beside
-uid 1000:
-
-```toml
-[environments.dev.roles]
-clerk   = ["*"]
-manager = ["uid:1000", "bearer:front-desk"]
-owner   = []
-```
-
-`hale check --matrix .` accepts it, and a misspelled prefix is still
-refused, with the spellings listed:
-
-```text
-./hale.toml: environment `dev` role `manager`: `barer:front-desk` is not a role member: write `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`, `bearer:<name>` or `*` (any authenticated caller)
-```
-
-Rebuild with `--env dev`, restart, and restock over HTTP:
-
-```sh
-curl -s -w '\n%{http_code}\n' -X POST -H 'Authorization: Bearer t-front-desk' \
-    --data '{"call":"Restocks","payload":{"qty":5}}' http://127.0.0.1:8794/
-```
-
-```text
-{"request_id":1,"ok":true,"value":{"on_hand":14,"by":"front-desk","role":"manager"},"caller":{"mode":"bearer","name":"front-desk","uid":-1,"gid":-1,"pid":-1,"via":"http"},"role":"manager"}
-200
-```
-
-A `bearer:` member is never a socket peer, and `uid:`, `gid:`,
-`user:` and `group:` never match a bearer caller, even one whose name
-is the same string: a Unix account and a token's subject are
-different identities. A bearer `name` is the source's, so the table
-does not look it up in the host's account database. A caller the
-binding cannot authenticate, such as a token your source names
-nobody, holds no role whatever the table says.
-
-The table is the deployment's. When membership depends on the
-program's own state instead, name your own source on the entry. A
-source is any locus satisfying `std::api::RoleSource`, the program
-keeps a handle to it, and it replaces the table for every caller,
-socket peers included:
-
-```hale,fragment
-locus DeskRoles {
-    params { on_shift: String = "front-desk"; }
-    fn holds(p: std::api::Principal, r: String) -> Bool {
-        return r == "clerk" && p.mode == "bearer" && p.name == self.on_shift;
-    }
-}
-
-main locus App {
-    params { shop: Shop = Shop { }; roles: DeskRoles = DeskRoles { }; }
-    // placement and bus as before
-    bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse, roles: self.roles),
-        http("127.0.0.1", 8794, principals: Tokens { });
+    // …
+    run() {
+        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        // …
     }
 }
 ```
 
-The program changes `self.roles.on_shift` as shifts change, and the
-gate follows. A watch is only on the socket, because the HTTP
-transport answers calls, reads and describes.
-
-## 7. Tools
-
-You still have not written a client. The tools below read only the
-description the binding serves, so each caller sees the slice its roles
-allow. Run the shop with uid 1000 as a manager.
-
-**OpenAPI.** `hale describe --openapi` writes an OpenAPI 3.1 document
-from the source. It has a path per command, read and stream, and each
-gate becomes a security requirement:
+The one surface is now two exposures, `counter` and `web`: one digest, two
+descriptions, and the same role source here (so `bearer:front-desk` can
+be given a role beside `uid:1000`). Each request is a `POST /call/<member>`
+whose body is the payload, under `Authorization: Bearer <token>`, with the
+digest in `Hale-Surface-Digest`; `GET /.description` answers the caller's
+document. The clients do both for you:
 
 ```sh
-hale describe shop.hl --openapi
+LOTUS_API_ROLES='clerk=bearer:front-desk;manager=' ./shop
+hale call http://127.0.0.1:8794 Shop::stock_now '{}' --token t-front-desk
+hale call --receipt http://127.0.0.1:8794 Shop::on_order '{"item": "lamp", "qty": 1}' --token t-front-desk
+hale call http://127.0.0.1:8794 Shop::on_order '{"item": "lamp", "qty": 1}' --token t-nobody
 ```
 
 ```text
 {
-  …
-  "paths": {
-    …
-    "/call/Restocks": {
-      "post": {
-        "operationId": "call.Restocks",
-        …
-        "security": [
-          {
-            "role": [
-              "manager"
-            ]
-          }
-        ],
-        "summary": "command Restocks: publish a Restock on subject shop.restock"
-      }
-    },
-    "/read/shop.stock": {
-      "get": {
-        "operationId": "read.shop.stock",
-        …
-        "summary": "read shop.stock: a snapshot of a Stock, with its as_of digest"
-      }
-    },
-    …
+  "on_hand": 10,
+  "orders": 0
+}
+{"body":{"by":"front-desk","on_hand":9,"order_id":1,"via":"http"},"status":200}
+hale call: http://127.0.0.1:8794 refused the description (HTTP 401): unauthenticated: no such token
 ```
 
-`--mcp` writes the MCP tool and resource shapes the same way.
+(`--token` is the bearer; `HALE_API_TOKEN` sets it for a session. The
+status is the contract's: 200 for a result, 422 for the handler's error,
+and 400, 401, 403, 409, 429 or 503 for a refusal with its kind and
+reason in the body.) The handler saw the caller as `front-desk`, `via:
+"http"`, and the program printed `order 1: 1 lamp for front-desk via http`.
 
-**An MCP host.** `hale mcp --app` serves the running program over MCP
-on stdio. Each command becomes a tool whose input schema is the
-payload's schema, and each read becomes a resource:
+## 7. A stream
+
+`Shipments` is published by the shop and bound to a **hub**. The binding
+row carries what a subscriber is promised: who may read it (`requires`),
+how many frames its queue holds (`bound`) and what the queue sheds when
+it is full (`on_full`, `drop_old` or `drop_new`). A subscriber that
+cannot keep up loses events, never the subscription.
+
+```hale,fragment
+main locus App {
+    params {
+        // …
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+    }
+    bindings {
+        Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
+    }
+    // …
+}
+```
+
+The hub is a WebSocket listener with the same two sources. Anything in the
+program that publishes `Shipments` publishes to the hub's subscribers, and
+`hale watch` subscribes:
 
 ```sh
-claude mcp add shop -- hale mcp --app /tmp/shop.sock
+hale watch ws://127.0.0.1:8796 Shipments --token t-front-desk
 ```
-
-The host's `tools/list` gets the commands this caller may use:
 
 ```text
-{"id":2,"jsonrpc":"2.0","result":{"tools":[{"description":"Command Orders: sends a Order to the program and returns the Placed its handler answers with.","inputSchema":{"properties":{"item":{"type":"string"},"qty":{"type":"integer"}},"required":["item","qty"],"type":"object"},"name":"Orders"},{"description":"Command Restocks: sends a Restock to the program and returns the Restocked its handler answers with. Needs the role manager; a role gate is a boundary check at the binding, never a proof over the program's internal call paths.","inputSchema":{"properties":{"qty":{"type":"integer"}},"required":["qty"],"type":"object"},"name":"Restocks"}]}}
+{"type":"subscribed","topic":"Shipments"}
+{"type":"event","topic":"Shipments","seq":1,"payload":{"order_id":1,"item":"lamp","qty":2}}
+{"type":"event","topic":"Shipments","seq":2,"payload":{"order_id":2,"item":"chair","qty":1}}
 ```
 
-`resources/list` gets `hale://read/shop.stock`. Calling the `Orders`
-tool places an order: `{"by":"uid:1000","on_hand":7,"order_id":2,"via":"api"}`.
+while orders are placed through the surface. Every event offered to a
+subscription takes the next `seq`, delivered or shed, so a gap in `seq`
+is exactly the frames its queue shed. The hub describes itself too,
+`hale describe ws://127.0.0.1:8796 --token t-front-desk`: its stream rows
+the caller may subscribe to (a caller who holds no `clerk` sees none and
+`hale watch` says so), with the loss statement in the document's own
+words.
 
-**A dashboard.** `hale admin` serves a page on the loopback with a
-form for each command, a button for each read, and a live tail for each
-stream. It prints the URL to open, which carries a token:
+## 8. Tools
+
+You still have not written a client. The tools below read only the
+description an exposure serves, so each caller sees the slice its roles
+allow.
+
+**OpenAPI.** The forms a client is generated from are projections of a
+surface's rows, one per surface, each carrying the digest, and they come
+from the program without running it:
+
+```sh
+hale check --api shop.hl --surface Counter --openapi
+hale check --api shop.hl --surface Counter --json-schema
+hale check --api shop.hl --surface Counter --mcp
+```
+
+The OpenAPI document has a `POST /call/<member>` per row, the responses
+by status, the digest as the `Hale-Surface-Digest` header and each
+member's `requires` beside it.
+
+**An MCP host.** `hale mcp --app` serves an exposure over MCP on stdio.
+Each member the caller may call becomes a tool whose input schema is the
+request's schema:
+
+```sh
+claude mcp add shop -- hale mcp --app http://127.0.0.1:8794 --token t-front-desk
+```
+
+The host's `tools/list` gets the members this caller may use:
+
+```text
+{"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"rpc Shop::on_order of Counter. Requires no role under the exposure's role source; the server still authorizes every request.","inputSchema":{"properties":{"item":{"type":"string"},"qty":{"type":"integer"}},"required":["item","qty"],"type":"object"},"name":"Shop__on_order","x-hale-requires":[]},{"description":"rpc Shop::stock_now of Counter. Requires clerk under the exposure's role source; …","name":"Shop__stock_now","x-hale-requires":["clerk"]}]}}
+```
+
+(A program can also serve MCP itself, with `mcp::Rpc`; `hale mcp --app
+mcp://host:port` then forwards that listener's own tools.)
+
+**A dashboard.** `hale admin` serves a page on the loopback with a form
+for each member and a live tail for each stream. It prints the URL to
+open, which carries a token:
 
 ```sh
 hale admin /tmp/shop.sock --port 7474
@@ -769,37 +528,29 @@ hale admin: http://127.0.0.1:7474/?token=03ea1263780059750082ce32e8900ab1  (over
 
 ## The whole program
 
-```hale
+```hale,fragment
 // Build an API (docs/src/services/build-an-api.md): one program grown a
 // step at a time. A shop takes orders and answers each with a reply,
-// streams its shipments, exposes its stock as a read, knows who is
-// calling, gates what only staff may do, and answers over HTTP as well
-// as on its socket.
+// streams its shipments, answers a stock query, knows who is calling,
+// gates what only staff may do, and answers over HTTP as well as on its
+// socket.
 
 type Order { item: String; qty: Int; }
 type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
+type StockQuery { item: String = ""; }
 type Restock { qty: Int; }
 type Restocked { on_hand: Int; by: String; role: String; }
 
-topic Orders { payload: Order; subject: "shop.order"; }
-topic Restocks { payload: Restock; subject: "shop.restock"; }
 topic Shipments { payload: Shipment; subject: "shop.shipment"; }
 
 role clerk;
 role manager includes clerk;
 
 locus Shop {
-    contract {
-        @gated(role: clerk) expose stock: Stock;
-    }
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
-    bus {
-        subscribe Orders as on_order;
-        subscribe Restocks as on_restock;
-        @gated(role: clerk) publish Shipments;
-    }
+    bus { publish Shipments; }
 
     fn on_order(o: Order, ctx: std::api::Context) -> Placed {
         if o.qty <= 0 || o.qty > self.stock.on_hand {
@@ -812,11 +563,19 @@ locus Shop {
         return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
     }
 
-    @gated(role: manager)
     fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
         self.stock.on_hand = self.stock.on_hand + r.qty;
         return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
     }
+
+    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+}
+
+// The shop's operations: who may call each is the row's `requires`.
+api Counter {
+    rpc Shop::on_order;
+    rpc Shop::stock_now requires: [clerk];
+    rpc Shop::on_restock requires: [manager];
 }
 
 // Who a bearer token on the HTTP transport is (a std::api::BearerSource).
@@ -831,16 +590,23 @@ locus Tokens {
 }
 
 main locus App {
-    params { shop: Shop = Shop { }; }
+    params {
+        shop: Shop = Shop { };
+        tokens: Tokens = Tokens { };
+        // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+    }
     placement { shop: cooperative(pool = work) where async_io; }
-    bus { publish Orders; }
     bindings {
-        api: unix("/tmp/shop.sock", bound: 64, on_full: refuse),
-        http("127.0.0.1", 8794, principals: Tokens { });
+        Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        Orders <- Order { item: "window display", qty: 1 };
+        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
+        sock.stop();
+        web.stop();
     }
 }
 
@@ -854,16 +620,14 @@ The compiler's example corpus builds this program on every change, as
 
 ## Where each piece is specified
 
-- The binding: the entry, the two knobs, the wire, refusals, replies,
-  reads and the HTTP transport.
-  [`spec/semantics.md` § The api binding](https://github.com/hale-lang/hale/blob/main/spec/semantics.md#the-api-binding-gh-1106)
-- Roles, `includes` and `@gated`.
-  [`spec/types.md` § Roles and `@gated`](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-and-gated-gh-1109)
+- The surface, the serve site, the transports, the outcomes, streams and
+  the description: [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md)
+  is the contract; [The API surface](./api.md) explains each piece on
+  its own.
+- Roles and `includes`.
+  [`spec/types.md` § Roles](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-gh-1109-1417)
 - `std::api`: `Principal`, `Context`, `RoleSource`, `BearerSource` and
   `StaticRoles`, in [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md),
   plus the source, `crates/hale-stdlib/hl/api.hl`.
-- The description that `hale describe`, `hale call`, `hale mcp --app`
-  and `hale admin` read.
-  [`spec/model.md` § The description](https://github.com/hale-lang/hale/blob/main/spec/model.md#the-description-the-models-first-wire-form-gh-1107)
-- Each piece explained on its own, with what is left out and why:
-  [The API binding](./api.md).
+- The clients (`hale describe`, `call`, `watch`, `admin`, `mcp --app`):
+  [`spec/api.md` § The clients](https://github.com/hale-lang/hale/blob/main/spec/api.md#the-clients).

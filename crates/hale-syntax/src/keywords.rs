@@ -55,12 +55,13 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "sum", "prod", "or", "fallible",
     "unix", "shm_ring", "role", "listen", "connect", "slot_count",
     "on_overflow", "block", "drop",
-    // GH #1106: the api binding entry and its knobs.
-    "api", "bound", "on_full", "refuse", "watch_bound", "on_watch_full",
+    // GH #1106, #1417: the surface path's knobs (`api::serve(…, bound:,
+    // on_full:)`).
+    "api", "bound", "on_full", "refuse",
     // GH #1137, #1135: what the entry serves, and its HTTP transport.
     "serve", "http", "principals",
     // GH #1109: roles at the boundary.
-    "gated", "includes", "roles", "on_unauthorized",
+    "includes", "roles",
     // GH #1417: a surface's rows (`api NAME { rpc L::f requires: [r]; }`,
     // `@rpc`), and a hub binding's `requires:`.
     "rpc", "requires",
