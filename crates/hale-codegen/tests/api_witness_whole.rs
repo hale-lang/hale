@@ -8,8 +8,9 @@
 //! source, receiver, placement, binding and `on_failure` is the contract's.
 //!
 //! One run of that program serves its rpc half over `http::Rpc` (twice),
-//! `unix::Rpc` and `mcp::Rpc` (a fifth serve site, `agent`, of `Public`) and
-//! its stream half over `ws::Hub`, and the tests assert what a
+//! `unix::Rpc`, `mcp::Rpc` (a fifth serve site, `agent`, of `Public`) and
+//! `grpc::Rpc` (a sixth, `wire`, whose calls, trailers and GOAWAY at the stop
+//! the test holds to the spec's gRPC column), and its stream half over `ws::Hub`, and the tests assert what a
 //! caller of each can observe: the assertions of `api_http_witness`
 //! (members reach their own receiver and pool, a shared handler meets each
 //! surface's `requires`, a digest mismatch, every outcome, one exposure
@@ -432,9 +433,10 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     dave.silence(100);
 
     // ---- `Public` over gRPC, beside the rest, in the same run ----
+    // (the connection stays open: the final stop says GOAWAY on it)
+    let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
     {
         use super::api_grpc::{description_over_grpc, text_of, unary};
-        let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
         let described = unary(&mut g, 1, "/hale.api.Description/Describe", Some("t-alice"), "{}");
         assert_eq!(described.header("grpc-status"), Some("0"), "{described:?}");
         assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", w.grpc, "wire"), "alice's description over gRPC is the fixture's");
@@ -479,6 +481,8 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
     assert!(std::net::TcpStream::connect(("127.0.0.1", mcp)).is_err(), "the MCP endpoint's address is released");
     assert!(std::net::TcpStream::connect(("127.0.0.1", grpc)).is_err(), "the gRPC endpoint's address is released");
+    let go = g.goaway_within(Duration::from_secs(15)).expect("wire's stop says GOAWAY on the open connection");
+    assert_eq!(go.1, 0, "NO_ERROR");
     for line in ["public stopped", "partner stopped", "admin stopped", "stopped"] {
         assert!(done.stdout.contains(line), "{line}:\n{}", done.stdout);
     }
