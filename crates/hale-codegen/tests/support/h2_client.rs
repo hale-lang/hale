@@ -395,6 +395,20 @@ impl Client {
         }
     }
 
+    /// Read until `done` is true of what `stream` holds (or it has ended)
+    /// or `within` passes; whatever it holds then. A call that stays open
+    /// between messages is read this way, before its end.
+    pub fn until(&mut self, stream: u32, done: impl Fn(&Response) -> bool, within: Duration) -> Response {
+        let until = Instant::now() + within;
+        while Instant::now() < until && !self.eof {
+            if self.streams.get(&stream).is_some_and(|r| r.ended || done(r)) {
+                break;
+            }
+            self.pump(Duration::from_millis(50));
+        }
+        self.streams.get(&stream).cloned().unwrap_or_default()
+    }
+
     /// Read until `stream` has ended (END_STREAM or a reset) or `within`
     /// passes; whatever it holds then.
     pub fn response(&mut self, stream: u32, within: Duration) -> Response {

@@ -52,6 +52,9 @@ typedef struct h2_stream {
     size_t blen, boff;
     char *trailers;
     size_t tlen;
+    /* the response is started (its HEADERS are submitted) and is kept open:
+     * more body, or its trailers, will come (see lotus_h2_respond) */
+    int started, more;
     struct h2_stream *next;
 } h2_stream;
 
@@ -357,9 +360,11 @@ static nghttp2_ssize body_read(nghttp2_session *ng, int32_t id, uint8_t *buf,
     (void)ud;
     size_t left = t->blen - t->boff;
     size_t n = left < length ? left : length;
+    /* an open response with nothing to send waits for lotus_h2_respond */
+    if (left == 0 && t->more) return NGHTTP2_ERR_DEFERRED;
     if (n) memcpy(buf, t->body + t->boff, n);
     t->boff += n;
-    if (t->boff == t->blen) {
+    if (t->boff == t->blen && !t->more) {
         *flags |= NGHTTP2_DATA_FLAG_EOF;
         if (t->tlen) {
             size_t cnt = 0;
@@ -384,7 +389,13 @@ static char *dup_blob(const void *blob, size_t *len) {
 /* Answer a stream: HEADERS (the ":status" line among them), then the body
  * as DATA, then the trailers as a closing HEADERS; with no body and no
  * trailers the HEADERS closes the stream (a trailers-only answer is the
- * caller's headers alone). 0 on success. */
+ * caller's headers alone). 0 on success.
+ *
+ * A response may be kept open, for a call that answers more than once: a
+ * `trailers` of exactly "+" sends the headers and the body and leaves the
+ * stream open; a later call with empty `headers` on the same stream sends
+ * more body, with "+" again to stay open or with the trailers (or none) to
+ * end it. */
 int64_t lotus_h2_respond(int64_t h, int64_t stream, const void *headers,
                          const void *body, const void *trailers) {
     h2_session *s = (h2_session *)(intptr_t)h;
@@ -393,17 +404,47 @@ int64_t lotus_h2_respond(int64_t h, int64_t stream, const void *headers,
     h2_stream *t = stream_find(s, id);
     if (!t) t = stream_add(s, id);
     if (!t) return -2;
-    free(t->body);
-    free(t->trailers);
-    t->body = dup_blob(body, &t->blen);
-    t->trailers = dup_blob(trailers, &t->tlen);
-    t->boff = 0;
-    size_t hl = 0;
+    size_t hl = 0, bl = 0, tl = 0;
     char *htext = dup_blob(headers, &hl);
-    if (!t->body || !t->trailers || !htext) {
+    char *nb = dup_blob(body, &bl);
+    char *nt = dup_blob(trailers, &tl);
+    if (!htext || !nb || !nt) {
         free(htext);
+        free(nb);
+        free(nt);
         return -2;
     }
+    int more = tl == 1 && nt[0] == '+';
+    if (more) tl = 0;
+    if (t->started && hl == 0) {
+        /* more of an open response */
+        if (t->boff == t->blen) t->blen = t->boff = 0;
+        char *g = (char *)realloc(t->body, t->blen + bl + 1);
+        if (!g) {
+            free(htext);
+            free(nb);
+            free(nt);
+            return -2;
+        }
+        t->body = g;
+        if (bl) memcpy(t->body + t->blen, nb, bl);
+        t->blen += bl;
+        free(t->trailers);
+        t->trailers = nt;
+        t->tlen = tl;
+        t->more = more;
+        free(nb);
+        free(htext);
+        return nghttp2_session_resume_data(s->sess, id);
+    }
+    free(t->body);
+    free(t->trailers);
+    t->body = nb;
+    t->blen = bl;
+    t->trailers = nt;
+    t->tlen = tl;
+    t->boff = 0;
+    t->more = more;
     size_t cnt = 0;
     nghttp2_nv *nv = parse_nv(htext, hl, &cnt);
     if (!nv) {
@@ -411,7 +452,7 @@ int64_t lotus_h2_respond(int64_t h, int64_t stream, const void *headers,
         return -2;
     }
     int rv;
-    if (t->blen == 0 && t->tlen == 0) {
+    if (t->blen == 0 && t->tlen == 0 && !more) {
         rv = nghttp2_submit_response2(s->sess, id, nv, cnt, NULL);
     } else {
         nghttp2_data_provider2 prd;
@@ -419,6 +460,7 @@ int64_t lotus_h2_respond(int64_t h, int64_t stream, const void *headers,
         prd.read_callback = body_read;
         rv = nghttp2_submit_response2(s->sess, id, nv, cnt, &prd);
     }
+    if (rv == 0) t->started = 1;
     free(nv);
     free(htext);
     return rv;

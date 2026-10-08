@@ -458,6 +458,36 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
         assert_eq!(cancelled.header("grpc-status"), Some("0"), "{cancelled:?}");
         assert_eq!(text_of(&cancelled), "{\"order\":48,\"was_open\":true}");
     }
+    // ---- ... and as protobuf (R8b), on the same connection: the messages of
+    // the generated `.proto`, the same handlers, the same stream ----
+    {
+        use super::api_grpc_proto::{encode, framed, reflected_services, status_details, unary_pb, PROTO};
+        let place = "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}";
+        let placed = unary_pb(&mut g, 15, "/Public/Orders__place", Some("t-alice"), place, "PlaceOrder");
+        assert_eq!(placed.header("grpc-status"), Some("0"), "{placed:?}");
+        assert_eq!(placed.header("content-type"), Some(PROTO), "{placed:?}");
+        assert_eq!(placed.data, framed(&encode("{\"order\":49,\"notional\":125000}", "OrderReceipt")), "the receipt as OrderReceipt");
+        assert_eq!(dave.text(), fill(11, 49), "the fill reaches the operator's stream whichever codec placed the order");
+        let missed = unary_pb(&mut g, 17, "/Public/Orders__cancel", Some("t-alice"), "{\"order\":99999}", "CancelOrder");
+        let error = encode("{\"code\":\"unknown_order\",\"reason\":\"no order 99999\"}", "OrderError");
+        assert_eq!(missed.header("grpc-status"), Some("9"), "{missed:?}");
+        assert_eq!(
+            missed.header("grpc-status-details-bin"),
+            Some(status_details(9, "handler_error", "type.hale.dev/OrderError", &error).as_str()),
+            "the handler's error is the Any of an OrderError"
+        );
+        let forbidden = unary_pb(&mut g, 19, "/Public/Orders__cancel", Some("t-bob"), "{\"order\":49}", "CancelOrder");
+        assert_eq!(forbidden.header("grpc-status"), Some("7"), "{forbidden:?}");
+        let malformed = unary_pb(&mut g, 21, "/Public/Orders__place", Some("t-alice"), "{\"symbol\":\"ACME\",\"limit\":12500}", "PlaceOrder");
+        assert_eq!((malformed.header("grpc-status"), malformed.header("grpc-message")), (Some("3"), Some("missing_field: qty")), "{malformed:?}");
+        let nobody = unary_pb(&mut g, 23, "/Public/Orders__place", Some("t-mallory"), place, "PlaceOrder");
+        assert_eq!((nobody.header("grpc-status"), nobody.header("grpc-message")), (Some("16"), Some("no such token")), "{nobody:?}");
+        let cancelled = unary_pb(&mut g, 25, "/Public/Orders__cancel", Some("t-alice"), "{\"order\":49}", "CancelOrder");
+        assert_eq!(cancelled.header("grpc-status"), Some("0"), "{cancelled:?}");
+        assert_eq!(cancelled.data, framed(&encode("{\"order\":49,\"was_open\":true}", "Cancelled")));
+        // the surface is discoverable beside the rest
+        assert_eq!(reflected_services(&mut g, 27, "t-alice"), ["Public", "hale.api.Description", "grpc.reflection.v1.ServerReflection"]);
+    }
     dave.silence(100);
 
     w.server.stop_one("partner");

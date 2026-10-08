@@ -346,6 +346,117 @@ impl<'a> Codec<'a> {
     }
 }
 
+/// How a row's value crosses a gRPC exposure as protobuf (R8b): the
+/// expression that writes `v` as the message `<T>` or the one-field message
+/// of a scalar (`<rpc>Request`, …, `value = 1`), and what reads `bytes` as
+/// one. The records are `json_gen`'s `__api_pb_*` codecs.
+pub(crate) struct PbCodec<'a> {
+    shapes: &'a Shapes<'a>,
+    convs: &'a BTreeMap<String, Conv>,
+    schemas: &'a crate::surfaces::Schemas<'a>,
+}
+
+impl PbCodec<'_> {
+    /// The Hale expression (of type `Bytes`) that writes `v` (of type `te`).
+    pub(crate) fn encode(&self, te: &TypeExpr, v: &str) -> String {
+        use hale_syntax::ast::PrimType;
+        let te = &self.shapes.dealias(te);
+        let put = |p: PrimType, v: &str| match p {
+            PrimType::Int => format!("__api_pb_put_int(1, {v})"),
+            PrimType::Float => format!("__api_pb_put_f64(1, {v})"),
+            PrimType::Bool => format!("__api_pb_put_bool(1, {v})"),
+            _ => format!("__api_pb_put_str(1, {v})"),
+        };
+        match self.shapes.classify(te) {
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_pb_encode_{name}({v})"),
+            TypeClass::Prim(p) => put(p, v),
+            TypeClass::Named { name, base, .. } => match self.convs.get(name) {
+                Some(c) => format!("__api_pb_put_int(1, {})", c.to_int(v)),
+                None => put(base, v),
+            },
+            _ => "std::bytes::from_string(\"\")".to_string(),
+        }
+    }
+
+    /// Statements that decode `bytes` (a `Bytes`) as `te` into `let <var>`,
+    /// running `bail` (a statement list ending in `return`) when it does not.
+    pub(crate) fn decode(&self, te: &TypeExpr, bytes: &str, var: &str, bail: &str) -> String {
+        use hale_syntax::ast::PrimType;
+        let te = &self.shapes.dealias(te);
+        let boxed = |p: PrimType| match p {
+            PrimType::Int => "__api_pb_box_int",
+            PrimType::Float => "__api_pb_box_float",
+            PrimType::Bool => "__api_pb_box_bool",
+            _ => "__api_pb_box_str",
+        };
+        match self.shapes.classify(te) {
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
+                format!("let {var} = __api_pb_decode_{name}({bytes}) or {{ {bail} }};\n")
+            }
+            TypeClass::Prim(p) => format!("let {var} = {}({bytes}) or {{ {bail} }};\n", boxed(p)),
+            TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
+                let c = &self.convs[name];
+                let n = format!("__n_{var}");
+                let ins = format!("let {n} = __api_pb_box_int({bytes}) or {{ {bail} }};\n");
+                match c {
+                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
+                    Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
+                }
+            }
+            TypeClass::Named { base, .. } => format!("let {var} = {}({bytes}) or {{ {bail} }};\n", boxed(base)),
+            _ => format!("let {var} = {bytes};\n"),
+        }
+    }
+
+    /// The message that carries `te`, as the `.proto` names it.
+    pub(crate) fn message(&self, member: &str, what: &str, te: &TypeExpr) -> String {
+        let mut scratch = BTreeMap::new();
+        match self.schemas.type_ref(te, &mut scratch) {
+            crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n),
+            _ => crate::proto_gen::wrapper_name(member, what),
+        }
+    }
+}
+
+/// The descriptors a gRPC exposure reflects, one file a line: its name, the
+/// symbols it declares (comma separated) and its `FileDescriptorProto` in
+/// base64, tab separated. The surface's file is the one `hale api export`
+/// writes (`proto_gen::from_model`); the other two are the reserved
+/// description method's and the reflection service's own. Empty when a row
+/// has no proto3 encoding (the export refuses it by name).
+fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &str, digest: u64) -> String {
+    use crate::surface_doc::{ClientError, ClientMember, ClientModel};
+    let mut types = BTreeMap::new();
+    let members: Vec<ClientMember> = rows
+        .iter()
+        .map(|r| ClientMember {
+            name: r.member.clone(),
+            request: r.request.as_ref().map(|te| schemas.type_ref(te, &mut types)),
+            response: r.response.as_ref().map(|te| schemas.type_ref(te, &mut types)),
+            error: match (&r.error, r.server_error) {
+                (_, true) => ClientError::Server,
+                (Some(e), false) => ClientError::Type(schemas.type_ref(e, &mut types)),
+                (None, false) => ClientError::None,
+            },
+            requires: r.requires.clone(),
+        })
+        .collect();
+    let model = ClientModel {
+        surface: surface.to_string(),
+        digest: hale_model::surface::digest_text(digest),
+        members,
+        types,
+        streams: Vec::new(),
+    };
+    let Ok(file) = crate::proto_gen::from_model(&model) else { return String::new() };
+    let mut out = String::new();
+    for f in [file, crate::proto_gen::description_file(), crate::proto_gen::reflection_file()] {
+        out.push_str(&format!("{}\t{}\t{}\n", f.name, f.symbols().join(","), crate::proto_gen::base64(&f.descriptor())));
+    }
+    out
+}
+
 /// What of `std::api` the runtime declares (`hale_stdlib::API_RUNTIME_SOURCE`).
 const RUNTIME_NAMES: &[&str] = &[
     "Grants",
@@ -616,12 +727,18 @@ pub fn expand(
         roles: Option<Expr>,
         expiring: bool,
         revised: bool,
+        /// served over `grpc::Rpc`: its rows get protobuf codecs beside the JSON ones.
+        grpc: bool,
+        /// a gRPC exposure's descriptors for server reflection (see `grpc_files`).
+        files: String,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let confer;
     let convs;
     let all_names: BTreeSet<String>;
     let all_builtins;
+    let pb_names: BTreeSet<String>;
+    let pb_builtins;
     {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
@@ -630,6 +747,9 @@ pub fn expand(
         convs = hale_syntax::json_gen::scalar_convs(&ro);
         let mut names = BTreeSet::new();
         let mut builtins = BTreeMap::new();
+        let mut names_pb = BTreeSet::new();
+        let mut builtins_pb = BTreeMap::new();
+        let schemas = crate::surfaces::Schemas::of(&ro);
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         for p in &ro {
             for d in flat_decls(&p.items) {
@@ -773,11 +893,16 @@ pub fn expand(
                     let expiring = has_fn(&principals, "expiry");
                     let revised = has_fn(&roles, "grants");
                     let digest = digest_of(&shapes, &rows);
+                    let grpc = is_grpc_site(l, Some(transport));
                     for r in &rows {
                         for te in r.request.iter().chain(r.response.iter()).chain(r.error.iter().filter(|_| !r.server_error)) {
                             struct_closure(&shapes, te, &mut names, &mut builtins);
+                            if grpc {
+                                struct_closure(&shapes, te, &mut names_pb, &mut builtins_pb);
+                            }
                         }
                     }
+                    let files = if grpc { grpc_files(&rows, &schemas, &surface, digest) } else { String::new() };
                     plans.push(Plan {
                         site: Site {
                             program: pi,
@@ -795,12 +920,16 @@ pub fn expand(
                         roles,
                         expiring,
                         revised,
+                        grpc,
+                        files,
                     });
                 }
             }
         }
         all_names = names;
         all_builtins = builtins;
+        pb_names = names_pb;
+        pb_builtins = builtins_pb;
     }
     if plans.is_empty() {
         return Vec::new();
@@ -813,6 +942,13 @@ pub fn expand(
         let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
             all_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
         hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins);
+        // a gRPC exposure's rows are also carried as protobuf
+        if plans.iter().any(|p| p.grpc) {
+            let names: Vec<String> = pb_names.iter().cloned().collect();
+            let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
+                pb_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
+            hale_syntax::json_gen::generate_rpc_pb_codecs(programs, first, &names, &builtins);
+        }
     }
 
     // ---- per exposure ----
@@ -825,10 +961,11 @@ pub fn expand(
     let shapes = Shapes::of_all(&slices);
     let codec = Codec { shapes: &shapes, convs: &convs };
     let schemas = crate::surfaces::Schemas::of(&ro_refs);
+    let pb = PbCodec { shapes: &shapes, convs: &convs, schemas: &schemas };
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         let site = &plan.site;
-        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, &schemas));
+        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, plan.grpc.then_some(&pb), &schemas));
         for (slot, ty) in plan.slots.iter().enumerate() {
             let members: Vec<(usize, &Row)> = plan
                 .rows
@@ -840,6 +977,7 @@ pub fn expand(
                 exposure: id,
                 slot,
                 members: members.iter().map(|(m, r)| (*m, (*r).clone())).collect(),
+                grpc: plan.grpc,
             });
         }
         out.push(Expansion {
@@ -876,7 +1014,7 @@ pub fn expand(
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
             if let Some(t) = &site.transport {
-                push("transport", as_stdlib_unix(t, id, &site.surface));
+                push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files));
                 if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
                     push("address", addr);
                 }
@@ -938,7 +1076,7 @@ pub fn expand(
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
                             if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path)) {
-                                *e = as_stdlib_unix(e, id, &site.surface);
+                                *e = as_stdlib_unix(e, id, &site.surface, &plan.files);
                             }
                         }
                     }
@@ -969,7 +1107,7 @@ pub fn expand(
     for (ty, bs) in &bindings {
         for p in programs.iter_mut() {
             if let Some(l) = find_locus_mut(&mut p.items, ty) {
-                extend_receiver(l, bs, &codec);
+                extend_receiver(l, bs, &codec, &pb);
                 break;
             }
         }
@@ -995,6 +1133,8 @@ struct Binding {
     slot: usize,
     /// (member index in the surface's canonical order, the row).
     members: Vec<(usize, Row)>,
+    /// the exposure is served over `grpc::Rpc`: its calls may arrive as protobuf.
+    grpc: bool,
 }
 
 /// Whether a transport literal's path is the stdlib's Unix transport,
@@ -1031,7 +1171,7 @@ pub(crate) fn is_grpc_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
 /// HTTP transport's `codec: json` is the one codec v1 has, and is not a
 /// field of the locus (nor is the gRPC transport's). The gRPC transport
 /// also carries the name of the surface it serves, which a call's path names.
-fn as_stdlib_unix(t: &Expr, id: i64, surface: &str) -> Expr {
+fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str) -> Expr {
     let mut e = fresh(t);
     if let Expr::Struct { path, inits, span, .. } = &mut e {
         let kind = if is_unix_rpc(path) {
@@ -1051,11 +1191,13 @@ fn as_stdlib_unix(t: &Expr, id: i64, surface: &str) -> Expr {
             inits.retain(|i| {
                 i.name.name != "tid"
                     && i.name.name != "surface"
+                    && i.name.name != "files"
                     && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
             });
             inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
             if kind == "grpc" {
                 inits.push(StructInit { name: Ident::new("surface", sp), value: Expr::Literal(Literal::String(surface.to_string()), sp), span: sp });
+                inits.push(StructInit { name: Ident::new("files", sp), value: Expr::Literal(Literal::String(files.to_string()), sp), span: sp });
             }
         }
     }
@@ -1353,6 +1495,7 @@ fn surface_src(
     slots: &[String],
     confer: &BTreeMap<String, Vec<String>>,
     codec: &Codec<'_>,
+    pb: Option<&PbCodec<'_>>,
     schemas: &crate::surfaces::Schemas<'_>,
 ) -> String {
     let mut s = String::new();
@@ -1389,8 +1532,16 @@ fn surface_src(
                 TypeClass::Struct { .. } | TypeClass::Builtin(_)
             );
             let bail = if is_struct { "return err.kind + \": \" + err.field;" } else { bail };
+            // a protobuf call (`pb::` and the message in base64) is checked by
+            // its own codec: the same words for the same faults
+            let pb_check = pb.map_or(String::new(), |pb| {
+                format!(
+                    "            if std::str::starts_with(body, \"pb:\") {{\n                let __raw = std::text::base64::decode(body[4..len(body)]);\n                {}                return \"\";\n            }}\n",
+                    pb.decode(te, "__raw", "__v", bail)
+                )
+            });
             s.push_str(&format!(
-                "        if i == {i} {{\n            {}            return \"\";\n        }}\n",
+                "        if i == {i} {{\n{pb_check}            {}            return \"\";\n        }}\n",
                 codec.decode(te, "body", "__v", bail)
             ));
         }
@@ -1504,7 +1655,7 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> Stri
 
 /// Add the plumbing of spec/api.md § Receiver failure and generations to a
 /// receiver type, for each exposure that binds it.
-fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>) {
+fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &PbCodec<'_>) {
     let span = l.name.span;
     if l.members.iter().any(|m| {
         matches!(m, LocusMember::Fn(f) if f.name.name == "__rpc_ev")
@@ -1539,6 +1690,12 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>) {
         ));
         for (m, row) in &b.members {
             fns.push_str(&format!("    if c.member == {m} {{\n"));
+            if b.grpc {
+                // the call arrived as protobuf: the same steps, the other codec
+                fns.push_str("        if std::str::starts_with(c.body, \"pb:\") {\n");
+                fns.push_str(&thunk_body_pb(row, slot, pb));
+                fns.push_str("        return;\n        }\n");
+            }
             fns.push_str(&thunk_body(row, slot, codec));
             fns.push_str("        return;\n    }\n");
         }
@@ -1595,11 +1752,66 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>) {
 /// The statements that run one call of `row` on its receiver: decode the
 /// request, call the handler through the fallible ABI, publish the outcome.
 fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
+    thunk_steps(row, slot, Wire::Json(codec))
+}
+
+/// The same steps for a call that arrived as protobuf.
+fn thunk_body_pb(row: &Row, slot: usize, pb: &PbCodec<'_>) -> String {
+    thunk_steps(row, slot, Wire::Pb(pb))
+}
+
+/// Which codec a call crosses by: the row's JSON, or its protobuf.
+#[derive(Clone, Copy)]
+enum Wire<'a> {
+    Json(&'a Codec<'a>),
+    Pb(&'a PbCodec<'a>),
+}
+
+impl Wire<'_> {
+    /// Statements that decode the call's body as the request into `__req`.
+    fn decode(&self, row: &Row, te: &TypeExpr, bail: &str) -> String {
+        let _ = row;
+        match self {
+            Wire::Json(c) => c.decode(te, "c.body", "__req", bail),
+            Wire::Pb(p) => format!(
+                "let __raw = std::text::base64::decode(c.body[4..len(c.body)]);\n{}",
+                p.decode(te, "__raw", "__req", bail)
+            ),
+        }
+    }
+    /// The text of a result body.
+    fn ok(&self, te: &TypeExpr, v: &str) -> String {
+        match self {
+            Wire::Json(c) => c.encode(te, v),
+            Wire::Pb(p) => format!("\"pb::\" + std::text::base64::encode({})", p.encode(te, v)),
+        }
+    }
+    /// The body of a result of nothing.
+    fn null(&self) -> &'static str {
+        match self {
+            Wire::Json(_) => "\"null\"",
+            Wire::Pb(_) => "\"pb::\"",
+        }
+    }
+    /// The text of a handler error's body: a protobuf one names its message.
+    fn err(&self, row: &Row, te: &TypeExpr) -> String {
+        match self {
+            Wire::Json(c) => c.encode(te, "err"),
+            Wire::Pb(p) => format!(
+                "\"pb:{}:\" + std::text::base64::encode({})",
+                p.message(&row.member, "Error", te),
+                p.encode(te, "err")
+            ),
+        }
+    }
+}
+
+fn thunk_steps(row: &Row, slot: usize, wire: Wire<'_>) -> String {
     let mut s = String::new();
     let bail = format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); return;");
     let mut args = String::new();
     if let Some(te) = &row.request {
-        s.push_str(&codec.decode(te, "c.body", "__req", &bail));
+        s.push_str(&wire.decode(row, te, &bail));
         args.push_str("__req");
     }
     if row.served_ctx {
@@ -1622,7 +1834,7 @@ fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
         let e = row.error.as_ref().expect("an error type");
         Some(format!(
             "self.__rpc_ev(c.exposure, c.rid, {slot}, 1, {}); return;",
-            codec.encode(e, "err")
+            wire.err(row, e)
         ))
     };
     match (&row.response, fail_branch) {
@@ -1630,23 +1842,23 @@ fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
             s.push_str(&format!("let __v = {call} or {{ {fb} }};\n"));
             s.push_str(&format!(
                 "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                codec.encode(resp, "__v")
+                wire.ok(resp, "__v")
             ));
         }
         (Some(resp), None) => {
             s.push_str(&format!("let __v = {call};\n"));
             s.push_str(&format!(
                 "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                codec.encode(resp, "__v")
+                wire.ok(resp, "__v")
             ));
         }
         (None, Some(fb)) => {
             s.push_str(&format!("{call} or {{ {fb} }};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, \"null\");\n"));
+            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
         }
         (None, None) => {
             s.push_str(&format!("{call};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, \"null\");\n"));
+            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
         }
     }
     s

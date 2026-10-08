@@ -376,23 +376,26 @@ toolchain on stdio and is not a client of this endpoint.
 ### Serving over gRPC
 
 `grpc::Rpc` takes a `bind:`, a `principals:` and a `roles:` (and, as
-`http::Rpc` does, `codec: json`, the one codec there is) and serves unary
-calls over HTTP/2, cleartext, many calls to a connection:
+`http::Rpc` does, `codec: json`, the row's JSON codec) and serves unary
+calls over HTTP/2, cleartext, many calls to a connection, in protobuf or in
+JSON as each caller asks:
 
 ```hale,fragment
 let public = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
-A call is `POST /<Surface>/<member>`, the member written `Orders.place`,
-with `content-type: application/grpc` or `application/grpc+json` (the
-messages are the codec's JSON, so `+proto` is refused), one gRPC message
-(a zero byte, four bytes of length, the JSON) in and one out. The
+A call is `POST /<Surface>/<rpc>`, the rpc the member written as an MCP
+tool is (`Orders__place` for `Orders::place`; `Orders.place` still names it),
+with `content-type: application/grpc` or `application/grpc+proto` for
+protobuf, or `application/grpc+json` for the row's JSON, one gRPC message
+(a zero byte, four bytes of length, the message) in and one out, answered in
+the codec it came in. The
 credential is the `authorization: Bearer <token>` metadata, and the digest
 you generated against, if you send one, is the `hale-surface-digest`
 metadata. The status is gRPC's:
 
 ```text
-:method POST   :path /Public/Orders.place   content-type application/grpc+json
+:method POST   :path /Public/Orders__place   content-type application/grpc+json
 authorization Bearer t-alice   hale-surface-digest fnv1a64:a8930d6e7998e986
 message {"symbol": "ACME", "qty": 10, "limit": 12500}
 
@@ -401,9 +404,69 @@ message {"order":41,"notional":125000}
 trailers grpc-status 0
 ```
 
+The same call as protobuf is the message `PlaceOrder` of the generated file
+(`symbol = 1`, `qty = 2`, `limit = 3`) and answers an `OrderReceipt`.
+
+#### The `.proto`, and finding the surface
+
+The `.proto` is not written by hand: it is generated from the rows, like the
+other forms, and `hale api export` writes it beside them.
+
+```text
+$ hale api export --surface Public --out api/public desk.hl
+wrote api/public/Public.description.json
+wrote api/public/Public.openapi.json
+wrote api/public/Public.json-schema.json
+wrote api/public/Public.mcp.json
+wrote api/public/Public.proto
+wrote api/public/DIGEST
+```
+
+```protobuf
+service Public {
+  // rpc Orders::place
+  // requires no role
+  // a violation is the server error (ClosureViolation): status 13, no handler error
+  rpc Orders__place(PlaceOrder) returns (OrderReceipt);
+}
+
+message PlaceOrder {
+  optional string symbol = 1;
+  optional int64 qty = 2;
+  optional int64 limit = 3; // Hale: Money, q(cent)
+}
+```
+
+A message is a record the rows reach and its fields are numbered in the order
+the struct declares them, so the numbers hold as long as the surface digest
+does; every scalar is `optional` so an absent field is told from a zero one
+(and a field with no default that is absent is the same `missing_field`
+refusal the JSON codec gives). The header of the file states the five
+outcomes in these terms: a handler's error is the detail of its status, an
+`Any` of the error's message, and a refusal is the detail `HaleRefusal`. `hale
+check --api --surface Public --proto` prints the file, and `hale api export
+--check` refuses a committed copy that drifted. Two fields of a record whose
+default JSON names are the same (`a_b` and `aB`, or `a` and `_a`, which
+protoc compares without regard to case) make a file `protoc` refuses, so the
+record is refused instead, naming both fields; a `json:` tag on one of them
+renames it.
+
+A client is whatever generates stubs from a `.proto`; `hale api client`
+makes Hale and TypeScript clients and neither speaks gRPC (a browser's
+`fetch` cannot, and neither client carries an HTTP/2 stack). The server also
+answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
+have the file finds the surface through the server: it lists three services
+(the surface, `hale.api.Description` and the reflection service itself) and
+answers the descriptor of the file that declares any of them, the file a
+compiler makes of the `.proto`. A reflection call is one stream: each request
+is answered as it arrives, and the call stays open until the tool ends its
+side. Reflection is for a caller the bearer source
+names, so pass the `authorization` metadata to the tool as to a call.
+
 A handler's own error is `FAILED_PRECONDITION` with the error in
-`grpc-status-details-bin` (a `google.rpc.Status` whose detail is the
-error's JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a
+`grpc-status-details-bin` (a `google.rpc.Status` whose detail is the error's
+message, `OrderError` for `Orders::cancel`, or the error's JSON for a caller
+that asked in JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a
 digest mismatch), `UNAUTHENTICATED`, `PERMISSION_DENIED`,
 `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, its reason in `grpc-message` and the
 refusal object in the details; a handler that violated is `INTERNAL`. Each
@@ -548,8 +611,10 @@ hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # 
 
 `export` writes a bundle: `Public.description.json` (every member with its
 roles, the exposures that serve it, the hubs, the schemas),
-`Public.openapi.json`, `Public.json-schema.json`, `Public.mcp.json` and
-`DIGEST` (the digest and the compiler's version). Every file is a function
+`Public.openapi.json`, `Public.json-schema.json`, `Public.mcp.json`,
+`Public.proto` (the messages and the service a `grpc::Rpc` exposure speaks;
+see Serving over gRPC) and `DIGEST` (the digest and the compiler's version).
+Every file is a function
 of the rows alone, so two runs and two checkouts write the same bytes, and
 an imported type is named by its path under the import alias (`lib::Item`),
 never by a path of the machine. `--check DIR` writes nothing and exits 1,
@@ -570,7 +635,9 @@ per stream. Both send the surface's digest on every call, so a program that
 changed under a client refuses it `digest_mismatch`; both name the digest in
 a constant, and `--check` refuses a committed copy made against another one.
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
-`ws://` (both); TLS and gRPC are not spoken yet.
+`ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
+`.proto` to its own language's stub generator, or finds the surface through
+server reflection.
 
 ## When it says no
 

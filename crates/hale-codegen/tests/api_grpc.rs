@@ -26,23 +26,30 @@ mod build_opts;
 #[path = "support/h2_client.rs"]
 pub(crate) mod h2_client;
 #[path = "support/harness.rs"]
-mod harness;
+pub(crate) mod harness;
 #[path = "support/http_rpc.rs"]
-mod http_rpc;
+pub(crate) mod http_rpc;
 #[path = "support/ports.rs"]
 mod ports;
 
 use h2_client::*;
 use http_rpc::*;
 
-const DIGEST: &str = "fnv1a64:a8930d6e7998e986";
-const WAIT: Duration = Duration::from_secs(15);
+pub(crate) const DIGEST: &str = "fnv1a64:a8930d6e7998e986";
+pub(crate) const WAIT: Duration = Duration::from_secs(15);
 
 /// The `Public` program of `api_http.rs`, served over `grpc::Rpc`.
-fn source(bound: u32) -> String {
+pub(crate) fn source(bound: u32) -> String {
     let grpc = super::api_http::PUBLIC.replace("http::Rpc { bind: std::env::var(\"BIND\"), codec: json,", "grpc::Rpc { bind: std::env::var(\"BIND\"), codec: json,");
     assert_ne!(grpc, super::api_http::PUBLIC, "the transport was swapped");
     grpc.replace("@BOUND@", &bound.to_string())
+}
+
+/// A variant of the program (`source`, built under `name`).
+pub(crate) fn build_variant(source: &str, name: &str) -> PathBuf {
+    let bin = harness::unique_bin(name);
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build the variant program over grpc::Rpc");
+    bin
 }
 
 /// The program with `bound` requests at a time, built once per process.
@@ -61,7 +68,7 @@ fn public(bound: u32) -> PathBuf {
 
 // ---- gRPC's wire, written out ----
 
-fn b64(bytes: &[u8]) -> String {
+pub(crate) fn b64(bytes: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -74,7 +81,7 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
-fn varint(mut n: usize) -> Vec<u8> {
+pub(crate) fn varint(mut n: usize) -> Vec<u8> {
     let mut out = Vec::new();
     while n >= 128 {
         out.push((n % 128) as u8 | 0x80);
@@ -84,7 +91,7 @@ fn varint(mut n: usize) -> Vec<u8> {
     out
 }
 
-fn field(tag: u8, body: &[u8]) -> Vec<u8> {
+pub(crate) fn field(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
     out.extend(varint(body.len()));
     out.extend_from_slice(body);
@@ -102,24 +109,24 @@ fn status_details(code: usize, message: &str, type_url: &str, value: &str) -> St
     b64(&status)
 }
 
-fn pct(s: &str) -> String {
+pub(crate) fn pct(s: &str) -> String {
     s.bytes().map(|b| if (32..=126).contains(&b) && b != b'%' { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 /// A gRPC message: the compression flag, the length, the bytes.
-fn message(text: &str) -> Vec<u8> {
+pub(crate) fn message(text: &str) -> Vec<u8> {
     let mut m = vec![0];
     m.extend((text.len() as u32).to_be_bytes());
     m.extend_from_slice(text.as_bytes());
     m
 }
 
-fn pair(k: &str, v: &str) -> (String, String) {
+pub(crate) fn pair(k: &str, v: &str) -> (String, String) {
     (k.to_string(), v.to_string())
 }
 
 /// The status of a refusal kind, by the spec's table.
-fn code_of(kind: &str) -> usize {
+pub(crate) fn code_of(kind: &str) -> usize {
     match kind {
         "malformed" => 3,
         "digest_mismatch" => 9,
@@ -134,7 +141,7 @@ fn code_of(kind: &str) -> usize {
 /// What a recorded HTTP reply is as a gRPC response, written from the
 /// spec's column and nothing else of the implementation: the headers, the
 /// data, the trailers.
-fn expected(rec: &Recording, ctype: &str) -> (Vec<(String, String)>, Vec<u8>, Vec<(String, String)>) {
+pub(crate) fn expected(rec: &Recording, ctype: &str) -> (Vec<(String, String)>, Vec<u8>, Vec<(String, String)>) {
     let head = vec![pair(":status", "200"), pair("content-type", ctype)];
     if rec.status == 200 {
         return (head, message(&rec.reply), vec![pair("grpc-status", "0")]);
@@ -156,20 +163,20 @@ fn expected(rec: &Recording, ctype: &str) -> (Vec<(String, String)>, Vec<u8>, Ve
 }
 
 /// The recorded request's member as a gRPC method: `Orders.place`.
-fn method_of(rec: &Recording) -> String {
+pub(crate) fn method_of(rec: &Recording) -> String {
     rec.path.strip_prefix("/call/").expect("a call path").replace("::", ".")
 }
 
-fn token_of(rec: &Recording) -> Option<String> {
+pub(crate) fn token_of(rec: &Recording) -> Option<String> {
     rec.headers.iter().find(|(k, _)| k == "Authorization").and_then(|(_, v)| v.strip_prefix("Bearer ")).map(str::to_string)
 }
 
-fn digest_of(rec: &Recording) -> Option<String> {
+pub(crate) fn digest_of(rec: &Recording) -> Option<String> {
     rec.headers.iter().find(|(k, _)| k == "Hale-Surface-Digest").map(|(_, v)| v.clone())
 }
 
 /// One unary call: HEADERS and one message, on `stream`.
-fn call(c: &mut Client, stream: u32, path: &str, token: Option<&str>, digest: Option<&str>, ctype: &str, msg: &[u8]) {
+pub(crate) fn call(c: &mut Client, stream: u32, path: &str, token: Option<&str>, digest: Option<&str>, ctype: &str, msg: &[u8]) {
     let auth = token.map(|t| format!("Bearer {t}"));
     let mut hs: Vec<(&str, &str)> = vec![(":method", "POST"), (":scheme", "http"), (":path", path), (":authority", "localhost"), ("content-type", ctype), ("te", "trailers")];
     if let Some(a) = auth.as_deref() {
@@ -182,7 +189,7 @@ fn call(c: &mut Client, stream: u32, path: &str, token: Option<&str>, digest: Op
     c.data(stream, msg, true);
 }
 
-const JSON: &str = "application/grpc+json";
+pub(crate) const JSON: &str = "application/grpc+json";
 
 /// Send the recorded request as a gRPC call.
 fn replay(c: &mut Client, stream: u32, rec: &Recording) {
@@ -199,7 +206,7 @@ fn assert_replayed(c: &mut Client, stream: u32, name: &str, rec: &Recording) {
     assert!(got.ended && got.reset.is_none(), "{name}: {got:?}");
 }
 
-fn start(bound: u32, env: &[(&str, &str)]) -> Server {
+pub(crate) fn start(bound: u32, env: &[(&str, &str)]) -> Server {
     let server = Server::start(&public(bound), env);
     server.ready();
     server
@@ -362,7 +369,8 @@ fn a_request_that_is_not_a_call_is_malformed() {
     };
     let ok = message(PLACE);
     malformed(&mut c, "a content type that is not gRPC", "/Public/Orders.place", "text/plain", &ok, &[], "a gRPC call has content-type application/grpc");
-    malformed(&mut c, "protobuf is not served", "/Public/Orders.place", "application/grpc+proto", &ok, &[], "content-type application/grpc+proto is not served: the codec is json");
+    malformed(&mut c, "a codec nobody serves", "/Public/Orders.place", "application/grpc+thrift", &ok, &[], "content-type application/grpc+thrift is not served: the codecs are protobuf");
+    malformed(&mut c, "a json message that is a protobuf body", "/Public/Orders.place", JSON, &message("pb::AAAA"), &[], "the message is not json text");
     malformed(&mut c, "compression", "/Public/Orders.place", JSON, &ok, &[("grpc-encoding", "gzip")], "compression is not supported");
     let mut flagged = ok.clone();
     flagged[0] = 1;
@@ -392,10 +400,10 @@ fn a_request_that_is_not_a_call_is_malformed() {
     assert!(got.header("grpc-message").unwrap_or("").contains("a%20gRPC%20call%20is%20a%20POST") || got.header("grpc-message").unwrap_or("").contains("a gRPC call is a POST"), "{got:?}");
     stream.set(stream.get() + 2);
     // the connection served all of that and serves on; a member may be spelled with its `::`
-    call(&mut c, stream.get(), "/Public/Orders::place", Some("t-alice"), Some(DIGEST), "application/grpc", &ok);
+    call(&mut c, stream.get(), "/Public/Orders::place", Some("t-alice"), Some(DIGEST), JSON, &ok);
     let fine = c.response(stream.get(), WAIT);
     assert_eq!(fine.header("grpc-status"), Some("0"), "{fine:?}");
-    assert_eq!(fine.header("content-type"), Some("application/grpc"), "a bare application/grpc is answered as it was asked");
+    assert_eq!(fine.header("content-type"), Some(JSON), "a content type is answered as it was asked");
     assert_eq!(text_of(&fine), "{\"order\":41,\"notional\":125000}");
     assert!(server.finish().status.success());
 }

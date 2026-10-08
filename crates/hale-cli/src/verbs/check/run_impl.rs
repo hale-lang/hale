@@ -69,7 +69,7 @@ fn topology_artifact<'c>(
 /// holding those roles under its role source (the role source is program
 /// code the check does not run, so what the caller holds is an input);
 /// with `--surface NAME` and one of `--openapi`, `--json-schema`,
-/// `--mcp`, that projection of the surface. Law 6's statement of each
+/// `--mcp`, `--proto`, that projection of the surface. Law 6's statement of each
 /// row the document lists whose error type is `ClosureViolation` goes to
 /// stderr as a note.
 fn api_document(
@@ -88,7 +88,7 @@ fn api_document(
     let surface = flag_value("--surface")?;
     let argv: Vec<String> = std::env::args().collect();
     let forms: Vec<&str> =
-        ["--openapi", "--json-schema", "--mcp"].into_iter().filter(|f| argv.iter().any(|a| a == f)).collect();
+        ["--openapi", "--json-schema", "--mcp", "--proto"].into_iter().filter(|f| argv.iter().any(|a| a == f)).collect();
     let notes = |surface: Option<&str>, members: Option<&[String]>| {
         for (s, m, note) in hale_types::surfaces::server_error_notes(rows) {
             if surface.is_none_or(|x| x == s) && members.is_none_or(|ms| ms.contains(&m)) {
@@ -133,14 +133,16 @@ fn api_document(
         (None, Some(surface), [form]) => {
             notes(Some(&surface), None);
             match *form {
+                // the protobuf form is text, not a JSON document
+                "--proto" => return surface_doc::proto(rows, &schemas, &surface),
                 "--openapi" => surface_doc::openapi(rows, &schemas, &surface)?,
                 "--json-schema" => surface_doc::json_schema(rows, &schemas, &surface)?,
                 _ => surface_doc::mcp(rows, &schemas, &surface)?,
             }
         }
-        (None, Some(_), []) => return Err("--surface takes one of --openapi, --json-schema, --mcp".to_string()),
-        (None, None, [_, ..]) => return Err("--openapi, --json-schema and --mcp take --surface NAME".to_string()),
-        (None, Some(_), [_, _, ..]) => return Err("one form at a time: --openapi, --json-schema or --mcp".to_string()),
+        (None, Some(_), []) => return Err("--surface takes one of --openapi, --json-schema, --mcp, --proto".to_string()),
+        (None, None, [_, ..]) => return Err("--openapi, --json-schema, --mcp and --proto take --surface NAME".to_string()),
+        (None, Some(_), [_, _, ..]) => return Err("one form at a time: --openapi, --json-schema, --mcp or --proto".to_string()),
         (Some(_), _, _) => {
             return Err("--exposure describes one exposure; --surface's forms are the surface's, not an exposure's".to_string())
         }
