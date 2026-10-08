@@ -3,13 +3,190 @@
 A service that is authoritative over something ends up wanting a
 surface that tools can plug into: a command line, a dashboard, an
 MCP host. You could write an HTTP server, a JSON codec per message
-and a routing table for it. You do not have to. Everything the
-program already declares on its bus *is* its API, and one line at
-the deployment tier hands it out.
+and a routing table for it. You do not have to.
 
-This chapter explains each piece with an example of its own. To see
-the pieces combined into one program, built step by step from an
-empty file to a gated API, read [Build an API](./build-an-api.md).
+A program says what it exposes in rows: a **surface** is a table of
+operations, each naming a handler and the roles a caller must hold
+(`spec/api.md`). The compiler checks the rows, folds each surface into
+a contract digest and prints what a caller can learn, without running
+anything. Serving a surface on a transport is the next step of the
+track (`api::serve`, described below and not yet built); until then the
+older path, one `api:` binding entry that puts everything a program
+declares on its bus on a Unix socket, is how a program is served, and
+the rest of this chapter documents it. It is the path the surfaces
+retire (step R4 of GH #1417).
+
+## Surfaces
+
+An `api` block names a surface and lists its rows. Each `rpc` line is
+one row: a member fn of a locus, and the roles a caller needs.
+
+```hale
+role trader;
+
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+
+type PlaceOrder { symbol: String; qty: Int; limit: Money; }
+type OrderReceipt { order: OrderId; notional: Money; }
+type CancelOrder { order: OrderId; }
+type Cancelled { order: OrderId; was_open: Bool; }
+type OrderError { code: String; reason: String; }
+
+api Public {
+    rpc Orders::place;
+    rpc Orders::cancel requires: [trader];
+}
+
+locus Orders {
+    params {
+        next: Int = 41;
+        open: Int = 0;
+    }
+    closure position_limit { captures: open; epoch inline; }
+
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) {
+        if o.qty > 10000 { violate position_limit; }
+        let id = OrderId(self.next);
+        self.next = self.next + 1;
+        self.open = self.open + 1;
+        return OrderReceipt { order: id, notional: o.limit * o.qty };
+    }
+
+    fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) {
+        let n = Int(c.order);
+        if n < 41 || n >= self.next {
+            fail OrderError { code: "unknown_order", reason: "no order " + to_string(n) };
+        }
+        return Cancelled { order: c.order, was_open: true };
+    }
+}
+
+fn main() { }
+```
+
+A handler takes its request as one parameter, and may take a trailing
+`ctx: std::api::Context`, which is not part of the request. What it
+returns is the response, and its error type decides what a caller sees
+when it fails: `cancel` fails with an `OrderError` the caller receives
+as the handler error, with that type's schema; `place` may violate a
+closure, so (as any value-returning method that may violate) it is
+`fallible(ClosureViolation)`, and its failure reaches a caller as the
+server error, which carries nothing of the violation.
+
+The same row can be written on the handler instead. `@rpc` contributes
+it to the seed's **default surface**, named after the seed:
+
+```hale,fragment
+locus Orders {
+    @rpc
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) { … }
+    @rpc(requires: [trader])
+    fn cancel(c: CancelOrder) -> Cancelled fallible(OrderError) { … }
+}
+```
+
+Both spellings feed one table, and nothing else about the locus is
+read: a handler is an operation because a row says so, not because it
+subscribes a topic or returns a value. A handler can sit in several
+surfaces, each with its own `requires`, and two versions of one API
+over one set of handlers are two surfaces.
+
+### What the check refuses
+
+The rows are checked before anything is served. A row that names no
+handler, a handler that takes two requests, a member listed twice in
+one surface, a role no `role` declares, a type the JSON codec cannot
+carry, and a handler returning nothing that may violate without saying
+so are each an error at the row:
+
+```text
+rpc `Orders::plcae`: `Orders` declares no fn `plcae`; did you mean `place`?
+rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `trader`?
+rpc `Ledger::dump`: its response `Export` has a field `raw: Bytes`, which the JSON codec does not carry
+rpc `Orders::flush` may violate (`violate stale`) and returns nothing: an rpc handler that may violate is `fallible(ClosureViolation)`, so its caller receives the server error instead of a result
+```
+
+### The digest
+
+Each surface folds into a **contract digest**: its rows in member
+order, each its member, the shape hashes of its request, response and
+error types, and its roles. It moves when a member, a shape, an error
+type or a role changes, and for nothing else: not the surface's name,
+not where it is served, not the build. A shape hash is deep, so a field
+changed inside a nested type moves it too (`spec/model.md` § The shape
+of a type). `hale check --dump-model` prints the surfaces with their
+digests and rows.
+
+### What a caller can learn
+
+`hale check --api` prints the program's **inventory** from the rows:
+every surface with its digest and rows, every place the program serves
+one, and the JSON Schema of every type they name.
+
+```text
+$ hale check --api desk.hl
+{
+  "inventory": 1,
+  "app": "Desk",
+  "surfaces": [
+    {
+      "name": "Public",
+      "digest": "fnv1a64:a8930d6e7998e986",
+      "members": [ … ]
+    }
+  ],
+  …
+}
+```
+
+A caller fetches a **description** scoped to the one exposure it
+reaches, filtered by the roles it holds there. What a caller holds is
+its role source's to say when the program runs, so the check takes it
+as an input:
+
+```text
+$ hale check --api desk.hl --exposure public --caller bob
+$ hale check --api desk.hl --exposure public --caller alice --holds trader
+```
+
+`bob` sees `Orders::place` alone; `alice`, holding `trader`, sees
+`Orders::cancel` too. A row whose error type is `ClosureViolation`
+lists the string `"ClosureViolation"` in place of an error schema, and
+the check says so on stderr beside it.
+
+The same rows project to the other forms a client is generated from,
+one per surface, each carrying the digest:
+
+```text
+$ hale check --api desk.hl --surface Public --openapi
+$ hale check --api desk.hl --surface Public --json-schema
+$ hale check --api desk.hl --surface Public --mcp
+```
+
+### Serving, next
+
+A serve site puts one surface on one transport for the instances that
+answer it:
+
+```hale,fragment
+let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+Today the check reads a serve site as far as a description names it,
+the surface, the listener, the sources, the receivers and the queue,
+and a build refuses the program: nothing serves it yet. Until it does,
+the binding below is how a program is served.
+
+## The structural path
+
+This chapter explains each piece of the `api:` binding with an example
+of its own. To see the pieces combined into one program, built step by
+step from an empty file to a gated API, read
+[Build an API](./build-an-api.md). Everything the program already
+declares on its bus *is* this API, and one line at the deployment tier
+hands it out.
 
 ## One entry, no other change
 
