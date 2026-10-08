@@ -35,16 +35,14 @@ The binary accepts the launcher's existing `PROJECT PORT WEBROOT` arguments;
 direct invocation can omit `WEBROOT` for API-only use. The explicit policy path
 comes only from `HALE_DNA_COMMAND_POLICY`, which is required.
 
-The commands are the api binding's (GH #1104 piece 5): this seed
-declares its own `main locus` with the `api:` entry and a wrapper
-(`ReviewCommands`) subscribing the head's command topics under the
-same gates over the shared admissions (`api::CommandAdmission`, and
-`api::KnowledgeAdmission` for the Knowledge topics), since
-the surface is the entrypoint seed's own loci and an imported main's
-bindings are inert. The socket is one per record under
-`$XDG_RUNTIME_DIR/hale/dna/`, named in `/capabilities` (`api.socket`);
-`LOTUS_API` overrides it. `hale check --dump-api dna/api/practice_review`
-lists them as `api::…`. The head serves the organization's own Workflow
+The commands are the head's surface `HeadCommands` (GH #1417): this seed
+declares its own `main locus` that serves it over `unix::Rpc` and `http::Rpc`
+and holds the shared admissions (`api::Commands`: `api::CommandAdmission`, and
+`api::KnowledgeAdmission` for the Knowledge rows), since a library's main
+locus serves nothing and the surface is named program-wide. The socket is one
+per record under `$XDG_RUNTIME_DIR/hale/dna/`, named in `/capabilities`
+(`api.socket`); `HALE_DNA_RPC_SOCKET` overrides it. `hale check --api
+dna/api/practice_review` lists the rows (`Commands::…`). The head serves the organization's own Workflow
 catalog (`ProjectWorkflowCatalog`: what `hale dna definitions --json`
 reads, the baseline alone without a `dna/org/workflows.hl`). Retain the
 authority, native service and adapter for the

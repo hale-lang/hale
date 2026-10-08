@@ -14,7 +14,7 @@ shows itself to people.
 
 | part | what it is | where it lives |
 | --- | --- | --- |
-| head | a project's API: reads over HTTP, commands on its api binding (a socket and an HTTP transport) | `dna/api` |
+| head | a project's API: reads over HTTP, commands as a surface (`HeadCommands`) over a socket and an HTTP exposure | `dna/api` |
 | the project head | the face's server: a registry of projects, receipts, a proxy to each project's head | `dna/api/project_service`, `dna/face/start.sh` |
 | face | the browser shell | `dna/face` |
 | surface | `hale dna ui`: a read-only page from the record | `dna/ui` |
@@ -40,7 +40,7 @@ verb starts it.
 | 8792 | the project head, serving the face | `--port` |
 | 8793 | the API child's reads | `--api-port` |
 | 8794 | the stub OpenID provider (`dna/oidc`) | `--oidc-port` |
-| 8795 | the API child's commands: its api binding's HTTP transport | `--commands-port` |
+| 8795 | the API child's commands: its surface's HTTP exposure | `--commands-port` |
 
 The API child says when each part is listening. Its commands port is
 given to it (`HALE_DNA_COMMANDS_PORT`), never derived from the reads'
@@ -121,19 +121,19 @@ The head speaks plain HTTP. On a network, put TLS in front of it.
 
 ## Commands and their receipts
 
-Every command the record takes is a gated topic on the head's api
-binding. The record answers who holds what, so the same gates apply on
+Every command the record takes is a row of the head's surface `HeadCommands`.
+The record answers who holds what, so the same rows' `requires` apply on
 the socket and over HTTP:
 
-| gate | who passes | topics |
+| gate | who passes | rows |
 | --- | --- | --- |
-| `owner` | a holder of `position:board` | `OrganizationPropose`, `TaskReassign`, `PersonRetire` |
-| `reviewer` | a holder of `position:reviewer` | `ReviewVerdict` |
-| `position` | a holder of any live position | `PracticePropose`, the `Attempt*` topics, `FrictionFile`, the `Knowledge*` changes |
-| none | any person the head can name | `TaskCreate`, `CommandLookup`, `KnowledgeLookup` |
+| `owner` | a holder of `position:board` | `propose_organization`, `reassign_task`, `retire_person` |
+| `reviewer` | a holder of `position:reviewer` | `verdict` |
+| `position` | a holder of any live position | `propose`, the attempt rows (`claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance`), `file_friction`, the `*_knowledge` changes |
+| none | any person the head can name | `create_task`, `lookup`, `lookup_knowledge` |
 
-Over HTTP a command is a line of the wire, POSTed to the commands port
-under the caller's bearer. A browser holds a session, not a bearer: the
+Over HTTP a command is `POST /call/<member>` on the commands port, under
+the caller's bearer. A browser holds a session, not a bearer: the
 head that serves the page relays its `POST …/commands` with the
 session's token, after checking what a cookie needs (the exact
 `Origin`, `X-Hale-Command: 1`, a JSON body).
@@ -143,7 +143,7 @@ request ids, the operation, the principal (`principal_mode`,
 `principal_name` and the positions the person holds),
 the target, and a `state` with its `reason`. Sent again under the same
 id, a command that landed is found by it and answered with the same
-receipt; `CommandLookup` reads one back.
+receipt; `lookup` reads one back.
 
 The project head keeps receipts of its own operations (create, init,
 attach, sync, the local body, secrets, the model probe, and more), each
@@ -311,7 +311,7 @@ alone (port 8790 by default). Every request runs one offline verb in
 the project root and returns what it printed: the status, the Board's
 queue, the pending Reviews and one Review's three views, the fleet,
 pressure, and the history. It reads, and takes no command: a POST is
-refused, because the record's commands are the head's gated topics.
+refused, because the record's commands are the head's surface.
 It serves under `dna.principal = oidc` (with `dna.oidc.issuer`,
 `dna.oidc.client` and `dna.oidc.redirect` set), a session in front of
 every page, and otherwise refuses to start, as any head does.
