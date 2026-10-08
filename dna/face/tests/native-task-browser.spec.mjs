@@ -76,7 +76,7 @@ test('lost native POST reply survives API restart and reload with GET-only exact
     await route.abort('failed');
   });
   await prepare(page, service); await confirmation(page).getByRole('button', { name: 'Confirm reassignment', exact: true }).click();
-  const committed = await nativeResponse; expect(committed.status).toBe(200); expect(committed.json.value.receipt.task.state).toBe('applied');
+  const committed = await nativeResponse; expect(committed.status).toBe(200); expect(committed.json.receipt.task.state).toBe('applied');
   await expect(recovery(page)).toBeVisible(); const before = await stored(page); expect(before).toHaveLength(1);
   expect(savedCommand.call).toBe('TaskReassign');
   expect(before[0].value).toMatchObject({ version: 5, operation: 'dna.task.reassign', request_id: savedCommand.payload.request_id, target_id: service.task });
@@ -87,7 +87,7 @@ test('lost native POST reply survives API restart and reload with GET-only exact
   expect((await stored(page))[0].value.request_id).toBe(savedCommand.payload.request_id); expect(postCount).toBe(1);
   expect(reassignments(service)).toHaveLength(1); expect((await service.current()).assignee).toBe('blair');
   const lookup = await service.lookup(savedCommand.payload.request_id);
-  expect(lookup.status).toBe(200); expect(lookup.receipt.command_id).toBe(committed.json.value.receipt.command_id); expect(lookup.receipt.task).toEqual(committed.json.value.receipt.task);
+  expect(lookup.status).toBe(200); expect(lookup.receipt.command_id).toBe(committed.json.receipt.command_id); expect(lookup.receipt.task).toEqual(committed.json.receipt.task);
 });
 
 test('native current-assignment conflict and retired/outside-policy recipients cannot reassign', async ({ page, service }, info) => {

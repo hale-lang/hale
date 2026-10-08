@@ -123,7 +123,7 @@ export async function scriptedCommands(page, service, options = {}) {
       if (script.postMode === 'lost') return route.abort('failed');
       if (script.postMode === 'stale') return fulfill(200, receiptLine(refusedReply('stale_subject')));
       if (script.postMode === 'identity_changed') return fulfill(200, receiptLine(refusedReply('command_context_changed')));
-      if (!slice().includes(body.call)) return fulfill(refusalStatus('unknown'), refusalLine('unknown', body.call));
+      if (!slice().includes(body.call)) return fulfill(refusalStatus('unauthorized'), refusalLine('unauthorized', body.call));
       return fulfill(200, receipt(body, principal)).catch(() => {});
     }
     return fulfill(405, routeError('method_not_allowed', 'a command is one POSTed line of the api wire'));

@@ -498,8 +498,8 @@ try {
     // unknown to this caller, and the lookup is the provider's to refuse.
     const described = await httpRequest('POST', prefix() + '/commands', { describe: true });
     assert.equal(described.status, 200, JSON.stringify(described));
-    assert.deepEqual(described.json.value.commands.map(entry => entry.name).sort(), ['CommandLookup', 'TaskCreate']);
-    await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 404, 'unknown');
+    assert.deepEqual(described.json.commands.map(entry => entry.name).sort(), ['CommandLookup', 'TaskCreate']);
+    await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 403, 'unauthorized');
     await expectError('LOOKUP', prefix() + '/commands', 'replace-1', 200, 'forbidden');
     assert.equal(admission('unauthorized').length, 0);
   });

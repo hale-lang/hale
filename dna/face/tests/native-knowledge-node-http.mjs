@@ -113,7 +113,7 @@ try {
       arguments: { verdict: 'approve', comment: 'Approve exact café 🧭\r\ncontrol \u0001 evidence.' },
     };
     const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(verdict)) });
-    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response));
+    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.ok, true, JSON.stringify(response));
     const decided = await service.waitCommand(requestId, receipt => receipt.verdict.state === 'accepted' && receipt.activation.state === 'adopted');
     adopted = await service.waitNode(command.request_id, receipt => receipt.node.activation_state === 'adopted');
     assert.equal(adopted.node.review_outcome, 'approve'); assert.equal(adopted.node.candidate_digest, created.node.candidate_digest);

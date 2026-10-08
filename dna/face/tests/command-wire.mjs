@@ -1,10 +1,13 @@
 import net from 'node:net';
 
-// The head's command wire as the face meets it (GH #1104, #1135): one line
-// of the api binding's wire POSTed to …/commands, the binding's own HTTP
-// transport under the session's bearer, and its receipt line back — a
-// lookup included, as a `CommandLookup` call. Scripted lanes build their
-// answers here so every lane scripts the one shape the head speaks.
+// The head's command wire as the face meets it (GH #1104, #1135, #1417): one
+// line, `{call, payload}` or `{describe: true}`, POSTed to …/commands, which
+// the head relays to the surface's HTTP exposure under the session's bearer,
+// and the exposure's reply back — a result as the `CommandReply` itself, a
+// refusal as `{refusal: {kind, reason}}`, a description as the slice
+// `{commands: [{name}]}` — a lookup included, as a `CommandLookup` call.
+// Scripted lanes build their answers here so every lane scripts the one shape
+// the head speaks.
 
 // The call each operation is sent as.
 export const CALLS = {
@@ -44,26 +47,17 @@ export function isDescribe(request) {
 }
 export const isWrite = request => request.method() !== 'GET' && !isDescribe(request) && callOf(request) !== 'CommandLookup';
 
-// The session's caller, as the binding reports a line over HTTP: the
-// bearer's principal (a trusted-local session's is the head's account).
-export const CALLER = { mode: 'bearer', name: 'uid:1000', uid: 1000, gid: -1, pid: -1, via: 'http' };
-let sequence = 0;
-export function receiptLine(value, { role } = {}) {
-  return { request_id: ++sequence, ok: true, value, caller: CALLER, ...(role ? { role } : {}) };
-}
-export function refusalLine(kind, reason = kind) {
-  return { request_id: ++sequence, ok: false, refusal: { kind, reason }, caller: CALLER };
-}
-export const REFUSAL_STATUS = { unauthenticated: 401, unauthorized: 403, unknown: 404, over_bound: 503 };
+// An exposure's result is the reply itself, and its refusal an object of its
+// own kind (spec/api.md § Outcomes).
+export function receiptLine(value) { return value; }
+export function refusalLine(kind, reason = kind) { return { refusal: { kind, reason } }; }
+export const REFUSAL_STATUS = { malformed: 400, digest_mismatch: 409, unauthenticated: 401, unauthorized: 403, full: 429, shutting_down: 503, unavailable: 503, server: 500 };
 export const refusalStatus = kind => REFUSAL_STATUS[kind] || 400;
 
-// The describe value: only the command entries matter to the face.
+// The slice the head answers a describe line: only the command names matter
+// to the face.
 export function describeLine(names) {
-  return receiptLine({
-    hale_api: 1, app: 'Head', notes: {},
-    commands: names.map(name => ({ name, subject: 'dna.commands.' + name, payload: name, reply: 'CommandReply', keyed_by: null, role: null })),
-    reads: [], streams: [], schemas: {},
-  });
+  return { commands: names.map(name => ({ name })) };
 }
 
 // A CommandReceipt with every typed branch present, as the head writes it.
@@ -129,13 +123,13 @@ export function knowledgeReceiptView(r) {
     ...(node ? { node: r.node } : binding ? { binding: r.binding } : r.reviewed ? { relationship: r.relationship } : {}),
   };
 }
-// A forwarded Knowledge exchange, settled: the binding's refusal kind, the
+// A forwarded Knowledge exchange, settled: the exposure's refusal kind, the
 // provider's refusal code, or the receipt in the old terms.
 export function settleKnowledge(status, json) {
+  if (json?.refusal) return { status, code: json.refusal.kind, refusal: json.refusal };
   if (!json || typeof json.ok !== 'boolean') return { status, code: json?.error?.code || 'unanswered' };
-  if (!json.ok) return { status, code: json.refusal.kind, refusal: json.refusal };
-  if (!json.value.ok) return { status, code: json.value.code };
-  return { status, code: '', reply: json.value, receipt: knowledgeReceiptView(json.value.receipt), source: { record_id: json.value.application_id, record_head: json.value.head, record_revision: String(json.value.revision) } };
+  if (!json.ok) return { status, code: json.code };
+  return { status, code: '', reply: json, receipt: knowledgeReceiptView(json.receipt), source: { record_id: json.application_id, record_head: json.head, record_revision: String(json.revision) } };
 }
 // A receipt line's CommandReply receipt, grouped the way the old HTTP
 // receipt was (principal, target, proposal, verdict, review, activation), so
@@ -152,13 +146,13 @@ export function receiptView(r) {
     person: { ...r.person, transferred: r.person.transferred >= 0 ? String(r.person.transferred) : '' },
   };
 }
-// What a forwarded exchange settled to: the binding's refusal kind, the
+// What a forwarded exchange settled to: the exposure's refusal kind, the
 // provider's refusal code, or the receipt.
 export function settle(status, json) {
+  if (json?.refusal) return { status, code: json.refusal.kind, refusal: json.refusal };
   if (!json || typeof json.ok !== 'boolean') return { status, code: json?.error?.code || 'unanswered' };
-  if (!json.ok) return { status, code: json.refusal.kind, refusal: json.refusal };
-  if (!json.value.ok) return { status, code: json.value.code };
-  return { status, code: '', reply: json.value, receipt: receiptView(json.value.receipt) };
+  if (!json.ok) return { status, code: json.code };
+  return { status, code: '', reply: json, receipt: receiptView(json.receipt) };
 }
 
 // Free loopback ports, `count` of them, distinct: every probe is held open

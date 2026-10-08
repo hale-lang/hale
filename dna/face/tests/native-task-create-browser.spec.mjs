@@ -42,7 +42,7 @@ test('native ask lands as the CLI row: one POST, a real receipt, one intent.requ
   await prepare(page, service); expect(posts).toHaveLength(0); expect(asks(service)).toHaveLength(0);
   const reply = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
   await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
-  const response = await reply; expect(response.status()).toBe(200); const line = await response.json(); expect(line.value.ok).toBe(true); const receipt = line.value.receipt;
+  const response = await reply; expect(response.status()).toBe(200); const line = await response.json(); expect(line.ok).toBe(true); const receipt = line.receipt;
   fs.writeFileSync(service.evidence + '/task-create-response.json', JSON.stringify(receipt, null, 2));
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'requested');
   expect(receipt.operation).toBe('dna.task.create'); expect(receipt.task_create.intent_state).toBe('requested'); expect(receipt.task_create.task_id).toBe(''); expect(receipt.task_create.kind).toBe('');
@@ -74,7 +74,7 @@ test('native judgment ask carries its kind onto the CLI row (GH #1144)', async (
   await expect(confirmation(page)).toContainText('Ask for this assessment');
   const reply = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
   await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
-  const line = await (await reply).json(); expect(line.value.ok).toBe(true); expect(line.value.receipt.task_create.kind).toBe('judgment');
+  const line = await (await reply).json(); expect(line.ok).toBe(true); expect(line.receipt.task_create.kind).toBe('judgment');
   expect(posts).toHaveLength(1); expect(posts[0]).toEqual({ call: 'TaskCreate', payload: { request_id: expect.any(String), record_head: before, outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' } });
   const rows = asks(service); expect(rows).toHaveLength(1);
   const body = JSON.parse(rows[0].body);
@@ -93,7 +93,7 @@ test('lost native POST reply survives API restart and reload with GET-only exact
     await route.abort('failed');
   });
   await prepare(page, service); await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
-  const committed = await nativeResponse; expect(committed.status).toBe(200); expect(committed.json.value.receipt.task_create.intent_state).toBe('requested');
+  const committed = await nativeResponse; expect(committed.status).toBe(200); expect(committed.json.receipt.task_create.intent_state).toBe('requested');
   await expect(recovery(page)).toBeVisible(); const before = await stored(page); expect(before).toHaveLength(1);
   expect(before[0].value).toMatchObject({ version: 7, operation: 'dna.task.create', request_id: savedCommand.payload.request_id, target_kind: 'dna.record', target_id: service.application });
   expect(Object.keys(before[0].value)).not.toContain('arguments'); expect(asks(service)).toHaveLength(1);
@@ -101,7 +101,7 @@ test('lost native POST reply survives API restart and reload with GET-only exact
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'requested');
   expect((await stored(page))[0].value.request_id).toBe(savedCommand.payload.request_id); expect(postCount).toBe(1); expect(asks(service)).toHaveLength(1);
   const lookup = await service.lookup(savedCommand.payload.request_id);
-  expect(lookup.status).toBe(200); expect(lookup.receipt.task_create).toEqual(committed.json.value.receipt.task_create);
+  expect(lookup.status).toBe(200); expect(lookup.receipt.task_create).toEqual(committed.json.receipt.task_create);
   const stale = await service.post({ ...savedCommand, payload: { ...savedCommand.payload, request_id: 'stale-' + savedCommand.payload.request_id } });
   expect(stale.status).toBe(200); expect(stale.code).toBe('stale_subject'); expect(asks(service)).toHaveLength(1);
 });

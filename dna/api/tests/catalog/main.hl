@@ -3,6 +3,7 @@
 import "../../../core" as dna;
 import "../../../operations" as ops;
 import "../.." as api;
+import "../../../organization_source" as orgsource;
 
 fn populate(catalog: dna::WorkflowCatalog, updated: Bool) {
     let a = catalog.define("close", 1, "record record", "Close the month — équipe <workflow>");
@@ -43,6 +44,55 @@ locus FixtureProvider {
     }
 }
 
+// The head these lanes run: the library's reads and the head's surface over
+// the composed provider, on this program's own main locus (a library's main
+// locus serves nothing: a program serves its own, spec/api.md § Serving).
+main locus FixtureHead {
+    params {
+        root: String = ".";
+        socket: String = "";
+        served: String = "";
+        roles: dna::RecordRoles = dna::RecordRoles { };
+        srv: std::http::Server;
+        commands: api::Commands = api::Commands { };
+        http_port: Int = 0;
+        bearer: std::api::BearerSource = std::api::NoBearer { };
+    }
+    placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
+    run() {
+        if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
+        let local = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "fixture", bound: 64, on_full: refuse);
+        let remote = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "fixture-commands", bound: 64, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        local.stop();
+        remote.stop();
+    }
+}
+
+// The fixture's head, trusted-local: the launch token names the head's own
+// account (the lanes set HALE_DNA_TRUSTED_LOCAL).
+fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::WorkflowCatalogProvider, provider: api::CommandProvider) {
+    if !dna::trusted_local_fixture() {
+        eprintln("hale dna api: ", dna::TRUSTED_LOCAL_REFUSED);
+        std::process::exit(2);
+    }
+    let user = api::local_person(root);
+    let token = api::launch_token(root + "/.hale/dna");
+    let socket = api::head_socket(root);
+    println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
+    FixtureHead {
+        root: root, socket: socket, served: api::served_socket(socket), roles: dna::RecordRoles { root: root },
+        http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
+        commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: provider }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: api::LocalKnowledgeCommands { root: root } } },
+        srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
+            root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
+            definitions: definitions, knowledge: api::LocalKnowledge { root: root },
+            people: api::NoPeople { }, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: ops::NoGovernanceAuthority { } }, organization_runtime: api::NoOrganizationRuntime { },
+            command_origin: "http://127.0.0.1:" + to_string(port), local_name: user, token: token
+        } }
+    };
+}
+
 fn main() {
     let root = std::env::arg(1);
     let port = std::str::parse_int(std::env::arg(2)) or 0;
@@ -59,5 +109,5 @@ fn main() {
             source_revision: "fixture-catalog-v2", source_path: "app/workflows.hl", dependency_digest: "fixture-dependencies-v1"
         } }
     };
-    api::serve(root, port, web, host);
+    head_up(root, port, web, host, api::NoCommands { });
 }

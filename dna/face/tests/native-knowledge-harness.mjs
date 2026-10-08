@@ -169,7 +169,7 @@ export async function startKnowledgeService(options = {}) {
     async slice() {
       const described = await request('/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: '{"describe":true}' });
       if (described.status !== 200 || !described.body.ok) throw new Error('describe failed ' + JSON.stringify(described));
-      return described.body.value.commands.map(entry => entry.name);
+      return described.body.commands.map(entry => entry.name);
     },
     // An admission moves the Record; the spine's tick follows it.
     async post(command) {

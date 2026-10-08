@@ -41,10 +41,10 @@ export async function startBindingService(options = {}) {
     let response;
     for (let attempt = 0; attempt < 5; attempt++) {
       response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
-      if (response.body.value?.ok === true || !['command_busy', 'snapshot_changed'].includes(response.body.value?.code)) break;
+      if (response.body.ok === true || !['command_busy', 'snapshot_changed'].includes(response.body.code)) break;
       await service.quiesce();
     }
-    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
+    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.ok, true, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
     return command;
   }
   async function createItem() {

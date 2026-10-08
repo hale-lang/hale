@@ -61,7 +61,7 @@ export async function startNodeService(options = {}) {
       const described = await request(commandPath, { method: 'POST', headers: commandHeaders, body: '{"describe":true}' });
       assert.equal(described.status, 200, JSON.stringify(described)); assert.equal(described.body.ok, true, JSON.stringify(described));
       // as the face reads it: a name another seed declared, by its tail
-      return described.body.value.commands.map(entry => { const at = entry.name.lastIndexOf('::'); return at < 0 ? entry.name : entry.name.slice(at + 2); });
+      return described.body.commands.map(entry => { const at = entry.name.lastIndexOf('::'); return at < 0 ? entry.name : entry.name.slice(at + 2); });
     },
     lookup: requestId => forward(knowledgeLookupLine(requestId)),
     async command(operation, arguments_, target, requestId = randomUUID()) {
