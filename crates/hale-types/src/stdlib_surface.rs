@@ -820,6 +820,9 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             // GH #1108: the local context a handler reached in-process gets.
             row!("local_context", ALLOC, [] -> Named("__StdApiContext"), HaleBody("__api_local_context")),
+            // GH #1444: a serving `main locus`'s `run()` parks here; the body
+            // is `Handle.wait()`, which ends in `time::__idle_wait`.
+            row!("run_until_stopped", SYSCALL | BLOCK | TIME, [Named("__StdApiHandle")] -> Unit, HaleBody("__std_api_run_until_stopped")),
         ],
         open_prefixes: &[],
     },
@@ -2079,6 +2082,7 @@ pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "udp", "recv_with_source"],
     &["std", "time", "sleep"],
     &["std", "time", "__idle_wait"],
+    &["std", "api", "run_until_stopped"],
 ];
 
 /// Does this stdlib path park (rather than hold the worker) when it
@@ -2111,13 +2115,14 @@ pub fn parks_on_async_io(segs: &[&str]) -> bool {
 /// |---|---|
 /// | `std::time::sleep` | `lower_time_sleep` chunks the sleep into ≤100ms slices and drains the pool's bus queue between them, so a sleeping locus keeps the queue serviced ~10×/s |
 /// | `std::time::__idle_wait` | on main it waits on the queue and a delivery ends it; anywhere else it is `sleep` |
+/// | `std::api::run_until_stopped` | its body is `Handle.wait()`, which is `__idle_wait` in a loop |
 ///
 /// That slicing is what makes "handlers plus a `time::sleep` loop"
 /// the *prescribed* event-driven shape — the shape both blocking
 /// diagnostics name as the fix — so counting `sleep` as a stall
 /// would have the lint flag its own advice.
 pub const COOPERATIVE_YIELDING_BLOCK_LEAVES: &[&[&str]] =
-    &[&["std", "time", "sleep"], &["std", "time", "__idle_wait"]];
+    &[&["std", "time", "sleep"], &["std", "time", "__idle_wait"], &["std", "api", "run_until_stopped"]];
 
 /// Does this stdlib path hold a classic cooperative pool's OS thread
 /// for the duration of its wait? The registry's `block` rows minus
