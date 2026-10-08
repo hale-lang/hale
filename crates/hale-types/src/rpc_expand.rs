@@ -367,6 +367,18 @@ fn mentions_runtime(programs: &[&mut Program]) -> bool {
     false
 }
 
+/// Where the appended runtime parses: its own window of the generated
+/// space, from here up to the topics'.
+const RUNTIME_BASE: u32 = API_SYNTH_BASE + 0x0400_0000;
+
+/// Whether an offset is in the appended runtime's source. The runtime is
+/// stdlib source in every judgment (the analysis copy's rows are not the
+/// program's own); this is how a pass that partitions program from stdlib
+/// knows it.
+pub fn is_runtime_pos(pos: u32) -> bool {
+    (RUNTIME_BASE..API_SYNTH_BASE + 0x0500_0000).contains(&pos)
+}
+
 /// Append the runtime to the first program, once.
 fn inject_runtime(programs: &mut [&mut Program]) {
     let have = programs.iter().any(|p| {
@@ -375,7 +387,7 @@ fn inject_runtime(programs: &mut [&mut Program]) {
     if have || programs.is_empty() {
         return;
     }
-    match parse_source_at(hale_stdlib::API_RUNTIME_SOURCE, API_SYNTH_BASE + 0x0400_0000) {
+    match parse_source_at(hale_stdlib::API_RUNTIME_SOURCE, RUNTIME_BASE) {
         Ok(rt) => {
             for mut item in rt.items {
                 if let TopDecl::Type(t) = &mut item {

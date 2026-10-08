@@ -1859,6 +1859,13 @@ pub fn summarize_identified(
             };
         }
     }
+    // The api runtime a serving program carries (`rpc_expand`) is stdlib
+    // source appended to the program: a declaration named in the runtime's
+    // parse window is the copy's, as the bundled stdlib's are, whichever
+    // snapshot minted it. `runtime_ids` holds its fns' and loci's ids, to
+    // mark their rows below.
+    let mut runtime_ids: BTreeSet<hale_syntax::ast::NodeId> = BTreeSet::new();
+    let in_runtime = |name: &hale_syntax::ast::Ident| crate::rpc_expand::is_runtime_pos(name.span.start.0);
     let shadowed = |ids: &crate::snapshot::Snapshot, item: &TopDecl| {
         is_stdlib_copy(ids)
             && match item {
@@ -2103,6 +2110,9 @@ pub fn summarize_identified(
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
+                    if in_runtime(&decl.name) {
+                        runtime_ids.insert(decl.id);
+                    }
                     let key = FnKey::free_fn(DeclId::of(universe, decl.id), decl.name.name.clone());
                     {
                         let c = carried_by(&decl.effects, &classes);
@@ -2142,8 +2152,11 @@ pub fn summarize_identified(
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
-                    if is_stdlib_copy(ids) {
+                    if is_stdlib_copy(ids) || in_runtime(&l.name) {
                         analysis_copy_loci.insert(locus.clone());
+                    }
+                    if in_runtime(&l.name) {
+                        runtime_ids.insert(l.id);
                     }
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
@@ -2560,7 +2573,7 @@ pub fn summarize_identified(
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts);
-        if is_stdlib_copy(ids) {
+        if is_stdlib_copy(ids) || runtime_ids.contains(decl) {
             summary.analysis_copy.insert(key.clone());
         } else {
             own.insert(key.clone());
@@ -2639,7 +2652,7 @@ pub fn summarize_identified(
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
-                    if is_stdlib_copy(ids) {
+                    if is_stdlib_copy(ids) || in_runtime(&i.name) {
                         summary.analysis_copy_interfaces.insert(i.name.name.clone());
                     }
                     ifaces.insert(
