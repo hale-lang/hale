@@ -39,7 +39,7 @@ fn shaped(src: &str, renames: &[(Vec<String>, String)]) -> hale_syntax::ast::Pro
     let mut p = parse_source(src).expect("parse");
     desugar_before_check(
         &mut [&mut p],
-        &Sequence { import_renames: renames, api: None, api_roles: None },
+        &Sequence { import_renames: renames, api: None, api_roles: None, default_surface: "" },
     )
     .expect("no --api, nothing to refuse");
     p

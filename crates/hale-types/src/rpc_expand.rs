@@ -111,23 +111,29 @@ fn q(s: &str) -> String {
 /// imported seed's loci (`renames` names them) feed that seed's default
 /// surface, named by its import alias, and a member there is spelled with
 /// the alias path (`toy::Echo::echo`); the seed's own loci feed its own
-/// default surface (the one name that is no alias and no `api` block).
-/// In canonical order: member as bytes, then as written.
-fn rows_of_surface(programs: &[&Program], surface: &str, renames: &[(Vec<String>, String)]) -> Vec<Row> {
+/// default surface (`default_surface`, when it is no alias), whether or not
+/// an `api` block carries the same name: a block and the `@rpc` rows of
+/// the seed's own loci are one surface, both kept. A block of another
+/// name does not take them. In canonical order: member as bytes, then as
+/// written.
+fn rows_of_surface(
+    programs: &[&Program],
+    surface: &str,
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> Vec<Row> {
     let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
-    let mut block_named = false;
     for p in programs {
         for d in flat_decls(&p.items) {
             match d {
                 TopDecl::Locus(l) => {
                     loci.insert(l.name.name.as_str(), l);
                 }
-                TopDecl::Api(a) if a.name.name == surface => block_named = true,
                 _ => {}
             }
         }
     }
-    let is_alias = renames.iter().any(|(path, _)| path[0] == surface);
+    let is_default = !renames.iter().any(|(path, _)| path[0] == surface) && surface == default_surface;
     let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize| -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
@@ -190,7 +196,7 @@ fn rows_of_surface(programs: &[&Program], surface: &str, renames: &[(Vec<String>
                     let written = match renames.iter().find(|(_, m)| *m == l.name.name) {
                         Some((path, _)) if path[0] == surface => path.join("::"),
                         Some(_) => continue,
-                        None if !is_alias && !block_named => l.name.name.clone(),
+                        None if is_default => l.name.name.clone(),
                         None => continue,
                     };
                     for m in &l.members {
@@ -213,6 +219,21 @@ fn rows_of_surface(programs: &[&Program], surface: &str, renames: &[(Vec<String>
     }
     rows.sort_by(|a, b| (a.member.as_bytes(), a.written_at).cmp(&(b.member.as_bytes(), b.written_at)));
     rows
+}
+
+/// The members and the contract digest of `surface`, as the adapter a
+/// serve site of it is built from reads them: the pass's own selection,
+/// for the agreement law with `surfaces::surface_rows` to pin.
+pub fn selection(
+    programs: &[&Program],
+    surface: &str,
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> (Vec<String>, u64) {
+    let rows = rows_of_surface(programs, surface, renames, default_surface);
+    let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
+    let shapes = Shapes::of_all(&slices);
+    (rows.iter().map(|r| r.member.clone()).collect(), digest_of(&shapes, &rows))
 }
 
 fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
@@ -469,7 +490,11 @@ fn inject_topics(programs: &mut [&mut Program]) {
 }
 
 /// Run the pass over a bundle's programs.
-pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) -> Vec<Expansion> {
+pub fn expand(
+    programs: &mut [&mut Program],
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> Vec<Expansion> {
     if !mentions_runtime(programs) {
         return Vec::new();
     }
@@ -549,7 +574,7 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
                     }) {
                         continue;
                     }
-                    let rows = rows_of_surface(&ro, &surface, renames);
+                    let rows = rows_of_surface(&ro, &surface, renames, default_surface);
                     if rows.is_empty() {
                         continue;
                     }

@@ -916,6 +916,7 @@ fn the_omitted_run_moves_no_diagnostic() {
             import_renames: &[],
             api: None,
             api_roles: None,
+            default_surface: "",
         };
         if hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq).is_err() {
             continue;

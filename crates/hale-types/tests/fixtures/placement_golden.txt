@@ -5862,6 +5862,14 @@ row	App@literal1.b	Holder	main	default
 dynamic	Holder	on main
 dynamic	Zub	on main
 
+== tests/hale/api/combo_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.local	Local	main	default
+row	Desk@literal1.other	Other	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/identity_test.hl
 root	App	the entry
 domain	pool:work	async_io

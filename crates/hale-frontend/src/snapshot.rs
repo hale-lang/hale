@@ -732,6 +732,10 @@ impl Snapshot {
             // entry point runs before its check: JSON Tier 2's parsers,
             // the api binding (GH #1106, bundle-wide), then the passes
             // that shape a declaration.
+            let keys: std::collections::BTreeSet<String> =
+                snap.programs.keys().map(|p| p.display().to_string()).collect();
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            let default_surface = hale_types::surfaces::default_surface_name(&keys);
             let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
             hale_types::desugar_sequence::desugar_before_check(
                 &mut refs,
@@ -739,6 +743,7 @@ impl Snapshot {
                     import_renames: &snap.import_renames,
                     api: snap.config.api.as_deref(),
                     api_roles: snap.config.api_roles.as_deref(),
+                    default_surface: &default_surface,
                 },
             )
         };

@@ -1,0 +1,59 @@
+// GH #1417 (R2a) — an `api` block that shares the seed's default surface
+// name is one surface with the seed's own `@rpc` handlers.
+//
+// The block here is named for this file, the seed's default surface. The
+// served surface answers the block's row and the handler's, and reports the
+// digest `hale check --api` describes over both.
+
+locus Local {
+    params { entered: Int = 0; }
+    @rpc
+    fn secret(x: Int) -> Int {
+        self.entered = self.entered + 1;
+        return x + 100;
+    }
+}
+
+locus Other {
+    fn echo(x: Int) -> Int { return x + 1; }
+}
+
+api combo_test {
+    rpc Other::echo;
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-a" { return std::api::Principal { mode: "bearer", name: "a" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        local: Local = Local { };
+        other: Other = Other { };
+        f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+    }
+
+    run() {
+        let combo = api::serve(combo_test, self.f, as: "combo", receivers: { Local: self.local, Other: self.other }, bound: 4, on_full: refuse);
+        let f = self.f;
+
+        f.call(1, "Other::echo", "1", "t-a");
+        std::test::assert_eq_str(f.await_outcome(1, 2000), "result", "the block's row is answered");
+        std::test::assert(std::str::contains(f.line(1), "\"value\":2"), "with its result");
+        f.call(2, "Local::secret", "1", "t-a");
+        std::test::assert_eq_str(f.await_outcome(2, 2000), "result", "and so is the seed's own handler");
+        std::test::assert(std::str::contains(f.line(2), "\"value\":101"), "with its result");
+        std::test::assert_eq_int(self.local.entered, 1, "which ran once");
+
+        f.call_digest(3, "Other::echo", "1", "t-a", "fnv1a64:0000000000000000");
+        std::test::assert_eq_str(f.await_outcome(3, 2000), "refusal:digest_mismatch", "a digest that is not the served one");
+        std::test::assert(std::str::contains(f.line(3), "\"served\":\"fnv1a64:360036e040350fd9\""), "the served digest is the described one");
+    }
+}
+
+fn main() { Desk { }; }

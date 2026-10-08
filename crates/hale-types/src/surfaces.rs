@@ -295,13 +295,20 @@ fn pool_label(table: &PlacementTable, id: crate::placement::DomainId) -> String 
 /// The seed a bundle is: its program's file stem, or its directory's
 /// name; the default surface of its `@rpc` handlers is named after it.
 fn seed_name(bundle: &Bundle<'_>) -> String {
-    let keys: Vec<&String> = bundle.programs.keys().collect();
+    let keys: Vec<&str> = bundle.programs.keys().map(String::as_str).collect();
+    default_surface_name(&keys)
+}
+
+/// The seed's default surface name from the bundle's file keys, in key
+/// order: the file's stem for one file, else its directory's name. The
+/// desugar sequence runs before a bundle exists and is given this name.
+pub fn default_surface_name(keys: &[&str]) -> String {
     let stem = |k: &str| {
         std::path::Path::new(k).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| k.to_string())
     };
-    match keys.as_slice() {
+    match keys {
         [one] => stem(one),
-        [first, ..] => std::path::Path::new(first.as_str())
+        [first, ..] => std::path::Path::new(first)
             .parent()
             .and_then(|p| p.file_name())
             .map(|s| s.to_string_lossy().to_string())
