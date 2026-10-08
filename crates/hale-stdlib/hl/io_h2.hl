@@ -71,6 +71,9 @@ locus __StdIoH2Conn {
         session: Int = 0;
         open: Bool = true;
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // what a read brings, handed to the session and cleared: the
+        // connection reads into one buffer for its whole life
+        rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 16384 };
     }
     bus {
         subscribe __ApiH2CmdT as on_cmd where key == self.route;
@@ -89,19 +92,7 @@ locus __StdIoH2Conn {
     run() {
         // the session's SETTINGS go out before anything is read
         if self.open { self.settle(); }
-        while self.open && !self.draining {
-            let chunk = self.stream.recv_bytes(65536) or __h2_none();
-            if len(chunk) == 0 {
-                self.open = false;
-            } else {
-                let used = std::io::h2::__feed(self.session, chunk);
-                self.pump();
-                self.settle();
-                // a protocol error: the session has queued its GOAWAY, which
-                // `settle` has written
-                if used < 0 { self.open = false; }
-            }
-        }
+        while self.open && !self.draining { self.step(); }
         // the connection is over: every stream of it is, and the descriptor
         // is released
         self.pump();
@@ -111,6 +102,33 @@ locus __StdIoH2Conn {
             self.session = 0;
         }
         self.release_fd();
+    }
+    // One read and what comes of it. A method of its own so that what a
+    // read allocates (what the session hands back) is the call's and is
+    // released when it returns: this loop is the connection's whole life,
+    // and buffers kept for it would be a leak that grows with every call a
+    // long-lived connection carries.
+    fn step() {
+        // The read goes into the connection's one buffer (`recv_into`
+        // allocates nothing per read) and the session reads it where it is.
+        // Not `Stream.recv_bytes`: it allocates a blob of the size asked
+        // out of an arena that outlives the read, and asks the runtime's one
+        // `last_io_status` after it, which on a pool where connections
+        // interleave at their parks can answer with another connection's
+        // failed read (a peer that reset) and end a good connection. 0 is
+        // the end of the stream, below 0 a read that failed: either ends it.
+        let n = std::io::tcp::recv_into(self.fd, self.rx, 16384);
+        if n <= 0 {
+            self.open = false;
+            return;
+        }
+        let used = std::io::h2::__feed(self.session, self.rx.view());
+        self.rx.clear();
+        self.pump();
+        self.settle();
+        // a protocol error: the session has queued its GOAWAY, which
+        // `settle` has written
+        if used < 0 { self.open = false; }
     }
     // The session's events, raised for the transport.
     @unbounded

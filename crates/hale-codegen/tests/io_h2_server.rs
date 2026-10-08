@@ -267,6 +267,37 @@ fn stop_says_goaway_and_closes_the_listener() {
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
 }
 
+fn rss_kb(pid: u32) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("status");
+    status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok()).expect("VmRSS")
+}
+
+#[test]
+fn a_connection_carries_many_calls_in_bounded_memory() {
+    // The connection reads into one buffer for its whole life: a read that
+    // allocated would cost the process a page a call, and in the end its
+    // capped payload arena. (The program prints three lines a call, so the
+    // count stays under what its stdout pipe holds.)
+    let server = start();
+    let mut c = Client::connect(server.port);
+    let mut stream = 1u32;
+    let mut run = |c: &mut Client, n: u32| {
+        for _ in 0..n {
+            get(c, stream, "/hello");
+            let r = c.response(stream, WAIT);
+            assert_eq!(r.status(), 200, "stream {stream}: {r:?} eof={}", c.eof);
+            stream += 2;
+        }
+    };
+    run(&mut c, 100);
+    let a = rss_kb(server.pid());
+    run(&mut c, 400);
+    let b = rss_kb(server.pid());
+    let per_call = b.saturating_sub(a) * 1024 / 400;
+    assert!(per_call < 1024, "a call costs the process {per_call} bytes ({a} kB -> {b} kB over 400 calls)");
+    assert!(server.finish().status.success());
+}
+
 #[test]
 fn the_h2_server_runs_clean_under_asan() {
     let bin = harness::unique_bin("io_h2_server_asan");

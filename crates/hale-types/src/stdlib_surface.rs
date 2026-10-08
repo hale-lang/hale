@@ -896,7 +896,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__ev_bytes", ALLOC, [Int] -> Bytes, Intrinsic(IoH2EvBytesRaw)),
             row!("__ev_code", ALLOC, [Int] -> Int, Intrinsic(IoH2EvCodeRaw)),
             row!("__ev_stream", ALLOC, [Int] -> Int, Intrinsic(IoH2EvStreamRaw)),
-            row!("__feed", ALLOC, [Int, Bytes] -> Int, Intrinsic(IoH2FeedRaw)),
+            row!("__feed", ALLOC, [Int, Any] -> Int, Intrinsic(IoH2FeedRaw)),
             row!("__goaway", ALLOC, [Int, Int] -> Int, Intrinsic(IoH2GoawayRaw)),
             row!("__open", ALLOC, [] -> Int, Intrinsic(IoH2OpenRaw)),
             row!("__poll", ALLOC, [Int] -> Int, Intrinsic(IoH2PollRaw)),

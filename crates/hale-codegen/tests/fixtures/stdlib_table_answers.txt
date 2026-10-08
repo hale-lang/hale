@@ -691,7 +691,7 @@ std::io::h2::__drain | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int)
 std::io::h2::__ev_bytes | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__ev_bytes
 std::io::h2::__ev_code | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__ev_code
 std::io::h2::__ev_stream | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__ev_stream
-std::io::h2::__feed | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__feed
+std::io::h2::__feed | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Any) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__feed
 std::io::h2::__goaway | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__goaway
 std::io::h2::__open | lookup=io::h2@3 | locus=false | effects=alloc | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__open
 std::io::h2::__poll | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__poll

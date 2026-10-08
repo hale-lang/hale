@@ -68,6 +68,10 @@ impl Server {
         Server { child: Some(child), dir, port, port2, trigger }
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().expect("running").id()
+    }
+
     pub fn sock(&self) -> PathBuf {
         self.dir.join("s.sock")
     }

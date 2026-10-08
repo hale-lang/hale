@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_grpc.rs"]
+mod api_grpc;
 #[path = "api_hub.rs"]
 mod api_hub;
 #[path = "api_hub_desk.rs"]

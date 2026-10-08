@@ -177,11 +177,11 @@ let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders:
 
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
-standard library ships four today. `std::api::test::Rpc` has no socket: a
+standard library ships five today. `std::api::test::Rpc` has no socket: a
 test hands it requests and reads the answers, through the same
 admission, dispatch and completion every transport uses. `unix::Rpc` is
-a Unix socket, `http::Rpc` an HTTP listener and `mcp::Rpc` an MCP server
-over one. The sources are fields of the
+a Unix socket, `http::Rpc` an HTTP listener, `mcp::Rpc` an MCP server and
+`grpc::Rpc` a gRPC one over HTTP/2. The sources are fields of the
 transport's literal, `principals:` for who a bearer token is and
 `roles:` for who holds a role; grants belong to the source the serve
 site names, never to a role's name, so one program can serve a surface
@@ -361,9 +361,52 @@ for the handler's error, `-32602` for a payload that does not decode,
 an unauthenticated caller also gets HTTP `401`. The listener, its limits and
 its failure behaviour are `http::Rpc`'s, since it is the same listener.
 Not served: resources over streams, MCP over stdio, and a client that
-needs a session or an event stream. `grpc::Rpc` is not shipped; it needs
-an HTTP/2 primitive the runtime does not have. `hale mcp` is a server for
-the toolchain on stdio and is not a client of this endpoint.
+needs a session or an event stream. `hale mcp` is a server for the
+toolchain on stdio and is not a client of this endpoint.
+
+### Serving over gRPC
+
+`grpc::Rpc` takes a `bind:`, a `principals:` and a `roles:` (and, as
+`http::Rpc` does, `codec: json`, the one codec there is) and serves unary
+calls over HTTP/2, cleartext, many calls to a connection:
+
+```hale,fragment
+let public = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+A call is `POST /<Surface>/<member>`, the member written `Orders.place`,
+with `content-type: application/grpc` or `application/grpc+json` (the
+messages are the codec's JSON, so `+proto` is refused), one gRPC message
+(a zero byte, four bytes of length, the JSON) in and one out. The
+credential is the `authorization: Bearer <token>` metadata, and the digest
+you generated against, if you send one, is the `hale-surface-digest`
+metadata. The status is gRPC's:
+
+```text
+:method POST   :path /Public/Orders.place   content-type application/grpc+json
+authorization Bearer t-alice   hale-surface-digest fnv1a64:a8930d6e7998e986
+message {"symbol": "ACME", "qty": 10, "limit": 12500}
+
+:status 200   content-type application/grpc+json
+message {"order":41,"notional":125000}
+trailers grpc-status 0
+```
+
+A handler's own error is `FAILED_PRECONDITION` with the error in
+`grpc-status-details-bin` (a `google.rpc.Status` whose detail is the
+error's JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a
+digest mismatch), `UNAUTHENTICATED`, `PERMISSION_DENIED`,
+`RESOURCE_EXHAUSTED` or `UNAVAILABLE`, its reason in `grpc-message` and the
+refusal object in the details; a handler that violated is `INTERNAL`. Each
+is a trailers-only response, the status in the headers. The description is
+the call `hale.api.Description/Describe`, answered for the caller the bearer
+names. A stream the client resets, or a connection that fails, is that
+stream's or that connection's alone, and `public.stop()` answers what is
+executing, refuses what is queued, says `GOAWAY` on every connection and
+closes the listener. The HTTP/2 itself, its windows, pings and settings,
+is the runtime's built-in nghttp2, a library with no threads of its own,
+read from a socket parked on the same `async_io` pool the other transports
+use.
 
 ### Streams: a topic bound to a hub
 
