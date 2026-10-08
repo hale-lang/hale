@@ -207,7 +207,7 @@ fn dump_topology_never_overwrites_the_target() {
 /// Every command the top-level usage lists. `--help` is the one part
 /// of the surface all of them have, so all of them answer it.
 const SUBCOMMANDS: &[&str] = &[
-    "admin", "bench", "build", "call", "check", "describe", "dna", "doc",
+    "admin", "api", "bench", "build", "call", "check", "describe", "dna", "doc",
     "fetch", "fleet", "fmt", "init", "inputs", "iris", "lex", "lsp", "mcp",
     "model", "node", "parse", "replay", "run", "targets", "test",
     "topology", "verify", "watch",
