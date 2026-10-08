@@ -75,7 +75,8 @@ fn main() {{ App {{ }}; }}
     )
 }
 
-fn build_source(name: &str, src: &str) -> (bool, String) {
+/// Builds `src` (dumping the IR beside the output); (built, stderr, the IR).
+fn build_source(name: &str, src: &str) -> (bool, String, String) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static N: AtomicUsize = AtomicUsize::new(0);
     let stem = format!("hale_api_serve_build_{}_{}_{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed), name);
@@ -90,10 +91,12 @@ fn build_source(name: &str, src: &str) -> (bool, String) {
         .arg("-o")
         .arg(&out_path)
         .env("HALE_SKIP_STALE_CHECK", "1")
+        .env("LOTUS_DUMP_IR", "1")
         .output()
         .expect("run hale build");
+    let ir = std::fs::read_to_string(dir.join("out.ll")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
-    (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+    (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), ir)
 }
 
 const NON_MAIN: &str = "`api::serve` over `unix::Rpc` in `Server`: a socket's listener runs on a pool of its own";
@@ -104,11 +107,11 @@ const NON_MAIN: &str = "`api::serve` over `unix::Rpc` in `Server`: a socket's li
 #[test]
 fn a_unix_serve_outside_main_is_refused_written_or_held() {
     let written = unix_server("", "unix::Rpc { path: \"/tmp/hale_r2b_a.sock\" }");
-    let (ok, err) = build_source("written", &written);
+    let (ok, err, _) = build_source("written", &written);
     assert!(!ok && err.contains(NON_MAIN), "written: {err}");
 
     let held = unix_server("rpc: std::api::unix::Rpc = std::api::unix::Rpc { path: \"/tmp/hale_r2b_b.sock\" };", "self.rpc");
-    let (ok, err) = build_source("held", &held);
+    let (ok, err, _) = build_source("held", &held);
     assert!(!ok && err.contains(NON_MAIN), "held: {err}");
 
     // the declared type alone says it: the default is built elsewhere
@@ -116,6 +119,39 @@ fn a_unix_serve_outside_main_is_refused_written_or_held() {
         "api Public",
         "fn make_rpc() -> std::api::unix::Rpc { return std::api::unix::Rpc { path: \"/tmp/hale_r2b_c.sock\" }; }\napi Public",
     );
-    let (ok, err) = build_source("typed", &typed);
+    let (ok, err, _) = build_source("typed", &typed);
     assert!(!ok && err.contains(NON_MAIN), "typed: {err}");
+}
+
+/// The main locus's serve over a `unix::Rpc` whose path reads a param the
+/// locus declares: the listener is born after that param, so its default
+/// (the copied path) reads an initialized `self.socket_path`.
+fn main_serving(path: &str) -> String {
+    format!(
+        r#"
+api Public {{ rpc Echo::echo; }}
+locus Echo {{ fn echo(n: Int) -> Int {{ return n; }} }}
+main locus App {{
+    params {{
+        socket_path: String = "/tmp/hale_r2b_d.sock";
+        echo: Echo = Echo {{ }};
+    }}
+    run() {{
+        let h = api::serve(Public, unix::Rpc {{ path: {path} }}, as: "public", bound: 2, on_full: refuse);
+        h.stop();
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn a_listener_path_may_read_a_param_declared_before_the_serve() {
+    let (ok, err, read) = build_source("path_reads_param", &main_serving("self.socket_path"));
+    assert!(ok, "the path reads a declared param: {err}");
+    let (ok, err, literal) = build_source("path_literal", &main_serving("\"/tmp/hale_r2b_d.sock\""));
+    assert!(ok, "{err}");
+    assert!(literal.contains("__rpc_u_1"), "the control schedules the listener's birth");
+    assert!(read.contains("__rpc_u_1"), "the listener's birth is scheduled when the path reads a param");
 }

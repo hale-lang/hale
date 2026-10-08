@@ -753,13 +753,17 @@ pub fn expand(
             l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
         }
         // a Unix transport's listener: a param of the serving locus born
-        // first (so it is subscribed when the exposure attaches), placed on a
+        // after the authored params its path may read, and before the
+        // exposure (so it is subscribed when the exposure attaches), placed on a
         // pool of its own
         if l.is_main {
             if let Some(path) = unix_path_of(l, site.transport.as_ref()) {
                 if let Some((lp, entry)) = parse_unix_listener(id, path, span) {
                     if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        pb.params.insert(0, lp);
+                        // after every authored param (the path may read one),
+                        // before the exposure just pushed
+                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
+                        pb.params.insert(at, lp);
                     }
                     if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                         pl.entries.push(entry);
