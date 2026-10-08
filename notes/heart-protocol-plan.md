@@ -31,6 +31,17 @@ Most hearts will be existing services that emit metrics and logs and nothing els
 - The shell deployment gateway (`dna::ShellDeployment`) is the documented and tested path: apply runs the gateway (a build or a container restart the project owns), the observation window judges the pulse, which is language-neutral; `heart.md` § Expression gains the foreign case with the reference heart.
 - Out of scope: a foreign codebase as the organism itself; a heart that cannot speak NATS (an HTTP ingestion bridge is an open point).
 
+## 4. How many: codebases and applications
+
+The seam is plural on both axes, and the two axes are different things. A **codebase** is a source the organism knows how to build or run: a Hale workspace, a repository of compose services, a foreign tree with an adapter. An **application** is what the record attaches by name: an account on the nerves (`app-<name>`, GH #989), readings keyed `<app>/<event>/<id>`, an expression (a topology and a deploy target, or none for a foreign one). One codebase can yield several applications (a workspace with several mains), and one organism can attach applications from several codebases. Nothing in the inbound half assumes one: the heart durable reads `<org>.app.>`, accounts and readings are already per name. What assumes one is the expression half, and that is what this item changes.
+
+- **`application.attached` is one row per application**, and the record holds as many as the organism attaches: `name` (the subject token), `source` (the codebase and the main or service within it), the expression fields (`artifact`, `artifact_digest`, `shape_hash`; empty for an adapter-attached app), `provenance`. `application.detached` revokes one. `hale dna init` attaches what the workspace declares (one main, or every `apps/*` main it is told to); `hale dna application attach <name> [--main PATH | --foreign ...]` adds one later; `remove` is already there.
+- **Expression is per application.** `current.topology` becomes `current/<name>.topology`, the upgrade and deploy paths take the application's name, the fleet and effects gates run per application, and `ShellDeployment` is one per application. The host's projection lists the applications (the `expression` object becomes an array keyed by name); the face's Application picker, which already exists, selects among them.
+- **What stays singular:** the record and its journal, the organization and its bus token `<org>`, authority and roles, the practices, and the organism's place in the habitat. Several applications are one organism's; several records are the habitat's.
+- **Identity:** an application's name is unique within the organism and is the only key the nerves, the readings, the expression files and the conformance verb (H2) use; a codebase has no account of its own.
+
+This lands before H0's adapter attach (which is the first second application most organisms will have) as the model change under it: the plural row, the per-name expression paths and the projection's list, with `init` and the existing single-application fixtures unchanged in behaviour (one row, one topology file under the new name).
+
 ## Exit criteria
 
 H0: the recipe above, measured as stated, on the Go reference service. The reference foreign heart attaches, publishes, serves, conforms and is driven by the `HeartHand` in the DNA suite; the contract bundle is committed and drift-checked; the spec chapter is the only document a foreign implementer needs; a Hale heart still passes unchanged.
