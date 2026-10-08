@@ -121,7 +121,15 @@ impl Server {
             if start.elapsed() > limit {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("the program did not exit within {limit:?} of being asked to stop");
+                let mut out = String::new();
+                if let Some(mut o) = child.stdout.take() {
+                    let _ = o.read_to_string(&mut out);
+                }
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut err);
+                }
+                panic!("the program did not exit within {limit:?} of being asked to stop\nstdout:\n{out}\nstderr:\n{err}");
             }
             std::thread::sleep(Duration::from_millis(10));
         }

@@ -375,17 +375,29 @@ const RUNTIME_NAMES: &[&str] = &[
 /// the runtime (`std::api::Request`, `std::api::test::Rpc`, …): the
 /// runtime joins a program only then.
 fn mentions_runtime(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| {
+        (w[2] == "api" && w[3] == "serve")
+            || (w[1] == "std" && w[2] == "api" && RUNTIME_NAMES.contains(&w[3]))
+            || (w[0] == "std" && w[1] == "io" && w[2] == "h2" && H2_NAMES.contains(&w[3]))
+    })
+}
+
+/// The names of `std::io::h2` a program may spell: its listener, its
+/// connection and the two messages between a connection and a transport.
+const H2_NAMES: &[&str] = &["Listener", "Conn", "Event", "Cmd"];
+
+/// Whether any name sequence the programs spell satisfies `pred`, given the
+/// last four names of the walk, the oldest first.
+fn spells(programs: &[&mut Program], pred: &dyn Fn(&[&str; 4]) -> bool) -> bool {
     use hale_syntax::names::{for_each_spelled_in_item, Spelled};
     let mut found = false;
     for p in programs {
         for item in &p.items {
-            let mut window: [&str; 3] = ["", "", ""];
+            let mut window: [&str; 4] = ["", "", "", ""];
             for_each_spelled_in_item(item, &mut |s| {
                 if let Spelled::Name(n) = s {
-                    window = [window[1], window[2], n];
-                    if (window[1] == "api" && window[2] == "serve")
-                        || (window[0] == "std" && window[1] == "api" && RUNTIME_NAMES.contains(&window[2]))
-                    {
+                    window = [window[1], window[2], window[3], n];
+                    if pred(&window) {
                         found = true;
                     }
                 }
@@ -396,6 +408,14 @@ fn mentions_runtime(programs: &[&mut Program]) -> bool {
         }
     }
     false
+}
+
+/// Whether the programs need the HTTP/2 server: a `grpc::Rpc` transport (at
+/// a serve site, or held as a param), or a name of `std::io::h2`.
+fn mentions_h2(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| {
+        (w[2] == "grpc" && w[3] == "Rpc") || (w[0] == "std" && w[1] == "io" && w[2] == "h2" && H2_NAMES.contains(&w[3]))
+    })
 }
 
 /// Where the appended runtime parses: its own window of the generated
@@ -487,6 +507,44 @@ fn inject_hub(programs: &mut [&mut Program]) {
     }
 }
 
+/// The HTTP/2 server's loci and its two topics, once, for a program that
+/// serves over `grpc::Rpc` or names a type of `std::io::h2`: kept out of
+/// `API_RUNTIME_SOURCE` so a program that serves a surface over another
+/// transport carries no HTTP/2.
+fn inject_h2(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoH2Conn")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_H2_SOURCE, RUNTIME_BASE + 0x00C0_0000) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the HTTP/2 server did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+    match parse_source_at(H2_TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000 + 0x0020_0000) {
+        Ok(t) => programs[0].items.extend(t.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the HTTP/2 server's topics did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+const H2_TOPICS_SRC: &str = "topic __ApiH2EventT { payload: __StdIoH2Event; subject: \"__api.h2.event\"; keyed_by key; }
+topic __ApiH2CmdT { payload: __StdIoH2Cmd; subject: \"__api.h2.cmd\"; keyed_by key; }
+";
+
 const HUB_TOPICS_SRC: &str = "topic __ApiHubEventT { payload: __StdApiHubEvent; subject: \"__api.hub.event\"; keyed_by key; }
 topic __ApiHubUpT { payload: __StdApiHubUp; subject: \"__api.hub.up\"; keyed_by key; }
 topic __ApiHubOutT { payload: __StdApiHubOut; subject: \"__api.hub.out\"; keyed_by key; }
@@ -504,6 +562,9 @@ pub fn expand(
     }
     inject_runtime(programs);
     inject_topics(programs);
+    if mentions_h2(programs) {
+        inject_h2(programs);
+    }
     if hubs {
         inject_hub(programs);
         crate::hub_expand::expand(programs);

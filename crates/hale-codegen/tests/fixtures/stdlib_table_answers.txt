@@ -680,6 +680,10 @@ std::io::fs::unlink | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str
 std::io::fs::write_bytes | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_bytes
 std::io::fs::write_file | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file
 std::io::fs::write_file_append | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file_append
+std::io::h2::Cmd | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Conn | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Event | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Listener | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::h2::__alive | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__alive
 std::io::h2::__close | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
 std::io::h2::__drain | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__drain

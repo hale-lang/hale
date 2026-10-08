@@ -317,6 +317,11 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "Server"],
     &["std", "io", "MirrorRing"],
     &["std", "io", "file", "File"],
+    // R7: the HTTP/2 server's loci and its two messages (io_h2.hl)
+    &["std", "io", "h2", "Cmd"],
+    &["std", "io", "h2", "Conn"],
+    &["std", "io", "h2", "Event"],
+    &["std", "io", "h2", "Listener"],
     &["std", "io", "tcp", "Listener"],
     &["std", "io", "tcp", "LogEvent"],
     &["std", "io", "tcp", "Stream"],

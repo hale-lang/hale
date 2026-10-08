@@ -495,6 +495,7 @@ admitted.
 | `std::io::udp` | (no raw UDP in the browser) |
 | `std::io::tls` | the browser does TLS transparently for `wss://` / `https://` |
 | `std::io::fs`, `std::io::file` | `fetch` via an `@ffi("js")` host import, or a bus message |
+| `std::io::h2` | a WebSocket bus adapter (`ws://`), or an `@ffi("js")` host import |
 | `std::io::stdin`, `std::io::stdout` | `println(...)` (the loader routes it to the host console) |
 | `std::term` | (no terminal in the browser) |
 | `std::process` | (no OS process control) |
