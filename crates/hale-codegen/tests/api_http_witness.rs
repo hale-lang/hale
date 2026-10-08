@@ -244,6 +244,7 @@ fn start(bound: u32, env: &[(&str, &str)]) -> Server {
     let server = Server::start(&desk(bound), &all);
     server.ready();
     wait_listening(server.port2);
+    wait_accepting_unix(&server.sock());
     server
 }
 
