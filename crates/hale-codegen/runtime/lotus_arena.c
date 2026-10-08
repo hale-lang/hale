@@ -6709,10 +6709,14 @@ typedef struct lotus_bus_queue {
      * that finds it set writes `wake_w`, which ends the wait. The same
      * wake-fd pattern an async_io pool uses (an eventfd on Linux, a
      * non-blocking pipe elsewhere); -1 when the fd could not be made,
-     * and the wait is then a plain bounded sleep. */
+     * and the wait is then a plain bounded sleep. wasm32 has no wake fd
+     * and no idle wait: the fd, the enqueue's write, the wait and the
+     * destroy's close are compiled out. */
+#ifndef __wasm__
     _Atomic int       idle;
     int               wake_r;
     int               wake_w;
+#endif
 } lotus_bus_queue_t;
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
@@ -6790,8 +6794,10 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     q->tail = 0;
     pthread_mutex_init(&q->lock, NULL);
     q->owner = pthread_self();
+#ifndef __wasm__
     atomic_init(&q->idle, 0);
     q->wake_r = q->wake_w = -1;
+#endif
 #if defined(__linux__)
     q->wake_r = q->wake_w = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 #elif !defined(__wasm__)
@@ -7402,6 +7408,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     }
     if (locked) {
         pthread_mutex_unlock(&q->lock);
+#ifndef __wasm__
         /* The owner is waiting for work (lotus_bus_queue_idle_wait):
          * end its wait. The cell is in the queue before this load, and
          * the waiter sets `idle` before it looks, so one of us sees the
@@ -7412,6 +7419,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
             ssize_t w = write(q->wake_w, &one, sizeof one);
             (void)w;
         }
+#endif
     }
 }
 
@@ -8024,6 +8032,10 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
  * wake fd, gets the same bounded wait without the wake. */
 void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
     if (!q) return;
+#ifdef __wasm__
+    (void)ns;
+    lotus_bus_queue_drain(q);
+#else
     if (ns < 0) ns = 0;
     int ready = 0;
     int can_wake = q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner);
@@ -8050,12 +8062,15 @@ void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
         while (read(q->wake_r, buf, sizeof buf) > 0) {}
     }
     lotus_bus_queue_drain(q);
+#endif
 }
 
 void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
     if (!q) return;
+#ifndef __wasm__
     if (q->wake_r >= 0) close(q->wake_r);
     if (q->wake_w >= 0 && q->wake_w != q->wake_r) close(q->wake_w);
+#endif
     pthread_mutex_destroy(&q->lock);
     if (q->cells) free(q->cells);
     free(q);
@@ -20102,10 +20117,15 @@ void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
  * queue's owner (a pool worker, a pinned thread), and the caller sleeps
  * as `std::time::sleep` does. */
 int64_t lotus_bus_idle_wait_main(int64_t ns) {
+#ifdef __wasm__
+    (void)ns;
+    return 0;
+#else
     lotus_bus_queue_t *q = g_bus_queue_for_remote;
     if (!q || !pthread_equal(pthread_self(), q->owner)) return 0;
     lotus_bus_queue_idle_wait(q, ns);
     return 1;
+#endif
 }
 
 /* m59: reader-thread args. The entry back-reference carries the
