@@ -56,6 +56,9 @@ impl Server {
             .env("BIND2", format!("127.0.0.1:{port2}"))
             .env("SOCK", &sock)
             .env("TRIGGER", &trigger)
+            .env("TRIGGER_PUBLIC", dir.join("stop_public"))
+            .env("TRIGGER_PARTNER", dir.join("stop_partner"))
+            .env("TRIGGER_ADMIN", dir.join("stop_admin"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (k, v) in env {
@@ -72,6 +75,12 @@ impl Server {
     /// Ask the program to stop (its `stop()` runs), without waiting.
     pub fn trigger(&self) {
         std::fs::write(&self.trigger, "stop").expect("write the trigger");
+    }
+
+    /// Ask the program to stop one exposure (`public`, `partner` or
+    /// `admin`) and go on serving the others.
+    pub fn stop_one(&self, name: &str) {
+        std::fs::write(self.dir.join(format!("stop_{name}")), "stop").expect("write the trigger");
     }
 
     /// Whether the program has exited.
@@ -141,6 +150,40 @@ pub fn wait_listening(port: u16) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// One line out and one line back over a Unix socket: the unix transport's
+/// wire, for the exposures a program serves over both.
+pub fn unix_ask(sock: &Path, line: &str) -> String {
+    use std::os::unix::net::UnixStream;
+    let start = Instant::now();
+    let mut s = loop {
+        match UnixStream::connect(sock) {
+            Ok(s) => break s,
+            Err(e) => {
+                if start.elapsed() > Duration::from_secs(20) {
+                    panic!("could not connect to {}: {e}", sock.display());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    s.set_read_timeout(Some(Duration::from_secs(15))).expect("read timeout");
+    s.write_all(format!("{line}\n").as_bytes()).expect("write");
+    let mut out = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        match s.read(&mut b) {
+            Ok(1) if b[0] != b'\n' => out.push(b[0]),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether nothing accepts on `port`.
+pub fn closed(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_err()
 }
 
 /// One HTTP response.
