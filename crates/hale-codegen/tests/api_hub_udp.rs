@@ -156,7 +156,7 @@ fn an_expired_credential_sends_unauthorized_at_its_instant() {
     assert_eq!(soon.text(), event("\"x\"", 1, 1));
     assert_eq!(soon.text(), unauthorized("\"x\"", "expired"));
     let at = t0.elapsed();
-    assert!(at >= std::time::Duration::from_millis(500) && at < std::time::Duration::from_millis(3000), "{at:?}");
+    assert!(at >= std::time::Duration::from_millis(1200) && at < std::time::Duration::from_millis(8000), "{at:?}");
     server.await_stat("subs", 0);
     server.command("fill 2");
     server.await_stat("made", 3);

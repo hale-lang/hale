@@ -3907,7 +3907,7 @@ row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 == crates/hale-codegen/tests/stream_fallible_unaddressed_rejects.rs#40b7c91b
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 
-== crates/hale-codegen/tests/support/hub_witness.rs#b9bf63e6
+== crates/hale-codegen/tests/support/hub_witness.rs#fa5d5bbe
 root	Desk	the entry
 domain	pool:__api_ws	async_io
 domain	pinned:__StdApiHubStream@binding1

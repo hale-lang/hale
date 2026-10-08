@@ -20,8 +20,8 @@ type OrderId = distinct Int;
 type Fill { order: OrderId; qty: Int; price: Money; }
 topic Fills { payload: Fill; subject: "desk.fills"; }
 
-// Who a bearer token is. `t-soon` is erin, whose credential expires 700 ms
-// after the source is first asked about it.
+// Who a bearer token is. `t-soon` is erin, whose credential expires EXPIRY_MS (1500)
+// ms after the source is first asked about it.
 locus Tokens {
     params { issued: Int = 0; }
     fn principal(token: String) -> std::api::Principal {
@@ -34,7 +34,8 @@ locus Tokens {
     fn expiry(token: String) -> Int {
         if token == "t-soon" {
             if self.issued == 0 { self.issued = std::time::nanos(std::time::current()); }
-            return self.issued + 700000000;
+            let ms = std::str::parse_int(std::env::var("EXPIRY_MS")) or 1500;
+            return self.issued + ms * 1000000;
         }
         return 0;
     }

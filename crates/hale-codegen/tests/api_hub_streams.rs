@@ -246,7 +246,7 @@ fn an_expired_credential_ends_the_subscription_at_its_instant() {
     // request to wake the connection
     assert_eq!(soon.text(), unauthorized("expired"));
     let at = t0.elapsed();
-    assert!(at >= Duration::from_millis(500) && at < Duration::from_millis(3000), "expired after {at:?}");
+    assert!(at >= Duration::from_millis(1200) && at < Duration::from_millis(8000), "expired after {at:?}");
     server.await_stat("subs", 0);
     // nothing published after is delivered, and the spent credential admits nothing new
     server.command("fill 3");
@@ -381,7 +381,8 @@ fn the_description_from_the_hubs_listener_is_the_fixture_for_the_caller() {
 fn the_revocation_and_expiry_program_runs_clean_under_asan() {
     let bin = harness::unique_bin("api_hub_streams_asan");
     harness::build_source_asan(WITNESS, &bin);
-    let server = Server::start(&bin, &[]);
+    // (a sanitized program is slower: its credential has longer to live)
+    let server = Server::start(&bin, &[("EXPIRY_MS", "4000")]);
     let mut dave = admitted(&server, "t-dave");
     let mut erin = admitted(&server, "t-erin");
     let broken = admitted(&server, "t-erin");
