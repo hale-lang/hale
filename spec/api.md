@@ -536,7 +536,10 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 - **The listener is bound at birth.** A path it cannot bind (a missing
   directory, a path a live process holds) fails the program's boot: the
   diagnostic on stderr and exit code 2, the root failure shape of a binding
-  that cannot open; a stale socket file is replaced. The path is held
+  that cannot open; a stale socket file is replaced. An empty `path`
+  binds nothing and is not a failure: the exposure has no socket, and the
+  program boots (a program that computes the path at run time hands the
+  transport none when the path is another process's to hold). The path is held
   from birth, but nothing is accepted until the exposure is attached to
   the bus (a client that connects earlier waits in the socket's backlog), so
   a request read is never published to an exposure that is not there yet.

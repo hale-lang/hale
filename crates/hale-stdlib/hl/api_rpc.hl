@@ -1449,6 +1449,9 @@ locus __StdApiUnixListener {
         publish __ApiUnixOutT;
     }
     birth() {
+        // no path, no socket: a program that finds the path is another
+        // process's to hold hands the transport none, and serves nowhere
+        if len(self.path) == 0 { return; }
         self.fd = std::io::unix::listen_socket(self.path) or - 1;
         if self.fd < 0 {
             // the structural failure of a binding that cannot be realized
@@ -1459,6 +1462,7 @@ locus __StdApiUnixListener {
     }
     @unbounded
     run() {
+        if self.fd < 0 { return; }
         // The path is held from birth, and a client that connects before the
         // exposure is subscribed waits in the socket's backlog: a line read
         // earlier would be published to nobody. The transport answers the

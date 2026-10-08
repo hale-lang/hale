@@ -662,13 +662,29 @@ main locus Head {
 }
 
 // The surface's socket, beside the binding's: `HALE_DNA_RPC_SOCKET`, else
-// the binding's name with `.rpc` for `.sock` (never longer than it).
+// the binding's name with `.rpc` for `.sock` (never longer than it). The
+// surface is served by the process that holds the binding's socket: when
+// another live process holds it (a second API for the same record, whose
+// binding runs without its socket), the surface has no socket here either,
+// and "" is what the transport is given (it listens nowhere).
 fn rpc_socket_of(socket: String) -> String {
     let given = std::env::var("HALE_DNA_RPC_SOCKET");
     if len(given) > 0 { return given; }
+    if held_elsewhere(socket) { return ""; }
     if len(socket) == 0 { return "/tmp/hale-" + to_string(std::process::uid()) + "-head.rpc"; }
     if std::str::ends_with(socket, ".sock") { return socket[0..(len(socket) - 5)] + ".rpc"; }
     return socket + ".rpc";
+}
+
+// Whether a live process other than this one answers on `socket`: asked
+// before this process binds anything, so any answer is another's.
+fn held_elsewhere(socket: String) -> Bool {
+    if len(socket) == 0 { return false; }
+    let fd = std::io::unix::connect(socket) or - 1;
+    if fd < 0 { return false; }
+    let other = std::io::unix::peer_pid(fd) != std::process::pid();
+    std::io::tcp::__close_fd(fd);
+    return other;
 }
 
 fn main() {

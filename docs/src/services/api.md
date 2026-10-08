@@ -210,7 +210,10 @@ main locus Desk {
 
 The socket is bound when the program boots, so a path it cannot bind (a
 missing directory, a socket another program is serving) stops the
-program with a diagnostic instead of running without it. Its accept and
+program with a diagnostic instead of running without it. (An empty `path`
+is not a path it cannot bind: it binds nothing, and the exposure has no
+socket. A program that finds its path is another process's to hold passes
+none.) Its accept and
 read loops run on a pool of their own, which only the main locus can
 place, so the serving locus is the main locus; the compiler adds the
 listener to it. A client writes one JSON object per line and reads one
