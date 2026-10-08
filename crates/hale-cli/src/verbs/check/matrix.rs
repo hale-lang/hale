@@ -414,9 +414,9 @@ mod tests {
         );
         let healthy = "[claims]\nno_base = true\n\n\
              [environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
-             [environments.dev.roles]\nsupport = []\nowner = []\n\n\
+             [environments.dev.roles]\nsupport = []\n\n\
              [environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app\"]\n\n\
-             [environments.prod.roles]\nsupport = []\nowner = []\n";
+             [environments.prod.roles]\nsupport = []\n";
         let loads_of = |manifest: &str| {
             write("hale.toml", manifest);
             let before = seed_loads_on_this_thread();
