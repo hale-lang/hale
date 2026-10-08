@@ -418,6 +418,25 @@ impl<'a> Shapes<'a> {
         TypeClass::Other
     }
 
+    /// What a chain of plain aliases ends at (`type Count = Int;` is the
+    /// `Int`): `te` itself when it names no alias. The contract shape reads
+    /// an alias this way, so a codec that dealiases first decodes what the
+    /// schema describes.
+    pub fn dealias(&self, te: &TypeExpr) -> TypeExpr {
+        let mut cur = te.clone();
+        for _ in 0..=self.types.len() {
+            let next = match Self::bare_name(&cur).and_then(|n| self.types.get(n)) {
+                Some(td) => match &td.body {
+                    TypeDeclBody::Alias(t) => t.clone(),
+                    _ => break,
+                },
+                None => break,
+            };
+            cur = next;
+        }
+        cur
+    }
+
     /// A builtin record's fields by name and type: the list the contract
     /// shape renders.
     pub fn builtin_fields(&self, te: &TypeExpr) -> Vec<(String, TypeExpr)> {

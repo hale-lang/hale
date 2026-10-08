@@ -73,6 +73,7 @@ pub mod quantitative;
 pub mod resolve;
 pub mod resolved;
 pub mod roles;
+pub mod rpc_expand;
 pub mod surfaces;
 pub mod unit_graph;
 pub mod units;

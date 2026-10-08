@@ -22,7 +22,7 @@ fn check_for(src: &str, triple: &str) -> Vec<String> {
     let mut program = parse_source(src).expect("parse failed");
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
     )
     .unwrap();
     let ids = hale_types::snapshot::mint([("", &mut program)], &[]);

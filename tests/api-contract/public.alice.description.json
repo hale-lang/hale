@@ -65,7 +65,8 @@
         "unauthenticated": 401,
         "unauthorized": 403,
         "full": 429,
-        "shutting_down": 503
+        "shutting_down": 503,
+        "unavailable": 503
       }
     },
     "server_error": {

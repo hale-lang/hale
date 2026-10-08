@@ -13,10 +13,14 @@ never a property of a locus's structure.
 
 GH #1417. This document is the contract, stated before any of it ships
 (step R0 of the plan): the `api` block and `@rpc` parse to rows in R1,
-which also computes the digest and prints descriptions; the runtime
-serves `unix::Rpc` in R2 and `http::Rpc` in R3; hubs and stream
-authorization land in R5; R4 retires the structural path (§ What this
-replaces). Each section names the step that ships it. Until R1, the
+which also computes the digest and prints descriptions; R2a ships the
+runtime (the interfaces of § The runtime boundaries, the identity
+sources, receiver failure, `api::serve` checked and lowered) over an
+in-process fixture transport, `std::api::test::Rpc`; `unix::Rpc` proves
+the same runtime over a socket in R2b and `http::Rpc` follows in R3;
+hubs and stream authorization land in R5; R4 retires the structural
+path (§ What this replaces). Each section names the step that ships it.
+Until R1, the
 fixtures under `tests/api-contract/` are what a consumer builds against:
 the consumer program of § The witness, its descriptions per exposure
 and caller, the program-wide inventory, one recorded request and reply
@@ -166,7 +170,8 @@ before anything is served:
    \`Bytes\`, which the JSON codec does not carry". A
    `ClosureViolation` error carries no schema (law 6), so no form is
    asked of it. R1 holds every row to the JSON codec, the one codec a
-   serve site has until R2 reads a serve site's own. A row is never
+   serve site has (R2a lowers the JSON codec and no other; a serve site's
+`codec:` is read when a second codec exists). A row is never
    left out of a served surface with a warning: the row is the intent,
    and an intent the program cannot honour is an error.
 6. **A row's error type decides its failure.** A row whose error type
@@ -306,11 +311,25 @@ and makes an **exposure**:
 - the call returns the **handle**: what the serving locus holds, joins
   and stops (`stop()`, § The request lifecycle).
 
-The laws of a serve site (R2; R1 parses a serve site only as far as a
+**The exposure is a child of the serving locus** (R2a). A serve site
+makes its exposure when the serving locus is born, as a param the
+locus owns and settles with its other params (so before its `run()`),
+and the `api::serve(…)` expression in a body is that exposure's
+handle: its lifetime is the serving locus's, `stop()` or the locus's
+dissolution shuts it down (§ The runtime boundaries, shutdown), and a
+transport that cannot realize its listener fails the serving locus's
+birth (§ The `Rpc` interface). The transport instance is held by the
+exposure: a literal in the call is a child of the exposure, a name
+(`self.fixture`) is a borrow of the instance the serving locus holds.
+The receivers are the serving locus's own instances, bound by the
+exposure to the bus (§ Receiver failure and generations); the role
+source and the bearer source are held by reference.
+
+The laws of a serve site (R2a; R1 parsed a serve site only as far as a
 description names it, its surface, its transport instance's kind,
 listener, codec and sources, `as:`, `receivers:`, `bound:` and
-`on_full:`, checks none of these laws and builds no program that holds
-one):
+`on_full:`, checked none of these laws and refused to build a program
+that held one):
 
 1. **An exposure is named once.** "exposure \`public\` is served twice:
    \`as:\` names one exposure; name this one apart".
@@ -333,6 +352,22 @@ one):
    \`bound:\`, the requests it holds accepted and not yet answered, and
    \`on_full: refuse\`, the one policy for a request".
 
+A serve site is also refused when it cannot be served at all: a surface
+no \`api\` block (or \`@rpc\` handler) declares, "serve of \`Pubic\`: no
+surface \`Pubic\` is declared; did you mean \`Public\`?"; no \`as:\`, "serve
+of \`Public\`: a serve site names its exposure with \`as:\`"; no transport
+instance; a receiver that is a param but is not built by a literal, "serve
+of \`Public\`: \`orders\` is not built by a literal in a param of \`Desk\`: the
+serve numbers the instance in the literal that builds it" (§ Receiver
+failure and generations); and a serve site in a free fn, "\`api::serve\` in
+\`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
+param of the serving locus; serve from the locus that holds the
+receivers". A build refuses a serve site over a transport the compiler
+does not ship (R2b and R3 add \`unix::Rpc\` and \`http::Rpc\`): "\`api::serve\`
+over \`http::Rpc\`: this compiler serves a surface over
+\`std::api::test::Rpc\`, the in-process transport, or a transport the
+program declares; the socket transports follow".
+
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
 interface). The runtime then holds it to these checks in this order,
@@ -351,13 +386,20 @@ and the first that fails is the refusal the caller receives:
 6. the payload decodes by the request's shape under the codec
    (`malformed`, reason `missing_field` or `wrong_type` and the field);
 7. the exposure is accepting (`shutting_down`) and holds fewer than its
-   bound of requests accepted and not yet answered (`full`).
+   bound of requests accepted and not yet answered (`full`);
+8. the receiver the member is bound to is not known to be unavailable
+   (`unavailable`, § Receiver failure and generations).
 
-Only then is the call enqueued on the receiver's pool through the
-cross-pool path, and the runtime awaits its outcome. **Authorization is
-evaluated on the transport's thread before anything is enqueued:** a
-refused request never reaches the handler's queue, and its handler's
-state cannot tell it arrived.
+Only then is the request **accepted**: it takes a server request id and
+one unit of the exposure's bound, and is handed to its receiver's pool
+through the cross-pool path (§ The runtime boundaries, dispatch), and
+the runtime awaits its outcome without holding the pool the handler
+needs. A request accepted can still end `unavailable` (its receiver
+became unavailable before it ran) or `shutting_down` (the exposure
+stopped before it ran): both mean it did not execute. **Authorization is
+evaluated before anything is enqueued:** a refused request never
+reaches the handler's queue, and its handler's state cannot tell it
+arrived.
 
 **Grants belong to the role-source instance**, never to a role name.
 `public_roles` and `partner_roles` above are two sources: `alice`
@@ -378,6 +420,16 @@ of the row's `requires` as written, empty for a row that requires
 none). It is for the checks no row can state; the row's `requires` has
 already held when the handler runs.
 
+A handler of a served surface may declare `ctx: std::api::ServedContext`
+instead: the same fields, and the name of the exposure the call came
+through (`exposure`) and the execution generation of the receiver it
+was admitted under (`generation`; § Receiver failure and generations),
+which a call made inside the program has no value for ("" and 0).
+`Context` itself is not extended: the standard library is lowered into
+every program, so a field added to a stdlib type moves the IR of
+programs that serve nothing; `ServedContext` is part of the runtime a
+program carries only when it serves (§ The runtime boundaries).
+
 **Descriptions read the rows dispatch reads.** Which members a
 caller's description lists is decided by the same rows and the same
 role source the checks above consult, so discovery and dispatch agree
@@ -387,7 +439,8 @@ server still authorizes every request.
 ## The `Rpc` interface
 
 `Rpc` is a stdlib `interface` in the shape of `__StdBusAdapter`,
-implemented by a locus with lifecycle (R2). A transport owns:
+implemented by a locus with lifecycle (`std::api::Rpc`, R2a). A
+transport owns:
 
 - **listening**, realized at birth: a listener it cannot bind fails the
   declaring locus's birth, as F.37 makes a binding that cannot open a
@@ -399,6 +452,42 @@ implemented by a locus with lifecycle (R2). A transport owns:
 - **the encoding of each outcome** in its protocol's terms, fixed per
   transport (§ Outcomes).
 
+Its methods, all of them infallible and all of them called by the
+runtime, never the reverse:
+
+```hale,fragment
+interface std::api::Rpc {
+    // The exposure that holds this transport tells it which exposure it
+    // is; the answer is the transport's name for `Context.via`
+    // ("unix", "http", "ws", "test").
+    fn attach(exposure: Int) -> String;
+    // Bytes in: one message of the transport's protocol, as the
+    // transport read it from `correlation`'s connection, becomes a
+    // `Request`. A message that is not a request is a `Request` of kind
+    // `malformed` carrying the reason; framing never fails.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request;
+    // Bytes out: the transport encodes `outcome` in its protocol's terms
+    // (§ Outcomes) and writes it to `correlation`'s connection. A write
+    // that fails is local to that connection.
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome);
+    // The runtime has finished with `correlation`'s connection: its
+    // request completed after the connection was lost (§ The request
+    // lifecycle), so the transport releases whatever it keeps for it.
+    fn close_connection(correlation: Int);
+    // Shutdown (§ The runtime boundaries): the exposure accepts nothing
+    // more; the transport releases its listener.
+    fn stop_listening();
+}
+```
+
+The transport reaches the runtime over the bus, from its own receive
+path: it publishes the raw message with its correlation
+(`std::api::RpcIngress` on the wire subject `__api.rpc.ingress`, keyed
+by the exposure it was attached to), and a lost connection
+(`std::api::RpcLost` on `__api.rpc.lost`). A transport never decodes a
+payload, never reads a role and never holds policy; the peer's
+credentials travel in the `Request` its `frame` builds.
+
 Its methods are infallible: a failure at the boundary is structural (a
 dead listener is a birth failure, a broken connection the transport
 failure outcome), never a value error, since a fallible interface call
@@ -408,9 +497,226 @@ the same for every transport. A transport may not own what is not its:
 shapes and error types are the model's, the codec is the binding's
 (F.36), roles and the bearer are the exposure's sources.
 
-The stdlib implements `unix::Rpc` (R2: the GH #1106 binding re-homed),
-`http::Rpc` (R3), `ws::Hub` and `udp::Hub` (R5, § Streams), `grpc::Rpc`
-and `mcp::Rpc` (R6); a program implements one the stdlib lacks.
+The stdlib implements `std::api::test::Rpc` (R2a: the in-process
+fixture transport, below), `unix::Rpc` (R2b: the GH #1106 binding
+re-homed), `http::Rpc` (R3), `ws::Hub` and `udp::Hub` (R5, § Streams),
+`grpc::Rpc` and `mcp::Rpc` (R6); a program implements one the stdlib
+lacks.
+
+**The fixture transport** (`std::api::test::Rpc`) is a conforming
+transport with no socket: a test hands it framed requests
+(`call(correlation, member, payload, credential)`, `describe(…)`,
+`lose(correlation)`) and reads the outcomes it was asked to deliver
+(`outcome(correlation)`), each as the Unix JSON reply line of § Outcomes
+(`request_id`, the client's `id`, the answer, `caller`). It goes through
+the same admission, dispatch and completion as every transport, and it
+is how the runtime is proven before a socket exists.
+
+## The runtime boundaries
+
+The `Rpc` responsibility list is a set of concrete types and methods,
+published before any transport-specific dispatch so that transports,
+hubs, DNA and Face build against one contract. Every transport goes
+through this one path.
+
+| boundary | the contract |
+|---|---|
+| **framed request** | what a transport hands the runtime: `std::api::Request`, the member's identity, the payload bytes, the client's digest if it sent one, and the transport's correlation; distinct from the server's request identity, which the runtime assigns when it receives the request |
+| **exposure** | `std::api::Exposure`: the surface, the bound receiver instances, the codec, the bearer source, the role source, the queue bound and the serve handle, built by `api::serve` |
+| **admission** | the ordered checks of § Serving, run before enqueue against the exposure's actual sources; the offline `--holds` flag of `hale check --api` is a description input, never a runtime authority |
+| **dispatch** | enqueue on the bound instance's pool and await its typed outcome without blocking the scheduler work the handler, its owner's `on_failure` or the wait itself needs |
+| **completion** | one owner of pending request state, reply storage and terminal completion, disconnected clients included |
+| **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
+| **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
+
+**A lost connection.** A reply for a request whose connection was lost
+before the request completed is dropped: completion (`finish`) sees the
+lost mark, delivers nothing, and tells the transport the connection is
+finished with (`close_connection`, once). A reply already written before
+the loss is not unwritten: the record is gone, the later loss finds
+nothing, and `close_connection` is not called. Either way the work ran
+once and the unit of the bound is released once. The fixture transport's
+`lose(correlation)` is synchronous with the mark: it returns once the
+exposure has handled the loss, so a test that gates its handler and opens
+the gate after `lose` holds the first order, and one that lets the handler
+complete first holds the second, whatever the runner's speed.
+
+**The runtime is part of a program only when it serves.** Every stdlib
+declaration is lowered into every program, so the runtime of this
+section (`api_rpc.hl`: the types below, the `Exposure`, the fixture
+transport, the five topics) is not part of the bundled stdlib. The
+compiler appends it to a program that serves a surface (`api::serve`) or
+spells one of its names (`std::api::Request`, `std::api::test::Rpc`,
+`std::api::ServedContext`, …), before the check; a program that does
+neither lowers as it did before R2a, byte for byte.
+
+```hale,fragment
+// The framed request: what Rpc.frame returns.
+type std::api::Request {
+    kind: Int;                  // 0 a call, 1 a describe, 2 malformed
+    member: String;             // "Orders::cancel"; empty for a describe
+    bytes: Bytes;               // the payload, by the exposure's codec
+    digest: String;             // the digest the client built against, or ""
+    correlation: Int;           // the transport's: the connection, the envelope id
+    credential: String;         // a bearer token the transport read, or ""
+    peer: std::api::Principal;  // the peer the transport vouches for (a Unix
+                                // peer's kernel credentials), or nobody
+    reason: String;             // why a malformed request is malformed
+}
+
+// The outcome: what the runtime hands Rpc.reply. A transport failure is
+// the absence of a reply, so it has no variant.
+type std::api::Outcome = enum {
+    Result(String),             // the response by the codec
+    HandlerError(String),       // the handler's E by the codec
+    Refusal(String, String, String),  // kind, reason, the extra: `served` on
+                                // digest_mismatch, `requires` (comma-joined)
+                                // on unauthorized, else ""
+    ServerError,                // the handler violated; says nothing of it
+};
+
+// What a caller is handed to hold; stop() is idempotent.
+interface std::api::Handle { fn stop(); }
+```
+
+**Receiving.** A request is received when the transport has published
+it. The runtime takes the server's **request id** for it then, an
+integer unique and increasing for the exposure's lifetime, and keeps
+the transport's correlation beside it: the request id is the server's
+identity for the request (the Unix reply's `request_id`, the `Context`'s
+`request_id`), the correlation is the transport's way back to the
+caller, and neither stands for the other.
+
+**Admission** is the checks of § Serving, in that order, run on the
+exposure's pool, one request at a time, against the sources the
+exposure holds: the bearer source named by the transport instance's
+`principals:` field and the role source named by its `roles:` field
+(§ Identity sources). A refusal is an `Outcome::Refusal` handed to the
+transport with the request id and the caller as far as it was
+established.
+
+**Dispatch** puts an accepted call on the pool of the receiver the
+member is bound to, by the bus's cross-pool path, as a delivery to that
+one instance, and never by a direct call (a method call across pools is
+a check error, `spec/types.md` § Single-threaded-method invariant). The
+call carries the request id, the member, the payload, the caller's
+`Context` and the **generation** it was admitted under (§ Receiver
+failure and generations), and is invoked on the receiver's pool through
+the fallible ABI: a `fallible(E)` handler's error slot is the **handler
+error**, a `ClosureViolation` is the **server error**, after the
+owner's `on_failure` has run (§ Structural failure in a handler).
+Nothing waits: the exposure holds the call as pending state, the
+receiver's pool publishes the outcome back to the exposure when the
+handler ends, and the exposure completes the request when that arrives.
+A reply wait therefore never occupies the pool the handler, its owner's
+`on_failure` or the completion needs, whether the receiver shares the
+exposure's pool or not. An exposure puts **at most one call per
+receiver** on that receiver's pool at a time and holds the rest in its
+own queue, in the order accepted: a call is *queued* until the receiver
+is free and *executing* from the moment it is on the receiver's pool, so
+that what `stop()` and a receiver's failure refuse is exactly what has
+not been handed over, and what has been handed over runs.
+
+**Completion** has one owner, the exposure's pending table: a record
+per accepted request keyed by the request id, holding the request (its
+payload, the member), the `Context`, the generation, the transport's
+correlation, whether the connection was lost, and where the request is
+(queued, executing). The reply storage is the exposure's too: the
+encoded outcome is the owned `String` the receiver's pool published, so
+it outlives the handler's per-call scratch, and the request and the
+`Context` live in the pending record from acceptance until completion,
+whatever the transport does with its connection in between. A request
+reaches one terminal outcome (an outcome delivered, an outcome dropped
+because the connection was lost, or a refusal), and the record is
+removed and the unit of the bound released exactly once, in that one
+place (the table holds accepted requests and nothing else: a removed
+record's place is taken by the next request, so it is never longer than
+the bound, and the queue runs in the order of the request ids, not of the
+places); a second event for the same request id finds no record and does
+nothing.
+
+**Shutdown.** `stop()` (idempotent) closes admission (a request received
+after it is refused `shutting_down`), refuses every queued request
+`shutting_down`, waits for the executing requests to complete and
+delivers their outcomes to the connections still open, then has the
+transport release its listener. The handle's dissolution and the serving
+locus's teardown run the same shutdown, so a program that never calls
+`stop()` still refuses its queue and lets its executing calls finish
+before the listener goes. The wait is a yield to the scheduler (a
+sleep, which drains the pool's queue), not a block, and it is bounded:
+`stop()` waits ten seconds for a handler, a teardown one second, since a
+teardown may be the process's, and a process shuts the pools of its
+receivers down under the calls they are running. A call still executing
+when the wait ends is abandoned: its reply is dropped, the transport is
+told the connection is finished with (`close_connection`), its unit of
+the bound is released once, and its caller observes the transport
+failure, never a refusal (it may have run).
+
+**Describing.** The runtime answers a describe request from the
+exposure's live sources: the members the caller's `Context` may call
+(`requires` held under this exposure's role source), by the rows the
+admission checks read, so a description and an admission of the same
+caller agree. The full document of § The description is what
+`hale check --api` prints from the rows; the exposure's live answer
+carries the identity, the caller and the members, and the schemas stay
+the document's.
+
+## Identity sources
+
+The interfaces for credential validity and grant revision are R2's;
+their use for live subscriptions (invalidation, delivery) stays R5's.
+
+- A **bearer source** answers a credential with the principal and its
+  validity: `fn expiry(token: String) -> Int` of
+  `std::api::ExpiringBearerSource`, the instant the credential expires
+  as nanoseconds since the Unix epoch (`std::time::nanos` of a `Time`),
+  0 for no expiry, read against the runtime's clock
+  (`std::time::current()`); the exposure refuses `unauthenticated`,
+  reason `expired`, a credential past its expiry. A source written
+  before the interface existed satisfies only `BearerSource` and is
+  asked nothing about expiry: its credentials do not expire. (The
+  answer is an `Int`, not a `Time`, because a locus method that returns
+  a `Time` does not lower yet; the unit is the one `Time` is.)
+- A **role source** answers a principal with its grants and the
+  source's current revision as one pair, `std::api::Grants { roles:
+  String, revision: Int }` (`roles` the comma-joined roles the principal
+  holds directly), from `fn grants(p: Principal) -> Grants` of
+  `std::api::RevisedRoleSource`, so a check never reads grants from one
+  revision and the number from another. A revision changes when a grant
+  is added or removed, and the source publishes the new revision on the
+  wire subject `__api.roles.revision` (a `std::api::Revision { source:
+  String, revision: Int }`; the standard library declares no `topic`, so
+  a publisher writes `publish "__api.roles.revision" of type
+  std::api::Revision;`) for a subscriber to learn of it; R5 reads it to
+  invalidate live subscriptions. `holds(p, r)` of
+  `std::api::RoleSource` stays the direct question: a source that
+  implements `grants` as well is asked it once per request, one that does
+  not is asked `holds` once per role the check needs, with the revision
+  unstated (0).
+- The runtime queries both on the exposure's own pool under Hale's
+  cross-pool rules: a source is a locus the serving locus holds, placed
+  with the exposure (or `sync = serialized`); a transport never holds
+  policy.
+- The interfaces are provider-independent: a local bootstrap table, a
+  human identity federation and internal agent credentials are all
+  sources.
+- RPC authorization stays an admission-time check: expiry and revision
+  add no re-authorization of queued calls and no cancellation of
+  accepted work.
+
+The stdlib's static table answers the pair as `std::api::RevisedStaticRoles`
+(an `inner: std::api::StaticRoles` and a `revision`, 0 for a table fixed
+for the process): its `grants` is the roles of the table the principal
+holds, `holds` is `inner`'s. `StaticRoles` and `NoBearer` themselves are not
+edited, for the reason `Context` is not (§ Serving): a stdlib locus is
+lowered into every program. A bearer source that states no expiry is any
+that has no `expiry`, `NoBearer` among them.
+
+The optional interfaces change no existing program: `Principal` and the
+two source interfaces keep the layout and the methods they had, so a
+source written for the structural path is a source here, and the
+exposure asks the extension only of a source whose declaration states
+it (the compiler wires `expiry` and `grants` from the source's type).
 
 ## Outcomes
 
@@ -423,7 +729,7 @@ to hash for one.
 |---|---|---|---|---|---|
 | result | the handler returned | 200, body = the response by codec | `{"ok": true, "value": …}` | OK | result |
 | handler error | the handler failed with its declared `E` | 422, body = `E` by codec | `{"ok": false, "error": E}` | FAILED_PRECONDITION, `E` in details | error object with `E` |
-| refusal | the request was not accepted (the kinds below) | 400 / 409 / 401 / 403 / 429 / 503, body = `{"refusal": …}` | `{"ok": false, "refusal": {"kind": …, "reason": …}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
+| refusal | the request was not accepted, or was accepted and did not run (the kinds below) | 400 / 409 / 401 / 403 / 429 / 503, body = `{"refusal": …}` | `{"ok": false, "refusal": {"kind": …, "reason": …}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
 | server error | the handler failed with `ClosureViolation`, its row's error type (§ Structural failure in a handler) | 500, body = `{"refusal": {"kind": "server"}}` | `{"ok": false, "refusal": {"kind": "server"}}` | INTERNAL | error object |
 | transport failure | the connection or the protocol broke | the transport's own | EOF | the transport's own | the transport's own |
 
@@ -436,7 +742,8 @@ The refusal kinds, each with its status:
 | `unauthenticated` | the sources name nobody | 401 | UNAUTHENTICATED |
 | `unauthorized` | the `Context` does not hold the row's `requires`; the refusal carries `"requires"` | 403 | PERMISSION_DENIED |
 | `full` | the exposure holds its bound of requests accepted and not yet answered | 429 | RESOURCE_EXHAUSTED |
-| `shutting_down` | the exposure is stopping (§ The request lifecycle) | 503 | UNAVAILABLE |
+| `shutting_down` | the exposure is stopping (§ The request lifecycle); the request was queued and did not run | 503 | UNAVAILABLE |
+| `unavailable` | the receiver the member is bound to is draining, dissolved or restarting (§ Receiver failure and generations); the request did not run | 503 | UNAVAILABLE |
 
 A refusal object is `{"kind": K, "reason": "<text>"}`, plus `"served"`
 on `digest_mismatch` and `"requires"` on `unauthorized`. The server
@@ -444,7 +751,8 @@ error's object is `{"kind": "server"}` and says nothing of the
 violation, which is the program's to report (§ Structural failure in a
 handler).
 
-**The Unix JSON transport** (`unix::Rpc`, R2) is a Unix domain stream
+**The Unix JSON transport** (`unix::Rpc`, R2b; the R2a fixture transport
+encodes its outcomes as these lines) is a Unix domain stream
 socket carrying one JSON object per line, as the GH #1106 binding's
 wire was. A request:
 
@@ -484,12 +792,13 @@ Every recorded exchange of both transports is under
 ## The request lifecycle
 
 A request is **received**; then **refused** (the checks of § Serving)
-or **accepted**; an accepted request is **queued** on the receiver's
-pool, under the exposure's `bound` and `on_full` as a topic binding's
-are; then **executing**; then it has an **outcome**, which is
-**delivered**, or **lost** when the connection is gone by then. `refuse`
-is the one `on_full` policy for requests: a caller waiting for an
-answer cannot be shed silently.
+or **accepted**; an accepted request is **queued** in the exposure
+under its `bound` and `on_full` (as a topic binding's are), and handed to
+its receiver's pool when the receiver is free (§ The runtime
+boundaries, dispatch); then **executing**; then it has an **outcome**,
+which is **delivered**, or **lost** when the connection is gone by then.
+`refuse` is the one `on_full` policy for requests: a caller waiting for
+an answer cannot be shed silently.
 
 - **No cancellation.** A handler runs to completion. A client's timeout,
   or a connection lost after acceptance, never implies the operation
@@ -503,11 +812,118 @@ answer cannot be shed silently.
   its status through another rpc. Idempotency, durable execution and
   recovery are the application's.
 
+**What a request guarantees.** These five hold for every transport, and
+`tests/hale/api/` holds the runtime to each:
+
+1. **Waiting permits supervision to progress.** A reply wait, and
+   `stop()`, cannot block the pool needed to run the handler or its
+   owner's `on_failure`: the wait is the exposure's pending state, not a
+   thread parked on the receiver's pool, and `stop()` waits by yielding
+   to the scheduler (a sleep drains the pool's queue). This holds with
+   the receiver on the exposure's pool and with it on another.
+2. **Requests and replies outlive their use.** The request and its
+   `Context` live in the pending record until completion, and survive the
+   enqueue; the reply is an owned value that survives the handler's
+   scratch cleanup; a disconnect frees nothing an executing request still
+   uses.
+3. **Completion and capacity are accounted for once.** Each accepted
+   request reaches exactly one terminal outcome and releases its unit of
+   the bound exactly once; a disconnected, still-executing request stays
+   accounted for until it completes.
+4. **No implicit rollback or retry.** A lost response cancels nothing
+   and authorizes no resubmission; an explicit shutdown refuses the
+   queued work and the executing work finishes.
+5. **F.42 stands.** A violating handler is `fallible(ClosureViolation)`;
+   its owner's `on_failure` runs first; when supervision lets execution
+   return, the runtime reads the fallible result and answers the server
+   error without exposing the record; when supervision exits the process,
+   the caller observes a transport failure, never a swallowed structural
+   failure; any other error type is the handler error.
+
+A queued call known not to have executed (`unavailable`,
+`shutting_down`) is distinguished from a call whose execution or
+delivery is uncertain (a connection lost after acceptance), which is
+never reported as a refusal.
+
+## Receiver failure and generations
+
+A bound receiver can become unavailable while its owner and the serve
+handle live: draining after a violation, dissolved, or restarting.
+
+- Unavailability is **per receiver**: the members bound to it are
+  refused `unavailable` (503 / `UNAVAILABLE`, the Unix kind
+  `unavailable`); the exposure's other members serve on. Requests queued
+  for that receiver settle `unavailable` too, a refusal the caller may
+  read as "not executed".
+- Each bound instance has an **execution generation**, advanced by a
+  restart in place or a replacement in the owner's field. A call
+  accepted under one generation never executes under the next: still
+  queued, it is refused `unavailable`; executing, it completes under the
+  generation that ran it. The binding follows the owner's field, so a
+  replacement is served without re-establishing the exposure.
+- A **lost connection after acceptance is uncertain**: the work
+  executes once and its reply is dropped; the client is never told it
+  was refused. Only `unavailable` and `shutting_down` on queued work
+  mean "did not execute".
+- Listener failure, receiver failure, disconnect and repeated `stop()`
+  compose without duplicate completion or premature destruction:
+  completion has one owner (§ The runtime boundaries), and each accepted
+  request reaches one terminal outcome and releases its capacity
+  exactly once.
+- F.42 stands (§ Structural failure in a handler): a violating
+  handler's owner runs `on_failure` first; when supervision lets
+  execution return, the runtime reads the fallible result and answers
+  the server error without exposing the record; when supervision exits
+  the process, the caller observes a transport failure.
+- No implicit rollback or retry anywhere; durable idempotency, receipts
+  and application retry are DNA's and the application's.
+
+**How the runtime knows.** A receiver instance is bound to its exposure
+by the serve site: the instance gains, at the serve site's compile, a
+subscription of its own to the exposure's calls, a number the exposure
+addresses it by, and an incarnation stamp it sets at every `birth()`
+(its first, a restart's, a replacement's). It announces the stamp to
+the exposure at each birth, and its `dissolve()` announces that it is
+gone. The exposure keeps, per bound receiver, the stamp of the
+incarnation it knows and a generation that grows by one at every
+announcement; a call carries the generation it was admitted under and
+the stamp it was handed over to, and the receiver executes a call only
+if the stamp is its own incarnation's, so a call handed to an
+incarnation that ended is never run by the next one, even at an address
+the next one reuses. A receiver that is draining has no subscription to
+hand a call to: the exposure learns it at the handover (the bus reports
+a delivery no subscriber took) and settles that call, and every call
+queued behind it, `unavailable`. A receiver whose stamp the exposure
+has not yet learned (it was born before the exposure, or has not
+answered) is asked, and its calls wait queued until it answers or the
+bus reports no subscriber to ask. A receiver found unavailable is asked
+again when the next request for it arrives, since it may be back (a
+`restart(c)` lowers a failure's drain request and runs no `birth()`, so
+nothing is announced); one that answers is a new generation, which
+calls accepted before it do not enter. An announcement of an incarnation
+the exposure already knows changes nothing, and the departure of an
+incarnation a successor has already replaced is news to nobody.
+
+One cell the exposure cannot take back: a call already handed to a
+receiver (executing, § The runtime boundaries, dispatch) when another
+exposure's call makes it fail. Two exposures bound to one instance each
+hand it a call; the runtime has no primitive that withdraws a queued
+cell, so the second runs if the failing receiver's pool still delivers
+it, and is answered as it ends (R2b may narrow the window).
+
+The instance bound is addressed by the number the serve site gives it,
+which the compiler writes into every literal that builds the field's
+instance in the serving locus: the param's own, and the right-hand side
+of each `self.orders = Orders { … }` assignment. A receiver replaced
+that way keeps the binding, because the number rides in the literal;
+an instance built anywhere else carries no number and is bound to no
+exposure.
+
 ## Structural failure in a handler
 
 A handler that may violate is `fallible(ClosureViolation)` (§ Surfaces
 and their rows, F.42), and the runtime calls it as any caller calls a
-fallible fn (R2): through the fallible ABI (GH #1426), so a violation
+fallible fn (R2a): through the fallible ABI (GH #1426), so a violation
 arrives in the error slot as the `ClosureViolation` the owner's
 `on_failure` received, and no value is produced. The owner's
 `on_failure` runs first, as for any violation (`spec/semantics.md` §
@@ -516,6 +932,16 @@ with the server error, whose object says nothing of the violation,
 which is the program's to report. The runtime's call is the transport
 caller's `or`: it reads the error slot and never a reply the handler
 did not produce. Nothing beyond F.42 and law 7 is asked of the handler.
+
+The owner's `on_failure` decides what happens next, and the caller
+sees it: when it lets execution return (it absorbs the failure, or
+restarts or quarantines the receiver), the request is answered with the
+server error; when supervision exits the process instead (`bubble` to
+the root, a `restart` budget spent), the caller observes a transport
+failure, never a swallowed structural failure. After a violation the
+receiver is draining or restarting: its other members' queued calls
+settle `unavailable` (§ Receiver failure and generations) while the
+exposure's other receivers serve on.
 
 ## Streams
 
@@ -639,10 +1065,21 @@ correlation field, the largest frame) are R5's.
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
 binding's was: `Int`, `Float`, `Bool`, `String` and nested structs of
-the same, with a `json:"key"` tag renaming a key; an identity, a range,
-a quantity and a point are their integer (`spec/units.md` § Layout and
-the wire), and the description names the unit a quantity counts.
-Decoding is strict: a value of the wrong JSON kind is `wrong_type`, a
+the same, with a `json:"key"` tag renaming a key; a plain alias
+(`type Count = Int;`) is what its chain ends at, and a builtin record
+(`IndexError`) its fields as the description gives them; an identity, a range
+and a quantity are their integer (`spec/units.md` § Layout and the
+wire: read as an `Int` and converted, a quantity by its denomination,
+`n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
+and the description names the unit a quantity counts. A point is not
+carried (its origin is not a count): a row whose shape holds one is
+refused by law 5. Decoding is strict: a value of the wrong JSON kind is
+`wrong_type`
+(a payload that is one scalar is that scalar's complete JSON token: `true`
+or `false` for a `Bool`, one quoted and correctly escaped string for a
+`String`, a number for a `Float`, a number with no fraction or exponent for
+an `Int` and for the integer a unit scalar counts; anything else is
+refused before the request is queued), a
 missing field without a literal default is `missing_field`, and a
 handler only ever sees a decoded value. A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),
@@ -829,7 +1266,13 @@ row shape hashes against `digest.md`, and each surface's projections.
 The plan's § 3 assertions that need a
 running program (refusals before a handler's counter moves, queued
 shutdown, a lost response, revocation while connected) are the exit
-criteria of R2, R3 and R5.
+criteria of R2, R3 and R5. R2a holds the rpc half of them over the
+in-process transport (`tests/hale/api/`: the witness's own `Orders`,
+`Ledger`, rows and role sources served by `std::api::test::Rpc`,
+each refusal leaving the handler's counter where it was, the five
+outcomes, the lifecycle guarantees of § The request lifecycle); R2b
+runs the same assertions over a Unix socket, R3 over HTTP, R5 adds the
+stream half.
 
 ## Open points
 
@@ -843,9 +1286,14 @@ criteria of R2, R3 and R5.
 - **A hub that also serves a surface** (rpcs and streams on one
   connection): its description lists both, and the frames that carry
   an rpc over WebSocket are R5's (below).
-- **Expiry and revision as interfaces**: the field on `Context` that
-  states a credential's expiry, and how a role source announces a
-  revision (R5).
+- **A dispatch window wider than one call per receiver**: the exposure
+  hands a receiver one call at a time (§ The runtime boundaries,
+  dispatch) so that what it refuses is exactly what has not been handed
+  over; a wider window needs a runtime primitive to withdraw a queued
+  cell (R2b).
+- **The hub's use of expiry and revision** (R5): the interfaces are
+  § Identity sources'; a hub's invalidation of a live subscription from
+  them is R5's.
 - **MCP resources over streams.**
 - **Whether a locus may implement two interfaces at once** (the hub);
   if not, the hub is two loci sharing one listener (R5).

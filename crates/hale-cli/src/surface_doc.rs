@@ -135,7 +135,8 @@ const NOTE_INVENTORY: &str = "every exposure with its listener, its sources and 
 const HUB_AUTHORIZATION: &str = "requires is checked against this hub's role source when a subscription is admitted, and again at the credential's expiry and at every role-source revision: a boundary check, never a proof over the program's internal call paths";
 const HUB_LIFECYCLE: &str = "a subscription invalidated by expiry or revocation receives one unauthorized frame and loses what it had buffered; stop() sends closed, and a reconnect replays only what a stream's replay says";
 const HUB_DISCOVERY: &str = "this document lists the streams this caller may subscribe to under this hub's role source; the hub still authorizes every subscription";
-const REFUSALS: [&str; 6] = ["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down"];
+const REFUSALS: [&str; 7] =
+    ["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down", "unavailable"];
 
 /// A stream row's loss statement: the publish contract's delivery and
 /// what its `on_full` sheds.
@@ -171,6 +172,7 @@ fn outcomes(transport: &str) -> Result<J, String> {
                             ("unauthorized", J::Int(403)),
                             ("full", J::Int(429)),
                             ("shutting_down", J::Int(503)),
+                            ("unavailable", J::Int(503)),
                         ]),
                     ),
                 ]),
@@ -675,7 +677,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
         if h.server_error {
             responses.push(("500".to_string(), refusal("server error: the handler violated (ClosureViolation)")));
         }
-        responses.push(("503".to_string(), refusal("refusal: shutting_down")));
+        responses.push(("503".to_string(), refusal("refusal: shutting_down, unavailable")));
         op.push(("responses".to_string(), J::Obj(responses)));
         op.push(("security".to_string(), J::Arr(vec![o(vec![("bearer", J::Arr(Vec::new()))])])));
         op.push(("x-hale-requires".to_string(), strs(row.requires.iter().map(|(r, _)| r.as_str()))));

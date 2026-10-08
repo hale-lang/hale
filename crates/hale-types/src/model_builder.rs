@@ -255,7 +255,7 @@ pub fn derive_application_model_over(
     // and a call into the stdlib's analysis copy is the unresolved call
     // (the same site, row and hole) the program alone decides, so the
     // copy never moves `shape_hash`, the build and replay identity.
-    let summary = merged.own_rows();
+    let summary = merged.program_rows();
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);
     let effect_classes = &inputs.effects.classes;

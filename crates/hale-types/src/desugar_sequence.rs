@@ -58,6 +58,10 @@ pub struct Sequence<'a> {
     /// The roles the build's environment binds, if any: what the api
     /// pass bakes into the binding.
     pub api_roles: Option<&'a str>,
+    /// The seed's default surface name (`surfaces::default_surface_name`
+    /// over the bundle's files): the surface the seed's own `@rpc`
+    /// handlers feed, which a serve site's rows are selected for.
+    pub default_surface: &'a str,
 }
 
 /// Run the sequence over every program of a bundle, in place.
@@ -95,6 +99,9 @@ pub fn desugar_before_check(
         hale_syntax::api_gen::inject_api_entry(l, path);
     }
     let surface = hale_syntax::api_gen::generate_api(programs, root, seq.api_roles);
+    // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
+    // an adapter and its receivers' plumbing (`rpc_expand`).
+    crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
     // not parse is reported where it is appended (`resolve_rewritten`);
@@ -153,7 +160,7 @@ pub fn bundled_stdlib() -> Result<&'static Program, String> {
                         .join("; ");
                     format!("stdlib parse: {}", summary)
                 })?;
-            let seq = Sequence { import_renames: &[], api: None, api_roles: None };
+            let seq = Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" };
             shape(&mut [&mut stdlib], &seq, &[]);
             Ok(stdlib)
         })

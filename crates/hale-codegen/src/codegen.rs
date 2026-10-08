@@ -941,6 +941,23 @@ fn row_disagrees(topic: &str) -> CodegenError {
     ))
 }
 
+/// GH #1417 (R2a): the handle an `api::serve(…)` call is. The exposure was
+/// built with the serving locus, as the param `rpc_expand` wrote for the
+/// site's `as:` (`__rpc_x_<as>`), so the call reads that field of `self`;
+/// nothing of its arguments is evaluated here.
+fn serve_site_handle(args: &[Expr], span: hale_syntax::Span) -> Option<Expr> {
+    let Some(Expr::Struct { inits, .. }) = args.last() else { return None };
+    let name = inits.iter().find_map(|i| match (&*i.name.name, &i.value) {
+        ("as", Expr::Literal(hale_syntax::ast::Literal::String(s), _)) => Some(s.as_str()),
+        _ => None,
+    })?;
+    Some(Expr::Field {
+        receiver: Box::new(Expr::KwSelf(span)),
+        name: hale_syntax::ast::Ident::new(hale_types::rpc_expand::exposure_param(name), span),
+        span,
+    })
+}
+
 fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
     match payload {
         TypeExpr::Named { path, generic_args, .. }
@@ -20329,8 +20346,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #534: an importer's `alias::Enum::Variant`
                     // resolves its first two segments through the
                     // per-build rename table.
-                    let aliased: Option<String> = if path.segments.len() == 3 {
-                        let head: Vec<&str> = path.segments[..2]
+                    // GH #1417 (R2a): so does a stdlib enum's public path,
+                    // `std::api::Outcome::Refusal(…)`.
+                    let aliased: Option<String> = if path.segments.len() >= 3 {
+                        let head: Vec<&str> = path.segments
+                            [..path.segments.len() - 1]
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect();
@@ -25543,6 +25563,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
+        // GH #1417 (R2a): a serve site's exposure was built with its
+        // serving locus; the call is its handle (`lower_serve_site`).
+        if segs == ["api", "serve"] {
+            if let Some(handle) = serve_site_handle(args, qn.span) {
+                let _ = self.lower_expr(&handle, scope)?;
+                return Ok(());
+            }
+        }
         // m71: std::* paths route through the stdlib lowering. The
         // dispatcher returns Some(_) iff it recognized the path; an
         // unknown std::* path errors with the same shape as the rest
@@ -25617,6 +25645,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
+        // GH #1417 (R2a): the handle of a serve site's exposure.
+        if segs == ["api", "serve"] {
+            if let Some(handle) = serve_site_handle(args, qn.span) {
+                return self.lower_expr(&handle, scope);
+            }
+        }
+        // GH #1417 (R2a): a variant of an enum another seed or the stdlib
+        // declares, by its public path (`std::api::Outcome::Refusal(…)`):
+        // the enum's mangled name and the variant.
+        if segs.len() >= 3 {
+            let head = &segs[..segs.len() - 1];
+            if let Some(mangled) = self.mangled_for_path(head).filter(|m| self.user_enums.contains_key(m)) {
+                let variant = qn.segments[qn.segments.len() - 1].clone();
+                let rewritten = QualifiedName {
+                    segments: vec![hale_syntax::ast::Ident::new(mangled, qn.span), variant],
+                    span: qn.span,
+                };
+                return self.lower_path_call_expr(&rewritten, args, scope);
+            }
+        }
         if segs.first() == Some(&"std") {
             self.note_ts_call_site(&segs, qn);
             return self.lower_stdlib_path_call_expr(&segs, qn.span, args, scope);

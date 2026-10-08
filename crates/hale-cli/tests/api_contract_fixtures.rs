@@ -742,7 +742,8 @@ fn a_hub_exposure_lists_a_stream_exactly_when_its_caller_holds_requires() {
 // ------------------------------------------------------------------
 // The wire.
 
-const REFUSALS: &[&str] = &["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down"];
+const REFUSALS: &[&str] =
+    &["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down", "unavailable"];
 
 fn http_status(outcome: &str, kind: Option<&str>) -> u64 {
     match (outcome, kind) {
@@ -755,6 +756,7 @@ fn http_status(outcome: &str, kind: Option<&str>) -> u64 {
         ("refusal", Some("unauthorized")) => 403,
         ("refusal", Some("full")) => 429,
         ("refusal", Some("shutting_down")) => 503,
+        ("refusal", Some("unavailable")) => 503,
         other => panic!("no outcome {other:?}"),
     }
 }

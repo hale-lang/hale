@@ -222,21 +222,24 @@ fn every_renamed_std_target_is_declared_or_consciously_exempt() {
     // without a declaration would silently reopen the old
     // permissive typing for that name. Make it a decision instead.
     const EXEMPT: &[&str] = &[];
-    let program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-        .expect("the bundled stdlib source must parse");
+    // The bundled stdlib, and the runtime of `api::serve` (GH #1417,
+    // `API_RUNTIME_SOURCE`), which joins a program that serves or names it.
     let mut declared = std::collections::BTreeSet::new();
-    for item in &program.items {
-        match item {
-            hale_syntax::ast::TopDecl::Locus(l) => {
-                declared.insert(l.name.name.clone());
+    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE] {
+        let program = hale_syntax::parse_source(source).expect("the bundled stdlib source must parse");
+        for item in &program.items {
+            match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    declared.insert(l.name.name.clone());
+                }
+                hale_syntax::ast::TopDecl::Type(t) => {
+                    declared.insert(t.name.name.clone());
+                }
+                hale_syntax::ast::TopDecl::Interface(i) => {
+                    declared.insert(i.name.name.clone());
+                }
+                _ => {}
             }
-            hale_syntax::ast::TopDecl::Type(t) => {
-                declared.insert(t.name.name.clone());
-            }
-            hale_syntax::ast::TopDecl::Interface(i) => {
-                declared.insert(i.name.name.clone());
-            }
-            _ => {}
         }
     }
     let mut undeclared: Vec<String> = Vec::new();

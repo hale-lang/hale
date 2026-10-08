@@ -151,6 +151,13 @@ fn the_own_rows_are_the_program_alone_on_every_corpus_program() {
     let mut moved: Vec<String> = Vec::new();
     for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
         let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
+        // The api runtime is never a program of its own: it joins a program
+        // that serves a surface, at an offset window the summary marks as
+        // the stdlib's (`the_appended_runtime_is_not_the_programs_own`).
+        // Alone at offset 0 it is not appended, so no window marks it.
+        if p.source == hale_stdlib::API_RUNTIME_SOURCE {
+            continue;
+        }
         let mut programs = std::collections::BTreeMap::new();
         programs.insert("app.hl".to_string(), &program);
         let bundle = hale_types::symbol::Bundle::new(programs);
@@ -205,4 +212,25 @@ fn a_call_into_the_copy_is_the_unresolved_call() {
     let (same, n) = checked.expect("dna/api has a summary");
     assert!(n > 0, "dna/api calls into the copy");
     assert!(same, "dna/api's own rows are its program-alone summary");
+}
+
+/// The api runtime a serving program carries is stdlib source appended to
+/// it (`rpc_expand`): the program's own rows are its own fns and loci, and
+/// none of the runtime's `__StdApi*`. The witness serves surfaces, so the
+/// runtime is in its bundle and in the full summary, as the copy's.
+#[test]
+fn the_appended_runtime_is_not_the_programs_own() {
+    let path = root().join("tests/hale/api/witness_test.hl");
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("the witness loads");
+    let summary = snap.demand_alloc_summary().expect("the witness has a summary");
+    let runtime = summary.fns.keys().filter(|k| k.locus.as_deref() == Some("__StdApiExposure")).count();
+    assert!(runtime > 0, "the runtime is in the full summary");
+    assert!(
+        summary.fns.keys().filter(|k| k.locus.as_deref() == Some("__StdApiExposure")).all(|k| !summary.is_own(k)),
+        "every runtime fn is the copy's"
+    );
+    assert!(!summary.is_own_locus("__StdApiExposure"), "the runtime's locus is the copy's");
+    let own = summary.own_rows();
+    assert!(own.fns.keys().all(|k| !k.locus.as_deref().is_some_and(|l| l.starts_with("__StdApi"))), "no runtime row among the own rows");
+    assert!(own.fns.keys().any(|k| k.locus.as_deref() == Some("__RpcSurface_2")), "the program's own surfaces are rows");
 }

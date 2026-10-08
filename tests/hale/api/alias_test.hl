@@ -1,0 +1,53 @@
+// GH #1417 (R2a) — an import alias named for the seed's default surface.
+//
+// This file's default surface is `alias_test`, and the import alias is the
+// same name. The surface is one: the seed's own `@rpc` handler and the
+// library's, spelled through the alias. One selection rule
+// (`surfaces::select_members`) feeds the described rows and the exposure,
+// so serving `alias_test` answers both members and reports the digest
+// `hale check --api` describes.
+
+import "./surface_lib" as alias_test;
+
+locus Local {
+    params { entered: Int = 0; }
+    @rpc
+    fn secret(x: Int) -> Int {
+        self.entered = self.entered + 1;
+        return x + 100;
+    }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-a" { return std::api::Principal { mode: "bearer", name: "a" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        echo: alias_test::Echo = alias_test::Echo { };
+        local: Local = Local { };
+        f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+    }
+
+    run() {
+        let s = api::serve(alias_test, self.f, as: "one", receivers: { Local: self.local }, bound: 4, on_full: refuse);
+        let t = self.f;
+
+        t.call(1, "Local::secret", "1", "t-a");
+        std::test::assert_eq_str(t.await_outcome(1, 2000), "result", "the seed's own member is served");
+        std::test::assert(std::str::contains(t.line(1), "\"value\":101"), "with its result");
+        t.call(2, "alias_test::Echo::echo", "1", "t-a");
+        std::test::assert_eq_str(t.await_outcome(2, 2000), "result", "and the library's, spelled through the alias");
+        std::test::assert(std::str::contains(t.line(2), "\"value\":2"), "with its result");
+        t.call_digest(3, "Local::secret", "1", "t-a", "fnv1a64:0000000000000000");
+        std::test::assert_eq_str(t.await_outcome(3, 2000), "refusal:digest_mismatch", "a digest that is not the served one");
+        std::test::assert(std::str::contains(t.line(3), "\"served\":\"fnv1a64:09b4df1845736fe7\""), "the exposure serves the described digest");
+    }
+}
+
+fn main() { Desk { }; }

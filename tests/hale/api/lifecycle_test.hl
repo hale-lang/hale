@@ -1,0 +1,112 @@
+// GH #1417 (R2a, spec/api.md § The request lifecycle) — what a request
+// guarantees, over the in-process transport.
+//
+// A receiver whose `slow` handler holds a call for 80 ms, served as the
+// exposure `svc` with room for three requests. The cases:
+//
+//   * a connection lost after the handler started: the work executes once
+//     and its reply is dropped (the transport hears `close_connection`
+//     once), and the request keeps its place in the bound until it
+//     completes: a second request meanwhile is `full`, one after is not;
+//   * `stop()` with one call executing and two queued: the queued are
+//     refused `shutting_down` (they did not run), the executing one
+//     finishes and is answered, `stop()` returns after it, and the
+//     transport's listener is released; a second `stop()` does nothing, and
+//     a request after it is `shutting_down`;
+//   * the counters each case reads are the handler's own, so "did not run"
+//     is the handler's state, not the runtime's say-so.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+role caller;
+
+locus Svc {
+    params { started: Int = 0; finished: Int = 0; quick: Int = 0; }
+    fn slow(r: Req) -> Res {
+        self.started = self.started + 1;
+        std::time::sleep(80ms);
+        self.finished = self.finished + 1;
+        return Res { n: r.n };
+    }
+    fn fast(r: Req) -> Res {
+        self.quick = self.quick + 1;
+        return Res { n: r.n };
+    }
+}
+
+api S {
+    rpc Svc::slow;
+    rpc Svc::fast;
+}
+
+main locus App {
+    params {
+        svc: Svc = Svc { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        tight: Svc = Svc { };
+        tight_fixture: std::api::test::Rpc = std::api::test::Rpc { };
+    }
+    placement {
+        svc: cooperative(pool = work) where async_io;
+        tight: cooperative(pool = work2) where async_io;
+    }
+
+    fn until_started(n: Int) {
+        let mut i = 0;
+        while i < 3000 && self.svc.started < n { std::time::sleep(1ms); i = i + 1; }
+    }
+
+    run() {
+        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 3, on_full: refuse);
+        let f = self.fixture;
+
+        // ---- stop() with one call executing and two queued ----
+        f.call_as_peer(1, "Svc::slow", "{\"n\":1}", 1000);
+        f.call_as_peer(2, "Svc::slow", "{\"n\":2}", 1000);
+        f.call_as_peer(3, "Svc::slow", "{\"n\":3}", 1000);
+        self.until_started(1);
+        std::time::sleep(10ms);
+        std::test::assert_eq_int(self.svc.started, 1, "one call is executing; the receiver is handed one at a time");
+        std::test::assert_eq_int(f.outcomes_of(2) + f.outcomes_of(3), 0, "the other two are queued, not answered");
+        // the bound is three: a fourth is full while three are accepted and unanswered
+        f.call_as_peer(4, "Svc::fast", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(f.await_outcome(4, 2000), "refusal:full", "the exposure holds three requests accepted and unanswered");
+        std::test::assert_eq_int(self.svc.quick, 0, "a refused request never reached the handler");
+        h.stop();
+        std::test::assert_eq_str(f.outcome(1), "result", "the executing call finished and was answered before stop returned");
+        std::test::assert_eq_str(f.outcome(2), "refusal:shutting_down", "a queued call is refused");
+        std::test::assert_eq_str(f.outcome(3), "refusal:shutting_down", "and so is the next");
+        std::test::assert_eq_int(self.svc.started, 1, "neither queued call ran");
+        std::test::assert_eq_int(self.svc.finished, 1, "the executing call completed once");
+        std::test::assert_eq_int(f.stops, 1, "the listener was released");
+        h.stop();
+        std::test::assert_eq_int(f.stops, 1, "a second stop() does nothing");
+        f.call_as_peer(5, "Svc::fast", "{\"n\":5}", 1000);
+        std::test::assert_eq_str(f.await_outcome(5, 2000), "refusal:shutting_down", "a request after stop() is refused");
+        std::test::assert_eq_int(self.svc.quick, 0, "and never ran");
+
+        // ---- a connection lost after the handler started ----
+        let g = api::serve(S, self.tight_fixture, as: "tight", receivers: { Svc: self.tight }, bound: 1, on_full: refuse);
+        let t = self.tight_fixture;
+        t.call_as_peer(10, "Svc::slow", "{\"n\":10}", 1000);
+        let mut i = 0;
+        while i < 3000 && self.tight.started < 1 { std::time::sleep(1ms); i = i + 1; }
+        std::test::assert_eq_int(self.tight.started, 1, "the handler started");
+        t.lose(10);
+        std::time::sleep(5ms);
+        t.call_as_peer(11, "Svc::fast", "{\"n\":11}", 1000);
+        std::test::assert_eq_str(t.await_outcome(11, 2000), "refusal:full", "the lost request still holds its place until it completes");
+        let mut j = 0;
+        while j < 3000 && t.closed < 1 { std::time::sleep(1ms); j = j + 1; }
+        std::test::assert_eq_int(self.tight.finished, 1, "the work executed to completion, once");
+        std::test::assert_eq_int(t.outcomes_of(10), 0, "its reply was dropped");
+        std::test::assert_eq_int(t.closed, 1, "the transport was told once that the connection is finished with");
+        t.call_as_peer(12, "Svc::fast", "{\"n\":12}", 1000);
+        std::test::assert_eq_str(t.await_outcome(12, 2000), "result", "the unit of the bound was released: a request is accepted again");
+        std::test::assert_eq_int(self.tight.started, 1, "and nothing resubmitted the lost one");
+        g.stop();
+    }
+}
+
+fn main() { App { }; }

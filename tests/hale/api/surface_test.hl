@@ -1,0 +1,71 @@
+// GH #1417 (R2a) — a served surface answers its own rows and no others.
+//
+// An imported seed's `@rpc` handlers are the default surface its import
+// alias names, with members spelled through the alias (`toy::Echo::echo`);
+// the seed's own handlers are another surface. The exposure is built from the
+// rows `hale check --api` describes: serving `toy` answers `toy::Echo::echo`,
+// refuses the local handler as an unknown member and reports the described
+// digest; serving the local surface does the converse.
+
+import "./surface_lib" as toy;
+
+locus Local {
+    params { entered: Int = 0; }
+    @rpc
+    fn secret(x: Int) -> Int {
+        self.entered = self.entered + 1;
+        return x + 100;
+    }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-a" { return std::api::Principal { mode: "bearer", name: "a" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        echo: toy::Echo = toy::Echo { };
+        local: Local = Local { };
+        toy_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+        local_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+    }
+
+    run() {
+        let imported = api::serve(toy, self.toy_f, as: "toy", bound: 4, on_full: refuse);
+        let own = api::serve(surface_test, self.local_f, as: "own", receivers: { Local: self.local }, bound: 4, on_full: refuse);
+        let t = self.toy_f;
+        let l = self.local_f;
+
+        t.call(1, "toy::Echo::echo", "1", "t-a");
+        std::test::assert_eq_str(t.await_outcome(1, 2000), "result", "the imported surface answers its advertised member");
+        std::test::assert(std::str::contains(t.line(1), "\"value\":2"), "with the library's result");
+        t.call(2, "Local::secret", "1", "t-a");
+        std::test::assert_eq_str(t.await_outcome(2, 2000), "refusal:malformed", "a handler outside the served surface is refused");
+        std::test::assert(std::str::contains(t.line(2), "unknown_member"), "as an unknown member");
+        t.call(3, "Echo::echo", "1", "t-a");
+        std::test::assert_eq_str(t.await_outcome(3, 2000), "refusal:malformed", "and the member is spelled through the alias");
+        std::time::sleep(20ms);
+        std::test::assert_eq_int(self.local.entered, 0, "the local handler never ran");
+
+        l.call(4, "Local::secret", "1", "t-a");
+        std::test::assert_eq_str(l.await_outcome(4, 2000), "result", "the local surface answers its own member");
+        std::test::assert(std::str::contains(l.line(4), "\"value\":101"), "with its result");
+        l.call(5, "toy::Echo::echo", "1", "t-a");
+        std::test::assert_eq_str(l.await_outcome(5, 2000), "refusal:malformed", "and refuses the library's");
+        std::test::assert(std::str::contains(l.line(5), "unknown_member"), "as an unknown member");
+
+        t.call_digest(6, "toy::Echo::echo", "1", "t-a", "fnv1a64:0000000000000000");
+        l.call_digest(7, "Local::secret", "1", "t-a", "fnv1a64:0000000000000000");
+        std::test::assert_eq_str(t.await_outcome(6, 2000), "refusal:digest_mismatch", "a digest that is not the served one");
+        std::test::assert_eq_str(l.await_outcome(7, 2000), "refusal:digest_mismatch", "on either exposure");
+        std::test::assert(std::str::contains(t.line(6), "\"served\":\"fnv1a64:e424d165c99a9661\""), "toy serves the described digest");
+        std::test::assert(std::str::contains(l.line(7), "\"served\":\"fnv1a64:8bfc77fa171fe10c\""), "and so does the local surface");
+    }
+}
+
+fn main() { Desk { }; }

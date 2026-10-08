@@ -236,6 +236,20 @@ fn named_type(te: &TypeExpr) -> Option<String> {
     }
 }
 
+/// GH #1417 (R2a): `std::api::ServedContext`, in either of its spellings:
+/// the context a handler of a served surface may declare instead of
+/// `Context`, which also names the exposure and the generation the call was
+/// admitted under (the runtime's `api_rpc.hl`).
+pub fn is_served_context_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            segs == ["std", "api", "ServedContext"] || segs == ["__StdApiServedContext"]
+        }
+        _ => false,
+    }
+}
+
 /// `std::api::Context`, in either of its spellings.
 pub fn is_context_type(te: &TypeExpr) -> bool {
     match te {

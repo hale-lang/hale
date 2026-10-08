@@ -1,0 +1,89 @@
+// GH #1417 (R2a, spec/api.md § Receiver failure and generations) — a bound
+// receiver that is replaced.
+//
+// `poison` violates, and the owner's `on_failure` replaces the receiver
+// (`self.svc = Svc { }`): the old instance is torn down and a new one built
+// in the same field, at an address the allocator may hand back. The binding
+// follows the owner's field, so the exposure serves the replacement without
+// being re-established, and:
+//
+//   * the violating call is the server error, after the owner's handler;
+//   * the calls queued behind it were accepted under the old instance's
+//     generation, so they settle `unavailable`, and the replacement never
+//     runs them, whatever its address;
+//   * the next call runs on the replacement, in the next generation.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+locus Svc {
+    params { births: Int = 0; ran_slow: Int = 0; ran_fast: Int = 0; }
+    closure bad { captures: ran_fast; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    fn slow(r: Req) -> Res {
+        self.ran_slow = self.ran_slow + 1;
+        return Res { n: r.n };
+    }
+    fn fast(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.ran_fast = self.ran_fast + 1;
+        return Res { n: ctx.generation };
+    }
+    fn poison(r: Req) -> Res fallible(ClosureViolation) {
+        // long enough for the calls behind it to be accepted and queued first
+        std::time::sleep(30ms);
+        violate bad;
+    }
+}
+
+api S {
+    rpc Svc::slow;
+    rpc Svc::fast;
+    rpc Svc::poison;
+}
+
+main locus App {
+    params {
+        svc: Svc = Svc { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        failures: Int = 0;
+        answered_when_failed: Int = -1;
+    }
+    placement { svc: cooperative(pool = work) where async_io; }
+    on_failure(c: Svc, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        self.answered_when_failed = self.fixture.outcomes_of(2);
+        self.svc = Svc { };
+    }
+
+    run() {
+        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        let f = self.fixture;
+
+        f.call_as_peer(1, "Svc::fast", "{\"n\":1}", 1000);
+        std::test::assert_eq_str(f.await_outcome(1, 2000), "result", "the first instance serves");
+        std::test::assert(std::str::contains(f.line(1), "\"value\":{\"n\":1}"), "in the first generation");
+
+        // the violating call, and two calls queued behind it
+        f.call_as_peer(2, "Svc::poison", "{\"n\":2}", 1000);
+        f.call_as_peer(3, "Svc::slow", "{\"n\":3}", 1000);
+        f.call_as_peer(4, "Svc::fast", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(f.await_outcome(2, 3000), "server_error", "the violating call is the server error");
+        std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
+        std::test::assert_eq_int(self.answered_when_failed, 0, "before the caller was answered");
+        std::test::assert_eq_str(f.await_outcome(3, 3000), "refusal:unavailable", "a call queued behind it was accepted under the old generation");
+        std::test::assert_eq_str(f.await_outcome(4, 3000), "refusal:unavailable", "and so was the next");
+        std::test::assert_eq_int(self.svc.births, 1, "the field holds a new instance: born once");
+        std::test::assert_eq_int(self.svc.ran_slow, 0, "the replacement did not run the old instance's queued calls");
+        std::test::assert_eq_int(self.svc.ran_fast, 0, "nor any other");
+
+        // the next call runs on the replacement, in the next generation
+        f.call_as_peer(5, "Svc::fast", "{\"n\":5}", 1000);
+        std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "the replacement serves, without re-establishing the exposure");
+        std::test::assert(std::str::contains(f.line(5), "\"value\":{\"n\":2}"), "in the second generation");
+        std::test::assert_eq_int(self.svc.ran_fast, 1, "on the replacement");
+
+        h.stop();
+    }
+}
+
+fn main() { App { }; }

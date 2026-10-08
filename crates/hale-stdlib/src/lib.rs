@@ -21,6 +21,17 @@
 //! This crate is deliberately dependency-free: it is source text and
 //! one name-mapping table, nothing else.
 
+/// GH #1417 (R2a): the runtime of `api::serve` and its in-process
+/// transport (`api_rpc.hl`). It is not part of [`AP_SOURCE`]: every stdlib
+/// declaration is lowered into every program, so a runtime that most
+/// programs never serve through would put its types and loci in all of
+/// their IR. A program that serves a surface, or that names a type of the
+/// runtime (`std::api::Request`, `std::api::test::Rpc`, …), has it
+/// appended to its own declarations before the check
+/// (`hale_types::rpc_expand`); the names it declares are mapped in
+/// [`PATH_RENAMES`] like the rest of `std::api`.
+pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -353,6 +364,27 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // GH #1135: who a bearer on the binding's HTTP transport is.
     (&["std", "api", "BearerSource"], "__StdApiBearerSource"),
     (&["std", "api", "NoBearer"], "__StdApiNoBearer"),
+    // GH #1417 (R2a): the runtime of `api::serve` (api_rpc.hl) and a role
+    // source's and a bearer source's optional extensions (api.hl).
+    (&["std", "api", "Grants"], "__StdApiGrants"),
+    (&["std", "api", "RevisedRoleSource"], "__StdApiRevisedRoleSource"),
+    (&["std", "api", "Revision"], "__StdApiRevision"),
+    (&["std", "api", "ExpiringBearerSource"], "__StdApiExpiringBearerSource"),
+    (&["std", "api", "RevisedStaticRoles"], "__StdApiRevisedStaticRoles"),
+    (&["std", "api", "ServedContext"], "__StdApiServedContext"),
+    (&["std", "api", "Request"], "__StdApiRequest"),
+    (&["std", "api", "Outcome"], "__StdApiOutcome"),
+    (&["std", "api", "Rpc"], "__StdApiRpc"),
+    (&["std", "api", "Handle"], "__StdApiHandle"),
+    (&["std", "api", "Surface"], "__StdApiSurface"),
+    (&["std", "api", "Exposure"], "__StdApiExposure"),
+    (&["std", "api", "RpcIngress"], "__StdApiRpcIngress"),
+    (&["std", "api", "RpcLost"], "__StdApiRpcLost"),
+    (&["std", "api", "RpcCall"], "__StdApiRpcCall"),
+    (&["std", "api", "RpcHello"], "__StdApiRpcHello"),
+    (&["std", "api", "RpcEvent"], "__StdApiRpcEvent"),
+    (&["std", "api", "test", "Rpc"], "__StdApiTestRpc"),
+    (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // GH #989: the local vault directory, exported so a caller that

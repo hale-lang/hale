@@ -209,7 +209,7 @@
         "refusal": {
           "const": {
             "body": "refusal",
-            "status": { "malformed": 400, "digest_mismatch": 409, "unauthenticated": 401, "unauthorized": 403, "full": 429, "shutting_down": 503 }
+            "status": { "malformed": 400, "digest_mismatch": 409, "unauthenticated": 401, "unauthorized": 403, "full": 429, "shutting_down": 503, "unavailable": 503 }
           }
         },
         "server_error": { "const": { "status": 500, "body": "refusal" } },
@@ -225,7 +225,7 @@
         "result": { "const": { "ok": true, "field": "value" } },
         "handler_error": { "const": { "ok": false, "field": "error" } },
         "refusal": {
-          "const": { "ok": false, "field": "refusal", "kinds": ["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down"] }
+          "const": { "ok": false, "field": "refusal", "kinds": ["malformed", "digest_mismatch", "unauthenticated", "unauthorized", "full", "shutting_down", "unavailable"] }
         },
         "server_error": { "const": { "ok": false, "field": "refusal", "kind": "server" } },
         "transport_failure": { "const": "eof" }

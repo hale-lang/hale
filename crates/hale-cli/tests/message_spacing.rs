@@ -32,6 +32,12 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-types/src/rpc_expand.rs",
+        "surface_src",
+        "generated Hale source keeps its indentation so the expanded \
+         program is readable in a dump",
+    ),
+    (
         "crates/hale-types/src/unit_report.rs",
         "render",
         "`hale check --units`: the `kind         : …` field column of \

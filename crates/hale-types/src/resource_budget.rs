@@ -77,7 +77,7 @@ const FD_ACQUIRING_PATHS: &[&str] = &[
 /// copy (the TCP `Listener`'s hooks accept and store streams) is not the
 /// program's acquisition.
 pub fn resource_leak_diags(summary: &AllocSummary) -> Vec<Diag> {
-    let summary = summary.own_rows();
+    let summary = summary.program_rows();
     let unbounded = summary.unbounded_invoked();
     let mut out = Vec::new();
     for f in summary.fns.values() {
@@ -289,7 +289,7 @@ pub fn budget_for_programs(bundle: &Bundle<'_>, table: &PlacementTable, summary:
     // (open/connect/accept) and direct held-fd *locus instantiations*
     // (`tcp::Listener { }`). The program's own: the stdlib's analysis
     // copy opens fds inside the loci the program starts.
-    let summary = summary.own_rows();
+    let summary = summary.program_rows();
     let calls = summary
         .fns
         .values()

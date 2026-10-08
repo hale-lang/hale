@@ -1,0 +1,355 @@
+// GH #1417 (R2a) — the witness's rpc half, over the in-process transport.
+//
+// `tests/api-contract/program.hl` is the consumer fixture of the plan's
+// § 3; its serve sites are over `http::Rpc` and `unix::Rpc`, which R3 and
+// R2b ship. This program is its rpc half with the same rows, types,
+// handlers and role sources, served through `std::api::test::Rpc`, which
+// goes through the one admission, dispatch and completion every transport
+// does. What it holds the runtime to:
+//
+//   * two instances of one receiver type reach their own exposures and
+//     their own pools (`public` answers through `orders`, `partner` through
+//     `partner_orders`);
+//   * every refusal leaves the handler's counter where it was, and the
+//     checks run in the contract's order;
+//   * the five outcomes are distinguishable: a result, the handler's own
+//     error, a refusal, the server error, and a connection that was lost;
+//   * `cancel`'s `OrderError` reaches the caller as the handler error with
+//     its body, and the handler's `Context` names the exposure, the
+//     caller, the request id and the generation;
+//   * `place`'s violation is the server error, the owner's `on_failure`
+//     ran before the caller was answered, a call queued to `Orders`
+//     settles `unavailable`, and `Ledger`'s member serves on;
+//   * the served digest is the contract's (`tests/api-contract/digest.md`),
+//     and a caller's description from the live sources lists exactly what
+//     admission lets that caller call.
+
+role trader;
+role operator;
+
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+
+type PlaceOrder { symbol: String; qty: Int; limit: Money; }
+type OrderReceipt { order: OrderId; notional: Money; }
+type CancelOrder { order: OrderId; }
+type Cancelled { order: OrderId; was_open: Bool; }
+type OrderError { code: String; reason: String; }
+type Rebalance { book: String; }
+type Rebalanced { moved: Money; }
+type Ping { n: Int; }
+type Pong { n: Int; }
+
+api Public {
+    rpc Orders::place;
+    rpc Orders::cancel requires: [trader];
+}
+
+api Admin {
+    rpc Orders::cancel requires: [operator];
+    rpc Ledger::rebalance requires: [operator];
+}
+
+api Local {
+    rpc Audit::ping;
+}
+
+api Gate {
+    rpc Hold::hold;
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        if token == "t-bob" { return std::api::Principal { mode: "bearer", name: "bob" }; }
+        if token == "t-carol" { return std::api::Principal { mode: "bearer", name: "carol" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Grants {
+    params {
+        trader: String = "";
+        operator: String = "";
+    }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if r == "trader" { return len(self.trader) > 0 && p.name == self.trader; }
+        if r == "operator" { return len(self.operator) > 0 && p.name == self.operator; }
+        return false;
+    }
+}
+
+locus Orders {
+    params {
+        next: Int = 41;
+        open: Int = 0;
+        entered: Int = 0;
+        last_ctx: String = "";
+    }
+    closure position_limit { captures: open; epoch inline; }
+
+    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) {
+        self.entered = self.entered + 1;
+        if o.qty > 10000 { violate position_limit; }
+        let id = OrderId(self.next);
+        self.next = self.next + 1;
+        self.open = self.open + 1;
+        return OrderReceipt { order: id, notional: o.limit * o.qty };
+    }
+
+    @unbounded
+    fn cancel(c: CancelOrder, ctx: std::api::ServedContext) -> Cancelled fallible(OrderError) {
+        self.entered = self.entered + 1;
+        self.last_ctx = ctx.exposure + "/" + to_string(ctx.generation) + "/" + ctx.caller.name + "/" + ctx.via + "/" + to_string(ctx.request_id) + "/" + ctx.role;
+        let n = Int(c.order);
+        if n < 41 || n >= self.next {
+            fail OrderError { code: "unknown_order", reason: "no order " + to_string(n) };
+        }
+        self.open = self.open - 1;
+        return Cancelled { order: c.order, was_open: true };
+    }
+}
+
+locus Ledger {
+    params { moved: Int = 0; entered: Int = 0; }
+    closure books_balanced { captures: moved; epoch inline; }
+
+    fn rebalance(r: Rebalance) -> Rebalanced fallible(ClosureViolation) {
+        self.entered = self.entered + 1;
+        if len(r.book) == 0 { violate books_balanced; }
+        self.moved = self.moved + 1500;
+        return Rebalanced { moved: 1500cent };
+    }
+}
+
+// a receiver on the exposure's own pool
+locus Audit {
+    params { pings: Int = 0; }
+    fn ping(p: Ping) -> Pong {
+        self.pings = self.pings + 1;
+        return Pong { n: p.n + 1 };
+    }
+}
+
+// a receiver whose handler waits on a gate the test opens: the test decides
+// when the work completes, so the order of a lost connection and a completion
+// is the test's, never the runner's
+locus Hold {
+    params { gate: Int = 0; entered: Int = 0; finished: Int = 0; }
+    @unbounded
+    fn hold(p: Ping) -> Pong {
+        self.entered = self.entered + 1;
+        while self.gate == 0 { std::time::sleep(1ms); }
+        self.finished = self.finished + 1;
+        return Pong { n: p.n };
+    }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        public_roles: Grants = Grants { trader: "alice" };
+        partner_roles: Grants = Grants { trader: "carol" };
+        admin_roles: Grants = Grants { operator: "uid:1000" };
+        orders: Orders = Orders { };
+        partner_orders: Orders = Orders { next: 9001 };
+        ledger: Ledger = Ledger { };
+        audit: Audit = Audit { };
+        hold: Hold = Hold { };
+        public_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer, roles: self.public_roles };
+        partner_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer, roles: self.partner_roles };
+        admin_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
+        local_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
+        gate_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
+        orders_failed: Int = 0;
+        ledger_failed: Int = 0;
+        answered_before_failure: Int = -1;
+    }
+    placement {
+        orders: cooperative(pool = desk) where async_io;
+        partner_orders: cooperative(pool = partner) where async_io;
+        ledger: cooperative(pool = desk) where async_io;
+        hold: cooperative(pool = gate) where async_io;
+    }
+    fn await_entered(n: Int) {
+        let mut w = 0;
+        while self.hold.entered < n && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+    }
+    fn await_finished(n: Int) {
+        let mut w = 0;
+        while self.hold.finished < n && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+    }
+    // the owner hears of a violation before the caller does
+    on_failure(o: Orders, err: ClosureViolation) {
+        self.orders_failed = self.orders_failed + 1;
+        self.answered_before_failure = self.public_f.outcomes_of(70) + self.admin_f.outcomes_of(70);
+    }
+    on_failure(l: Ledger, err: ClosureViolation) { self.ledger_failed = self.ledger_failed + 1; }
+
+    run() {
+        let public = api::serve(Public, self.public_f, as: "public", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
+        let partner = api::serve(Public, self.partner_f, as: "partner", receivers: { Orders: self.partner_orders }, bound: 8, on_full: refuse);
+        let admin = api::serve(Admin, self.admin_f, as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger }, bound: 8, on_full: refuse);
+        let local = api::serve(Local, self.local_f, as: "local", bound: 8, on_full: refuse);
+        let gate = api::serve(Gate, self.gate_f, as: "gate", receivers: { Hold: self.hold }, bound: 1, on_full: refuse);
+        let p = self.public_f;
+        let q = self.partner_f;
+        let a = self.admin_f;
+        let l = self.local_f;
+        let g = self.gate_f;
+        let order = "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}";
+
+        // ---- the contract's digests ----
+        p.call_digest(1, "Orders::place", order, "t-alice", "fnv1a64:0000000000000000");
+        std::test::assert_eq_str(p.await_outcome(1, 2000), "refusal:digest_mismatch", "a digest that is not the served one");
+        std::test::assert(std::str::contains(p.line(1), "\"served\":\"fnv1a64:a8930d6e7998e986\""), "the refusal names the digest Public serves (digest.md)");
+        a.call_digest(2, "Ledger::rebalance", "{\"book\":\"main\"}", "", "fnv1a64:0000000000000000");
+        std::test::assert_eq_str(a.await_outcome(2, 2000), "refusal:unauthenticated", "no peer, no credential: nobody");
+        p.call_digest(3, "Orders::place", order, "t-alice", "fnv1a64:a8930d6e7998e986");
+        std::test::assert_eq_str(p.await_outcome(3, 2000), "result", "the served digest is accepted");
+
+        // ---- two instances of one receiver type, each its own exposure ----
+        std::test::assert_eq_int(self.orders.next, 42, "public reached orders");
+        std::test::assert_eq_int(self.partner_orders.next, 9001, "and not partner_orders");
+        q.call(10, "Orders::place", order, "t-carol");
+        std::test::assert_eq_str(q.await_outcome(10, 2000), "result", "partner answers through its own instance");
+        std::test::assert_eq_int(self.partner_orders.next, 9002, "partner reached partner_orders");
+        std::test::assert_eq_int(self.orders.next, 42, "and orders did not move");
+
+        // ---- grants belong to the source the serve names ----
+        p.call(11, "Orders::cancel", "{\"order\":41}", "t-alice");
+        std::test::assert_eq_str(p.await_outcome(11, 2000), "result", "alice holds trader under public_roles");
+        std::test::assert_eq_str(p.line(11), "{\"request_id\":" + to_string(p.request_id(11)) + ",\"id\":11,\"ok\":true,\"value\":{\"order\":41,\"was_open\":true},\"caller\":{\"mode\":\"bearer\",\"name\":\"alice\",\"uid\":-1,\"gid\":-1,\"pid\":-1,\"via\":\"test\"}}", "a result is the Unix JSON line of the contract");
+        std::test::assert_eq_str(self.orders.last_ctx, "public/1/alice/test/" + to_string(p.request_id(11)) + "/trader", "the handler's Context: exposure, generation, caller, via, request id, authorizing role");
+        q.call(12, "Orders::cancel", "{\"order\":41}", "t-alice");
+        std::test::assert_eq_str(q.await_outcome(12, 2000), "refusal:unauthorized", "alice holds nothing under partner_roles");
+        q.call(13, "Orders::cancel", "{\"order\":9001}", "t-carol");
+        std::test::assert_eq_str(q.await_outcome(13, 2000), "result", "carol holds trader under partner_roles");
+        p.call(14, "Orders::cancel", "{\"order\":41}", "t-carol");
+        std::test::assert_eq_str(p.await_outcome(14, 2000), "refusal:unauthorized", "and nothing under public_roles");
+        a.call_as_peer(15, "Orders::cancel", "{\"order\":41}", 1000);
+        std::test::assert_eq_str(a.await_outcome(15, 2000), "result", "operator uid:1000 holds operator under admin_roles");
+        a.call_as_peer(16, "Orders::cancel", "{\"order\":41}", 1001);
+        std::test::assert_eq_str(a.await_outcome(16, 2000), "refusal:unauthorized", "uid 1001 holds nothing");
+
+        // ---- every refusal leaves the handler's counters where they were ----
+        let before = self.orders.entered + self.partner_orders.entered + self.ledger.entered;
+        p.send(20, "not a request");
+        p.call(21, "Orders::place", order, "t-nobody");
+        p.call_digest(22, "Orders::place", order, "t-nobody", "fnv1a64:0000000000000000");
+        p.call_digest(23, "Orders::nope", order, "t-alice", "fnv1a64:0000000000000000");
+        p.call(24, "Orders::nope", order, "t-alice");
+        p.call(25, "Orders::cancel", "not json", "t-bob");
+        p.call(26, "Orders::cancel", "not json", "t-alice");
+        p.call(27, "Orders::place", "{\"symbol\":\"ACME\",\"limit\":12500}", "t-alice");
+        p.call(28, "Orders::place", "{\"symbol\":\"ACME\",\"qty\":\"ten\",\"limit\":12500}", "t-alice");
+        std::test::assert_eq_str(p.await_outcome(28, 2000), "refusal:malformed", "a payload that does not decode");
+        std::test::assert_eq_str(p.outcome(20), "refusal:malformed", "1. not a request");
+        std::test::assert_eq_str(p.outcome(21), "refusal:unauthenticated", "2. a bearer the source names nobody");
+        std::test::assert_eq_str(p.outcome(22), "refusal:unauthenticated", "2. before the digest is looked at");
+        std::test::assert_eq_str(p.outcome(23), "refusal:digest_mismatch", "3. before the member is looked up");
+        std::test::assert_eq_str(p.outcome(24), "refusal:malformed", "4. no such member");
+        std::test::assert(std::str::contains(p.line(24), "unknown_member"), "with its reason");
+        std::test::assert_eq_str(p.outcome(25), "refusal:unauthorized", "5. the role before the payload is decoded");
+        std::test::assert_eq_str(p.outcome(26), "refusal:malformed", "6. the payload once the role is held");
+        std::test::assert(std::str::contains(p.line(26), "wrong_type") || std::str::contains(p.line(26), "missing_field"), "by shape");
+        std::test::assert(std::str::contains(p.line(27), "missing_field: qty"), "a field the payload lacks");
+        std::test::assert(std::str::contains(p.line(28), "wrong_type: qty"), "a field of the wrong JSON kind");
+        std::time::sleep(20ms);
+        let after = self.orders.entered + self.partner_orders.entered + self.ledger.entered;
+        std::test::assert_eq_int(after, before, "no refused request reached a handler");
+
+        // ---- the five outcomes ----
+        p.call(30, "Orders::place", order, "t-alice");
+        std::test::assert_eq_str(p.await_outcome(30, 2000), "result", "result");
+        a.call_as_peer(31, "Orders::cancel", "{\"order\":999}", 1000);
+        std::test::assert_eq_str(a.await_outcome(31, 2000), "handler_error", "the handler's own error");
+        std::test::assert(std::str::contains(a.line(31), "\"error\":{\"code\":\"unknown_order\",\"reason\":\"no order 999\"}"), "its body is OrderError by the codec");
+        std::test::assert_eq_str(p.outcome(21), "refusal:unauthenticated", "a refusal");
+
+        // ---- a lost connection: the rule, in both orders ----
+        // A reply for a request whose connection was lost before completion
+        // is dropped, and the transport is told the connection is finished
+        // with; a reply already written is not unwritten. `lose` returns
+        // once the exposure has marked the record (spec/api.md § The runtime
+        // boundaries) and the handler waits on the gate, so the order is the
+        // test's.
+        // lost before completion: no reply, the work ran once, the unit released once
+        g.call_as_peer(32, "Hold::hold", "{\"n\":1}", 1000);
+        self.await_entered(1);
+        g.lose(32);
+        self.hold.gate = 1;
+        self.await_finished(1);
+        let mut w = 0;
+        while g.closed < 1 && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+        std::test::assert_eq_int(g.outcomes_of(32), 0, "a lost connection is the absence of a reply");
+        std::test::assert_eq_int(self.hold.entered, 1, "the work ran once");
+        std::test::assert_eq_int(g.closed, 1, "and the transport was told the connection is finished with");
+        // the bound is 1: a unit released twice would admit the third call,
+        // one never released would refuse the second
+        self.hold.gate = 0;
+        g.call_as_peer(33, "Hold::hold", "{\"n\":2}", 1000);
+        self.await_entered(2);
+        g.call_as_peer(34, "Hold::hold", "{\"n\":3}", 1000);
+        std::test::assert_eq_str(g.await_outcome(34, 2000), "refusal:full", "the unit was released once: one call in flight, the next is over the bound");
+        self.hold.gate = 1;
+        std::test::assert_eq_str(g.await_outcome(33, 2000), "result", "and the call in flight answers");
+        // completion before lost: one reply, and a later loss changes nothing
+        g.call_as_peer(35, "Hold::hold", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(g.await_outcome(35, 2000), "result", "completed before the loss");
+        g.lose(35);
+        std::test::assert_eq_int(g.outcomes_of(35), 1, "a reply already written is not unwritten");
+        std::test::assert_eq_int(g.closed, 1, "and nothing is left to close");
+        std::test::assert_eq_int(self.hold.entered, 3, "the refused call never reached the handler");
+
+        // ---- the description from the live sources agrees with admission ----
+        p.describe(40, "t-alice");
+        p.describe(41, "t-bob");
+        std::test::assert_eq_str(p.await_outcome(41, 2000), "result", "a description is a result");
+        std::test::assert(std::str::contains(p.line(40), "{\"name\":\"Orders::cancel\",\"requires\":[\"trader\"]}"), "alice may call cancel");
+        std::test::assert(std::str::contains(p.line(40), "{\"name\":\"Orders::place\",\"requires\":[]}"), "and place");
+        std::test::assert(!std::str::contains(p.line(41), "Orders::cancel"), "bob may not call cancel, so it is not listed");
+        std::test::assert(std::str::contains(p.line(41), "Orders::place"), "he may call place");
+        std::test::assert(std::str::contains(p.line(41), "Public@fnv1a64:a8930d6e7998e986/public"), "the exposure's identity: surface, digest, name");
+        p.call(42, "Orders::cancel", "{\"order\":41}", "t-bob");
+        std::test::assert_eq_str(p.await_outcome(42, 2000), "refusal:unauthorized", "admission agrees with what bob was shown");
+        a.describe(43, "");
+        std::test::assert_eq_str(a.await_outcome(43, 2000), "refusal:unauthenticated", "a describe is admitted like a call: no peer, no description");
+        std::test::assert(std::str::contains(p.line(40), "Public@fnv1a64:a8930d6e7998e986/public"), "alice's too");
+
+        // ---- a receiver on the exposure's own pool ----
+        l.call_as_peer(50, "Audit::ping", "{\"n\":1}", 1000);
+        std::test::assert_eq_str(l.await_outcome(50, 2000), "result", "a receiver on main answers through main's exposure");
+        std::test::assert(std::str::contains(l.line(50), "\"value\":{\"n\":2}"), "with its value");
+
+        // ---- place's violation: the server error, the owner first, Orders
+        //      unavailable, Ledger's member still serving ----
+        let orders_entered = self.orders.entered;
+        p.call(70, "Orders::place", "{\"symbol\":\"ACME\",\"qty\":99999,\"limit\":12500}", "t-alice");
+        p.call(71, "Orders::cancel", "{\"order\":42}", "t-alice");
+        std::test::assert_eq_str(p.await_outcome(70, 3000), "server_error", "a violating handler is the server error");
+        std::test::assert_eq_str(p.line(70), "{\"request_id\":" + to_string(p.request_id(70)) + ",\"id\":70,\"ok\":false,\"refusal\":{\"kind\":\"server\"},\"caller\":{\"mode\":\"bearer\",\"name\":\"alice\",\"uid\":-1,\"gid\":-1,\"pid\":-1,\"via\":\"test\"}}", "and says nothing of the violation");
+        std::test::assert_eq_int(self.orders_failed, 1, "the owner's on_failure ran");
+        std::test::assert_eq_int(self.answered_before_failure, 0, "before the caller was answered");
+        std::test::assert_eq_str(p.await_outcome(71, 3000), "refusal:unavailable", "a call queued to Orders did not run");
+        // the admin exposure binds the same instance; it learns at its first handover
+        a.call_as_peer(72, "Orders::cancel", "{\"order\":42}", 1000);
+        a.call_as_peer(73, "Ledger::rebalance", "{\"book\":\"main\"}", 1000);
+        std::test::assert_eq_str(a.await_outcome(72, 3000), "refusal:unavailable", "nor does the admin exposure's, per receiver");
+        std::test::assert_eq_str(a.await_outcome(73, 3000), "result", "Ledger's member serves on");
+        std::test::assert_eq_int(self.orders.entered, orders_entered + 1, "Orders ran only the violating call");
+        std::test::assert_eq_int(self.ledger_failed, 0, "Ledger did not fail");
+        q.call(74, "Orders::place", order, "t-carol");
+        std::test::assert_eq_str(q.await_outcome(74, 2000), "result", "partner_orders is another instance, and serves on");
+
+        public.stop();
+        partner.stop();
+        admin.stop();
+        local.stop();
+        gate.stop();
+    }
+}
+
+fn main() { Desk { }; }

@@ -20,7 +20,7 @@ fn diags(src: &str) -> Vec<String> {
     // checker no longer follows the alias itself.
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
     )
     .expect("no --api, nothing to refuse");
     let mut programs: std::collections::BTreeMap<
@@ -292,7 +292,7 @@ fn after_the_sequence_no_construction_site_names_an_alias() {
     let mut b = parse_source(uses).expect("parse");
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut a, &mut b],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
     )
     .expect("no --api, nothing to refuse");
     // The alias names appear in `decls` only as the aliases' own

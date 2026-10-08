@@ -275,3 +275,16 @@ fn a_clean_check_and_a_warning_only_check_still_dump_the_manifest() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The api runtime a serving program carries is stdlib source: the
+/// manifest of the witness, which serves surfaces, has no `__StdApi*` row
+/// under the program's name, and still has the program's own.
+#[test]
+fn the_appended_api_runtime_is_not_a_manifest_row() {
+    let witness = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hale/api/witness_test.hl");
+    let out = hale().arg("check").arg(&witness).arg("--dump-effects-manifest").output().expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("__RpcSurface_2::check"), "the program's own rows are there: {text}");
+    let runtime: Vec<&str> = text.lines().filter(|l| l.starts_with("__StdApi") || l.starts_with("__api_rpc_") || l.starts_with("__api_test_")).collect();
+    assert!(runtime.is_empty(), "the runtime is not the program's: {runtime:?}");
+}
