@@ -7,6 +7,8 @@
 
 #[path = "api_grpc.rs"]
 mod api_grpc;
+#[path = "api_grpc_proto.rs"]
+mod api_grpc_proto;
 #[path = "api_hub.rs"]
 mod api_hub;
 #[path = "api_hub_desk.rs"]
