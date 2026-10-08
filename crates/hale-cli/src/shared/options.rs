@@ -71,6 +71,7 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--openapi", false),
     ("--json-schema", false),
     ("--mcp", false),
+    ("--proto", false),
     // GH #476 Change 2: derive + print the canonical
     // ApplicationModel (internal format). The demand surface the
     // `hale model dump` shim routes through.

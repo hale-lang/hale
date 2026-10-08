@@ -1151,6 +1151,13 @@ pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) ->
     Ok(ClientModel { surface: surface.to_string(), digest: digest_text(digest), members: out, types: book.types, streams })
 }
 
+/// The `.proto` of a surface (R8b): a pure function of its rows, and the file
+/// the gRPC transport's `application/grpc+proto` speaks.
+pub fn proto(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<String, String> {
+    let model = client_model(rows, schemas, surface)?;
+    Ok(crate::proto_gen::from_model(&model)?.text())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

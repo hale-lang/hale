@@ -28,7 +28,9 @@ usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
   NAME.openapi.json       the OpenAPI form (hale check --api --surface NAME --openapi)
   NAME.json-schema.json   the JSON Schema form
   NAME.mcp.json           the MCP form
-  DIGEST                  the surface's contract digest and the compiler's version
+  NAME.proto              the protobuf form: the messages and the service the
+                          gRPC transport speaks (hale check --api --surface NAME --proto)
+  DIGEST                 the surface's contract digest and the compiler's version
 The files are rendered from the surface's rows alone, so two runs and two
 checkouts of one program write the same bytes. `--check DIR` writes nothing:
 it compares a committed bundle to the surface and exits 1 naming the drift.
@@ -147,6 +149,7 @@ pub(crate) fn bundle(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -
         (format!("{surface}.openapi.json"), surface_doc::openapi(rows, schemas, surface)?.pretty()),
         (format!("{surface}.json-schema.json"), surface_doc::json_schema(rows, schemas, surface)?.pretty()),
         (format!("{surface}.mcp.json"), surface_doc::mcp(rows, schemas, surface)?.pretty()),
+        (format!("{surface}.proto"), surface_doc::proto(rows, schemas, surface)?),
         ("DIGEST".to_string(), format!("{}\n{}\n", model.digest, compiler())),
     ])
 }
