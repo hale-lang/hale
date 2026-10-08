@@ -402,6 +402,7 @@ written before the code in the same PR. Each exit criterion is a test.
 | **R5 hubs** | `ws::Hub` (streams and rpc on one connection) and `udp::Hub`; stream rows' `requires`, expiry and revocation, description derivation; the § 3 fixture's `Fills` half, so the fixture passes whole | a subscriber without the role gets nothing and buffers nothing; revocation while connected ends the subscription; the description lists `Fills` only for `operator`; the § 3 fixture passes whole |
 | **R4 cutover** | one coordinated replacement with the cleanup included (decision 21): every affected consumer on the new path (the 13 sites, the two DNA apps, DNA's verbs and reads, voice) and the superseded machinery deleted in the same cutover: `api_gen`'s synthesis, exposed reads, `@gated`, `serve:`, the api admission over locus rows, `bindings { api: … }`, the old description and client paths (`hale call`, `watch`, `admin`, `mcp` move to descriptions), `dna/api/contract/v1`, their fixtures, generators, commands and documentation; meaningful behaviour tests retargeted to the final path; forward migrations for any persisted state that changes; the F.40 leftovers in this area closed | `git grep 'api: unix'` and `git grep '@gated'` find nothing; no compatibility adapter, dual route or fallback exists; the DNA suite green; `spec/semantics.md` has no api binding section |
 | **R6 transports** | `grpc::Rpc`, `mcp::Rpc` (tools are rpcs; resources over streams are an open point) | each passes the § 3 fixture's `Public` half over its protocol |
+| **R8 generated specs and clients** | R8a: `hale api export` writes a surface's forms (description, OpenAPI, JSON Schema, MCP, the digest) as one deterministic bundle; `hale api client --lang hale\|ts` generates a typed client from the rows (one fn per member, the five outcomes, a subscribe per stream); both take `--check` against a committed copy. R8b: the gRPC client with R6's transport | the witness's bundle equals `tests/api-contract/`; the generated clients produce the recorded requests and read the recorded replies; a committed bundle or client is refused when its surface's digest moves |
 
 Dependencies: R0 opens as soon as #1426 is on `main`. R1 follows R0.
 R2a follows R1 and is the first R2 handoff: R3 (HTTP) and R5 (hubs)
@@ -510,6 +511,13 @@ descriptions a consumer built against in R0 are what R1 generates.
     queued work mean "did not execute"; no implicit rollback or retry.
 26. Serve-handle dissolution or owner teardown drives shutdown; an
     ordinary connection failure is local to its connection.
+27. Specs and clients are generated from the rows, never written by
+    hand; a committed client names its surface's digest and is refused
+    when it drifts. A generator is a pure function of the rows: the same
+    surface yields the same bytes on any run and any checkout (no path,
+    no clock; an imported type is named by its declared path under the
+    import alias, never by the mangled name that embeds the library's
+    location).
 
 ## 8. Open points
 

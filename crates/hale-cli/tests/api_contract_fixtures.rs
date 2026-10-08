@@ -1121,3 +1121,179 @@ fn main() { }
         json!({"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]})
     );
 }
+
+// ------------------------------------------------------------------
+// R8a: `hale api export`, a surface's bundle (spec/api.md § The
+// clients): the forms of the contract, generated from the rows, with the
+// digest, deterministic and checkable.
+
+fn export_cmd(program: &Path, surface: &str, extra: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["api", "export", "--surface", surface])
+        .args(extra)
+        .arg(program)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale")
+}
+
+/// A scratch directory of this test's own.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("hale_api_export_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn export_to(program: &Path, surface: &str, dir: &Path) {
+    let out = export_cmd(program, surface, &["--out", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "hale api export {surface}:\n{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// The bundle's three forms are the contract's fixtures, its description
+/// is the schema's inventory form of that surface, and its DIGEST is the
+/// digest every document of the surface carries.
+#[test]
+fn the_witness_bundle_is_the_contract_fixtures() {
+    let dir = scratch("witness");
+    for surface in ["Admin", "Public"] {
+        export_to(&contract_dir().join("program.hl"), surface, &dir);
+        for form in ["openapi", "json-schema", "mcp"] {
+            let file = format!("{surface}.{form}.json");
+            let got = std::fs::read_to_string(dir.join(&file)).unwrap();
+            assert_eq!(got, fixture_text(&file), "{file}");
+        }
+        let description: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{surface}.description.json"))).unwrap()).unwrap();
+        let errs = errors_against_schema(&description);
+        assert!(errs.is_empty(), "{surface}.description.json does not conform to the schema:\n{}", errs.join("\n"));
+        // every member of the surface, with its roles; only that surface
+        let inv = inventory();
+        let want = surface_of(&inv, surface);
+        assert_eq!(description["surfaces"], json!([want]), "{surface}: its row table, every member with its roles");
+        assert_eq!(description["inventory"], json!(1));
+        for ex in description["exposures"].as_array().unwrap() {
+            assert_eq!(ex["surface"], json!(surface), "{surface}: an exposure of another surface is not its");
+        }
+        assert_eq!(description["hubs"], inv["hubs"], "{surface}: the program's hubs carry the streams a client subscribes to");
+        let digest = std::fs::read_to_string(dir.join("DIGEST")).unwrap();
+        let mut lines = digest.lines();
+        assert_eq!(lines.next(), want["digest"].as_str(), "{surface}: DIGEST names the surface's digest");
+        assert!(lines.next().is_some_and(|l| l.starts_with("hale ")), "{surface}: DIGEST names the compiler's version");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same surface yields the same bytes on two runs and in two
+/// checkouts (a copy of the program at another path).
+#[test]
+fn a_bundle_is_the_same_bytes_on_two_runs_and_two_checkouts() {
+    let a = scratch("det_a");
+    let b = scratch("det_b");
+    let checkout = scratch("det_checkout");
+    let elsewhere = checkout.join("a/deeper/checkout");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let copy = elsewhere.join("program.hl");
+    std::fs::copy(contract_dir().join("program.hl"), &copy).unwrap();
+    export_to(&contract_dir().join("program.hl"), "Public", &a);
+    export_to(&copy, "Public", &b);
+    let mut names: Vec<String> = std::fs::read_dir(&a).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names.len(), 5, "{names:?}");
+    for n in &names {
+        assert_eq!(std::fs::read(a.join(n)).unwrap(), std::fs::read(b.join(n)).unwrap(), "{n} differs between two checkouts");
+        let text = std::fs::read_to_string(a.join(n)).unwrap();
+        assert!(!text.contains("hale_api_export"), "{n} names a path of the checkout");
+    }
+    // and a second run over the same program, into the same directory
+    export_to(&contract_dir().join("program.hl"), "Public", &a);
+    for n in &names {
+        assert_eq!(std::fs::read(a.join(n)).unwrap(), std::fs::read(b.join(n)).unwrap(), "{n} differs between two runs");
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+    let _ = std::fs::remove_dir_all(&checkout);
+}
+
+/// `--check` is silent on a current bundle and, after a row is edited,
+/// refuses naming the digest that moved and the forms that differ.
+#[test]
+fn check_refuses_a_bundle_after_a_row_is_edited() {
+    let dir = scratch("drift");
+    let program = dir.join("program.hl");
+    let src = std::fs::read_to_string(contract_dir().join("program.hl")).unwrap();
+    std::fs::write(&program, &src).unwrap();
+    let bundle = dir.join("bundle");
+    export_to(&program, "Public", &bundle);
+    let ok = export_cmd(&program, "Public", &["--check", bundle.to_str().unwrap()]);
+    assert!(ok.status.success(), "a current bundle is current:\n{}", String::from_utf8_lossy(&ok.stderr));
+    // edit a row: Orders::cancel needs operator, not trader
+    let edited = src.replace("rpc Orders::cancel requires: [trader];", "rpc Orders::cancel requires: [operator];");
+    assert_ne!(edited, src);
+    std::fs::write(&program, &edited).unwrap();
+    let out = export_cmd(&program, "Public", &["--check", bundle.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the surface Public moved"), "{err}");
+    assert!(err.contains("fnv1a64:a8930d6e7998e986"), "names the committed digest: {err}");
+    assert!(err.contains("Public.openapi.json differs"), "names the forms that differ: {err}");
+    // a missing file is drift too
+    std::fs::write(&program, &src).unwrap();
+    std::fs::remove_file(bundle.join("Public.mcp.json")).unwrap();
+    let out = export_cmd(&program, "Public", &["--check", bundle.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Public.mcp.json is missing"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An imported type is named by its declared path under the import alias,
+/// never by the mangled name that embeds the library's location.
+#[test]
+fn an_imported_type_is_named_by_its_path_under_the_alias() {
+    let root = scratch("imported");
+    let write = |dir: &Path| {
+        let lib = dir.join("lib");
+        let app = dir.join("app");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            lib.join("lib.hl"),
+            "type Item { name: String; count: Int; }\ntype Tag = distinct Int;\ntype Stamped { item: Item; tag: Tag; }\n",
+        )
+        .unwrap();
+        let main = [
+            "import \"../lib\" as lib;",
+            "locus Shelf { fn put(i: lib::Item) -> lib::Stamped { return lib::Stamped { item: i, tag: lib::Tag(1) }; } }",
+            "api Store { rpc Shelf::put; }",
+            "main locus App {",
+            "    params { shelf: Shelf = Shelf { }; }",
+            "    run() {",
+            "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8a-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
+            "        while !self.draining { std::time::sleep(100ms); }",
+            "        h.stop();",
+            "    }",
+            "}",
+            "fn main() { App { }; }",
+            "",
+        ]
+        .join("\n");
+        std::fs::write(app.join("main.hl"), main).unwrap();
+        app.join("main.hl")
+    };
+    let one = write(&root.join("one"));
+    let two = write(&root.join("a/much/deeper/checkout"));
+    let (a, b) = (root.join("out_a"), root.join("out_b"));
+    export_to(&one, "Store", &a);
+    export_to(&two, "Store", &b);
+    for n in ["Store.description.json", "Store.openapi.json", "Store.json-schema.json", "Store.mcp.json", "DIGEST"] {
+        let text = std::fs::read_to_string(a.join(n)).unwrap();
+        assert!(!text.contains("__lib_"), "{n} embeds a mangled name:\n{text}");
+        assert_eq!(text, std::fs::read_to_string(b.join(n)).unwrap(), "{n} differs between two checkouts");
+    }
+    let js: Value = serde_json::from_str(&std::fs::read_to_string(a.join("Store.json-schema.json")).unwrap()).unwrap();
+    let defs = js["$defs"].as_object().unwrap();
+    assert!(defs.contains_key("lib::Item") && defs.contains_key("lib::Stamped"), "{:?}", defs.keys().collect::<Vec<_>>());
+    assert_eq!(defs["lib::Stamped"]["properties"]["item"]["$ref"], json!("#/$defs/lib::Item"));
+    assert_eq!(defs["lib::Stamped"]["properties"]["tag"]["x-hale-type"], json!("lib::Tag"));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -1777,6 +1777,12 @@ impl<'a> Schemas<'a> {
         Schemas { shapes: Shapes::of_all(&slices) }
     }
 
+    /// A row's type as a document spells it: the author's spelling of an
+    /// imported type, the signature's text otherwise.
+    pub fn show(&self, t: &RowTy) -> String {
+        self.shapes.display_of(&t.te).unwrap_or_else(|| t.display.clone())
+    }
+
     /// The schema `te` is in a description, every struct schema it
     /// reaches added to `out` by name.
     pub fn type_ref(&self, te: &TypeExpr, out: &mut BTreeMap<String, TypeSchema>) -> FieldSchema {
@@ -1795,10 +1801,12 @@ impl<'a> Schemas<'a> {
             }
             TypeClass::Named { name, base, unit } => json(base).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar {
                 json: j,
-                hale_type: Some(name.to_string()),
+                hale_type: Some(self.shapes.display_name(name)),
                 unit,
             }),
             TypeClass::Struct { name, fields } => {
+                let name = self.shapes.display_name(name);
+                let name = name.as_str();
                 if !out.contains_key(name) {
                     // Reserve the name first, so a type that reaches
                     // itself stops here.

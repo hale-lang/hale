@@ -56,6 +56,8 @@ pub(crate) fn usage() {
     eprintln!("    hale watch <ws://hub> <topic>  subscribe to a stream, print frames as they arrive");
     eprintln!("    hale admin <endpoint>         a local page over the description, calling through the endpoint");
     eprintln!("        [--port <n>] [--token <t>]");
+    eprintln!("    hale api export --surface <S> a surface's bundle: description, OpenAPI, JSON Schema, MCP, digest");
+    eprintln!("        [--out <dir> | --check <dir>] [file | dir]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
@@ -358,6 +360,7 @@ read. An `mcp://host:port` endpoint is an `mcp::Rpc` listener, whose own
 `tools/list` is forwarded. `claude mcp add app -- hale mcp --app
 /run/app.sock` is the whole setup.
 ",
+        "api" => crate::verbs::api::api_usage(),
         "describe" => "\
 hale describe <endpoint | file.hl | dir> [--token <t>] [-o <path>]
 
