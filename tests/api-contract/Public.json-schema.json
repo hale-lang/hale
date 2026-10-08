@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hale:surface:Public@fnv1a64:a8930d6e7998e986",
+  "title": "Public surface",
+  "x-hale-surface": "Public",
+  "x-hale-digest": "fnv1a64:a8930d6e7998e986",
+  "x-hale-members": {
+    "Orders::cancel": {
+      "name": "Orders::cancel",
+      "request": {
+        "$ref": "#/$defs/CancelOrder"
+      },
+      "response": {
+        "$ref": "#/$defs/Cancelled"
+      },
+      "error": {
+        "$ref": "#/$defs/OrderError"
+      },
+      "requires": [
+        "trader"
+      ]
+    },
+    "Orders::place": {
+      "name": "Orders::place",
+      "request": {
+        "$ref": "#/$defs/PlaceOrder"
+      },
+      "response": {
+        "$ref": "#/$defs/OrderReceipt"
+      },
+      "error": "ClosureViolation",
+      "requires": []
+    }
+  },
+  "$defs": {
+    "CancelOrder": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    },
+    "Cancelled": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "was_open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "order",
+        "was_open"
+      ]
+    },
+    "OrderError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "OrderReceipt": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "notional": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "order",
+        "notional"
+      ]
+    },
+    "PlaceOrder": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "qty": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "symbol",
+        "qty",
+        "limit"
+      ]
+    }
+  }
+}

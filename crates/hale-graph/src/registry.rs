@@ -275,6 +275,7 @@ const ARRANGEMENT: &str = "crates/hale-types/src/arrangement.rs";
 const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const ROLES: &str = "crates/hale-types/src/roles.rs";
 const SURFACES: &str = "crates/hale-types/src/surfaces.rs";
+const SURFACE_DOC: &str = "crates/hale-cli/src/surface_doc.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -1263,9 +1264,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("check (the snapshot's check stage: the same laws over the snapshot's rows)", SNAPSHOT, "surface_laws"),
             consumer_at("the model (the `surfaces` and `surface_rows` tables, projected; the digest law)", MODEL_BUILDER, "inputs.surfaces"),
             consumer_at("build (a serve site and a hub binding are refused until served)", TLIB, "unserved_sites"),
-            consumer("check --api (the inventory; the descriptions per exposure, R1)"),
-            consumer("the contract digest (R1)"),
-            consumer("the OpenAPI, JSON Schema and MCP generators (re-homed onto the rows, R1)"),
+            consumer_at("check --api (the inventory; one exposure's description for a caller holding `--holds` under its role source; law 6's notes on stderr)", V_CHECK, "api_document"),
+            consumer_at("the OpenAPI, JSON Schema and MCP forms of one surface (`check --api --surface`), projections of its rows", SURFACE_DOC, "openapi"),
             consumer("serve (the runtime's dispatch: Context, the digest check, requires before enqueue, decode by shape, R2 and R3)"),
             consumer("hubs (stream admission, expiry and revocation, R5)"),
             consumer("describe / call / watch / admin / mcp (over descriptions, R4)"),

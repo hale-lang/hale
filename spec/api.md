@@ -711,13 +711,51 @@ sources and its receivers, and every hub with its exposure identity,
 its stream digest, its listener, its sources and its stream rows. It is
 a deployment inventory, not an authorization statement for any caller.
 
+`hale check --api --exposure NAME --caller PRINCIPAL [--holds ROLE,…]`
+prints one exposure's description for one caller, from the same rows.
+What a caller holds is its role source's to say when the program runs
+(a role source is program code, `fn holds`, which the check does not
+run), so the roles it holds under that exposure's source are an input,
+and the description lists exactly what they admit; the caller's `roles`
+are those of them the exposure's rows and streams require. PRINCIPAL is
+the principal as the exposure establishes it, a name (its mode the
+transport's: `unix` over the Unix socket, `bearer` otherwise) or the
+JSON object (`{"mode": "unix", "name": "uid:1000", "uid": 1000, …}`).
+A served description is the server's, at `GET /.description` or `{"describe":
+true}` (R2), its caller and roles established at the request. From R1
+the compiler's documents for `tests/api-contract/program.hl` are the
+fixtures beside it, byte for byte.
+
+What R1 reads of a serve site, and only that: its surface (its first
+argument, a surface's name); its transport instance's kind (the
+literal's namespace, `http`, `unix`), its address (`bind:` or `path:`),
+its codec (`codec:`, `json` when it names none) and its bearer and role
+sources (`principals:` and `roles:`, each a `self.<param>` named with
+the param's type, `kernel` for the Unix transport's peer when it names
+no bearer source); `as:`; the `receivers:` it binds, and, for every
+other locus type the surface's rows name, the one instance the serving
+locus holds of it, inferred; `bound:` and `on_full:`. A receiver's pool
+is the placement table's. Of a hub: the param a stream row binds
+(`self.hub`), its literal's kind, `bind:`, `codec:` (`json` when none),
+sources and `as:`; of each stream row, its topic and wire subject, its
+direction (`out` when the program publishes the topic), the payload,
+`bound:`, `on_full:` and `requires:`, and no replay.
+
 Both are versioned (`"description": 1`, `"inventory": 1`); their format
 is `spec/api-description.schema.json`. A document is served as compact
 JSON, its keys in the schema's order; the fixtures are the same values
 pretty-printed, and a producer is held to them as values. The OpenAPI,
-JSON Schema and MCP forms of GH #1107 are projections of the
-description; a generated client is one per surface and carries the
-digest.
+JSON Schema and MCP forms of GH #1107 are projections of a surface's
+rows, one per surface, each carrying the digest: `hale check --api
+--surface NAME --openapi` (a `POST /call/<member>` per row, `200` its
+response, `422` its handler error, `500` a `ClosureViolation` row's
+server error, the refusals by their statuses, the digest as the
+`Hale-Surface-Digest` header), `--json-schema` (every type the rows name
+under `$defs`, each member's types by reference) and `--mcp` (a tool per
+row, its input the request's schema, self-contained); the fixture
+program's are pinned beside the R0 documents
+(`<Surface>.<form>.json`). The structural path's forms (`hale describe
+--openapi`, `--mcp`) are unchanged until R4.
 
 ## What this replaces
 
@@ -761,7 +799,10 @@ by hand:
 - `wire/unix/*.json`, `wire/http/*.json`: one request and its reply per
   outcome (result, handler error, each refusal kind, server error);
 - `digest.md`: `Public`'s digest worked byte for byte, `Admin`'s, and
-  the hub `fills`'s stream digest.
+  the hub `fills`'s stream digest;
+- `<Surface>.openapi.json`, `<Surface>.json-schema.json`,
+  `<Surface>.mcp.json` (R1): each surface's three projections, as the
+  compiler prints them.
 
 `crates/hale-cli/tests/api_contract_fixtures.rs` validates every
 document against the schema and holds the fixtures to this contract: an
@@ -774,7 +815,11 @@ form admits no member and no status; the digests, the stream digest
 among them, are the ones `digest.md` folds; a row whose error type is
 `ClosureViolation` carries no error schema and is the only kind of
 member a server error is recorded for; every wire record encodes its
-outcome as § Outcomes says. The plan's § 3 assertions that need a
+outcome as § Outcomes says. From R1 it also runs the compiler over
+`program.hl` and holds what it prints to the fixtures byte for byte:
+the inventory, each description for its caller, the model's digests and
+row shape hashes against `digest.md`, and each surface's projections.
+The plan's § 3 assertions that need a
 running program (refusals before a handler's counter moves, queued
 shutdown, a lost response, revocation while connected) are the exit
 criteria of R2, R3 and R5.

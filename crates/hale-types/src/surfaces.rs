@@ -1075,3 +1075,87 @@ pub fn surface_laws(
     }
     diags
 }
+
+// ---- the schemas a description carries (spec/api.md § The description) ----
+
+/// A field's, a member's or a stream's JSON Schema in a description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldSchema {
+    /// `{"type": …}`, with a named scalar's `x-hale-type` and a
+    /// quantity's or a point's `x-hale-unit` (its `q(…)` tag).
+    Scalar { json: &'static str, hale_type: Option<String>, unit: Option<String> },
+    /// `{"$ref": "#/schemas/<name>"}`: a struct, its schema in the
+    /// document's `schemas`.
+    Ref(String),
+    /// A type the codec does not carry (law 5 refuses its row).
+    Unformed,
+}
+
+/// A struct's schema: its properties in declaration order, each its
+/// JSON key (a `json:"key"` tag renames it) and schema, and the keys a
+/// value must carry (every field without a literal default).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeSchema {
+    pub properties: Vec<(String, FieldSchema)>,
+    pub required: Vec<String>,
+}
+
+/// The schemas of the types a bundle declares, read as the JSON codec
+/// reads them (law 5's classification).
+pub struct Schemas<'a> {
+    shapes: Shapes<'a>,
+}
+
+impl<'a> Schemas<'a> {
+    pub fn of(programs: &[&'a Program]) -> Schemas<'a> {
+        let slices: Vec<&'a [TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
+        Schemas { shapes: Shapes::of_all(&slices) }
+    }
+
+    /// The schema `te` is in a description, every struct schema it
+    /// reaches added to `out` by name.
+    pub fn type_ref(&self, te: &TypeExpr, out: &mut BTreeMap<String, TypeSchema>) -> FieldSchema {
+        use crate::topic_identity::TypeClass;
+        use hale_syntax::ast::PrimType;
+        let json = |p: PrimType| match p {
+            PrimType::Int => Some("integer"),
+            PrimType::Float => Some("number"),
+            PrimType::Bool => Some("boolean"),
+            PrimType::String => Some("string"),
+            _ => None,
+        };
+        match self.shapes.classify(te) {
+            TypeClass::Prim(p) => {
+                json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })
+            }
+            TypeClass::Named { name, base, unit } => json(base).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar {
+                json: j,
+                hale_type: Some(name.to_string()),
+                unit,
+            }),
+            TypeClass::Struct { name, fields } => {
+                if !out.contains_key(name) {
+                    // Reserve the name first, so a type that reaches
+                    // itself stops here.
+                    out.insert(name.to_string(), TypeSchema { properties: Vec::new(), required: Vec::new() });
+                    let mut properties = Vec::new();
+                    let mut required = Vec::new();
+                    for f in fields {
+                        let key = f
+                            .tag
+                            .as_deref()
+                            .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
+                            .unwrap_or_else(|| f.name.name.clone());
+                        properties.push((key.clone(), self.type_ref(&f.ty, out)));
+                        if f.default.is_none() {
+                            required.push(key);
+                        }
+                    }
+                    out.insert(name.to_string(), TypeSchema { properties, required });
+                }
+                FieldSchema::Ref(name.to_string())
+            }
+            TypeClass::Builtin | TypeClass::Enum | TypeClass::Other => FieldSchema::Unformed,
+        }
+    }
+}

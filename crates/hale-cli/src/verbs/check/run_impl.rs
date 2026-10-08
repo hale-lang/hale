@@ -63,6 +63,91 @@ fn topology_artifact<'c>(
 /// The refusal every flag that needs the model prints when the
 /// program does not typecheck: exit 1, the program named, the kind of
 /// the first error.
+/// GH #1417 (R1): the document `hale check --api` prints from the
+/// surface rows: the inventory; with `--exposure NAME --caller
+/// PRINCIPAL [--holds R,…]`, that exposure's description for the caller
+/// holding those roles under its role source (the role source is program
+/// code the check does not run, so what the caller holds is an input);
+/// with `--surface NAME` and one of `--openapi`, `--json-schema`,
+/// `--mcp`, that projection of the surface. Law 6's statement of each
+/// row the document lists whose error type is `ClosureViolation` goes to
+/// stderr as a note.
+fn api_document(
+    snap: &Snapshot,
+    rows: &hale_types::surfaces::SurfaceRows,
+    flag_value: &dyn Fn(&str) -> Result<Option<String>, String>,
+) -> Result<String, String> {
+    use crate::surface_doc;
+    let programs: Vec<&hale_syntax::ast::Program> = snap.programs().values().collect();
+    let schemas = hale_types::surfaces::Schemas::of(&programs);
+    let exposure = flag_value("--exposure")?;
+    let caller = flag_value("--caller")?;
+    let holds: std::collections::BTreeSet<String> = flag_value("--holds")?
+        .map(|v| v.split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    let surface = flag_value("--surface")?;
+    let argv: Vec<String> = std::env::args().collect();
+    let forms: Vec<&str> =
+        ["--openapi", "--json-schema", "--mcp"].into_iter().filter(|f| argv.iter().any(|a| a == f)).collect();
+    let notes = |surface: Option<&str>, members: Option<&[String]>| {
+        for (s, m, note) in hale_types::surfaces::server_error_notes(rows) {
+            if surface.is_none_or(|x| x == s) && members.is_none_or(|ms| ms.contains(&m)) {
+                eprintln!("note: {note}");
+            }
+        }
+    };
+    let doc = match (exposure, surface, forms.as_slice()) {
+        (None, None, []) => {
+            notes(None, None);
+            surface_doc::inventory(rows, &schemas)
+        }
+        (Some(exposure), None, []) => {
+            let caller = caller.ok_or("--exposure takes --caller: the principal the exposure establishes")?;
+            let doc = surface_doc::description(rows, &schemas, &exposure, &caller, &holds)?;
+            if let surface_doc::J::Obj(pairs) = &doc {
+                let surface = pairs.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                    ("surface", surface_doc::J::Str(s)) => Some(s.clone()),
+                    _ => None,
+                });
+                let listed: Vec<String> = pairs
+                    .iter()
+                    .filter(|(k, _)| k == "members")
+                    .flat_map(|(_, v)| match v {
+                        surface_doc::J::Arr(ms) => ms.clone(),
+                        _ => Vec::new(),
+                    })
+                    .filter_map(|m| match m {
+                        surface_doc::J::Obj(p) => p.into_iter().find_map(|(k, v)| match (k.as_str(), v) {
+                            ("name", surface_doc::J::Str(n)) => Some(n),
+                            _ => None,
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(s) = surface {
+                    notes(Some(&s), Some(&listed));
+                }
+            }
+            doc
+        }
+        (None, Some(surface), [form]) => {
+            notes(Some(&surface), None);
+            match *form {
+                "--openapi" => surface_doc::openapi(rows, &schemas, &surface)?,
+                "--json-schema" => surface_doc::json_schema(rows, &schemas, &surface)?,
+                _ => surface_doc::mcp(rows, &schemas, &surface)?,
+            }
+        }
+        (None, Some(_), []) => return Err("--surface takes one of --openapi, --json-schema, --mcp".to_string()),
+        (None, None, [_, ..]) => return Err("--openapi, --json-schema and --mcp take --surface NAME".to_string()),
+        (None, Some(_), [_, _, ..]) => return Err("one form at a time: --openapi, --json-schema or --mcp".to_string()),
+        (Some(_), _, _) => {
+            return Err("--exposure describes one exposure; --surface's forms are the surface's, not an exposure's".to_string())
+        }
+    };
+    Ok(doc.pretty())
+}
+
 fn refuse_without_model(target: &Path, doing: &str, b: &hale_frontend::snapshot::Blocked) -> u8 {
     eprintln!(
         "refusing to {}: `{}` does not typecheck, so its model \
@@ -507,6 +592,34 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
                 }
             }
             None => print!("{}", text),
+        }
+    }
+    // GH #1417 (R1): the surface rows' documents. Same refusal rule as
+    // the artifact; the document is stdout's alone (the check's report is
+    // stderr's), so it can be compared byte for byte.
+    if argv.iter().any(|a| a == "--api") {
+        if let Some(d) = checked.iter().find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim) {
+            eprintln!(
+                "refusing to describe the api: `{}` does not typecheck, so its description would name a \
+                 program that does not exist. Fix the {} first.",
+                target.display(),
+                d.kind_str()
+            );
+            return 1;
+        }
+        let rows = match snap.demand_surface_rows() {
+            Ok(rows) => rows,
+            Err(b) => {
+                eprintln!("refusing to describe the api: {}", b.because.first().map_or("blocked", |d| d.message.as_str()));
+                return 1;
+            }
+        };
+        match api_document(snap, rows, &flag_value) {
+            Ok(text) => print!("{text}"),
+            Err(msg) => {
+                eprintln!("hale check --api: {msg}");
+                return 2;
+            }
         }
     }
     // GH #476 Change 2: the canonical-model demand surface. Same

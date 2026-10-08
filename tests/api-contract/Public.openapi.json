@@ -1,0 +1,369 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Public surface",
+    "version": "fnv1a64:a8930d6e7998e986",
+    "description": "The surface Public over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by the JSON codec. requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths; a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back.",
+    "x-hale-surface": "Public",
+    "x-hale-digest": "fnv1a64:a8930d6e7998e986"
+  },
+  "paths": {
+    "/call/Orders::cancel": {
+      "post": {
+        "operationId": "Orders::cancel",
+        "summary": "rpc Orders::cancel",
+        "description": "Requires trader under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:a8930d6e7998e986"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelOrder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cancelled"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "handler error: OrderError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "trader"
+        ]
+      }
+    },
+    "/call/Orders::place": {
+      "post": {
+        "operationId": "Orders::place",
+        "summary": "rpc Orders::place",
+        "description": "Requires no role; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:a8930d6e7998e986"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceOrder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server error: the handler violated (ClosureViolation)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": []
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CancelOrder": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer",
+            "x-hale-type": "OrderId"
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
+      "Cancelled": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer",
+            "x-hale-type": "OrderId"
+          },
+          "was_open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "order",
+          "was_open"
+        ]
+      },
+      "OrderError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "reason"
+        ]
+      },
+      "OrderReceipt": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer",
+            "x-hale-type": "OrderId"
+          },
+          "notional": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)"
+          }
+        },
+        "required": [
+          "order",
+          "notional"
+        ]
+      },
+      "PlaceOrder": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)"
+          }
+        },
+        "required": [
+          "symbol",
+          "qty",
+          "limit"
+        ]
+      },
+      "Refusal": {
+        "type": "object",
+        "properties": {
+          "refusal": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "served": {
+                "type": "string"
+              },
+              "requires": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "refusal"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

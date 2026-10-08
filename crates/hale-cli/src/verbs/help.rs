@@ -468,6 +468,18 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 to comments moving and to");
     println!("                                 claim renames.");
     println!();
+    println!("The API surface (spec/api.md):");
+    println!("  --api                           print the inventory: every");
+    println!("                                 surface with its digest and rows,");
+    println!("                                 every exposure and hub (JSON).");
+    println!("  --api --exposure <name> --caller <principal> [--holds <role,...>]");
+    println!("                                 print one exposure's description");
+    println!("                                 for a caller holding those roles");
+    println!("                                 under its role source. <principal>");
+    println!("                                 is a name or the JSON principal.");
+    println!("  --api --surface <name> --openapi | --json-schema | --mcp");
+    println!("                                 print that form of one surface.");
+    println!();
     println!("Effects and budgets:");
     println!("  --dump-effects-manifest         emit the effects manifest");
     println!("  --check-effects-manifest <path> gate on a manifest baseline");

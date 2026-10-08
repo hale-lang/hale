@@ -41,6 +41,7 @@ pub(crate) const BUILD_ONLY_FLAGS: &[&str] = &[
 pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
     "--dump-api",
+    "--api",
     "--dump-model",
     "--check-topology",
     "--check-topology-shape",
@@ -65,6 +66,16 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // GH #1107: the api binding's description, the model's first
     // wire form. `=<path>` writes it, bare prints it.
     ("--dump-api", false),
+    // GH #1417 (R1): the surface rows' documents: the inventory, one
+    // exposure's description for a caller, one surface's projections.
+    ("--api", false),
+    ("--exposure", true),
+    ("--caller", true),
+    ("--holds", true),
+    ("--surface", true),
+    ("--openapi", false),
+    ("--json-schema", false),
+    ("--mcp", false),
     // GH #476 Change 2: derive + print the canonical
     // ApplicationModel (internal format). The demand surface the
     // `hale model dump` shim routes through.

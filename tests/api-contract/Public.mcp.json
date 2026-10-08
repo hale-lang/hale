@@ -1,0 +1,55 @@
+{
+  "x-hale-surface": "Public",
+  "x-hale-digest": "fnv1a64:a8930d6e7998e986",
+  "tools": [
+    {
+      "name": "Orders__cancel",
+      "description": "rpc Orders::cancel of Public: returns Cancelled; its failure is the handler error OrderError. Requires trader under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer",
+            "x-hale-type": "OrderId"
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
+      "x-hale-requires": [
+        "trader"
+      ]
+    },
+    {
+      "name": "Orders__place",
+      "description": "rpc Orders::place of Public: returns OrderReceipt; a violation is the server error. Requires no role; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)"
+          }
+        },
+        "required": [
+          "symbol",
+          "qty",
+          "limit"
+        ]
+      },
+      "x-hale-requires": []
+    }
+  ],
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

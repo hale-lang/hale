@@ -38,6 +38,7 @@ mod fleet;
 mod dna;
 mod iris;
 mod api_client;
+mod surface_doc;
 mod mcp;
 mod pkg;
 mod replay;

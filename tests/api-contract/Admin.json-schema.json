@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hale:surface:Admin@fnv1a64:40381db6685c9f75",
+  "title": "Admin surface",
+  "x-hale-surface": "Admin",
+  "x-hale-digest": "fnv1a64:40381db6685c9f75",
+  "x-hale-members": {
+    "Ledger::rebalance": {
+      "name": "Ledger::rebalance",
+      "request": {
+        "$ref": "#/$defs/Rebalance"
+      },
+      "response": {
+        "$ref": "#/$defs/Rebalanced"
+      },
+      "error": "ClosureViolation",
+      "requires": [
+        "operator"
+      ]
+    },
+    "Orders::cancel": {
+      "name": "Orders::cancel",
+      "request": {
+        "$ref": "#/$defs/CancelOrder"
+      },
+      "response": {
+        "$ref": "#/$defs/Cancelled"
+      },
+      "error": {
+        "$ref": "#/$defs/OrderError"
+      },
+      "requires": [
+        "operator"
+      ]
+    }
+  },
+  "$defs": {
+    "CancelOrder": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    },
+    "Cancelled": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "x-hale-type": "OrderId"
+        },
+        "was_open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "order",
+        "was_open"
+      ]
+    },
+    "OrderError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "Rebalance": {
+      "type": "object",
+      "properties": {
+        "book": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "book"
+      ]
+    },
+    "Rebalanced": {
+      "type": "object",
+      "properties": {
+        "moved": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)"
+        }
+      },
+      "required": [
+        "moved"
+      ]
+    }
+  }
+}
