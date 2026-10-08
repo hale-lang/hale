@@ -295,21 +295,33 @@ fn named_in_sigs() -> Vec<(String, &'static str)> {
 
 #[test]
 fn every_named_sig_type_is_declared_by_the_stdlib() {
-    let program = parse_source(hale_stdlib::AP_SOURCE)
-        .expect("the bundled stdlib source must parse");
+    // The bundled source, and the api runtime seeds (`api_rpc.hl`,
+    // `api_hub.hl`, `io_h2.hl`, `api_grpc.hl`): a seed joins a program
+    // before the check whenever it serves or names one of its types, so a
+    // row naming a seed type types as that nominal, never as a nobody.
     let mut declared = std::collections::BTreeSet::new();
-    for item in &program.items {
-        match item {
-            hale_syntax::ast::TopDecl::Locus(l) => {
-                declared.insert(l.name.name.clone());
+    for source in [
+        hale_stdlib::AP_SOURCE,
+        hale_stdlib::API_RUNTIME_SOURCE,
+        hale_stdlib::API_HUB_SOURCE,
+        hale_stdlib::API_H2_SOURCE,
+        hale_stdlib::API_GRPC_SOURCE,
+    ] {
+        let program = parse_source(source)
+            .expect("the bundled stdlib source must parse");
+        for item in &program.items {
+            match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    declared.insert(l.name.name.clone());
+                }
+                hale_syntax::ast::TopDecl::Type(t) => {
+                    declared.insert(t.name.name.clone());
+                }
+                hale_syntax::ast::TopDecl::Interface(i) => {
+                    declared.insert(i.name.name.clone());
+                }
+                _ => {}
             }
-            hale_syntax::ast::TopDecl::Type(t) => {
-                declared.insert(t.name.name.clone());
-            }
-            hale_syntax::ast::TopDecl::Interface(i) => {
-                declared.insert(i.name.name.clone());
-            }
-            _ => {}
         }
     }
     let missing: Vec<String> = named_in_sigs()
@@ -348,6 +360,22 @@ fn every_named_sig_type_is_the_rename_target_users_can_spell() {
         "`Named(..)` names with no PATH_RENAMES entry — users have \
          no way to spell these types, so the row cannot unify with \
          an annotation: {orphans:?}"
+    );
+}
+
+#[test]
+fn a_seed_typed_row_refuses_a_non_handle() {
+    // `run_until_stopped` names `__StdApiHandle`, declared by the api
+    // runtime seed, not the bundled source: the seed joins the program
+    // for the row, so the argument is checked against the real interface.
+    let src = prog("std::api::run_until_stopped(5);");
+    assert!(
+        messages(&src).iter().any(|m| {
+            m.contains("`std::api::run_until_stopped` argument 1")
+                && m.contains("std::api::Handle")
+        }),
+        "a non-handle must be refused: {:?}",
+        messages(&src)
     );
 }
 

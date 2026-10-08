@@ -78,7 +78,7 @@ fn witness_whole(hub: u16, mcp: u16, grpc: u16) -> String {
     );
     let s = swap(
         &s,
-        "        while !self.draining { std::time::sleep(100ms); }\n        public.stop();\n        partner.stop();\n        admin.stop();\n",
+        "        std::api::run_until_stopped(public);\n        public.stop();\n        partner.stop();\n        admin.stop();\n",
         concat!(
             "        let tp = std::env::var(\"TRIGGER_PUBLIC\");\n",
             "        let tq = std::env::var(\"TRIGGER_PARTNER\");\n",

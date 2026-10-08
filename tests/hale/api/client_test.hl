@@ -75,9 +75,19 @@ fn wait_for(path: String) -> Bool {
     return false;
 }
 
+// The server creates the report and then writes it, so the file can be seen
+// empty: read until it has content.
+@unbounded
 fn report_of(path: String) -> String {
     if !wait_for(path) { return "no report"; }
-    return std::io::fs::read_file(path) or "unreadable";
+    let mut text = std::io::fs::read_file(path) or "unreadable";
+    let mut i = 0;
+    while len(text) == 0 && i < 100 {
+        std::time::sleep(20ms);
+        text = std::io::fs::read_file(path) or "unreadable";
+        i = i + 1;
+    }
+    return text;
 }
 
 fn refusal_text(f: pubc::ApiRefusal) -> String {

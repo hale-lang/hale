@@ -35,6 +35,8 @@ mod api_unix;
 mod api_unix_lifecycle;
 #[path = "api_witness_whole.rs"]
 mod api_witness_whole;
+#[path = "bus_idle_wait.rs"]
+mod bus_idle_wait;
 #[path = "io_h2_server.rs"]
 mod io_h2_server;
 #[path = "io_h2_session.rs"]
