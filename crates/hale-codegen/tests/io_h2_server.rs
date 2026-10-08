@@ -30,6 +30,9 @@ mod ports;
 use h2_client::*;
 use http_rpc::*;
 
+/// The size of a `/blob` response, in bytes (the program below spells it out).
+const BLOB: usize = 1 << 20;
+
 /// `$BIND` is the listener, `$TRIGGER` stops it. The transport answers
 /// `/hello` at once, `/upload` with the count of body bytes it was sent
 /// when the stream ends, `/big` with 300000 bytes, and says what it saw.
@@ -44,6 +47,20 @@ fn filler(n: Int) -> String {
     let mut s = "x";
     while len(s) < n { s = s + s; }
     return s[0..n];
+}
+
+/// `n` bytes, the byte at `i` being `(i + seed) % 251`: a body whose every
+/// position says whose it is, so bytes of another stream's frame, or a
+/// repeated or lost span, cannot pass for it.
+@unbounded
+fn pattern(n: Int, seed: Int) -> Bytes {
+    let mb = std::bytes::BytesBuilder { };
+    let mut i = 0;
+    while i < n {
+        mb.append_u8((i + seed) % 251);
+        i = i + 1;
+    }
+    return mb.finish() or std::bytes::from_string("");
 }
 
 locus Echo {
@@ -77,6 +94,9 @@ locus Echo {
             println("open conn=" + to_string(e.conn) + " stream=" + to_string(e.stream) + " path=" + self.path);
             if self.path == "/hello" {
                 self.say(e, ":status: 200\ncontent-type: text/plain\n", std::bytes::from_string("hello"), "x-done: yes\n");
+            }
+            if self.path == "/blob" {
+                self.say(e, ":status: 200\n", pattern(1048576, e.stream), "x-done: blob\n");
             }
             if self.path == "/big" {
                 self.say(e, ":status: 200\n", std::bytes::from_string(filler(300000)), "x-done: big\n");
@@ -195,6 +215,43 @@ fn a_body_crosses_the_flow_control_windows_both_ways() {
     assert!(down.data.iter().all(|b| *b == b'x'));
     assert_eq!(down.header("x-done"), Some("big"));
     assert!(server.finish().status.success());
+}
+
+#[test]
+fn concurrent_responses_larger_than_the_send_buffer_do_not_interleave() {
+    // Eight streams ask at once for a megabyte each (eight in all, several
+    // times what the socket's buffers hold) of a client that does not read
+    // at first and then reads in small pieces. The server's writes park on a
+    // full buffer while the other handlers of the connection answer more
+    // streams and a PING: the connection has one writer, so the bytes of two
+    // frames never meet, and the client parses every frame and finds every
+    // stream's body whole and its own.
+    let server = start();
+    let mut c = Client::connect(server.port);
+    let streams: Vec<u32> = (0..8).map(|i| 2 * i + 1).collect();
+    for s in &streams {
+        get(&mut c, *s, "/blob");
+    }
+    // the sends meet a full buffer while nothing is read, and a PING arrives
+    std::thread::sleep(Duration::from_millis(500));
+    c.ping(*b"parked!!");
+    std::thread::sleep(Duration::from_millis(200));
+    c.ping(*b"parked2!");
+    c.slowly(&streams, Duration::from_secs(60), 8192, Duration::from_millis(1));
+    for s in &streams {
+        let r = c.streams.get(s).cloned().unwrap_or_default();
+        assert_eq!(r.status(), 200, "stream {s}");
+        assert_eq!(r.data.len(), BLOB, "stream {s}: {} bytes", r.data.len());
+        let whole = r.data.iter().enumerate().all(|(i, b)| *b as usize == (i + *s as usize) % 251);
+        assert!(whole, "stream {s}: a byte is not where its stream put it");
+        assert_eq!(r.header("x-done"), Some("blob"), "stream {s}: {r:?}");
+        assert!(r.ended && r.reset.is_none(), "stream {s}");
+    }
+    c.idle(Duration::from_millis(200));
+    assert_eq!(c.pongs, 2, "both PINGs were acknowledged");
+    assert!(c.goaway.is_none() && !c.eof, "the connection is whole");
+    let done = server.finish();
+    assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
 }
 
 #[test]

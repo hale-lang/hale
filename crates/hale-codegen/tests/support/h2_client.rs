@@ -296,8 +296,14 @@ impl Client {
     /// Read what has arrived (waiting up to `wait` for the first byte) and
     /// handle every whole frame in it.
     pub fn pump(&mut self, wait: Duration) {
+        self.pump_at_most(wait, 65536);
+    }
+
+    /// `pump`, taking at most `cap` bytes from the socket: a client that
+    /// reads slowly, so the server's sends meet a full buffer.
+    pub fn pump_at_most(&mut self, wait: Duration, cap: usize) {
         self.sock.set_read_timeout(Some(wait.max(Duration::from_millis(1)))).ok();
-        let mut buf = [0u8; 65536];
+        let mut buf = vec![0u8; cap.clamp(1, 65536)];
         match self.sock.read(&mut buf) {
             Ok(0) => self.eof = true,
             Ok(n) => self.inbox.extend_from_slice(&buf[..n]),
@@ -394,6 +400,16 @@ impl Client {
             self.pump(Duration::from_millis(50));
         }
         self.streams.get(&stream).cloned().unwrap_or_default()
+    }
+
+    /// Read until every stream in `streams` has ended or `within` passes,
+    /// `cap` bytes and then a pause of `pause` at a time.
+    pub fn slowly(&mut self, streams: &[u32], within: Duration, cap: usize, pause: Duration) {
+        let until = Instant::now() + within;
+        while Instant::now() < until && !self.eof && !streams.iter().all(|s| self.streams.get(s).is_some_and(|r| r.ended)) {
+            std::thread::sleep(pause);
+            self.pump_at_most(Duration::from_millis(50), cap);
+        }
     }
 
     /// Read until the server closes the connection or `within` passes.

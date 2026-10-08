@@ -2816,13 +2816,14 @@ dynamic	Hi	on main
 == crates/hale-codegen/tests/interface_return.rs#9bb60cd6
 dynamic	Cnt	on main	in the seed
 
-== crates/hale-codegen/tests/io_h2_server.rs#b7628811
+== crates/hale-codegen/tests/io_h2_server.rs#55fe1f36
 root	App	the entry
 domain	pool:h2	async_io
 row	App@literal1	App	main	default
 row	App@literal1.echo	Echo	main	default
 row	App@literal1.server	__StdIoH2Listener	pool:h2	entry	off owner
 -- dynamic	sites in the seed
+dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIoH2Conn	on pool:h2
 dynamic	__StdIoTcpStream	on pool:h2|unknown (no instance)
 
