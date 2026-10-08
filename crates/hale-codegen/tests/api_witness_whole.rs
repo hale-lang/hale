@@ -7,8 +7,9 @@
 //! exposure, or all of them, when told to. Every type, surface, role
 //! source, receiver, placement, binding and `on_failure` is the contract's.
 //!
-//! One run of that program serves its rpc half over `http::Rpc` (twice) and
-//! `unix::Rpc` and its stream half over `ws::Hub`, and the tests assert what a
+//! One run of that program serves its rpc half over `http::Rpc` (twice),
+//! `unix::Rpc` and `mcp::Rpc` (a fifth serve site, `agent`, of `Public`) and
+//! its stream half over `ws::Hub`, and the tests assert what a
 //! caller of each can observe: the assertions of `api_http_witness`
 //! (members reach their own receiver and pool, a shared handler meets each
 //! surface's `requires`, a digest mismatch, every outcome, one exposure
@@ -57,7 +58,7 @@ fn swap(src: &str, from: &str, to: &str) -> String {
 /// over the hub, and a
 /// run loop that stops `public`, `partner` and `admin` on `$TRIGGER_PUBLIC`,
 /// `$TRIGGER_PARTNER` and `$TRIGGER_ADMIN` and everything on `$TRIGGER`.
-fn witness_whole(hub: u16) -> String {
+fn witness_whole(hub: u16, mcp: u16) -> String {
     let s = CONTRACT;
     let s = swap(&s, "bind: \"127.0.0.1:8080\"", "bind: std::env::var(\"BIND\")");
     let s = swap(&s, "bind: \"127.0.0.1:8081\"", "bind: std::env::var(\"BIND2\")");
@@ -68,6 +69,11 @@ fn witness_whole(hub: u16) -> String {
         &s,
         "as: \"admin\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n",
         "as: \"admin\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n        let feed = api::serve(Public, self.hub, as: \"feed\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n",
+    );
+    let s = swap(
+        &s,
+        "        let feed = api::serve(",
+        &format!("        let agent = api::serve(Public, mcp::Rpc {{ bind: \"127.0.0.1:{mcp}\", principals: self.bearer, roles: self.public_roles }}, as: \"agent\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let feed = api::serve("),
     );
     let s = swap(
         &s,
@@ -89,6 +95,7 @@ fn witness_whole(hub: u16) -> String {
             "        public.stop();\n",
             "        partner.stop();\n",
             "        admin.stop();\n",
+            "        agent.stop();\n",
             "        feed.stop();\n",
             "        self.hub.stop();\n",
             "        println(\"stopped\");\n",
@@ -103,14 +110,15 @@ fn witness_whole(hub: u16) -> String {
     )
 }
 
-/// The program built once per process, and the port its hub was built for.
-fn build() -> (PathBuf, u16) {
-    static BIN: OnceLock<(PathBuf, u16)> = OnceLock::new();
+/// The program built once per process, and the ports its hub and its MCP
+/// endpoint were built for.
+fn build() -> (PathBuf, u16, u16) {
+    static BIN: OnceLock<(PathBuf, u16, u16)> = OnceLock::new();
     BIN.get_or_init(|| {
         let bin = harness::unique_bin("api_witness_whole");
-        let hub = ports::free_port();
-        build_opts::build_source(&witness_whole(hub), &bin, &build_opts::options()).expect("build the contract's program");
-        (bin, hub)
+        let (hub, mcp) = (ports::free_port(), ports::free_port());
+        build_opts::build_source(&witness_whole(hub, mcp), &bin, &build_opts::options()).expect("build the contract's program");
+        (bin, hub, mcp)
     })
     .clone()
 }
@@ -119,13 +127,14 @@ const PUBLIC_DIGEST: &str = "fnv1a64:a8930d6e7998e986";
 const ADMIN_DIGEST: &str = "fnv1a64:40381db6685c9f75";
 
 /// The program, running: the http server (`port`, `port2`, the socket), and
-/// the port of its hub.
+/// the ports of its hub and its MCP endpoint.
 struct Whole {
     server: Server,
     hub: u16,
+    mcp: u16,
 }
 
-fn start(bin: &std::path::Path, hub: u16, env: &[(&str, &str)]) -> Whole {
+fn start(bin: &std::path::Path, hub: u16, mcp: u16, env: &[(&str, &str)]) -> Whole {
     let operator = format!("uid:{}", unix_rpc::me().0);
     let mut all: Vec<(&str, &str)> = vec![("OPERATOR", &operator)];
     all.extend_from_slice(env);
@@ -133,7 +142,8 @@ fn start(bin: &std::path::Path, hub: u16, env: &[(&str, &str)]) -> Whole {
     server.ready();
     wait_listening(server.port2);
     wait_listening(hub);
-    Whole { server, hub }
+    wait_listening(mcp);
+    Whole { server, hub, mcp }
 }
 
 fn place(port: u16, token: &str) -> Response {
@@ -175,8 +185,8 @@ fn wait_closed(port: u16, what: &str) {
 
 #[test]
 fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
-    let (bin, hub) = build();
-    let w = start(&bin, hub, &[]);
+    let (bin, hub, mcp) = build();
+    let w = start(&bin, hub, mcp, &[]);
     let (public, partner) = (w.server.port, w.server.port2);
 
     // ---- the stream half: admission, in the contract's words ----
@@ -372,6 +382,51 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
             got_reply = true;
         }
     }
+    // ---- `Public` over MCP, beside the rest, in the same run ----
+    let mcp_rpc = |token: Option<&str>, body: &str| {
+        let mut headers = vec![h("Content-Type", "application/json")];
+        if let Some(t) = token {
+            headers.push(bearer(t));
+        }
+        request(w.mcp, "POST", "/mcp", &headers, Some(body))
+    };
+    let listed = mcp_rpc(Some("t-alice"), r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#);
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let listed: serde_json::Value = serde_json::from_str(&listed.body).expect("json");
+    let want: serde_json::Value = serde_json::from_str(&description_fixture("Public.mcp.json")).expect("json");
+    assert_eq!(listed["result"]["tools"], want["tools"], "alice's tools are Public.mcp.json's");
+    let bob_listed = mcp_rpc(Some("t-bob"), r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#);
+    assert!(bob_listed.body.contains("Orders__place") && !bob_listed.body.contains("Orders__cancel"), "{}", bob_listed.body);
+    assert_eq!(mcp_rpc(None, r#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#).status, 401);
+    let call = |id: u32, tool: &str, args: &str| {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{args},"_meta":{{"hale/digest":"{PUBLIC_DIGEST}"}}}}}}"#
+        );
+        mcp_rpc(Some("t-alice"), &body)
+    };
+    // a call is a call: the same receiver, the same handler, the same stream
+    let placed = call(4, "Orders__place", r#"{"symbol":"ACME","qty":10,"limit":12500}"#);
+    assert_eq!(placed.status, 200, "{}", placed.body);
+    assert_eq!(
+        placed.body,
+        r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"order\":47,\"notional\":125000}"}],"structuredContent":{"order":47,"notional":125000},"isError":false}}"#
+    );
+    assert_eq!(dave.text(), fill(9, 47));
+    // the handler's error, the role's refusal and a missing field, as the MCP column says
+    let missed = call(5, "Orders__cancel", r#"{"order":99999}"#);
+    assert_eq!(missed.status, 200, "{}", missed.body);
+    assert!(missed.body.contains(r#""id":5,"error":{"code":-32001,"message":"handler_error""#), "{}", missed.body);
+    let forbidden = mcp_rpc(
+        Some("t-bob"),
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"Orders__cancel","arguments":{"order":47}}}"#,
+    );
+    assert!(forbidden.body.contains(r#""id":6,"error":{"code":-32005,"message":"unauthorized""#), "{}", forbidden.body);
+    let malformed = call(7, "Orders__place", r#"{"symbol":"ACME","limit":12500}"#);
+    assert!(malformed.body.contains(r#""id":7,"error":{"code":-32602,"message":"malformed""#), "{}", malformed.body);
+    let cancelled = call(8, "Orders__cancel", r#"{"order":47}"#);
+    assert!(cancelled.body.contains(r#""id":8,"result":"#) && cancelled.body.contains(r#""isError":false"#), "{}", cancelled.body);
+    dave.silence(100);
+
     w.server.stop_one("partner");
     wait_closed(partner, "partner's listener closed after its stop()");
     let line = unix(&w, "{\"call\":\"Ledger::rebalance\",\"payload\":{\"book\":\"main\"},\"id\":\"a-5\"}");
@@ -388,9 +443,10 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert_eq!(status, 200);
 
     // ---- the stop: `closed` after what was queued, then the close; every address released ----
-    let hub = w.hub;
+    let (hub, mcp) = (w.hub, w.mcp);
     let done = w.server.finish();
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
+    assert!(std::net::TcpStream::connect(("127.0.0.1", mcp)).is_err(), "the MCP endpoint's address is released");
     for line in ["public stopped", "partner stopped", "admin stopped", "stopped"] {
         assert!(done.stdout.contains(line), "{line}:\n{}", done.stdout);
     }
@@ -408,9 +464,9 @@ fn the_contracts_program_runs_clean_under_asan() {
     // a connection that outlives its request, a subscriber that goes away, a
     // listener released at stop(), a peer locus per connection
     let bin = harness::unique_bin("api_witness_whole_asan");
-    let hub = ports::free_port();
-    harness::build_source_asan(&witness_whole(hub), &bin);
-    let w = start(&bin, hub, &[("LOTUS_NO_CHUNK_POOL", "1")]);
+    let (hub, mcp) = (ports::free_port(), ports::free_port());
+    harness::build_source_asan(&witness_whole(hub, mcp), &bin);
+    let w = start(&bin, hub, mcp, &[("LOTUS_NO_CHUNK_POOL", "1")]);
     let (public, partner) = (w.server.port, w.server.port2);
     let mut dave = Ws::connect(w.hub, Some("t-dave"));
     dave.subscribe("Fills");
@@ -439,6 +495,18 @@ fn the_contracts_program_runs_clean_under_asan() {
     send(partner, "POST /call/Orders::place HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"sym").close();
     let line = unix(&w, "{\"describe\":true}");
     assert!(line.contains("\"ok\":true"), "{line}");
+    let json = [h("Content-Type", "application/json"), bearer("t-alice")];
+    let tools = request(w.mcp, "POST", "/mcp", &json, Some(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#));
+    assert_eq!(tools.status, 200, "{}", tools.body);
+    let placed = request(
+        w.mcp,
+        "POST",
+        "/mcp",
+        &json,
+        Some(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Orders__place","arguments":{"symbol":"ACME","qty":10,"limit":12500}}}"#),
+    );
+    assert!(placed.body.contains(r#""isError":false"#), "{}", placed.body);
+    send(w.mcp, "POST /mcp HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"json").close();
     let second = Ws::connect(w.hub, Some("t-dave"));
     second.abandon();
     let done = w.server.finish();
