@@ -11,8 +11,9 @@
 // a topic bound to a hub with `requires:`. From R1 it parses and checks,
 // and `hale check --api` prints its inventory and descriptions from its
 // rows (crates/hale-cli/tests/api_contract_fixtures.rs holds them to the
-// documents beside it); it does not build until its serve sites and its
-// hub are served (R2, R5). No other gate reads this directory: the
+// documents beside it); it builds, its serve sites and its hub being served
+// (R2, R3, R5), and crates/hale-codegen/tests/api_witness_whole.rs runs it
+// whole. No other gate reads this directory: the
 // corpus (hale-corpus), the examples sweep and the in-language suite
 // (`tests/hale`) each walk directories of their own.
 //

@@ -411,7 +411,7 @@ fn transport_of(e: &Expr, params: &BTreeMap<String, String>) -> Option<Transport
         codec,
         principals: source(field("principals")),
         roles: source(field("roles")),
-        name: text(field("as")),
+        name: text(field("as")).or_else(|| text(field("name"))),
     })
 }
 
@@ -889,16 +889,20 @@ pub fn surface_rows(
     SurfaceRows { surfaces, rows, serves, hubs, app }
 }
 
-/// The socket transport a serve site names, `"unix"` or `"http"`: a
-/// literal written at the site, or a param the locus holds (`self.rpc`)
-/// whose declared type, or whose literal default, is `unix::Rpc` or
-/// `http::Rpc`.
+/// The socket transport a serve site names (`"unix::Rpc"`, `"http::Rpc"`,
+/// `"ws::Hub"` or `"udp::Hub"`): a literal written at the site, or a param
+/// the locus holds (`self.rpc`) whose declared type, or whose literal
+/// default, is one of them.
 fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static str> {
     let kind_of = |path: &hale_syntax::ast::QualifiedName| {
         if crate::rpc_expand::is_unix_rpc(path) {
-            Some("unix")
+            Some("unix::Rpc")
         } else if crate::rpc_expand::is_http_rpc(path) {
-            Some("http")
+            Some("http::Rpc")
+        } else if crate::hub_expand::is_ws_hub(path) {
+            Some("ws::Hub")
+        } else if crate::hub_expand::is_udp_hub(path) {
+            Some("udp::Hub")
         } else {
             None
         }
@@ -938,7 +942,7 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
                     diags.push(Diag::ty(
                         site.span,
                         format!(
-                            "`api::serve` over `{kind}::Rpc` in `{}`: a socket's listener runs on a pool of its own, which \
+                            "`api::serve` over `{kind}` in `{}`: a socket's listener runs on a pool of its own, which \
                              only the main locus places; serve from the main locus (spec/api.md § The `Rpc` interface)",
                             l.name.name
                         ),
@@ -973,12 +977,25 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             for m in &l.members {
                 let LocusMember::Bindings(bb) = m else { continue };
                 for hb in &bb.hubs {
+                    // a hub the expansion built (`hub_expand`) is served
+                    let built = l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Params(pb)
+                            if pb.params.iter().any(|p| p.name.name == hb.instance.name && crate::hub_expand::is_built(&p.init)))
+                    });
+                    let bound_stream = l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Bindings(b)
+                            if b.entries.iter().any(|e| e.topic.name == hb.topic.name))
+                    });
+                    if built && bound_stream {
+                        continue;
+                    }
                     diags.push(Diag::ty(
                         hb.span,
                         format!(
-                            "`{}` is bound to the hub `self.{}`, which is described (`hale check --api`) but not yet \
-                             served: this compiler does not lower a hub binding, so the program cannot be built \
-                             (spec/api.md § Streams)",
+                            "`{}` is bound to the hub `self.{}`, which is described (`hale check --api`) but cannot be \
+                             served: a hub is a param built by a `ws::Hub {{ bind: \"…\", …, as: \"…\" }}` literal in the \
+                             main locus, and a stream row states `bound:` and `on_full:` (`drop_old` or `drop_new`) \
+                             for a topic the program publishes, so the program cannot be built (spec/api.md § Streams)",
                             hb.topic.name, hb.instance.name
                         ),
                     ));
@@ -1282,6 +1299,27 @@ pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows) -> Vec<Diag> {
     let mut diags = Vec::new();
     let mut first_named: BTreeMap<String, Span> = BTreeMap::new();
     let surface_names: Vec<&str> = rows.surfaces.iter().map(|s| s.name.as_str()).collect();
+    // the topics some locus publishes: the ones a stream can carry
+    let published: BTreeSet<String> = programs
+        .iter()
+        .flat_map(|p| flat_decls(&p.items))
+        .filter_map(|d| match d {
+            TopDecl::Locus(l) => Some(l),
+            _ => None,
+        })
+        .flat_map(|l| l.members.iter())
+        .filter_map(|m| match m {
+            LocusMember::Bus(b) => Some(b),
+            _ => None,
+        })
+        .flat_map(|b| b.members.iter())
+        .filter_map(|m| match m {
+            hale_syntax::ast::BusMember::Publish { subject: hale_syntax::ast::BusSubject::Topic(t), .. } => {
+                Some(t.name.clone())
+            }
+            _ => None,
+        })
+        .collect();
     for p in &programs {
         for d in flat_decls(&p.items) {
             match d {
@@ -1299,12 +1337,107 @@ pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows) -> Vec<Diag> {
                         ));
                     }
                 }
-                TopDecl::Locus(l) => serve_laws_of(l, rows, &surface_names, &mut first_named, &mut diags),
+                TopDecl::Locus(l) => {
+                    serve_laws_of(l, rows, &surface_names, &mut first_named, &mut diags);
+                    hub_laws_of(l, &published, &mut first_named, &mut diags);
+                }
                 _ => {}
             }
         }
     }
     diags
+}
+
+/// The laws of a hub binding (spec/api.md § Streams): a hub names its
+/// exposure once among the program's, built by a literal with a `bind:`; a
+/// stream row states its queue, and its policy is one a watcher queue has.
+fn hub_laws_of(l: &LocusDecl, published: &BTreeSet<String>, first_named: &mut BTreeMap<String, Span>, diags: &mut Vec<Diag>) {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for m in &l.members {
+        let LocusMember::Bindings(bb) = m else { continue };
+        for hb in &bb.hubs {
+            let instance = hb.instance.name.as_str();
+            if seen.insert(instance) {
+                let literal = l.members.iter().find_map(|m| match m {
+                    LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == instance),
+                    _ => None,
+                });
+                let inits = match literal.map(|p| &p.init) {
+                    Some(ParamInit::Value(Expr::Struct { inits, .. })) => Some(inits),
+                    _ => None,
+                };
+                let Some(inits) = inits else {
+                    diags.push(Diag::ty(
+                        hb.span,
+                        format!("hub `self.{instance}`: a hub is a param built by a `ws::Hub {{ … }}` literal"),
+                    ));
+                    continue;
+                };
+                let text = |n: &str| {
+                    inits.iter().find(|i| i.name.name == n).and_then(|i| match &i.value {
+                        Expr::Literal(hale_syntax::ast::Literal::String(s), _) => Some(s.clone()),
+                        _ => None,
+                    })
+                };
+                if !inits.iter().any(|i| i.name.name == "bind") {
+                    diags.push(Diag::ty(
+                        hb.span,
+                        format!("hub `self.{instance}`: a hub states the address it listens on, `bind: \"host:port\"`"),
+                    ));
+                }
+                match text("as").or_else(|| text("name")) {
+                    None => diags.push(Diag::ty(
+                        hb.span,
+                        format!("hub `self.{instance}`: a hub names its exposure with `as:`"),
+                    )),
+                    Some(name) => {
+                        if let Some(first) = first_named.get(&name) {
+                            diags.push(
+                                Diag::ty(
+                                    hb.span,
+                                    format!("exposure `{name}` is served twice: `as:` names one exposure; name this one apart"),
+                                )
+                                .with_related(*first, "its first serve"),
+                            );
+                        } else {
+                            first_named.insert(name, hb.span);
+                        }
+                    }
+                }
+            }
+            if !matches!(hb.bound, Some((n, _)) if n > 0) {
+                diags.push(Diag::ty(
+                    hb.span,
+                    format!(
+                        "stream `{}` of hub `self.{instance}`: a stream row states `bound:`, the frames each admitted \
+                         subscriber's queue holds",
+                        hb.topic.name
+                    ),
+                ));
+            }
+            if !matches!(hb.on_full.as_ref().map(|i| i.name.as_str()), Some("drop_old" | "drop_new")) {
+                diags.push(Diag::ty(
+                    hb.span,
+                    format!(
+                        "stream `{}` of hub `self.{instance}`: a stream row states `on_full: drop_old` or `drop_new`, \
+                         the two policies a watcher queue has; a subscriber that cannot keep up loses events, never \
+                         the subscription, so a stream is not `refuse`d",
+                        hb.topic.name
+                    ),
+                ));
+            }
+            if !published.contains(&hb.topic.name) {
+                diags.push(Diag::ty(
+                    hb.span,
+                    format!(
+                        "stream `{}` of hub `self.{instance}`: no locus publishes `{}`; a stream carries the events \
+                         the program publishes",
+                        hb.topic.name, hb.topic.name
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn serve_laws_of(
@@ -1364,6 +1497,24 @@ fn serve_laws_of(
             diags.push(Diag::ty(
                 site.span,
                 format!("serve of `{surface}`: a serve site names the transport instance that carries it"),
+            ));
+        }
+        // rpcs are not framed over datagrams yet (R6): a `udp::Hub` carries streams
+        let over_udp = match site.transport {
+            Some(Expr::Struct { path, .. }) => crate::hub_expand::is_udp_hub(path),
+            Some(e) => self_field(e)
+                .and_then(|f| params.get(f))
+                .is_some_and(|t| t == "udp::Hub" || t == "std::api::udp::Hub"),
+            None => false,
+        };
+        if over_udp {
+            diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` over a `udp::Hub`: a request and its reply over datagrams are not framed in \
+                     this release, so a `udp::Hub` carries streams only; serve the surface over a `ws::Hub` or a socket \
+                     transport (spec/api.md § Streams)"
+                ),
             ));
         }
         let Some(name) = name else {

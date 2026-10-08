@@ -38,6 +38,18 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          program is readable in a dump",
     ),
     (
+        "crates/hale-types/src/hub_expand.rs",
+        "codec_src",
+        "generated Hale source keeps its indentation so the expanded \
+         program is readable in a dump",
+    ),
+    (
+        "crates/hale-types/src/hub_expand.rs",
+        "codec_src",
+        "generated Hale source keeps its indentation so the expanded \
+         program is readable in a dump",
+    ),
+    (
         "crates/hale-types/src/unit_report.rs",
         "render",
         "`hale check --units`: the `kind         : …` field column of \

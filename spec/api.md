@@ -18,7 +18,7 @@ runtime (the interfaces of § The runtime boundaries, the identity
 sources, receiver failure, `api::serve` checked and lowered) over an
 in-process fixture transport, `std::api::test::Rpc`; `unix::Rpc` proves
 the same runtime over a socket in R2b and `http::Rpc` over HTTP in R3;
-hubs and stream authorization land in R5; R4 retires the structural
+hubs and stream authorization are R5's (`ws::Hub`, `udp::Hub`: § Streams); R4 retires the structural
 path (§ What this replaces). Each section names the step that ships it.
 Until R1, the
 fixtures under `tests/api-contract/` are what a consumer builds against:
@@ -363,11 +363,11 @@ failure and generations); and a serve site in a free fn, "\`api::serve\` in
 \`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
 param of the serving locus; serve from the locus that holds the
 receivers". A build refuses a serve site over a transport the compiler
-does not ship (\`ws::Hub\` until R5, \`grpc::Rpc\` and \`mcp::Rpc\` until R6):
+does not ship (\`grpc::Rpc\` and \`mcp::Rpc\` until R6):
 "\`api::serve\` over \`grpc::Rpc\`: this compiler serves a surface over
 \`std::api::test::Rpc\`, the in-process transport, \`unix::Rpc\`, \`http::Rpc\`,
 or a transport the program declares; the other socket transports follow",
-and a serve over \`unix::Rpc\` or \`http::Rpc\` from a locus that is not the
+and a serve over \`unix::Rpc\`, \`http::Rpc\`, \`ws::Hub\` or \`udp::Hub\` from a locus that is not the
 main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
 runs on a pool of its own, which only the main locus places; serve from
 the main locus" (§ The Unix transport, § The HTTP transport).
@@ -811,7 +811,7 @@ the document's.
 ## Identity sources
 
 The interfaces for credential validity and grant revision are R2's;
-their use for live subscriptions (invalidation, delivery) stays R5's.
+their use for live subscriptions (invalidation, delivery) is R5's (§ Streams).
 
 - A **bearer source** answers a credential with the principal and its
   validity: `fn expiry(token: String) -> Int` of
@@ -834,8 +834,8 @@ their use for live subscriptions (invalidation, delivery) stays R5's.
   wire subject `__api.roles.revision` (a `std::api::Revision { source:
   String, revision: Int }`; the standard library declares no `topic`, so
   a publisher writes `publish "__api.roles.revision" of type
-  std::api::Revision;`) for a subscriber to learn of it; R5 reads it to
-  invalidate live subscriptions. `holds(p, r)` of
+  std::api::Revision;`) for a subscriber to learn of it; a hub's connections read it to
+  invalidate live subscriptions (§ Streams). `holds(p, r)` of
   `std::api::RoleSource` stays the direct question: a source that
   implements `grants` as well is asked it once per request, one that does
   not is asked `holds` once per role the check needs, with the revision
@@ -1104,18 +1104,48 @@ bindings {
 
 Streams are topic bindings, and the exposure's fields live on the
 binding row: `requires`, `bound`, `on_full`. A **hub** is a transport
-instance that implements the stream adapter (`__StdBusAdapter`) and may
-implement `Rpc` as well, so one listener carries rpcs and streams over
-one connection authenticated once, at connect (R5). A hub's **stream
-rows** are the topic bindings to it, each with its topic, payload,
-direction (`out` for a topic the program publishes, `in` for one it
-subscribes), codec, `bound`, `on_full`, whether it replays, and
-`requires`.
+instance built by a literal in the main locus's `params`: `ws::Hub`
+(WebSocket) or `udp::Hub` (datagrams, § Over datagrams), with `bind:`
+the address it listens on, `principals:` and `roles:` its two sources and
+`as:` its name. The literal is the param's default and the only hub:
+the compiler numbers it and gives it its rows there, so a construction
+that supplies the param is refused ("param `hub` is a hub that streams
+are bound to; its default is the hub, and a construction cannot supply
+another"). It is two kinds of locus sharing one listener, so that no
+locus has to serve two interfaces: the hub itself holds the sources,
+admits subscriptions and is the `Rpc` a surface may be served over
+(`api::serve(S, self.hub, …)`: one listener carries rpcs and streams over
+one connection, authenticated once, at connect, § Rpcs on a hub); and
+each topic bound to it is an adapter binding, the stream adapter
+(`__StdBusAdapter`) with the topic's JSON codec, that hands each event
+published to the connections' queues. A hub's **stream rows** are the
+topic bindings to it, each with its topic, payload, direction (`out`: a
+stream carries what the program publishes, and a row for a topic nothing
+publishes is refused), codec, `bound`, `on_full`, whether it replays, and
+`requires`. A row states `bound:` and `on_full:`; `refuse` is not a
+policy of a stream, since a subscriber that cannot keep up loses events,
+never the subscription. A hub has at most sixteen stream rows.
+
+The hub's address is bound in the program's birth, before any user code
+runs, and a program that cannot bind it does not boot (a diagnostic and
+exit status 2, as for a socket transport). A hub is a main-locus param
+for the reason a socket transport's listener is: its accept and read loops
+run on a pool of their own (`__api_ws`), which only the main locus places,
+and the compiler adds the listener to the main locus, born after every
+param the program declares (so the hub's `bind:` may read one).
+Each stream is a thread of its own for the publish fanout to write
+through (an adapter binding's), so a hub with many streams costs that many
+threads.
 
 - **Admission.** A subscription is authorized against the row's
   `requires` before it is admitted, from the `Context` the hub's
   sources established; a caller who may not read a stream is refused
-  and buffers nothing.
+  and buffers nothing. A `subscribe` is answered `subscribed` or `refusal`
+  (the frames below), and one for a subscription already admitted is
+  answered `subscribed` again and changes nothing (its `seq` and its queue
+  go on). The roles are read as a serve site's are: directly, or through a
+  role that includes them, from the role source's grants-and-revision pair
+  when it states one (`RevisedRoleSource`) and its `holds` otherwise.
 - **Delivery.** A publish on a hub-bound topic is accepted (the publish
   contract, `spec/semantics.md` § The publish contract) when it is
   handed to every admitted subscriber's queue, each holding at most
@@ -1123,7 +1153,16 @@ subscribes), codec, `bound`, `on_full`, whether it replays, and
   oldest undelivered frame, `drop_new` the frame being published).
   Every event offered to a subscription takes the next `seq` of that
   subscription, delivered or shed, so the frames shed are the gap
-  between two `seq`s the subscriber receives.
+  between two `seq`s the subscriber receives: after `drop_new` sheds the
+  newest, the gap shows at the next frame that arrives. A subscription's
+  queue is kept by its connection, which alone knows when its socket takes
+  a frame: a frame is written as soon as the socket takes it, and a
+  connection that writes slowly (a client that does not read) queues up to
+  `bound` frames behind the write. Frames go out one at a time, in the
+  order they were offered. An event has to fit the bus frame, 65,536 bytes
+  on the wire (the encoded payload and 17 bytes of header): a larger one
+  reaches the program's local subscribers and no remote one, as it does for
+  any adapter, and takes no `seq`.
 - **Replay.** A reconnect implies replay only if the binding provides
   it, and its row says whether it does; a hub binding provides none in
   v1, so a reconnecting subscriber receives what is published after it
@@ -1141,6 +1180,27 @@ subscribes), codec, `bound`, `on_full`, whether it replays, and
   current revision or past the credential's expiry; the check happens
   at the revision and at every delivery, whichever comes first. An rpc
   needs no such rule: each call is authorized on arrival.
+
+  How the hub knows. A role source announces a revision on the wire
+  subject `__api.roles.revision` (§ Identity sources), which every
+  connection subscribes to. On one, the connection delivers nothing to its
+  subscriptions, and asks the hub to recheck its subscribers' roles against
+  the source's grants now; what is published meanwhile is queued, and sheds
+  under the row's policy, but is not written. The answer ends each
+  subscription whose `requires` no longer holds (one `unauthorized` frame,
+  reason `revoked`, and its queue dropped, so no frame offered after the
+  revision reaches a subscriber who lost the grant) and releases the rest,
+  whose queued frames then go out in order. A revision that changes
+  nothing for a subscriber costs it a pause and no frame. A source that
+  cannot announce its own revisions (a table fixed in the program) tells
+  the hub, `self.hub.announce(revision)`, with the same effect; a source
+  that never announces is never rechecked, and only the credential's
+  expiry ends a subscription. The credential's expiry is the connection's
+  to enforce, from the instant the bearer source stated at connect: no
+  event is written at or past it, and the instant itself ends the
+  subscriptions (one `unauthorized` frame, reason `expired`) with no event
+  or request to wake the connection. A spent credential admits nothing new
+  (`unauthenticated`, reason: the bearer token is refused: expired).
 
 There is no second stream declaration: the description derives every
 stream a caller may use from the binding rows (§ The description).
@@ -1195,17 +1255,103 @@ form a hub exposure's description states:
 | closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`; then the connection closes |
 
 A refusal's object is § Outcomes', its kind one of `unauthenticated`
-(the sources named nobody at connect), `unauthorized` (the `Context`
-does not hold the row's `requires`, and the object carries
-`"requires"`), `malformed` (not a frame, or a topic the hub binds no
-stream for, reason `unknown_topic`) and `shutting_down`. `P` is the
-payload by the row's codec. `seq` starts at 1 for a subscription and
+(the sources named nobody at connect: no credential was presented, or the
+bearer source refused it, with its reason), `unauthorized` (the `Context`
+does not hold the row's `requires`: reason `<topic> requires <role>`, and
+the object carries `"requires"`), `malformed` (not a frame, a frame of an
+unknown type, a subscribe naming no topic, or a topic the hub binds no
+stream for: reason `unknown_topic: <topic>`) and `shutting_down`. A
+refusal for a frame that names no topic carries `"topic": null`. `P` is
+the payload by the row's codec. `seq` starts at 1 for a subscription and
 grows by one per event offered to it, so a gap is the frames shed (the
 delivery bullet above). A connection that ends without a `closed` frame
-is the transport failure. The frames are R0's contract, which a
-consumer builds against; the runtime that sends them, the timing of
-expiry and revocation, and the framing of rpcs over WebSocket (a
-correlation field, the largest frame) are R5's.
+is the transport failure, and so is a program that ends without calling
+`stop()`: its connections end with no `closed` frame. The frames are R0's
+contract, which a consumer builds against; R5 delivers them as follows.
+
+- **The credential.** A client presents its credential at the WebSocket
+  upgrade, `Authorization: Bearer <token>`, or `?access_token=<token>` on
+  the request's path for a client that cannot set a header; the hub's
+  bearer source names who it is, and its expiry, once. A connection that
+  presents none, or one the source refuses, is not turned away: the
+  upgrade completes, and each of its subscribes is refused
+  `unauthenticated`.
+- **The WebSocket.** The upgrade is RFC 6455's (`Sec-WebSocket-Key` answered
+  by the derived accept key). Client frames are masked text; a ping is
+  answered with a pong, which is written after the frames queued before the ping; a client's close frame is answered with one and the
+  connection closes; a fragmented message, or one past 64 KiB, closes the
+  connection. The hub's frames are single unmasked text frames.
+- **`stop()`.** `hub.stop()` (and the stop of a serve handle for a surface
+  served over the hub, and the hub's teardown) stops accepting, writes
+  `closed` to each connection after what was queued for it, then the close
+  frame, and releases the address. A subscribe after `stop()` is refused
+  `shutting_down`. `stop()` is idempotent.
+- **A connection that breaks** (an EOF, a failed write, a client that does
+  not read for 5 s of one write) is forgotten alone: its subscriptions go
+  with it, and the hub and its other connections go on.
+- **The description** is served at the hub's listener: `GET
+  /.description`, with the credential as above, answers the caller's
+  document (§ The description) as compact JSON, `401` with a refusal
+  object when the sources name nobody. It is the document `hale check
+  --api --exposure NAME --caller PRINCIPAL --holds ROLE,…` prints for
+  that caller, which the compiler wrote the pieces of: `tests/api-contract/
+  fills.dave.description.json` and `fills.bob.description.json` are what
+  the witness's hub answers `dave` and `bob`, as values.
+
+**Rpcs on a hub.** A surface served over a hub (`api::serve(Public,
+self.hub, as: "desk", …)`) is carried on the connection a subscriber
+holds, with the same sources: the caller's `Context` is the one the
+credential presented at the upgrade established, checked by the exposure
+as for any transport. A call is a frame
+
+```text
+{"type": "call", "id": "c1", "call": "Orders::place", "payload": {…}, "digest": "…"}
+```
+
+(`id` and `digest` optional) and is answered by
+
+```text
+{"type": "reply", "request_id": 7, "id": "c1", "ok": true, "value": {…}, "caller": {"mode": "bearer", "name": "dave"}}
+```
+
+whose `ok`, `value`, `error` and `refusal` are § Outcomes' unix reply's, the
+`id` the client's, echoed raw. A reply and the events of a subscription
+share the connection, in the order the hub wrote them. A call for a
+connection that ends before its reply is lost as any accepted request is
+(§ Receiver failure and generations).
+
+**Over datagrams.** `std::api::udp::Hub` is the `ws` frames minus the
+connection. A subscriber is an (address, `id`) pair: every datagram of a
+subscriber carries the `id` it chose in its subscribe (any JSON string or
+number, echoed raw) as the correlation a connection otherwise is, so one
+socket may hold several subscribers; the credential rides the subscribe,
+`{"type": "subscribe", "topic": T, "id": ID, "token": TOKEN}`, since there
+is no connection to authenticate once at connect, and the hub's sources
+name the subscriber at its first datagram. It is answered by a
+`subscribed` or `refusal` datagram and then sends `event` datagrams
+(`{"type": "event", "id": ID, "topic": T, "seq": N, "payload": P}`), the
+one `unauthorized` datagram at expiry or revocation, and `closed` to each
+subscriber at `stop()`; a subscriber ends its subscription with
+`{"type": "unsubscribe", "id": ID}`, which frees the id (its `seq` starts
+again at 1 when the id is used again), and `{"type": "describe", "id": ID,
+"token": TOKEN}` is answered by `{"type": "description", "id": ID,
+"document": …}` (or `"document": null` and the refusal). A subscriber that
+vanishes without unsubscribing is held until `stop()`. A datagram is sent
+when the hub writes it and is not retried: the network may lose or
+reorder it, so a gap in `seq` is a frame shed or lost, and the loss
+statement of a `udp::Hub` stream says so; the rest of admission, delivery,
+expiry and revocation is the `ws` form's. The description's outcome form
+for a datagram hub is `"transport": "udp"`
+(`spec/api-description.schema.json`). A request and its reply over
+datagrams are not framed in this release: a serve of a surface over a
+`udp::Hub` is refused, saying so. UDP sockets share a port, so a second
+program for the same UDP address is not refused; an address no interface
+holds fails the boot.
+
+**What a program asks of a hub.** The hub is a param, and its methods are
+the program's: `events()`, the events its topics have offered; `subscribers()`,
+the subscriptions admitted and not ended, over every connection;
+`connections()`; `announce(revision)`, above; and `stop()`.
 
 ## Codecs
 
@@ -1419,7 +1565,11 @@ in-process transport (`tests/hale/api/`: the witness's own `Orders`,
 each refusal leaving the handler's counter where it was, the five
 outcomes, the lifecycle guarantees of § The request lifecycle); R2b
 runs the same assertions over a Unix socket, R3 over HTTP, R5 adds the
-stream half.
+stream half over WebSocket and datagrams (`crates/hale-codegen/tests/
+api_hub_streams.rs`, `api_hub_desk.rs` and `api_hub_udp.rs`: the witness's
+hub half, its `dave` and `bob`, a revoked grant, an expired credential,
+shedding, `stop()`, and the served descriptions held to the fixtures as
+values).
 
 ## Open points
 
@@ -1431,19 +1581,17 @@ stream half.
   surface over many instances of one type, keyed by the request), or
   only a single instance.
 - **A hub that also serves a surface** (rpcs and streams on one
-  connection): its description lists both, and the frames that carry
-  an rpc over WebSocket are R5's (below).
+  connection): the rpcs are carried (§ Rpcs on a hub), but the hub's
+  live description lists its streams only; the full document of a surface
+  and a hub together is the inventory's.
 - **A dispatch window wider than one call per receiver**: the exposure
   hands a receiver one call at a time (§ The runtime boundaries,
   dispatch) so that what it refuses is exactly what has not been handed
   over; a wider window needs a runtime primitive to withdraw a queued
   cell (R2b).
-- **The hub's use of expiry and revision** (R5): the interfaces are
-  § Identity sources'; a hub's invalidation of a live subscription from
-  them is R5's.
 - **MCP resources over streams.**
-- **Whether a locus may implement two interfaces at once** (the hub);
-  if not, the hub is two loci sharing one listener (R5).
 - **A surface-level `requires` default** that rows inherit.
-- **The wire framing of rpcs over WebSocket and UDP** (a correlation id
-  field, the largest frame; R5, R6).
+- **The wire framing of rpcs over UDP** (a correlation id field, the
+  largest datagram; R6). Over WebSocket they are framed (§ Streams).
+- **Leases for a datagram subscriber** that vanishes without
+  unsubscribing, and a refusal for a second program binding a UDP address.

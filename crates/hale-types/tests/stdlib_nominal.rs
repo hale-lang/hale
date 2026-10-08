@@ -223,9 +223,9 @@ fn every_renamed_std_target_is_declared_or_consciously_exempt() {
     // permissive typing for that name. Make it a decision instead.
     const EXEMPT: &[&str] = &[];
     // The bundled stdlib, and the runtime of `api::serve` (GH #1417,
-    // `API_RUNTIME_SOURCE`), which joins a program that serves or names it.
+    // `API_RUNTIME_SOURCE`, and the hub's, `API_HUB_SOURCE`), which join a program that serves or names them.
     let mut declared = std::collections::BTreeSet::new();
-    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE] {
+    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE, hale_stdlib::API_HUB_SOURCE] {
         let program = hale_syntax::parse_source(source).expect("the bundled stdlib source must parse");
         for item in &program.items {
             match item {

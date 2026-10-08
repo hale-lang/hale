@@ -35,6 +35,8 @@ dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
 libc = "0.2"
+# The hub tests hold a served description to the fixture documents as values.
+serde_json = "1"
 
 # Each `tests/<name>.rs` below is one binary; the files an area root pulls in
 # with `#[path]` are its modules.

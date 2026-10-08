@@ -3,7 +3,7 @@
 //! `unix::Rpc`; `hale check` admits it (R1's description and the
 //! serve-site laws read it as written), and `hale build` says what it
 //! cannot serve yet, instead of dropping the sites (R2b: `unix::Rpc` is
-//! served; R3: `http::Rpc` is). A hub binding is refused (R5).
+//! served; R3: `http::Rpc` is; R5: a hub binding is), so the witness builds.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,7 +17,7 @@ fn witness() -> PathBuf {
 }
 
 #[test]
-fn a_build_of_the_witness_is_refused_only_for_its_hub() {
+fn a_build_of_the_witness_serves_every_site() {
     let mut out_path = std::env::temp_dir();
     out_path.push(format!("hale_api_serve_build_{}_witness", std::process::id()));
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
@@ -30,11 +30,11 @@ fn a_build_of_the_witness_is_refused_only_for_its_hub() {
         .expect("run hale build");
     let _ = std::fs::remove_file(&out_path);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "the witness builds:\n{stderr}");
-    // (R2b ships `unix::Rpc`, R3 `http::Rpc`)
+    assert!(out.status.success(), "the witness builds:\n{stderr}");
+    // (R2b ships `unix::Rpc`, R3 `http::Rpc`, R5 the hub)
     assert!(!stderr.contains("`api::serve` over `http::Rpc`"), "`http::Rpc` is served:\n{stderr}");
     assert!(!stderr.contains("`api::serve` over `unix::Rpc`"), "`unix::Rpc` is served:\n{stderr}");
-    assert!(stderr.contains("`Fills` is bound to the hub `self.hub`"), "the hub binding is refused too:\n{stderr}");
+    assert!(!stderr.contains("is bound to the hub"), "the hub binding is served:\n{stderr}");
 }
 
 #[test]
@@ -172,6 +172,33 @@ fn an_http_serve_outside_main_is_refused_written_or_held() {
     assert!(!ok && err.contains(NON_MAIN_HTTP), "typed: {err}");
 }
 
+/// The hub's listener is likewise `main`-only: a serve over a `ws::Hub` or a
+/// `udp::Hub` from another locus is refused, written or held.
+#[test]
+fn a_hub_serve_outside_main_is_refused_written_or_held() {
+    for kind in ["ws", "udp"] {
+        let lit = format!("{kind}::Hub {{ bind: \"127.0.0.1:0\", principals: self.bearer, roles: self.roles, as: \"hub\" }}");
+        let non_main = format!("`api::serve` over `{kind}::Hub` in `Server`: a socket's listener runs on a pool of its own");
+        let written = http_server("", &lit);
+        let (ok, err, _) = build_source(&format!("{kind}_written"), &written);
+        assert!(!ok && err.contains(&non_main), "{kind} written: {err}");
+
+        let held = http_server(&format!("hub: std::api::{kind}::Hub = std::api::{lit};"), "self.hub");
+        let (ok, err, _) = build_source(&format!("{kind}_held"), &held);
+        assert!(!ok && err.contains(&non_main), "{kind} held: {err}");
+
+        // the declared type alone says it: the default is built elsewhere
+        let typed = http_server(&format!("hub: std::api::{kind}::Hub = make_hub();"), "self.hub").replace(
+            "api Public",
+            &format!(
+                "fn make_hub() -> std::api::{kind}::Hub {{ return std::api::{kind}::Hub {{ bind: \"127.0.0.1:0\", principals: Tokens {{ }}, roles: Nobody {{ }}, name: \"hub\" }}; }}\napi Public"
+            ),
+        );
+        let (ok, err, _) = build_source(&format!("{kind}_typed"), &typed);
+        assert!(!ok && err.contains(&non_main), "{kind} typed: {err}");
+    }
+}
+
 /// The main locus's serve over a `unix::Rpc` whose path reads a param the
 /// locus declares: the listener is born after that param, so its default
 /// (the copied path) reads an initialized `self.socket_path`.
@@ -193,6 +220,50 @@ main locus App {{
 fn main() {{ App {{ }}; }}
 "#
     )
+}
+
+/// The main locus holds a hub whose `bind:` is `bind`, an authored param.
+fn main_hub(bind: &str) -> String {
+    format!(
+        r#"
+role operator;
+type Fill {{ qty: Int; }}
+topic Fills {{ payload: Fill; subject: "desk.fills"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: "" }}; }}
+    fn refused() -> String {{ return "no such token"; }}
+}}
+locus Nobody {{ fn holds(p: std::api::Principal, r: String) -> Bool {{ return false; }} }}
+locus Maker {{
+    bus {{ publish Fills; }}
+    fn make(n: Int) {{ Fills <- Fill {{ qty: n }}; }}
+}}
+main locus Desk {{
+    params {{
+        addr: String = "127.0.0.1:0";
+        bearer: Tokens = Tokens {{ }};
+        roles: Nobody = Nobody {{ }};
+        hub: ws::Hub = ws::Hub {{ bind: {bind}, principals: self.bearer, roles: self.roles, as: "fills" }};
+        maker: Maker = Maker {{ }};
+    }}
+    bindings {{ Fills: self.hub requires: [operator], bound: 8, on_full: drop_old; }}
+    run() {{ self.maker.make(1); self.hub.stop(); }}
+}}
+fn main() {{ Desk {{ }}; }}
+"#
+    )
+}
+
+/// One rule for every listener: after the authored params, so a hub's
+/// `bind:` may read one.
+#[test]
+fn a_hub_bind_may_read_an_authored_param() {
+    let (ok, err, read) = build_source("hub_reads_param", &main_hub("self.addr"));
+    assert!(ok, "the bind reads a declared param: {err}");
+    let (ok, err, literal) = build_source("hub_literal", &main_hub("\"127.0.0.1:0\""));
+    assert!(ok, "{err}");
+    assert!(literal.contains("__rpc_w_1"), "the control schedules the listener's birth");
+    assert!(read.contains("__rpc_w_1"), "the listener's birth is scheduled when the bind reads a param");
 }
 
 #[test]

@@ -253,3 +253,22 @@ fn the_appended_runtime_is_not_the_programs_own() {
     assert!(own.fns.keys().all(|k| !k.locus.as_deref().is_some_and(|l| l.starts_with("__StdApi"))), "no runtime row among the own rows");
     assert!(own.fns.keys().any(|k| k.locus.as_deref() == Some("__RpcSurface_2")), "the program's own surfaces are rows");
 }
+
+/// The hub's source (`api_hub.hl`) is appended the same way to a program
+/// that binds a topic to a hub, and is runtime too: the contract's program
+/// carries both, and neither is among its own rows, though both are in the
+/// full summary the coverage law reads.
+#[test]
+fn the_appended_hub_is_not_the_programs_own_either() {
+    let path = root().join("tests/api-contract/program.hl");
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("the contract's program loads");
+    let summary = snap.demand_alloc_summary().expect("the contract's program has a summary");
+    for locus in ["__StdApiHub", "__StdApiWsPeer", "__StdApiExposure"] {
+        assert!(summary.fns.keys().any(|k| k.locus.as_deref() == Some(locus)), "{locus} is in the full summary");
+        assert!(!summary.is_own_locus(locus), "{locus} is the copy's");
+        assert!(summary.fns.keys().filter(|k| k.locus.as_deref() == Some(locus)).all(|k| !summary.is_own(k)), "every {locus} fn is the copy's");
+    }
+    let own = summary.own_rows();
+    assert!(own.fns.keys().all(|k| !k.locus.as_deref().is_some_and(|l| l.starts_with("__StdApi"))), "no runtime row among the own rows");
+    assert!(own.fns.keys().any(|k| k.locus.as_deref() == Some("Orders")), "the program's own loci are rows");
+}

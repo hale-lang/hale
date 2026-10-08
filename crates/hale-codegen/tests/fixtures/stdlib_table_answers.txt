@@ -479,6 +479,7 @@ std::api::ExpiringBearerSource | lookup=api@2 | locus=false | effects=- | sig=- 
 std::api::Exposure | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Exposure` | suggest=-
 std::api::Grants | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Grants` | suggest=-
 std::api::Handle | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Handle` | suggest=-
+std::api::HubRows | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::HubRows` | suggest=-
 std::api::NoBearer | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::NoBearer` | suggest=-
 std::api::Outcome | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Outcome` | suggest=-
 std::api::Principal | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Principal` | suggest=-
@@ -501,8 +502,12 @@ std::api::http::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false |
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
 std::api::test::Record | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
 std::api::test::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
+std::api::udp::Endpoint | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::udp` — did you mean `std::io::udp`?
+std::api::udp::Hub | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::udp` — did you mean `std::io::udp`?
 std::api::unix::Listener | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::unix` — did you mean `std::io::unix`?
 std::api::unix::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::unix` — did you mean `std::io::unix`?
+std::api::ws::Hub | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::ws`
+std::api::ws::Listener | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::ws`
 std::bus::Adapter | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::UnixTransport | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::__binding_fai | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fai` | suggest=-
