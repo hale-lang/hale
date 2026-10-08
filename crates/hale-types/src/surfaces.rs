@@ -850,8 +850,8 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
                     site.span,
                     format!(
                         "`api::serve` over `{transport}`: this compiler serves a surface over \
-                         `std::api::test::Rpc`, the in-process transport, or a transport the program declares; the \
-                         socket transports follow (spec/api.md § The `Rpc` interface)"
+                         `std::api::test::Rpc`, the in-process transport, `unix::Rpc`, or a transport the program declares; the \
+                         other socket transports follow (spec/api.md § The `Rpc` interface)"
                     ),
                 ));
             }

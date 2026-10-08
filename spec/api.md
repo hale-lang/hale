@@ -363,10 +363,13 @@ failure and generations); and a serve site in a free fn, "\`api::serve\` in
 \`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
 param of the serving locus; serve from the locus that holds the
 receivers". A build refuses a serve site over a transport the compiler
-does not ship (R2b and R3 add \`unix::Rpc\` and \`http::Rpc\`): "\`api::serve\`
-over \`http::Rpc\`: this compiler serves a surface over
-\`std::api::test::Rpc\`, the in-process transport, or a transport the
-program declares; the socket transports follow".
+does not ship (R3 adds \`http::Rpc\`): "\`api::serve\` over \`http::Rpc\`: this
+compiler serves a surface over \`std::api::test::Rpc\`, the in-process
+transport, \`unix::Rpc\`, or a transport the program declares; the other
+socket transports follow", and a serve over \`unix::Rpc\` from a locus that
+is not the main locus: "\`api::serve\` over \`unix::Rpc\` in \`Desk\`: a socket's
+listener runs on a pool of its own, which only the main locus places; serve
+from the main locus" (§ The Unix transport).
 
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
@@ -511,6 +514,70 @@ transport with no socket: a test hands it framed requests
 (`request_id`, the client's `id`, the answer, `caller`). It goes through
 the same admission, dispatch and completion as every transport, and it
 is how the runtime is proven before a socket exists.
+
+### The Unix transport
+
+`unix::Rpc` (`std::api::unix::Rpc`, R2b) serves an exposure over a Unix
+domain stream socket, one JSON object per line (§ Outcomes states the
+wire). It is written at a serve site, or held as a param and named:
+
+```hale,fragment
+let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
+```
+
+- **The principal is the peer's kernel credentials**, read once per
+  connection: `mode: "unix"`, `name: "uid:<n>"`, `uid`, `gid`, `pid` and
+  the supplementary groups. The transport therefore has no bearer
+  source (`principals:` is not one of its fields); `roles:` is the
+  role source, as for every transport. A connection whose peer the kernel
+  will not name has uid -1 and is refused `unauthenticated` ("the kernel
+  did not name the peer") before anything else is looked at.
+- **The listener is bound at birth.** A path it cannot bind (a missing
+  directory, a path a live process holds) fails the program's boot: the
+  diagnostic on stderr and exit code 2, the root failure shape of a binding
+  that cannot open; a stale socket file is replaced. The path is held
+  from birth, but nothing is accepted until the exposure is attached to
+  the bus (a client that connects earlier waits in the socket's backlog), so
+  a request read is never published to an exposure that is not there yet.
+  The socket file is removed when the exposure stops or is torn down.
+- **The listener runs on a pool of its own.** A socket's accept and read
+  park a coroutine, so they need an `async_io` pool, and only the main
+  locus places: the serve expansion adds the listener to the serving main
+  locus as a param, placed on the pool `__api_unix`, which every Unix
+  exposure of the program shares. A serve over `unix::Rpc` from a locus
+  that is not the main locus is refused. The transport itself, and the
+  exposure, stay on the serving locus's pool; the two meet on the bus
+  only (the subject `__api.unix.out`, keyed by exposure and connection).
+- **Framing is a line.** A request is one JSON object on one line of at
+  most 60000 bytes:
+  `{"call": "Orders::cancel", "payload": {…}, "id": …, "digest": "…"}`
+  or `{"describe": true}`. The reply is one line (§ Outcomes). `id` is
+  any JSON value, echoed verbatim (`null` when the request has none);
+  `request_id` is the exposure's. Replies are written in the order the
+  program produces them, so a client correlates by `id`. A client may have
+  many requests in flight on a connection, and several connections.
+- **A connection fails alone.** A line that is not a JSON object is
+  answered `malformed` with `request_id` 0 and the connection is closed. An
+  object that is neither a call nor a describe, or a call that carries no
+  `payload`, is refused `malformed` and the connection stays open. An EOF,
+  a client that goes away after sending, and a reply write that fails
+  (a reader that does not read for 5 seconds) end that connection: the
+  requests it still has with the exposure are lost (§ The request
+  lifecycle), and the listener and every other connection go on.
+- **`describe`** answers `{"ok": true, "value": <description>}`: the
+  exposure's identity, the caller the exposure established, and the members
+  that caller may call under the exposure's role source, from the same
+  rows and the same sources admission reads, so the two agree for the same
+  caller. (The listener, schemas and notes of the full document of § The
+  description are not in the live document yet.)
+- **`stop()`** closes the listener and every connection after the replies
+  already sent: the queued requests are refused `shutting_down` and the
+  executing ones are answered first, as § The request lifecycle states.
+  A program that ends without `stop()` is torn down by its owner and
+  releases its sockets, but the pools of the listener and its connections
+  are stopped before the exposure's shutdown can write to them, so a
+  caller with a request in flight sees the connection end, which is the
+  transport failure outcome, never a refusal: `stop()` is the orderly path.
 
 ## The runtime boundaries
 
