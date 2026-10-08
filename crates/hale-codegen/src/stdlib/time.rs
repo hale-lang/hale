@@ -45,6 +45,12 @@ pub(crate) trait TimeStdlib<'ctx> {
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError>;
 
+    fn lower_time_idle_wait(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError>;
+
     // GH #607: Time is a value — i64 nanoseconds since the epoch.
     fn lower_std_time_current(
         &mut self,
@@ -427,6 +433,74 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             Some((ns, CodegenTy::Time)),
             "time.parse_time",
         )
+    }
+
+    /// Lower `std::time::__idle_wait(duration)`: on the main thread, a wait
+    /// on its bus queue that a foreign-thread delivery ends
+    /// (`lotus_bus_queue_idle_wait`); on any other thread, `sleep`.
+    fn lower_time_idle_wait(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "time::__idle_wait takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (val, ty) = self.lower_expr(&args[0], scope)?;
+        if ty != CodegenTy::Duration {
+            return Err(CodegenError::Unsupported(format!(
+                "time::__idle_wait expects Duration, got {:?}",
+                ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        // Declared here, not with the builtins, so a program that never
+        // names this call carries no new declaration.
+        let wait_main = self
+            .module
+            .get_function("lotus_bus_idle_wait_main")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "lotus_bus_idle_wait_main",
+                    i64_t.fn_type(&[i64_t.into()], false),
+                    None,
+                )
+            });
+        let waited = self
+            .builder
+            .build_call(wait_main, &[val.into()], "idle.wait.main")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let did_wait = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                waited,
+                i64_t.const_int(0, false),
+                "idle.waited",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering time::__idle_wait");
+        let sleep_bb = self.context.append_basic_block(func, "idle.sleep");
+        let done_bb = self.context.append_basic_block(func, "idle.done");
+        self.builder
+            .build_conditional_branch(did_wait, done_bb, sleep_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(sleep_bb);
+        self.lower_time_sleep(args, scope)?;
+        self.builder
+            .build_unconditional_branch(done_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(done_bb);
+        Ok(())
     }
 
     /// Lower `time::sleep(duration)` to a monotonic-clock,

@@ -26870,6 +26870,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
             },
+            Id::TimeIdleWaitRaw => match pos {
+                StdCallPos::Statement => {
+                    self.lower_time_idle_wait(args, scope)?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
             Id::TimeMonotonic => self.lower_time_monotonic(args),
             Id::TimeMonotonicNs => self.lower_time_monotonic_ns(args),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
@@ -27714,6 +27721,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TimeNanos
             | Id::TimeNow
             | Id::TimeSleep
+            | Id::TimeIdleWaitRaw
             | Id::TimeTimeFromUnix
             | Id::TimeUnix
             | Id::TsNodeChild

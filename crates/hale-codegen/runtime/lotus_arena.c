@@ -20097,6 +20097,17 @@ void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
     g_bus_queue_for_remote = queue;
 }
 
+/* `std::time::__idle_wait` on the main thread: wait for work on main's
+ * queue for at most `ns`. 1 when it waited; 0 when this is not the
+ * queue's owner (a pool worker, a pinned thread), and the caller sleeps
+ * as `std::time::sleep` does. */
+int64_t lotus_bus_idle_wait_main(int64_t ns) {
+    lotus_bus_queue_t *q = g_bus_queue_for_remote;
+    if (!q || !pthread_equal(pthread_self(), q->owner)) return 0;
+    lotus_bus_queue_idle_wait(q, ns);
+    return 1;
+}
+
 /* m59: reader-thread args. The entry back-reference carries the
  * pre-created listener transport (#227: bind/listen now happens
  * synchronously in lotus_bus_register_remote so a dead binding
