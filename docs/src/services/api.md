@@ -336,7 +336,9 @@ closes the listener after the replies.
 surface as an MCP server over HTTP: a JSON-RPC message in `POST /mcp`,
 its answer in the response. The tools are the rows the caller may call
 (`tools/list` is the caller's description, filtered, each tool named as
-its member with `::` written `__`), and `tools/call` is a call, through
+its member with `::` written `__`; an identifier's own underscores are
+escaped where they would run into that, as the spec says), and
+`tools/call` is a call, through
 the same admission as an HTTP body:
 
 ```hale,fragment

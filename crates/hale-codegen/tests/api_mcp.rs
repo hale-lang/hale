@@ -260,7 +260,7 @@ fn a_message_that_is_not_a_call_is_refused_and_the_connection_ends() {
     // a tool no row names
     let unknown = rpc(server.port, Some("t-alice"), &message(1, "tools/call", "{\"name\":\"Orders__nothing\",\"arguments\":{}}"));
     assert_eq!(unknown.status, 200, "{}", unknown.body);
-    assert!(unknown.body.contains("\"code\":-32602") && unknown.body.contains("unknown_member: Orders::nothing"), "{}", unknown.body);
+    assert!(unknown.body.contains("\"code\":-32602") && unknown.body.contains("unknown_member: Orders__nothing"), "{}", unknown.body);
     // not JSON, a batch, a call without a name
     let junk = rpc(server.port, Some("t-alice"), "this is not json");
     assert!(junk.body.contains("\"code\":-32700") && junk.body.contains("\"id\":null"), "{}", junk.body);
@@ -284,6 +284,74 @@ fn a_message_that_is_not_a_call_is_refused_and_the_connection_ends() {
     assert!(after.body.contains("\"id\":4,\"result\""), "{}", after.body);
     let done = server.finish();
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
+}
+
+/// A surface whose members hold `__`: `A::b__c` and `A__b::c` are one name
+/// under a plain `::` → `__` spelling.
+const UNDERSCORES: &str = r#"
+type Q { n: Int; }
+type R { n: Int; }
+
+api S {
+    rpc A::b_c;
+    rpc A::b__c;
+    rpc A__b::c;
+}
+
+locus Tok {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "x" }; }
+    fn refused() -> String { return ""; }
+}
+
+locus A {
+    fn b_c(q: Q) -> R { return R { n: 1 }; }
+    fn b__c(q: Q) -> R { return R { n: 3 }; }
+}
+
+locus A__b {
+    fn c(q: Q) -> R { return R { n: 2 }; }
+}
+
+main locus D {
+    params {
+        t: Tok = Tok { };
+        a: A = A { };
+        ab: A__b = A__b { };
+    }
+    run() {
+        let h = api::serve(S, mcp::Rpc { bind: std::env::var("BIND"), principals: self.t }, as: "s", bound: 4, on_full: refuse);
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
+            std::time::sleep(10ms);
+        }
+        h.stop();
+    }
+}
+
+fn main() { D { }; }
+"#;
+
+#[test]
+fn a_member_with_underscores_is_called_by_its_own_tool_name() {
+    let bin = harness::unique_bin("api_mcp_underscores");
+    build_opts::build_source(UNDERSCORES, &bin, &build_opts::options()).expect("build the underscore surface over mcp::Rpc");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let list = rpc(server.port, Some("t"), &message(1, "tools/list", "{}"));
+    let mut names: Vec<&str> = list.body.split("\"name\":\"").skip(1).filter_map(|t| t.split('"').next()).collect();
+    names.sort();
+    // three distinct tools; a `_` of an identifier that would run into the
+    // joining `__` is written `_-`
+    assert_eq!(names, ["A_-_-b__c", "A__b_-_-c", "A__b_c"], "{}", list.body);
+    // each reaches its own member: the handlers answer 1, 3 and 2
+    for (id, (tool, n)) in [("A__b_c", 1), ("A__b_-_-c", 3), ("A_-_-b__c", 2)].into_iter().enumerate() {
+        let got = rpc(server.port, Some("t"), &message(id as u32 + 2, "tools/call", &format!("{{\"name\":\"{tool}\",\"arguments\":{{\"n\":0}}}}")));
+        assert!(got.body.contains(&format!("\"structuredContent\":{{\"n\":{n}}}")), "{tool}: {}", got.body);
+    }
+    // the plain rewrite's name is no tool: it is refused, not guessed at
+    let rewritten = rpc(server.port, Some("t"), &message(9, "tools/call", "{\"name\":\"A__b__c\",\"arguments\":{\"n\":0}}"));
+    assert!(rewritten.body.contains("\"code\":-32602") && rewritten.body.contains("unknown_member: A__b__c"), "{}", rewritten.body);
+    assert!(server.finish().status.success());
 }
 
 #[test]

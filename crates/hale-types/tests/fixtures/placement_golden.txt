@@ -580,7 +580,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#ff63e5c7
+== crates/hale-stdlib/hl/api_rpc.hl#a24090a3
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1210,6 +1210,19 @@ row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+
+== crates/hale-codegen/tests/api_mcp.rs#206f7719
+root	D	the entry
+domain	pool:__api_http	async_io
+row	D@literal1	D	main	default
+row	D@literal1.__rpc_h_1	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	D@literal1.a	A	main	default
+row	D@literal1.ab	A__b	main	default
+row	D@literal1.t	Tok	main	default
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `mcp::Rpc`
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 

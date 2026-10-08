@@ -788,9 +788,25 @@ pub fn json_schema(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> 
     ]))
 }
 
+/// One identifier of a member in a tool name: itself, unless it holds `__`
+/// or starts or ends with `_` (which would read as, or run into, the `__`
+/// that joins the two), when each `_` is written `_-`. A `-` cannot occur
+/// in an identifier, so the names of two members never collide. The
+/// stdlib's `__api_mcp_ident` is the same function.
+fn tool_ident(id: &str) -> String {
+    if id.contains("__") || id.starts_with('_') || id.ends_with('_') {
+        id.replace('_', "_-")
+    } else {
+        id.to_string()
+    }
+}
+
 /// A tool name: the member with `::` spelled `__`.
 fn tool_name(member: &str) -> String {
-    member.replace("::", "__")
+    match member.split_once("::") {
+        Some((recv, method)) => format!("{}__{}", tool_ident(recv), tool_ident(method)),
+        None => member.to_string(),
+    }
 }
 
 /// The MCP form of a surface: every row a tool, its input schema the

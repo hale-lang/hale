@@ -531,6 +531,17 @@ locus __StdApiExposure {
         }
         return "";
     }
+    // The row whose tool name is `tool`, -1 for none (a lookup in the
+    // surface's rows, not a rewrite of the name).
+    fn tool_row(tool: String) -> Int {
+        let n = self.rows.count();
+        let mut k = 0;
+        while k < n {
+            if __api_mcp_tool(self.rows.name_of(k)) == tool { return k; }
+            k = k + 1;
+        }
+        return -1;
+    }
     fn principal_json(p: std::api::Principal) -> String {
         return "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\"}";
     }
@@ -670,7 +681,12 @@ locus __StdApiExposure {
             self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was generated against " + r.digest, self.digest);
             return;
         }
-        let m = self.rows.member(r.member);
+        let mut m = self.rows.member(r.member);
+        if self.via == "mcp" {
+            // the transport frames the tool name it was called by; the
+            // member is the row whose tool name that is
+            m = self.tool_row(r.member);
+        }
         if m < 0 {
             self.refuse(i.correlation, rid, who, "malformed", "unknown_member: " + r.member, "");
             return;
@@ -678,7 +694,7 @@ locus __StdApiExposure {
         let req = self.rows.requires(m);
         let miss = self.missing_role(who, req);
         if len(miss) > 0 {
-            self.refuse(i.correlation, rid, who, "unauthorized", r.member + " requires " + miss, req);
+            self.refuse(i.correlation, rid, who, "unauthorized", self.rows.name_of(m) + " requires " + miss, req);
             return;
         }
         let body = std::str::from_bytes(r.bytes);
@@ -704,7 +720,7 @@ locus __StdApiExposure {
             self.probe_ok = true;
             __ApiRpcHelloT <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.probe_failed();
             if !self.probe_ok {
-                self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + r.member + " is unavailable; the call did not run", "");
+                self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + self.rows.name_of(m) + " is unavailable; the call did not run", "");
                 return;
             }
             self.slot_state[slot] = 0;
@@ -1979,6 +1995,26 @@ fn __api_mcp_type_name(raw: String) -> String {
     return "nothing";
 }
 
+/// One identifier of a member in a tool name: itself, unless it holds `__`
+/// or starts or ends with `_` (which would read as, or run into, the `__`
+/// that joins the two), when each `_` is written `_-`. A `-` cannot occur
+/// in an identifier, so the names of two members never collide.
+fn __api_mcp_ident(id: String) -> String {
+    let n = len(id);
+    if n == 0 { return id; }
+    if std::str::index_of(id, "__") >= 0 || id[0..1] == "_" || id[(n - 1)..n] == "_" {
+        return std::str::replace(id, "_", "_-");
+    }
+    return id;
+}
+
+/// A member's tool name: `Orders::place` is `Orders__place`.
+fn __api_mcp_tool(member: String) -> String {
+    let at = std::str::index_of(member, "::");
+    if at < 0 { return member; }
+    return __api_mcp_ident(member[0..at]) + "__" + __api_mcp_ident(member[(at + 2)..len(member)]);
+}
+
 /// The tools of a description (spec/api.md § The MCP transport): a tool per
 /// member the document lists, its input the request's schema made
 /// self-contained (a nested type's schema under `$defs`). A member whose
@@ -2033,7 +2069,7 @@ fn __api_mcp_tools(doc: String) -> String {
             if len(roles) > 0 { needs = "Requires " + roles + " under the exposure's role source"; }
             let text = "rpc " + name + " of " + surface + ": returns " + __api_mcp_type_name(std::json::find_field_raw(el, "response")) + fails + ". " + needs + "; the server still authorizes every request.";
             if len(tools) > 0 { tools = tools + ","; }
-            tools = tools + "{\"name\":\"" + std::str::replace(name, "::", "__") + "\",\"description\":\"" + std::json::escape_string(text) + "\",\"inputSchema\":" + input + ",\"x-hale-requires\":" + (if len(requires) > 0 { requires } else { "[]" }) + "}";
+            tools = tools + "{\"name\":\"" + __api_mcp_tool(name) + "\",\"description\":\"" + std::json::escape_string(text) + "\",\"inputSchema\":" + input + ",\"x-hale-requires\":" + (if len(requires) > 0 { requires } else { "[]" }) + "}";
         }
     }
     return tools;
@@ -2156,7 +2192,7 @@ locus __StdApiMcpRpc {
             if len(args) == 0 { args = "{}"; }
             let mut digest = std::http::header(req, "Hale-Surface-Digest");
             if len(digest) == 0 { digest = std::json::find_string_field(std::json::find_field_raw(pm, "_meta"), "hale/digest"); }
-            return std::api::Request { kind: 0, member: std::str::replace(name, "__", "::"), bytes: std::bytes::from_string(args), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request { kind: 0, member: name, bytes: std::bytes::from_string(args), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
         }
         self.note(correlation, 0, id, "");
         return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "method not found: " + method };

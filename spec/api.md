@@ -684,7 +684,10 @@ and the encoding.
   for the caller the bearer names, which is the caller's description
   filtered by the rows and sources admission reads: a tool per member the
   caller may call, named as the member with `::` written `__`
-  (`Orders__place`; a tool name may not contain `:`), described as `hale
+  (`Orders__place`; a tool name may not contain `:`; an identifier that
+  holds `__` or starts or ends with `_` writes each of its `_` as `_-`, a
+  `-` being no part of an identifier, so no two members share a tool
+  name), described as `hale
   check --api --mcp` describes it, its `inputSchema` the request's schema
   made self-contained (a type it reaches under `$defs`), `x-hale-requires`
   the roles. A caller holding no role sees the members that require none.
@@ -694,7 +697,9 @@ and the encoding.
 - **`tools/call` is a call.** `params.name` is the tool and
   `params.arguments` the payload, which goes through admission exactly as
   an HTTP body does; the digest, when the client sends one, is the header
-  `Hale-Surface-Digest` or `params._meta["hale/digest"]`.
+  `Hale-Surface-Digest` or `params._meta["hale/digest"]`. The tool is
+  found, not decoded: the member is the row whose tool name it is, and a
+  name no row has is `malformed`, `unknown_member`.
 - **The session methods are the transport's.** `initialize` answers the
   client's `protocolVersion` (the current one, `2025-06-18`, when it
   names none), the capability `tools` and `serverInfo` as the surface's
