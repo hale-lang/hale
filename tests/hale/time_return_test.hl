@@ -1,0 +1,50 @@
+// A fn that returns `Time` lowers like one that returns `Duration`: an
+// i64 count in a register. `Time` is a point over `Duration` since the
+// unit dialect's U4, and the locus-method declaration listed it with
+// the pointer-returned types, so a method call whose result was read
+// as an `Int` (an argument of `println`, an `==` operand) panicked
+// inkwell at build (downstream handoff, found building the API runtime).
+//
+// Covers a method, a free fn, a method returning a `Time` field, a
+// `fallible(E)` method, a mode, and the call as a direct operand.
+
+type E { kind: String; }
+
+fn later(t: Time, d: Duration) -> Time {
+    return t + d;
+}
+
+locus Clock {
+    params { base: Time = Time(3ns); }
+
+    fn at(d: Duration) -> Time {
+        return self.base + d;
+    }
+
+    fn start() -> Time {
+        return self.base;
+    }
+
+    fn checked(ok: Bool) -> Time fallible(E) {
+        if !ok { fail E { kind: "no" }; }
+        return self.base + 1s;
+    }
+
+    mode bulk() -> Time {
+        return self.base;
+    }
+}
+
+fn main() {
+    let c = Clock { };
+    std::test::assert(c.at(5s) == Time(3ns) + 5s, "method returning base + d");
+    std::test::assert(later(Time(1ns), 5s) == Time(1ns) + 5s, "free fn");
+    std::test::assert(c.start() == Time(3ns), "method returning a Time field");
+    std::test::assert((c.checked(true) or Time(0ns)) == Time(3ns) + 1s, "fallible ok path");
+    std::test::assert((c.checked(false) or Time(0ns)) == Time(0ns), "fallible fail path");
+    std::test::assert(c.bulk() == Time(3ns), "mode returning a Time");
+
+    let t = c.at(1s);
+    std::test::assert(t == Time(3ns) + 1s, "bound result");
+    std::test::assert(to_string(c.start()) == "1970-01-01T00:00:00.000000003Z", "the call as a to_string argument");
+}

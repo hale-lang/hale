@@ -1711,7 +1711,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                             .into(),
                                     ));
                                 }
-                                CodegenTy::Int | CodegenTy::Duration => self
+                                CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
@@ -1750,7 +1750,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String
                                 | CodegenTy::Bytes
-                                | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
                                 | CodegenTy::Array(_, _)
@@ -1880,7 +1879,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                             .into(),
                                     ));
                                 }
-                                CodegenTy::Int | CodegenTy::Duration => self
+                                CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
@@ -1919,7 +1918,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String
                                 | CodegenTy::Bytes
-                                | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
                                 | CodegenTy::Array(_, _)
