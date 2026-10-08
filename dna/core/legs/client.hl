@@ -3,41 +3,38 @@
 //
 // A leg holds nothing between tasks and has no database role: everything
 // it knows it reads from the head — the record and the hat over HTTP,
-// which stay reads — and everything it does is a call on the head's
-// gated topics over its api socket (`dna.commands.*`, GH #1110): the
+// which stay reads — and everything it does is a call on a member of the
+// head's surface over its socket (`Commands::claim`, GH #1417): the
 // claim, the renewal, the ask for its spend (GH #1131), the outcome, the
 // release, the friction, and the
 // lookup that reads a command back, each under a request id the leg
 // mints from what it asks, so a verb run twice is one act and the second
 // run reads the first's receipt. The socket authenticates: the principal
 // is the peer's credentials, mapped to a person by the record
-// (`dna.unix.member`), and a verb outside what that person holds is
-// `unknown`, as the binding answers everything outside a caller's slice.
+// (`dna.unix.member`), and a verb outside what that person holds is not
+// in the description the socket gives it (a call to it is `unauthorized`).
 // This seed sits beside the core it imports as `..` in the repository
 // (`dna/core/legs`), in the toolchain cache, and in a project's
 // `vendor/dna/legs`, like pond's copies do.
 import ".." as dna;
 
-// The head's topics for a leg, by their wire subjects (the hard cut of
-// #1129): a subject is the same on every head, while the call name a
-// head lists depends on whose seed subscribes the topic — `AttemptClaim`
-// on the standalone head, `api::AttemptClaim` on a composed one — so
-// the leg reads the names from the description at attach.
-const CLAIM_SUBJECT: String = "dna.commands.attempt.claim";
-const RENEW_SUBJECT: String = "dna.commands.attempt.renew";
-const OUTCOME_SUBJECT: String = "dna.commands.attempt.outcome";
-const RELEASE_SUBJECT: String = "dna.commands.attempt.release";
-const ALLOWANCE_SUBJECT: String = "dna.commands.attempt.allowance";
-const FRICTION_SUBJECT: String = "dna.commands.friction.file";
-const LOOKUP_SUBJECT: String = "dna.commands.lookup";
+// The head's members for a leg: the rows of `HeadCommands`
+// (dna/api/commands.hl), by the names a description lists.
+const CLAIM_MEMBER: String = "Commands::claim";
+const RENEW_MEMBER: String = "Commands::renew";
+const OUTCOME_MEMBER: String = "Commands::outcome";
+const RELEASE_MEMBER: String = "Commands::release_attempt";
+const ALLOWANCE_MEMBER: String = "Commands::ask_allowance";
+const FRICTION_MEMBER: String = "Commands::file_friction";
+const LOOKUP_MEMBER: String = "Commands::lookup";
 const SOCKET_WAIT: Int = 30; // seconds a verb waits on the socket for its answer
 
-// The call name the description lists for a subject, "" when the
-// caller's slice has none: each command is one object of the `commands`
-// array, its `name` and `subject` among its fields.
+// The member a description lists, "" when the caller's slice has none:
+// each member is one object of the `members` array, its `name` among its
+// fields.
 @unbounded
-fn topic_named(description: String, subject: String) -> String {
-    let commands = std::json::find_field_raw(description, "commands");
+fn member_named(description: String, member: String) -> String {
+    let commands = std::json::find_field_raw(description, "members");
     let mut i = 0;
     let mut depth = 0;
     let mut start = -1;
@@ -48,7 +45,7 @@ fn topic_named(description: String, subject: String) -> String {
             depth = depth - 1;
             if depth == 0 && start >= 0 {
                 let one = commands[start..(i + 1)];
-                if std::json::find_string_field(one, "subject") == subject { return std::json::find_string_field(one, "name"); }
+                if std::json::find_string_field(one, "name") == member { return member; }
                 start = -1;
             }
         }
@@ -102,8 +99,8 @@ locus Wire {
         }
         return "";
     }
-    fn call(id: String, topic: String, payload: String) -> String {
-        return self.ask("{\"id\": " + dna::record_json_quote(id) + ", \"call\": " + dna::record_json_quote(topic) + ", \"payload\": " + payload + "}");
+    fn call(id: String, member: String, payload: String) -> String {
+        return self.ask("{\"id\": " + dna::record_json_quote(id) + ", \"call\": " + dna::record_json_quote(member) + ", \"payload\": " + payload + "}");
     }
     fn describe() -> String { return self.ask("{\"describe\": true}"); }
 }
@@ -162,14 +159,14 @@ locus Head {
         principal_name: String = "";
         attached: Bool = false;
         error: String = "";
-        // the call names this head lists for the leg's subjects
-        claim_topic: String = "";
-        renew_topic: String = "";
-        outcome_topic: String = "";
-        release_topic: String = "";
-        allowance_topic: String = "";
-        friction_topic: String = "";
-        lookup_topic: String = "";
+        // the members this head lists for the leg
+        claim_member: String = "";
+        renew_member: String = "";
+        outcome_member: String = "";
+        release_member: String = "";
+        allowance_member: String = "";
+        friction_member: String = "";
+        lookup_member: String = "";
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
         return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
@@ -245,21 +242,21 @@ locus Head {
             self.principal_name = std::json::find_string_field(caller, "name");
         }
         let description = std::json::find_field_raw(described, "value");
-        self.claim_topic = topic_named(description, CLAIM_SUBJECT);
-        self.renew_topic = topic_named(description, RENEW_SUBJECT);
-        self.outcome_topic = topic_named(description, OUTCOME_SUBJECT);
-        self.release_topic = topic_named(description, RELEASE_SUBJECT);
-        self.allowance_topic = topic_named(description, ALLOWANCE_SUBJECT);
-        self.friction_topic = topic_named(description, FRICTION_SUBJECT);
-        self.lookup_topic = topic_named(description, LOOKUP_SUBJECT);
-        if len(self.claim_topic) == 0 {
-            self.error = "the head's socket lists no `" + CLAIM_SUBJECT + "` for " + self.principal_name + ": this peer holds no position the record knows (`git config --local --add dna.unix.member \"uid:<n>=<person>\"`, and a `holds` edge), or the head serves no commands";
+        self.claim_member = member_named(description, CLAIM_MEMBER);
+        self.renew_member = member_named(description, RENEW_MEMBER);
+        self.outcome_member = member_named(description, OUTCOME_MEMBER);
+        self.release_member = member_named(description, RELEASE_MEMBER);
+        self.allowance_member = member_named(description, ALLOWANCE_MEMBER);
+        self.friction_member = member_named(description, FRICTION_MEMBER);
+        self.lookup_member = member_named(description, LOOKUP_MEMBER);
+        if len(self.claim_member) == 0 {
+            self.error = "the head's socket lists no `" + CLAIM_MEMBER + "` for " + self.principal_name + ": this peer holds no position the record knows (`git config --local --add dna.unix.member \"uid:<n>=<person>\"`, and a `holds` edge), or the head serves no commands";
             return false;
         }
         self.attached = true;
         return true;
     }
-    // One call on a topic, the receipt as the verbs read it. A head that
+    // One call on a member, the receipt as the verbs read it. A head that
     // read its record while another writer's row landed answers
     // `snapshot_changed`, and one whose record kept moving through all of
     // its reads answers `command_busy`: neither admitted the command. It is
@@ -269,16 +266,16 @@ locus Head {
     // the owner write moves often; the answer is never the leg's to give
     // up on.
     @unbounded
-    fn call(request_id: String, topic: String, payload: String) -> Reply {
+    fn call(request_id: String, member: String, payload: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let mut r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
+        let mut r = socket_reply(self.socket, self.wire.call(request_id, member, payload));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
-            r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
+            r = socket_reply(self.socket, self.wire.call(request_id, member, payload));
         }
         return r;
     }
-    // ---- the commands, each its topic's payload
+    // ---- the commands, each its member's request
     // `effect_class` is the performer's (GH #946): the claim is filtered on it
     fn claim(request_id: String, performer_kind: String, performer: String, effect_class: String, capabilities: String, data_classes: String, organizations: String, ttl: Int) -> Reply {
         let b = std::json::Builder { };
@@ -293,7 +290,7 @@ locus Head {
         b.string_field("organizations", organizations);
         b.int_field("ttl", ttl);
         b.end_object();
-        return self.call(request_id, self.claim_topic, b.result());
+        return self.call(request_id, self.claim_member, b.result());
     }
     fn renew(request_id: String, attempt_id: String, holder: String, token: Int, ttl: Int) -> Reply {
         let b = std::json::Builder { };
@@ -304,7 +301,7 @@ locus Head {
         b.int_field("token", token);
         b.int_field("ttl", ttl);
         b.end_object();
-        return self.call(request_id, self.renew_topic, b.result());
+        return self.call(request_id, self.renew_member, b.result());
     }
     fn give_back(request_id: String, attempt_id: String, holder: String, token: Int, why: String) -> Reply {
         let b = std::json::Builder { };
@@ -315,7 +312,7 @@ locus Head {
         b.int_field("token", token);
         b.string_field("why", why);
         b.end_object();
-        return self.call(request_id, self.release_topic, b.result());
+        return self.call(request_id, self.release_member, b.result());
     }
     // The outcome: `evidence` and `receipts` travel as JSON arrays in text;
     // the hat fields are empty and -1 when no hat was worn.
@@ -341,7 +338,7 @@ locus Head {
         b.string_field("prompt_digest", if worn { prompt_digest } else { "" });
         b.string_field("renderer", if worn { renderer } else { "" });
         b.end_object();
-        return self.call(request_id, self.outcome_topic, b.result());
+        return self.call(request_id, self.outcome_member, b.result());
     }
     // The ask for the attempt's spend (GH #1131), under the lease: the
     // spine answers it with a row, which the ask's lookup reads back
@@ -354,7 +351,7 @@ locus Head {
         b.string_field("holder", holder);
         b.int_field("token", token);
         b.end_object();
-        return self.call(request_id, self.allowance_topic, b.result());
+        return self.call(request_id, self.allowance_member, b.result());
     }
     fn friction(request_id: String, position: String, attempt_id: String, text: String) -> Reply {
         let b = std::json::Builder { };
@@ -365,11 +362,11 @@ locus Head {
         b.string_field("attempt_id", attempt_id);
         b.string_field("text", text);
         b.end_object();
-        return self.call(request_id, self.friction_topic, b.result());
+        return self.call(request_id, self.friction_member, b.result());
     }
     // A command read back by the request id the leg minted.
     fn lookup(request_id: String) -> Reply {
-        return self.call("lookup:" + request_id, self.lookup_topic, "{\"request_id\": " + dna::record_json_quote(request_id) + "}");
+        return self.call("lookup:" + request_id, self.lookup_member, "{\"request_id\": " + dna::record_json_quote(request_id) + "}");
     }
     // The hat of one Work, as the head renders it: structure, never a
     // prompt (a read). The head refuses a hat the record moved under

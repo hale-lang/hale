@@ -1046,9 +1046,9 @@ repository:
   the issuer, the client among the audience, the expiry and the nonce.
   A caller that is not a browser presents its ID token as
   `Authorization: Bearer`, checked the same way without a nonce
-  (`bearer_refusal`). A command reaches the head's api binding over the
-  binding's own HTTP transport (GH #1135; `spec/semantics.md` § "The
-  HTTP transport"), on the port the head's launcher gives it
+  (`bearer_refusal`). A command reaches the head's surface (`HeadCommands`) over its
+  `http::Rpc` exposure (GH #1135, #1417; `spec/api.md` § The HTTP
+  transport), `POST /call/<member>`, on the port the head's launcher gives it
   (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
   given, none served, and a relayed command is `commands_unavailable`),
   as a POSTed line of
@@ -1114,10 +1114,10 @@ repository:
   cookie. The child reads as the principal
   `service:<service>`, never a person's name, so a read a person alone
   may make (a Review's exact candidate) is refused it; its only POST is
-  a command, and a command or a lookup is a person's: the binding
+  a command, and a command or a lookup is a person's: the handler
   refuses an issuer's subject that maps to no person (`forbidden`),
-  gated or not, and never records it as the account the head runs
-  under. A service holds no position, so no gate names it. A sign-in's state is used once, expires in ten minutes, and is bound to
+  whatever its row requires, and never records it as the account the head runs
+  under. A service holds no position, so no row's role is held by it. A sign-in's state is used once, expires in ten minutes, and is bound to
   the browser that started it by an `HttpOnly; SameSite=Lax` `dna_signin`
   cookie: a callback carrying the state from any other browser is refused
   and leaves the sign-in for the browser that started it (so a callback
@@ -2236,9 +2236,10 @@ memory is named to it.
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
   `hale_dna_work`. The commands go over the head's api socket (GH
-  #1104 piece 5): each verb a `call` on the head's gated topic —
-  `AttemptClaim`, `AttemptRenew`, `AttemptOutcome`, `AttemptRelease`,
-  `FrictionFile`, gated `position`; `CommandLookup` for `settle` —
+  #1104 piece 5): each verb a `call` on a member of the head's surface —
+  `Commands::claim`, `Commands::renew`, `Commands::outcome`,
+  `Commands::release_attempt`, `Commands::file_friction`, requiring
+  `position`; `Commands::lookup` for `settle` —
   with the receipt on the value channel as the record wrote it; the
   reads (the record head, the hat, the socket's path in
   `/capabilities`) stay HTTP. The principal is the peer's credentials
@@ -4872,8 +4873,8 @@ that has not reached the record's head answers
 `knowledge_projection_unavailable` until the spine's tick applies it,
 and without the DSN Knowledge reads are unsupported
 (`knowledge_unsupported`). It admits Knowledge commands — the
-`Knowledge*` topics on its api binding, gated `position`, reached over
-its HTTP transport like its other commands — into the
+`*_knowledge` members of its surface, requiring `position`, reached over
+its HTTP exposure like its other commands — into the
 record in the same process, under the explicit authority policy in the
 file `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names (`dna.knowledge-authority/1`,
 at most 64 KiB, decoded by `KnowledgePolicyCodec` in
@@ -4892,7 +4893,7 @@ the organization as an instance of its own plan.
 ## Environment
 
 Every `HALE_DNA_*` variable the DNA reads, and the few others its
-programs read (`HALE_API_CONTRACT_ROOT`). The host, the CLI and the
+programs read. The host, the CLI and the
 programs they start pass most of these to each other: a variable the CLI
 sets for a child is listed under the process that reads it. Variables
 that name a role's memory or nerves are never inherited by a process
@@ -4957,7 +4958,7 @@ otherwise.
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |
 | `HALE_DNA_ORGANIZATION_POLICY=<path>` | unset | An optional, independent policy for organization-source proposals and Review writes; configuring evidence reads does not enable them. |
 | `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
-| `HALE_DNA_RPC_SOCKET=<path>` | the binding's socket with `.rpc` for `.sock` | Where the head serves its surface (`HeadCommands`: `lookup` and `file_friction`, GH #1417), beside the api binding's socket. |
+| `HALE_DNA_RPC_SOCKET=<path>` | the record's socket under `XDG_RUNTIME_DIR/hale/dna` (else `.hale/dna`) | Where the head serves its surface (`HeadCommands`, GH #1417) over `unix::Rpc`; the capabilities name it to the legs. |
 | `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
 | `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
@@ -4972,6 +4973,5 @@ otherwise.
 | `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
 | `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
-| `HALE_API_CONTRACT_ROOT=<dir>` | `dna/api/contract/v1` | The directory the api contract check reads the contract from. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
 | `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |

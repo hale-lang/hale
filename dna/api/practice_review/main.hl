@@ -2,7 +2,7 @@
 // Run: HALE_DNA_COMMAND_POLICY=authority.json practice_review <root> <port> [webroot]
 // One loopback Record/body/host deployment. The ordinary dna/api head answers
 // every command `commands_unsupported`. This head composes the shared native
-// Governance service explicitly; the commands are the api binding's (see
+// Governance service explicitly; the commands are the head's surface (see
 // dna/api/commands.hl), gated by the record's positions and admitted here.
 import ".." as api;
 import "../../core" as dna;
@@ -10,51 +10,44 @@ import "../../operations" as ops;
 import "../../organization_source" as orgsource;
 import "../../organization_runtime" as runtime;
 
-// The composed head is the binding (GH #1104 piece 5): it holds the
-// record's command locus, `api::Commands`, and names it in the entry's
-// `serve:` (GH #1137) — the same admission and gates, served as they are
-// declared; the core it imports stays off the surface. The HTTP reads
-// run beside it.
+// The composed head serves the head's surface (GH #1417): it holds the
+// record's command locus, `api::Commands`, and serves dna/api's
+// `HeadCommands` over it (a surface is named program-wide, not through the
+// import's alias) - the same admission and rows, served as they are
+// declared; the core it imports stays off the surface. The HTTP reads run
+// beside it.
 main locus PracticeReviewHead {
     params {
         root: String = ".";
         port: Int = 8792;
-        socket: String = "";
+        socket: String = ""; // the record's socket, as the capabilities name it
+        served: String = ""; // where this process listens: the socket, or "" when another process holds it
         roles: dna::RecordRoles = dna::RecordRoles { };
         srv: std::http::Server;
         commands: api::Commands = api::Commands { };
-        // GH #1135: the binding's HTTP transport, and who its bearers are
+        // GH #1135: the commands port (the HTTP exposure's), and who its bearers are
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
-        // GH #1417 (R3): where the head's surface (`HeadCommands`) is served
-        // beside the binding's socket, through the composed provider
-        rpc_socket: String = "";
     }
     // The server off the main pool, a command's git work on its own; a
     // SIGTERM drains the head (run() returns, the io pool's shutdown ends
-    // the accept, the binding's dissolve removes the socket).
+    // the accept, the exposures stop and remove the socket).
     placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
-    bindings {
-        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), http("127.0.0.1", self.http_port, principals: self.bearer), serve: [commands];
-    }
     run() {
-        // the binding's transports listen before run(): announce the
-        // commands port a launcher waits for (as dna/api's Head does)
+        // the exposures listen before run(): announce the commands port a
+        // launcher waits for (as dna/api's Head does)
         if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
-        // the surface: dna/api's `HeadCommands` (a surface is named
-        // program-wide, not through the import's alias), `lookup` and
-        // `file_friction` through the composed head's commands under the
-        // same record's roles, on a socket of its own; `composed` because
-        // the library's head serves its own exposure as `head`
-        let rpc = api::serve(HeadCommands, unix::Rpc { path: self.rpc_socket, roles: dna::RecordRoles { root: self.root } }, as: "composed", bound: 16, on_full: refuse);
+        let local = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "composed", bound: 64, on_full: refuse);
+        let remote = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "composed-commands", bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        rpc.stop();
+        local.stop();
+        remote.stop();
     }
 }
 
 // The head, up: the reads over HTTP with the socket named in its
-// capabilities, the commands on the socket and on the binding's own HTTP
-// transport (GH #1135), on the port its launcher gives it
+// capabilities, the commands on the socket and on the commands port
+// (GH #1135), on the port its launcher gives it
 // (`HALE_DNA_COMMANDS_PORT`). Under OIDC
 // (GH #989) a caller is a verified ID token's subject — a bearer, or the
 // session a sign-in set — and its person; trusted-local is a fixture's
@@ -70,7 +63,7 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
         println("hale dna api: http://127.0.0.1:", port, " (OIDC: ", auth.issuer, "; composed command provider)");
         PracticeReviewHead {
             root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
-            rpc_socket: api::rpc_socket_of(socket), http_port: api::commands_port(), bearer: api::OidcBearer { auth: api::oidc_ui(record, port, "hale dna practice-review api") },
+            served: api::served_socket(socket), http_port: api::commands_port(), bearer: api::OidcBearer { auth: api::oidc_ui(record, port, "hale dna practice-review api") },
             commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
             srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
                 root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
@@ -94,7 +87,7 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
     println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
     PracticeReviewHead {
         root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
-        rpc_socket: api::rpc_socket_of(socket), http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
+        served: api::served_socket(socket), http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
         commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
         srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
             root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },

@@ -34,6 +34,7 @@
 // rest runs on the record either way.
 
 import "../core" as dna;
+import "../core/legs" as legs;
 import "../host" as host;
 import "../operations" as ops;
 
@@ -105,8 +106,9 @@ locus App {
     }
     // Whether the socket lists the leg's claim to this peer.
     fn claim_listed() -> Bool {
-        let d = dna::run_tool(toolchain() + "\ndescribe\n" + self.socket());
-        return d.code == 0 && std::str::contains(d.stdout + d.stderr, "AttemptClaim");
+        let wire = legs::Wire { };
+        if !wire.connect(self.socket()) { return false; }
+        return std::str::contains(wire.describe(), "\"name\":\"Commands::claim\"");
     }
     // Ratify every proposal `author` made, as the review path writes it.
     @unbounded

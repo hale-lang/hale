@@ -38,10 +38,22 @@ fn bearer(url: String, body: String, token: String) -> fixture::HttpResponse {
     return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
 }
 
+// The same, as a GET: the description route of the commands port.
+fn bearer_get(url: String, token: String) -> fixture::HttpResponse {
+    let auth = if len(token) > 0 { "\n--header\nAuthorization: Bearer " + token } else { "" };
+    let result = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include" + auth + "\n" + url);
+    let split = std::str::index_of(result.stdout, "\r\n\r\n");
+    if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
+    let head = result.stdout[0..split];
+    let space = std::str::index_of(head, " ");
+    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
+    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+}
+
 locus Cases {
-    params { root: String = ""; issuer_url: String = ""; schema: String = ""; json: fixture::Json = fixture::Json { }; }
+    params { root: String = ""; issuer_url: String = ""; json: fixture::Json = fixture::Json { }; }
     fn application_identity() {
-        let f = fixture::Fixture { root: self.root + "/01", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/01" };
         f.start();
         let payload = f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
         f.source(payload);
@@ -62,42 +74,44 @@ locus Cases {
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
     }
-    // The binding's own HTTP transport (GH #1135): one line of the api
-    // wire per POST under a bearer, on the port the launcher gave it; in a
-    // fixture's trusted-local session the bearer is the head's launch
-    // token, which names the head's own account. The face this head
-    // serves relays its session's line there under that token, past the
-    // CSRF guard a cookie needs; nothing adds a principal of its own.
+    // The head's HTTP exposure (GH #1135, #1417): `POST /call/<member>` per
+    // call under a bearer, on the port the launcher gave it; in a fixture's
+    // trusted-local session the bearer is the head's launch token, which
+    // names the head's own account. The face this head serves relays its
+    // session's line there under that token, past the CSRF guard a cookie
+    // needs; nothing adds a principal of its own.
     fn forwarding() {
         // with the shell: the launch token opens it
-        let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.prepare_web(); f.start();
+        let f = fixture::Fixture { root: self.root + "/fw" }; f.standard(); f.prepare_web(); f.start();
         let path = "http://127.0.0.1:" + to_string(f.commands_port) + "/";
         let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
-        let described = bearer(path, "{\"describe\":true}", token);
+        let described = bearer_get(path + ".description", token);
         std::test::assert_eq_int(described.status, 200, described.body);
-        std::test::assert(std::str::contains(described.body, "\"ok\":true") && std::str::contains(described.body, "\"mode\":\"bearer\"") && std::str::contains(described.body, "\"via\":\"http\"}") && std::str::contains(described.body, "\"name\":\"TaskCreate\""), "the slice, over the binding's HTTP transport, under the launch token's principal: " + described.body);
-        let raised = bearer(path, "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}", token);
+        std::test::assert(std::str::contains(described.body, "\"mode\":\"bearer\"") && std::str::contains(described.body, "\"name\":\"Commands::create_task\""), "the description, over the HTTP exposure, under the launch token's principal: " + described.body);
+        let raised = bearer(path + "call/Commands::create_task", "{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}", token);
         std::test::assert_eq_int(raised.status, 200, raised.body);
         std::test::assert(std::str::contains(raised.body, "\"code\":\"commands_unsupported\""), "the handler ran; the standalone head composes no provider: " + raised.body);
-        let gated = bearer(path, "{\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}", token);
-        std::test::assert_eq_int(gated.status, 404, gated.body);
-        std::test::assert(std::str::contains(gated.body, "\"kind\":\"unknown\""), "a closed gate is unknown to this principal, as on the socket: " + gated.body);
-        // a Knowledge change is a gated topic like the rest; its recovery is not
-        let knowledge = bearer(path, "{\"call\":\"KnowledgeEdgeLink\",\"payload\":{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}}", token);
-        std::test::assert(knowledge.status == 404 && std::str::contains(knowledge.body, "\"kind\":\"unknown\""), "a Knowledge change outside the slice is unknown: " + knowledge.body);
-        let recovered = bearer(path, "{\"call\":\"KnowledgeLookup\",\"payload\":{\"request_id\":\"k-1\"}}", token);
+        let gated = bearer(path + "call/Commands::retire_person", "{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}", token);
+        std::test::assert_eq_int(gated.status, 403, gated.body);
+        std::test::assert(std::str::contains(gated.body, "\"kind\":\"unauthorized\"") && std::str::contains(gated.body, "\"requires\":[\"owner\"]"), "a closed row is refused to this principal, naming its role: " + gated.body);
+        // a Knowledge change is a row like the rest; its recovery is not gated
+        let knowledge = bearer(path + "call/Commands::link_knowledge", "{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}", token);
+        std::test::assert(knowledge.status == 403 && std::str::contains(knowledge.body, "\"kind\":\"unauthorized\""), "a Knowledge change outside the principal's roles is refused: " + knowledge.body);
+        let recovered = bearer(path + "call/Commands::lookup_knowledge", "{\"request_id\":\"k-1\"}", token);
         std::test::assert(recovered.status == 200 && std::str::contains(recovered.body, "\"code\":\"commands_unsupported\""), "a Knowledge lookup reaches its handler; no policy, no provider: " + recovered.body);
-        let looked = bearer(path, "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"ask-1\"}}", token);
-        std::test::assert(looked.status == 200 && std::str::contains(looked.body, "\"ok\":true"), "a lookup is the CommandLookup call: " + looked.body);
-        let claimed = bearer(path, "{\"describe\":true,\"via\":\"admin\"}", token);
-        std::test::assert(claimed.status == 200 && !std::str::contains(claimed.body, "admin"), "a via in a line is no mark: " + claimed.body);
-        let bare = bearer(path, "{\"describe\":true}", "");
-        std::test::assert(bare.status == 401 && std::str::contains(bare.body, "\"kind\":\"unauthenticated\""), "without a bearer the transport takes nothing: " + bare.body);
-        let wrong = bearer(path, "{\"describe\":true}", "not-the-token");
+        let looked = bearer(path + "call/Commands::lookup", "{\"request_id\":\"ask-1\"}", token);
+        std::test::assert(looked.status == 200 && std::str::contains(looked.body, "\"code\":\"commands_unsupported\""), "a lookup is the Commands::lookup row: " + looked.body);
+        let bare = bearer_get(path + ".description", "");
+        std::test::assert(bare.status == 401 && std::str::contains(bare.body, "\"kind\":\"unauthenticated\""), "without a bearer the exposure takes nothing: " + bare.body);
+        let wrong = bearer_get(path + ".description", "not-the-token");
         std::test::assert(wrong.status == 401 && std::str::contains(wrong.body, "\"kind\":\"unauthenticated\""), "a token the head did not mint names nobody: " + wrong.body);
-        // the session's line, relayed: the same answer, the same principal
+        // the session's line, relayed: the same slice, under the same principal
         let relayed = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", true);
-        std::test::assert(relayed.status == 200 && std::str::contains(relayed.body, "\"mode\":\"bearer\"") && std::str::contains(relayed.body, "\"via\":\"http\"}") && std::str::contains(relayed.body, "\"name\":\"TaskCreate\""), "the session's line reaches the binding under the launch token: " + relayed.body);
+        std::test::assert(relayed.status == 200 && std::str::contains(relayed.body, "\"name\":\"TaskCreate\""), "the session's line reaches the exposure under the launch token: " + relayed.body);
+        let relayed_call = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"ask-1\"}}", true);
+        std::test::assert(relayed_call.status == 200 && std::str::contains(relayed_call.body, "\"code\":\"commands_unsupported\""), "and so does its call, named as the face names it: " + relayed_call.body);
+        let relayed_unknown = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"call\":\"NotACommand\",\"payload\":{}}", true);
+        std::test::assert(relayed_unknown.status == 400 && std::str::contains(relayed_unknown.body, "\"reason\":\"unknown_member\""), "a call the surface has no member for is malformed: " + relayed_unknown.body);
         let no_session = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", false);
         std::test::assert_eq_int(no_session.status, 401, "without the session nothing is relayed: " + no_session.body);
         let forged = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--max-time\n40\n--output\n/dev/null\n--write-out\n%{http_code}\n--header\nX-Hale-Token: " + token + "\n--header\nContent-Type: application/json\n--data\n{\"describe\":true}\n" + f.url() + f.prefix + "/commands");
@@ -114,7 +128,7 @@ locus Cases {
         f.stop();
     }
     fn native_unicode() {
-        let f = fixture::Fixture { root: self.root + "/02", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/02" };
         let p = f.practice("acceptance/résumé", "Première ligne — ✓\n第二行 / preserve", "org/support/équipe", "org/reviews/決定:α", false);
         let before = f.refs(); f.start();
         f.source(f.read("practices", "", ""));
@@ -129,7 +143,7 @@ locus Cases {
         std::test::assert_eq_str(f.refs(), before, "reads move no Record or receipt ref");
     }
     fn approval_is_not_activation() {
-        let f = fixture::Fixture { root: self.root + "/03", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/03" };
         let p = f.standard(); f.append("review.settled", p.review_id, "approve by alice"); f.start();
         let pending = f.item("practices", p.digest);
         self.json.eq(pending, "state", "pending"); self.json.eq(pending, "review_state", "settled");
@@ -143,21 +157,21 @@ locus Cases {
         self.json.eq(review, "state", "settled"); self.json.eq(review, "settled", "approve by alice"); self.json.eq(review, "outcome", "approve");
     }
     fn design_codec() {
-        let f = fixture::Fixture { root: self.root + "/04", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/04" };
         let p = f.practice("design/record-authority", "The Record is authoritative.", "org", "", true); f.start();
         let item = f.item("practices", p.digest);
         self.json.eq(item, "text", p.text); self.json.eq(item, "provenance", "design");
         self.json.is_bool(item, "text_available", true); self.json.eq(item, "text_status", "available");
     }
     fn ratification_precedence() {
-        let f = fixture::Fixture { root: self.root + "/05", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/05" };
         let p = f.standard(); f.append("knowledge.ratified", p.digest, "{}"); f.append("knowledge.declined", p.digest, "{}"); f.start();
         self.json.eq(f.item("practices", p.digest), "state", "ratified");
         f.append("knowledge.retired", p.digest, "{\"by\":\"replacement\"}");
         self.json.eq(f.item("practices", p.digest), "state", "retired");
     }
     fn pagination() {
-        let f = fixture::Fixture { root: self.root + "/06", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/06" };
         let p0 = f.practice("practice/0", "version 0", "org", "", false);
         let p1 = f.practice("practice/1", "version 1", "org", "", false);
         let p2 = f.practice("practice/2", "version 2", "org", "", false);
@@ -187,7 +201,7 @@ locus Cases {
         let fresh = f.read("practices", "", ""); f.source(fresh); self.json.is_int(self.json.page(fresh), "total", 4);
     }
     fn missing_ids() {
-        let f = fixture::Fixture { root: self.root + "/07", profiled_schema: self.schema }; let p = f.standard(); f.start();
+        let f = fixture::Fixture { root: self.root + "/07" }; let p = f.standard(); f.start();
         f.error("GET", fixture::APPLICATIONS + "/missing/capabilities", 404, "", "");
         f.error("GET", fixture::APPLICATIONS + "//dna/practices", 404, "", "");
         f.error("GET", fixture::APPLICATIONS + "/missing/dna/practices", 404, "", "");
@@ -195,7 +209,7 @@ locus Cases {
         f.error("GET", f.prefix + "/dna/reviews?id=org%2Freviews%2Fmissing", 404, "", "");
     }
     fn malformed_query() {
-        let f = fixture::Fixture { root: self.root + "/08", profiled_schema: self.schema }; let p = f.standard(); f.start();
+        let f = fixture::Fixture { root: self.root + "/08" }; let p = f.standard(); f.start();
         let cases = "limit=0\nlimit=101\nlimit=-1\nlimit=nan\noffset=-1\noffset=1\nlimit=1&limit=2\nid=\nid=%\nid=%GG\nid=%00\nid=%FF\nid=%C0%AF\nas=board\nrole=board\nposition_id=org\nunknown=value";
         let mut i = 0;
         while i < dna::count_lines(cases) {
@@ -203,7 +217,7 @@ locus Cases {
         }
     }
     fn no_writes() {
-        let f = fixture::Fixture { root: self.root + "/09", profiled_schema: self.schema }; let p = f.standard(); let before = f.refs(); f.start();
+        let f = fixture::Fixture { root: self.root + "/09" }; let p = f.standard(); let before = f.refs(); f.start();
         let methods = "POST\nPUT\nPATCH\nDELETE"; let paths = "/dna/practices\n/dna/reviews\n/commands";
         let mut i = 0;
         while i < 4 {
@@ -222,14 +236,14 @@ locus Cases {
         std::test::assert_eq_str(f.refs(), before, "all fourteen mutation requests preserve refs");
     }
     fn service_restart() {
-        let f = fixture::Fixture { root: self.root + "/10", profiled_schema: self.schema }; let p = f.standard();
+        let f = fixture::Fixture { root: self.root + "/10" }; let p = f.standard();
         f.append("review.settled", p.review_id, "approve by alice"); f.start();
         let before = f.read("practices", "", ""); let refs = f.refs(); f.stop(); f.start();
         std::test::assert_eq_str(f.read("practices", "", ""), before, "retained response after restart");
         std::test::assert_eq_str(f.refs(), refs, "restart moves no refs");
     }
     fn redacted() {
-        let f = fixture::Fixture { root: self.root + "/11", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/11" };
         let p = f.practice("redacted", "REDACTED-CANARY: customer private data", "org", "", false);
         f.append("review.settled", p.review_id, "approve by DECIDER-CANARY");
         f.append("review.reasoned", p.review_id, "REASONED-CANARY: private justification");
@@ -241,7 +255,7 @@ locus Cases {
         std::test::assert(!std::str::contains(all, "REASONED-CANARY") && !std::str::contains(all, "DECIDER-CANARY"), "embedded review text absent");
     }
     fn protected_receipts() {
-        let f = fixture::Fixture { root: self.root + "/12", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/12" };
         let p = f.practice("protected/0", "PROTECTED-CANARY-classified", "org", "", false);
         let q = f.practice("protected/1", "PROTECTED-CANARY-withheld", "org", "", false);
         f.append("receipt.classified", p.digest, "{\"class\":\"confidential\",\"store\":\"knowledge\"}");
@@ -249,11 +263,11 @@ locus Cases {
         f.start(); f.hidden(p, "protected"); f.hidden(q, "protected");
     }
     fn adopted() {
-        let f = fixture::Fixture { root: self.root + "/13", profiled_schema: self.schema }; let p = f.practice("adopted", "LEDGER-VISIBILITY-CANARY", "org", "", false);
+        let f = fixture::Fixture { root: self.root + "/13" }; let p = f.practice("adopted", "LEDGER-VISIBILITY-CANARY", "org", "", false);
         f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start(); f.hidden(p, "source_unavailable"); f.source(f.read("practices", "", ""));
     }
     fn abandoned() {
-        let f = fixture::Fixture { root: self.root + "/14", profiled_schema: self.schema }; let p = f.practice("abandoned", "ABANDONED-LEDGER-CANARY", "org", "", false);
+        let f = fixture::Fixture { root: self.root + "/14" }; let p = f.practice("abandoned", "ABANDONED-LEDGER-CANARY", "org", "", false);
         f.append("review.settled", p.review_id, "approve by VISIBILITY-DECIDER-CANARY"); f.append("ledger.adopted", "ledger", "{\"routing\":1}");
         f.append("ledger.abandoned", "ledger", "{\"why\":\"keeper unavailable\",\"by\":\"alice\"}");
         std::test::assert(std::str::contains(f.blob(p.digest), p.text), "unmarked stale blob present"); f.start(); f.uncertain(p);
@@ -262,7 +276,7 @@ locus Cases {
         let bodies = "{}\n{\"class\":null}\n{\"class\":42}\n{\"class\":{\"name\":\"confidential\"}}\n{\"class\":\"unknown-class\"}\n{}";
         let mut i = 0;
         while i < 6 {
-            let f = fixture::Fixture { root: self.root + "/15-" + to_string(i), profiled_schema: self.schema };
+            let f = fixture::Fixture { root: self.root + "/15-" + to_string(i) };
             let p = f.practice("uncertain", "UNCERTAIN-CLASS-CANARY-" + to_string(i), "org", "", false);
             f.append("review.settled", p.review_id, "approve by VISIBILITY-DECIDER-CANARY");
             f.append(if i == 5 { "receipt.withheld" } else { "receipt.classified" }, p.digest, dna::line_at(bodies, i));
@@ -271,7 +285,7 @@ locus Cases {
         }
     }
     fn ordinary_review() {
-        let f = fixture::Fixture { root: self.root + "/16", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/16" };
         let id = "operations/nonknowledge-review"; let question = "Approve the service change?\nScope: org/support — exact candidate";
         let subject = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         f.review(id, question, subject, ""); f.append("review.settled", id, "approve by alice"); f.start();
@@ -280,14 +294,14 @@ locus Cases {
         self.json.is_bool(review, "text_available", false); self.json.eq(review, "question", question); self.json.eq(review, "settled", "approve by alice"); self.json.eq(review, "outcome", "approve");
     }
     fn unlinked_review() {
-        let f = fixture::Fixture { root: self.root + "/17", profiled_schema: self.schema }; let digest = f.receipt("UNLINKED-RECEIPT-CANARY"); let id = "operations/review-without-knowledge-link";
+        let f = fixture::Fixture { root: self.root + "/17" }; let digest = f.receipt("UNLINKED-RECEIPT-CANARY"); let id = "operations/review-without-knowledge-link";
         f.review(id, "UNLINKED-QUESTION-CANARY", digest, ""); f.append("review.settled", id, "approve by VISIBILITY-DECIDER-CANARY");
         f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start();
         let review = f.uncertain_item("reviews", id, "UNLINKED-QUESTION-CANARY", false);
         if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
     }
     fn inconsistent_links() {
-        let f = fixture::Fixture { root: self.root + "/18", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/18" };
         let visible = f.practice("visible/practice", "A visible canonical practice", "org", "", false);
         let redacted = f.practice("redacted/practice", "MISMATCHED-SUBJECT-CANARY", "org", "", false);
         f.append("receipt.redacted", redacted.digest, "{\"by\":\"alice\",\"why\":\"expired\",\"policy\":\"retention\"}");
@@ -298,7 +312,7 @@ locus Cases {
         if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
     }
     fn missing_and_mismatched_receipts() {
-        let f = fixture::Fixture { root: self.root + "/19", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/19" };
         let missing = f.practice("missing", "MISSING-CANARY", "org", "", false); f.git("update-ref\n-d\nrefs/dna/receipts/" + missing.digest[7..len(missing.digest)]);
         let wrong = f.practice("wrong", "ORIGINAL-CANARY", "org", "", false);
         let replacement = f.receipt("{\"text\":\"TAMPERED-CANARY\"}");
@@ -308,17 +322,17 @@ locus Cases {
         std::test::assert(!std::str::contains(f.read("practices", "", ""), "TAMPERED-CANARY"), "tampered text absent");
     }
     fn malformed_document() {
-        let f = fixture::Fixture { root: self.root + "/20", profiled_schema: self.schema }; let digest = f.receipt("{\"kind\":\"practice\",\"text\":\"INVALID-DOCUMENT-CANARY\"");
+        let f = fixture::Fixture { root: self.root + "/20" }; let digest = f.receipt("{\"kind\":\"practice\",\"text\":\"INVALID-DOCUMENT-CANARY\"");
         let id = dna::knowledge_review_id(digest); let b = std::json::Builder { };
         f.append("knowledge.proposed", digest, "{\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(id) + ",\"kind\":\"practice\",\"name\":\"invalid/document\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
         f.review(id, "INVALID-DOCUMENT-CANARY", digest, digest); f.start();
         f.hidden(fixture::Practice { digest: digest, review_id: id, text: "INVALID-DOCUMENT-CANARY" }, "invalid_document"); f.source(f.read("practices", "", ""));
     }
     fn missing_record() {
-        let f = fixture::Fixture { root: self.root + "/21", profiled_schema: self.schema }; f.start(); f.git("update-ref\n-d\nrefs/dna/journal"); f.error("GET", fixture::APPLICATIONS, 503, "", "");
+        let f = fixture::Fixture { root: self.root + "/21" }; f.start(); f.git("update-ref\n-d\nrefs/dna/journal"); f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn malformed_record() {
-        let f = fixture::Fixture { root: self.root + "/22", profiled_schema: self.schema }; let p = f.standard(); f.start();
+        let f = fixture::Fixture { root: self.root + "/22" }; let p = f.standard(); f.start();
         std::io::fs::write_file(f.root + "/broken.jsonl", "not a JSON journal\n") or discard;
         let blob = f.git("hash-object\n-w\n" + f.root + "/broken.jsonl");
         let index = f.root + "/malformed.index";
@@ -328,21 +342,21 @@ locus Cases {
         f.git("update-ref\nrefs/dna/journal\n" + commit); f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn oidc_refusals() {
-        let f = fixture::Fixture { root: self.root + "/23", profiled_schema: self.schema }; let p = f.standard(); let before = f.refs(); f.configure_oidc(self.issuer_url);
+        let f = fixture::Fixture { root: self.root + "/23" }; let p = f.standard(); let before = f.refs(); f.configure_oidc(self.issuer_url);
         f.error("GET", fixture::APPLICATIONS, 401, "", ""); f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
         let unmapped = f.sign_in("unmapped-sub"); std::test::assert_eq_int(unmapped.status, 403, unmapped.body);
         std::test::assert(!std::str::contains(dna::response_header(unmapped.headers, "Set-Cookie"), "dna_session="), "unmapped receives no session");
         std::test::assert_eq_str(f.refs(), before, "authentication writes no domain refs");
     }
     fn oidc_incomplete() {
-        let f = fixture::Fixture { root: self.root + "/24", profiled_schema: self.schema }; f.git("config\ndna.principal\noidc"); let before = f.refs(); f.spawn();
+        let f = fixture::Fixture { root: self.root + "/24" }; f.git("config\ndna.principal\noidc"); let before = f.refs(); f.spawn();
         let deadline = std::time::now() + 10; let mut code = -2;
         while code == -2 && std::time::now() < deadline { code = std::process::try_wait(f.api) or - 1; if code == -2 { std::time::sleep(25ms); } }
         std::test::assert(code != -2 && code != 0, "incomplete OIDC must fail startup: " + f.log()); f.api.pid = -1;
         std::test::assert_eq_str(f.refs(), before, "failed startup writes no refs");
     }
     fn oidc_session() {
-        let f = fixture::Fixture { root: self.root + "/25", profiled_schema: self.schema }; let p = f.standard(); f.configure_oidc(self.issuer_url);
+        let f = fixture::Fixture { root: self.root + "/25" }; let p = f.standard(); f.configure_oidc(self.issuer_url);
         let initial = fixture::curl("GET", self.issuer_url + "/test/exchanges", "", ""); let count = self.json.integer(initial.body, "exchanges");
         let login = f.sign_in(""); std::test::assert_eq_int(login.status, 302, login.body);
         std::test::assert(std::str::contains(dna::response_header(login.headers, "Set-Cookie"), "HttpOnly"), "HttpOnly session");
@@ -359,7 +373,7 @@ locus Cases {
         f.stop(); f.start(); f.error("GET", fixture::APPLICATIONS, 401, old_session, "");
     }
     fn web_assets() {
-        let f = fixture::Fixture { root: self.root + "/26", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/26" };
         let p = f.practice("PRIVATE-RECORD-NAME", "PRIVATE-RECORD-TEXT", "org", "", false);
         f.prepare_web();
         std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
@@ -397,7 +411,7 @@ locus Cases {
     fn web_startup() {
         let mut i = 0;
         while i < 13 {
-            let f = fixture::Fixture { root: self.root + "/27-" + to_string(i), profiled_schema: self.schema };
+            let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
             f.prepare_web();
             if i < 10 {
                 let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else if i == 2 { "styles.css" } else if i == 3 { "application.js" } else if i == 4 { "definition-draft.js" } else if i == 5 { "organization-draft.js" } else if i == 6 { "knowledge-draft.js" } else if i == 7 { "task-administration.js" } else if i == 8 { "projects.js" } else { "task-create.js" };
@@ -412,7 +426,7 @@ locus Cases {
         }
     }
     fn api_only() {
-        let f = fixture::Fixture { root: self.root + "/28", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/28" };
         // Even if a bundle happens to be in the process's working directory,
         // omitting argv 3 keeps the established API-only surface.
         std::io::fs::write_file(f.root + "/index.html", fixture::SHELL_HTML) or discard;
@@ -427,7 +441,7 @@ locus Cases {
         f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
     }
     fn web_oidc() {
-        let f = fixture::Fixture { root: self.root + "/29", profiled_schema: self.schema }; let p = f.standard();
+        let f = fixture::Fixture { root: self.root + "/29" }; let p = f.standard();
         f.prepare_web(); f.configure_oidc(self.issuer_url);
         let shell = f.http("GET", shell_url(f), "", "");
         std::test::assert_eq_int(shell.status, 200, "the public shell needs no DNA session");
@@ -463,7 +477,7 @@ locus Cases {
         f.git("add\n--\ndna/org"); f.git("commit\n-q\n-m\norganization fixture");
     }
     fn organization_reads() {
-        let f = fixture::Fixture { root: self.root + "/30", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/30" };
         self.organization_seed(f, false);
         let before = f.refs(); f.start();
         let caps = f.validate(f.http("GET", f.prefix + "/capabilities", "", ""), "CapabilitiesResponse", 200);
@@ -490,7 +504,7 @@ locus Cases {
         std::test::assert_eq_str(f.refs(), before, "organization reads change no source or Record refs");
     }
     fn organization_snapshots() {
-        let f = fixture::Fixture { root: self.root + "/31", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/31" };
         self.organization_seed(f, false); f.start();
         let path = f.prefix + "/dna/organization";
         let first = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
@@ -510,7 +524,7 @@ locus Cases {
         self.json.is_int(self.json.page(latest), "total", 6);
     }
     fn organization_failure() {
-        let f = fixture::Fixture { root: self.root + "/32", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/32" };
         f.start(); f.error("GET", f.prefix + "/dna/organization", 503, "", "");
         self.organization_seed(f, false);
         f.validate(f.http("GET", f.prefix + "/dna/organization", "", ""), "OrganizationResponse", 200);
@@ -522,7 +536,7 @@ locus Cases {
         std::test::assert(!std::str::contains(response.body, "PRIVATE INVALID SOURCE") && !std::str::contains(response.body, "Org.team"), "failed refresh returns neither compiler internals nor old structure");
     }
     fn organization_identity() {
-        let f = fixture::Fixture { root: self.root + "/33", profiled_schema: self.schema };
+        let f = fixture::Fixture { root: self.root + "/33" };
         self.organization_seed(f, false); f.configure_oidc(self.issuer_url);
         let path = f.prefix + "/dna/organization?id=Org.team.first";
         f.error("GET", path, 401, "", "");
@@ -581,7 +595,7 @@ main locus App {
     }
     placement { server: cooperative(pool = io); }
     run() {
-        let cases = Cases { root: self.root, issuer_url: self.issuer_url, schema: fixture::contract_schema() };
+        let cases = Cases { root: self.root, issuer_url: self.issuer_url };
         cases.all();
         let removed = dna::run_tool("rm\n-rf\n" + self.root);
         std::test::assert_eq_int(removed.code, 0, "owned scratch removed");

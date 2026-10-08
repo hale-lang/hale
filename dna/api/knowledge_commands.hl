@@ -1,7 +1,7 @@
 // dna/api/knowledge_commands.hl — Knowledge commands, the head's gated
 // topics (GH #985, #1129).
 //
-// A Knowledge change is a topic on the head's api binding, like every
+// A Knowledge change is a row of the head's surface (`HeadCommands`), like every
 // other command the record takes (commands.hl): one flat payload per
 // operation under the request id the caller mints, the head supplying the
 // record, the principal and the target the operation implies. Every
@@ -51,15 +51,6 @@ type KnowledgeReply {
     revision: Int = 0;
     receipt: ops::KnowledgeReceipt = ops::KnowledgeReceipt { };
 }
-
-topic KnowledgeEdgeLink { payload: KnowledgeLink; subject: "dna.commands.knowledge.edge.link"; }
-topic KnowledgeEdgeUnlink { payload: KnowledgeUnlink; subject: "dna.commands.knowledge.edge.unlink"; }
-topic KnowledgeNodePropose { payload: KnowledgeNodeProposal; subject: "dna.commands.knowledge.node.propose"; }
-topic KnowledgeNodeRevise { payload: KnowledgeNodeRevision; subject: "dna.commands.knowledge.node.revise"; }
-topic KnowledgeNodeRetire { payload: KnowledgeNodeRetirement; subject: "dna.commands.knowledge.node.retire"; }
-topic KnowledgeBindingBind { payload: KnowledgeBind; subject: "dna.commands.knowledge.binding.bind"; }
-topic KnowledgeBindingUnbind { payload: KnowledgeUnbind; subject: "dna.commands.knowledge.binding.unbind"; }
-topic KnowledgeLookup { payload: KnowledgeRecovery; subject: "dna.commands.knowledge.lookup"; }
 
 // The Knowledge handlers, beside `CommandAdmission` and on the same
 // pool: each builds the operations' command, checks it against their
