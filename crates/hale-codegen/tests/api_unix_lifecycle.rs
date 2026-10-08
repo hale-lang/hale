@@ -847,3 +847,30 @@ fn the_lifecycle_program_runs_clean_under_asan() {
     }
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
 }
+
+#[test]
+fn a_connection_that_resets_does_not_fail_a_read_in_progress_on_another() {
+    // Two connections of one exposure share its pool, each parked in a read.
+    // One makes a call and goes away with the answer unread, which fails
+    // the server's next read of it (ECONNRESET); the other, half through
+    // its line, then finishes it and must be answered.
+    let server = start("stop");
+    let mut waiting = server.connect();
+    for round in 0..6 {
+        let line = call("Orders::place", "{\"symbol\":\"ACME\",\"qty\":10}", &format!("w-{round}"));
+        let (head, tail) = line.split_at(line.len() / 2);
+        waiting.send_raw(head.as_bytes());
+        {
+            let mut vanishing = server.connect();
+            vanishing.send(&call("Orders::stats", "{\"n\":0}", &format!("v-{round}")));
+            std::thread::sleep(Duration::from_millis(80));
+            vanishing.reset();
+        }
+        std::thread::sleep(Duration::from_millis(80));
+        waiting.send_raw(tail.as_bytes());
+        waiting.send_raw(b"\n");
+        let got = waiting.line();
+        assert!(is_result(&got), "round {round}: the connection that was mid-read is served: {got}");
+    }
+    assert!(server.finish().status.success());
+}
