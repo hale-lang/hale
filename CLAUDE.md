@@ -92,7 +92,9 @@ reach DNA.** `scripts/ci-scope.sh <base> <head>` prints `prose=` and
 (its tests apart, except the DNA suite), `Cargo.toml`/`Cargo.lock`,
 the workflows or the scripts those jobs run, and also when the base is
 unknown or the diff empty. `scripts/ci-scope-test.sh` pins it on
-synthetic diffs.
+synthetic diffs. A PR's checks are that scoped suite; the merge queue
+runs the full suite on the merge group before anything reaches `main`,
+and `main`'s own push run is the full suite as well.
 
 The `parity` job in `.github/workflows/tests.yml` gates both:
 the workspace doctests, plus the test binaries that share

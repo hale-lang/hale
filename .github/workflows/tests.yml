@@ -3,8 +3,9 @@ name: tests
 # Runs the workspace test suite on every pull request targeting
 # main and on every push to main. A pull request runs the DNA and
 # face jobs only when its diff can reach DNA (`scope.dna`, from
-# scripts/ci-scope.sh); a push to main runs every job. The push twin of
-# a PR run follows the same rule. Linux-only at v1; the macos
+# scripts/ci-scope.sh); the merge group runs every job, and a push to
+# main runs the DNA and face jobs whatever its diff, so a stack is
+# tested as the combination it becomes. Linux-only at v1; the macos
 # workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
@@ -53,6 +54,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests the combination a stack becomes, with
+  # every job: the scope outputs are forced true on this event.
+  merge_group:
   workflow_dispatch:
 
 # Cancel an in-flight run on the same branch when a new push lands;
@@ -124,6 +128,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "merge group: every job runs"
+            { echo "substrate=true"; echo "dna=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           base=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
@@ -211,7 +220,7 @@ jobs:
   docs:
     name: docs (embedded spec)
     needs: scope
-    if: needs.scope.outputs.code != 'true'
+    if: github.event_name == 'merge_group' || needs.scope.outputs.code != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
