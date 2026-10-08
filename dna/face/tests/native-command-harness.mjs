@@ -257,15 +257,17 @@ export async function startService(options = {}) {
     ? result.json.error?.code === 'snapshot_changed' && result.json.error?.retryable === true
     : [501, 503].includes(result.status) && (result.json.error?.retryable === true || ['record_unavailable', 'commands_unavailable'].includes(result.json.error?.code));
   const read = suffix => wait('native source read', () => get(suffix), result => !transient(result));
-  // One line of the api wire to the head's binding, on its own HTTP
-  // transport at the port this lane gave it, under the launch token — the
-  // head's own account, as a tool presents it (GH #1135).
+  // One call to the head's binding, on its own HTTP transport at the port
+  // this lane gave it, under the launch token — the head's own account, as
+  // a tool presents it (GH #1135): `POST /call/<member>` with the payload
+  // as the body, the member as the program names it.
+  const MEMBERS = { CommandLookup: 'Commands::lookup' };
   function line(value) {
     healthy();
-    const body = JSON.stringify(value);
+    const body = JSON.stringify(value.payload);
     return new Promise((resolve, reject) => {
-      const entry = { method: 'POST', path: 'binding:' + (value.call || 'describe') }; requestLog.push(entry);
-      const request = http.request({ host: '127.0.0.1', port: commandsPort, path: '/', method: 'POST', agent: false,
+      const entry = { method: 'POST', path: 'binding:' + value.call }; requestLog.push(entry);
+      const request = http.request({ host: '127.0.0.1', port: commandsPort, path: '/call/' + MEMBERS[value.call], method: 'POST', agent: false,
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
         const chunks = [];
         response.on('data', chunk => chunks.push(chunk));
