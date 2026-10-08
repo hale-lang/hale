@@ -255,6 +255,42 @@ fn concurrent_responses_larger_than_the_send_buffer_do_not_interleave() {
 }
 
 #[test]
+fn a_half_close_while_the_writer_is_parked_ends_the_connection() {
+    // Eight megabytes are asked for by a client that reads nothing, so the
+    // connection's writer parks in a send on a full buffer. The client then
+    // half-closes its write side and keeps its read side open and unread:
+    // the reader sees the end of the stream and must fail the parked send
+    // (the park has no deadline of its own) before it joins the writer. The
+    // connection ends in bounded time, raises its end, and gives its
+    // descriptor back while the client still holds its socket; a second
+    // connection of the listener is unaffected throughout.
+    let server = start();
+    let fds = |pid: u32| std::fs::read_dir(format!("/proc/{pid}/fd")).expect("fd dir").count();
+    let mut b = Client::connect(server.port);
+    get(&mut b, 1, "/hello");
+    assert_eq!(b.response(1, WAIT).status(), 200);
+    let held = fds(server.pid());
+    let mut c = Client::connect(server.port);
+    assert_eq!(fds(server.pid()), held + 1, "the connection holds a descriptor");
+    for s in (0..8).map(|i| 2 * i + 1) {
+        get(&mut c, s, "/blob");
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    c.half_close();
+    let start = std::time::Instant::now();
+    while fds(server.pid()) != held {
+        assert!(start.elapsed() < WAIT, "the descriptor of the half-closed connection is released");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    get(&mut b, 3, "/hello");
+    assert_eq!(b.response(3, WAIT).status(), 200, "the other connection is unaffected");
+    let done = server.finish();
+    assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
+    assert!(done.stdout.matches("ended conn=").count() >= 1, "the end was raised:\n{}", done.stdout);
+    drop(c);
+}
+
+#[test]
 fn a_reset_stream_is_raised_and_the_connection_goes_on() {
     let server = start();
     let mut c = Client::connect(server.port);

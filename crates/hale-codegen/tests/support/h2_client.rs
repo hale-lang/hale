@@ -243,6 +243,12 @@ impl Client {
         c
     }
 
+    /// Close the write direction only: the read side stays open, and what the
+    /// server has sent stays unread.
+    pub fn half_close(&mut self) {
+        self.sock.shutdown(std::net::Shutdown::Write).expect("half-close");
+    }
+
     fn write_all(&mut self, bytes: &[u8]) {
         let _ = self.sock.write_all(bytes);
     }

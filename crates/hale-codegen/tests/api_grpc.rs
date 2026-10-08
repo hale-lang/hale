@@ -549,6 +549,40 @@ fn large_answers_to_calls_in_flight_share_a_connection_without_interleaving() {
 }
 
 #[test]
+fn a_half_close_while_the_writer_is_parked_ends_the_connection() {
+    // Eight calls answered with a megabyte each, to a client that reads
+    // nothing: the connection's writer parks in a send. The client half-closes
+    // its write side, its read side open and unread; the server's connection
+    // ends in bounded time and gives its descriptor back, and another
+    // connection of the listener still answers.
+    let server = Server::start(&big(), &[]);
+    server.ready();
+    let fds = |pid: u32| std::fs::read_dir(format!("/proc/{pid}/fd")).expect("fd dir").count();
+    let mut b = Client::connect(server.port);
+    let place = "{\"symbol\":\"ACME\",\"qty\":1,\"limit\":1}";
+    call(&mut b, 1, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(place));
+    assert_eq!(b.response(1, Duration::from_secs(10)).header("grpc-status"), Some("0"));
+    let held = fds(server.pid());
+    let mut c = Client::connect(server.port);
+    assert_eq!(fds(server.pid()), held + 1, "the connection holds a descriptor");
+    let big_place = "{\"symbol\":\"ACME\",\"qty\":1000000,\"limit\":1}";
+    for s in (0..8).map(|i| 2 * i + 1) {
+        call(&mut c, s, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(big_place));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    c.half_close();
+    let start = std::time::Instant::now();
+    while fds(server.pid()) != held {
+        assert!(start.elapsed() < Duration::from_secs(10), "the descriptor of the half-closed connection is released");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    call(&mut b, 3, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(place));
+    assert_eq!(b.response(3, Duration::from_secs(10)).header("grpc-status"), Some("0"), "the other connection is unaffected");
+    assert!(server.finish().status.success());
+    drop(c);
+}
+
+#[test]
 fn a_long_lived_connection_does_not_grow_with_the_calls_it_carries() {
     // One connection, call after call. Its read once allocated a blob out
     // of an arena that outlives the read (about 4 KiB of resident memory a
