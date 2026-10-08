@@ -1,0 +1,364 @@
+// ---- the gRPC transport (spec/api.md § gRPC) ----
+//
+// `std::api::grpc::Rpc` serves an exposure over gRPC, unary calls only, on
+// the HTTP/2 server of `std::io::h2` (io_h2.hl): that file's listener and
+// connections do the sockets, the framing of HTTP/2, the windows, the
+// pings; what is this transport's own is the stream. A connection raises a
+// stream's events on the bus (`__api.h2.event`, keyed by the transport's
+// number); the transport reads the request headers, collects the body to
+// its end, and publishes the whole of it as the exposure's ingress, its
+// correlation the connection and the stream; the exposure's answer comes
+// back through `reply`, which asks the connection (`__api.h2.cmd`) to write
+// it as a gRPC response. Many calls are in flight on a connection, and on
+// many connections; a stream that breaks is that stream's.
+
+/// A stream the transport holds. state: 0 free, 1 receiving (the headers are
+/// in, the body is coming), 2 handed to the exposure and not answered, 3
+/// handed over and lost (the peer reset the stream, or its connection ended).
+type __StdApiGrpcStream {
+    conn: Int = -1;
+    stream: Int = 0;
+    state: Int = 0;
+    over: Bool = false;
+    headers: String = "";
+    body: Bytes;
+}
+
+fn __api_grpc_free() -> __StdApiGrpcStream {
+    return __StdApiGrpcStream { conn: -1, stream: 0, state: 0, over: false, headers: "", body: std::bytes::from_string("") };
+}
+
+@form(vec)
+locus __StdApiGrpcStreams {
+    capacity { heap items of __StdApiGrpcStream; }
+}
+
+/// A request message is at most this long (the HTTP transport's body limit).
+fn __api_grpc_max() -> Int {
+    return 1048576;
+}
+
+/// The value of header `name` in the text of a stream's headers
+/// ("name: value" lines), "" when it has none.
+fn __api_grpc_header(h: String, name: String) -> String {
+    let text = "\n" + h;
+    let at = std::str::index_of(text, "\n" + name + ": ");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 3)..len(text)];
+    let end = std::str::index_of(rest, "\n");
+    if end < 0 { return rest; }
+    return rest[0..end];
+}
+
+/// The media type of a content-type value, without its parameters.
+fn __api_grpc_media(ctype: String) -> String {
+    let semi = std::str::index_of(ctype, ";");
+    if semi >= 0 { return std::str::trim(ctype[0..semi]); }
+    return std::str::trim(ctype);
+}
+
+/// The gRPC status of a refusal kind (spec/api.md § Outcomes).
+fn __api_grpc_code(kind: String) -> Int {
+    if kind == "malformed" { return 3; }
+    if kind == "digest_mismatch" { return 9; }
+    if kind == "unauthenticated" { return 16; }
+    if kind == "unauthorized" { return 7; }
+    if kind == "full" { return 8; }
+    if kind == "shutting_down" { return 14; }
+    if kind == "unavailable" { return 14; }
+    return 13;
+}
+
+/// A `grpc-message`: percent-encoded as the protocol states, every byte
+/// outside printable ASCII, and `%`, as `%XX`.
+fn __api_grpc_message(s: String) -> String {
+    let hex = "0123456789ABCDEF";
+    let b = std::bytes::from_string(s);
+    let n = len(b);
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let c = std::bytes::read_u8(b, i) or 0;
+        if c >= 32 && c <= 126 && c != 37 {
+            out = out + s[i..(i + 1)];
+        } else {
+            out = out + "%" + hex[(c / 16)..(c / 16 + 1)] + hex[(c % 16)..(c % 16 + 1)];
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+/// A protobuf varint.
+fn __api_pb_varint(n: Int) -> Bytes {
+    let mut out = std::bytes::from_string("");
+    let mut v = n;
+    while v >= 128 {
+        out = std::bytes::concat(out, std::bytes::from_int(v % 128 + 128));
+        v = v / 128;
+    }
+    return std::bytes::concat(out, std::bytes::from_int(v));
+}
+
+/// A protobuf length-delimited field: its tag byte, the length, the bytes.
+fn __api_pb_field(tag: Int, body: Bytes) -> Bytes {
+    return std::bytes::concat(std::bytes::concat(std::bytes::from_int(tag), __api_pb_varint(len(body))), body);
+}
+
+/// `grpc-status-details-bin`: a `google.rpc.Status` (code, message, and one
+/// detail, an `Any` whose value is the JSON object `value`), base64.
+fn __api_grpc_details(code: Int, message: String, type_url: String, value: String) -> String {
+    let any = std::bytes::concat(__api_pb_field(10, std::bytes::from_string(type_url)), __api_pb_field(18, std::bytes::from_string(value)));
+    let status = std::bytes::concat(std::bytes::concat(std::bytes::from_int(8), __api_pb_varint(code)), std::bytes::concat(__api_pb_field(18, std::bytes::from_string(message)), __api_pb_field(26, any)));
+    return std::text::base64::encode(status);
+}
+
+/// A gRPC message: the compression flag (0), the length as four bytes, big
+/// endian, and the text.
+fn __api_grpc_prefix(text: String) -> Bytes {
+    let n = len(text);
+    let size = std::bytes::concat(std::bytes::concat(std::bytes::from_int(n / 16777216), std::bytes::from_int((n / 65536) % 256)), std::bytes::concat(std::bytes::from_int((n / 256) % 256), std::bytes::from_int(n % 256)));
+    return std::bytes::concat(std::bytes::concat(std::bytes::from_int(0), size), std::bytes::from_string(text));
+}
+
+/// A request `frame` refuses `malformed`, with the credential it carried.
+fn __api_grpc_bad(raw: Bytes, correlation: Int, token: String, reason: String) -> std::api::Request {
+    return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: std::api::Principal { mode: "bearer", name: "" }, reason: reason };
+}
+
+/// The gRPC transport (`std::api::grpc::Rpc`; `grpc::Rpc` at a serve site).
+/// `tid` is the number of the exposure it serves and `surface` its name,
+/// which the compiler writes into the literal, together with the HTTP/2
+/// listener it pairs with. The principal is the bearer `principals` names,
+/// read from the `authorization` metadata; the codec is JSON.
+locus __StdApiGrpcRpc {
+    params {
+        bind: String;
+        principals: std::api::BearerSource;
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        surface: String = "";
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+        streams: __StdApiGrpcStreams = __StdApiGrpcStreams { };
+    }
+    bus {
+        subscribe __ApiH2CmdT as on_ask where key == self.tid;
+        subscribe __ApiH2EventT as on_event where key == self.tid;
+        publish __ApiH2CmdT;
+        publish __ApiRpcIngressT;
+        publish __ApiRpcLostT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "grpc";
+    }
+    fn on_ask(c: __StdIoH2Cmd) {
+        if c.kind == 4 {
+            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 3, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
+        }
+    }
+    // ---- the streams ----
+    @unbounded
+    fn find(conn: Int, stream: Int) -> Int {
+        let n = self.streams.len();
+        let mut k = 0;
+        while k < n {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if s.state != 0 && s.conn == conn && s.stream == stream { return k; }
+            k = k + 1;
+        }
+        return -1;
+    }
+    // The table holds the streams of every connection; a stream past 4096 is
+    // refused (REFUSED_STREAM), never queued without a bound.
+    @unbounded
+    fn put(rec: __StdApiGrpcStream) -> Bool {
+        let n = self.streams.len();
+        let mut k = 0;
+        while k < n {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if s.state == 0 {
+                self.streams.set(k, rec) or discard;
+                return true;
+            }
+            k = k + 1;
+        }
+        if n >= 4096 { return false; }
+        self.streams.push(rec);
+        return true;
+    }
+    fn on_event(e: __StdIoH2Event) {
+        if e.kind == 1 { self.opened(e); }
+        if e.kind == 2 { self.chunk(e); }
+        if e.kind == 3 { self.ended(e); }
+        if e.kind == 4 || e.kind == 6 { self.gone(e.conn, e.stream); }
+        if e.kind == 7 { self.drop_conn(e.conn); }
+    }
+    fn opened(e: __StdIoH2Event) {
+        let rec = __StdApiGrpcStream { conn: e.conn, stream: e.stream, state: 1, over: false, headers: std::str::from_bytes(e.bytes), body: std::bytes::from_string("") };
+        if self.put(rec) { return; }
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + e.conn, kind: 1, stream: e.stream, code: 7, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
+    }
+    // The body, to its end; one past the message limit it is dropped and
+    // stands as a prefix that declares more than the limit, which `frame`
+    // refuses.
+    fn chunk(e: __StdIoH2Event) {
+        let k = self.find(e.conn, e.stream);
+        if k < 0 { return; }
+        let s = self.streams.get(k) or __api_grpc_free();
+        if s.state != 1 || s.over { return; }
+        if len(s.body) + len(e.bytes) > __api_grpc_max() + 5 {
+            let huge = std::bytes::concat(std::bytes::from_int(0), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::from_int(255)))));
+            self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: true, headers: s.headers, body: huge }) or discard;
+            return;
+        }
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, headers: s.headers, body: std::bytes::concat(s.body, e.bytes) }) or discard;
+    }
+    // The request is whole: the exposure answers it. The raw message is the
+    // length of the headers, a newline, the headers and the body.
+    fn ended(e: __StdIoH2Event) {
+        let k = self.find(e.conn, e.stream);
+        if k < 0 { return; }
+        let s = self.streams.get(k) or __api_grpc_free();
+        if s.state != 1 { return; }
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 2, over: s.over, headers: s.headers, body: __h2_none() }) or discard;
+        let raw = std::bytes::concat(std::bytes::from_string(to_string(len(s.headers)) + "\n" + s.headers), s.body);
+        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: e.conn * 4294967296 + e.stream, raw: raw };
+    }
+    // The peer reset the stream, or it closed: a request not yet handed over
+    // is forgotten; one the exposure holds is lost.
+    fn gone(conn: Int, stream: Int) {
+        let k = self.find(conn, stream);
+        if k < 0 { return; }
+        let s = self.streams.get(k) or __api_grpc_free();
+        if s.state == 1 {
+            self.streams.set(k, __api_grpc_free()) or discard;
+        }
+        if s.state == 2 {
+            self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 3, over: false, headers: s.headers, body: __h2_none() }) or discard;
+            __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: conn * 4294967296 + stream };
+        }
+    }
+    @unbounded
+    fn drop_conn(conn: Int) {
+        let n = self.streams.len();
+        let mut k = 0;
+        while k < n {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if s.state != 0 && s.conn == conn {
+                if s.state == 2 {
+                    self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 3, over: false, headers: s.headers, body: __h2_none() }) or discard;
+                    __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: conn * 4294967296 + s.stream };
+                } else {
+                    self.streams.set(k, __api_grpc_free()) or discard;
+                }
+            }
+            k = k + 1;
+        }
+    }
+    // ---- the protocol ----
+    // The raw message is a stream's request (see `ended`).
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        let nl = std::bytes::find_byte(raw, 0, 10);
+        if nl < 0 { return __api_grpc_bad(raw, correlation, "", "not a gRPC request"); }
+        let hlen = std::str::parse_int(std::str::from_bytes(std::bytes::slice(raw, 0, nl))) or 0;
+        let h = std::str::from_bytes(std::bytes::slice(raw, nl + 1, nl + 1 + hlen));
+        let body = std::bytes::slice(raw, nl + 1 + hlen, len(raw));
+        let auth = __api_grpc_header(h, "authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        if __api_grpc_header(h, ":method") != "POST" {
+            return __api_grpc_bad(raw, correlation, token, "a gRPC call is a POST");
+        }
+        let media = __api_grpc_media(__api_grpc_header(h, "content-type"));
+        if media != "application/grpc" && media != "application/grpc+json" {
+            if std::str::starts_with(media, "application/grpc") {
+                return __api_grpc_bad(raw, correlation, token, "content-type " + media + " is not served: the codec is json (application/grpc or application/grpc+json)");
+            }
+            return __api_grpc_bad(raw, correlation, token, "a gRPC call has content-type application/grpc");
+        }
+        let enc = __api_grpc_header(h, "grpc-encoding");
+        if len(enc) > 0 && enc != "identity" {
+            return __api_grpc_bad(raw, correlation, token, "compression is not supported: send grpc-encoding identity");
+        }
+        let mut path = __api_grpc_header(h, ":path");
+        let q = std::str::index_of(path, "?");
+        if q >= 0 { path = path[0..q]; }
+        let slash = std::str::index_of(path[1..len(path)], "/");
+        if len(path) < 2 || path[0..1] != "/" || slash < 0 {
+            return __api_grpc_bad(raw, correlation, token, "a gRPC call is POST /<Surface>/<member>");
+        }
+        let service = path[1..(slash + 1)];
+        let method = std::str::replace(std::str::replace(path[(slash + 2)..len(path)], "%3A", ":"), "%3a", ":");
+        if service == "hale.api.Description" && method == "Describe" {
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
+        if service != self.surface {
+            return __api_grpc_bad(raw, correlation, token, "no such service " + service + ": this exposure serves " + self.surface);
+        }
+        // `Orders.place` (or `Orders::place`) is the member `Orders::place`
+        let mut member = method;
+        if std::str::index_of(member, "::") < 0 { member = std::str::replace(member, ".", "::"); }
+        // one message: the compression flag, four bytes of length, the JSON
+        if len(body) < 5 { return __api_grpc_bad(raw, correlation, token, "a call carries a message with its five-byte prefix"); }
+        let flag = std::bytes::read_u8(body, 0) or 0;
+        let n = std::bytes::read_u32_be(body, 1) or 0;
+        if flag != 0 { return __api_grpc_bad(raw, correlation, token, "compressed messages are not supported"); }
+        if n > __api_grpc_max() { return __api_grpc_bad(raw, correlation, token, "a request message is at most " + to_string(__api_grpc_max()) + " bytes"); }
+        if len(body) != 5 + n { return __api_grpc_bad(raw, correlation, token, "a unary call carries exactly one message"); }
+        if n == 0 { return __api_grpc_bad(raw, correlation, token, "a call carries a message"); }
+        let text = std::str::from_bytes(std::bytes::slice(body, 5, 5 + n));
+        if len(text) != n { return __api_grpc_bad(raw, correlation, token, "the message is not json text"); }
+        return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(text), digest: __api_grpc_header(h, "hale-surface-digest"), correlation: correlation, credential: token, peer: nobody, reason: "" };
+    }
+    // The outcome as a gRPC response (spec/api.md § Outcomes): a result is
+    // headers, the message and a closing `grpc-status: 0`; anything else is a
+    // trailers-only response, the status and its message in the headers, the
+    // object the codec states in `grpc-status-details-bin`.
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let conn = correlation / 4294967296;
+        let stream = correlation % 4294967296;
+        let k = self.find(conn, stream);
+        let mut ctype = "application/grpc";
+        if k >= 0 {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if __api_grpc_media(__api_grpc_header(s.headers, "content-type")) == "application/grpc+json" { ctype = "application/grpc+json"; }
+            self.streams.set(k, __api_grpc_free()) or discard;
+        }
+        let head = ":status: 200\ncontent-type: " + ctype + "\n";
+        let mut headers = head;
+        let mut body = __h2_none();
+        let mut trailers = "";
+        match outcome {
+            __StdApiOutcome::Result(b) -> {
+                body = __api_grpc_prefix(b);
+                trailers = "grpc-status: 0\n";
+            },
+            __StdApiOutcome::HandlerError(b) -> {
+                headers = head + "grpc-status: 9\ngrpc-message: handler_error\ngrpc-status-details-bin: " + __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", b) + "\n";
+            },
+            __StdApiOutcome::Refusal(kind, reason, extra) -> {
+                let code = __api_grpc_code(kind);
+                headers = head + "grpc-status: " + to_string(code) + "\ngrpc-message: " + __api_grpc_message(reason) + "\ngrpc-status-details-bin: " + __api_grpc_details(code, reason, "type.hale.dev/hale.api.Refusal", __api_refusal_object(kind, reason, extra)) + "\n";
+            },
+            __StdApiOutcome::ServerError -> {
+                headers = head + "grpc-status: 13\ngrpc-message: server_error\ngrpc-status-details-bin: " + __api_grpc_details(13, "server_error", "type.hale.dev/hale.api.Refusal", "{\"kind\":\"server\"}") + "\n";
+            },
+        }
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + conn, kind: 0, stream: stream, code: 0, headers: std::bytes::from_string(headers), body: body, trailers: std::bytes::from_string(trailers) };
+    }
+    // The request's stream is gone and its work has completed: nothing is
+    // written; what the transport kept for it is released.
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        let k = self.find(correlation / 4294967296, correlation % 4294967296);
+        if k >= 0 { self.streams.set(k, __api_grpc_free()) or discard; }
+    }
+    // GOAWAY on every connection and the listener closed, after the replies
+    // already sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 5, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
+    }
+}

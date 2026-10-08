@@ -48,6 +48,11 @@ pub const API_HUB_SOURCE: &str = include_str!("../hl/api_hub.hl");
 /// program, and a program with no server carries no HTTP/2.
 pub const API_H2_SOURCE: &str = include_str!("../hl/io_h2.hl");
 
+/// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
+/// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
+/// to a program that names `grpc::Rpc`.
+pub const API_GRPC_SOURCE: &str = include_str!("../hl/api_grpc.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -416,6 +421,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "h2", "Conn"], "__StdIoH2Conn"),
     (&["std", "io", "h2", "Event"], "__StdIoH2Event"),
     (&["std", "io", "h2", "Cmd"], "__StdIoH2Cmd"),
+    (&["std", "api", "grpc", "Rpc"], "__StdApiGrpcRpc"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),

@@ -298,6 +298,7 @@ fn declared_names() -> BTreeSet<&'static str> {
         .chain(hale_stdlib::API_RUNTIME_SOURCE.lines())
         .chain(hale_stdlib::API_HUB_SOURCE.lines())
         .chain(hale_stdlib::API_H2_SOURCE.lines())
+        .chain(hale_stdlib::API_GRPC_SOURCE.lines())
         .filter_map(|l| {
             // GH #436: skip leading decorators. A declaration may be
             // annotated (`@sealed locus X`, `@form(vec) locus Y`), and
