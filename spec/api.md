@@ -277,7 +277,7 @@ main locus Desk {
     run() {
         let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
         let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
-        while !self.draining { std::time::sleep(100ms); }
+        std::api::run_until_stopped(public);
         public.stop();
         admin.stop();
     }
@@ -929,8 +929,12 @@ type std::api::Outcome = enum {
     ServerError,                // the handler violated; says nothing of it
 };
 
-// What a caller is handed to hold; stop() is idempotent.
-interface std::api::Handle { fn stop(); }
+// What a caller is handed to hold; stop() is idempotent. wait() returns
+// when stop() or the drain has ended the exposure (§ Parking).
+interface std::api::Handle { fn stop(); fn wait(); }
+
+// h.wait() as a free function, for a serving main locus's run().
+fn std::api::run_until_stopped(h: std::api::Handle);
 ```
 
 **Receiving.** A request is received when the transport has published
@@ -988,6 +992,24 @@ record's place is taken by the next request, so it is never longer than
 the bound, and the queue runs in the order of the request ids, not of the
 places); a second event for the same request id finds no record and does
 nothing.
+
+**Parking.** `h.wait()`, and `std::api::run_until_stopped(h)` which is
+the same call, return when `stop()` has run on the exposure or the
+process or the serving locus is draining. Between those they wait in
+bounded slices of 100 ms on `std::time::__idle_wait`: on the main thread
+that is a wait on main's bus queue which a delivery from another thread
+ends at once (the queue's wake descriptor, written by the enqueue, the
+pattern an `async_io` pool's wake descriptor already is), and anywhere
+else it is a `sleep`. A serving `main locus` whose `run()` ends in
+`run_until_stopped` therefore answers a call in the time the work takes
+and its cross-pool hops take, not in the next slice of a `sleep` loop. The
+wait never leaves the thread's own scheduling: no thread is added and the
+main thread is still the one that runs main's handlers. A program that
+keeps its own `while !self.draining { sleep(…); }` loop is still correct
+and answers at the latency of its slice, since main's bus queue is
+drained only when its thread next looks at it; a loop that does periodic
+work of its own keeps that loop and gains the park by waiting with
+`h.wait()` only where it has nothing else to do.
 
 **Shutdown.** `stop()` (idempotent) closes admission (a request received
 after it is refused `shutting_down`), refuses every queued request

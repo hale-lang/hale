@@ -203,11 +203,18 @@ main locus Desk {
     }
     run() {
         let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
-        while !self.draining { std::time::sleep(100ms); }
+        std::api::run_until_stopped(admin);
         admin.stop();
     }
 }
 ```
+
+`std::api::run_until_stopped(admin)` is the serving locus's wait: it
+returns when the exposure is stopped or the process drains, and until
+then it parks, waking the moment a call arrives for the main thread, so a
+call is answered in the time the work takes. A `run()` that does
+periodic work of its own keeps its `while !self.draining { … sleep(…); }`
+loop; it works, and a call waits for the loop's next slice.
 
 The socket is bound when the program boots, so a path it cannot bind (a
 missing directory, a socket another program is serving) stops the
@@ -291,7 +298,7 @@ main locus Desk {
     run() {
         let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
         let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
-        while !self.draining { std::time::sleep(100ms); }
+        std::api::run_until_stopped(public);
         public.stop();
         partner.stop();
     }
@@ -666,7 +673,7 @@ main locus Head {
     params { roles: RecordRoles = RecordRoles { }; }
     run() {
         let local = api::serve(Billing, unix::Rpc { path: "/run/head.sock", roles: self.roles }, as: "head", bound: 64, on_full: refuse);
-        while !self.draining { std::time::sleep(100ms); }
+        std::api::run_until_stopped(local);
         local.stop();
     }
 }
