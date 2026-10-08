@@ -438,7 +438,11 @@ refusal the JSON codec gives). The header of the file states the five
 outcomes in these terms: a handler's error is the detail of its status, an
 `Any` of the error's message, and a refusal is the detail `HaleRefusal`. `hale
 check --api --surface Public --proto` prints the file, and `hale api export
---check` refuses a committed copy that drifted.
+--check` refuses a committed copy that drifted. Two fields of a record whose
+default JSON names are the same (`a_b` and `aB`, or `a` and `_a`, which
+protoc compares without regard to case) make a file `protoc` refuses, so the
+record is refused instead, naming both fields; a `json:` tag on one of them
+renames it.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
 makes Hale and TypeScript clients and neither speaks gRPC (a browser's
@@ -447,7 +451,9 @@ answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
 have the file finds the surface through the server: it lists three services
 (the surface, `hale.api.Description` and the reflection service itself) and
 answers the descriptor of the file that declares any of them, the file a
-compiler makes of the `.proto`. Reflection is for a caller the bearer source
+compiler makes of the `.proto`. A reflection call is one stream: each request
+is answered as it arrives, and the call stays open until the tool ends its
+side. Reflection is for a caller the bearer source
 names, so pass the `authorization` metadata to the tool as to a call.
 
 A handler's own error is `FAILED_PRECONDITION` with the error in

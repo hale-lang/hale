@@ -1437,3 +1437,73 @@ fn the_protobuf_form_follows_the_rules_over_shapes_of_its_own() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("Store.proto differs"), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two fields of a record whose default proto3 JSON names collide (`a_b` and
+/// `aB` are both `aB`; protoc compares them without regard to case, so `a` and
+/// `_a` are `a` and `A`) make a `.proto` protoc refuses. `check --api
+/// --surface X --proto` and `api export` refuse the record with both fields and
+/// the name, and a control whose names differ is written. The JSON, OpenAPI,
+/// schema and MCP forms have no such rule and are still written.
+#[test]
+fn a_record_whose_fields_share_a_json_name_has_no_proto() {
+    let dir = scratch("proto_json_names");
+    let program = |fields: &str| {
+        let path = dir.join("program.hl");
+        std::fs::write(
+            &path,
+            [
+                &format!("type Data {{ {fields} }}"),
+                "locus Shelf { fn put(d: Data) -> Data { return d; } }",
+                "api Store { rpc Shelf::put; }",
+                "main locus App {",
+                "    params { shelf: Shelf = Shelf { }; }",
+                "    run() {",
+                "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-names.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
+                "        h.stop();",
+                "    }",
+                "}",
+                "fn main() { App { }; }",
+                "",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        path
+    };
+    let check = |path: &Path| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(["check"])
+            .arg(path)
+            .args(["--api", "--surface", "Store", "--proto"])
+            .env("HALE_SKIP_STALE_CHECK", "1")
+            .output()
+            .expect("run hale")
+    };
+    for (fields, both, name) in [("a_b: Int; aB: Int;", ["`a_b`", "`aB`"], "the same default JSON name `aB`"), ("a: Int; _a: Int;", ["`a`", "`_a`"], "`a` and `A`")] {
+        let path = program(fields);
+        let out = check(&path);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{fields}: it was written:\n{}", String::from_utf8_lossy(&out.stdout));
+        assert!(err.contains("Data") && both.iter().all(|f| err.contains(f)) && err.contains(name), "{fields}: {err}");
+        let out = export_cmd(&path, "Store", &["--out", dir.join("out").to_str().unwrap()]);
+        assert!(!out.status.success(), "{fields}: export wrote it");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(both.iter().all(|f| err.contains(f)) && err.contains(name), "{fields}: {err}");
+    }
+    // the control: names that differ
+    let path = program("a_b: Int; aC: Int;");
+    let out = check(&path);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("optional int64 aC = 2;"));
+    // and the other forms are written for the colliding record
+    let path = program("a_b: Int; aB: Int;");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check"])
+        .arg(&path)
+        .args(["--api", "--surface", "Store", "--openapi"])
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}

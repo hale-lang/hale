@@ -359,10 +359,26 @@ fn record(display: &str, schema: &TypeSchema) -> Result<PMessage, String> {
         return Err(format!("the type `{display}` is not a proto3 message name"));
     }
     let mut fields = Vec::new();
+    // each field's default JSON name (protoc's `json_name`), which proto3 wants
+    // one to a message, compared without regard to case as protoc compares them
+    let mut json_names: Vec<(&str, String)> = Vec::new();
     for (i, (key, f)) in schema.properties.iter().enumerate() {
         if !is_ident(key) {
             return Err(format!("{display}: the field `{key}` is not a proto3 field name"));
         }
+        let json = json_name(key);
+        if let Some((other, theirs)) = json_names.iter().find(|(_, j)| j.eq_ignore_ascii_case(&json)) {
+            let same = if *theirs == json {
+                format!("the same default JSON name `{json}`")
+            } else {
+                format!("default JSON names `{theirs}` and `{json}`, which protoc takes for the same (they differ only in case)")
+            };
+            return Err(format!(
+                "{display}: the fields `{other}` and `{key}` have {same}; protoc refuses a message whose fields share one, \
+                 so rename one of them (a `json:` tag on the field does)"
+            ));
+        }
+        json_names.push((key, json));
         let number = i as u32 + 1;
         fields.push(match f {
             FieldSchema::Scalar { json, hale_type, unit } => {
@@ -777,6 +793,27 @@ mod tests {
         assert!(err.contains("T.xs") && err.contains("no proto3 encoding"), "{err}");
         let err = from_model(&model(FieldSchema::Unformed, Vec::new())).unwrap_err();
         assert!(err.contains("R::f") && err.contains("Request"), "{err}");
+    }
+
+    /// Two fields whose default JSON names collide are refused, with both
+    /// fields and the JSON name in the words: protoc would refuse the file.
+    #[test]
+    fn fields_that_share_a_json_name_are_a_stop() {
+        let two = |a: &str, b: &str| {
+            let t = TypeSchema { properties: vec![(a.to_string(), int()), (b.to_string(), int())], required: Vec::new() };
+            from_model(&model(FieldSchema::Ref("Data".to_string()), vec![("Data", t)]))
+        };
+        let err = two("a_b", "aB").unwrap_err();
+        assert!(err.contains("Data") && err.contains("`a_b`") && err.contains("`aB`") && err.contains("the same default JSON name `aB`"), "{err}");
+        // they differ only in case: protoc takes them for the same
+        let err = two("a", "_a").unwrap_err();
+        assert!(err.contains("`a`") && err.contains("`_a`") && err.contains("`a` and `A`") && err.contains("only in case"), "{err}");
+        let err = two("fooBar", "foo_bar").unwrap_err();
+        assert!(err.contains("`fooBar`") && err.contains("`foo_bar`") && err.contains("`fooBar`"), "{err}");
+        // the control: names that differ stay
+        assert!(two("a_b", "aC").is_ok());
+        assert!(two("a", "b_a").is_ok());
+        assert!(two("a_b", "a_c").is_ok());
     }
 
     /// Two names that land on one message are refused, not renamed.

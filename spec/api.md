@@ -894,7 +894,16 @@ locus is refused, written at the site or held as a param.
   request or response in `HaleEmpty`, and a refusal in `HaleRefusal`. The file's
   header states the five outcomes and these rules. A shape the codec does not
   carry has no encoding and is refused naming the row and the field, never
-  approximated, and so is a name two types would share. The field numbers are
+  approximated, and so is a name two types would share, and so is a record two
+  of whose fields have the same default proto3 JSON name (the field's name
+  with its underscores removed and the letter after each capitalised: `a_b`
+  and `aB` are both `aB`), compared without regard to case as protoc compares
+  them (`a` and `_a` are `a` and `A`): `protoc` refuses such a file, so
+  `check --api --surface NAME --proto` and `api export` refuse the record,
+  naming both fields and the JSON name; a `json:` tag on one of the fields
+  renames it. It is a rule of the protobuf form, not of the surface laws: the
+  JSON codec has no such collision, and the other forms are still written. The
+  field numbers are
   held by the surface digest: it folds each struct's fields in declaration
   order, so a reorder or an insertion moves the digest, and no number moves
   while the digest holds.
