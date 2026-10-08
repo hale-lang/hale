@@ -201,7 +201,15 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     // what lies between it and the last frame read is what was shed
     let again = if topic == "Blobs" { "blobs 1 100" } else { "ticks 1 100" };
     server.command(again);
-    let (seq, n) = seq_and_n(&dave.text());
+    // (a burst event still in the connection's mailbox when the pong went out
+    // is part of the burst, not the next event: read past it to seq 401)
+    let (seq, n) = loop {
+        let (seq, n) = seq_and_n(&dave.text());
+        if seq >= 401 {
+            break (seq, n);
+        }
+        got.push((seq, n));
+    };
     assert_eq!((seq, n), (401, 1), "seq counts every event offered, delivered or shed");
     got.push((seq, 401));
     let done = server.finish();
