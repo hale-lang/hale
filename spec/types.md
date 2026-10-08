@@ -95,7 +95,7 @@ The same rule holds for a locus's or a perspective's `params`, for
 the named members of a `contract`, and for an `interface`'s methods.
 Before it, the second declaration passed `hale check` and one of the
 two won the slot, with nothing in the source to say which — while
-the json codecs and the api binding's description assume one slot
+the json codecs and a surface's description assume one slot
 per name.
 
 ### A struct binding is a copy (GH #713)
@@ -1387,12 +1387,9 @@ that have no caller frame to address the error channel:
   decl (one fn may be referenced by zero subscriptions; the
   subscription is what fails to typecheck).
   A subscribed handler MAY declare a return type (GH #1106):
-  bus dispatch ignores the value, and through an `api` binding
-  it is the reply to the caller (`spec/semantics.md` § "The api
-  binding"). At most one subscriber of a topic may declare one
-  when the program carries an api binding; the return type must
-  have a JSON form there, or the topic is left out of the API
-  with a warning.
+  bus dispatch ignores the value. A reply to a caller is a served
+  `rpc` row's response (`spec/api.md` § Surfaces and their rows),
+  not a bus handler's return.
 
 The narrowing from "no fallible on locus methods" to
 "substrate-facing surfaces only" preserves the two-channel
@@ -1594,8 +1591,8 @@ paths; who holds the role is the serve site's role source (`spec/api.md`
 § Identity sources).
 
 `@gated(role: R)`, which gated a subscribed handler, an `expose` member
-or a `publish` through the api binding, is retired with the binding
-(R4): the parser refuses it with the replacement.
+or a `publish` through the retired api binding, is refused by the parser
+with the replacement (`requires` on an `rpc` row, `spec/api.md`).
 
 ## Recovery-primitive typing
 

@@ -733,14 +733,19 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
 
 /// The member list as a refusal message: what the exposure shows this caller.
 fn not_a_member(verb: &str, what: &str, name: &str, doc: &Value) -> String {
-    format!(
-        "hale {}: `{}` is not {} (the exposure describes the slice the caller's roles show)\n  members: {}\n  streams (use `hale watch`): {}",
+    let listed = |names: Vec<String>| if names.is_empty() { "none".to_string() } else { names.join(", ") };
+    let mut text = format!(
+        "hale {}: `{}` is not {} (the exposure describes the slice the caller's roles show)\n  members: {}",
         verb,
         name,
         what,
-        member_names(doc).join(", "),
-        stream_topics(doc).join(", ")
-    )
+        listed(member_names(doc))
+    );
+    let streams = stream_topics(doc);
+    if !streams.is_empty() {
+        text.push_str(&format!("\n  streams (use `hale watch`): {}", streams.join(", ")));
+    }
+    text
 }
 
 /// `hale call <endpoint> <member> [<json payload>] [--token T] [--receipt]`.
@@ -783,7 +788,9 @@ pub fn run_call(rest: &[String]) -> ExitCode {
         eprintln!("{}", not_a_member("call", "a member this caller may call", &name, &doc));
         return ExitCode::from(1);
     }
-    let digest = doc.get("digest").and_then(Value::as_str).map(str::to_string);
+    // (a hub's document carries the stream digest, which is not the digest of
+    // a surface it carries rpcs for: a call over a hub names none)
+    let digest = if on_hub { None } else { doc.get("digest").and_then(Value::as_str).map(str::to_string) };
     let reply = match call(&ep, token.as_deref(), &name, &body, digest.as_deref()) {
         Ok(r) => r,
         Err(e) => {

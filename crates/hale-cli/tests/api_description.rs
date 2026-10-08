@@ -13,7 +13,8 @@
 //! What this file held for the structural binding (the `--dump-api`
 //! document, a running socket's served description, `hale mcp --app`,
 //! `hale admin`, `hale call`) is gone with the binding; the generic
-//! clients are held beside the clients (R4 C).
+//! clients, over a running program's served descriptions, are held in
+//! `api_clients.rs` (R4 C).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

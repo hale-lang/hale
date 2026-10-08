@@ -4092,7 +4092,7 @@ its behavior as described in this document.
 | `LOTUS_REPLAY_AT_CONSUMER=<id>` | unset | With `LOTUS_REPLAY_AT`, count the n'th consume of that consumer instead of the process-wide n'th; `--at <consumer-id>:<n>`. |
 | `LOTUS_REPLAY_FD=<fd>` | unset | An already-open, validated descriptor for the recording, passed by `hale replay` so no path is re-resolved between admission and replay. |
 | `LOTUS_API=<path>` | the baked path | Overrides the unix socket path of the program's `api` binding at run time. |
-| `LOTUS_API_ROLES=<table>` | the baked `[environments.<env>.roles]` | Overrides the api binding's roles table at run time; with no table baked in, every gate refuses until this says otherwise. |
+| `LOTUS_API_ROLES=<table>` | the `table` param of the program's `std::api::StaticRoles` | Overrides a `StaticRoles` source's table at run time (`spec/stdlib.md` § `std::api`); with no table, every `requires` refuses until this says otherwise. |
 | `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |

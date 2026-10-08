@@ -278,6 +278,14 @@ fn call_speaks_each_transports_wire_and_names_the_digest_it_read() {
     let r = run(&["call", &sock, "Counter::peek", r#"{"n": 0}"#]);
     assert_eq!(json_of(&r.stdout), json!({ "total": 2 }), "the refused call did not run, and the digest the client names is accepted");
 
+    // over a hub's connection: the `call` frame, under the hub's sources (alice holds no `trader` there,
+    // and `peek` requires none)
+    let r = run(&["call", &app.hub(), "Counter::peek", r#"{"n": 0}"#, "--token", "t-alice"]);
+    assert!(r.ok, "{}", r.stderr);
+    assert_eq!(json_of(&r.stdout), json!({ "total": 2 }));
+    let r = run(&["call", &app.hub(), "Counter::add", r#"{"n": 1}"#, "--token", "t-alice"]);
+    assert!(!r.ok && r.stderr.contains("refused: unauthorized") && r.stderr.contains("requires trader"), "{}", r.stderr);
+
     // a socket that is not there, a scheme that is not spoken
     let r = run(&["call", "/nonexistent/hale.sock", "Counter::peek"]);
     assert!(!r.ok && r.stderr.contains("could not connect"), "{}", r.stderr);

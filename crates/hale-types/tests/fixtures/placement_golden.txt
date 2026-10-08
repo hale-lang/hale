@@ -467,7 +467,7 @@ row	App@literal1.p	PluginHost	main	default
 row	~	Gateway	main	default
 row	~.s	Signer	main	inherited
 
-== crates/hale-cli/tests/fixtures/api_clients/main.hl#ab56e51e
+== crates/hale-cli/tests/fixtures/api_clients/main.hl#4e7309ef
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:__api_ws	async_io

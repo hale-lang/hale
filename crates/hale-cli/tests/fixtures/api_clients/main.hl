@@ -77,7 +77,9 @@ main locus Desk {
         let local = api::serve(Books, unix::Rpc { path: "@SOCK@", roles: self.unix_roles }, as: "local", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
         let web = api::serve(Books, http::Rpc { bind: "127.0.0.1:@HTTP@", codec: json, principals: self.bearer, roles: self.http_roles }, as: "web", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
         let agent = api::serve(Books, mcp::Rpc { bind: "127.0.0.1:@MCP@", principals: self.bearer, roles: self.http_roles }, as: "agent", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        let feed = api::serve(Books, self.hub, as: "feed", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
+        feed.stop();
         local.stop();
         web.stop();
         agent.stop();

@@ -1708,8 +1708,8 @@ assume the others in a build:
     notes/unbounded-alloc-audit-2026-07-02.md). Flags every site
     regardless of `@bounded` (a `@unbounded` fn is still suppressed, and
     so is a site with **no author position**: one whose span lies in
-    source a desugar generated — at or beyond the api binding's
-    `API_SYNTH_BASE`, or in a declaration the snapshot's origin rows
+    source a desugar generated — at or beyond
+    `API_SYNTH_BASE` (the window of source the serve expansion generates), or in a declaration the snapshot's origin rows
     mark synthesized whose offset no source file owns, a `json_gen`
     parser or api codec owning none — and no other site, whoever's
     code calls it; the check's warnings and the editor's
