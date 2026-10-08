@@ -490,7 +490,8 @@ fn main() {
     assert!(arrangement(m).iter().any(|row| row.contains(" App.h.roles.router RouterV1 ")));
 }
 
-/// C3: API binding expressions are copied into generated params with
+/// C3, retargeted in R4: a serve site's expressions (`roles:`,
+/// `principals:`) are copied into the generated exposure's params with
 /// their source spans intact. Their source location is not their birth
 /// context, and must not erase the adapter's model dispatch domains.
 #[test]
@@ -508,24 +509,37 @@ fn copied_api_binding_expressions_keep_params_birth_provenance() {
     let s = Snapshot::from_program(program, Vec::new(), config).unwrap_or_else(|_| panic!("load"));
     let m = model(&s);
     let graph = s.demand_ownership_graph().expect("ownership");
-    for child in ["Table", "Tokens", "__ApiBinding", "__ApiHttp"] {
+    for child in ["Table", "Tokens"] {
         let sites: Vec<_> = graph.sites.iter().filter(|site| site.child_ty == child).collect();
-        assert!(!sites.is_empty(), "binding copy of {child} is a graph row");
-        assert!(sites.iter().all(|site| site.params_default), "{sites:?}");
-        let lid = m.entities.loci.iter().position(|l| l.name == child).unwrap();
-        assert!(!m.holes.iter().any(|h| h.at == hale_model::EntityRef::LocusDecl(hale_model::LocusDeclId(lid as u32))
-            && h.kind == hale_model::HoleKind::RuntimeInheritedPlacement), "{child}: {:?}", locus_holes(m));
+        // The authored `roles: Table { }` sits in `run()`, a body birth; its
+        // copy in the generated listener's params is a params default.
+        let copies: Vec<_> = sites.iter().filter(|site| site.params_field.is_some()).collect();
+        assert!(!copies.is_empty(), "the exposure's copy of {child} is a graph row: {sites:?}");
+        assert!(copies.iter().all(|site| site.params_default), "{:?}", copies.iter().map(|s| (s.span.start, &s.enclosing_locus, &s.params_field)).collect::<Vec<_>>());
     }
     let plan = &m.analyses.dispatch_plan;
-    let pings = plan.subjects.iter().find(|p| p.subject == "__api.call.Pings").expect("API call dispatch");
-    assert_eq!(pings.publisher_domains, ["pool:__api_io"], "the API adapter's publisher is arranged: {pings:?}");
-    assert_eq!(pings.subscriber_domains, ["pool:work"]);
-    // Each dynamically accepted peer constructs its frames default.
+    let call = plan.subjects.iter().find(|p| p.subject == "__api.rpc.call").expect("rpc call dispatch");
+    assert_eq!(call.subscriber_domains, ["pool:work"], "the receiver's pool is arranged: {call:?}");
+    let out = plan.subjects.iter().find(|p| p.subject == "__api.http.out").expect("http out dispatch");
+    assert_eq!(out.publisher_domains, ["pool:__api_http"], "the exposure's publisher is arranged: {out:?}");
+    // The serve sites are born in `run()`, and so are their `roles:` and
+    // `principals:` sources; each is a body birth, dynamic by rule. What
+    // the exposure builds from them (the copies above) adds no row of its own.
     assert_eq!(locus_holes(m), [
-        "__ApiFrameQ instance born outside the arrangement: owner and placement resolve at runtime",
-        "__ApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
-        "__ApiPeer instance born outside the arrangement: owner and placement resolve at runtime",
-    ], "connection peers and their default children remain dynamic");
+        "Table instance born outside the arrangement: owner and placement resolve at runtime",
+        "Tokens instance born outside the arrangement: owner and placement resolve at runtime",
+        "__RpcSurface_1 instance born outside the arrangement: owner and placement resolve at runtime",
+        "__RpcSurface_2 instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiExposure instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiHttpRpc instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiNoExpiry instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiNoRevision instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiRpcEntries instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiUnixPeer instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiUnixPendings instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiUnixRpc instance born outside the arrangement: owner and placement resolve at runtime",
+    ], "body births and the exposure's connection peers remain dynamic");
 }
 
 /// C3: even an overlapping span cannot turn a method-body birth into a
