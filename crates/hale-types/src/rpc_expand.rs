@@ -362,6 +362,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "RpcHello",
     "RpcEvent",
     "test",
+    "unix",
 ];
 
 /// Whether the programs serve a surface (`api::serve`) or spell a name of
@@ -515,7 +516,7 @@ pub fn expand(
                     let buildable = match transport {
                         Expr::Struct { path, .. } => {
                             let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                            segs.first() == Some(&"std") || loci.contains_key(segs.join("::").as_str())
+                            segs.first() == Some(&"std") || is_unix_rpc(path) || loci.contains_key(segs.join("::").as_str())
                         }
                         e => crate::surfaces::self_field(e).is_some(),
                     };
@@ -729,7 +730,7 @@ pub fn expand(
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
             if let Some(t) = &site.transport {
-                push("transport", t.clone());
+                push("transport", as_stdlib_unix(t, id));
             }
             if let Some(p) = &plan.principals {
                 push("bearer", p.clone());
@@ -750,6 +751,42 @@ pub fn expand(
             pb.params.push(param);
         } else {
             l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
+        }
+        // a Unix transport's listener: a param of the serving locus born
+        // after the authored params its path may read, and before the
+        // exposure (so it is subscribed when the exposure attaches), placed on a
+        // pool of its own
+        if l.is_main {
+            if let Some(path) = unix_path_of(l, site.transport.as_ref()) {
+                if let Some((lp, entry)) = parse_unix_listener(id, path, span) {
+                    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
+                        // after every authored param (the path may read one),
+                        // before the exposure just pushed
+                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
+                        pb.params.insert(at, lp);
+                    }
+                    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
+                        pl.entries.push(entry);
+                    } else {
+                        l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
+                    }
+                }
+            }
+        }
+        // a Unix transport the serving locus holds as a param is numbered
+        // in the literal that builds it, as one written in the call is
+        if let Some(f) = site.transport.as_ref().and_then(|t| crate::surfaces::self_field(t)) {
+            for m in l.members.iter_mut() {
+                if let LocusMember::Params(pb) = m {
+                    for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
+                        if let ParamInit::Value(e) = &mut p.init {
+                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path)) {
+                                *e = as_stdlib_unix(e, id);
+                            }
+                        }
+                    }
+                }
+            }
         }
         // the receivers' numbers, written into the literals that build them
         for (slot, field) in plan.fields.iter().enumerate() {
@@ -789,6 +826,83 @@ struct Binding {
     slot: usize,
     /// (member index in the surface's canonical order, the row).
     members: Vec<(usize, Row)>,
+}
+
+/// Whether a transport literal's path is the stdlib's Unix transport,
+/// spelled `unix::Rpc` (the serve site's spelling) or `std::api::unix::Rpc`.
+pub(crate) fn is_unix_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["unix", "Rpc"] | ["std", "api", "unix", "Rpc"])
+}
+
+/// The transport literal as the exposure holds it: a Unix transport is
+/// spelled by its stdlib path and carries the number of the exposure it
+/// serves (`tid`), which keys the bus subjects its connections share.
+fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
+    let mut e = fresh(t);
+    if let Expr::Struct { path, inits, span, .. } = &mut e {
+        if is_unix_rpc(path) {
+            let sp = *span;
+            path.segments = ["std", "api", "unix", "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
+            inits.retain(|i| i.name.name != "tid");
+            inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
+        }
+    }
+    e
+}
+
+/// The `path:` a Unix transport is built with, at a serve site or in the
+/// param the site names; `None` for any other transport.
+fn unix_path_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_unix_rpc(path) => {
+            inits.iter().find(|i| i.name.name == "path").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
+}
+
+/// The listener of Unix exposure `id` and its placement: a param of the
+/// serving locus on a pool of its own (a socket's accept parks a
+/// coroutine, so it needs an `async_io` pool, which only the main locus
+/// places).
+fn parse_unix_listener(id: i64, path: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+    let field = format!("__rpc_u_{id}");
+    let src = format!(
+        "main locus __Tmp {{ params {{ {field}: __StdApiUnixListener = __StdApiUnixListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_unix) where async_io; }} }}\n"
+    );
+    let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0600_0000 + id as u32 * 0x100).ok()?;
+    let mut param = None;
+    let mut entry = None;
+    for item in prog.items {
+        if let TopDecl::Locus(l) = item {
+            for m in l.members {
+                match m {
+                    LocusMember::Params(pb) => param = pb.params.into_iter().next(),
+                    LocusMember::Placement(pl) => entry = pl.entries.into_iter().next(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut param = param?;
+    if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
+        inits.push(StructInit { name: Ident::new("path", span), value: path, span });
+    }
+    Some((param, entry?))
 }
 
 fn parse_params(src: &str) -> Option<ParamDecl> {
@@ -903,6 +1017,7 @@ topic __ApiRpcLostT { payload: __StdApiRpcLost; subject: \"__api.rpc.lost\"; key
 topic __ApiRpcCallT { payload: __StdApiRpcCall; subject: \"__api.rpc.call\"; keyed_by key; on_unmatched: fail; }
 topic __ApiRpcHelloT { payload: __StdApiRpcHello; subject: \"__api.rpc.hello\"; keyed_by key; on_unmatched: fail; }
 topic __ApiRpcEventT { payload: __StdApiRpcEvent; subject: \"__api.rpc.event\"; keyed_by exposure; }
+topic __ApiUnixOutT { payload: __StdApiUnixOut; subject: \"__api.unix.out\"; keyed_by key; }
 ";
 
 /// The rows adapter of exposure `id`.

@@ -177,14 +177,61 @@ let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders:
 
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
-one the standard library ships today is `std::api::test::Rpc`, which
-has no socket: a test hands it requests and reads the answers, through
-the same admission, dispatch and completion every transport uses
-(`http::Rpc` and `unix::Rpc` follow). The sources are fields of the
+standard library ships two today. `std::api::test::Rpc` has no socket: a
+test hands it requests and reads the answers, through the same
+admission, dispatch and completion every transport uses. `unix::Rpc` is
+a Unix socket (`http::Rpc` follows). The sources are fields of the
 transport's literal, `principals:` for who a bearer token is and
 `roles:` for who holds a role; grants belong to the source the serve
 site names, never to a role's name, so one program can serve a surface
 twice under two sources.
+
+### Serving over a Unix socket
+
+`unix::Rpc` takes a `path:` and a `roles:`. Who is calling is the peer's
+kernel credentials, so it has no bearer source: the caller is `uid:1000`,
+and a role source says what `uid:1000` holds. The desk of the witness
+serves its `Admin` surface to its operator this way:
+
+```hale,fragment
+main locus Desk {
+    params {
+        admin_roles: Grants = Grants { operator: "uid:1000" };
+        orders: Orders = Orders { };
+        ledger: Ledger = Ledger { };
+    }
+    run() {
+        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        admin.stop();
+    }
+}
+```
+
+The socket is bound when the program boots, so a path it cannot bind (a
+missing directory, a socket another program is serving) stops the
+program with a diagnostic instead of running without it. Its accept and
+read loops run on a pool of their own, which only the main locus can
+place, so the serving locus is the main locus; the compiler adds the
+listener to it. A client writes one JSON object per line and reads one
+per reply, each carrying the `id` it was sent with, the `request_id` the
+exposure assigned, and who the exposure took the caller to be:
+
+```text
+{"call": "Orders::cancel", "payload": {"order": 41}, "id": "c-1", "digest": "fnv1a64:40381db6685c9f75"}
+{"request_id": 1, "id": "c-1", "ok": true, "value": {"order": 41, "was_open": true}, "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
+{"describe": true}
+```
+
+A `describe` answers with the exposure's identity and the members this
+caller may call: the same rows and the same sources the next request is
+checked against, so what it lists is what it admits. A connection that
+breaks (an EOF, a line that is not an object, a reply that cannot be
+written) is closed alone: the listener and the other connections go on.
+`admin.stop()` answers what is executing, refuses what is queued as
+`shutting_down`, and closes the socket after the replies. A program that
+ends without calling it releases its sockets too, but a caller with a
+request in flight then sees the connection end instead of a reply.
 
 The serve site makes an *exposure* when its locus is born, and the
 call is the handle: `public.stop()` stops accepting, refuses what is
@@ -208,8 +255,8 @@ handler that wants to know which exposure a call came through, and which
 generation of its receiver admitted it, declares `ctx:
 std::api::ServedContext` where it would declare `std::api::Context`.
 
-Until the socket transports land, the binding below is how a program is
-served over a socket.
+The `bindings { api: … }` entry below is the structural path to a socket
+and still works as it did; `api::serve` is the new one.
 
 ## The structural path
 

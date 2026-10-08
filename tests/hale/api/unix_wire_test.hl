@@ -1,0 +1,99 @@
+// GH #1417 (R2b, spec/api.md § The Unix JSON transport) — the pieces of the
+// Unix transport that a client cannot drive through a socket.
+//
+// A connected `AF_UNIX` socket always has credentials, so the recorded
+// `unauthenticated` exchange (`tests/api-contract/wire/unix/
+// refusal_unauthenticated.json`: a peer the kernel will not name, uid -1)
+// cannot be replayed from a client (`crates/hale-codegen/tests/api_unix.rs`
+// replays the others). Its three pieces are held here instead:
+//
+//   * the transport frames a line from a peer with no credentials as a
+//     request whose peer is `uid:-1`, and tells a call, a describe and a
+//     line that is not a request apart;
+//   * admission refuses such a peer `unauthenticated`, in the words the
+//     recording has, before anything else is looked at (the member, the
+//     role, the payload) and without the handler running;
+//   * the reply is encoded as the recorded line, byte for byte.
+
+role operator;
+
+type Rebalance { book: String; }
+type Rebalanced { moved: Int; }
+
+locus Ledger {
+    params { entered: Int = 0; }
+    fn rebalance(r: Rebalance) -> Rebalanced {
+        self.entered = self.entered + 1;
+        return Rebalanced { moved: 1500 };
+    }
+}
+
+api Admin {
+    rpc Ledger::rebalance requires: [operator];
+}
+
+locus Anyone {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return true; }
+}
+
+main locus Desk {
+    params {
+        ledger: Ledger = Ledger { };
+        roles: Anyone = Anyone { };
+        fx: std::api::test::Rpc = std::api::test::Rpc { roles: self.roles };
+        wire: std::api::unix::Rpc = std::api::unix::Rpc { path: "/tmp/hale-unix-wire-test-unused.sock", tid: 0 };
+    }
+    run() {
+        let admin = api::serve(Admin, self.fx, as: "admin", receivers: { Ledger: self.ledger }, bound: 4, on_full: refuse);
+
+        // ---- framing: what a connection hands over is its credentials, a tab and the line ----
+        let t = self.wire;
+        let r = t.frame(std::bytes::from_string("-1:-1:-1:\t{\"call\":\"Ledger::rebalance\",\"payload\":{\"book\":\"main\"},\"id\":\"c-5\"}"), 5);
+        std::test::assert_eq_int(r.kind, 0, "a call");
+        std::test::assert_eq_str(r.member, "Ledger::rebalance", "names its member");
+        std::test::assert_eq_str(std::str::from_bytes(r.bytes), "{\"book\":\"main\"}", "and carries the payload as the client wrote it");
+        std::test::assert_eq_str(r.digest, "", "no digest was sent");
+        std::test::assert_eq_str(r.peer.name, "uid:-1", "the kernel did not name the peer");
+        std::test::assert_eq_int(r.peer.uid, -1, "so its uid is -1");
+        std::test::assert_eq_str(r.peer.mode, "unix", "over the Unix socket");
+
+        let with_digest = t.frame(std::bytes::from_string("1000:1001:42:5,6\t{\"call\":\"A::b\",\"payload\":{},\"digest\":\"fnv1a64:0123456789abcdef\"}"), 6);
+        std::test::assert_eq_str(with_digest.digest, "fnv1a64:0123456789abcdef", "the client's digest is carried when it sends one");
+        std::test::assert_eq_str(with_digest.peer.name, "uid:1000", "a named peer");
+        std::test::assert_eq_int(with_digest.peer.gid, 1001, "with its group");
+        std::test::assert_eq_int(with_digest.peer.pid, 42, "and its process");
+        std::test::assert_eq_str(with_digest.peer.groups, "5,6", "and its supplementary groups");
+
+        let d = t.frame(std::bytes::from_string("1000:1000:1:\t{\"describe\":true}"), 7);
+        std::test::assert_eq_int(d.kind, 1, "a describe");
+        let no_payload = t.frame(std::bytes::from_string("1000:1000:1:\t{\"call\":\"A::b\"}"), 8);
+        std::test::assert_eq_int(no_payload.kind, 2, "a call without a payload is not a request");
+        std::test::assert(std::str::contains(no_payload.reason, "payload"), "and says so");
+        let neither = t.frame(std::bytes::from_string("1000:1000:1:\t{\"hello\":1}"), 9);
+        std::test::assert_eq_int(neither.kind, 2, "an object that is neither a call nor a describe is not a request");
+
+        // ---- admission: a peer the kernel will not name is refused first ----
+        // (the fixture's request with no credential is a unix peer of uid -1)
+        let f = self.fx;
+        f.call(1, "Ledger::rebalance", "{\"book\":\"main\"}", "");
+        std::test::assert_eq_str(f.await_outcome(1, 2000), "refusal:unauthenticated", "no credentials, no call");
+        std::test::assert(std::str::contains(f.line(1), "\"reason\":\"the kernel did not name the peer\""), "in the recorded words");
+        f.call(2, "Ledger::nope", "{}", "");
+        std::test::assert_eq_str(f.await_outcome(2, 2000), "refusal:unauthenticated", "before the member is looked up");
+        f.describe(3, "");
+        std::test::assert_eq_str(f.await_outcome(3, 2000), "refusal:unauthenticated", "and a describe is admitted like a call");
+        std::time::sleep(20ms);
+        std::test::assert_eq_int(self.ledger.entered, 0, "the handler never ran");
+
+        // ---- the reply: the recorded line, byte for byte ----
+        let outcome = __StdApiOutcome::Refusal("unauthenticated", "the kernel did not name the peer", "");
+        std::test::assert_eq_str(
+            "{\"request_id\":5,\"id\":\"c-5\"," + __api_outcome_answer(outcome) + ",\"caller\":" + __api_caller_json(r.peer, false) + "}",
+            "{\"request_id\":5,\"id\":\"c-5\",\"ok\":false,\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":\"the kernel did not name the peer\"},\"caller\":{\"mode\":\"unix\",\"name\":\"uid:-1\",\"uid\":-1,\"gid\":-1,\"pid\":-1}}",
+            "the reply line is the recorded one"
+        );
+        admin.stop();
+    }
+}
+
+fn main() { Desk { }; }

@@ -384,6 +384,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "RpcHello"], "__StdApiRpcHello"),
     (&["std", "api", "RpcEvent"], "__StdApiRpcEvent"),
     (&["std", "api", "test", "Rpc"], "__StdApiTestRpc"),
+    (&["std", "api", "unix", "Rpc"], "__StdApiUnixRpc"),
+    (&["std", "api", "unix", "Listener"], "__StdApiUnixListener"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
