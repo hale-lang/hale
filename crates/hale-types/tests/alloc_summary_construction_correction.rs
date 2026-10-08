@@ -619,8 +619,8 @@ fn own_entries_run_to_exit_programs() {
     // U3's `tests/hale/unit_quantities_test.hl`; 88: U5's five acceptance
     // programs, `tests/hale/units_{identities,money,temperature,ticks,time}_test.hl`;
     // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
-    // `tests/hale/time_return_test.hl`; 89: `dna/api`, which serves a
-    // `handle` loop of its own, does not load until R4 B migrates it.
+    // `tests/hale/time_return_test.hl`; 89: `dna/api`, whose `Head::run` serves a
+    // surface and is no longer a run-to-exit program (R4 B).
     assert_eq!(moved, 89, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
@@ -657,6 +657,7 @@ fn own_entries_run_to_exit_programs() {
 #[test]
 fn reached_a_started_loop_keeps_its_facts() {
     for (t, kept) in [
+        ("dna/api", &["Api::handle"][..]),
         ("dna/ui", &["Ui::handle"][..]),
         ("crates/hale-codegen/tests/fixtures/examples/69-http-router", &["Count::handle", "Hello::handle", "Stamp::after", "Stamp::before"][..]),
         ("tests/hale/router_middleware_test.hl", &["Hello::handle", "Stamp::after", "Stamp::before"][..]),
