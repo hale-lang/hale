@@ -1,6 +1,5 @@
 // Narrow HTTP query grammar, not a Task execution or lifecycle proof.
 import ".." as api;
-import "../contract/v1/validator" as contracts;
 locus TaskQueryCases {
     params { }
     fn check() {
@@ -19,11 +18,6 @@ locus TaskQueryCases {
         std::test::assert(h.task_query("assignee=" + exact).ok, "256 UTF-8 bytes accepted");
         std::test::assert(!h.task_query("assignee=" + exact + "a").ok, "257 UTF-8 bytes refused");
         std::test::assert(h.query("id=t1&limit=2").ok && h.task_query("id=t1&limit=2").assignee == "", "unfiltered common grammar preserved");
-        let files = contracts::ContractFiles { };
-        let parameter = "{\"parameters\":[{\"name\":\"assignee\",\"in\":\"query\",\"required\":false,\"schema\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}}]}";
-        std::test::assert(files.assignee_parameter(parameter, true).ok, "Task OpenAPI filter declared");
-        std::test::assert(!files.assignee_parameter(parameter, false).ok, "filter cannot be advertised on other reads");
-        std::test::assert(!files.assignee_parameter("{\"parameters\":[]}", true).ok, "Task filter contract cannot silently disappear");
         eprintln("PASS exact Task-only assignee query grammar");
     }
 }

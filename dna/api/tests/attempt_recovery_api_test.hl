@@ -31,7 +31,6 @@ locus RecoveryCases {
     fn get(service: api::Api, suffix: String, status: Int, schema: String) -> String {
         let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + suffix });
         std::test::assert_eq_int(response.status, status, "GET " + suffix + " -> " + response.body);
-        let checked = self.f.validator.validate(schema, response.body); std::test::assert(checked.ok, checked.error + "\n" + response.body);
         return response.body;
     }
     fn seed() {

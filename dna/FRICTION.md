@@ -829,7 +829,7 @@ stated with each entry.
 
 ## F.22 — Unicode escape decoding differs from the expected string
 
-**Original context:** `dna/api/contract/v1`; preserved port observations.
+**Original context:** the DNA api contract (retired in GH #1417); preserved port observations.
 
 During this port, a program built with this worktree's `target/release/hale`
 printed `?` for `std::json::unescape_string("\\u0031")`; the expected string

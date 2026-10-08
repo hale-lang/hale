@@ -11,15 +11,14 @@ From the repository root, build the API once and run the HTTP suite:
 hale build dna/api -o target/seeds/api/api
 HALE_API_BIN="$PWD/target/seeds/api/api" \
 HALE_BIN="$(command -v hale)" \
-HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
 hale test dna/api/tests/read_api_test.hl
 ```
 
 The paths must be absolute; `HALE_API_BIN` can select a binary built elsewhere.
 The suite does not rebuild the service. Every success/error API response is
-checked against the checked-in JSON Schema using the native contract validator.
-Its supported schema profile is documented in the [contract README](../contract/v1/README.md).
-Missing schema or service binary fails the suite. `read_api_test.hl` executes
+checked for its status, content type and that it is a JSON object, and the
+tests assert its fields.
+A missing service binary fails the suite. `read_api_test.hl` executes
 all 34 named HTTP cases and remains silent on success. A second native test
 program exercises the Organization source loader directly.
 A third native program, `definitions_api_test.hl`, calls the real API handler

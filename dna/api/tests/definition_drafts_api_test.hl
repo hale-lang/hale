@@ -102,8 +102,6 @@ locus DraftCases {
         std::test::assert_eq_str(self.json.raw(self.json.data(caps.body), "writes"), "", "record commands are never an HTTP capability");
         self.json.is_bool(self.json.raw(self.json.data(caps.body), "definition_drafts"), "publication", false);
         std::test::assert_eq_int(self.host.calls, 0, "capabilities never capture catalog");
-        let cap_contract = self.f.validator.validate("CapabilitiesResponse", caps.body);
-        std::test::assert(cap_contract.ok, cap_contract.error);
         let read = service.handle(std::http::Request { method: "GET", path: self.f.prefix + "/dna/definitions" });
         std::test::assert_eq_int(read.status, 200, read.body);
         let basis = self.json.raw(self.json.data(read.body), "basis");
@@ -124,8 +122,6 @@ locus DraftCases {
         let text = codec.text(artifact, "text");
         std::test::assert(std::str::contains(text, "face_register_workflows") && std::str::contains(text, "cost_ceiling:"), "exact generated artifact");
         self.json.eq(artifact, "digest", dna::digest_of(text));
-        let checked = self.f.validator.validate("DefinitionDraftResponse", result.body);
-        std::test::assert(checked.ok, checked.error);
         std::test::assert_eq_str(self.host.catalog.encode(), document, "candidate never mutates application catalog");
         std::test::assert_eq_int(self.host.catalog.bound_count(), bound, "no native expansion");
         std::test::assert_eq_str(self.f.refs(), refs, "validation changes no project ref");
@@ -145,8 +141,6 @@ locus DraftCases {
         std::test::assert_eq_int(semantic.status, 200, semantic.body);
         self.json.is_bool(self.json.raw(self.json.data(semantic.body), "validation"), "valid", false);
         std::test::assert_eq_str(self.json.raw(self.json.data(semantic.body), "artifact"), "null", "native-invalid has no export");
-        let invalid_contract = self.f.validator.validate("DefinitionDraftResponse", semantic.body);
-        std::test::assert(invalid_contract.ok, invalid_contract.error);
         let long_text = std::bytes::BytesBuilder { }; let mut n = 0;
         while n < 8193 { long_text.append_u8(120); n = n + 1; }
         let budget_calls = self.host.calls;
