@@ -305,7 +305,24 @@ export async function startService(options = {}) {
     return head;
   }
   const projecting = result => result.status === 503 && result.json.error?.code === 'knowledge_projection_unavailable';
+  // The bootstrap Practice's ratification runs as the organism's own
+  // workflow after the organization answers ready, its rows (the ratify
+  // step, then the hat step, each an admitted attempt and its outcome)
+  // spaced by the organism's tick: a head that is quiet between two of
+  // them is not settled, and a page opened then reads while the rest land,
+  // is answered `snapshot_changed` twice and stays on "Record is changing".
+  // Settled is the task born to ratify the bootstrap digest having its
+  // settlement row.
+  const bootstrapSettled = () => {
+    if (!practice) return true;
+    const rows = journal().rows;
+    const born = rows.filter(row => row.kind === 'task.born' && row.body.includes(practice)).map(row => row.entity);
+    const settled = new Set(rows.filter(row => row.kind === 'workflow.settled' || row.kind === 'workflow.refused').map(row => row.entity));
+    return born.length > 0 && born.every(task => settled.has(task));
+  };
   async function quiesce() {
+    if (!alive(host) || host.paused) return;
+    await wait('bootstrap ratification settled', bootstrapSettled, Boolean, 60_000);
     let previous = '';
     for (let round = 0; ; round++) {
       const head = await stableHead();
