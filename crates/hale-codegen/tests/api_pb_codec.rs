@@ -319,3 +319,48 @@ fn main() {{ Desk {{ }}; }}
     let want: Vec<String> = expect.iter().map(|(k, v)| format!("{k} {v}")).collect();
     assert_eq!(got.lines().collect::<Vec<_>>(), want.iter().map(String::as_str).collect::<Vec<_>>(), "the generated decoder and prost agree");
 }
+
+// ---- the descriptor is the file a compiler makes of the text ----
+
+/// The `.proto` generator's file for one member whose request is `Data`, a
+/// record of `Int` fields named `fields`.
+fn data_file(fields: &[&str]) -> Result<hale_types::proto_gen::ProtoFile, String> {
+    use hale_types::surface_doc::{ClientError, ClientMember, ClientModel};
+    use hale_types::surfaces::{FieldSchema, TypeSchema};
+    let int = || FieldSchema::Scalar { json: "integer", hale_type: None, unit: None };
+    let data = TypeSchema { properties: fields.iter().map(|f| (f.to_string(), int())).collect(), required: Vec::new() };
+    hale_types::proto_gen::from_model(&ClientModel {
+        surface: "S".to_string(),
+        digest: "fnv1a64:0".to_string(),
+        members: vec![ClientMember { name: "R::f".to_string(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        types: [("Data".to_string(), data)].into_iter().collect(),
+        streams: Vec::new(),
+    })
+}
+
+/// What a compiler (`protox`) makes of the file's text, and the descriptor the
+/// file serializes for reflection, as `FileDescriptorProto`s.
+fn compiled_and_reflected(file: &hale_types::proto_gen::ProtoFile, what: &str) -> (prost_types::FileDescriptorProto, prost_types::FileDescriptorProto) {
+    use prost::Message;
+    let dir = std::env::temp_dir().join(format!("hale_r8b_{what}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("S.proto"), file.text()).unwrap();
+    let set = protox::compile(["S.proto"], [&dir]).unwrap_or_else(|e| panic!("protox: {e}\n{}", file.text()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut compiled = set.file.into_iter().find(|f| f.name() == "S.proto").expect("the file");
+    compiled.source_code_info = None;
+    (compiled, prost_types::FileDescriptorProto::decode(file.descriptor().as_slice()).expect("a FileDescriptorProto"))
+}
+
+/// Where `protox` compiles the text, the descriptor reflection serves is what
+/// it makes of it. (The synthetic oneof's name is protoc's own choice in the
+/// text, so the descriptor's follows the same rule: pinned in `proto_gen`'s
+/// unit tests, where a field `_a` beside `a` can be built, since a record with
+/// both is refused by the JSON-name rule before it is written.)
+#[test]
+fn the_reflected_descriptor_is_the_file_a_compiler_makes_of_the_text() {
+    for fields in [vec!["a", "b"], vec!["a", "X_a"], vec!["b", "_c"], vec!["_a_b", "c"]] {
+        let (compiled, reflected) = compiled_and_reflected(&data_file(&fields).unwrap(), "descriptor");
+        assert_eq!(reflected, compiled, "{fields:?}: the reflected descriptor is the compiled text");
+    }
+}

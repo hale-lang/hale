@@ -572,8 +572,14 @@ impl ProtoFile {
         for m in &self.messages {
             let mut msg = Vec::new();
             put_str(1, &m.name, &mut msg);
-            // a proto3 `optional` field has a synthetic oneof of its own, after the real ones
-            let mut synthetic = Vec::new();
+            // a proto3 `optional` field has a synthetic oneof of its own, after
+            // the real ones, named as protoc names it (parser.cc): the field's
+            // name with a `_` put in front unless it starts with one, then `X`
+            // in front until the name is no field's and no oneof's of the
+            // message (`a` beside a field `_a`: `X_a`; `_c`, whose own name is
+            // taken by it: `X_c`)
+            let mut taken: std::collections::HashSet<String> = m.fields.iter().map(|f| f.name.clone()).chain(m.oneofs.iter().cloned()).collect();
+            let mut synthetic: Vec<String> = Vec::new();
             for f in &m.fields {
                 let mut fd = Vec::new();
                 put_str(1, &f.name, &mut fd);
@@ -589,7 +595,12 @@ impl ProtoFile {
                 let index = match (f.oneof, f.label) {
                     (Some(k), _) => Some(k),
                     (None, Label::Optional) => {
-                        synthetic.push(format!("_{}", f.name));
+                        let mut name = if f.name.starts_with('_') { f.name.clone() } else { format!("_{}", f.name) };
+                        while taken.contains(&name) {
+                            name = format!("X{name}");
+                        }
+                        taken.insert(name.clone());
+                        synthetic.push(name);
                         Some(m.oneofs.len() + synthetic.len() - 1)
                     }
                     _ => None,
@@ -775,6 +786,31 @@ mod tests {
         let outer = TypeSchema { properties: vec![("t".to_string(), FieldSchema::Ref("a_T".to_string()))], required: Vec::new() };
         let err = from_model(&model(FieldSchema::Ref("a::T".to_string()), vec![("a::T", outer), ("a_T", t)])).unwrap_err();
         assert!(err.contains("`a_T` is named twice"), "{err}");
+    }
+
+    /// The synthetic oneof of an `optional` field is named as protoc names it
+    /// (the field's name, a `_` in front unless it has one, `X` in front until
+    /// no field or oneof of the message has the name), so a real field `_a`
+    /// beside `a` does not collide with it. Built by hand: a record with both
+    /// fields is refused by the JSON-name rule before it gets here.
+    #[test]
+    fn a_synthetic_oneof_never_takes_the_name_of_a_field() {
+        let oneofs = |names: &[&str]| {
+            let fields = names.iter().enumerate().map(|(i, n)| field(n, i as u32 + 1, Ty::Scalar(Scalar::Int64), Label::Optional)).collect();
+            let file = ProtoFile { name: "S.proto".to_string(), package: String::new(), header: Vec::new(), messages: vec![message("Data", fields)], service: None };
+            let d = file.descriptor();
+            let named = |n: &str| {
+                let needle = [&[0x42, n.len() as u8 + 2, 0x0a, n.len() as u8][..], n.as_bytes()].concat();
+                d.windows(needle.len()).any(|w| w == needle.as_slice())
+            };
+            ["_a", "X_a", "XX_a", "XXX_a", "_X_a", "_b"].iter().filter(|n| named(n)).map(|n| n.to_string()).collect::<Vec<String>>()
+        };
+        // `a` beside a field `_a`: the oneof is `X_a`, and `_a`'s own, its name taken, `XX_a`
+        assert_eq!(oneofs(&["a", "_a"]), ["X_a", "XX_a"]);
+        // `X_a` is a field too
+        assert_eq!(oneofs(&["a", "_a", "X_a"]), ["XX_a", "XXX_a", "_X_a"]);
+        // no collision: the name protoc gives
+        assert_eq!(oneofs(&["a", "b"]), ["_a", "_b"]);
     }
 
     /// The text and the descriptor are one model: the descriptor names every
