@@ -97,7 +97,7 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
     }
     out.push_str("  };\n}\n\n");
     out.push_str(&format!("export function decode_{ident}(json: unknown): {ident} {{\n"));
-    out.push_str("  const o = (json ?? {}) as Record<string, unknown>;\n  return {\n");
+    out.push_str("  const o = (json ?? {}) as __Record<string, unknown>;\n  return {\n");
     for (key, f) in &t.properties {
         out.push_str(&format!("    {}: {},\n", prop(key), decode(f, &format!("o[{}]", json_quote(key)), &format!("{name}.{key}"))?));
     }
@@ -135,7 +135,7 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     };
     Ok(format!(
         "/** {name}{requires} */\nexport type {outcome} = Outcome<{value}, {error}>;\n\n\
-         export function {fn_name}(opts: ClientOptions{param}): Promise<{outcome}> {{\n  \
+         export function {fn_name}(opts: ClientOptions{param}): __Promise<{outcome}> {{\n  \
          return apiCall(opts, {member}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
@@ -174,7 +174,8 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     };
     for name in [
         "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe",
+        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "__Record", "__Promise", "__Array", "__AsyncIterable",
+        "__AsyncGenerator", "__Response", "__MessageEvent",
     ] {
         claim(name.to_string())?;
     }

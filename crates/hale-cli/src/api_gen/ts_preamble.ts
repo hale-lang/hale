@@ -7,6 +7,17 @@
 // the fifth, a connection that never answered, is thrown as a TransportError,
 // because a request that may have been accepted is not a refusal.
 
+// The globals the wire names as types, reached through `globalThis` so that no type of the surface (a
+// `Response`, a `Record`, a `Promise`) can shadow one: a module's own declarations win over the
+// global scope, and `globalThis.X` is the one spelling they do not reach.
+type __Record<K extends keyof any, V> = globalThis.Record<K, V>;
+type __Promise<T> = globalThis.Promise<T>;
+type __Array<T> = globalThis.Array<T>;
+type __AsyncIterable<T> = globalThis.AsyncIterable<T>;
+type __AsyncGenerator<T> = globalThis.AsyncGenerator<T>;
+type __Response = globalThis.Response;
+type __MessageEvent = globalThis.MessageEvent;
+
 export interface ClientOptions {
   /** `http://host:port` of an `http::Rpc` listener (or of a hub's listener). */
   endpoint: string;
@@ -51,7 +62,7 @@ export type Outcome<T, E> =
   | { kind: "server_error" };
 
 function apiRefusal(body: unknown): Refusal {
-  const r = (body as { refusal?: Record<string, unknown> } | null)?.refusal ?? {};
+  const r = (body as { refusal?: __Record<string, unknown> } | null)?.refusal ?? {};
   const out: Refusal = {
     kind: typeof r.kind === "string" ? r.kind : "malformed",
     reason: typeof r.reason === "string" ? r.reason : "",
@@ -67,13 +78,13 @@ async function apiCall<T, E>(
   payload: string,
   decodeValue: (json: unknown) => T,
   decodeError: (json: unknown) => E,
-): Promise<Outcome<T, E>> {
-  const headers: Record<string, string> = {
+): __Promise<Outcome<T, E>> {
+  const headers: __Record<string, string> = {
     "Content-Type": "application/json",
     "Hale-Surface-Digest": SURFACE_DIGEST,
   };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
-  let res: Response;
+  let res: __Response;
   let text: string;
   try {
     res = await (opts.fetch ?? fetch)(opts.endpoint + "/call/" + member, { method: "POST", headers, body: payload });
@@ -98,8 +109,8 @@ async function apiCall<T, E>(
 }
 
 /** The description the endpoint serves this caller, as parsed JSON. */
-export async function describe(opts: ClientOptions): Promise<unknown> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+export async function describe(opts: ClientOptions): __Promise<unknown> {
+  const headers: __Record<string, string> = { Accept: "application/json" };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
   try {
     const res = await (opts.fetch ?? fetch)(opts.endpoint + "/.description", { headers });
@@ -120,13 +131,13 @@ export type StreamEvent<P> =
   | { kind: "revoked" }
   | { kind: "closed" };
 
-export interface Subscription<P> extends AsyncIterable<StreamEvent<P>> {
+export interface Subscription<P> extends __AsyncIterable<StreamEvent<P>> {
   /** Ends the subscription and closes the connection. */
   close(): void;
 }
 
 function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unknown) => P): Subscription<P> {
-  const queue: Array<StreamEvent<P> | TransportError | null> = [];
+  const queue: __Array<StreamEvent<P> | TransportError | null> = [];
   let wake: (() => void) | undefined;
   let ended = false;
   const push = (item: StreamEvent<P> | TransportError | null): void => {
@@ -157,11 +168,11 @@ function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unkn
     push(null);
   };
   ws.onopen = () => ws.send(JSON.stringify({ type: "subscribe", topic }));
-  ws.onmessage = (m: MessageEvent) => {
+  ws.onmessage = (m: __MessageEvent) => {
     if (ended) return;
-    let frame: Record<string, unknown>;
+    let frame: __Record<string, unknown>;
     try {
-      frame = JSON.parse(String(m.data)) as Record<string, unknown>;
+      frame = JSON.parse(String(m.data)) as __Record<string, unknown>;
     } catch {
       return lose("the hub sent a frame that is not JSON: " + String(m.data));
     }
@@ -188,7 +199,7 @@ function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unkn
   ws.onclose = () => lose("the hub ended the connection with no closed frame");
   return {
     close: finish,
-    async *[Symbol.asyncIterator](): AsyncGenerator<StreamEvent<P>> {
+    async *[Symbol.asyncIterator](): __AsyncGenerator<StreamEvent<P>> {
       for (;;) {
         while (queue.length === 0) await new Promise<void>((resolve) => (wake = resolve));
         const item = queue.shift();
