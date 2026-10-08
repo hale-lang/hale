@@ -819,6 +819,17 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             // over a transport this compiler does not ship yet.
             for site in locus_serve_sites(l) {
                 let Some(Expr::Literal(hale_syntax::ast::Literal::String(name), _)) = site.option("as") else { continue };
+                if !l.is_main && matches!(site.transport, Some(Expr::Struct { path, .. }) if crate::rpc_expand::is_unix_rpc(path)) {
+                    diags.push(Diag::ty(
+                        site.span,
+                        format!(
+                            "`api::serve` over `unix::Rpc` in `{}`: a socket's listener runs on a pool of its own, which \
+                             only the main locus places; serve from the main locus (spec/api.md § The `Rpc` interface)",
+                            l.name.name
+                        ),
+                    ));
+                    continue;
+                }
                 let built = l.members.iter().any(|m| {
                     matches!(m, LocusMember::Params(pb)
                         if pb.params.iter().any(|p| p.name.name == crate::rpc_expand::exposure_param(name)))

@@ -482,7 +482,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `parent.is_main` may be referenced from: `crates/hale-types/src/check.rs` ×1
 - `!l.is_main)` may be referenced from: `crates/hale-types/src/check.rs` ×1
 - `singleton |= l.is_main` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1
-- `if l.is_main {` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1
+- `if l.is_main {` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/rpc_expand.rs` ×1
 
 ### `ownership` — Canonical · derivation
 

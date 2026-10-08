@@ -3,7 +3,8 @@
 //! `http::Rpc` and `Admin` over `unix::Rpc`; `hale check` admits it
 //! (R1's description and the serve-site laws read it as written), and
 //! `hale build` says what it cannot serve yet, instead of dropping the
-//! sites. A hub binding is refused likewise (R5).
+//! sites (R2b: `unix::Rpc` is served, `http::Rpc` is not). A hub binding
+//! is refused likewise (R5).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -31,12 +32,12 @@ fn a_build_refuses_a_serve_site_over_a_transport_it_does_not_ship() {
     let _ = std::fs::remove_file(&out_path);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "the witness builds:\n{stderr}");
-    for transport in ["http::Rpc", "unix::Rpc"] {
-        assert!(
-            stderr.contains(&format!("`api::serve` over `{transport}`: this compiler serves a surface over")),
-            "no refusal of `{transport}` in:\n{stderr}"
-        );
-    }
+    // (R2b ships `unix::Rpc`; `http::Rpc` follows in R3)
+    assert!(
+        stderr.contains("`api::serve` over `http::Rpc`: this compiler serves a surface over"),
+        "no refusal of `http::Rpc` in:\n{stderr}"
+    );
+    assert!(!stderr.contains("`api::serve` over `unix::Rpc`"), "`unix::Rpc` is served:\n{stderr}");
     assert!(stderr.contains("`Fills` is bound to the hub `self.hub`"), "the hub binding is refused too:\n{stderr}");
 }
 

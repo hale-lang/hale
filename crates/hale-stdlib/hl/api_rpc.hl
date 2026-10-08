@@ -484,7 +484,9 @@ locus __StdApiExposure {
             named = who.uid >= 0 && len(who.name) > 0;
         }
         if !named {
-            self.refuse(i.correlation, rid, who, "unauthenticated", "the sources name nobody", "");
+            let mut why = "the sources name nobody";
+            if who.mode == "unix" { why = "the kernel did not name the peer"; }
+            self.refuse(i.correlation, rid, who, "unauthenticated", why, "");
             return;
         }
         if r.kind == 1 {
@@ -492,7 +494,7 @@ locus __StdApiExposure {
             return;
         }
         if len(r.digest) > 0 && r.digest != self.digest {
-            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was built against another digest of this surface", self.digest);
+            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was generated against " + r.digest, self.digest);
             return;
         }
         let m = self.rows.member(r.member);
@@ -503,7 +505,7 @@ locus __StdApiExposure {
         let req = self.rows.requires(m);
         let miss = self.missing_role(who, req);
         if len(miss) > 0 {
-            self.refuse(i.correlation, rid, who, "unauthorized", "needs role " + miss, req);
+            self.refuse(i.correlation, rid, who, "unauthorized", r.member + " requires " + miss, req);
             return;
         }
         let body = std::str::from_bytes(r.bytes);
@@ -517,7 +519,7 @@ locus __StdApiExposure {
             return;
         }
         if self.inflight >= self.bound {
-            self.refuse(i.correlation, rid, who, "full", "the exposure holds " + to_string(self.bound) + " requests accepted and not yet answered", "");
+            self.refuse(i.correlation, rid, who, "full", "the exposure holds its bound of requests accepted and not yet answered", "");
             return;
         }
         let slot = self.rows.receiver(m);
@@ -578,7 +580,8 @@ locus __StdApiExposure {
         }
     }
     fn unavailable(k: Int) {
-        self.finish(k, __StdApiOutcome::Refusal("unavailable", "the receiver is unavailable; the call did not run", ""));
+        let e = self.entries.get(k) or __StdApiRpcEntry { };
+        self.finish(k, __StdApiOutcome::Refusal("unavailable", "the receiver of " + self.rows.name_of(e.member) + " is unavailable; the call did not run", ""));
     }
     fn settle_slot(slot: Int, state: Int) {
         let n = self.entries.len();
@@ -762,6 +765,85 @@ locus __StdApiExposure {
     }
 }
 
+// ---- the wire of the Unix JSON transport (spec/api.md § Outcomes) ----
+
+/// The kind of an outcome, as a test reads it: `result`, `handler_error`,
+/// `server_error`, `refusal:<kind>`.
+fn __api_outcome_kind(outcome: std::api::Outcome) -> String {
+    let mut kind = "";
+    match outcome {
+        __StdApiOutcome::Result(b) -> { kind = "result"; },
+        __StdApiOutcome::HandlerError(b) -> { kind = "handler_error"; },
+        __StdApiOutcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
+        __StdApiOutcome::ServerError -> { kind = "server_error"; },
+    }
+    return kind;
+}
+
+/// What an outcome says, as the members of a reply object: `"ok":true,
+/// "value":…`, `"ok":false,"error":…` or `"ok":false,"refusal":{…}`.
+fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
+    let mut answer = "";
+    match outcome {
+        __StdApiOutcome::Result(b) -> {
+            answer = "\"ok\":true,\"value\":" + b;
+        },
+        __StdApiOutcome::HandlerError(b) -> {
+            answer = "\"ok\":false,\"error\":" + b;
+        },
+        __StdApiOutcome::Refusal(k, r, x) -> {
+            let mut extra = "";
+            if k == "digest_mismatch" { extra = ",\"served\":\"" + x + "\""; }
+            if k == "unauthorized" {
+                let mut arr = "";
+                let mut rest = x;
+                while len(rest) > 0 {
+                    let comma = std::str::index_of(rest, ",");
+                    let mut one = rest;
+                    if comma >= 0 {
+                        one = rest[0..comma];
+                        rest = rest[(comma + 1)..len(rest)];
+                    } else {
+                        rest = "";
+                    }
+                    if len(arr) > 0 { arr = arr + ","; }
+                    arr = arr + "\"" + one + "\"";
+                }
+                extra = ",\"requires\":[" + arr + "]";
+            }
+            answer = "\"ok\":false,\"refusal\":{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
+        },
+        __StdApiOutcome::ServerError -> {
+            answer = "\"ok\":false,\"refusal\":{\"kind\":\"server\"}";
+        },
+    }
+    return answer;
+}
+
+/// The principal as a reply's `caller`; the fixture transport adds the
+/// door the call came through (`via`), a socket does not.
+fn __api_caller_json(p: std::api::Principal, with_via: Bool) -> String {
+    let mut j = "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\",\"uid\":" + to_string(p.uid) + ",\"gid\":" + to_string(p.gid) + ",\"pid\":" + to_string(p.pid);
+    if with_via && len(p.via) > 0 { j = j + ",\"via\":\"" + p.via + "\""; }
+    return j + "}";
+}
+
+/// The nth `sep`-separated field of `s` ("" past the end; the last field
+/// is the rest).
+fn __api_field(s: String, sep: String, n: Int) -> String {
+    let mut rest = s;
+    let mut i = 0;
+    while i < n {
+        let at = std::str::index_of(rest, sep);
+        if at < 0 { return ""; }
+        rest = rest[(at + 1)..len(rest)];
+        i = i + 1;
+    }
+    let at = std::str::index_of(rest, sep);
+    if at < 0 { return rest; }
+    return rest[0..at];
+}
+
 // ---- the in-process transport ----
 
 /// One outcome the fixture transport was asked to deliver.
@@ -831,52 +913,10 @@ locus __StdApiTestRpc {
         let payload = __api_test_field(text, 7);
         return std::api::Request { kind: k, member: __api_test_field(text, 1), bytes: std::bytes::from_string(payload), digest: __api_test_field(text, 2), correlation: correlation, credential: __api_test_field(text, 3), peer: peer, reason: "" };
     }
-    fn caller_json(p: std::api::Principal) -> String {
-        let mut j = "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\",\"uid\":" + to_string(p.uid) + ",\"gid\":" + to_string(p.gid) + ",\"pid\":" + to_string(p.pid);
-        if len(p.via) > 0 { j = j + ",\"via\":\"" + p.via + "\""; }
-        return j + "}";
-    }
     fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
-        let mut kind = "";
-        let mut answer = "";
-        match outcome {
-            __StdApiOutcome::Result(b) -> {
-                kind = "result";
-                answer = "\"ok\":true,\"value\":" + b;
-            },
-            __StdApiOutcome::HandlerError(b) -> {
-                kind = "handler_error";
-                answer = "\"ok\":false,\"error\":" + b;
-            },
-            __StdApiOutcome::Refusal(k, r, x) -> {
-                kind = "refusal:" + k;
-                let mut extra = "";
-                if k == "digest_mismatch" { extra = ",\"served\":\"" + x + "\""; }
-                if k == "unauthorized" {
-                    let mut arr = "";
-                    let mut rest = x;
-                    while len(rest) > 0 {
-                        let comma = std::str::index_of(rest, ",");
-                        let mut one = rest;
-                        if comma >= 0 {
-                            one = rest[0..comma];
-                            rest = rest[(comma + 1)..len(rest)];
-                        } else {
-                            rest = "";
-                        }
-                        if len(arr) > 0 { arr = arr + ","; }
-                        arr = arr + "\"" + one + "\"";
-                    }
-                    extra = ",\"requires\":[" + arr + "]";
-                }
-                answer = "\"ok\":false,\"refusal\":{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
-            },
-            __StdApiOutcome::ServerError -> {
-                kind = "server_error";
-                answer = "\"ok\":false,\"refusal\":{\"kind\":\"server\"}";
-            },
-        }
-        let line = "{\"request_id\":" + to_string(request_id) + ",\"id\":" + to_string(correlation) + "," + answer + ",\"caller\":" + self.caller_json(caller) + "}";
+        let kind = __api_outcome_kind(outcome);
+        let answer = __api_outcome_answer(outcome);
+        let line = "{\"request_id\":" + to_string(request_id) + ",\"id\":" + to_string(correlation) + "," + answer + ",\"caller\":" + __api_caller_json(caller, true) + "}";
         self.records.push(__StdApiTestRecord { correlation: correlation, request_id: request_id, kind: kind, line: line });
     }
     fn close_connection(correlation: Int) {
@@ -951,5 +991,355 @@ locus __StdApiTestRpc {
             i = i + 1;
         }
         return self.outcome(correlation);
+    }
+}
+
+// ---- the Unix transport (spec/api.md § The Unix JSON transport) ----
+//
+// `std::api::unix::Rpc` is a Unix domain stream socket carrying one JSON
+// object per line. It owns three things and nothing of policy:
+//
+//   * the listener (`__StdApiUnixListener`): it binds at birth, so a path it
+//     cannot bind fails the program's boot as a binding does (F.37), and
+//     accepts on a pool of its own (`async_io`: an accept or a read parks
+//     the coroutine, never the worker). It is a param of the serving main
+//     locus, which the compiler adds (only a main locus places);
+//   * a connection (`__StdApiUnixPeer`) per accepted socket, on the same
+//     pool: it reads the peer's credentials from the kernel once, frames
+//     lines, publishes each as the ingress of the exposure and writes the
+//     replies the transport hands it;
+//   * the transport itself (`__StdApiUnixRpc`), on the exposure's pool: it
+//     frames a line into a `Request` and encodes an `Outcome` as a reply.
+//
+// A connection and the transport meet only on the bus, on the subject
+// `__api.unix.out` keyed by `tid << 32 | connection` (a reply, or a close)
+// and by `tid` (the listener and every connection of the exposure: close).
+// A correlation is `connection << 24 | seq`; the
+// client's `id` is kept by the connection and echoed verbatim. An ordinary
+// connection failure (EOF, a write that fails, a line that is not an
+// object) closes that connection and nothing else.
+
+/// What the transport says to the listener and the connections. kind: 0 a
+/// reply for the connection `key` names, 1 close (the connection, or, keyed
+/// by the exposure, the listener and every connection, after the replies
+/// sent before it).
+type __StdApiUnixOut {
+    key: Int;
+    kind: Int;
+    seq: Int;
+    request_id: Int;
+    answer: String;
+    caller: String;
+}
+
+/// A request a connection has published and not yet seen answered.
+type __StdApiUnixPending {
+    seq: Int = 0;
+    id: String = "";
+}
+
+@form(vec)
+locus __StdApiUnixPendings {
+    capacity { heap items of __StdApiUnixPending; }
+}
+
+/// One accepted connection.
+locus __StdApiUnixPeer {
+    params {
+        conn: Int = 0;
+        tid: Int = 0;
+        route: Int = 0;
+        fd: Int = -1;
+        open: Bool = true;
+        buf: String = "";
+        next_seq: Int = 1;
+        header: String = "";
+        caller: String = "";
+        pending: __StdApiUnixPendings = __StdApiUnixPendings { };
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+    }
+    bus {
+        subscribe __ApiUnixOutT as on_out where key == self.route;
+        subscribe __ApiUnixOutT as on_group where key == self.tid;
+        publish __ApiRpcIngressT;
+        publish __ApiRpcLostT;
+    }
+    birth() {
+        self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        // The peer's credentials, as its kernel vouches for them, once per
+        // connection. -1 means the kernel would not say.
+        let uid = std::io::unix::peer_uid(self.fd);
+        let gid = std::io::unix::peer_gid(self.fd);
+        let pid = std::io::unix::peer_pid(self.fd);
+        let n = std::io::unix::peer_groups_count(self.fd);
+        let mut groups = "";
+        let mut k = 0;
+        while k < n {
+            let g = std::io::unix::peer_group_at(self.fd, k);
+            if g >= 0 {
+                if len(groups) > 0 { groups = groups + ","; }
+                groups = groups + to_string(g);
+            }
+            k = k + 1;
+        }
+        self.header = to_string(uid) + ":" + to_string(gid) + ":" + to_string(pid) + ":" + groups;
+        self.caller = __api_caller_json(std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: gid, pid: pid }, false);
+        // a reader that never reads cannot hold this connection's writer for long
+        std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
+    }
+    @unbounded
+    run() {
+        while self.open && !self.draining {
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                self.open = false;
+            } else {
+                self.buf = self.buf + chunk;
+                if len(self.buf) > 60000 && std::str::index_of(self.buf, "\n") < 0 {
+                    self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one line of at most 60000 bytes\"},\"caller\":" + self.caller + "}");
+                    self.open = false;
+                } else {
+                    self.drain_lines();
+                }
+            }
+        }
+        // the connection is over: the requests it still has with the
+        // exposure are lost, and the descriptor is released
+        self.lose_all();
+        self.release_fd();
+    }
+    @unbounded
+    fn drain_lines() {
+        let mut nl = std::str::index_of(self.buf, "\n");
+        while nl >= 0 && self.open {
+            let line = self.buf[0..nl];
+            self.buf = self.buf[(nl + 1)..len(self.buf)];
+            self.handle_line(line);
+            nl = std::str::index_of(self.buf, "\n");
+        }
+    }
+    fn handle_line(line: String) {
+        let t = std::str::trim(line);
+        if len(t) == 0 { return; }
+        if len(t) > 60000 || !std::json::valid_object(t) {
+            self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one JSON object per line\"},\"caller\":" + self.caller + "}");
+            self.hangup();
+            return;
+        }
+        let seq = self.next_seq;
+        self.next_seq = (seq % 16777215) + 1;
+        let mut id = std::json::find_field_raw(t, "id");
+        if len(id) == 0 { id = "null"; }
+        self.add(seq, id);
+        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn * 16777216 + seq, raw: std::bytes::from_string(self.header + "\t" + t) };
+    }
+    fn add(seq: Int, id: String) {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiUnixPending { };
+            if p.seq == 0 {
+                self.pending.set(k, __StdApiUnixPending { seq: seq, id: id }) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.pending.push(__StdApiUnixPending { seq: seq, id: id });
+    }
+    fn index_of(seq: Int) -> Int {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiUnixPending { };
+            if p.seq == seq { return k; }
+            k = k + 1;
+        }
+        return -1;
+    }
+    fn lose_all() {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiUnixPending { };
+            if p.seq != 0 {
+                self.pending.set(k, __StdApiUnixPending { }) or discard;
+                __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: self.conn * 16777216 + p.seq };
+            }
+            k = k + 1;
+        }
+    }
+    fn on_out(o: __StdApiUnixOut) {
+        if o.kind == 1 {
+            self.hangup();
+            return;
+        }
+        if o.kind != 0 || !self.open { return; }
+        let k = self.index_of(o.seq);
+        if k < 0 { return; }
+        let p = self.pending.get(k) or __StdApiUnixPending { };
+        self.pending.set(k, __StdApiUnixPending { }) or discard;
+        self.write_line("{\"request_id\":" + to_string(o.request_id) + ",\"id\":" + p.id + "," + o.answer + ",\"caller\":" + o.caller + "}");
+    }
+    fn on_group(o: __StdApiUnixOut) {
+        if o.kind == 1 { self.hangup(); }
+    }
+    fn write_line(line: String) {
+        if self.fd < 0 { return; }
+        // a write that fails closes this connection, and only this one
+        self.stream.send(line + "\n") or { self.hangup(); };
+    }
+    // Stop reading: the shutdown wakes the reader, which ends the connection.
+    fn hangup() {
+        self.open = false;
+        if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
+    }
+    fn release_fd() {
+        if self.fd >= 0 {
+            std::io::tcp::__close_fd(self.fd);
+            self.fd = -1;
+        }
+    }
+}
+
+/// The listening socket, on its own pool (`std::api::unix::Listener`; the
+/// compiler adds one to the main locus per `unix::Rpc` serve site, carrying
+/// the transport's `path` and the exposure's number).
+locus __StdApiUnixListener {
+    params {
+        path: String = "";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+    }
+    bus {
+        subscribe __ApiUnixOutT as on_ctl where key == self.tid;
+        publish __ApiUnixOutT;
+    }
+    birth() {
+        self.fd = std::io::unix::listen_socket(self.path) or -1;
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            // (spec/semantics.md): the diagnostic and a non-zero exit
+            eprintln("api: unix::Rpc could not listen on " + self.path);
+            std::process::exit(2);
+        }
+    }
+    @unbounded
+    run() {
+        // The path is held from birth, and a client that connects before the
+        // exposure is subscribed waits in the socket's backlog: a line read
+        // earlier would be published to nobody. The transport answers the
+        // listener's asking (kind 4) with kind 3 from the exposure's pool,
+        // whose handlers run once the program has finished booting, with the
+        // exposure's subscriptions in place; the asking repeats until it does,
+        // since nothing says which of the pools starts first.
+        while !self.started && !self.stopped && !self.draining {
+            __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 4, seq: 0, request_id: 0, answer: "", caller: "" };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let conn = std::io::tcp::__accept_one(self.fd);
+            if conn < 0 {
+                if self.stopped || self.draining { break; }
+                // a failed accept (out of descriptors, an aborted
+                // connection) ends one connection, never the listener
+                std::time::sleep(20ms);
+                continue;
+            }
+            let n = self.next_conn;
+            self.next_conn = n + 1;
+            __StdApiUnixPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        }
+    }
+    accept(c: __StdApiUnixPeer) { }
+    release(c: __StdApiUnixPeer) { }
+    fn on_ctl(o: __StdApiUnixOut) {
+        if o.kind == 3 { self.started = true; }
+        if o.kind == 1 {
+            self.stopped = true;
+            self.release_socket();
+        }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        std::io::tcp::__shutdown_listen_socket(self.fd);
+        std::io::tcp::__close_fd(self.fd);
+        self.fd = -1;
+        std::io::fs::unlink(self.path) or discard;
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}
+
+/// The Unix JSON transport (`std::api::unix::Rpc`; `unix::Rpc` at a serve
+/// site). `tid` is the number of the exposure it serves, which the compiler
+/// writes into the literal, together with the listener it pairs with: a
+/// param of the serving locus, placed on a pool of its own (only the main
+/// locus can place, so only the main locus serves over a socket). The
+/// principal is the peer's kernel credentials, so there is no bearer source.
+locus __StdApiUnixRpc {
+    params {
+        path: String = "";
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+    }
+    bus {
+        subscribe __ApiUnixOutT as on_ask where key == self.tid;
+        publish __ApiUnixOutT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "unix";
+    }
+    // The listener asks whether the exposure is there to be published to. A
+    // handler of this pool runs only after the boot, which has subscribed the
+    // exposure, so any answer is a true one.
+    fn on_ask(o: __StdApiUnixOut) {
+        if o.kind == 4 {
+            __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 3, seq: 0, request_id: 0, answer: "", caller: "" };
+        }
+    }
+    // The raw message is the connection's credentials (`uid:gid:pid:groups`),
+    // a tab, and the line the client sent.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let text = std::str::from_bytes(raw);
+        let tab = std::str::index_of(text, "\t");
+        let head = text[0..tab];
+        let line = text[(tab + 1)..len(text)];
+        let uid = std::str::parse_int(__api_field(head, ":", 0)) or - 1;
+        let gid = std::str::parse_int(__api_field(head, ":", 1)) or - 1;
+        let pid = std::str::parse_int(__api_field(head, ":", 2)) or - 1;
+        let peer = std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: gid, pid: pid, groups: __api_field(head, ":", 3) };
+        let call = std::json::string_field(line, "call");
+        if call.kind == "string" {
+            let payload = std::json::find_field_raw(line, "payload");
+            if len(payload) == 0 {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: peer, reason: "a call carries a \"payload\" object" };
+            }
+            return std::api::Request { kind: 0, member: call.text, bytes: std::bytes::from_string(payload), digest: std::json::find_string_field(line, "digest"), correlation: correlation, peer: peer, reason: "" };
+        }
+        if std::json::find_field_raw(line, "describe") == "true" {
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, peer: peer, reason: "" };
+        }
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: peer, reason: "a request is a \"call\" or a \"describe\"" };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid * 4294967296 + correlation / 16777216, kind: 0, seq: correlation % 16777216, request_id: request_id, answer: __api_outcome_answer(outcome), caller: __api_caller_json(caller, false) };
+    }
+    // The request's connection is gone and its work has completed: nothing
+    // is written; whatever is left of the connection is closed.
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid * 4294967296 + correlation / 16777216, kind: 1, seq: 0, request_id: 0, answer: "", caller: "" };
+    }
+    // Close the listener and every connection, after the replies already
+    // sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 1, seq: 0, request_id: 0, answer: "", caller: "" };
     }
 }

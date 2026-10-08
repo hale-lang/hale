@@ -499,6 +499,8 @@ std::api::Surface | lookup=api@2 | locus=false | effects=- | sig=- | parks=false
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
 std::api::test::Record | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
 std::api::test::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`
+std::api::unix::Listener | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::unix` — did you mean `std::io::unix`?
+std::api::unix::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::unix` — did you mean `std::io::unix`?
 std::bus::Adapter | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::UnixTransport | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::__binding_fai | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fai` | suggest=-

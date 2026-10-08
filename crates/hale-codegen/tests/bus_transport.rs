@@ -9,6 +9,8 @@
 mod api_runtime;
 #[path = "api_serve_build.rs"]
 mod api_serve_build;
+#[path = "api_unix.rs"]
+mod api_unix;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]

@@ -862,7 +862,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "parent.is_main", allowed: &[(CHECK, 1)] },
             Seam { symbol: "!l.is_main)", allowed: &[(CHECK, 1)] },
             Seam { symbol: "singleton |= l.is_main", allowed: &[(OWNERSHIP_GRAPH, 1)] },
-            Seam { symbol: "if l.is_main {", allowed: &[(ALLOC, 1)] },
+            Seam { symbol: "if l.is_main {", allowed: &[(ALLOC, 1), (RPC_EXPAND, 1)] },
         ],
     },
     Family {
