@@ -110,8 +110,16 @@ fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
     if dir.join("nghttp2/nghttp2.h").exists() {
         return Ok(());
     }
-    let tmp = dir.with_extension(format!("tmp{}", std::process::id()));
-    let io = |what: &str, e: std::io::Error| CodegenError::Link(format!("stage the nghttp2 headers ({what}): {e}"));
+    // One staging directory per call, not per process: two builds in one
+    // process (a test binary building two h2 programs at once) staged into
+    // one pid-named directory, each removing the other's files before its
+    // rename, and the directory that won could be missing a header.
+    static STAGINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = STAGINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.with_extension(format!("tmp{}-{n}", std::process::id()));
+    let io = |what: &str, e: std::io::Error| {
+        CodegenError::Link(format!("stage the nghttp2 headers ({what}): {e}"))
+    };
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join("nghttp2")).map_err(|e| io("mkdir", e))?;
     for (name, text) in HEADERS {
@@ -125,7 +133,9 @@ fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
     if dir.join("nghttp2/nghttp2.h").exists() {
         Ok(())
     } else {
-        Err(CodegenError::Link("the nghttp2 headers were not staged".into()))
+        Err(CodegenError::Link(
+            "the nghttp2 headers were not staged".into(),
+        ))
     }
 }
 
@@ -144,7 +154,9 @@ pub(crate) fn h2_objects(
         name.hash(&mut h);
         text.hash(&mut h);
     }
-    let dir = options.cache_dir.join(format!("lotus-rt-h2-inc-{:016x}", h.finish()));
+    let dir = options
+        .cache_dir
+        .join(format!("lotus-rt-h2-inc-{:016x}", h.finish()));
     let _ = std::fs::create_dir_all(&options.cache_dir);
     stage_headers(&dir)?;
     let mut flags: Vec<String> = cflags.to_vec();
@@ -159,14 +171,58 @@ pub(crate) fn h2_objects(
                 let flags = &flags;
                 let stem = format!("h2-{}", name.trim_end_matches(".c"));
                 scope.spawn(move || {
-                    compile_cached_runtime_object_with(options, cc, cc_version, source, &stem, flags)
+                    compile_cached_runtime_object_with(
+                        options, cc, cc_version, source, &stem, flags,
+                    )
                 })
             })
             .collect();
         handles
             .into_iter()
-            .map(|t| t.join().unwrap_or_else(|_| Err(CodegenError::Link("an nghttp2 compile panicked".into()))))
+            .map(|t| {
+                t.join().unwrap_or_else(|_| {
+                    Err(CodegenError::Link("an nghttp2 compile panicked".into()))
+                })
+            })
             .collect()
     });
     results.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two builds in one process stage the headers at once: each must find
+    /// them complete, whichever rename won. The staging directory used to be
+    /// named by the process alone, so the second call removed the first's
+    /// files before its own rename.
+    #[test]
+    fn concurrent_staging_in_one_process_leaves_every_header() {
+        let root = std::env::temp_dir().join(format!("hale-h2-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for round in 0..40 {
+            let dir = root.join(format!("inc-{round}"));
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let dir = dir.clone();
+                    std::thread::spawn(move || stage_headers(&dir))
+                })
+                .collect();
+            for t in threads {
+                if let Err(e) = t.join().unwrap() {
+                    panic!("round {round}: {e:?}");
+                }
+            }
+            for (name, text) in HEADERS {
+                assert_eq!(
+                    std::fs::read_to_string(dir.join(name)).ok().as_deref(),
+                    Some(*text),
+                    "round {round}: {name}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
