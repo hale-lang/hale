@@ -436,6 +436,15 @@ locus __StdApiGrpcRpc {
         let s = self.streams.get(k) or __api_grpc_free();
         if s.state != 1 || s.over { return; }
         if len(s.body) + len(e.bytes) > __api_grpc_max() + 5 {
+            if self.is_reflection(s) {
+                // a reflection call ends at once, with its status
+                let mut code = 0;
+                if !s.sent { code = self.reflect_refusal(s); }
+                if code == 0 { code = 8; }
+                self.streams.set(k, __api_grpc_free()) or discard;
+                self.reflect_end(s, code);
+                return;
+            }
             let huge = std::bytes::concat(std::bytes::from_int(0), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::from_int(255)))));
             self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: true, headers: s.headers, body: huge }) or discard;
             return;
@@ -459,30 +468,51 @@ locus __StdApiGrpcRpc {
     fn is_reflection(s: __StdApiGrpcStream) -> Bool {
         return std::str::starts_with(__api_grpc_header(s.headers, ":path"), "/grpc.reflection.v1.ServerReflection/");
     }
-    // The headers that refuse the call (the status in them), empty when the
-    // call is allowed.
-    fn reflect_refusal(s: __StdApiGrpcStream) -> String {
+    // The status that refuses the call, 0 when it is allowed. The bearer is
+    // asked again at every message, so a source that stops naming the caller
+    // ends a call that is already answering.
+    fn reflect_refusal(s: __StdApiGrpcStream) -> Int {
         let auth = __api_grpc_header(s.headers, "authorization");
         let mut token = "";
         if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
         let who = self.principals.principal(token);
-        let head = ":status: 200\ncontent-type: application/grpc\n";
-        if len(token) == 0 || len(who.name) == 0 {
-            return head + "grpc-status: 16\ngrpc-message: " + __api_grpc_message("the bearer token is refused") + "\n";
-        }
+        if len(token) == 0 || len(who.name) == 0 { return 16; }
         let enc = __api_grpc_header(s.headers, "grpc-encoding");
-        if enc != "" && enc != "identity" {
-            return head + "grpc-status: 12\ngrpc-message: " + __api_grpc_message("compression is not supported: send grpc-encoding identity") + "\n";
-        }
+        if enc != "" && enc != "identity" { return 12; }
+        return 0;
+    }
+    fn reflect_why(code: Int) -> String {
+        if code == 16 { return "the bearer token is refused"; }
+        if code == 12 { return "compression is not supported: send grpc-encoding identity"; }
+        if code == 8 { return "the request message is over the limit"; }
+        if code == 13 { return "a request message ends before its length"; }
         return "";
+    }
+    // The one end of a reflection call, whatever ends it: a refusal, an
+    // oversize or unfinished message, the client's half-close, the stop. A
+    // call not yet answered has no response, so it ends as a trailers-only
+    // response, the status in the headers; one that has answered has its
+    // headers out and DATA flowing, so the status is the trailers of that
+    // response, which then ends. The caller has freed the stream's slot.
+    fn reflect_end(s: __StdApiGrpcStream, code: Int) {
+        let mut status = "grpc-status: " + to_string(code) + "\n";
+        let why = self.reflect_why(code);
+        if len(why) > 0 { status = status + "grpc-message: " + __api_grpc_message(why) + "\n"; }
+        let mut head = "";
+        let mut trailers = status;
+        if !s.sent {
+            head = ":status: 200\ncontent-type: application/grpc\n" + status;
+            trailers = "";
+        }
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: __h2_none(), trailers: std::bytes::from_string(trailers) };
     }
     fn reflect_ready(k: Int) {
         let s = self.streams.get(k) or __api_grpc_free();
         if s.state != 1 || s.over || len(s.body) < 5 { return; }
         let no = self.reflect_refusal(s);
-        if len(no) > 0 {
+        if no != 0 {
             self.streams.set(k, __api_grpc_free()) or discard;
-            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(no), body: __h2_none(), trailers: __h2_none() };
+            self.reflect_end(s, no);
             return;
         }
         // every whole message, in order; the rest waits for its bytes
@@ -501,23 +531,14 @@ locus __StdApiGrpcRpc {
         // "+" leaves the response open for the next answer
         __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: body, trailers: std::bytes::from_string("+") };
     }
-    // A reflection call ends: the status, after the answers already sent. A
-    // message left unfinished is the client's error.
+    // The client ended its side, or the transport stops: the status, after the
+    // answers already sent. A message left unfinished is the client's error.
     fn reflect_finish(s: __StdApiGrpcStream) {
-        let mut head = "";
-        if !s.sent { head = ":status: 200\ncontent-type: application/grpc\n"; }
-        let mut status = "grpc-status: 0\n";
-        if s.over {
-            status = "grpc-status: 8\ngrpc-message: " + __api_grpc_message("the request message is over the limit") + "\n";
-        } else if len(s.body) > 0 {
-            status = "grpc-status: 13\ngrpc-message: " + __api_grpc_message("a request message ends before its length") + "\n";
-        }
-        let no = self.reflect_refusal(s);
-        if len(no) > 0 && !s.sent {
-            head = no;
-            status = "";
-        }
-        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: __h2_none(), trailers: std::bytes::from_string(status) };
+        let mut code = 0;
+        if !s.sent { code = self.reflect_refusal(s); }
+        if code == 0 && s.over { code = 8; }
+        if code == 0 && len(s.body) > 0 { code = 13; }
+        self.reflect_end(s, code);
     }
     // The answer to one `ServerReflectionRequest`: the request is echoed
     // (`original_request`), and the answer is the services, a file, or an

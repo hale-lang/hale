@@ -924,7 +924,15 @@ locus is refused, written at the site or held as a param.
   answered in order; a message split across DATA frames is answered once,
   when it is whole), and the call stays open until the client ends its side,
   when the server ends it with `grpc-status: 0`; a transport that stops ends
-  an open reflection call the same way, before its GOAWAY. The descriptor is the surface's, not
+  an open reflection call the same way, before its GOAWAY. Every end goes
+  through one path that knows whether the response has started: a call not
+  yet answered ends as a trailers-only response (the status in the headers),
+  one that has answered ends with the status (`grpc-status`, `grpc-message`)
+  as the trailers of the open response. An error reaches the open response
+  the same way: a message over the limit (8) ends the call at once, a message
+  the client's half-close leaves unfinished is 13, and the bearer is asked
+  again at every message, so a source that stops naming the caller ends the
+  call with 16. The descriptor is the surface's, not
   the caller's: the roles are checked when a call is made, as the description
   filters by them and the `.proto` does not. `grpc.reflection.v1alpha` is not
   served.

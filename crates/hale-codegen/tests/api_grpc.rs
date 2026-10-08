@@ -45,6 +45,13 @@ pub(crate) fn source(bound: u32) -> String {
     grpc.replace("@BOUND@", &bound.to_string())
 }
 
+/// A variant of the program (`source`, built under `name`).
+pub(crate) fn build_variant(source: &str, name: &str) -> PathBuf {
+    let bin = harness::unique_bin(name);
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build the variant program over grpc::Rpc");
+    bin
+}
+
 /// The program with `bound` requests at a time, built once per process.
 fn public(bound: u32) -> PathBuf {
     static BUILT: OnceLock<std::sync::Mutex<std::collections::BTreeMap<u32, PathBuf>>> = OnceLock::new();

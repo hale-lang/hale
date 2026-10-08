@@ -788,6 +788,75 @@ fn a_reflection_call_open_at_stop_ends_with_its_status_and_a_goaway() {
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
 }
 
+/// What a reflection call that has answered is told when it ends in error:
+/// the status is the trailers of the response already open (not a second
+/// response), then the stream ends and the connection serves on. Three ends
+/// after a first answered request: a second message over the limit (8), a
+/// message the client's half-close leaves unfinished (13), and a bearer source
+/// that stops naming the caller at the second message (16; the bearer is
+/// asked at every message). The hand-written client reads each as a response
+/// whose headers came with the first answer and whose trailers hold the
+/// status.
+#[test]
+fn a_reflection_error_after_the_first_answer_is_the_trailers_of_the_open_response() {
+    // `t-once` is named by the bearer source for its first ask only
+    let source = super::api_grpc::source(16).replace(
+        "locus Tokens {\n    fn principal(token: String) -> std::api::Principal {\n",
+        "locus Tokens {\n    params { asked: Int = 0; }\n    fn principal(token: String) -> std::api::Principal {\n        if token == \"t-once\" {\n            self.asked = self.asked + 1;\n            if self.asked == 1 { return std::api::Principal { mode: \"bearer\", name: \"alice\" }; }\n            return std::api::Principal { mode: \"bearer\", name: \"\" };\n        }\n",
+    );
+    assert!(source.contains("t-once"), "the bearer source was swapped");
+    let bin = super::api_grpc::build_variant(&source, "api_grpc_proto_reflect_end");
+    let server = super::api_grpc::http_rpc::Server::start(&bin, &[]);
+    server.ready();
+    let mut c = Client::connect(server.port);
+    let list = ask(request::Kind::ListServices(String::new()));
+    let framed_list = framed(&list.encode_to_vec());
+    let open = |c: &mut Client, stream: u32, token: &str| {
+        let auth = format!("Bearer {token}");
+        let hs: Vec<(&str, &str)> = vec![(":method", "POST"), (":scheme", "http"), (":path", REFLECTION), (":authority", "localhost"), ("content-type", BARE), ("te", "trailers"), ("authorization", auth.as_str())];
+        c.headers(stream, &hs, false);
+        c.data(stream, &framed_list, false);
+    };
+    // the end: one answer in the open response, then the status as its
+    // trailers, no second set of headers, and nothing after the status
+    let ends = |c: &mut Client, stream: u32, status: &str, message: &str| {
+        let got = c.response(stream, WAIT);
+        assert!(got.ended && got.reset.is_none(), "{got:?}");
+        assert_eq!(got.header(":status"), Some("200"), "{got:?}");
+        assert!(!got.headers.iter().any(|(k, _)| k == "grpc-status"),"the status is not in the headers of an answered call: {got:?}");
+        assert_eq!(whole(&got.data), 1, "the answer already sent, and no more: {got:?}");
+        assert_eq!(got.trailers.iter().find(|(k, _)| k == "grpc-status").map(|(_, v)| v.as_str()), Some(status), "{got:?}");
+        let said = got.trailers.iter().find(|(k, _)| k == "grpc-message").map(|(_, v)| v.as_str()).unwrap_or("");
+        assert!(said.contains(message), "{said:?} names {message:?}: {got:?}");
+    };
+
+    // a second message over the limit: ends at once, without the half-close
+    open(&mut c, 1, "t-alice");
+    answers(&mut c, 1, 1);
+    let mut huge = vec![0u8, 0, 0x1e, 0x84, 0x80]; // a message of 2,000,000 bytes, its first 1.1 MB
+    huge.resize(1_100_000, 7);
+    c.data(1, &huge, false);
+    ends(&mut c, 1, "8", "over");
+
+    // a message the half-close leaves unfinished
+    open(&mut c, 3, "t-alice");
+    answers(&mut c, 3, 1);
+    c.data(3, &framed_list[..3], true);
+    ends(&mut c, 3, "13", "ends");
+
+    // the bearer source stops naming the caller at the second message
+    open(&mut c, 5, "t-once");
+    answers(&mut c, 5, 1);
+    c.data(5, &framed_list, false);
+    ends(&mut c, 5, "16", "refused");
+
+    // the connection serves on
+    let rec = recording("result");
+    replay(&mut c, 7, &rec, PROTO);
+    assert_replayed(&mut c, 7, "result", &rec, PROTO);
+    assert!(server.finish().status.success());
+}
+
 /// The protobuf and reflection paths under AddressSanitizer with the arena's
 /// chunk recycling off: every outcome, a large message, the description, the
 /// reflection service, a stream abandoned mid-message, a call still
