@@ -1055,6 +1055,10 @@ const WASM_UNIX: Behaviour = std_wasm_reject(
     "AF_UNIX sockets are syscalls the browser sandbox does not have",
     "a WebSocket bus adapter (`ws://`), or an `@ffi(\"js\")` host import",
 );
+const WASM_H2: Behaviour = std_wasm_reject(
+    "the HTTP/2 server is nghttp2 and a TCP listener, neither of which the wasm link reaches",
+    "a WebSocket bus adapter (`ws://`), or an `@ffi(\"js\")` host import",
+);
 const WASM_SOCKOPT: Behaviour = std_wasm_reject(
     "socket options are syscalls the browser sandbox does not have",
     "(no sockets in the browser)",
@@ -1074,6 +1078,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("io::tls", STD_NATIVE, STD_NATIVE, WASM_TLS),
     std_ns("io::fs", STD_NATIVE, STD_NATIVE, WASM_FS),
     std_ns("io::file", STD_NATIVE, STD_NATIVE, WASM_FS),
+    std_ns("io::h2", STD_NATIVE, STD_NATIVE, WASM_H2),
     std_ns("io::stdin", STD_NATIVE, STD_NATIVE, WASM_STDIO),
     std_ns("io::stdout", STD_NATIVE, STD_NATIVE, WASM_STDIO),
     std_ns("term", STD_NATIVE, STD_NATIVE, WASM_TERM),

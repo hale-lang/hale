@@ -362,11 +362,11 @@ failure and generations); and a serve site in a free fn, "\`api::serve\` in
 \`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
 param of the serving locus; serve from the locus that holds the
 receivers". A build refuses a serve site over a transport the compiler
-does not ship (\`grpc::Rpc\` until the runtime has an HTTP/2 primitive, § gRPC):
-"\`api::serve\` over \`grpc::Rpc\`: this compiler serves a surface over
+does not ship (one the stdlib lacks and the program does not declare):
+"\`api::serve\` over \`quic::Rpc\`: this compiler serves a surface over
 \`std::api::test::Rpc\`, the in-process transport, \`unix::Rpc\`, \`http::Rpc\`,
-\`mcp::Rpc\`, \`ws::Hub\`, \`udp::Hub\`, or a transport the program declares; the other transports follow",
-and a serve over \`unix::Rpc\`, \`http::Rpc\`, \`mcp::Rpc\`, \`ws::Hub\` or \`udp::Hub\` from a locus that is not the
+\`mcp::Rpc\`, \`grpc::Rpc\`, \`ws::Hub\`, \`udp::Hub\`, or a transport the program declares; the other transports follow",
+and a serve over \`unix::Rpc\`, \`http::Rpc\`, \`mcp::Rpc\`, \`grpc::Rpc\`, \`ws::Hub\` or \`udp::Hub\` from a locus that is not the
 main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
 runs on a pool of its own, which only the main locus places; serve from
 the main locus" (§ The Unix transport, § The HTTP transport).
@@ -514,7 +514,7 @@ shapes and error types are the model's, the codec is the binding's
 The stdlib implements `std::api::test::Rpc` (R2a: the in-process
 fixture transport, below), `unix::Rpc` (R2b: the GH #1106 binding
 re-homed), `http::Rpc` (R3, § The HTTP transport), `ws::Hub` and `udp::Hub` (R5, § Streams),
-`mcp::Rpc` (R6, § The MCP transport); `grpc::Rpc` is not shipped (§ gRPC);
+`mcp::Rpc` (R6, § The MCP transport) and `grpc::Rpc` (R7, § gRPC);
 a program implements one the stdlib lacks.
 
 **The fixture transport** (`std::api::test::Rpc`) is a conforming
@@ -769,20 +769,102 @@ no primitive to read the process's own standard input as a stream (a
 
 ### gRPC
 
-`grpc::Rpc` is not shipped. It needs HTTP/2 (frames, HPACK, flow control,
-streams multiplexed on one connection) and trailers, and the runtime has
-none: the stdlib's HTTP is HTTP/1.1 over `std::io::tcp` (`std::http`,
-the client, and `http::Rpc` here), with no HTTP/2 or TLS ALPN primitive
-anywhere in `crates/hale-stdlib/hl/` or the runtime's C. What the runtime
-would need is (1) an HTTP/2 connection primitive beside `std::io::tcp`
-(server preface, SETTINGS, HEADERS with HPACK in both directions, DATA with
-flow-control windows, trailers, GOAWAY), parked on the `async_io` pool like
-a read, and (2) per-stream correlation in the transport, since a gRPC
-connection carries many calls. Given those, the transport is `http::Rpc`'s
-shape with the mapping of § Outcomes' gRPC column (status codes, `E` in a
-`google.rpc.Status` detail, the digest in request metadata
-`hale-surface-digest`, the reflection answer being the description). A
-serve over `grpc::Rpc` is refused by the build until then.
+`grpc::Rpc` (`std::api::grpc::Rpc`, R7) serves an exposure over gRPC, unary
+calls only, on cleartext HTTP/2 (prior knowledge: no TLS, no ALPN, no
+upgrade). It is written at a serve site, or held as a param and named, with
+the fields `bind` (`host:port`), `codec` (`json`, the one codec v1 has),
+`principals` (the bearer source, required) and `roles` (the role source):
+
+```hale,fragment
+let public = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+**The protocol is a library, and the library is not ours.** HTTP/2 (frames,
+HPACK, SETTINGS and PING, flow-control windows, GOAWAY) is nghttp2 (MIT),
+vendored under `crates/hale-codegen/runtime/third_party/nghttp2` and built
+into the runtime by the cc step that builds the rest of its C, with the same
+flags, the sanitizers' included; a program that serves over gRPC is linked
+with it statically, and a program that does not carries none of it. The
+library is sans-I/O: bytes in, bytes out, a queue of events, all of it
+computation on the thread the runtime placed (`runtime/lotus_h2.c` is the
+glue and owns no thread, socket or blocking call), so there is no second
+scheduler: the socket is a descriptor `std::io::tcp` reads and writes, and a
+read parks its coroutine on the `async_io` pool as every read there does.
+
+**Two layers.** `std::io::h2` (`io_h2.hl`) is the server: a listener on the
+`async_io` pool `__api_grpc` (which every gRPC exposure of the program
+shares), and a connection locus per accepted socket, which feeds each read to
+its session, writes what the session drains and raises the session's stream
+events on the bus (`__api.h2.event`: a request's headers whole, bytes of its
+body, its end, a reset, a GOAWAY, a stream closed, the connection ended).
+`grpc::Rpc` is the transport on top: it reads those events, keeps a table of
+the streams (at most 4096 held at a time; one past that is refused
+`REFUSED_STREAM`), and asks the connection to answer a stream
+(`__api.h2.cmd`). The correlation is the connection and the stream, so many
+calls are in flight on a connection, and on many connections. The listener is
+bound at birth, with `http::Rpc`'s diagnostic (`api: grpc::Rpc could not
+listen on …`, exit code 2), nothing is accepted until the exposure is attached
+to the bus, and a serve over `grpc::Rpc` from a locus that is not the main
+locus is refused, written at the site or held as a param.
+
+- **Framing is a call.** `POST /<Surface>/<member>`, the member written
+  `Orders.place` (the `::` as `.`; `Orders::place`, or `Orders%3A%3Aplace`,
+  is the same member). The first segment is the exposure's surface: another
+  service is `malformed`. `content-type` is `application/grpc` or
+  `application/grpc+json`, and the response is answered in the one it was
+  asked in. The messages are the codec's, which is JSON, so a request in
+  `application/grpc+proto` (or any other suffix, or another media type) is
+  refused `malformed` with the reason, and a bare `application/grpc` is
+  taken as JSON; a client that sends protobuf there gets the decode's
+  refusal. A call is one message: a compression flag (0), four bytes of
+  length and the JSON. A flag of 1, a `grpc-encoding` other than `identity`,
+  a prefix that is cut off, an empty message, no message or more than one, a
+  message of more than 1048576 bytes and text that is not text are `malformed`
+  (`INVALID_ARGUMENT`), and the stream is answered. The bearer is the
+  `authorization: Bearer <token>` metadata, refused as `http::Rpc` refuses it,
+  and the digest, when sent, is the `hale-surface-digest` metadata.
+- **The reply is the contract's.** A result is a `HEADERS` frame (`:status 200`,
+  `content-type`), the response as one message in `DATA`, and the trailers
+  `grpc-status: 0`. Every other outcome is a trailers-only response (one
+  `HEADERS` frame closing the stream, `:status 200`, `content-type`,
+  `grpc-status`, `grpc-message`, `grpc-status-details-bin`), the status the
+  table of § Outcomes gives: `FAILED_PRECONDITION` (9) for a handler error,
+  with the message `handler_error`; `INVALID_ARGUMENT` (3),
+  `FAILED_PRECONDITION` (9, a digest mismatch), `UNAUTHENTICATED` (16),
+  `PERMISSION_DENIED` (7), `RESOURCE_EXHAUSTED` (8) and `UNAVAILABLE` (14, for
+  `shutting_down` and for `unavailable`) for a refusal, its reason the
+  message; `INTERNAL` (13), message `server_error`, for a handler that
+  violated. `grpc-message` is percent-encoded as gRPC states (a byte outside
+  printable ASCII, and `%`, as `%XX`). `grpc-status-details-bin` is the
+  base64 of a `google.rpc.Status` carrying the same code and message and one
+  `Any` detail: for a handler error, type `type.hale.dev/hale.api.HandlerError`
+  and the value `E` by codec (JSON bytes); for a refusal or the server error,
+  type `type.hale.dev/hale.api.Refusal` and the refusal object of
+  § Outcomes (`kind`, `reason`, and `served` or `requires`; the server
+  error's `{"kind": "server"}`). A transport failure is the stream reset or
+  the connection ended without a status.
+- **`describe` is a reserved method.** `POST /hale.api.Description/Describe`
+  (service `hale.api.Description`, which no surface can be named) answers, as
+  one message, the whole document of § The description for the caller the
+  bearer names, with the listener `grpc` and the outcome encoding above; the
+  request message is ignored. A caller nobody names gets the same
+  `UNAUTHENTICATED` as a call. It is a plain unary method rather than gRPC's
+  own reflection service, whose request and reply are protobuf messages the
+  json codec does not carry.
+- **A stream fails alone.** A client that resets a stream, or goes away, after
+  its request was published is a lost connection of the runtime (§ The request
+  lifecycle): the work still runs, once, and holds its place against the bound
+  until it completes. A stream reset before its request was whole is
+  forgotten. A frame the protocol forbids ends that connection (the library
+  has said `GOAWAY` with the error, which is written first), the peer's own
+  `GOAWAY` ends it once its streams are done, and a write that fails (a
+  reader that does not read for 5 seconds) ends it; the listener and every
+  other connection go on.
+- **`stop()`** answers the executing calls, refuses the queued ones
+  `shutting_down` (`UNAVAILABLE`), sends `GOAWAY` on every connection after
+  the replies already queued, and closes the listener; a connection ends when
+  its streams in flight are answered. A request that arrives while `stop()`
+  waits for an executing call is refused `shutting_down` as well.
 
 ## The runtime boundaries
 
@@ -1066,6 +1148,15 @@ object (`code`, `message`, `data`) for the handler's error, a refusal and
 the server error, with the codes of § The MCP transport; `tests/api-contract/
 wire/http/*.json` supply the payloads, so the `data` of each error is
 the recorded body.
+
+**The gRPC transport** (`grpc::Rpc`, R7; § gRPC) takes the same recorded
+calls as unary gRPC calls, `POST /Public/Orders.place` with the recorded
+body as the one request message, and answers each outcome as the gRPC column
+says: the recorded response body as the response message under
+`grpc-status: 0`, or a trailers-only response whose `grpc-status-details-bin`
+carries the recorded error or refusal body as the value of its `Any` detail;
+`tests/api-contract/wire/http/*.json` supply the bodies, so nothing is
+recorded twice.
 
 Every recorded exchange of the HTTP and Unix transports is under
 `tests/api-contract/wire/<transport>/<outcome>.json`.
@@ -1636,7 +1727,9 @@ member's or a stream's name in advance. An **endpoint** is a Unix socket
 path (or `unix:PATH`), `http://host:port` (an `http::Rpc` listener, the
 caller named by `--token T` or `HALE_API_TOKEN` as the bearer), `ws://host:port`
 (a hub's listener) or, for `hale mcp --app` only, `mcp://host:port`; a
-TLS scheme is refused, saying so.
+TLS scheme is refused, saying so, and so is `grpc://`: a `grpc::Rpc`
+listener is described by `hale check --api` and called by any gRPC client
+(§ gRPC; Open points).
 
 - **`hale describe ENDPOINT`** prints the exposure's description for the
   caller the endpoint names, the bytes it served (`{"describe": true}`
@@ -1760,7 +1853,7 @@ each refusal leaving the handler's counter where it was, the five
 outcomes, the lifecycle guarantees of § The request lifecycle); R2b
 runs the same assertions over a Unix socket, R3 over HTTP, R6 holds the
 `Public` half over MCP (the recorded calls as `tools/call`, `tools/list`
-against `Public.mcp.json`; `gRPC` has none, § gRPC), R5 adds the stream
+against `Public.mcp.json`), R7 over gRPC (the recorded calls as unary calls, the bodies in messages and details, § gRPC), R5 adds the stream
 half over WebSocket and datagrams (`crates/hale-codegen/tests/
 api_hub_streams.rs`, `api_hub_desk.rs` and `api_hub_udp.rs`: the witness's
 hub half, its `dave` and `bob`, a revoked grant, an expired credential,
@@ -1769,6 +1862,13 @@ values).
 
 ## Open points
 
+- **`grpc://` endpoints for `hale describe` and `hale call`**: the
+  clients are Rust and have no HTTP/2 stack (the runtime's nghttp2 is
+  linked into compiled programs, the test suite's client is hand-written
+  frames); a client would need HTTP/2 framing, HPACK, flow control and the
+  gRPC message framing, and the `Describe` method would be its discovery.
+  Until then a gRPC exposure's description is the program's
+  (`hale check --api`) and the stdlib's `hale.api.Description/Describe`.
 - **Additive compatibility**: a client built against a subset of a
   surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,
@@ -1789,7 +1889,6 @@ values).
   needs an event stream, a hub and a session identity, and stdio needs a
   runtime primitive to read the process's own standard input (§ The MCP
   transport).
-- **`grpc::Rpc`**: it needs an HTTP/2 primitive in the runtime (§ gRPC).
 - **The wrapped MCP input over a description**: an rpc whose request is
   not an object has no tool in `hale mcp --app` (as over `mcp::Rpc`),
   because the tool's wrapping property is the handler's parameter name,

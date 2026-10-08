@@ -8,8 +8,9 @@
 //! source, receiver, placement, binding and `on_failure` is the contract's.
 //!
 //! One run of that program serves its rpc half over `http::Rpc` (twice),
-//! `unix::Rpc` and `mcp::Rpc` (a fifth serve site, `agent`, of `Public`) and
-//! its stream half over `ws::Hub`, and the tests assert what a
+//! `unix::Rpc`, `mcp::Rpc` (a fifth serve site, `agent`, of `Public`) and
+//! `grpc::Rpc` (a sixth, `wire`, whose calls, trailers and GOAWAY at the stop
+//! the test holds to the spec's gRPC column), and its stream half over `ws::Hub`, and the tests assert what a
 //! caller of each can observe: the assertions of `api_http_witness`
 //! (members reach their own receiver and pool, a shared handler meets each
 //! surface's `requires`, a digest mismatch, every outcome, one exposure
@@ -58,7 +59,7 @@ fn swap(src: &str, from: &str, to: &str) -> String {
 /// over the hub, and a
 /// run loop that stops `public`, `partner` and `admin` on `$TRIGGER_PUBLIC`,
 /// `$TRIGGER_PARTNER` and `$TRIGGER_ADMIN` and everything on `$TRIGGER`.
-fn witness_whole(hub: u16, mcp: u16) -> String {
+fn witness_whole(hub: u16, mcp: u16, grpc: u16) -> String {
     let s = CONTRACT;
     let s = swap(&s, "bind: \"127.0.0.1:8080\"", "bind: std::env::var(\"BIND\")");
     let s = swap(&s, "bind: \"127.0.0.1:8081\"", "bind: std::env::var(\"BIND2\")");
@@ -73,7 +74,7 @@ fn witness_whole(hub: u16, mcp: u16) -> String {
     let s = swap(
         &s,
         "        let feed = api::serve(",
-        &format!("        let agent = api::serve(Public, mcp::Rpc {{ bind: \"127.0.0.1:{mcp}\", principals: self.bearer, roles: self.public_roles }}, as: \"agent\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let feed = api::serve("),
+        &format!("        let agent = api::serve(Public, mcp::Rpc {{ bind: \"127.0.0.1:{mcp}\", principals: self.bearer, roles: self.public_roles }}, as: \"agent\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let wire = api::serve(Public, grpc::Rpc {{ bind: \"127.0.0.1:{grpc}\", principals: self.bearer, roles: self.public_roles }}, as: \"wire\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let feed = api::serve("),
     );
     let s = swap(
         &s,
@@ -96,6 +97,7 @@ fn witness_whole(hub: u16, mcp: u16) -> String {
             "        partner.stop();\n",
             "        admin.stop();\n",
             "        agent.stop();\n",
+            "        wire.stop();\n",
             "        feed.stop();\n",
             "        self.hub.stop();\n",
             "        println(\"stopped\");\n",
@@ -110,15 +112,15 @@ fn witness_whole(hub: u16, mcp: u16) -> String {
     )
 }
 
-/// The program built once per process, and the ports its hub and its MCP
-/// endpoint were built for.
-fn build() -> (PathBuf, u16, u16) {
-    static BIN: OnceLock<(PathBuf, u16, u16)> = OnceLock::new();
+/// The program built once per process, and the ports its hub, its MCP
+/// endpoint and its gRPC endpoint were built for.
+fn build() -> (PathBuf, u16, u16, u16) {
+    static BIN: OnceLock<(PathBuf, u16, u16, u16)> = OnceLock::new();
     BIN.get_or_init(|| {
         let bin = harness::unique_bin("api_witness_whole");
-        let (hub, mcp) = (ports::free_port(), ports::free_port());
-        build_opts::build_source(&witness_whole(hub, mcp), &bin, &build_opts::options()).expect("build the contract's program");
-        (bin, hub, mcp)
+        let (hub, mcp, grpc) = (ports::free_port(), ports::free_port(), ports::free_port());
+        build_opts::build_source(&witness_whole(hub, mcp, grpc), &bin, &build_opts::options()).expect("build the contract's program");
+        (bin, hub, mcp, grpc)
     })
     .clone()
 }
@@ -132,9 +134,10 @@ struct Whole {
     server: Server,
     hub: u16,
     mcp: u16,
+    grpc: u16,
 }
 
-fn start(bin: &std::path::Path, hub: u16, mcp: u16, env: &[(&str, &str)]) -> Whole {
+fn start(bin: &std::path::Path, hub: u16, mcp: u16, grpc: u16, env: &[(&str, &str)]) -> Whole {
     let operator = format!("uid:{}", unix_rpc::me().0);
     let mut all: Vec<(&str, &str)> = vec![("OPERATOR", &operator)];
     all.extend_from_slice(env);
@@ -144,7 +147,8 @@ fn start(bin: &std::path::Path, hub: u16, mcp: u16, env: &[(&str, &str)]) -> Who
     wait_accepting_unix(&server.sock());
     wait_listening(hub);
     wait_listening(mcp);
-    Whole { server, hub, mcp }
+    wait_listening(grpc);
+    Whole { server, hub, mcp, grpc }
 }
 
 fn place(port: u16, token: &str) -> Response {
@@ -186,8 +190,8 @@ fn wait_closed(port: u16, what: &str) {
 
 #[test]
 fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
-    let (bin, hub, mcp) = build();
-    let w = start(&bin, hub, mcp, &[]);
+    let (bin, hub, mcp, grpc) = build();
+    let w = start(&bin, hub, mcp, grpc, &[]);
     let (public, partner) = (w.server.port, w.server.port2);
 
     // ---- the stream half: admission, in the contract's words ----
@@ -428,6 +432,34 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert!(cancelled.body.contains(r#""id":8,"result":"#) && cancelled.body.contains(r#""isError":false"#), "{}", cancelled.body);
     dave.silence(100);
 
+    // ---- `Public` over gRPC, beside the rest, in the same run ----
+    // (the connection stays open: the final stop says GOAWAY on it)
+    let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
+    {
+        use super::api_grpc::{description_over_grpc, text_of, unary};
+        let described = unary(&mut g, 1, "/hale.api.Description/Describe", Some("t-alice"), "{}");
+        assert_eq!(described.header("grpc-status"), Some("0"), "{described:?}");
+        assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", w.grpc, "wire"), "alice's description over gRPC is the fixture's");
+        // a call is a call: the same receiver, the same handler, the same stream
+        let placed = unary(&mut g, 3, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
+        assert_eq!(placed.header("grpc-status"), Some("0"), "{placed:?}");
+        assert_eq!(text_of(&placed), "{\"order\":48,\"notional\":125000}");
+        assert_eq!(dave.text(), fill(10, 48));
+        // the handler's error, the role's refusal, a missing field and a caller nobody names
+        let missed = unary(&mut g, 5, "/Public/Orders.cancel", Some("t-alice"), "{\"order\":99999}");
+        assert_eq!((missed.header("grpc-status"), missed.header("grpc-message")), (Some("9"), Some("handler_error")), "{missed:?}");
+        let forbidden = unary(&mut g, 7, "/Public/Orders.cancel", Some("t-bob"), "{\"order\":48}");
+        assert_eq!(forbidden.header("grpc-status"), Some("7"), "{forbidden:?}");
+        let malformed = unary(&mut g, 9, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"limit\":12500}");
+        assert_eq!((malformed.header("grpc-status"), malformed.header("grpc-message")), (Some("3"), Some("missing_field: qty")), "{malformed:?}");
+        let nobody = unary(&mut g, 11, "/Public/Orders.place", Some("t-mallory"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
+        assert_eq!((nobody.header("grpc-status"), nobody.header("grpc-message")), (Some("16"), Some("no such token")), "{nobody:?}");
+        let cancelled = unary(&mut g, 13, "/Public/Orders.cancel", Some("t-alice"), "{\"order\":48}");
+        assert_eq!(cancelled.header("grpc-status"), Some("0"), "{cancelled:?}");
+        assert_eq!(text_of(&cancelled), "{\"order\":48,\"was_open\":true}");
+    }
+    dave.silence(100);
+
     w.server.stop_one("partner");
     wait_closed(partner, "partner's listener closed after its stop()");
     let line = unix(&w, "{\"call\":\"Ledger::rebalance\",\"payload\":{\"book\":\"main\"},\"id\":\"a-5\"}");
@@ -444,10 +476,13 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert_eq!(status, 200);
 
     // ---- the stop: `closed` after what was queued, then the close; every address released ----
-    let (hub, mcp) = (w.hub, w.mcp);
+    let (hub, mcp, grpc) = (w.hub, w.mcp, w.grpc);
     let done = w.server.finish();
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
     assert!(std::net::TcpStream::connect(("127.0.0.1", mcp)).is_err(), "the MCP endpoint's address is released");
+    assert!(std::net::TcpStream::connect(("127.0.0.1", grpc)).is_err(), "the gRPC endpoint's address is released");
+    let go = g.goaway_within(Duration::from_secs(15)).expect("wire's stop says GOAWAY on the open connection");
+    assert_eq!(go.1, 0, "NO_ERROR");
     for line in ["public stopped", "partner stopped", "admin stopped", "stopped"] {
         assert!(done.stdout.contains(line), "{line}:\n{}", done.stdout);
     }
@@ -465,9 +500,9 @@ fn the_contracts_program_runs_clean_under_asan() {
     // a connection that outlives its request, a subscriber that goes away, a
     // listener released at stop(), a peer locus per connection
     let bin = harness::unique_bin("api_witness_whole_asan");
-    let (hub, mcp) = (ports::free_port(), ports::free_port());
-    harness::build_source_asan(&witness_whole(hub, mcp), &bin);
-    let w = start(&bin, hub, mcp, &[("LOTUS_NO_CHUNK_POOL", "1")]);
+    let (hub, mcp, grpc) = (ports::free_port(), ports::free_port(), ports::free_port());
+    harness::build_source_asan(&witness_whole(hub, mcp, grpc), &bin);
+    let w = start(&bin, hub, mcp, grpc, &[("LOTUS_NO_CHUNK_POOL", "1")]);
     let (public, partner) = (w.server.port, w.server.port2);
     let mut dave = Ws::connect(w.hub, Some("t-dave"));
     dave.subscribe("Fills");
@@ -507,6 +542,13 @@ fn the_contracts_program_runs_clean_under_asan() {
         Some(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Orders__place","arguments":{"symbol":"ACME","qty":10,"limit":12500}}}"#),
     );
     assert!(placed.body.contains(r#""isError":false"#), "{}", placed.body);
+    {
+        let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
+        let r = super::api_grpc::unary(&mut g, 1, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
+        assert_eq!(r.header("grpc-status"), Some("0"), "{r:?}");
+        let r = super::api_grpc::unary(&mut g, 3, "/Public/Orders.cancel", Some("t-bob"), "{\"order\":41}");
+        assert_eq!(r.header("grpc-status"), Some("7"), "{r:?}");
+    }
     send(w.mcp, "POST /mcp HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"json").close();
     let second = Ws::connect(w.hub, Some("t-dave"));
     second.abandon();

@@ -435,6 +435,8 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("api.hl", &["api"]),
         ("api_rpc.hl", &["api"]),
         ("api_hub.hl", &["api"]),
+        ("io_h2.hl", &["io::h2"]),
+        ("api_grpc.hl", &["api"]),
         ("test.hl", &["test"]),
         ("log.hl", &["log"]),
         ("ts.hl", &["ts"]),
@@ -466,6 +468,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("env.rs", &["env"]),
         ("io_file.rs", &["io::file"]),
         ("io_fs.rs", &["io::fs"]),
+        ("io_h2.rs", &["io::h2"]),
         ("io_stdin.rs", &["io::stdin"]),
         ("io_tcp.rs", &["io::tcp"]),
         ("io_tls.rs", &["io::tls"]),
@@ -541,14 +544,14 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (104, 47), "behaviour rows (all, std::)");
+    assert_eq!((m.behaviours.len(), std), (105, 48), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 9);
-    // On wasm32: 17 namespaces (the 10 browser-unavailable, T3's 7),
+    // On wasm32: 18 namespaces (the 10 browser-unavailable, T3's 7, R7's HTTP/2 server),
     // `[ffi] link`, `@export locus` with `run()`, ProcessSignals, and
     // T2's pinned threads, pools, `async_io` and the three transports;
     // on both POSIX columns the export-only module, `--wrap-main` and
     // T5's `@ffi("js")`; `async_io` on musl; 9 FFI type classes × 2 ABIs
     // × 3 targets.
-    assert_eq!(rejects.len(), 87, "{}", rejects.join("\n"));
+    assert_eq!(rejects.len(), 88, "{}", rejects.join("\n"));
 }

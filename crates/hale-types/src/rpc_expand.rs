@@ -369,23 +369,36 @@ const RUNTIME_NAMES: &[&str] = &[
     "unix",
     "http",
     "mcp",
+    "grpc",
 ];
 
 /// Whether the programs serve a surface (`api::serve`) or spell a name of
 /// the runtime (`std::api::Request`, `std::api::test::Rpc`, …): the
 /// runtime joins a program only then.
 fn mentions_runtime(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| {
+        (w[2] == "api" && w[3] == "serve")
+            || (w[1] == "std" && w[2] == "api" && RUNTIME_NAMES.contains(&w[3]))
+            || (w[0] == "std" && w[1] == "io" && w[2] == "h2" && H2_NAMES.contains(&w[3]))
+    })
+}
+
+/// The names of `std::io::h2` a program may spell: its listener, its
+/// connection and the two messages between a connection and a transport.
+const H2_NAMES: &[&str] = &["Listener", "Conn", "Event", "Cmd"];
+
+/// Whether any name sequence the programs spell satisfies `pred`, given the
+/// last four names of the walk, the oldest first.
+fn spells(programs: &[&mut Program], pred: &dyn Fn(&[&str; 4]) -> bool) -> bool {
     use hale_syntax::names::{for_each_spelled_in_item, Spelled};
     let mut found = false;
     for p in programs {
         for item in &p.items {
-            let mut window: [&str; 3] = ["", "", ""];
+            let mut window: [&str; 4] = ["", "", "", ""];
             for_each_spelled_in_item(item, &mut |s| {
                 if let Spelled::Name(n) = s {
-                    window = [window[1], window[2], n];
-                    if (window[1] == "api" && window[2] == "serve")
-                        || (window[0] == "std" && window[1] == "api" && RUNTIME_NAMES.contains(&window[2]))
-                    {
+                    window = [window[1], window[2], window[3], n];
+                    if pred(&window) {
                         found = true;
                     }
                 }
@@ -396,6 +409,14 @@ fn mentions_runtime(programs: &[&mut Program]) -> bool {
         }
     }
     false
+}
+
+/// Whether the programs need the HTTP/2 server: a `grpc::Rpc` transport (at
+/// a serve site, or held as a param), or a name of `std::io::h2`.
+fn mentions_h2(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| {
+        (w[2] == "grpc" && w[3] == "Rpc") || (w[0] == "std" && w[1] == "io" && w[2] == "h2" && H2_NAMES.contains(&w[3]))
+    })
 }
 
 /// Where the appended runtime parses: its own window of the generated
@@ -487,6 +508,75 @@ fn inject_hub(programs: &mut [&mut Program]) {
     }
 }
 
+/// The HTTP/2 server's loci and its two topics, once, for a program that
+/// serves over `grpc::Rpc` or names a type of `std::io::h2`: kept out of
+/// `API_RUNTIME_SOURCE` so a program that serves a surface over another
+/// transport carries no HTTP/2.
+fn inject_h2(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoH2Conn")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_H2_SOURCE, RUNTIME_BASE + 0x00C0_0000) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the HTTP/2 server did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+    match parse_source_at(H2_TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000 + 0x0020_0000) {
+        Ok(t) => programs[0].items.extend(t.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the HTTP/2 server's topics did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+/// Whether the programs name the gRPC transport (`grpc::Rpc` at a serve
+/// site, held as a param, or by its stdlib path).
+fn mentions_grpc(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[2] == "grpc" && w[3] == "Rpc")
+}
+
+/// The gRPC transport's locus, once, for a program that names `grpc::Rpc`:
+/// it speaks to the HTTP/2 server of [`inject_h2`], which is injected first.
+fn inject_grpc(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiGrpcRpc")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_GRPC_SOURCE, RUNTIME_BASE + 0x00E0_0000) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the gRPC transport did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+const H2_TOPICS_SRC: &str = "topic __ApiH2EventT { payload: __StdIoH2Event; subject: \"__api.h2.event\"; keyed_by key; }
+topic __ApiH2CmdT { payload: __StdIoH2Cmd; subject: \"__api.h2.cmd\"; keyed_by key; }
+";
+
 const HUB_TOPICS_SRC: &str = "topic __ApiHubEventT { payload: __StdApiHubEvent; subject: \"__api.hub.event\"; keyed_by key; }
 topic __ApiHubUpT { payload: __StdApiHubUp; subject: \"__api.hub.up\"; keyed_by key; }
 topic __ApiHubOutT { payload: __StdApiHubOut; subject: \"__api.hub.out\"; keyed_by key; }
@@ -504,6 +594,12 @@ pub fn expand(
     }
     inject_runtime(programs);
     inject_topics(programs);
+    if mentions_h2(programs) {
+        inject_h2(programs);
+    }
+    if mentions_grpc(programs) {
+        inject_grpc(programs);
+    }
     if hubs {
         inject_hub(programs);
         crate::hub_expand::expand(programs);
@@ -565,7 +661,7 @@ pub fn expand(
                     let buildable = match transport {
                         Expr::Struct { path, .. } => {
                             let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                            segs.first() == Some(&"std") || is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || loci.contains_key(segs.join("::").as_str())
+                            segs.first() == Some(&"std") || is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path) || loci.contains_key(segs.join("::").as_str())
                         }
                         e => crate::surfaces::self_field(e).is_some(),
                     };
@@ -780,7 +876,7 @@ pub fn expand(
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
             if let Some(t) = &site.transport {
-                push("transport", as_stdlib_unix(t, id));
+                push("transport", as_stdlib_unix(t, id, &site.surface));
                 if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
                     push("address", addr);
                 }
@@ -814,6 +910,7 @@ pub fn expand(
             let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
             let listener = match (unix_path, http_bind) {
                 (Some(path), _) => parse_unix_listener(id, path, span),
+                (None, Some(bind)) if is_grpc_site(l, site.transport.as_ref()) => parse_grpc_listener(id, bind, span),
                 (None, Some(bind)) => parse_http_listener(id, bind, is_mcp_site(l, site.transport.as_ref()), span),
                 (None, None) => None,
             };
@@ -840,8 +937,8 @@ pub fn expand(
                 if let LocusMember::Params(pb) = m {
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
-                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path)) {
-                                *e = as_stdlib_unix(e, id);
+                            if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path)) {
+                                *e = as_stdlib_unix(e, id, &site.surface);
                             }
                         }
                     }
@@ -921,12 +1018,20 @@ pub(crate) fn is_mcp_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
     matches!(segs.as_slice(), ["mcp", "Rpc"] | ["std", "api", "mcp", "Rpc"])
 }
 
+/// Whether a transport literal's path is the stdlib's gRPC transport,
+/// spelled `grpc::Rpc` (the serve site's spelling) or `std::api::grpc::Rpc`.
+pub(crate) fn is_grpc_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["grpc", "Rpc"] | ["std", "api", "grpc", "Rpc"])
+}
+
 /// The transport literal as the exposure holds it: a socket transport is
 /// spelled by its stdlib path and carries the number of the exposure it
 /// serves (`tid`), which keys the bus subjects its connections share. The
 /// HTTP transport's `codec: json` is the one codec v1 has, and is not a
-/// field of the locus.
-fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
+/// field of the locus (nor is the gRPC transport's). The gRPC transport
+/// also carries the name of the surface it serves, which a call's path names.
+fn as_stdlib_unix(t: &Expr, id: i64, surface: &str) -> Expr {
     let mut e = fresh(t);
     if let Expr::Struct { path, inits, span, .. } = &mut e {
         let kind = if is_unix_rpc(path) {
@@ -935,6 +1040,8 @@ fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
             Some("http")
         } else if is_mcp_rpc(path) {
             Some("mcp")
+        } else if is_grpc_rpc(path) {
+            Some("grpc")
         } else {
             None
         };
@@ -942,9 +1049,14 @@ fn as_stdlib_unix(t: &Expr, id: i64) -> Expr {
             let sp = *span;
             path.segments = ["std", "api", kind, "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
             inits.retain(|i| {
-                i.name.name != "tid" && !(kind == "http" && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
+                i.name.name != "tid"
+                    && i.name.name != "surface"
+                    && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
             });
             inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
+            if kind == "grpc" {
+                inits.push(StructInit { name: Ident::new("surface", sp), value: Expr::Literal(Literal::String(surface.to_string()), sp), span: sp });
+            }
         }
     }
     e
@@ -991,7 +1103,7 @@ fn http_bind_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
         }
     };
     match lit {
-        Expr::Struct { path, inits, .. } if is_http_rpc(path) || is_mcp_rpc(path) => {
+        Expr::Struct { path, inits, .. } if is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path) => {
             inits.iter().find(|i| i.name.name == "bind").map(|i| fresh(&i.value))
         }
         _ => None,
@@ -1001,6 +1113,16 @@ fn http_bind_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
 /// Whether the transport a serve site names is `mcp::Rpc`, written at the
 /// site or held as a param of the serving locus.
 fn is_mcp_site(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    site_literal_is(l, transport, is_mcp_rpc)
+}
+
+/// Whether the transport a serve site names is `grpc::Rpc`, written at the
+/// site or held as a param of the serving locus.
+fn is_grpc_site(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    site_literal_is(l, transport, is_grpc_rpc)
+}
+
+fn site_literal_is(l: &LocusDecl, transport: Option<&Expr>, is: fn(&hale_syntax::ast::QualifiedName) -> bool) -> bool {
     let lit: Option<&Expr> = match transport {
         Some(e @ Expr::Struct { .. }) => Some(e),
         Some(e) => crate::surfaces::self_field(e).and_then(|f| {
@@ -1014,7 +1136,36 @@ fn is_mcp_site(l: &LocusDecl, transport: Option<&Expr>) -> bool {
         }),
         None => None,
     };
-    matches!(lit, Some(Expr::Struct { path, .. }) if is_mcp_rpc(path))
+    matches!(lit, Some(Expr::Struct { path, .. }) if is(path))
+}
+
+/// The listener of gRPC exposure `id` and its placement: the HTTP/2
+/// server's (`std::io::h2`), a param of the serving main locus on an
+/// `async_io` pool of its own that every gRPC exposure of the program shares.
+fn parse_grpc_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+    let field = format!("__rpc_g_{id}");
+    let src = format!(
+        "main locus __Tmp {{ params {{ {field}: __StdIoH2Listener = __StdIoH2Listener {{ tid: {id}, what: \"grpc::Rpc\" }}; }} placement {{ {field}: cooperative(pool = __api_grpc) where async_io; }} }}\n"
+    );
+    let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0800_0000 + id as u32 * 0x100).ok()?;
+    let mut param = None;
+    let mut entry = None;
+    for item in prog.items {
+        if let TopDecl::Locus(l) = item {
+            for m in l.members {
+                match m {
+                    LocusMember::Params(pb) => param = pb.params.into_iter().next(),
+                    LocusMember::Placement(pl) => entry = pl.entries.into_iter().next(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut param = param?;
+    if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
+        inits.push(StructInit { name: Ident::new("bind", span), value: bind, span });
+    }
+    Some((param, entry?))
 }
 
 /// The listener of HTTP exposure `id` and its placement: as the Unix one,

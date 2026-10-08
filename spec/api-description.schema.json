@@ -195,6 +195,7 @@
     "outcomes": {
       "oneOf": [
         { "$ref": "#/$defs/outcomes_http" },
+        { "$ref": "#/$defs/outcomes_grpc" },
         { "$ref": "#/$defs/outcomes_mcp" },
         { "$ref": "#/$defs/outcomes_unix" }
       ]
@@ -215,6 +216,32 @@
         },
         "server_error": { "const": { "status": 500, "body": "refusal" } },
         "transport_failure": { "const": "the transport's own: the connection ends without a response" }
+      }
+    },
+    "outcomes_grpc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "result", "handler_error", "refusal", "server_error", "transport_failure"],
+      "properties": {
+        "transport": { "const": "grpc" },
+        "result": { "const": { "status": "OK", "body": "response" } },
+        "handler_error": { "const": { "status": "FAILED_PRECONDITION", "details": "error" } },
+        "refusal": {
+          "const": {
+            "details": "refusal",
+            "status": {
+              "malformed": "INVALID_ARGUMENT",
+              "digest_mismatch": "FAILED_PRECONDITION",
+              "unauthenticated": "UNAUTHENTICATED",
+              "unauthorized": "PERMISSION_DENIED",
+              "full": "RESOURCE_EXHAUSTED",
+              "shutting_down": "UNAVAILABLE",
+              "unavailable": "UNAVAILABLE"
+            }
+          }
+        },
+        "server_error": { "const": { "status": "INTERNAL", "details": "refusal" } },
+        "transport_failure": { "const": "the transport's own: the stream is reset or the connection ends without a status" }
       }
     },
     "outcomes_mcp": {

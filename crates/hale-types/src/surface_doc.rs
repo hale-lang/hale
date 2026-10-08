@@ -252,6 +252,31 @@ fn outcomes(transport: &str) -> Result<J, String> {
             ("server_error", o(vec![("field", s("error")), ("code", J::Int(-32603)), ("data", s("refusal"))])),
             ("transport_failure", s("the transport's own: the connection ends without a response")),
         ])),
+        "grpc" => Ok(o(vec![
+            ("transport", s("grpc")),
+            ("result", o(vec![("status", s("OK")), ("body", s("response"))])),
+            ("handler_error", o(vec![("status", s("FAILED_PRECONDITION")), ("details", s("error"))])),
+            (
+                "refusal",
+                o(vec![
+                    ("details", s("refusal")),
+                    (
+                        "status",
+                        o(vec![
+                            ("malformed", s("INVALID_ARGUMENT")),
+                            ("digest_mismatch", s("FAILED_PRECONDITION")),
+                            ("unauthenticated", s("UNAUTHENTICATED")),
+                            ("unauthorized", s("PERMISSION_DENIED")),
+                            ("full", s("RESOURCE_EXHAUSTED")),
+                            ("shutting_down", s("UNAVAILABLE")),
+                            ("unavailable", s("UNAVAILABLE")),
+                        ]),
+                    ),
+                ]),
+            ),
+            ("server_error", o(vec![("status", s("INTERNAL")), ("details", s("refusal"))])),
+            ("transport_failure", s("the transport's own: the stream is reset or the connection ends without a status")),
+        ])),
         "unix" => Ok(o(vec![
             ("transport", s("unix")),
             ("result", o(vec![("ok", J::Bool(true)), ("field", s("value"))])),
@@ -323,7 +348,7 @@ fn outcomes(transport: &str) -> Result<J, String> {
             ]))
         }
         other => Err(format!(
-            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, mcp, unix, and a hub's ws and udp)"
+            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, grpc, mcp, unix, and a hub's ws and udp)"
         )),
     }
 }

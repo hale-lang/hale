@@ -225,7 +225,7 @@ fn every_renamed_std_target_is_declared_or_consciously_exempt() {
     // The bundled stdlib, and the runtime of `api::serve` (GH #1417,
     // `API_RUNTIME_SOURCE`, and the hub's, `API_HUB_SOURCE`), which join a program that serves or names them.
     let mut declared = std::collections::BTreeSet::new();
-    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE, hale_stdlib::API_HUB_SOURCE] {
+    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE, hale_stdlib::API_HUB_SOURCE, hale_stdlib::API_H2_SOURCE, hale_stdlib::API_GRPC_SOURCE] {
         let program = hale_syntax::parse_source(source).expect("the bundled stdlib source must parse");
         for item in &program.items {
             match item {

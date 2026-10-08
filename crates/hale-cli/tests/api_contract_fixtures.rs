@@ -954,6 +954,47 @@ fn the_compiler_prints_every_description_byte_for_byte() {
     }
 }
 
+/// R7: the same exposure served over `grpc::Rpc` is described with its
+/// own listener and its own outcome encoding (spec/api.md § Outcomes, the
+/// gRPC column), conforms to the schema, and is otherwise the HTTP
+/// exposure's document: the members, the schemas and the caller do not
+/// depend on the transport.
+#[test]
+fn a_grpc_exposure_is_described_with_the_grpc_outcomes() {
+    let program = std::fs::read_to_string(contract_dir().join("program.hl")).expect("program.hl");
+    let swapped = program.replacen("http::Rpc { bind: \"127.0.0.1:8080\"", "grpc::Rpc { bind: \"127.0.0.1:8080\"", 1);
+    assert_ne!(swapped, program, "the contract still serves public over http::Rpc at :8080");
+    let got = hale_over("grpc_described", &swapped, &["--api", "--exposure", "public", "--caller", "alice", "--holds", "trader"]);
+    assert!(errors_against_schema(&got).is_empty(), "{:?}", errors_against_schema(&got));
+    assert_eq!(got["listener"], json!({"transport": "grpc", "address": "127.0.0.1:8080"}));
+    assert_eq!(
+        got["outcomes"],
+        json!({
+            "transport": "grpc",
+            "result": {"status": "OK", "body": "response"},
+            "handler_error": {"status": "FAILED_PRECONDITION", "details": "error"},
+            "refusal": {
+                "details": "refusal",
+                "status": {
+                    "malformed": "INVALID_ARGUMENT",
+                    "digest_mismatch": "FAILED_PRECONDITION",
+                    "unauthenticated": "UNAUTHENTICATED",
+                    "unauthorized": "PERMISSION_DENIED",
+                    "full": "RESOURCE_EXHAUSTED",
+                    "shutting_down": "UNAVAILABLE",
+                    "unavailable": "UNAVAILABLE"
+                }
+            },
+            "server_error": {"status": "INTERNAL", "details": "refusal"},
+            "transport_failure": "the transport's own: the stream is reset or the connection ends without a status"
+        })
+    );
+    let http: Value = serde_json::from_str(&hale(&["--api", "--exposure", "public", "--caller", "alice", "--holds", "trader"])).expect("JSON");
+    for key in ["members", "schemas", "caller", "digest", "surface", "codec", "streams", "notes"] {
+        assert_eq!(got[key], http[key], "`{key}` does not depend on the transport");
+    }
+}
+
 /// The model's digests are the ones digest.md folds by hand, and each
 /// row's shape hashes are digest.md's shapes.
 #[test]

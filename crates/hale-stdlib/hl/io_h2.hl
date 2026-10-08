@@ -1,0 +1,279 @@
+// Hale stdlib — std::io::h2 (GH #1417, R7).
+//
+// An HTTP/2 server over a socket parked on an `async_io` pool. The protocol
+// is nghttp2, built into the runtime and driven sans-I/O (`runtime/
+// lotus_h2.c`; the primitives are `std::io::h2::__*`): bytes in, bytes out, a
+// queue of events, all of it computation on the thread the pool placed. The
+// socket is what `std::io::tcp` reads and writes, and a read parks the
+// coroutine as every read on the pool does; no thread of nghttp2's, no wait
+// of its own, so a scheduler cycle is never blocked by this file.
+//
+// This source is appended to a program (not part of the stdlib every program
+// carries) when it serves over `grpc::Rpc` or names one of its types, the way
+// `api_rpc.hl` is: the IR of a program with no server is not touched. Its
+// topics are declared by the compiler where it joins (`hale_types::
+// rpc_expand`): `__ApiH2EventT` (`__api.h2.event`, keyed by the number of the
+// transport it serves) carries what the connections raise, and `__ApiH2CmdT`
+// (`__api.h2.cmd`, keyed by connection, or by transport for the listener and
+// every connection) what a transport asks of them.
+//
+//   listener  -- accepts, one `Conn` per socket (like the http listener)
+//   Conn      -- owns one socket and one session; feeds every read to the
+//                session, writes what it drains, raises its stream events
+//
+// A connection ends on its own: an EOF, a write that fails, a protocol error
+// (the session has queued its GOAWAY, which is written first), the peer's
+// GOAWAY once its streams are done. It never ends another connection or the
+// listener.
+
+/// What a connection raises. kind: 1 a stream's request headers are whole
+/// (bytes = "name: value\n" lines, pseudo-headers first), 2 bytes of a
+/// stream's body, 3 the peer sent all it will on the stream, 4 the peer reset
+/// the stream (code), 5 the peer is going away (code; stream = the last it
+/// will see), 6 the stream is over, whatever the cause (code), 7 the
+/// connection has ended (every stream of it is over).
+type __StdIoH2Event {
+    key: Int;
+    conn: Int;
+    kind: Int;
+    stream: Int;
+    code: Int;
+    bytes: Bytes;
+}
+
+/// What a transport asks. kind, to the connection `key` names: 0 answer
+/// `stream` (headers, body, trailers), 1 reset it (code), 2 GOAWAY and end
+/// once the streams in flight are answered, 6 end now; to the listener and
+/// every connection (`key` the transport's number): 5 stop (the listener
+/// closes, each connection says GOAWAY), 4 the listener asks whether the
+/// transport is there to be published to and 3 is the transport's answer.
+type __StdIoH2Cmd {
+    key: Int;
+    kind: Int;
+    stream: Int;
+    code: Int;
+    headers: Bytes;
+    body: Bytes;
+    trailers: Bytes;
+}
+
+fn __h2_none() -> Bytes {
+    return std::bytes::from_string("");
+}
+
+/// One accepted connection.
+locus __StdIoH2Conn {
+    params {
+        conn: Int = 0;
+        tid: Int = 0;
+        route: Int = 0;
+        fd: Int = -1;
+        session: Int = 0;
+        open: Bool = true;
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // what a read brings, handed to the session and cleared: the
+        // connection reads into one buffer for its whole life
+        rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 16384 };
+    }
+    bus {
+        subscribe __ApiH2CmdT as on_cmd where key == self.route;
+        subscribe __ApiH2CmdT as on_group where key == self.tid;
+        publish __ApiH2EventT;
+    }
+    birth() {
+        self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        // a reader that never reads cannot hold this connection's writer for long
+        std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
+        std::io::tcp::set_nodelay(self.fd, true) or discard;
+        self.session = std::io::h2::__open();
+        if self.session == 0 { self.open = false; }
+    }
+    @unbounded
+    run() {
+        // the session's SETTINGS go out before anything is read
+        if self.open { self.settle(); }
+        while self.open && !self.draining { self.step(); }
+        // the connection is over: every stream of it is, and the descriptor
+        // is released
+        self.pump();
+        __ApiH2EventT <- __StdIoH2Event { key: self.tid, conn: self.conn, kind: 7, stream: 0, code: 0, bytes: __h2_none() };
+        if self.session != 0 {
+            std::io::h2::__close(self.session);
+            self.session = 0;
+        }
+        self.release_fd();
+    }
+    // One read and what comes of it. A method of its own so that what a
+    // read allocates (what the session hands back) is the call's and is
+    // released when it returns: this loop is the connection's whole life,
+    // and buffers kept for it would be a leak that grows with every call a
+    // long-lived connection carries.
+    fn step() {
+        // The read goes into the connection's one buffer (`recv_into`
+        // allocates nothing per read) and the session reads it where it is.
+        // Not `Stream.recv_bytes`: it allocates a blob of the size asked
+        // out of an arena that outlives the read, and asks the runtime's one
+        // `last_io_status` after it, which on a pool where connections
+        // interleave at their parks can answer with another connection's
+        // failed read (a peer that reset) and end a good connection. 0 is
+        // the end of the stream, below 0 a read that failed: either ends it.
+        let n = std::io::tcp::recv_into(self.fd, self.rx, 16384);
+        if n <= 0 {
+            self.open = false;
+            return;
+        }
+        let used = std::io::h2::__feed(self.session, self.rx.view());
+        self.rx.clear();
+        self.pump();
+        self.settle();
+        // a protocol error: the session has queued its GOAWAY, which
+        // `settle` has written
+        if used < 0 { self.open = false; }
+    }
+    // The session's events, raised for the transport.
+    @unbounded
+    fn pump() {
+        if self.session == 0 { return; }
+        let mut k = std::io::h2::__poll(self.session);
+        while k != 0 {
+            let mut data = __h2_none();
+            if k == 1 || k == 2 { data = std::io::h2::__ev_bytes(self.session); }
+            __ApiH2EventT <- __StdIoH2Event { key: self.tid, conn: self.conn, kind: k, stream: std::io::h2::__ev_stream(self.session), code: std::io::h2::__ev_code(self.session), bytes: data };
+            k = std::io::h2::__poll(self.session);
+        }
+    }
+    // Write what the session has to send; end the connection when the
+    // session has nothing more to read or write (a GOAWAY exchanged and every
+    // stream done).
+    fn settle() {
+        self.flush();
+        if self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
+    }
+    @unbounded
+    fn flush() {
+        if self.fd < 0 || self.session == 0 { return; }
+        let mut out = std::io::h2::__drain(self.session);
+        while len(out) > 0 && self.open {
+            // a write that fails ends this connection, and only this one
+            self.stream.send_bytes(out) or { self.hangup(); };
+            if self.open { out = std::io::h2::__drain(self.session); }
+        }
+    }
+    fn on_cmd(c: __StdIoH2Cmd) {
+        if !self.open || self.session == 0 { return; }
+        if c.kind == 0 {
+            // a stream that is already over has nothing to be told
+            let _ = std::io::h2::__respond(self.session, c.stream, c.headers, c.body, c.trailers);
+            self.settle();
+        }
+        if c.kind == 1 {
+            let _ = std::io::h2::__reset(self.session, c.stream, c.code);
+            self.settle();
+        }
+        if c.kind == 2 {
+            let _ = std::io::h2::__goaway(self.session, 0);
+            self.settle();
+        }
+        if c.kind == 6 { self.hangup(); }
+    }
+    fn on_group(c: __StdIoH2Cmd) {
+        if c.kind == 5 && self.open && self.session != 0 {
+            let _ = std::io::h2::__goaway(self.session, 0);
+            self.settle();
+        }
+    }
+    // Stop reading: the shutdown wakes the reader, which ends the connection.
+    fn hangup() {
+        self.open = false;
+        if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
+    }
+    fn release_fd() {
+        if self.fd >= 0 {
+            std::io::tcp::__close_fd(self.fd);
+            self.fd = -1;
+        }
+    }
+}
+
+/// The listening socket, on its own pool (the compiler adds one to the main
+/// locus per `grpc::Rpc` serve site, carrying the transport's `bind` and its
+/// number). `host:port`; a port it cannot bind fails the boot.
+locus __StdIoH2Listener {
+    params {
+        bind: String = "";
+        what: String = "std::io::h2::Listener";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+    }
+    bus {
+        subscribe __ApiH2CmdT as on_ctl where key == self.tid;
+        publish __ApiH2CmdT;
+    }
+    birth() {
+        // `host:port`; the port is what follows the last colon
+        let mut colon = -1;
+        let mut k = 0;
+        while k < len(self.bind) {
+            if self.bind[k..(k + 1)] == ":" { colon = k; }
+            k = k + 1;
+        }
+        let mut host = "127.0.0.1";
+        let mut port = -1;
+        if colon >= 0 {
+            if colon > 0 { host = self.bind[0..colon]; }
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or - 1;
+        }
+        if port >= 0 && port <= 65535 {
+            self.fd = std::io::tcp::__listen_socket(host, port);
+        }
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            // (spec/semantics.md): the diagnostic and a non-zero exit
+            eprintln("api: " + self.what + " could not listen on " + self.bind);
+            std::process::exit(2);
+        }
+    }
+    @unbounded
+    run() {
+        // nothing is accepted before the transport is subscribed, and the
+        // asking repeats until it answers
+        while !self.started && !self.stopped && !self.draining {
+            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 4, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let conn = std::io::tcp::__accept_one(self.fd);
+            if conn < 0 {
+                if self.stopped || self.draining { break; }
+                // a failed accept (out of descriptors, an aborted
+                // connection) ends one connection, never the listener
+                std::time::sleep(20ms);
+                continue;
+            }
+            let n = self.next_conn;
+            self.next_conn = (n % 16777215) + 1;
+            __StdIoH2Conn { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        }
+    }
+    accept(c: __StdIoH2Conn) { }
+    release (c: __StdIoH2Conn) { }
+    fn on_ctl(c: __StdIoH2Cmd) {
+        if c.kind == 3 { self.started = true; }
+        if c.kind == 5 {
+            self.stopped = true;
+            self.release_socket();
+        }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        std::io::tcp::__shutdown_listen_socket(self.fd);
+        std::io::tcp::__close_fd(self.fd);
+        self.fd = -1;
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}

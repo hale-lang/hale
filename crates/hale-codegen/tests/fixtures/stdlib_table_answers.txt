@@ -206,6 +206,19 @@ ns std::io::tcp open_prefixes=[]
   set_recv_timeout syscall
   set_rx_timestamps syscall
   set_send_timeout syscall
+ns std::io::h2 open_prefixes=[]
+  __alive alloc
+  __close alloc
+  __drain alloc
+  __ev_bytes alloc
+  __ev_code alloc
+  __ev_stream alloc
+  __feed alloc
+  __goaway alloc
+  __open alloc
+  __poll alloc
+  __reset alloc
+  __respond alloc
 ns std::io::sockopt open_prefixes=[]
   IPPROTO_IP pure
   IPPROTO_IPV6 pure
@@ -497,6 +510,7 @@ std::api::RpcLost | lookup=api@2 | locus=false | effects=- | sig=- | parks=false
 std::api::ServedContext | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ServedContext` | suggest=-
 std::api::StaticRoles | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::StaticRoles` | suggest=-
 std::api::Surface | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Surface` | suggest=-
+std::api::grpc::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::grpc`
 std::api::http::Listener | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::http::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
@@ -667,6 +681,22 @@ std::io::fs::unlink | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str
 std::io::fs::write_bytes | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_bytes
 std::io::fs::write_file | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file
 std::io::fs::write_file_append | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file_append
+std::io::h2::Cmd | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Conn | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Event | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::Listener | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::h2::__alive | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__alive
+std::io::h2::__close | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close
+std::io::h2::__drain | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__drain
+std::io::h2::__ev_bytes | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__ev_bytes
+std::io::h2::__ev_code | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__ev_code
+std::io::h2::__ev_stream | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__ev_stream
+std::io::h2::__feed | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Any) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__feed
+std::io::h2::__goaway | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__goaway
+std::io::h2::__open | lookup=io::h2@3 | locus=false | effects=alloc | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__open
+std::io::h2::__poll | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__poll
+std::io::h2::__reset | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__reset
+std::io::h2::__respond | lookup=io::h2@3 | locus=false | effects=alloc | sig=(Int, Int, Bytes, Bytes, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__respond
 std::io::mirror::__capacity | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__capacity
 std::io::mirror::__commit | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__commit
 std::io::mirror::__consume | lookup=io::mirror@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__consume
