@@ -666,27 +666,126 @@ fn reflection_answers_the_descriptor_the_generated_proto_compiles_to() {
     assert!(server.finish().status.success());
 }
 
-/// The service is bidirectional: a client that waits for the answer before
-/// it ends its side of the stream (grpcurl does) gets it, and several
-/// requests in one stream get an answer each, in order.
+/// The headers that open a reflection call.
+fn reflect_open(c: &mut Client, stream: u32) {
+    let hs: Vec<(&str, &str)> = vec![(":method", "POST"), (":scheme", "http"), (":path", REFLECTION), (":authority", "localhost"), ("content-type", BARE), ("te", "trailers"), ("authorization", "Bearer t-alice")];
+    c.headers(stream, &hs, false);
+}
+
+/// Read until `n` answers have come, the call still open.
+fn answers(c: &mut Client, stream: u32, n: usize) -> Vec<ReflectionResponse> {
+    let got = c.until(stream, |r| whole(&r.data) >= n, WAIT);
+    assert!(whole(&got.data) >= n, "{n} answers expected: {got:?}");
+    messages(&got.data).iter().map(|m| ReflectionResponse::decode(m.as_slice()).expect("a ServerReflectionResponse")).collect()
+}
+
+/// The messages a body holds whole.
+fn whole(data: &[u8]) -> usize {
+    let mut at = 0;
+    let mut n = 0;
+    while at + 5 <= data.len() {
+        let size = u32::from_be_bytes(data[at + 1..at + 5].try_into().unwrap()) as usize;
+        if at + 5 + size > data.len() {
+            break;
+        }
+        at += 5 + size;
+        n += 1;
+    }
+    n
+}
+
+/// The client ends its side; the status comes, once, after the answers.
+fn half_close(c: &mut Client, stream: u32) -> super::api_grpc::h2_client::Response {
+    c.data(stream, &[], true);
+    let got = c.response(stream, WAIT);
+    assert!(got.ended, "{got:?}");
+    assert_eq!(got.trailers.iter().find(|(k, _)| k == "grpc-status").map(|(_, v)| v.as_str()), Some("0"), "{got:?}");
+    got
+}
+
+/// The service is bidirectional: the server answers each request as it
+/// arrives and keeps the call open until the client ends its side. A client
+/// that waits for an answer before it asks again (grpcurl does) gets every
+/// one, requests that arrive together get an answer each, in order, and a
+/// request split across DATA frames is answered once, when it is whole.
 #[test]
-fn reflection_answers_a_request_before_the_client_ends_its_side() {
+fn reflection_answers_each_request_as_it_arrives_and_stays_open_until_the_client_ends() {
     let server = start(16, &[]);
     let mut c = Client::connect(server.port);
     let list = ask(request::Kind::ListServices(String::new()));
-    let got = reflect(&mut c, 1, Some("t-alice"), std::slice::from_ref(&list), false);
-    assert!(matches!(got[0].kind, Some(response::Kind::ListServicesResponse(_))), "{got:?}");
-    // two requests in one stream
     let symbol = ask(request::Kind::FileContainingSymbol("Public".to_string()));
-    let got = reflect(&mut c, 3, Some("t-alice"), &[list.clone(), symbol], true);
+
+    // one RPC, two requests, an answer awaited between them; then the end
+    reflect_open(&mut c, 1);
+    c.data(1, &framed(&list.encode_to_vec()), false);
+    let got = answers(&mut c, 1, 1);
+    assert!(matches!(got[0].kind, Some(response::Kind::ListServicesResponse(_))), "{got:?}");
+    let open = c.until(1, |_| false, Duration::from_millis(200));
+    assert!(!open.ended && open.trailers.is_empty(), "the call stays open after an answer: {open:?}");
+    c.data(1, &framed(&symbol.encode_to_vec()), false);
+    let got = answers(&mut c, 1, 2);
     assert_eq!(got.len(), 2, "an answer for each");
+    assert_eq!(got[0].original_request.as_ref(), Some(&list), "the request is echoed");
+    assert!(matches!(got[1].kind, Some(response::Kind::FileDescriptorResponse(_))), "{got:?}");
+    assert_eq!(got[1].original_request.as_ref(), Some(&symbol));
+    let done = half_close(&mut c, 1);
+    assert_eq!(whole(&done.data), 2, "the end adds no message: {done:?}");
+
+    // two requests in one DATA frame
+    let reply = reflect(&mut c, 3, Some("t-alice"), &[list.clone(), symbol.clone()], true);
+    assert_eq!(reply.len(), 2, "an answer for each");
+    assert!(matches!(reply[0].kind, Some(response::Kind::ListServicesResponse(_))));
+    assert!(matches!(reply[1].kind, Some(response::Kind::FileDescriptorResponse(_))));
+
+    // one request split across two DATA frames: answered once, when whole
+    let framed_list = framed(&list.encode_to_vec());
+    reflect_open(&mut c, 5);
+    c.data(5, &framed_list[..3], false);
+    c.idle(Duration::from_millis(150));
+    assert_eq!(c.until(5, |_| false, Duration::from_millis(50)).data.len(), 0, "no answer to half a message");
+    c.data(5, &framed_list[3..], false);
+    let got = answers(&mut c, 5, 1);
     assert!(matches!(got[0].kind, Some(response::Kind::ListServicesResponse(_))));
-    assert!(matches!(got[1].kind, Some(response::Kind::FileDescriptorResponse(_))));
+    assert_eq!(whole(&half_close(&mut c, 5).data), 1, "answered once");
+
+    // a whole request and the start of the next in the first DATA frame: the
+    // start is kept, not discarded
+    let framed_symbol = framed(&symbol.encode_to_vec());
+    reflect_open(&mut c, 7);
+    let mut first = framed_list.clone();
+    first.extend_from_slice(&framed_symbol[..6]);
+    c.data(7, &first, false);
+    let got = answers(&mut c, 7, 1);
+    assert!(matches!(got[0].kind, Some(response::Kind::ListServicesResponse(_))));
+    c.idle(Duration::from_millis(150));
+    assert_eq!(whole(&c.until(7, |_| false, Duration::from_millis(50)).data), 1, "the unfinished request is not answered");
+    c.data(7, &framed_symbol[6..], false);
+    let got = answers(&mut c, 7, 2);
+    assert!(matches!(got[1].kind, Some(response::Kind::FileDescriptorResponse(_))), "{got:?}");
+    half_close(&mut c, 7);
+
     // the connection serves on
     let rec = recording("result");
-    replay(&mut c, 5, &rec, PROTO);
-    assert_replayed(&mut c, 5, "result", &rec, PROTO);
+    replay(&mut c, 9, &rec, PROTO);
+    assert_replayed(&mut c, 9, "result", &rec, PROTO);
     assert!(server.finish().status.success());
+}
+
+/// A reflection call still open when the transport stops is ended with its
+/// status, and the connection says GOAWAY.
+#[test]
+fn a_reflection_call_open_at_stop_ends_with_its_status_and_a_goaway() {
+    let server = start(16, &[]);
+    let mut c = Client::connect(server.port);
+    let list = ask(request::Kind::ListServices(String::new()));
+    reflect_open(&mut c, 1);
+    c.data(1, &framed(&list.encode_to_vec()), false);
+    answers(&mut c, 1, 1);
+    let done = server.finish();
+    let got = c.response(1, WAIT);
+    assert_eq!(got.trailers.iter().find(|(k, _)| k == "grpc-status").map(|(_, v)| v.as_str()), Some("0"), "{got:?}");
+    assert!(c.goaway_within(WAIT).is_some(), "GOAWAY");
+    assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
 }
 
 /// The protobuf and reflection paths under AddressSanitizer with the arena's

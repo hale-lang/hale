@@ -911,8 +911,11 @@ locus is refused, written at the site or held as a param.
   for extensions, which the server has none of. The service is
   bidirectional, and a client such as `grpcurl` waits for the answer to a
   request before it ends its side of the stream, so each whole message is
-  answered as it arrives (several in one stream are answered in order) and the
-  stream ends with `grpc-status: 0`. The descriptor is the surface's, not
+  answered as it arrives, with a DATA frame (several in one stream are
+  answered in order; a message split across DATA frames is answered once,
+  when it is whole), and the call stays open until the client ends its side,
+  when the server ends it with `grpc-status: 0`; a transport that stops ends
+  an open reflection call the same way, before its GOAWAY. The descriptor is the surface's, not
   the caller's: the roles are checked when a call is made, as the description
   filters by them and the `.proto` does not. `grpc.reflection.v1alpha` is not
   served.

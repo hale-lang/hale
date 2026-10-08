@@ -20,6 +20,9 @@ type __StdApiGrpcStream {
     stream: Int = 0;
     state: Int = 0;
     over: Bool = false;
+    // a reflection call: its answer is started (the headers are out) and the
+    // call stays open until the client ends its side
+    sent: Bool = false;
     headers: String = "";
     body: Bytes;
 }
@@ -437,50 +440,84 @@ locus __StdApiGrpcRpc {
             self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: true, headers: s.headers, body: huge }) or discard;
             return;
         }
-        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, headers: s.headers, body: std::bytes::concat(s.body, e.bytes) }) or discard;
-        if std::str::starts_with(__api_grpc_header(s.headers, ":path"), "/grpc.reflection.v1.ServerReflection/") { self.reflect_ready(k); }
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, sent: s.sent, headers: s.headers, body: std::bytes::concat(s.body, e.bytes) }) or discard;
+        if self.is_reflection(s) { self.reflect_ready(k); }
     }
     // ---- server reflection (grpc.reflection.v1.ServerReflection) ----
     //
     // The service is bidirectional, and a client (grpcurl) waits for the
     // answer to a request before it ends its side of the stream, so a call is
-    // answered as its messages are whole, not at the end of the stream: the
-    // answer to each message, then the status. The principal is the bearer
-    // the exposure's source names, as for every call. What the service knows
-    // is `files`, the descriptors the compiler wrote from the rows: the
+    // answered as its messages are whole, not at the end of the stream: each
+    // whole message gets its answer as a DATA frame, the call stays open and
+    // the bytes of a message not yet whole are kept for the next chunk, and
+    // the status goes out once, when the client ends its side (`ended`) or the
+    // transport stops (`stop_listening`). The principal is the bearer the
+    // exposure's source names, as for every call. What the service knows is
+    // `files`, the descriptors the compiler wrote from the rows: the
     // surface's `.proto`, the reserved description method's and this
     // service's own.
-    fn reflect_ready(k: Int) {
-        let s = self.streams.get(k) or __api_grpc_free();
-        if s.state != 1 || s.over || len(s.body) < 5 { return; }
-        let n = std::bytes::read_u32_be(s.body, 1) or 0;
-        if len(s.body) < 5 + n { return; }
-        self.streams.set(k, __api_grpc_free()) or discard;
+    fn is_reflection(s: __StdApiGrpcStream) -> Bool {
+        return std::str::starts_with(__api_grpc_header(s.headers, ":path"), "/grpc.reflection.v1.ServerReflection/");
+    }
+    // The headers that refuse the call (the status in them), empty when the
+    // call is allowed.
+    fn reflect_refusal(s: __StdApiGrpcStream) -> String {
         let auth = __api_grpc_header(s.headers, "authorization");
         let mut token = "";
         if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
         let who = self.principals.principal(token);
         let head = ":status: 200\ncontent-type: application/grpc\n";
-        let mut headers = head;
-        let mut body = __h2_none();
-        let mut trailers = "";
         if len(token) == 0 || len(who.name) == 0 {
-            let why = "the bearer token is refused";
-            headers = head + "grpc-status: 16\ngrpc-message: " + __api_grpc_message(why) + "\n";
-        } else if __api_grpc_header(s.headers, "grpc-encoding") != "" && __api_grpc_header(s.headers, "grpc-encoding") != "identity" {
-            headers = head + "grpc-status: 12\ngrpc-message: " + __api_grpc_message("compression is not supported: send grpc-encoding identity") + "\n";
-        } else {
-            // every whole message, in order
-            let mut at = 0;
-            while at + 5 <= len(s.body) {
-                let size = std::bytes::read_u32_be(s.body, at + 1) or 0;
-                if at + 5 + size > len(s.body) { break; }
-                body = std::bytes::concat(body, __api_grpc_frame(self.reflect_one(std::bytes::slice(s.body, at + 5, at + 5 + size))));
-                at = at + 5 + size;
-            }
-            trailers = "grpc-status: 0\n";
+            return head + "grpc-status: 16\ngrpc-message: " + __api_grpc_message("the bearer token is refused") + "\n";
         }
-        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(headers), body: body, trailers: std::bytes::from_string(trailers) };
+        let enc = __api_grpc_header(s.headers, "grpc-encoding");
+        if enc != "" && enc != "identity" {
+            return head + "grpc-status: 12\ngrpc-message: " + __api_grpc_message("compression is not supported: send grpc-encoding identity") + "\n";
+        }
+        return "";
+    }
+    fn reflect_ready(k: Int) {
+        let s = self.streams.get(k) or __api_grpc_free();
+        if s.state != 1 || s.over || len(s.body) < 5 { return; }
+        let no = self.reflect_refusal(s);
+        if len(no) > 0 {
+            self.streams.set(k, __api_grpc_free()) or discard;
+            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(no), body: __h2_none(), trailers: __h2_none() };
+            return;
+        }
+        // every whole message, in order; the rest waits for its bytes
+        let mut body = __h2_none();
+        let mut at = 0;
+        while at + 5 <= len(s.body) {
+            let size = std::bytes::read_u32_be(s.body, at + 1) or 0;
+            if at + 5 + size > len(s.body) { break; }
+            body = std::bytes::concat(body, __api_grpc_frame(self.reflect_one(std::bytes::slice(s.body, at + 5, at + 5 + size))));
+            at = at + 5 + size;
+        }
+        if at == 0 { return; }
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, sent: true, headers: s.headers, body: std::bytes::slice(s.body, at, len(s.body)) }) or discard;
+        let mut head = "";
+        if !s.sent { head = ":status: 200\ncontent-type: application/grpc\n"; }
+        // "+" leaves the response open for the next answer
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: body, trailers: std::bytes::from_string("+") };
+    }
+    // A reflection call ends: the status, after the answers already sent. A
+    // message left unfinished is the client's error.
+    fn reflect_finish(s: __StdApiGrpcStream) {
+        let mut head = "";
+        if !s.sent { head = ":status: 200\ncontent-type: application/grpc\n"; }
+        let mut status = "grpc-status: 0\n";
+        if s.over {
+            status = "grpc-status: 8\ngrpc-message: " + __api_grpc_message("the request message is over the limit") + "\n";
+        } else if len(s.body) > 0 {
+            status = "grpc-status: 13\ngrpc-message: " + __api_grpc_message("a request message ends before its length") + "\n";
+        }
+        let no = self.reflect_refusal(s);
+        if len(no) > 0 && !s.sent {
+            head = no;
+            status = "";
+        }
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: __h2_none(), trailers: std::bytes::from_string(status) };
     }
     // The answer to one `ServerReflectionRequest`: the request is echoed
     // (`original_request`), and the answer is the services, a file, or an
@@ -540,6 +577,11 @@ locus __StdApiGrpcRpc {
         if k < 0 { return; }
         let s = self.streams.get(k) or __api_grpc_free();
         if s.state != 1 { return; }
+        if self.is_reflection(s) {
+            self.streams.set(k, __api_grpc_free()) or discard;
+            self.reflect_finish(s);
+            return;
+        }
         self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 2, over: s.over, headers: s.headers, body: __h2_none() }) or discard;
         let raw = std::bytes::concat(std::bytes::from_string(to_string(len(s.headers)) + "\n" + s.headers), s.body);
         __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: e.conn * 4294967296 + e.stream, raw: raw };
@@ -711,8 +753,20 @@ locus __StdApiGrpcRpc {
     }
     // GOAWAY on every connection and the listener closed, after the replies
     // already sent (one subscriber sees the bus in the order it was published).
+    @unbounded
     fn stop_listening() {
         self.stops = self.stops + 1;
+        // a reflection call still open ends with its status, before the GOAWAY
+        let n = self.streams.len();
+        let mut k = 0;
+        while k < n {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if s.state == 1 && self.is_reflection(s) {
+                self.streams.set(k, __api_grpc_free()) or discard;
+                self.reflect_finish(s);
+            }
+            k = k + 1;
+        }
         __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 5, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
     }
 }
