@@ -275,6 +275,7 @@ const ARRANGEMENT: &str = "crates/hale-types/src/arrangement.rs";
 const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const ROLES: &str = "crates/hale-types/src/roles.rs";
 const SURFACES: &str = "crates/hale-types/src/surfaces.rs";
+const RPC_EXPAND: &str = "crates/hale-types/src/rpc_expand.rs";
 const SURFACE_DOC: &str = "crates/hale-cli/src/surface_doc.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -1254,7 +1255,7 @@ pub const FAMILIES: &[Family] = &[
             "the contract shapes (`topic_identity::Shapes`, the shape hashes the digest folds)",
             "placement (the pools the handlers' loci and the receivers run on)",
             "topics (a hub stream's wire subject)",
-            "serve sites: `api::serve(…)` and its named arguments, named, not checked (R2 checks them)",
+            "serve sites: `api::serve(…)` and its named arguments (R1 names them for the description; R2a checks them, the five laws, and builds each one's exposure)",
             "topic bindings to a hub with `requires:`, named, not served (R5)",
         ],
         producer: Some(site(SURFACES, "surface_rows")),
@@ -1262,11 +1263,15 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[
             consumer_at("check (the admission law over the rows: laws 1 to 5 and 7 of spec/api.md, beside the may-violate law, `CheckInputs::surfaces`)", CHECK, "surface_laws"),
             consumer_at("check (the snapshot's check stage: the same laws over the snapshot's rows)", SNAPSHOT, "surface_laws"),
+            consumer_at("check (the laws of a serve site: an exposure named once, every receiver type bound, a receiver that outlives its exposure, a bound type the rows name, a stated queue)", CHECK, "serve_laws"),
+            consumer_at("check (the snapshot's check stage: the serve-site laws over the snapshot's rows)", SNAPSHOT, "serve_laws"),
             consumer_at("the model (the `surfaces` and `surface_rows` tables, projected; the digest law)", MODEL_BUILDER, "inputs.surfaces"),
-            consumer_at("build (a serve site and a hub binding are refused until served)", TLIB, "unserved_sites"),
+            consumer_at("build (a hub binding, and a serve site over a transport this compiler does not ship, are refused until served)", TLIB, "unserved_sites"),
             consumer_at("check --api (the inventory; one exposure's description for a caller holding `--holds` under its role source; law 6's notes on stderr)", V_CHECK, "api_document"),
             consumer_at("the OpenAPI, JSON Schema and MCP forms of one surface (`check --api --surface`), projections of its rows", SURFACE_DOC, "openapi"),
-            consumer("serve (the runtime's dispatch: Context, the digest check, requires before enqueue, decode by shape, R2 and R3)"),
+            consumer_at("serve (R2a: a serve site's exposure, its rows adapter, its receivers' plumbing and the codecs of what the rows carry, written before the check by the desugar sequence)", RPC_EXPAND, "expand"),
+            consumer("serve (R2a: lowering reads the call as its exposure's handle, a read of the serving locus's param the expansion wrote; it reads no row)"),
+            consumer("serve (the runtime's dispatch over a socket: Context, the digest check, requires before enqueue, decode by shape, R2b and R3)"),
             consumer("hubs (stream admission, expiry and revocation, R5)"),
             consumer("describe / call / watch / admin / mcp (over descriptions, R4)"),
             consumer("ui (reserved)"),
@@ -1281,7 +1286,8 @@ pub const FAMILIES: &[Family] = &[
             "grants belong to the role-source instance a serve site names, never to a role name",
             "the outcome mappings are fixed per transport (v1): no row carries a status and the digest hashes none",
             "the rows have one producer (`surfaces::surface_rows`), demanded once per snapshot (`Snapshot::demand_surface_rows`, the `surface` count), not gated on the typing; a bundle no snapshot holds builds its own in the check's entry. Its columns: each row's surface, member (the locus in the row author's spelling), the locus and fn it resolves to, the roles as written with their spans, and what the handler resolves to (a member fn with its key, its value parameters past a trailing `ctx: std::api::Context`, the request, response and error types, whether the error is `ClosureViolation`, the pools; or no locus, no fn, a lifecycle method, mode or failure handler, a free fn); an `@rpc` row feeds the seed's default surface, named after the seed (an imported seed's by its import alias)",
-            "the admission law is a law over the rows (`surfaces::surface_laws`), in spec/api.md's wordings: a row names a handler (1), takes one request (2), is its surface's member once (3), requires declared roles (4), names types the JSON codec carries (5, the one codec a serve site has in R1), and a handler that may violate is `fallible(ClosureViolation)` whatever it returns (7, F.42's may-violate judgment over the summary); law 6 is a statement of the row (`server_error_notes`), not a refusal; the serve-site laws are R2's",
+            "the admission law is a law over the rows (`surfaces::surface_laws`), in spec/api.md's wordings: a row names a handler (1), takes one request (2), is its surface's member once (3), requires declared roles (4), names types the JSON codec carries (5: an identity, a range, a quantity and the four scalars; a point is refused), and a handler that may violate is `fallible(ClosureViolation)` whatever it returns (7, F.42's may-violate judgment over the summary); law 6 is a statement of the row (`server_error_notes`), not a refusal",
+            "the serve-site laws are a law over the same rows and the serving locus's params (`surfaces::serve_laws`), in spec/api.md's wordings, and the exposure a site builds is the desugar sequence's (`rpc_expand::expand`, before the check): it reads the surface's rows and digest, the site's named arguments, the transport's `principals:` and `roles:`, and the serving locus's params, and writes the exposure param, the rows adapter, the receivers' plumbing (a number per exposure, written into the literals that build the instance; an incarnation stamp; the keyed call and hello subscriptions; the thunk that runs a call through the fallible ABI) and the five `__api.rpc.*` topics; the check reads the call as written and lowering reads the param",
             "the model holds the surfaces and their rows under one law: each surface's digest is the fold of its own rows; neither table enters `shape_hash`, so a program with no surface hashes as it did",
             "a type's contract shape is `topic_identity::Shapes`' contract form, which agrees with the payload contract's observation form on every flat struct (spec/model.md § The shape of a type)",
         ],
@@ -1298,6 +1304,7 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "surface_rows(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "surface_laws(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
+            Seam { symbol: "serve_laws(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
         ],
     },
     Family {

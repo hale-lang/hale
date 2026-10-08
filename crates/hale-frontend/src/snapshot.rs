@@ -1777,6 +1777,7 @@ impl Snapshot {
                 let surfaces = self.demand_surface_rows().map_err(Clone::clone)?;
                 let roles = self.demand_role_rows().map_err(Clone::clone)?;
                 diags.extend(hale_types::surfaces::surface_laws(&self.bundle(), surfaces, roles, summary));
+                diags.extend(hale_types::surfaces::serve_laws(&self.bundle(), surfaces));
                 // So does the closures' reach law: whether a recovery
                 // reaches a locus is the typed receivers' answer.
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;

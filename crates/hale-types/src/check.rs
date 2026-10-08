@@ -685,6 +685,7 @@ pub fn check_bundle_reporting(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
+    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
@@ -5116,6 +5117,12 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
             continue;
         }
         declared_wires.insert(info.wire_subject.as_str());
+        // GH #1417 (R2a): the five topics a serve site's expansion declares
+        // (`rpc_expand`) are the runtime's; the stdlib holds the other end
+        // of each, outside the bundle this graph is built from.
+        if info.wire_subject.starts_with("__api.rpc.") {
+            continue;
+        }
         let row = bus.wires.get(&info.wire_subject);
         // GH #1417: a topic bound to a hub has its other end outside the
         // program, as a transport binding's does.

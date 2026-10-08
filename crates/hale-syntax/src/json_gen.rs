@@ -68,6 +68,86 @@ struct JsonField {
     key: String,            // JSON key (tag value or field name)
     kind: FieldKind,
     default_src: Option<String>, // scalar literal default; None for nested/required
+    /// GH #1417 (R2a): the field's type is a scalar of the unit dialect
+    /// (an identity, a range or a quantity): on the wire its `Int`, read
+    /// as `Int` and converted at the struct's construction, converted back
+    /// where it is emitted (spec/units.md § Layout and the wire).
+    conv: Option<Conv>,
+}
+
+/// How a scalar of the unit dialect crosses the JSON wire as its `Int`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Conv {
+    /// `type OrderId = distinct Int;` — `OrderId(n)` and `Int(id)`.
+    Identity(String),
+    /// `type Money = quantity Int in cent;` — `n * 1cent` and `q / 1cent`
+    /// (the multiple and the unit).
+    Quantity(u64, String),
+    /// A range (`Int { range: 0..10; }`, or an identity with one):
+    /// narrowing from the wire's `Int` may leave the range, which is a
+    /// wrong type — `Lvl(n) or fail …` and `Int(l)`.
+    Range(String),
+}
+
+impl Conv {
+    /// The expression that reads the wire's `int` as the field's type.
+    pub fn from_int(&self, int: &str, key: &str) -> String {
+        match self {
+            Conv::Identity(n) => format!("{}({})", n, int),
+            Conv::Quantity(m, u) => format!("{} * {}{}", int, m, u),
+            Conv::Range(n) => format!(
+                "{}({}) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
+                n, int, key
+            ),
+        }
+    }
+    /// The expression that writes the field's value `v` as the wire's `Int`.
+    pub fn to_int(&self, v: &str) -> String {
+        match self {
+            Conv::Identity(_) | Conv::Range(_) => format!("Int({})", v),
+            Conv::Quantity(m, u) => format!("({} / {}{})", v, m, u),
+        }
+    }
+}
+
+/// The scalars of the unit dialect a bundle declares that cross the JSON
+/// wire as their `Int`, by name (a point does not: its origin is not a
+/// count).
+pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String, Conv> {
+    use crate::ast::{ScalarClause, ScalarKind};
+    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, Conv>) {
+        for item in items {
+            match item {
+                TopDecl::Type(td) => {
+                    let TypeDeclBody::Scalar(sd) = &td.body else { continue };
+                    let name = td.name.name.clone();
+                    let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
+                    let conv = match sd.kind {
+                        Some(ScalarKind::Point) => None,
+                        Some(ScalarKind::Quantity) => sd
+                            .denom
+                            .as_ref()
+                            .filter(|_| matches!(sd.base, TypeExpr::Primitive(PrimType::Int, _)))
+                            .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone())),
+                        Some(ScalarKind::Distinct) => {
+                            Some(if ranged { Conv::Range(name.clone()) } else { Conv::Identity(name.clone()) })
+                        }
+                        None => ranged.then(|| Conv::Range(name.clone())),
+                    };
+                    if let Some(c) = conv {
+                        out.insert(name, c);
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for p in programs {
+        walk(&p.items, &mut out);
+    }
+    out
 }
 
 struct JsonType {
@@ -177,6 +257,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                             key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
                             kind,
                             default_src,
+                            conv: None,
                         });
                     }
                     if ok && !jfields.is_empty() {
@@ -405,9 +486,10 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     let inits: Vec<String> = t
         .fields
         .iter()
-        .map(|f| match f.kind {
-            FieldKind::Scalar(_) => format!("{}: __f_{}", f.name, f.name),
-            FieldKind::Nested(_) => format!("{}: __p_{}", f.name, f.name),
+        .map(|f| match (&f.kind, &f.conv) {
+            (FieldKind::Scalar(_), Some(c)) => format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key)),
+            (FieldKind::Scalar(_), None) => format!("{}: __f_{}", f.name, f.name),
+            (FieldKind::Nested(_), _) => format!("{}: __p_{}", f.name, f.name),
         })
         .collect();
     b.push_str(&format!("    return {} {{ {} }};\n}}\n", t.name, inits.join(", ")));
@@ -443,7 +525,10 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 "\"\\\"\" + std::json::escape_string(__v.{}) + \"\\\"\"",
                 f.name
             ),
-            FieldKind::Scalar(_) => format!("to_string(__v.{})", f.name),
+            FieldKind::Scalar(_) => match &f.conv {
+                Some(c) => format!("to_string({})", c.to_int(&format!("__v.{}", f.name))),
+                None => format!("to_string(__v.{})", f.name),
+            },
             FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
         };
         b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
@@ -708,12 +793,30 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
 /// struct outside the set is left as a required nested field the
 /// generator cannot read, so callers pass the transitive closure.
 pub fn generate_api_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
+    generate_codecs(programs, main_idx, names, false);
+}
+
+/// GH #1417 (R2a): the codecs of a surface's rows. As
+/// [`generate_api_codecs`], and a field whose type is a scalar of the unit
+/// dialect (an identity, a range, a quantity) is read and written as its
+/// `Int` (spec/api.md § Codecs).
+pub fn generate_rpc_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
+    generate_codecs(programs, main_idx, names, true);
+}
+
+fn generate_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String], units: bool) {
     let wanted: HashSet<String> = names.iter().cloned().collect();
     let mut types: Vec<JsonType> = Vec::new();
     let mut have_jsonerror = false;
     let mut existing_fns: HashSet<String> = HashSet::new();
+    let scalars = if units {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        scalar_convs(&ro)
+    } else {
+        std::collections::BTreeMap::new()
+    };
     for p in programs.iter() {
-        collect_api_types(&p.items, &wanted, &mut types);
+        collect_api_types(&p.items, &wanted, &scalars, &mut types);
         walk_fns(&p.items, &mut |name| {
             existing_fns.insert(name.to_string());
         });
@@ -765,7 +868,12 @@ fn walk_fns(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
 
 /// Like `collect_json_types`, but for a named set and with every field
 /// admitted (the api surface already classified the closure).
-fn collect_api_types(items: &[TopDecl], wanted: &HashSet<String>, out: &mut Vec<JsonType>) {
+fn collect_api_types(
+    items: &[TopDecl],
+    wanted: &HashSet<String>,
+    scalars: &std::collections::BTreeMap<String, Conv>,
+    out: &mut Vec<JsonType>,
+) {
     for item in items {
         match item {
             TopDecl::Type(td) => {
@@ -778,27 +886,33 @@ fn collect_api_types(items: &[TopDecl], wanted: &HashSet<String>, out: &mut Vec<
                 let TypeDeclBody::Struct(fields) = &td.body else { continue };
                 let mut jfields = Vec::new();
                 for f in fields {
+                    let mut conv = None;
                     let kind = if let Some(s) = scalar_of(&f.ty) {
                         FieldKind::Scalar(s)
+                    } else if let Some(c) = named_single(&f.ty).and_then(|tn| scalars.get(tn)) {
+                        // a scalar of the unit dialect: its `Int` on the wire
+                        conv = Some(c.clone());
+                        FieldKind::Scalar(ScalarTy::Int)
                     } else if let Some(tn) = named_single(&f.ty) {
                         FieldKind::Nested(tn.to_string())
                     } else {
                         continue;
                     };
                     let default_src = match kind {
-                        FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
-                        FieldKind::Nested(_) => None,
+                        FieldKind::Scalar(_) if conv.is_none() => f.default.as_ref().and_then(literal_src),
+                        _ => None,
                     };
                     jfields.push(JsonField {
                         name: f.name.name.clone(),
                         key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
                         kind,
                         default_src,
+                        conv,
                     });
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields });
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, out),
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, out),
             _ => {}
         }
     }

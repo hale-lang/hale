@@ -1198,6 +1198,39 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
 row	App@main1	App	main	default
 
+== crates/hale-codegen/tests/api_serve_build.rs#1a23f61d
+root	Desk	the entry
+domain	pool:op	async_io
+hole	Desk@literal1.fixture.principals	reuse `self.bearer`
+hole	Desk@literal1.fixture.principals	unresolved declaration `std::api::BearerSource`
+hole	Desk@literal1.fixture.roles	reuse `self.public_roles`
+hole	Desk@literal1.fixture.roles	unresolved declaration `std::api::RoleSource`
+hole	Desk@literal1.__rpc_x_public.transport	reuse `self.fixture`
+hole	Desk@literal1.__rpc_x_public.transport	unresolved declaration `std::api::Rpc`
+hole	Desk@literal1.__rpc_x_public.bearer	reuse `self.bearer`
+hole	Desk@literal1.__rpc_x_public.bearer	unresolved declaration `std::api::BearerSource`
+hole	Desk@literal1.__rpc_x_public.roles	reuse `self.public_roles`
+hole	Desk@literal1.__rpc_x_public.roles	unresolved declaration `std::api::RoleSource`
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.orders	Orders	pool:op	entry	off owner
+row	Desk@literal1.public_roles	Grants	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+-- Desk@literal1.__rpc_x_public	__StdApiExposure
+row	~	__StdApiExposure	main	default
+row	~.bearer	<hole>	main	inherited
+row	~.entries	__StdApiRpcEntries	main	inherited
+row	~.expiring	__StdApiNoExpiry	main	inherited
+row	~.revised	__StdApiNoRevision	main	inherited
+row	~.roles	<hole>	main	inherited
+row	~.rows	__RpcSurface_1	main	inherited
+row	~.transport	<hole>	main	inherited
+-- Desk@literal1.fixture	__StdApiTestRpc
+row	~	__StdApiTestRpc	main	default
+row	~.principals	<hole>	main	inherited
+row	~.records	__StdApiTestRecords	main	inherited
+row	~.roles	<hole>	main	inherited
+
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
 

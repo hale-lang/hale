@@ -352,6 +352,22 @@ that held one):
    \`bound:\`, the requests it holds accepted and not yet answered, and
    \`on_full: refuse\`, the one policy for a request".
 
+A serve site is also refused when it cannot be served at all: a surface
+no \`api\` block (or \`@rpc\` handler) declares, "serve of \`Pubic\`: no
+surface \`Pubic\` is declared; did you mean \`Public\`?"; no \`as:\`, "serve
+of \`Public\`: a serve site names its exposure with \`as:\`"; no transport
+instance; a receiver that is a param but is not built by a literal, "serve
+of \`Public\`: \`orders\` is not built by a literal in a param of \`Desk\`: the
+serve numbers the instance in the literal that builds it" (§ Receiver
+failure and generations); and a serve site in a free fn, "\`api::serve\` in
+\`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
+param of the serving locus; serve from the locus that holds the
+receivers". A build refuses a serve site over a transport the compiler
+does not ship (R2b and R3 add \`unix::Rpc\` and \`http::Rpc\`): "\`api::serve\`
+over \`http::Rpc\`: this compiler serves a surface over
+\`std::api::test::Rpc\`, the in-process transport, or a transport the
+program declares; the socket transports follow".
+
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
 interface). The runtime then holds it to these checks in this order,
@@ -994,10 +1010,14 @@ correlation field, the largest frame) are R5's.
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
 binding's was: `Int`, `Float`, `Bool`, `String` and nested structs of
-the same, with a `json:"key"` tag renaming a key; an identity, a range,
-a quantity and a point are their integer (`spec/units.md` § Layout and
-the wire), and the description names the unit a quantity counts.
-Decoding is strict: a value of the wrong JSON kind is `wrong_type`, a
+the same, with a `json:"key"` tag renaming a key; an identity, a range
+and a quantity are their integer (`spec/units.md` § Layout and the
+wire: read as an `Int` and converted, a quantity by its denomination,
+`n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
+and the description names the unit a quantity counts. A point is not
+carried (its origin is not a count): a row whose shape holds one is
+refused by law 5. Decoding is strict: a value of the wrong JSON kind is
+`wrong_type`, a
 missing field without a literal default is `missing_field`, and a
 handler only ever sees a decoded value. A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),
