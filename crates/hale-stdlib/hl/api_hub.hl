@@ -1,0 +1,1451 @@
+// ---- the hub (spec/api.md § Streams; GH #1417, R5) ----
+//
+// A hub is a core and a listener. The core (`std::api::ws::Hub`, or
+// `std::api::udp::Hub`: one locus, told its transport by `kind`) is the
+// param the program writes: it holds the sources, admits subscriptions
+// against the rows of the topics bound to it, and is the `Rpc` a surface
+// is served over. The listener and a locus per connection run on an
+// `async_io` pool of their own (as `unix::Rpc`'s do; over UDP the listener
+// is one socket and a locus per subscriber), and the two talk
+// over the bus: peers publish what a connection says (`__ApiHubUpT`),
+// the core answers (`__ApiHubOutT`), and each topic bound to the hub is an
+// adapter binding (`__StdApiHubStream`) that publishes the encoded event
+// (`__ApiHubEventT`) to the connections' queues.
+//
+// Who holds what. The core authenticates a connection once, when it
+// connects (the bearer source and the credential's expiry), and admits a
+// subscription against the stream row's `requires` (the role source).
+// Each connection holds its subscriptions' queues, because only the
+// connection knows when its socket takes a frame: at most `bound` frames
+// per subscription, shed under the row's `on_full`, every event offered
+// taking the next `seq` whether it is delivered or shed. A role source
+// announces a revision on `__api.roles.revision`; the connection, which
+// subscribes to it, delivers nothing to its subscriptions until the core
+// has answered a recheck it asked for after the announcement, so no event
+// is delivered under an authorization older than the revision. A
+// credential's expiry is the connection's to enforce, at every delivery
+// and at the instant itself.
+
+/// The error of a stream codec the compiler generates.
+type __StdApiHubCodecError {
+    kind: String = "";
+}
+
+/// An event a bound topic offers, for the hub whose number is `key`.
+type __StdApiHubEvent {
+    key: Int;
+    stream: Int;
+    payload: String;
+}
+
+/// What a connection says to the core, for the hub `key`. kind: 1 connect
+/// (`text` the credential), 2 subscribe (`text` the topic), 3 the
+/// connection expired its subscriptions, 4 gone (`text` the correlations
+/// of the rpcs it still had pending), 5 recheck (`a` the connection's
+/// count), 6 describe (`text` the credential), 7 an rpc (`a` its sequence
+/// number, `text` the frame).
+type __StdApiHubUp {
+    key: Int;
+    conn: Int;
+    kind: Int;
+    a: Int;
+    text: String;
+    text2: String;
+}
+
+/// What the core says to a connection (`key` = hub * 2^32 + connection) or
+/// to the listener and every connection (`key` = hub). To a connection,
+/// kind: 1 authenticated (`a` the credential's expiry, 0 for none; `b` 1
+/// when the sources named the caller), 2 admitted (`a` the stream, `b` its
+/// bound, `text` the policy and the topic), 3 send this frame, 4 revoked
+/// (`a` the stream), 5 the recheck numbered `a` is answered, 6 the
+/// description (`a` the status, `text` the document), 9 an rpc's reply
+/// (`text` the frame), 10 close. To all, kind: 1 stop, 7 the core is
+/// there, 8 is the core there.
+type __StdApiHubOut {
+    key: Int;
+    kind: Int;
+    a: Int;
+    b: Int;
+    text: String;
+}
+
+/// The rows of a hub, generated per hub by the compiler: its streams in
+/// binding order.
+interface __StdApiHubRows {
+    fn count() -> Int;
+    fn topic(i: Int) -> String;
+    fn requires(i: Int) -> String;
+    fn bound(i: Int) -> Int;
+    fn on_full(i: Int) -> String;
+    fn find(topic: String) -> Int;
+    fn grants(role: String) -> String;
+    fn head() -> String;
+    fn stream_doc(i: Int) -> String;
+    fn types() -> Int;
+    fn type_doc(j: Int) -> String;
+    fn type_mask(j: Int) -> Int;
+    fn outcomes() -> String;
+    fn notes() -> String;
+    fn required() -> String;
+}
+
+/// Rows with no stream: the default of a hub's.
+locus __StdApiNoHubRows {
+    fn count() -> Int { return 0; }
+    fn topic(i: Int) -> String { return ""; }
+    fn requires(i: Int) -> String { return ""; }
+    fn bound(i: Int) -> Int { return 0; }
+    fn on_full(i: Int) -> String { return ""; }
+    fn find(topic: String) -> Int { return -1; }
+    fn grants(role: String) -> String { return role; }
+    fn head() -> String { return ""; }
+    fn stream_doc(i: Int) -> String { return ""; }
+    fn types() -> Int { return 0; }
+    fn type_doc(j: Int) -> String { return ""; }
+    fn type_mask(j: Int) -> Int { return 0; }
+    fn outcomes() -> String { return ""; }
+    fn notes() -> String { return ""; }
+    fn required() -> String { return ""; }
+}
+
+/// `a,b` as the JSON array `["a","b"]`.
+fn __api_hub_csv_json(csv: String) -> String {
+    let mut out = "[";
+    let mut rest = csv;
+    let mut first = true;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut item = rest;
+        if comma >= 0 {
+            item = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        if !first { out = out + ","; }
+        out = out + "\"" + std::json::escape_string(item) + "\"";
+        first = false;
+    }
+    return out + "]";
+}
+
+fn __api_hub_quote(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+/// A refusal frame (spec/api.md § Streams, the `ws` frames).
+fn __api_hub_refusal(topic: String, kind: String, reason: String, requires: String) -> String {
+    let mut t = "null";
+    if len(topic) > 0 { t = __api_hub_quote(topic); }
+    let mut extra = "";
+    if len(requires) > 0 { extra = ",\"requires\":" + __api_hub_csv_json(requires); }
+    return "{\"type\":\"refusal\",\"topic\":" + t + ",\"refusal\":{\"kind\":" + __api_hub_quote(kind) + ",\"reason\":" + __api_hub_quote(reason) + extra + "}}";
+}
+
+/// A topic bound to a hub (`std::api::ws::Stream`): the adapter the compiler
+/// binds the topic to. `send` is the publish contract's delivery: it hands
+/// the event, encoded by the topic's codec, to every connection's queue.
+locus __StdApiHubStream {
+    params {
+        hub: Int = 0;
+        stream: Int = 0;
+        offered: Int = 0;
+    }
+    bus { publish __ApiHubEventT; }
+    fn send(subject: String, bytes: Bytes) {
+        self.offered = self.offered + 1;
+        __ApiHubEventT <- __StdApiHubEvent { key: self.hub, stream: self.stream, payload: std::str::from_bytes(bytes) };
+    }
+}
+
+/// One frame a connection has to write. stream: -1 a control frame (never
+/// shed), >= 0 an event of that stream. order: 0 is a free record.
+type __StdApiHubFrame {
+    stream: Int = -1;
+    order: Int = 0;
+    op: Int = 1;
+    then_close: Bool = false;
+    text: String = "";
+}
+
+@form(vec)
+locus __StdApiHubFrames {
+    capacity { heap items of __StdApiHubFrame; }
+}
+
+/// One accepted connection (WebSocket, or the one request of a description).
+locus __StdApiWsPeer {
+    params {
+        conn: Int = 0;
+        tid: Int = 0;
+        route: Int = 0;
+        fd: Int = -1;
+        // 0 a WebSocket connection (`fd`), 1 a UDP subscriber (the endpoint's
+        // socket `ufd`, the subscriber's address and the `id` it chose)
+        mode: Int = 0;
+        ufd: Int = -1;
+        host: String = "";
+        port: Int = 0;
+        cid: String = "null";
+        open: Bool = true;
+        live: Bool = false;
+        connected: Bool = false;
+        named: Bool = false;
+        auth_done: Bool = false;
+        expiry: Int = 0;
+        expired: Bool = false;
+        sent_checks: Int = 0;
+        done_checks: Int = 0;
+        next_seq: Int = 1;
+        flushing: Bool = false;
+        order: Int = 0;
+        doc: String = "";
+        doc_status: Int = 0;
+        frames: __StdApiHubFrames = __StdApiHubFrames { };
+        sub_on: [Int; 16] = [0; 16];
+        sub_seq: [Int; 16] = [0; 16];
+        sub_bound: [Int; 16] = [0; 16];
+        sub_new: [Int; 16] = [0; 16];
+        sub_count: [Int; 16] = [0; 16];
+        sub_topic: [String; 16] = [""; 16];
+        inbuf: Bytes = std::bytes::from_string("");
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+    }
+    bus {
+        subscribe __ApiHubOutT as on_out where key == self.route;
+        subscribe __ApiHubOutT as on_group where key == self.tid;
+        subscribe __ApiHubEventT as on_event where key == self.tid;
+        subscribe "__api.roles.revision" as on_revision of type std::api::Revision;
+        publish __ApiHubUpT;
+    }
+    birth() {
+        if self.mode == 1 {
+            // a datagram subscriber has no connection: it is live from its first datagram
+            self.live = true;
+            return;
+        }
+        self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        // a reader that never reads cannot hold this connection's writer for long
+        std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
+    }
+    @unbounded
+    run() {
+        if self.mode == 1 {
+            self.subscriber();
+            return;
+        }
+        self.serve();
+        // the connection is over: the core forgets it, and the descriptor is released
+        if self.connected {
+            self.say(4, 0, "");
+            self.connected = false;
+        }
+        self.open = false;
+        if self.fd >= 0 {
+            std::io::tcp::__close_fd(self.fd);
+            self.fd = -1;
+        }
+    }
+    // ---- a UDP subscriber ----
+    //
+    // It lives from its first datagram until it unsubscribes or the hub stops.
+    // Nothing reads for it: the endpoint hands it its datagrams over the bus,
+    // so its loop only keeps the clock for the credential's expiry.
+    @unbounded
+    fn subscriber() {
+        while self.open && !self.draining {
+            self.check_expiry();
+            let mut nap = 50000000;
+            if self.expiry != 0 && !self.expired {
+                let rem = self.expiry - std::time::nanos(std::time::current());
+                if rem < nap { nap = rem; }
+            }
+            if nap < 1000000 { nap = 1000000; }
+            std::time::sleep(nap * 1ns);
+        }
+        if self.connected {
+            self.say(4, 0, "");
+            self.connected = false;
+        }
+        self.open = false;
+    }
+    // One datagram of this subscriber: the frames of the `ws` form, each
+    // carrying the `id` the subscriber chose. The credential rides the first
+    // subscribe (there is no connection to authenticate once at connect).
+    fn datagram(text: String) {
+        if !self.open { return; }
+        if !std::json::valid_object(text) {
+            self.control(1, __api_hub_refusal("", "malformed", "a datagram is one JSON object", ""), false);
+            return;
+        }
+        let kind = std::json::find_string_field(text, "type");
+        if kind == "subscribe" || kind == "describe" {
+            if !self.connected {
+                self.connected = true;
+                self.say(1, 0, std::json::find_string_field(text, "token"));
+            }
+            if kind == "describe" {
+                self.say(6, 0, std::json::find_string_field(text, "token"));
+                return;
+            }
+            let topic = std::json::find_string_field(text, "topic");
+            if len(topic) == 0 {
+                self.control(1, __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""), false);
+                return;
+            }
+            self.say(2, 0, topic);
+            return;
+        }
+        if kind == "unsubscribe" {
+            self.open = false;
+            return;
+        }
+        self.control(1, __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""), false);
+    }
+    // `{"type":"event",…}` as `{"type":"event","id":ID,…}`
+    fn with_id(text: String) -> String {
+        let at = std::str::index_of(text[9..len(text)], "\"") + 9;
+        return text[0..(at + 1)] + ",\"id\":" + self.cid + text[(at + 1)..len(text)];
+    }
+    fn say(kind: Int, a: Int, text: String) {
+        __ApiHubUpT <- __StdApiHubUp { key: self.tid, conn: self.conn, kind: kind, a: a, text: text, text2: "" };
+    }
+    // ---- the request ----
+    @unbounded
+    fn serve() {
+        let mut head = "";
+        let mut ended = false;
+        while !ended && self.open {
+            let chunk = self.stream.recv(4096) or "";
+            if len(chunk) == 0 {
+                self.open = false;
+            } else {
+                head = head + chunk;
+                if std::str::index_of(head, "\r\n\r\n") >= 0 { ended = true; }
+                if len(head) > 16384 { self.open = false; }
+            }
+        }
+        if !self.open || !ended { return; }
+        let cut = std::str::index_of(head, "\r\n\r\n");
+        let rest = head[(cut + 4)..len(head)];
+        let req = __parse_http_request(head[0..(cut + 4)]);
+        let upgrade = std::str::lower(std::http::header(req, "Upgrade"));
+        if upgrade == "websocket" {
+            let key = std::http::header(req, "Sec-WebSocket-Key");
+            if len(key) == 0 {
+                self.http(400, "text/plain", "a WebSocket upgrade carries Sec-WebSocket-Key");
+                return;
+            }
+            self.inbuf = std::bytes::from_string(rest);
+            self.upgrade(key, self.credential(req));
+            return;
+        }
+        if req.method == "GET" && (req.path == "/.description" || std::str::starts_with(req.path, "/.description?")) {
+            self.describe(self.credential(req));
+            return;
+        }
+        self.http(404, "text/plain", "not found");
+    }
+    // The credential the request presents: `Authorization: Bearer <token>`,
+    // or `?access_token=<token>` for a client that cannot set a header.
+    fn credential(req: std::http::Request) -> String {
+        let auth = std::str::trim(std::http::header(req, "Authorization"));
+        if len(auth) > 7 && std::str::lower(auth[0..7]) == "bearer " {
+            return std::str::trim(auth[7..len(auth)]);
+        }
+        let at = std::str::index_of(req.path, "access_token=");
+        if at >= 0 {
+            let tail = req.path[(at + 13)..len(req.path)];
+            let amp = std::str::index_of(tail, "&");
+            if amp >= 0 { return tail[0..amp]; }
+            return tail;
+        }
+        return "";
+    }
+    fn http(status: Int, content_type: String, body: String) {
+        let mut phrase = "Status";
+        if status == 200 { phrase = "OK"; }
+        if status == 400 { phrase = "Bad Request"; }
+        if status == 401 { phrase = "Unauthorized"; }
+        if status == 404 { phrase = "Not Found"; }
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + phrase + "\r\nContent-Type: " + content_type + "\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or discard;
+    }
+    // `GET /.description`: the document for the caller, from the core.
+    fn describe(cred: String) {
+        self.connected = true;
+        self.doc_status = 0;
+        self.say(6, 0, cred);
+        let started = std::time::monotonic_ns();
+        while self.doc_status == 0 && std::time::monotonic_ns() - started < 2000000000 {
+            std::time::sleep(1ms);
+        }
+        if self.doc_status == 0 {
+            self.http(503, "text/plain", "the hub did not answer");
+            return;
+        }
+        self.http(self.doc_status, "application/json", self.doc);
+    }
+    // ---- the WebSocket ----
+    @unbounded
+    fn upgrade(key: String, cred: String) {
+        let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+        self.live = true;
+        self.connected = true;
+        self.say(1, 0, cred);
+        // the sources' word on the credential (its expiry, in particular) is
+        // known before the first frame is read
+        let started = std::time::monotonic_ns();
+        while !self.auth_done && std::time::monotonic_ns() - started < 2000000000 {
+            std::time::sleep(1ms);
+        }
+        self.stream.send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + answer + "\r\n\r\n") or { self.hangup(); };
+        self.parse_frames();
+        while self.open && !self.draining {
+            self.check_expiry();
+            // the credential's instant is a wake of its own
+            if self.expiry != 0 && !self.expired {
+                let rem = self.expiry - std::time::nanos(std::time::current());
+                if rem > 1000000 {
+                    std::io::tcp::set_recv_timeout(self.fd, rem * 1ns) or discard;
+                } else {
+                    std::io::tcp::set_recv_timeout(self.fd, 1ms) or discard;
+                }
+            }
+            let chunk = self.stream.recv_bytes(65536) or std::bytes::from_string("");
+            if len(chunk) == 0 {
+                let waiting = self.expiry != 0 && !self.expired && self.expiry - std::time::nanos(std::time::current()) < 50000000;
+                if !waiting { self.open = false; }
+            } else {
+                self.inbuf = std::bytes::concat(self.inbuf, chunk);
+                self.parse_frames();
+            }
+        }
+    }
+    @unbounded
+    fn parse_frames() {
+        let mut more = true;
+        while more && self.open {
+            more = self.parse_one();
+        }
+    }
+    // One client frame, if the buffer holds one.
+    fn parse_one() -> Bool {
+        let n = len(self.inbuf);
+        if n < 2 { return false; }
+        let b0 = std::bytes::at(self.inbuf, 0) or 0;
+        let b1 = std::bytes::at(self.inbuf, 1) or 0;
+        let fin = b0 >= 128;
+        let op = b0 % 16;
+        let masked = b1 >= 128;
+        let mut plen = b1 % 128;
+        let mut off = 2;
+        if plen == 126 {
+            if n < 4 { return false; }
+            plen = std::bytes::read_u16_be(self.inbuf, 2) or 0;
+            off = 4;
+        } else if plen == 127 {
+            if n < 10 { return false; }
+            plen = std::bytes::read_u64_be(self.inbuf, 2) or 0;
+            off = 10;
+        }
+        if plen > 65536 || plen < 0 {
+            self.control(8, "", true);
+            return false;
+        }
+        let mut key = 0;
+        if masked {
+            if n < off + 4 { return false; }
+            key = std::bytes::read_u32_le(self.inbuf, off) or 0;
+            off = off + 4;
+        }
+        if n < off + plen { return false; }
+        let payload = std::bytes::slice(self.inbuf, off, off + plen);
+        self.inbuf = std::bytes::slice(self.inbuf, off + plen, n);
+        let mut data = payload;
+        if masked {
+            let mb = std::bytes::BytesBuilder { };
+            mb.xor_mask(payload, key);
+            data = mb.finish() or payload;
+        }
+        if !fin || op == 0 {
+            // fragmented messages are not carried
+            self.control(8, "", true);
+            return false;
+        }
+        if op == 1 {
+            self.on_text(std::str::from_bytes(data));
+        } else if op == 8 {
+            self.control(8, "", true);
+            return false;
+        } else if op == 9 {
+            self.control(10, std::str::from_bytes(data), false);
+        }
+        return true;
+    }
+    fn on_text(text: String) {
+        if !std::json::valid_object(text) {
+            self.control(1, __api_hub_refusal("", "malformed", "a frame is one JSON object", ""), false);
+            return;
+        }
+        let kind = std::json::find_string_field(text, "type");
+        if kind == "subscribe" {
+            let topic = std::json::find_string_field(text, "topic");
+            if len(topic) == 0 {
+                self.control(1, __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""), false);
+                return;
+            }
+            self.say(2, 0, topic);
+            return;
+        }
+        if kind == "call" {
+            let seq = self.next_seq;
+            self.next_seq = (seq % 16777215) + 1;
+            self.say(7, seq, text);
+            return;
+        }
+        self.control(1, __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""), false);
+    }
+    // ---- what the core says ----
+    fn on_out(o: __StdApiHubOut) {
+        if o.kind == 1 {
+            self.named = o.b == 1;
+            self.expiry = o.a;
+            self.auth_done = true;
+            return;
+        }
+        if o.kind == 2 {
+            let s = o.a;
+            let sp = std::str::index_of(o.text, " ");
+            let policy = o.text[0..sp];
+            let topic = o.text[(sp + 1)..len(o.text)];
+            if self.sub_on[s] == 0 {
+                self.sub_on[s] = 1;
+                self.sub_seq[s] = 0;
+                self.sub_count[s] = 0;
+            }
+            self.sub_bound[s] = o.b;
+            self.sub_new[s] = 0;
+            if policy == "drop_new" { self.sub_new[s] = 1; }
+            self.sub_topic[s] = topic;
+            self.control(1, "{\"type\":\"subscribed\",\"topic\":" + __api_hub_quote(topic) + "}", false);
+            return;
+        }
+        if o.kind == 3 {
+            self.control(1, o.text, false);
+            return;
+        }
+        if o.kind == 4 {
+            self.revoke(o.a, "revoked");
+            return;
+        }
+        if o.kind == 5 {
+            if o.a > self.done_checks { self.done_checks = o.a; }
+            self.flush();
+            return;
+        }
+        if o.kind == 6 {
+            if self.mode == 1 {
+                if o.a == 200 {
+                    self.control(1, "{\"type\":\"description\",\"document\":" + o.text + "}", false);
+                } else {
+                    self.control(1, "{\"type\":\"description\",\"document\":null,\"refusal\":" + o.text + "}", false);
+                }
+                return;
+            }
+            self.doc = o.text;
+            self.doc_status = o.a;
+            return;
+        }
+        if o.kind == 20 {
+            self.datagram(o.text);
+            return;
+        }
+        if o.kind == 9 {
+            self.control(1, o.text, false);
+            return;
+        }
+        if o.kind == 10 {
+            self.hangup();
+        }
+    }
+    fn on_group(o: __StdApiHubOut) {
+        if o.kind != 1 { return; }
+        if self.live && self.open {
+            self.control(1, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}", true);
+        } else {
+            self.hangup();
+        }
+    }
+    // A role source announced a revision: nothing is delivered to this
+    // connection's subscriptions until the core has answered the recheck.
+    fn on_revision(r: std::api::Revision) {
+        if !self.live || !self.connected || !self.open { return; }
+        self.sent_checks = self.sent_checks + 1;
+        self.say(5, self.sent_checks, "");
+    }
+    fn stale() -> Bool {
+        return self.done_checks < self.sent_checks;
+    }
+    // ---- delivery ----
+    fn on_event(e: __StdApiHubEvent) {
+        let s = e.stream;
+        if !self.live || !self.open || s < 0 || s > 15 { return; }
+        if self.sub_on[s] == 0 { return; }
+        // every event offered takes the next seq, delivered or shed
+        let seq = self.sub_seq[s] + 1;
+        self.sub_seq[s] = seq;
+        if self.sub_count[s] >= self.sub_bound[s] {
+            if self.sub_new[s] == 1 {
+                // drop_new sheds the frame being published
+                return;
+            }
+            self.shed_oldest(s);
+        }
+        self.order = self.order + 1;
+        self.put(__StdApiHubFrame { stream: s, order: self.order, op: 1, then_close: false, text: "{\"type\":\"event\",\"topic\":" + __api_hub_quote(self.sub_topic[s]) + ",\"seq\":" + to_string(seq) + ",\"payload\":" + e.payload + "}" });
+        self.sub_count[s] = self.sub_count[s] + 1;
+        self.flush();
+    }
+    fn put(f: __StdApiHubFrame) {
+        let n = self.frames.len();
+        let mut k = 0;
+        while k < n {
+            let held = self.frames.get(k) or __StdApiHubFrame { };
+            if held.order == 0 {
+                self.frames.set(k, f) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.frames.push(f);
+    }
+    // The oldest queued frame of stream `s` (or, for -2, of any stream, or
+    // for -1 any control frame): its record's place, or -1.
+    fn oldest(s: Int, controls_only: Bool) -> Int {
+        let n = self.frames.len();
+        let mut best = -1;
+        let mut best_order = 0;
+        let mut k = 0;
+        while k < n {
+            let f = self.frames.get(k) or __StdApiHubFrame { };
+            if f.order != 0 && (best < 0 || f.order < best_order) {
+                let wanted = (s >= 0 && f.stream == s) || (s < 0 && (!controls_only || f.stream < 0));
+                if wanted {
+                    best = k;
+                    best_order = f.order;
+                }
+            }
+            k = k + 1;
+        }
+        return best;
+    }
+    fn shed_oldest(s: Int) {
+        let k = self.oldest(s, false);
+        if k < 0 { return; }
+        self.frames.set(k, __StdApiHubFrame { }) or discard;
+        self.sub_count[s] = self.sub_count[s] - 1;
+    }
+    // Drop what a subscription had buffered, and the subscription.
+    fn purge(s: Int) {
+        let n = self.frames.len();
+        let mut k = 0;
+        while k < n {
+            let f = self.frames.get(k) or __StdApiHubFrame { };
+            if f.order != 0 && f.stream == s {
+                self.frames.set(k, __StdApiHubFrame { }) or discard;
+            }
+            k = k + 1;
+        }
+        self.sub_count[s] = 0;
+        self.sub_on[s] = 0;
+    }
+    // The subscription ends: one `unauthorized` frame, its buffer dropped.
+    fn revoke(s: Int, reason: String) {
+        if s < 0 || s > 15 || self.sub_on[s] == 0 { return; }
+        let topic = self.sub_topic[s];
+        self.purge(s);
+        self.control(1, "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic) + ",\"reason\":" + __api_hub_quote(reason) + "}", false);
+    }
+    fn check_expiry() {
+        self.check_expiry_quiet();
+        self.flush();
+    }
+    // A frame that is not an event: queued behind what is queued, never shed.
+    fn control(op: Int, text: String, then_close: Bool) {
+        if !self.open { return; }
+        self.order = self.order + 1;
+        self.put(__StdApiHubFrame { stream: -1, order: self.order, op: op, then_close: then_close, text: text });
+        self.flush();
+    }
+    // Write what is queued, oldest first: events only while the connection's
+    // authorization is current (no recheck outstanding, the credential not
+    // spent), control frames always. One writer at a time: a write that
+    // parks lets the pool run the handlers that queue more.
+    fn flush() {
+        if self.flushing || !self.open || !self.live { return; }
+        self.flushing = true;
+        let mut more = true;
+        while more && self.open {
+            self.check_expiry_quiet();
+            let k = self.oldest(-2, self.stale() || self.expired_events());
+            if k < 0 {
+                more = false;
+            } else {
+                let f = self.frames.get(k) or __StdApiHubFrame { };
+                self.frames.set(k, __StdApiHubFrame { }) or discard;
+                if f.stream >= 0 { self.sub_count[f.stream] = self.sub_count[f.stream] - 1; }
+                self.write_frame(f.op, f.text);
+                if f.then_close {
+                    // the close handshake, then the end of the connection
+                    if f.op != 8 { self.write_frame(8, ""); }
+                    self.hangup();
+                }
+            }
+        }
+        self.flushing = false;
+    }
+    // The credential past its instant delivers no event, whether or not the
+    // subscriptions have been ended yet.
+    fn expired_events() -> Bool {
+        return self.expiry != 0 && std::time::nanos(std::time::current()) >= self.expiry;
+    }
+    fn check_expiry_quiet() {
+        if self.expired_events() && !self.expired {
+            // end the subscriptions now; their frames are queued as controls
+            self.expired = true;
+            let mut s = 0;
+            let mut any = false;
+            while s < 16 {
+                if self.sub_on[s] == 1 {
+                    self.revoke_queued(s, "expired");
+                    any = true;
+                }
+                s = s + 1;
+            }
+            if any { self.say(3, 0, ""); }
+        }
+    }
+    fn revoke_queued(s: Int, reason: String) {
+        let topic = self.sub_topic[s];
+        self.purge(s);
+        self.order = self.order + 1;
+        self.put(__StdApiHubFrame { stream: -1, order: self.order, op: 1, then_close: false, text: "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic) + ",\"reason\":" + __api_hub_quote(reason) + "}" });
+    }
+    // One WebSocket frame, unmasked, as a server writes it.
+    fn write_frame(op: Int, text: String) {
+        if self.mode == 1 {
+            // a datagram out; a frame the network or the buffer refuses is lost
+            if op == 1 {
+                std::io::udp::send(self.ufd, self.host, self.port, self.with_id(text)) or discard;
+            }
+            return;
+        }
+        if self.fd < 0 { return; }
+        let mb = std::bytes::BytesBuilder { };
+        mb.append_u8(128 + op);
+        let n = len(text);
+        if n < 126 {
+            mb.append_u8(n);
+        } else if n < 65536 {
+            mb.append_u8(126);
+            mb.append_u16_be(n);
+        } else {
+            mb.append_u8(127);
+            mb.append_u64_be(n);
+        }
+        mb.append_str(text);
+        let out = mb.finish() or std::bytes::from_string("");
+        // a write that fails closes this connection, and only this one
+        self.stream.send_bytes(out) or { self.hangup(); };
+    }
+    // Stop reading: the shutdown wakes the reader, which ends the connection.
+    fn hangup() {
+        self.open = false;
+        if self.mode == 0 && self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
+    }
+}
+
+/// The hub's listening socket, on its own pool (`std::api::ws::Listener`;
+/// the compiler adds one to the main locus per `ws::Hub`).
+locus __StdApiWsListener {
+    params {
+        bind: String = "";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+    }
+    bus {
+        subscribe __ApiHubOutT as on_ctl where key == self.tid;
+        publish __ApiHubOutT;
+    }
+    birth() {
+        let colon = std::str::index_of(self.bind, ":");
+        let mut host = "127.0.0.1";
+        let mut port = 0;
+        if colon >= 0 {
+            host = self.bind[0..colon];
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or 0;
+        }
+        self.fd = std::io::tcp::__listen_socket(host, port);
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            // (spec/semantics.md): the diagnostic and a non-zero exit
+            eprintln("api: ws::Hub could not listen on " + self.bind);
+            std::process::exit(2);
+        }
+    }
+    @unbounded
+    run() {
+        // A connection accepted before the hub's core is subscribed would
+        // publish to nobody: the core answers the listener's asking (kind 8)
+        // with kind 7 from its pool, whose handlers run once the program
+        // has finished booting.
+        while !self.started && !self.stopped && !self.draining {
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let conn = std::io::tcp::__accept_one(self.fd);
+            if conn < 0 {
+                if self.stopped || self.draining { break; }
+                // a failed accept ends one connection, never the listener
+                std::time::sleep(20ms);
+                continue;
+            }
+            let n = self.next_conn;
+            self.next_conn = n + 1;
+            __StdApiWsPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        }
+    }
+    accept(c: __StdApiWsPeer) { }
+    release (c: __StdApiWsPeer) { }
+    fn on_ctl(o: __StdApiHubOut) {
+        if o.kind == 7 { self.started = true; }
+        if o.kind == 1 {
+            self.stopped = true;
+            self.release_socket();
+        }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        std::io::tcp::__shutdown_listen_socket(self.fd);
+        std::io::tcp::__close_fd(self.fd);
+        self.fd = -1;
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}
+
+/// A subscriber the endpoint has made a locus for: its address and the `id`
+/// it chose, and the connection number the core knows it by. conn 0 is free.
+type __StdApiUdpKnown {
+    conn: Int = 0;
+    key: String = "";
+}
+
+@form(vec)
+locus __StdApiUdpKnowns {
+    capacity { heap items of __StdApiUdpKnown; }
+}
+
+/// The hub's UDP socket, on its own pool (`std::api::udp::Endpoint`; the
+/// compiler adds one to the main locus per `udp::Hub`). It reads datagrams
+/// and hands each to the subscriber it belongs to, made on the first
+/// `subscribe` or `describe` of an (address, id) pair.
+locus __StdApiUdpEndpoint {
+    params {
+        bind: String = "";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+        known: __StdApiUdpKnowns = __StdApiUdpKnowns { };
+    }
+    bus {
+        subscribe __ApiHubOutT as on_ctl where key == self.tid;
+        subscribe __ApiHubUpT as on_up where key == self.tid;
+        publish __ApiHubOutT;
+    }
+    birth() {
+        let colon = std::str::index_of(self.bind, ":");
+        let mut host = "127.0.0.1";
+        let mut port = 0;
+        if colon >= 0 {
+            host = self.bind[0..colon];
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or 0;
+        }
+        self.fd = std::io::udp::bind(host, port) or - 1;
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            eprintln("api: udp::Hub could not listen on " + self.bind);
+            std::process::exit(2);
+        }
+        // a read that gives up now and then, so the loop sees a stop
+        std::io::udp::set_recv_timeout(self.fd, 50ms) or discard;
+    }
+    @unbounded
+    run() {
+        // (as the WebSocket listener: nothing is read before the core is there)
+        while !self.started && !self.stopped && !self.draining {
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let b = std::io::udp::recv_with_source(self.fd, 65536) or std::bytes::from_string("");
+            if self.stopped || self.draining { break; }
+            if len(b) > 0 {
+                self.route_datagram(std::str::from_bytes(b), std::io::udp::last_source_host(), std::io::udp::last_source_port());
+            }
+        }
+        // The subscribers send through this socket: it is theirs for the instant
+        // they take to say `closed` to each other's addresses, and then it is released.
+        std::time::sleep(150ms);
+        self.release_socket();
+    }
+    fn route_datagram(text: String, host: String, port: Int) {
+        if !std::json::valid_object(text) { return; }
+        let mut id = std::json::find_field_raw(text, "id");
+        if len(id) == 0 { id = "null"; }
+        let key = host + ":" + to_string(port) + "/" + id;
+        let mut conn = self.conn_of(key);
+        if conn == 0 {
+            // a subscriber exists from its first subscribe or describe; any other
+            // datagram of an unknown id is nobody's
+            let kind = std::json::find_string_field(text, "type");
+            if kind != "subscribe" && kind != "describe" { return; }
+            conn = self.next_conn;
+            self.next_conn = conn + 1;
+            self.remember(__StdApiUdpKnown { conn: conn, key: key });
+            __StdApiWsPeer { mode: 1, ufd: self.fd, host: host, port: port, cid: id, conn: conn, tid: self.tid, route: self.tid * 4294967296 + conn };
+        }
+        __ApiHubOutT <- __StdApiHubOut { key: self.tid * 4294967296 + conn, kind: 20, a: 0, b: 0, text: text };
+    }
+    fn conn_of(key: String) -> Int {
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.known.get(k) or __StdApiUdpKnown { };
+            if e.conn != 0 && e.key == key { return e.conn; }
+            k = k + 1;
+        }
+        return 0;
+    }
+    fn remember(e: __StdApiUdpKnown) {
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let held = self.known.get(k) or __StdApiUdpKnown { };
+            if held.conn == 0 {
+                self.known.set(k, e) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.known.push(e);
+    }
+    // a subscriber that has ended is forgotten, so its id may be used again
+    fn on_up(u: __StdApiHubUp) {
+        if u.kind != 4 { return; }
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.known.get(k) or __StdApiUdpKnown { };
+            if e.conn == u.conn {
+                self.known.set(k, __StdApiUdpKnown { }) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+    }
+    accept(c: __StdApiWsPeer) { }
+    release (c: __StdApiWsPeer) { }
+    fn on_ctl(o: __StdApiHubOut) {
+        if o.kind == 7 { self.started = true; }
+        if o.kind == 1 { self.stopped = true; }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        let fd = self.fd;
+        self.fd = -1;
+        let _ = std::io::udp::__close(fd);
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}
+
+/// What the core knows of a connection: who the sources named at connect
+/// and the streams admitted to it (a bit per stream).
+type __StdApiHubConn {
+    conn: Int = 0;
+    p: std::api::Principal = std::api::Principal { };
+    cred: String = "";
+    named: Bool = false;
+    why: String = "";
+    expiry: Int = 0;
+    subs: Int = 0;
+}
+
+@form(vec)
+locus __StdApiHubConns {
+    capacity { heap items of __StdApiHubConn; }
+}
+
+/// A call received over a connection and not yet answered: its
+/// correlation, and the `id` the client wrote, echoed in the reply.
+type __StdApiHubPend {
+    corr: Int = 0;
+    id: String = "";
+}
+
+@form(vec)
+locus __StdApiHubPends {
+    capacity { heap items of __StdApiHubPend; }
+}
+
+/// The hub (`std::api::ws::Hub`). `tid` and `rows` are the compiler's,
+/// written into the literal with the sources' optional extensions.
+locus __StdApiHub {
+    params {
+        bind: String = "";
+        principals: std::api::BearerSource = std::api::NoBearer { };
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        name: String = "";
+        // "ws", or "udp" for a `udp::Hub` (the compiler writes it)
+        kind: String = "ws";
+        tid: Int = 0;
+        rows: std::api::HubRows = __StdApiNoHubRows { };
+        expiring: std::api::ExpiringBearerSource = __StdApiNoExpiry { };
+        revised: std::api::RevisedRoleSource = __StdApiNoRevision { };
+        has_expiry: Bool = false;
+        has_revised: Bool = false;
+        stopped: Bool = false;
+        offered: Int = 0;
+        admitted: Int = 0;
+        rpc: Int = 0;
+        closed: Int = 0;
+        conns: __StdApiHubConns = __StdApiHubConns { };
+        pends: __StdApiHubPends = __StdApiHubPends { };
+    }
+    bus {
+        subscribe __ApiHubOutT as on_ask where key == self.tid;
+        subscribe __ApiHubUpT as on_up where key == self.tid;
+        subscribe __ApiHubEventT as on_event where key == self.tid;
+        publish __ApiHubOutT;
+        publish __ApiRpcIngressT;
+        publish __ApiRpcLostT;
+        publish "__api.roles.revision" of type std::api::Revision;
+    }
+    /// A role source that cannot announce its own revisions (a table fixed
+    /// in the program) tells the hub its grants changed: every connection
+    /// has its subscriptions rechecked, as if the source had announced.
+    fn announce(revision: Int) {
+        "__api.roles.revision" <- std::api::Revision { source: self.name, revision: revision };
+    }
+    // The listener asks whether the core is there to be published to. A
+    // handler of this pool runs only after the boot, which has subscribed
+    // the core, so any answer is a true one.
+    fn on_ask(o: __StdApiHubOut) {
+        if o.kind == 8 {
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 7, a: 0, b: 0, text: "" };
+        }
+    }
+    fn on_event(e: __StdApiHubEvent) {
+        self.offered = self.offered + 1;
+    }
+    /// The events offered to this hub by the topics bound to it.
+    fn events() -> Int {
+        return self.offered;
+    }
+    /// The subscriptions admitted and not ended, over every connection.
+    fn subscribers() -> Int {
+        let n = self.conns.len();
+        let mut total = 0;
+        let mut k = 0;
+        while k < n {
+            let c = self.conns.get(k) or __StdApiHubConn { };
+            if c.conn != 0 {
+                let mut s = 0;
+                while s < 16 {
+                    if (c.subs & (1 << s)) != 0 { total = total + 1; }
+                    s = s + 1;
+                }
+            }
+            k = k + 1;
+        }
+        return total;
+    }
+    /// The connections the core knows.
+    fn connections() -> Int {
+        let n = self.conns.len();
+        let mut total = 0;
+        let mut k = 0;
+        while k < n {
+            let c = self.conns.get(k) or __StdApiHubConn { };
+            if c.conn != 0 { total = total + 1; }
+            k = k + 1;
+        }
+        return total;
+    }
+    /// Stop accepting, send every connection `closed`, and release the socket.
+    fn stop() {
+        if self.stopped { return; }
+        self.stopped = true;
+        __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 1, a: 0, b: 0, text: "" };
+    }
+    drain() { self.stop(); }
+    dissolve() { self.stop(); }
+    fn route(conn: Int) -> Int {
+        return self.tid * 4294967296 + conn;
+    }
+    fn index_of(conn: Int) -> Int {
+        let n = self.conns.len();
+        let mut k = 0;
+        while k < n {
+            let c = self.conns.get(k) or __StdApiHubConn { };
+            if c.conn == conn { return k; }
+            k = k + 1;
+        }
+        return -1;
+    }
+    fn put(c: __StdApiHubConn) {
+        let k = self.index_of(c.conn);
+        if k >= 0 {
+            self.conns.set(k, c) or discard;
+            return;
+        }
+        let n = self.conns.len();
+        let mut j = 0;
+        while j < n {
+            let held = self.conns.get(j) or __StdApiHubConn { };
+            if held.conn == 0 {
+                self.conns.set(j, c) or discard;
+                return;
+            }
+            j = j + 1;
+        }
+        self.conns.push(c);
+    }
+    fn on_up(u: __StdApiHubUp) {
+        if u.kind == 1 { self.connect(u); return; }
+        if u.kind == 2 { self.admit(u); return; }
+        if u.kind == 3 { self.expired(u); return; }
+        if u.kind == 4 { self.gone(u); return; }
+        if u.kind == 5 { self.recheck(u); return; }
+        if u.kind == 6 { self.describe(u); return; }
+        if u.kind == 7 { self.call(u); return; }
+    }
+    // The caller's Context, once, from the sources.
+    fn connect(u: __StdApiHubUp) {
+        let mut who = std::api::Principal { mode: "bearer", name: "" };
+        let mut named = false;
+        let mut why = "no credential was presented";
+        let mut expiry = 0;
+        if len(u.text) > 0 {
+            let p = self.principals.principal(u.text);
+            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.name };
+            named = len(p.name) > 0;
+            why = "";
+            if !named {
+                let r = self.principals.refused();
+                why = "the bearer token is refused" + (if len(r) > 0 { ": " + r } else { "" });
+            } else if self.has_expiry {
+                expiry = self.expiring.expiry(u.text);
+            }
+        }
+        self.put(__StdApiHubConn { conn: u.conn, p: who, cred: u.text, named: named, why: why, expiry: expiry, subs: 0 });
+        let mut flag = 0;
+        if named { flag = 1; }
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 1, a: expiry, b: flag, text: "" };
+    }
+    fn refuse(conn: Int, topic: String, kind: String, reason: String, requires: String) {
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(conn), kind: 3, a: 0, b: 0, text: __api_hub_refusal(topic, kind, reason, requires) };
+    }
+    // Whether the caller holds `role` under this hub's role source: directly
+    // or through a role that includes it (`grants` of the rows).
+    fn holds_role(held: String, p: std::api::Principal, role: String) -> Bool {
+        let mut rest = self.rows.grants(role);
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut g = rest;
+            if comma >= 0 {
+                g = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if self.has_revised {
+                if __api_rpc_has(held, g) { return true; }
+            } else {
+                if self.roles.holds(p, g) { return true; }
+            }
+        }
+        return false;
+    }
+    fn missing_role(p: std::api::Principal, requires: String) -> String {
+        let mut held = "";
+        if self.has_revised {
+            held = self.revised.grants(p).roles;
+        }
+        let mut rest = requires;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut r = rest;
+            if comma >= 0 {
+                r = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if !self.holds_role(held, p, r) { return r; }
+        }
+        return "";
+    }
+    // Admission (spec/api.md § Streams): against the row's `requires`, from
+    // the Context established at connect.
+    fn admit(u: __StdApiHubUp) {
+        let k = self.index_of(u.conn);
+        if k < 0 { return; }
+        let c = self.conns.get(k) or __StdApiHubConn { };
+        let topic = u.text;
+        let s = self.rows.find(topic);
+        if self.stopped {
+            self.refuse(u.conn, topic, "shutting_down", "the hub is stopping", "");
+            return;
+        }
+        if s < 0 {
+            self.refuse(u.conn, topic, "malformed", "unknown_topic: " + topic, "");
+            return;
+        }
+        if !c.named {
+            self.refuse(u.conn, topic, "unauthenticated", c.why, "");
+            return;
+        }
+        if c.expiry != 0 && c.expiry <= std::time::nanos(std::time::current()) {
+            self.refuse(u.conn, topic, "unauthenticated", "the bearer token is refused: expired", "");
+            return;
+        }
+        let req = self.rows.requires(s);
+        let miss = self.missing_role(c.p, req);
+        if len(miss) > 0 {
+            self.refuse(u.conn, topic, "unauthorized", topic + " requires " + miss, req);
+            return;
+        }
+        if (c.subs & (1 << s)) == 0 {
+            self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: c.subs | (1 << s) });
+            self.admitted = self.admitted + 1;
+        }
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 2, a: s, b: self.rows.bound(s), text: self.rows.on_full(s) + " " + topic };
+    }
+    fn expired(u: __StdApiHubUp) {
+        let k = self.index_of(u.conn);
+        if k < 0 { return; }
+        let c = self.conns.get(k) or __StdApiHubConn { };
+        self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: 0 });
+    }
+    fn gone(u: __StdApiHubUp) {
+        let k = self.index_of(u.conn);
+        if k >= 0 {
+            self.conns.set(k, __StdApiHubConn { }) or discard;
+        }
+        // the calls the connection still had are lost with it: the work runs
+        // once and its reply is dropped (spec/api.md § Receiver failure and
+        // generations)
+        let n = self.pends.len();
+        let mut j = 0;
+        while j < n {
+            let pd = self.pends.get(j) or __StdApiHubPend { };
+            if pd.corr != 0 && pd.corr / 16777216 == u.conn {
+                self.pends.set(j, __StdApiHubPend { }) or discard;
+                __ApiRpcLostT <- __StdApiRpcLost { exposure: self.rpc, correlation: pd.corr };
+            }
+            j = j + 1;
+        }
+    }
+    // ---- the `Rpc` a surface is served over (`api::serve(S, self.hub, …)`) ----
+    //
+    // A call frame is relayed to the exposure with the connection's
+    // credential, so the exposure's sources decide it as they decide any
+    // request: the Context is the one the connection was authenticated as.
+    fn call(u: __StdApiHubUp) {
+        let corr = u.conn * 16777216 + u.a;
+        let mut id = std::json::find_field_raw(u.text, "id");
+        if len(id) == 0 { id = "null"; }
+        let k = self.index_of(u.conn);
+        let mut cred = "";
+        if k >= 0 {
+            let c = self.conns.get(k) or __StdApiHubConn { };
+            cred = c.cred;
+        }
+        self.pend(__StdApiHubPend { corr: corr, id: id });
+        if self.rpc == 0 {
+            // no surface is served over this hub
+            self.answer(corr, 0, "\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"this hub serves no surface\"}", "{\"mode\":\"bearer\",\"name\":\"\"}");
+            return;
+        }
+        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.rpc, correlation: corr, raw: std::bytes::from_string(cred + "\t" + u.text) };
+    }
+    fn pend(p: __StdApiHubPend) {
+        let n = self.pends.len();
+        let mut j = 0;
+        while j < n {
+            let held = self.pends.get(j) or __StdApiHubPend { };
+            if held.corr == 0 {
+                self.pends.set(j, p) or discard;
+                return;
+            }
+            j = j + 1;
+        }
+        self.pends.push(p);
+    }
+    fn take_id(corr: Int) -> String {
+        let n = self.pends.len();
+        let mut j = 0;
+        while j < n {
+            let held = self.pends.get(j) or __StdApiHubPend { };
+            if held.corr == corr {
+                self.pends.set(j, __StdApiHubPend { }) or discard;
+                return held.id;
+            }
+            j = j + 1;
+        }
+        return "";
+    }
+    fn answer(corr: Int, request_id: Int, answer: String, caller: String) {
+        let id = self.take_id(corr);
+        if len(id) == 0 { return; }
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(corr / 16777216), kind: 9, a: 0, b: 0, text: "{\"type\":\"reply\",\"request_id\":" + to_string(request_id) + ",\"id\":" + id + "," + answer + ",\"caller\":" + caller + "}" };
+    }
+    fn attach(exposure: Int) -> String {
+        self.rpc = exposure;
+        return self.kind;
+    }
+    // The raw message is the connection's credential, a tab, and the frame
+    // the client sent.
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let text = std::str::from_bytes(raw);
+        let tab = std::str::index_of(text, "\t");
+        let cred = text[0..tab];
+        let line = text[(tab + 1)..len(text)];
+        let nobody = std::api::Principal { mode: "bearer", name: "", uid: -1 };
+        let call = std::json::string_field(line, "call");
+        if call.kind == "string" {
+            let payload = std::json::find_field_raw(line, "payload");
+            if len(payload) == 0 {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: cred, peer: nobody, reason: "a call carries a \"payload\" object" };
+            }
+            return std::api::Request { kind: 0, member: call.text, bytes: std::bytes::from_string(payload), digest: std::json::find_string_field(line, "digest"), correlation: correlation, credential: cred, peer: nobody, reason: "" };
+        }
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: cred, peer: nobody, reason: "a call names its member in \"call\"" };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        self.answer(correlation, request_id, __api_outcome_answer(outcome), __api_caller_json(caller, false));
+    }
+    // The call's connection is gone and its work has completed: nothing is
+    // written; whatever is left of the connection is closed.
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        self.take_id(correlation);
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(correlation / 16777216), kind: 10, a: 0, b: 0, text: "" };
+    }
+    fn stop_listening() {
+        self.stop();
+    }
+    // A role source announced a revision. The connection asked; the grants
+    // are read now, and what no longer holds ends (one frame, the buffer
+    // dropped); then the connection is told it may deliver again.
+    fn recheck(u: __StdApiHubUp) {
+        let k = self.index_of(u.conn);
+        if k >= 0 {
+            let c = self.conns.get(k) or __StdApiHubConn { };
+            let mut subs = c.subs;
+            let mut s = 0;
+            while s < 16 {
+                if (subs & (1 << s)) != 0 {
+                    let miss = self.missing_role(c.p, self.rows.requires(s));
+                    if len(miss) > 0 {
+                        subs = subs - (1 << s);
+                        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 4, a: s, b: 0, text: "" };
+                    }
+                }
+                s = s + 1;
+            }
+            if subs != c.subs {
+                self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: subs });
+            }
+        }
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 5, a: u.a, b: 0, text: "" };
+    }
+    // spec/api.md § The description, a hub exposure's: the streams the
+    // caller may subscribe to, by the rows admission reads, with the pieces
+    // of the document the compiler wrote.
+    fn describe(u: __StdApiHubUp) {
+        let mut who = std::api::Principal { mode: "bearer", name: "" };
+        let mut why = "no credential was presented";
+        if len(u.text) > 0 {
+            let p = self.principals.principal(u.text);
+            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.name };
+            if len(p.name) > 0 {
+                why = "";
+            } else {
+                let r = self.principals.refused();
+                why = "the bearer token is refused" + (if len(r) > 0 { ": " + r } else { "" });
+            }
+        }
+        if len(why) == 0 && self.has_expiry {
+            let at = self.expiring.expiry(u.text);
+            if at != 0 && at <= std::time::nanos(std::time::current()) {
+                why = "the bearer token is refused: expired";
+            }
+        }
+        if len(why) > 0 {
+            __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 6, a: 401, b: 0, text: "{\"ok\":false,\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":" + __api_hub_quote(why) + "}}" };
+            return;
+        }
+        let n = self.rows.count();
+        let mut visible = 0;
+        let mut streams = "";
+        let mut i = 0;
+        while i < n {
+            if len(self.missing_role(who, self.rows.requires(i))) == 0 {
+                if visible != 0 { streams = streams + ","; }
+                streams = streams + self.rows.stream_doc(i);
+                visible = visible + (1 << i);
+            }
+            i = i + 1;
+        }
+        let mut held = "";
+        let mut rest = self.rows.required();
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut r = rest;
+            if comma >= 0 {
+                r = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if len(self.missing_role(who, r)) == 0 {
+                if len(held) > 0 { held = held + ","; }
+                held = held + r;
+            }
+        }
+        let mut schemas = "";
+        let mut j = 0;
+        let types = self.rows.types();
+        while j < types {
+            if (self.rows.type_mask(j) & visible) != 0 {
+                if len(schemas) > 0 { schemas = schemas + ","; }
+                schemas = schemas + self.rows.type_doc(j);
+            }
+            j = j + 1;
+        }
+        let doc = self.rows.head() + "{\"mode\":" + __api_hub_quote(who.mode) + ",\"name\":" + __api_hub_quote(who.name) + "},\"roles\":" + __api_hub_csv_json(held) + "},\"members\":[],\"streams\":[" + streams + "],\"outcomes\":" + self.rows.outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + self.rows.notes() + "}";
+        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 6, a: 200, b: 0, text: doc };
+    }
+}

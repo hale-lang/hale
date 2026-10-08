@@ -5,6 +5,14 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_hub.rs"]
+mod api_hub;
+#[path = "api_hub_desk.rs"]
+mod api_hub_desk;
+#[path = "api_hub_streams.rs"]
+mod api_hub_streams;
+#[path = "api_hub_udp.rs"]
+mod api_hub_udp;
 #[path = "api_http.rs"]
 mod api_http;
 #[path = "api_http_witness.rs"]
@@ -19,6 +27,8 @@ mod api_serve_build;
 mod api_unix;
 #[path = "api_unix_lifecycle.rs"]
 mod api_unix_lifecycle;
+#[path = "api_witness_whole.rs"]
+mod api_witness_whole;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]

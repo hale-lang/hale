@@ -213,7 +213,7 @@ fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
 
 /// The roles that confer `role`: itself and every role that includes it,
 /// transitively (`role owner includes support;`).
-fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
+pub(crate) fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     let mut includes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs {
         for d in flat_decls(&p.items) {
@@ -244,7 +244,7 @@ fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
 /// The struct names a type reaches, for the codecs: declared structs, and
 /// builtin records (`IndexError`, …) with the primitive fields the schema
 /// and the contract shape give them (`Shapes::builtin_fields`).
-fn struct_closure(
+pub(crate) fn struct_closure(
     shapes: &Shapes<'_>,
     te: &TypeExpr,
     out: &mut BTreeSet<String>,
@@ -278,14 +278,18 @@ fn struct_closure(
 
 /// How a row's value crosses the wire at the top level: the expression
 /// that renders `v` as JSON, and what decodes `body`.
-struct Codec<'a> {
+pub(crate) struct Codec<'a> {
     shapes: &'a Shapes<'a>,
     convs: &'a BTreeMap<String, Conv>,
 }
 
-impl Codec<'_> {
+impl<'a> Codec<'a> {
+    pub(crate) fn new(shapes: &'a Shapes<'a>, convs: &'a BTreeMap<String, Conv>) -> Self {
+        Codec { shapes, convs }
+    }
+
     /// The Hale expression rendering `v` (of type `te`) as JSON text.
-    fn encode(&self, te: &TypeExpr, v: &str) -> String {
+    pub(crate) fn encode(&self, te: &TypeExpr, v: &str) -> String {
         use hale_syntax::ast::PrimType;
         let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
@@ -303,7 +307,7 @@ impl Codec<'_> {
 
     /// Statements that decode `body` as `te` into `let <var>`, running
     /// `bail` (a statement list ending in `return`) when it does not.
-    fn decode(&self, te: &TypeExpr, body: &str, var: &str, bail: &str) -> String {
+    pub(crate) fn decode(&self, te: &TypeExpr, body: &str, var: &str, bail: &str) -> String {
         use hale_syntax::ast::PrimType;
         // a plain alias decodes as what it stands for
         let te = &self.shapes.dealias(te);
@@ -450,17 +454,60 @@ fn inject_topics(programs: &mut [&mut Program]) {
     }
 }
 
+/// The hub's runtime and its three topics, once, for a program that binds a
+/// topic to a hub: kept out of `API_RUNTIME_SOURCE` so a program that serves
+/// a surface and binds no hub carries neither.
+fn inject_hub(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiWsHub")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_HUB_SOURCE, RUNTIME_BASE + 0x0080_0000) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the hub runtime did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+    match parse_source_at(HUB_TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000 + 0x0010_0000) {
+        Ok(t) => programs[0].items.extend(t.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the hub's topics did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+const HUB_TOPICS_SRC: &str = "topic __ApiHubEventT { payload: __StdApiHubEvent; subject: \"__api.hub.event\"; keyed_by key; }
+topic __ApiHubUpT { payload: __StdApiHubUp; subject: \"__api.hub.up\"; keyed_by key; }
+topic __ApiHubOutT { payload: __StdApiHubOut; subject: \"__api.hub.out\"; keyed_by key; }
+";
+
 /// Run the pass over a bundle's programs.
 pub fn expand(
     programs: &mut [&mut Program],
     renames: &[(Vec<String>, String)],
     default_surface: &str,
 ) -> Vec<Expansion> {
-    if !mentions_runtime(programs) {
+    let hubs = crate::hub_expand::binds_a_hub(programs);
+    if !mentions_runtime(programs) && !hubs {
         return Vec::new();
     }
     inject_runtime(programs);
     inject_topics(programs);
+    if hubs {
+        inject_hub(programs);
+        crate::hub_expand::expand(programs);
+    }
     // ---- the immutable phase: rows, digests, sites ----
     struct Plan {
         site: Site,

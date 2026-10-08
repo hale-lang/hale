@@ -365,6 +365,81 @@ needs a session or an event stream. `grpc::Rpc` is not shipped; it needs
 an HTTP/2 primitive the runtime does not have. `hale mcp` is a server for
 the toolchain on stdio and is not a client of this endpoint.
 
+### Streams: a topic bound to a hub
+
+A stream is a topic bound to a **hub**, and the binding row carries what a
+subscriber is promised: who may read it (`requires`), how many frames its
+queue holds (`bound`) and what the queue sheds when it is full (`on_full`,
+`drop_old` or `drop_new`; a subscriber that cannot keep up loses events,
+never the subscription, so `refuse` is not a stream's policy).
+
+```hale,fragment
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        hub_roles: Grants = Grants { operator: "dave" };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles, as: "fills" };
+    }
+    bindings {
+        Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+    }
+}
+```
+
+The hub is a param: `ws::Hub` speaks WebSocket and `udp::Hub` datagrams.
+Its default is the hub (the compiler numbers it and gives it its rows
+there), so a construction that supplies the param, `Desk { hub: … }`, is
+refused.
+Its `bind:` address is bound when the program boots (one it cannot bind
+stops the program with a diagnostic), `principals:` and `roles:` are the
+two sources, and `as:` names the exposure, once among the program's. The
+compiler adds the listener to the main locus and a binding for each
+topic, so anything in the program that publishes `Fills` publishes to the
+hub's subscribers; an event has to fit the bus frame (65,536 bytes
+encoded, header included). `hale check --api` prints the hub as an
+exposure of its stream rows, `hub@<stream digest>/fills`, and the
+description a caller fetches from the hub's address
+(`GET /.description`, with its credential) lists only the streams that
+caller may subscribe to.
+
+A client presents its credential at the upgrade (`Authorization: Bearer
+<token>`, or `?access_token=<token>`), is named once by the bearer
+source, and subscribes with a frame; the hub answers `subscribed` or a
+`refusal`, then sends `event`s:
+
+```text
+{"type": "subscribe", "topic": "Fills"}
+{"type": "subscribed", "topic": "Fills"}
+{"type": "event", "topic": "Fills", "seq": 1, "payload": {"order": 1, "qty": 1, "price": 10}}
+{"type": "refusal", "topic": "Fills", "refusal": {"kind": "unauthorized", "reason": "Fills requires operator", "requires": ["operator"]}}
+```
+
+A caller who may not read a stream is refused and nothing is queued for
+it. Every event offered to a subscription takes the next `seq`,
+delivered or shed, so a gap in `seq` is exactly the frames its queue shed
+(after `drop_new` the gap shows at the next frame that arrives). The
+subscription does not outlive its authority: when the credential expires,
+or a role source announces a revision (it publishes a `std::api::Revision`
+on `"__api.roles.revision"`, or a program tells the hub with
+`self.hub.announce(n)`) after which the row's `requires` no longer holds,
+the hub sends one `{"type": "unauthorized", "topic": "Fills", "reason":
+"expired"}` (or `"revoked"`) and drops what that subscription had queued;
+nothing published after the revision reaches a subscriber who lost the
+grant. `hub.stop()` sends `{"type": "closed", "reason": "shutting_down"}`
+after what was queued, and a connection that ends without it is a
+transport failure. The program can ask the hub `subscribers()`,
+`connections()` and `events()`.
+
+A hub can also be the transport a surface is served over,
+`api::serve(Public, self.hub, as: "desk", …)`: a call is a frame `{"type":
+"call", "id": "c1", "call": "Orders::place", "payload": {…}}` on the same
+connection, authenticated by the same credential, and the reply is a
+`{"type": "reply", "id": "c1", "ok": true, "value": …}` frame between the
+events. `udp::Hub` carries streams only: a subscriber is an address and an
+`id` it chooses (every datagram carries it, and the credential rides the
+subscribe), and a datagram lost on the way is a gap in `seq` like a shed
+one. The contract is `spec/api.md` § Streams.
+
 The `bindings { api: … }` entry below is the structural path to a socket
 and still works as it did; `api::serve` is the new one.
 

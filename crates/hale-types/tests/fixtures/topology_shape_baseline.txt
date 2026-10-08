@@ -206,6 +206,8 @@ crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
 crates/hale-codegen/tests/api_http.rs#1 f12bb1cac954b590
+crates/hale-codegen/tests/api_hub.rs#0 ecbb23fce024686d
+crates/hale-codegen/tests/api_hub_desk.rs#0 f0d38e651b067db7
 crates/hale-codegen/tests/api_mcp.rs#0 d0ed53bcce40d1dc
 crates/hale-codegen/tests/api_runtime.rs#0 f223b7d2c2517fb1
 crates/hale-codegen/tests/api_serve_build.rs#0 2cb19975fb6e2f4e
@@ -1305,6 +1307,7 @@ crates/hale-codegen/tests/string_escapes.rs#1 865d341109268295
 crates/hale-codegen/tests/string_escapes.rs#2 f2c1228edb650960
 crates/hale-codegen/tests/struct_layout_with_i128.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/struct_layout_with_i128.rs#1 f2c1228edb650960
+crates/hale-codegen/tests/support/hub_witness.rs#0 0cd17a993f7e7084
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295
 crates/hale-codegen/tests/tcp_recv_bytes.rs#2 865d341109268295

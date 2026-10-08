@@ -32,6 +32,14 @@
 /// [`PATH_RENAMES`] like the rest of `std::api`.
 pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
 
+/// The stream hub's runtime (`api_hub.hl`, GH #1417 R5): the core, the
+/// listener, the per-connection locus and the adapter a topic bound to a
+/// hub becomes. It is appended after [`API_RUNTIME_SOURCE`], and only to a
+/// program that binds a topic to a hub: the hub's topics are the program's
+/// own rows, and a program that serves a surface and no hub must not carry
+/// them.
+pub const API_HUB_SOURCE: &str = include_str!("../hl/api_hub.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -386,6 +394,12 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "test", "Rpc"], "__StdApiTestRpc"),
     (&["std", "api", "unix", "Rpc"], "__StdApiUnixRpc"),
     (&["std", "api", "unix", "Listener"], "__StdApiUnixListener"),
+    // GH #1417 (R5): the stream hub (api_hub.hl).
+    (&["std", "api", "ws", "Hub"], "__StdApiHub"),
+    (&["std", "api", "udp", "Hub"], "__StdApiHub"),
+    (&["std", "api", "ws", "Listener"], "__StdApiWsListener"),
+    (&["std", "api", "udp", "Endpoint"], "__StdApiUdpEndpoint"),
+    (&["std", "api", "HubRows"], "__StdApiHubRows"),
     (&["std", "api", "http", "Rpc"], "__StdApiHttpRpc"),
     (&["std", "api", "http", "Listener"], "__StdApiHttpListener"),
     (&["std", "api", "mcp", "Rpc"], "__StdApiMcpRpc"),

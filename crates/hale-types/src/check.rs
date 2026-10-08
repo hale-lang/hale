@@ -17123,6 +17123,27 @@ impl<'a> Checker<'a> {
         let mut seen: BTreeMap<String, ()> = BTreeMap::new();
         for init in inits {
             let got = self.check_expr(&init.value);
+            // a hub param is numbered, and given its rows, in its default
+            // (`hub_expand`); a construction that supplies its own would
+            // leave the listener and the stream adapters on a key the hub
+            // does not answer on
+            if kind_label == "locus" {
+                let built = self.locus_decls.get(name).is_some_and(|l| {
+                    l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p|
+                            p.name.name == init.name.name && crate::hub_expand::is_built(&p.init)))
+                    })
+                });
+                if built {
+                    self.diags.push(Diag::ty(
+                        init.span,
+                        format!(
+                            "locus `{}`: param `{}` is a hub that streams are bound to; its default is the hub, and a construction cannot supply another",
+                            name, init.name.name
+                        ),
+                    ));
+                }
+            }
             match fields.iter().find(|(n, _, _)| n == &init.name.name) {
                 Some((_, want, _)) => {
                     // 2026-05-16 — locus → interface coercion at
