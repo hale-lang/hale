@@ -7,6 +7,8 @@
 
 #[path = "api_grpc.rs"]
 mod api_grpc;
+#[path = "api_grpc_proto.rs"]
+mod api_grpc_proto;
 #[path = "api_hub.rs"]
 mod api_hub;
 #[path = "api_hub_desk.rs"]
@@ -21,6 +23,8 @@ mod api_http;
 mod api_http_witness;
 #[path = "api_mcp.rs"]
 mod api_mcp;
+#[path = "api_pb_codec.rs"]
+mod api_pb_codec;
 #[path = "api_runtime.rs"]
 mod api_runtime;
 #[path = "api_serve_build.rs"]

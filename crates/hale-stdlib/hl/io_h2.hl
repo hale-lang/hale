@@ -42,7 +42,8 @@ type __StdIoH2Event {
 }
 
 /// What a transport asks. kind, to the connection `key` names: 0 answer
-/// `stream` (headers, body, trailers), 1 reset it (code), 2 GOAWAY and end
+/// `stream` (headers, body, trailers; trailers of `+` keep the answer open,
+/// and a later answer with empty headers adds to it), 1 reset it (code), 2 GOAWAY and end
 /// once the streams in flight are answered, 6 end now; to the listener and
 /// every connection (`key` the transport's number): 5 stop (the listener
 /// closes, each connection says GOAWAY), 4 the listener asks whether the

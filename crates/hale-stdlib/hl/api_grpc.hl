@@ -20,6 +20,9 @@ type __StdApiGrpcStream {
     stream: Int = 0;
     state: Int = 0;
     over: Bool = false;
+    // a reflection call: its answer is started (the headers are out) and the
+    // call stays open until the client ends its side
+    sent: Bool = false;
     headers: String = "";
     body: Bytes;
 }
@@ -105,10 +108,178 @@ fn __api_pb_field(tag: Int, body: Bytes) -> Bytes {
     return std::bytes::concat(std::bytes::concat(std::bytes::from_int(tag), __api_pb_varint(len(body))), body);
 }
 
+// ---- protobuf (spec/api.md § gRPC): proto3's wire format ----
+//
+// What the generated codecs `__api_pb_decode_<T>` / `__api_pb_encode_<T>`
+// (hale_syntax::json_gen) call, and what the reflection service reads and
+// writes. A message crosses the exposure as text (`pb::` and the message in
+// base64: a String ends at its first NUL, a message does not), and these are
+// the bytes it is made of.
+
+/// The position after the varint at `p`: -1 when it runs past the end of `b`
+/// or is longer than ten bytes.
+fn __api_pb_vend(b: Bytes, p: Int) -> Int {
+    let n = len(b);
+    let mut q = p;
+    while q < n && q < p + 10 {
+        let c = std::bytes::read_u8(b, q) or 0;
+        q = q + 1;
+        if c < 128 { return q; }
+    }
+    return -1;
+}
+
+/// The varint at `p`, ending at `e` (what `__api_pb_vend` answered), as a
+/// 64-bit two's-complement integer.
+fn __api_pb_vval(b: Bytes, p: Int, e: Int) -> Int {
+    let mut v = 0;
+    let mut k = e - 1;
+    while k >= p {
+        let c = std::bytes::read_u8(b, k) or 0;
+        v = (v << 7) | (c & 127);
+        k = k - 1;
+    }
+    return v;
+}
+
+/// The position after a field's value of wire type `wire` that starts at
+/// `p`: -1 when it is cut short, or the wire type is not one proto3 writes.
+fn __api_pb_skip(b: Bytes, p: Int, wire: Int) -> Int {
+    let n = len(b);
+    if wire == 0 { return __api_pb_vend(b, p); }
+    if wire == 1 {
+        if p + 8 > n { return -1; }
+        return p + 8;
+    }
+    if wire == 5 {
+        if p + 4 > n { return -1; }
+        return p + 4;
+    }
+    if wire == 2 {
+        let e = __api_pb_vend(b, p);
+        if e < 0 { return -1; }
+        let l = __api_pb_vval(b, p, e);
+        if l < 0 || e + l > n { return -1; }
+        return e + l;
+    }
+    return -1;
+}
+
+/// A varint of any 64-bit integer (a negative one is ten bytes).
+fn __api_pb_uvarint(n: Int) -> Bytes {
+    let mut out = std::bytes::from_string("");
+    let mut v = n;
+    let mut more = true;
+    while more {
+        let low = v & 127;
+        v = (v >> 7) & 144115188075855871;
+        if v == 0 {
+            out = std::bytes::concat(out, std::bytes::from_int(low));
+            more = false;
+        } else {
+            out = std::bytes::concat(out, std::bytes::from_int(low | 128));
+        }
+    }
+    return out;
+}
+
+/// A varint field.
+fn __api_pb_put_int(no: Int, n: Int) -> Bytes {
+    return std::bytes::concat(__api_pb_uvarint(no * 8), __api_pb_uvarint(n));
+}
+
+fn __api_pb_put_bool(no: Int, b: Bool) -> Bytes {
+    let mut n = 0;
+    if b { n = 1; }
+    return __api_pb_put_int(no, n);
+}
+
+/// A `double` field: the tag and eight bytes, little endian.
+fn __api_pb_put_f64(no: Int, x: Float) -> Bytes {
+    let h = std::bytes::builder::__new(16);
+    let _ = std::bytes::builder::__append_f64(h, x, 0);
+    return std::bytes::concat(__api_pb_uvarint(no * 8 + 1), std::bytes::builder::__finish(h));
+}
+
+/// A length-delimited field: its tag, the length, the bytes.
+fn __api_pb_put_msg(no: Int, body: Bytes) -> Bytes {
+    return std::bytes::concat(std::bytes::concat(__api_pb_uvarint(no * 8 + 2), __api_pb_uvarint(len(body))), body);
+}
+
+fn __api_pb_put_str(no: Int, s: String) -> Bytes {
+    return __api_pb_put_msg(no, std::bytes::from_string(s));
+}
+
+/// Where the value of field `no` (of wire type `wire`) starts in the message
+/// `b`, the last of it if it was sent twice: -1 when it is absent, -2 when the
+/// message is not proto3, -3 when the field has another wire type.
+fn __api_pb_find(b: Bytes, no: Int, wire: Int) -> Int {
+    let n = len(b);
+    let mut p = 0;
+    let mut at = -1;
+    while p < n {
+        let te = __api_pb_vend(b, p);
+        if te < 0 { return -2; }
+        let tag = __api_pb_vval(b, p, te);
+        p = te;
+        let w = tag & 7;
+        if (tag >> 3) == no {
+            if w != wire { return -3; }
+            at = p;
+        }
+        let e = __api_pb_skip(b, p, w);
+        if e < 0 { return -2; }
+        p = e;
+    }
+    return at;
+}
+
+/// The message of a row whose request, response or error is a scalar: one
+/// field, `value = 1` (the `.proto`'s `<rpc>Request`, `<rpc>Response` and
+/// `<rpc>Error`). The readings fail as a record's field does.
+fn __api_pb_box_at(b: Bytes, wire: Int) -> Int fallible(JsonError) {
+    let p = __api_pb_find(b, 1, wire);
+    if p == -1 { fail JsonError { kind: "missing_field", field: "value" }; }
+    if p == -3 { fail JsonError { kind: "wrong_type", field: "value" }; }
+    if p < 0 { fail JsonError { kind: "wrong_type", field: "payload" }; }
+    return p;
+}
+
+fn __api_pb_box_int(b: Bytes) -> Int fallible(JsonError) {
+    let p = __api_pb_box_at(b, 0) or raise;
+    return __api_pb_vval(b, p, __api_pb_vend(b, p));
+}
+
+fn __api_pb_box_bool(b: Bytes) -> Bool fallible(JsonError) {
+    let p = __api_pb_box_at(b, 0) or raise;
+    return __api_pb_vval(b, p, __api_pb_vend(b, p)) != 0;
+}
+
+fn __api_pb_box_float(b: Bytes) -> Float fallible(JsonError) {
+    let p = __api_pb_box_at(b, 1) or raise;
+    if p + 8 > len(b) { fail JsonError { kind: "wrong_type", field: "payload" }; }
+    return std::bytes::read_f64_le(b, p) or 0.0;
+}
+
+fn __api_pb_box_str(b: Bytes) -> String fallible(JsonError) {
+    let p = __api_pb_box_at(b, 2) or raise;
+    let e = __api_pb_vend(b, p);
+    let l = __api_pb_vval(b, p, e);
+    let s = std::str::from_bytes(std::bytes::slice(b, e, e + l));
+    if len(s) != l { fail JsonError { kind: "wrong_type", field: "value" }; }
+    return s;
+}
+
 /// `grpc-status-details-bin`: a `google.rpc.Status` (code, message, and one
 /// detail, an `Any` whose value is the JSON object `value`), base64.
 fn __api_grpc_details(code: Int, message: String, type_url: String, value: String) -> String {
-    let any = std::bytes::concat(__api_pb_field(10, std::bytes::from_string(type_url)), __api_pb_field(18, std::bytes::from_string(value)));
+    return __api_grpc_details_bytes(code, message, type_url, std::bytes::from_string(value));
+}
+
+/// The same, the detail's value the bytes of a message (protobuf, which may
+/// hold a NUL).
+fn __api_grpc_details_bytes(code: Int, message: String, type_url: String, value: Bytes) -> String {
+    let any = std::bytes::concat(__api_pb_field(10, std::bytes::from_string(type_url)), __api_pb_field(18, value));
     let status = std::bytes::concat(std::bytes::concat(std::bytes::from_int(8), __api_pb_varint(code)), std::bytes::concat(__api_pb_field(18, std::bytes::from_string(message)), __api_pb_field(26, any)));
     return std::text::base64::encode(status);
 }
@@ -116,9 +287,60 @@ fn __api_grpc_details(code: Int, message: String, type_url: String, value: Strin
 /// A gRPC message: the compression flag (0), the length as four bytes, big
 /// endian, and the text.
 fn __api_grpc_prefix(text: String) -> Bytes {
-    let n = len(text);
+    return __api_grpc_frame(std::bytes::from_string(text));
+}
+
+/// A gRPC message of bytes.
+fn __api_grpc_frame(body: Bytes) -> Bytes {
+    let n = len(body);
     let size = std::bytes::concat(std::bytes::concat(std::bytes::from_int(n / 16777216), std::bytes::from_int((n / 65536) % 256)), std::bytes::concat(std::bytes::from_int((n / 256) % 256), std::bytes::from_int(n % 256)));
-    return std::bytes::concat(std::bytes::concat(std::bytes::from_int(0), size), std::bytes::from_string(text));
+    return std::bytes::concat(std::bytes::concat(std::bytes::from_int(0), size), body);
+}
+
+/// The message in a protobuf body (`pb:<message name>:<base64>`).
+fn __api_pb_text_bytes(text: String) -> Bytes {
+    let rest = text[3..len(text)];
+    let colon = std::str::index_of(rest, ":");
+    return std::text::base64::decode(rest[(colon + 1)..len(rest)]);
+}
+
+/// The name of the message in a protobuf body.
+fn __api_pb_text_name(text: String) -> String {
+    let rest = text[3..len(text)];
+    return rest[0..std::str::index_of(rest, ":")];
+}
+
+/// A refusal as its message (`HaleRefusal`): the kind and the reason, the
+/// roles an unauthorized one requires (one field a role), the digest a
+/// digest_mismatch one is served.
+fn __api_pb_refusal(k: String, r: String, x: String) -> Bytes {
+    let mut out = __api_pb_put_str(1, k);
+    if len(r) > 0 { out = std::bytes::concat(out, __api_pb_put_str(2, r)); }
+    if k == "digest_mismatch" { out = std::bytes::concat(out, __api_pb_put_str(4, x)); }
+    if k == "unauthorized" {
+        let mut rest = x;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let mut one = rest;
+            if comma >= 0 {
+                one = rest[0..comma];
+                rest = rest[(comma + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            out = std::bytes::concat(out, __api_pb_put_str(3, one));
+        }
+    }
+    return out;
+}
+
+/// The string field `no` of a message, "" when it has none.
+fn __api_pb_str_field(b: Bytes, no: Int) -> String {
+    let p = __api_pb_find(b, no, 2);
+    if p < 0 { return ""; }
+    let e = __api_pb_vend(b, p);
+    let l = __api_pb_vval(b, p, e);
+    return std::str::from_bytes(std::bytes::slice(b, e, e + l));
 }
 
 /// A request `frame` refuses `malformed`, with the credential it carried.
@@ -129,14 +351,20 @@ fn __api_grpc_bad(raw: Bytes, correlation: Int, token: String, reason: String) -
 /// The gRPC transport (`std::api::grpc::Rpc`; `grpc::Rpc` at a serve site).
 /// `tid` is the number of the exposure it serves and `surface` its name,
 /// which the compiler writes into the literal, together with the HTTP/2
-/// listener it pairs with. The principal is the bearer `principals` names,
-/// read from the `authorization` metadata; the codec is JSON.
+/// listener it pairs with, and the descriptors it reflects (`files`). The
+/// principal is the bearer `principals` names, read from the `authorization`
+/// metadata. The codec is the request's: protobuf for `application/grpc` and
+/// `application/grpc+proto` (the messages of the surface's `.proto`), the
+/// row's JSON for `application/grpc+json`; the reply speaks the same.
 locus __StdApiGrpcRpc {
     params {
         bind: String;
         principals: std::api::BearerSource;
         roles: std::api::RoleSource = __StdApiNoRoles { };
         surface: String = "";
+        // the descriptors server reflection answers, written by the compiler
+        // (rpc_expand::grpc_files): a line a file, name, symbols, base64
+        files: String = "";
         tid: Int = 0;
         closed: Int = 0;
         stops: Int = 0;
@@ -208,11 +436,160 @@ locus __StdApiGrpcRpc {
         let s = self.streams.get(k) or __api_grpc_free();
         if s.state != 1 || s.over { return; }
         if len(s.body) + len(e.bytes) > __api_grpc_max() + 5 {
+            if self.is_reflection(s) {
+                // a reflection call ends at once, with its status
+                let mut code = 0;
+                if !s.sent { code = self.reflect_refusal(s); }
+                if code == 0 { code = 8; }
+                self.streams.set(k, __api_grpc_free()) or discard;
+                self.reflect_end(s, code);
+                return;
+            }
             let huge = std::bytes::concat(std::bytes::from_int(0), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::concat(std::bytes::from_int(255), std::bytes::from_int(255)))));
             self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: true, headers: s.headers, body: huge }) or discard;
             return;
         }
-        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, headers: s.headers, body: std::bytes::concat(s.body, e.bytes) }) or discard;
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, sent: s.sent, headers: s.headers, body: std::bytes::concat(s.body, e.bytes) }) or discard;
+        if self.is_reflection(s) { self.reflect_ready(k); }
+    }
+    // ---- server reflection (grpc.reflection.v1.ServerReflection) ----
+    //
+    // The service is bidirectional, and a client (grpcurl) waits for the
+    // answer to a request before it ends its side of the stream, so a call is
+    // answered as its messages are whole, not at the end of the stream: each
+    // whole message gets its answer as a DATA frame, the call stays open and
+    // the bytes of a message not yet whole are kept for the next chunk, and
+    // the status goes out once, when the client ends its side (`ended`) or the
+    // transport stops (`stop_listening`). The principal is the bearer the
+    // exposure's source names, as for every call. What the service knows is
+    // `files`, the descriptors the compiler wrote from the rows: the
+    // surface's `.proto`, the reserved description method's and this
+    // service's own.
+    fn is_reflection(s: __StdApiGrpcStream) -> Bool {
+        return std::str::starts_with(__api_grpc_header(s.headers, ":path"), "/grpc.reflection.v1.ServerReflection/");
+    }
+    // The status that refuses the call, 0 when it is allowed. The bearer is
+    // asked again at every message, so a source that stops naming the caller
+    // ends a call that is already answering.
+    fn reflect_refusal(s: __StdApiGrpcStream) -> Int {
+        let auth = __api_grpc_header(s.headers, "authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        let who = self.principals.principal(token);
+        if len(token) == 0 || len(who.name) == 0 { return 16; }
+        let enc = __api_grpc_header(s.headers, "grpc-encoding");
+        if enc != "" && enc != "identity" { return 12; }
+        return 0;
+    }
+    fn reflect_why(code: Int) -> String {
+        if code == 16 { return "the bearer token is refused"; }
+        if code == 12 { return "compression is not supported: send grpc-encoding identity"; }
+        if code == 8 { return "the request message is over the limit"; }
+        if code == 13 { return "a request message ends before its length"; }
+        return "";
+    }
+    // The one end of a reflection call, whatever ends it: a refusal, an
+    // oversize or unfinished message, the client's half-close, the stop. A
+    // call not yet answered has no response, so it ends as a trailers-only
+    // response, the status in the headers; one that has answered has its
+    // headers out and DATA flowing, so the status is the trailers of that
+    // response, which then ends. The caller has freed the stream's slot.
+    fn reflect_end(s: __StdApiGrpcStream, code: Int) {
+        let mut status = "grpc-status: " + to_string(code) + "\n";
+        let why = self.reflect_why(code);
+        if len(why) > 0 { status = status + "grpc-message: " + __api_grpc_message(why) + "\n"; }
+        let mut head = "";
+        let mut trailers = status;
+        if !s.sent {
+            head = ":status: 200\ncontent-type: application/grpc\n" + status;
+            trailers = "";
+        }
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: __h2_none(), trailers: std::bytes::from_string(trailers) };
+    }
+    fn reflect_ready(k: Int) {
+        let s = self.streams.get(k) or __api_grpc_free();
+        if s.state != 1 || s.over || len(s.body) < 5 { return; }
+        let no = self.reflect_refusal(s);
+        if no != 0 {
+            self.streams.set(k, __api_grpc_free()) or discard;
+            self.reflect_end(s, no);
+            return;
+        }
+        // every whole message, in order; the rest waits for its bytes
+        let mut body = __h2_none();
+        let mut at = 0;
+        while at + 5 <= len(s.body) {
+            let size = std::bytes::read_u32_be(s.body, at + 1) or 0;
+            if at + 5 + size > len(s.body) { break; }
+            body = std::bytes::concat(body, __api_grpc_frame(self.reflect_one(std::bytes::slice(s.body, at + 5, at + 5 + size))));
+            at = at + 5 + size;
+        }
+        if at == 0 { return; }
+        self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 1, over: false, sent: true, headers: s.headers, body: std::bytes::slice(s.body, at, len(s.body)) }) or discard;
+        let mut head = "";
+        if !s.sent { head = ":status: 200\ncontent-type: application/grpc\n"; }
+        // "+" leaves the response open for the next answer
+        __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + s.conn, kind: 0, stream: s.stream, code: 0, headers: std::bytes::from_string(head), body: body, trailers: std::bytes::from_string("+") };
+    }
+    // The client ended its side, or the transport stops: the status, after the
+    // answers already sent. A message left unfinished is the client's error.
+    fn reflect_finish(s: __StdApiGrpcStream) {
+        let mut code = 0;
+        if !s.sent { code = self.reflect_refusal(s); }
+        if code == 0 && s.over { code = 8; }
+        if code == 0 && len(s.body) > 0 { code = 13; }
+        self.reflect_end(s, code);
+    }
+    // The answer to one `ServerReflectionRequest`: the request is echoed
+    // (`original_request`), and the answer is the services, a file, or an
+    // error_response (NOT_FOUND).
+    fn reflect_one(m: Bytes) -> Bytes {
+        let echo = __api_pb_put_msg(2, m);
+        if __api_pb_find(m, 7, 2) >= 0 {
+            let a = __api_pb_put_msg(1, __api_pb_put_str(1, self.surface));
+            let b = __api_pb_put_msg(1, __api_pb_put_str(1, "hale.api.Description"));
+            let c = __api_pb_put_msg(1, __api_pb_put_str(1, "grpc.reflection.v1.ServerReflection"));
+            return std::bytes::concat(echo, __api_pb_put_msg(6, std::bytes::concat(std::bytes::concat(a, b), c)));
+        }
+        let by_name = __api_pb_find(m, 3, 2) >= 0;
+        let by_symbol = __api_pb_find(m, 4, 2) >= 0;
+        if by_name || by_symbol {
+            let mut want = __api_pb_str_field(m, 4);
+            if by_name { want = __api_pb_str_field(m, 3); }
+            let d = self.file_for(want, by_symbol);
+            if len(d) > 0 { return std::bytes::concat(echo, __api_pb_put_msg(4, __api_pb_put_msg(1, d))); }
+            let mut what = "file";
+            if by_symbol { what = "symbol"; }
+            return std::bytes::concat(echo, __api_pb_put_msg(7, std::bytes::concat(__api_pb_put_int(1, 5), __api_pb_put_str(2, what + " not found: " + want))));
+        }
+        return std::bytes::concat(echo, __api_pb_put_msg(7, std::bytes::concat(__api_pb_put_int(1, 5), __api_pb_put_str(2, "this server has no extensions: ask for a file or a symbol, or list the services"))));
+    }
+    // The descriptor of the file named `want` (or declaring the symbol), empty
+    // when no file does.
+    @unbounded
+    fn file_for(want: String, by_symbol: Bool) -> Bytes {
+        let mut rest = self.files;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let mut line = rest;
+            if nl >= 0 {
+                line = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            let t1 = std::str::index_of(line, "\t");
+            if t1 >= 0 {
+                let after = line[(t1 + 1)..len(line)];
+                let t2 = std::str::index_of(after, "\t");
+                if t2 >= 0 {
+                    let mut hit = line[0..t1] == want;
+                    if by_symbol { hit = std::str::index_of("," + after[0..t2] + ",", "," + want + ",") >= 0; }
+                    if hit { return std::text::base64::decode(after[(t2 + 1)..len(after)]); }
+                }
+            }
+        }
+        return std::bytes::from_string("");
     }
     // The request is whole: the exposure answers it. The raw message is the
     // length of the headers, a newline, the headers and the body.
@@ -221,6 +598,11 @@ locus __StdApiGrpcRpc {
         if k < 0 { return; }
         let s = self.streams.get(k) or __api_grpc_free();
         if s.state != 1 { return; }
+        if self.is_reflection(s) {
+            self.streams.set(k, __api_grpc_free()) or discard;
+            self.reflect_finish(s);
+            return;
+        }
         self.streams.set(k, __StdApiGrpcStream { conn: s.conn, stream: s.stream, state: 2, over: s.over, headers: s.headers, body: __h2_none() }) or discard;
         let raw = std::bytes::concat(std::bytes::from_string(to_string(len(s.headers)) + "\n" + s.headers), s.body);
         __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: e.conn * 4294967296 + e.stream, raw: raw };
@@ -271,13 +653,15 @@ locus __StdApiGrpcRpc {
         if __api_grpc_header(h, ":method") != "POST" {
             return __api_grpc_bad(raw, correlation, token, "a gRPC call is a POST");
         }
+        // `application/grpc` and `+proto` carry protobuf, `+json` the row's JSON
         let media = __api_grpc_media(__api_grpc_header(h, "content-type"));
-        if media != "application/grpc" && media != "application/grpc+json" {
+        if media != "application/grpc" && media != "application/grpc+proto" && media != "application/grpc+json" {
             if std::str::starts_with(media, "application/grpc") {
-                return __api_grpc_bad(raw, correlation, token, "content-type " + media + " is not served: the codec is json (application/grpc or application/grpc+json)");
+                return __api_grpc_bad(raw, correlation, token, "content-type " + media + " is not served: the codecs are protobuf (application/grpc, application/grpc+proto) and json (application/grpc+json)");
             }
             return __api_grpc_bad(raw, correlation, token, "a gRPC call has content-type application/grpc");
         }
+        let proto = media != "application/grpc+json";
         let enc = __api_grpc_header(h, "grpc-encoding");
         if len(enc) > 0 && enc != "identity" {
             return __api_grpc_bad(raw, correlation, token, "compression is not supported: send grpc-encoding identity");
@@ -294,23 +678,33 @@ locus __StdApiGrpcRpc {
         if service == "hale.api.Description" && method == "Describe" {
             return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
         }
+        if service == "grpc.reflection.v1.ServerReflection" {
+            return __api_grpc_bad(raw, correlation, token, "a reflection call carries a request message");
+        }
         if service != self.surface {
             return __api_grpc_bad(raw, correlation, token, "no such service " + service + ": this exposure serves " + self.surface);
         }
         // `Orders.place` (or `Orders::place`) is the member `Orders::place`
         let mut member = method;
         if std::str::index_of(member, "::") < 0 { member = std::str::replace(member, ".", "::"); }
-        // one message: the compression flag, four bytes of length, the JSON
+        // one message: the compression flag, four bytes of length, the message
         if len(body) < 5 { return __api_grpc_bad(raw, correlation, token, "a call carries a message with its five-byte prefix"); }
         let flag = std::bytes::read_u8(body, 0) or 0;
         let n = std::bytes::read_u32_be(body, 1) or 0;
         if flag != 0 { return __api_grpc_bad(raw, correlation, token, "compressed messages are not supported"); }
         if n > __api_grpc_max() { return __api_grpc_bad(raw, correlation, token, "a request message is at most " + to_string(__api_grpc_max()) + " bytes"); }
         if len(body) != 5 + n { return __api_grpc_bad(raw, correlation, token, "a unary call carries exactly one message"); }
+        let digest = __api_grpc_header(h, "hale-surface-digest");
+        if proto {
+            // the exposure holds a call as text: `pb::` and the message in
+            // base64 (the generated adapters branch on that prefix)
+            let text = "pb::" + std::text::base64::encode(std::bytes::slice(body, 5, 5 + n));
+            return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(text), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
+        }
         if n == 0 { return __api_grpc_bad(raw, correlation, token, "a call carries a message"); }
         let text = std::str::from_bytes(std::bytes::slice(body, 5, 5 + n));
-        if len(text) != n { return __api_grpc_bad(raw, correlation, token, "the message is not json text"); }
-        return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(text), digest: __api_grpc_header(h, "hale-surface-digest"), correlation: correlation, credential: token, peer: nobody, reason: "" };
+        if len(text) != n || std::str::starts_with(text, "pb:") { return __api_grpc_bad(raw, correlation, token, "the message is not json text"); }
+        return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(text), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
     }
     // The outcome as a gRPC response (spec/api.md § Outcomes): a result is
     // headers, the message and a closing `grpc-status: 0`; anything else is a
@@ -320,10 +714,18 @@ locus __StdApiGrpcRpc {
         let conn = correlation / 4294967296;
         let stream = correlation % 4294967296;
         let k = self.find(conn, stream);
+        // the reply speaks the codec the request did: protobuf for
+        // `application/grpc` and `+proto`, the row's JSON for `+json`
         let mut ctype = "application/grpc";
+        let mut proto = true;
         if k >= 0 {
             let s = self.streams.get(k) or __api_grpc_free();
-            if __api_grpc_media(__api_grpc_header(s.headers, "content-type")) == "application/grpc+json" { ctype = "application/grpc+json"; }
+            let media = __api_grpc_media(__api_grpc_header(s.headers, "content-type"));
+            if media == "application/grpc+json" {
+                ctype = media;
+                proto = false;
+            }
+            if media == "application/grpc+proto" { ctype = media; }
             self.streams.set(k, __api_grpc_free()) or discard;
         }
         let head = ":status: 200\ncontent-type: " + ctype + "\n";
@@ -332,18 +734,33 @@ locus __StdApiGrpcRpc {
         let mut trailers = "";
         match outcome {
             __StdApiOutcome::Result(b) -> {
-                body = __api_grpc_prefix(b);
+                if !proto {
+                    body = __api_grpc_prefix(b);
+                } else if std::str::starts_with(b, "pb:") {
+                    body = __api_grpc_frame(__api_pb_text_bytes(b));
+                } else {
+                    // the description: `hale.api.DescriptionDocument { json = 1 }`
+                    body = __api_grpc_frame(__api_pb_put_str(1, b));
+                }
                 trailers = "grpc-status: 0\n";
             },
             __StdApiOutcome::HandlerError(b) -> {
-                headers = head + "grpc-status: 9\ngrpc-message: handler_error\ngrpc-status-details-bin: " + __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", b) + "\n";
+                let mut details = __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", b);
+                if proto && std::str::starts_with(b, "pb:") {
+                    details = __api_grpc_details_bytes(9, "handler_error", "type.hale.dev/" + __api_pb_text_name(b), __api_pb_text_bytes(b));
+                }
+                headers = head + "grpc-status: 9\ngrpc-message: handler_error\ngrpc-status-details-bin: " + details + "\n";
             },
             __StdApiOutcome::Refusal(kind, reason, extra) -> {
                 let code = __api_grpc_code(kind);
-                headers = head + "grpc-status: " + to_string(code) + "\ngrpc-message: " + __api_grpc_message(reason) + "\ngrpc-status-details-bin: " + __api_grpc_details(code, reason, "type.hale.dev/hale.api.Refusal", __api_refusal_object(kind, reason, extra)) + "\n";
+                let mut details = __api_grpc_details(code, reason, "type.hale.dev/hale.api.Refusal", __api_refusal_object(kind, reason, extra));
+                if proto { details = __api_grpc_details_bytes(code, reason, "type.hale.dev/HaleRefusal", __api_pb_refusal(kind, reason, extra)); }
+                headers = head + "grpc-status: " + to_string(code) + "\ngrpc-message: " + __api_grpc_message(reason) + "\ngrpc-status-details-bin: " + details + "\n";
             },
             __StdApiOutcome::ServerError -> {
-                headers = head + "grpc-status: 13\ngrpc-message: server_error\ngrpc-status-details-bin: " + __api_grpc_details(13, "server_error", "type.hale.dev/hale.api.Refusal", "{\"kind\":\"server\"}") + "\n";
+                let mut details = __api_grpc_details(13, "server_error", "type.hale.dev/hale.api.Refusal", "{\"kind\":\"server\"}");
+                if proto { details = __api_grpc_details_bytes(13, "server_error", "type.hale.dev/HaleRefusal", __api_pb_refusal("server", "", "")); }
+                headers = head + "grpc-status: 13\ngrpc-message: server_error\ngrpc-status-details-bin: " + details + "\n";
             },
         }
         __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid * 4294967296 + conn, kind: 0, stream: stream, code: 0, headers: std::bytes::from_string(headers), body: body, trailers: std::bytes::from_string(trailers) };
@@ -357,8 +774,20 @@ locus __StdApiGrpcRpc {
     }
     // GOAWAY on every connection and the listener closed, after the replies
     // already sent (one subscriber sees the bus in the order it was published).
+    @unbounded
     fn stop_listening() {
         self.stops = self.stops + 1;
+        // a reflection call still open ends with its status, before the GOAWAY
+        let n = self.streams.len();
+        let mut k = 0;
+        while k < n {
+            let s = self.streams.get(k) or __api_grpc_free();
+            if s.state == 1 && self.is_reflection(s) {
+                self.streams.set(k, __api_grpc_free()) or discard;
+                self.reflect_finish(s);
+            }
+            k = k + 1;
+        }
         __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 5, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
     }
 }

@@ -1026,6 +1026,8 @@ fn the_surface_projections_are_their_fixtures() {
             let got = hale(&["--api", "--surface", surface, &format!("--{form}")]);
             assert_eq!(got, fixture_text(&file), "{file}");
         }
+        // The protobuf form is text: the `.proto` the gRPC transport speaks.
+        assert_eq!(hale(&["--api", "--surface", surface, "--proto"]), fixture_text(&format!("{surface}.proto")), "{surface}.proto");
         // The forms carry the surface's digest and list exactly its rows.
         let inv = inventory();
         let s = surface_of(&inv, surface);
@@ -1204,6 +1206,7 @@ fn the_witness_bundle_is_the_contract_fixtures() {
             let got = std::fs::read_to_string(dir.join(&file)).unwrap();
             assert_eq!(got, fixture_text(&file), "{file}");
         }
+        assert_eq!(std::fs::read_to_string(dir.join(format!("{surface}.proto"))).unwrap(), fixture_text(&format!("{surface}.proto")));
         let description: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{surface}.description.json"))).unwrap()).unwrap();
         let errs = errors_against_schema(&description);
@@ -1240,7 +1243,7 @@ fn a_bundle_is_the_same_bytes_on_two_runs_and_two_checkouts() {
     export_to(&copy, "Public", &b);
     let mut names: Vec<String> = std::fs::read_dir(&a).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     names.sort();
-    assert_eq!(names.len(), 5, "{names:?}");
+    assert_eq!(names.len(), 6, "{names:?}");
     for n in &names {
         assert_eq!(std::fs::read(a.join(n)).unwrap(), std::fs::read(b.join(n)).unwrap(), "{n} differs between two checkouts");
         let text = std::fs::read_to_string(a.join(n)).unwrap();
@@ -1326,7 +1329,7 @@ fn an_imported_type_is_named_by_its_path_under_the_alias() {
     let (a, b) = (root.join("out_a"), root.join("out_b"));
     export_to(&one, "Store", &a);
     export_to(&two, "Store", &b);
-    for n in ["Store.description.json", "Store.openapi.json", "Store.json-schema.json", "Store.mcp.json", "DIGEST"] {
+    for n in ["Store.description.json", "Store.openapi.json", "Store.json-schema.json", "Store.mcp.json", "Store.proto", "DIGEST"] {
         let text = std::fs::read_to_string(a.join(n)).unwrap();
         assert!(!text.contains("__lib_"), "{n} embeds a mangled name:\n{text}");
         assert_eq!(text, std::fs::read_to_string(b.join(n)).unwrap(), "{n} differs between two checkouts");
@@ -1336,5 +1339,171 @@ fn an_imported_type_is_named_by_its_path_under_the_alias() {
     assert!(defs.contains_key("lib::Item") && defs.contains_key("lib::Stamped"), "{:?}", defs.keys().collect::<Vec<_>>());
     assert_eq!(defs["lib::Stamped"]["properties"]["item"]["$ref"], json!("#/$defs/lib::Item"));
     assert_eq!(defs["lib::Stamped"]["properties"]["tag"]["x-hale-type"], json!("lib::Tag"));
+    // the protobuf form spells the `::` of an imported type `_`, and says what it was
+    let proto = std::fs::read_to_string(a.join("Store.proto")).unwrap();
+    assert!(proto.contains("message lib_Stamped {\n  lib_Item item = 1;\n"), "{proto}");
+    assert!(proto.contains("// Hale: lib::Item"), "{proto}");
+    assert!(proto.contains("optional int64 tag = 2; // Hale: lib::Tag"), "{proto}");
+    assert!(proto.contains("rpc Shelf__put(lib_Item) returns (lib_Stamped);"), "{proto}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The corpus's own served surface, the DNA's head commands, exports a
+/// `.proto` (every shape its rows name has a proto3 encoding), the same bytes
+/// twice, with a message for each of its records and an rpc for each member.
+#[test]
+fn the_dna_head_commands_surface_exports_a_proto() {
+    let program = contract_dir().join("../../dna/api");
+    let (a, b) = (scratch("dna_proto_a"), scratch("dna_proto_b"));
+    export_to(&program, "HeadCommands", &a);
+    export_to(&program, "HeadCommands", &b);
+    let proto = std::fs::read_to_string(a.join("HeadCommands.proto")).unwrap();
+    assert_eq!(proto, std::fs::read_to_string(b.join("HeadCommands.proto")).unwrap(), "two runs, the same bytes");
+    assert!(proto.contains("service HeadCommands {"), "{proto}");
+    let json: Value = serde_json::from_str(&std::fs::read_to_string(a.join("HeadCommands.json-schema.json")).unwrap()).unwrap();
+    for name in json["$defs"].as_object().unwrap().keys() {
+        assert!(proto.contains(&format!("\nmessage {} {{", name.replace("::", "_"))), "a message for {name}");
+    }
+    for name in json["x-hale-members"].as_object().unwrap().keys() {
+        assert!(proto.contains(&format!("  rpc {}(", name.replace("::", "__"))), "an rpc for {name}");
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
+/// The rules of the protobuf form over shapes the witness does not use: a
+/// scalar request, response and error (carried in one-field messages), a row
+/// that takes and returns nothing, a field with a default, a `json:` tag, a
+/// record that reaches another, and two members whose rpc names share a
+/// receiver. Field numbers are the declaration order; every scalar is
+/// `optional`; a record is a field of its message type, not an optional one.
+#[test]
+fn the_protobuf_form_follows_the_rules_over_shapes_of_its_own() {
+    let dir = scratch("proto_rules");
+    let program = dir.join("program.hl");
+    std::fs::write(
+        &program,
+        [
+            "type Inner { a: Int; b: String; }",
+            "type Outer { name: String; inner: Inner; ratio: Float = 0.5; live: Bool = false; id: Int `json:\"ident\"`; }",
+            "locus Shelf {",
+            "    fn size(n: Int) -> Int { return n; }",
+            "    fn nothing() { }",
+            "    fn name_of(o: Outer) -> String fallible(String) { return o.name; }",
+            "    fn plain(o: Outer) -> Outer { return o; }",
+            "}",
+            "api Store { rpc Shelf::size; rpc Shelf::nothing; rpc Shelf::name_of; rpc Shelf::plain; }",
+            "main locus App {",
+            "    params { shelf: Shelf = Shelf { }; }",
+            "    run() {",
+            "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
+            "        while !self.draining { std::time::sleep(100ms); }",
+            "        h.stop();",
+            "    }",
+            "}",
+            "fn main() { App { }; }",
+            "",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    export_to(&program, "Store", &dir.join("out"));
+    let proto = std::fs::read_to_string(dir.join("out/Store.proto")).unwrap();
+    let body: Vec<&str> = proto.lines().filter(|l| !l.starts_with("//")).collect();
+    let body = body.join("\n");
+    // one rpc per member, named as an MCP tool is; a scalar rides in a one-field message
+    assert!(body.contains("rpc Shelf__size(Shelf__sizeRequest) returns (Shelf__sizeResponse);"), "{body}");
+    assert!(body.contains("rpc Shelf__nothing(HaleEmpty) returns (HaleEmpty);"), "{body}");
+    assert!(body.contains("rpc Shelf__name_of(Outer) returns (Shelf__name_ofResponse);"), "{body}");
+    assert!(body.contains("message Shelf__sizeRequest {\n  optional int64 value = 1;\n}"), "{body}");
+    assert!(body.contains("message Shelf__name_ofError {\n  optional string value = 1;\n}"), "{body}");
+    assert!(proto.contains("handler error: status 9, a detail of type type.hale.dev/Shelf__name_ofError"), "{proto}");
+    // numbers are the declaration order, the `json:` tag names the field, a record is a message field
+    assert!(
+        body.contains(
+            "message Outer {\n  optional string name = 1;\n  Inner inner = 2;\n  optional double ratio = 3;\n  optional bool live = 4;\n  optional int64 ident = 5;\n}"
+        ),
+        "{body}"
+    );
+    assert!(body.contains("message Inner {\n  optional int64 a = 1;\n  optional string b = 2;\n}"), "{body}");
+    // the refusal's message is fixed
+    assert!(body.contains("message HaleRefusal {\n  string kind = 1;\n  string reason = 2;\n  repeated string requires = 3;\n  string served = 4;\n}"), "{body}");
+    // and `--check` names a `.proto` that drifted
+    let out = export_cmd(&program, "Store", &["--check", dir.join("out").to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    std::fs::write(dir.join("out/Store.proto"), proto.replace("= 5;", "= 6;")).unwrap();
+    let out = export_cmd(&program, "Store", &["--check", dir.join("out").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Store.proto differs"), "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two fields of a record whose default proto3 JSON names collide (`a_b` and
+/// `aB` are both `aB`; protoc compares them without regard to case, so `a` and
+/// `_a` are `a` and `A`) make a `.proto` protoc refuses. `check --api
+/// --surface X --proto` and `api export` refuse the record with both fields and
+/// the name, and a control whose names differ is written. The JSON, OpenAPI,
+/// schema and MCP forms have no such rule and are still written.
+#[test]
+fn a_record_whose_fields_share_a_json_name_has_no_proto() {
+    let dir = scratch("proto_json_names");
+    let program = |fields: &str| {
+        let path = dir.join("program.hl");
+        std::fs::write(
+            &path,
+            [
+                &format!("type Data {{ {fields} }}"),
+                "locus Shelf { fn put(d: Data) -> Data { return d; } }",
+                "api Store { rpc Shelf::put; }",
+                "main locus App {",
+                "    params { shelf: Shelf = Shelf { }; }",
+                "    run() {",
+                "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-names.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
+                "        h.stop();",
+                "    }",
+                "}",
+                "fn main() { App { }; }",
+                "",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        path
+    };
+    let check = |path: &Path| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(["check"])
+            .arg(path)
+            .args(["--api", "--surface", "Store", "--proto"])
+            .env("HALE_SKIP_STALE_CHECK", "1")
+            .output()
+            .expect("run hale")
+    };
+    for (fields, both, name) in [("a_b: Int; aB: Int;", ["`a_b`", "`aB`"], "the same default JSON name `aB`"), ("a: Int; _a: Int;", ["`a`", "`_a`"], "`a` and `A`")] {
+        let path = program(fields);
+        let out = check(&path);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{fields}: it was written:\n{}", String::from_utf8_lossy(&out.stdout));
+        assert!(err.contains("Data") && both.iter().all(|f| err.contains(f)) && err.contains(name), "{fields}: {err}");
+        let out = export_cmd(&path, "Store", &["--out", dir.join("out").to_str().unwrap()]);
+        assert!(!out.status.success(), "{fields}: export wrote it");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(both.iter().all(|f| err.contains(f)) && err.contains(name), "{fields}: {err}");
+    }
+    // the control: names that differ
+    let path = program("a_b: Int; aC: Int;");
+    let out = check(&path);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("optional int64 aC = 2;"));
+    // and the other forms are written for the colliding record
+    let path = program("a_b: Int; aB: Int;");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check"])
+        .arg(&path)
+        .args(["--api", "--surface", "Store", "--openapi"])
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
 }

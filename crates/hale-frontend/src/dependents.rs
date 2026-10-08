@@ -247,7 +247,12 @@ impl DependencyIndex {
                         surfaced.push(i);
                     }
                 }
-                TopDecl::Fn(fd) if fd.name.name.starts_with("__api_decode_") || fd.name.name.starts_with("__api_encode_") => {
+                TopDecl::Fn(fd)
+                    if fd.name.name.starts_with("__api_decode_")
+                        || fd.name.name.starts_with("__api_encode_")
+                        || fd.name.name.starts_with("__api_pb_decode_")
+                        || fd.name.name.starts_with("__api_pb_encode_") =>
+                {
                     codecs.push(i)
                 }
                 _ => {}

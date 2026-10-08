@@ -373,7 +373,7 @@ endpoint is a socket path, `http://host:port` (the caller is named by
 the document is the bytes the exposure serves. From a program it is
 `hale check --api`: the inventory of every surface and exposure, or with
 `--exposure NAME --caller P [--holds R,...]` one exposure's description,
-or with `--surface NAME --openapi | --json-schema | --mcp` one surface's
+or with `--surface NAME --openapi | --json-schema | --mcp | --proto` one surface's
 projection, all from the rows without running the program.
 ",
         "call" => "\
@@ -473,7 +473,7 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 for a caller holding those roles");
     println!("                                 under its role source. <principal>");
     println!("                                 is a name or the JSON principal.");
-    println!("  --api --surface <name> --openapi | --json-schema | --mcp");
+    println!("  --api --surface <name> --openapi | --json-schema | --mcp | --proto");
     println!("                                 print that form of one surface.");
     println!();
     println!("Effects and budgets:");

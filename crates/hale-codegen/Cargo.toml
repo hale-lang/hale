@@ -35,6 +35,12 @@ dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
 libc = "0.2"
+# Test-only: `protox` compiles the generated `.proto` as protoc would, and the
+# reflection test holds the served descriptor to what it compiled to
+# (api_grpc_proto.rs). Nothing here is the runtime's or the stdlib's.
+prost = "0.13"
+prost-types = "0.13"
+protox = "0.7"
 # The hub tests hold a served description to the fixture documents as values.
 serde_json = "1"
 

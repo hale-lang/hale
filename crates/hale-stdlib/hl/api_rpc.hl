@@ -654,6 +654,11 @@ locus __StdApiExposure {
             // member is the row whose tool name that is
             m = self.tool_row(r.member);
         }
+        if m < 0 && self.via == "grpc" {
+            // a gRPC method is the member written as an MCP tool is
+            // (`Orders__place`, the rpc of the `.proto`)
+            m = self.tool_row(r.member);
+        }
         if m < 0 {
             self.refuse(i.correlation, rid, who, "malformed", "unknown_member: " + r.member, "");
             return;
