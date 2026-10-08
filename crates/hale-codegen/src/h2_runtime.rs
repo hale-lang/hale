@@ -114,49 +114,65 @@ fn staged(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Write the headers under `dir` unless they are already there, complete.
+/// How many generations of the include directory are tried before the
+/// staging gives up: the canonical name and seven beside it.
+const GENERATIONS: u32 = 8;
+
+/// The directory the headers are read from: `canonical` when it holds them
+/// all, else the first generation beside it (`<canonical>-g1`, `-g2`, …)
+/// that does, staged here if none did.
 ///
-/// A directory that is there but incomplete (a cache restored from a run
-/// whose staging was cut short, a staging killed midway) is moved aside and
-/// staged again: its presence alone proves nothing.
-fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
-    if staged(dir) {
-        return Ok(());
-    }
-    // One staging directory per call, not per process: two builds in one
-    // process (a test binary building two h2 programs at once) staged into
-    // one pid-named directory, each removing the other's files before its
-    // rename, and the directory that won could be missing a header.
+/// A complete directory is never moved or removed, by anyone: a build that
+/// was handed one keeps reading it. So a directory that is there but
+/// incomplete (a cache restored from a run whose staging was cut short, a
+/// staging killed midway) is not repaired in place; it is left, and the
+/// next generation's name is used. Every staging writes into a temporary
+/// directory of the call's own and renames it into place, so the name only
+/// ever appears complete, and two callers landing the same generation at
+/// once both find it complete whichever rename won.
+fn stage_headers(canonical: &std::path::Path) -> Result<PathBuf, CodegenError> {
     static STAGINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = STAGINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let pid = std::process::id();
-    let tmp = dir.with_extension(format!("tmp{pid}-{n}"));
     let io = |what: &str, e: std::io::Error| {
         CodegenError::Link(format!("stage the nghttp2 headers ({what}): {e}"))
     };
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(tmp.join("nghttp2")).map_err(|e| io("mkdir", e))?;
-    for (name, text) in HEADERS {
-        std::fs::write(tmp.join(name), text).map_err(|e| io(name, e))?;
-    }
-    if dir.exists() && !staged(dir) {
-        let aside = dir.with_extension(format!("broken{pid}-{n}"));
-        if std::fs::rename(dir, &aside).is_ok() {
-            let _ = std::fs::remove_dir_all(&aside);
+    for generation in 0..GENERATIONS {
+        let dir = if generation == 0 {
+            canonical.to_path_buf()
+        } else {
+            canonical.with_file_name(format!(
+                "{}-g{generation}",
+                canonical
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("lotus-rt-h2-inc")
+            ))
+        };
+        if staged(&dir) {
+            return Ok(dir);
+        }
+        if dir.exists() {
+            // there and incomplete: nobody's to move, so the next name
+            continue;
+        }
+        let n = STAGINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.with_extension(format!("tmp{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("nghttp2")).map_err(|e| io("mkdir", e))?;
+        for (name, text) in HEADERS {
+            std::fs::write(tmp.join(name), text).map_err(|e| io(name, e))?;
+        }
+        // a concurrent staging may have landed the name first: it holds the
+        // same bytes
+        if std::fs::rename(&tmp, &dir).is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        if staged(&dir) {
+            return Ok(dir);
         }
     }
-    // a concurrent build may have put the directory there first: it holds
-    // the same bytes
-    if std::fs::rename(&tmp, dir).is_err() {
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-    if staged(dir) {
-        Ok(())
-    } else {
-        Err(CodegenError::Link(
-            "the nghttp2 headers were not staged".into(),
-        ))
-    }
+    Err(CodegenError::Link(
+        "the nghttp2 headers were not staged".into(),
+    ))
 }
 
 /// The library's objects and the glue's, compiled (or taken from the
@@ -178,9 +194,9 @@ pub(crate) fn h2_objects(
         .cache_dir
         .join(format!("lotus-rt-h2-inc-{:016x}", h.finish()));
     let _ = std::fs::create_dir_all(&options.cache_dir);
-    stage_headers(&dir)?;
+    let include = stage_headers(&dir)?;
     let mut flags: Vec<String> = cflags.to_vec();
-    flags.push(format!("-I{}", dir.display()));
+    flags.push(format!("-I{}", include.display()));
     flags.extend(DEFINES.iter().map(|d| d.to_string()));
     let mut units: Vec<(&str, &str)> = SOURCES.to_vec();
     units.push(("glue", GLUE));
@@ -231,8 +247,9 @@ mod tests {
                 })
                 .collect();
             for t in threads {
-                if let Err(e) = t.join().unwrap() {
-                    panic!("round {round}: {e:?}");
+                match t.join().unwrap() {
+                    Ok(used) => assert_eq!(used, dir, "round {round}: the canonical name"),
+                    Err(e) => panic!("round {round}: {e:?}"),
                 }
             }
             for (name, text) in HEADERS {
@@ -247,22 +264,45 @@ mod tests {
     }
 
     /// A directory that is there but incomplete, as a cache restored from a
-    /// cut-short staging leaves it, is staged again rather than trusted.
+    /// cut-short staging leaves it, is neither trusted nor touched: the next
+    /// generation's name is staged and handed out, the same one to every
+    /// caller, and the incomplete directory keeps its bytes.
     #[test]
-    fn an_incomplete_directory_is_staged_again() {
+    fn an_incomplete_directory_is_left_and_the_next_generation_used() {
         let root =
             std::env::temp_dir().join(format!("hale-h2-stage-broken-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let dir = root.join("inc");
-        std::fs::create_dir_all(dir.join("nghttp2")).unwrap();
-        std::fs::write(dir.join("nghttp2/nghttp2.h"), "not the header").unwrap();
-        stage_headers(&dir).unwrap();
-        assert!(staged(&dir));
-        let (name, text) = HEADERS[0];
-        std::fs::remove_file(dir.join(name)).unwrap();
-        assert!(!staged(&dir));
-        stage_headers(&dir).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text);
+        let canonical = root.join("inc");
+        std::fs::create_dir_all(canonical.join("nghttp2")).unwrap();
+        std::fs::write(canonical.join("nghttp2/nghttp2.h"), "not the header").unwrap();
+        let used = stage_headers(&canonical).unwrap();
+        assert_eq!(used, root.join("inc-g1"));
+        assert!(staged(&used));
+        assert_eq!(
+            std::fs::read_to_string(canonical.join("nghttp2/nghttp2.h")).unwrap(),
+            "not the header"
+        );
+        assert_eq!(
+            stage_headers(&canonical).unwrap(),
+            used,
+            "the same generation again"
+        );
+        // the first generation poisoned too: the second
+        let (name, _) = HEADERS[0];
+        std::fs::remove_file(used.join(name)).unwrap();
+        let next = stage_headers(&canonical).unwrap();
+        assert_eq!(next, root.join("inc-g2"));
+        assert!(staged(&next));
+        assert!(!staged(&used), "a generation is never repaired in place");
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temporary directory is left: {leftovers:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
