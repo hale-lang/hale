@@ -220,3 +220,89 @@ fn the_witness_serve_sites_are_the_inventorys() {
     let names: Vec<&str> = rows.serves.iter().filter_map(|s| s.name.as_deref()).collect();
     assert_eq!(names, vec!["public", "partner", "admin"]);
 }
+
+// ---- a main locus the program imports ----
+
+/// A seed whose library declares a `main locus` that serves, and an entry
+/// program `entry` (the library is `import "lib" as lib;`).
+fn seed_with_serving_library(tag: &str, entry: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("hale_serve_imported_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(
+        d.join("lib/main.hl"),
+        "type Req { n: Int; }
+type Res { n: Int; }
+locus Echo { fn echo(r: Req) -> Res { return Res { n: r.n }; } }
+api Public { rpc Echo::echo; }
+main locus LibMain {
+    params {
+        echo: Echo = Echo { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+    }
+    run() {
+        let public = api::serve(Public, self.fixture, as: \"public\", bound: 8, on_full: refuse);
+        public.stop();
+    }
+}
+fn main() { LibMain { }; }
+",
+    )
+    .unwrap();
+    std::fs::write(d.join("main.hl"), entry).unwrap();
+    d
+}
+
+fn errors_of_seed(dir: &std::path::Path) -> Vec<String> {
+    let snap = Snapshot::load(dir, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("it loads");
+    let diags = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
+    // (the CLI writes an imported name as the program spells it)
+    let out = diags.iter().filter(|d| d.is_error()).map(|d| d.message.replace("__lib_lib___main__LibMain", "lib::LibMain")).collect();
+    let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+const IMPORTED_MAIN_SERVES: &str = "`api::serve` in `lib::LibMain`, a main locus the program imports: only the entry program's main locus serves; serve from the entry's main locus or hold the exposure there (spec/api.md § Serving)";
+
+#[test]
+fn a_serve_in_a_main_locus_the_program_builds_but_imports_is_refused() {
+    // the program writes the library's main locus as a part of its own main
+    // locus: the exposure would never be built, since only the entry's main
+    // locus serves
+    let as_a_child = seed_with_serving_library(
+        "child",
+        "import \"lib\" as lib;
+main locus App { params { inner: lib::LibMain = lib::LibMain { }; } run() { } }
+fn main() { App { }; }
+",
+    );
+    assert_eq!(errors_of_seed(&as_a_child), vec![IMPORTED_MAIN_SERVES.to_string()]);
+    // and as the whole program, `fn main() { lib::LibMain { }; }` (a seed whose
+    // only main locus is imported has no entry)
+    let as_the_program = seed_with_serving_library(
+        "program",
+        "import \"lib\" as lib;
+fn main() { lib::LibMain { }; }
+",
+    );
+    assert_eq!(errors_of_seed(&as_the_program), vec![IMPORTED_MAIN_SERVES.to_string()]);
+}
+
+#[test]
+fn a_library_whose_main_locus_is_only_imported_for_its_types_is_admitted() {
+    // its serve site never runs, and the program says nothing of it: an
+    // application's tests import the application this way
+    let types_only = seed_with_serving_library(
+        "types",
+        "import \"lib\" as lib;
+main locus App { run() { let r = lib::Req { n: 1 }; println(r.n); } }
+fn main() { App { }; }
+",
+    );
+    assert_eq!(errors_of_seed(&types_only), Vec::<String>::new());
+}

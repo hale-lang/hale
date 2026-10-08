@@ -372,6 +372,17 @@ main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
 runs on a pool of its own, which only the main locus places; serve from
 the main locus" (§ The Unix transport, § The HTTP transport).
 
+Only the entry program's main locus serves: the serve expansion builds
+the exposure's listener on it, and a `main locus` that arrives through
+`import` is constructed by nobody. A serve site in an imported main locus
+that the program also writes the name of (`lib::Head { }` as a part of its
+own main locus, or as its `fn main`) would build and check and serve
+nothing, so it is refused: "`api::serve` in `lib::Head`, a main locus
+the program imports: only the entry program's main locus serves; serve
+from the entry's main locus or hold the exposure there". A library whose
+main locus is only imported for its types, as an application's tests
+import the application, never runs its serve sites and is not refused.
+
 **What happens to a request.** The transport turns bytes into a
 request: the member, the payload's bytes and a correlation (§ The `Rpc`
 interface). The runtime then holds it to these checks in this order,

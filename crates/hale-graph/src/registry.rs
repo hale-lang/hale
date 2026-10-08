@@ -1251,7 +1251,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[
             consumer_at("check (the admission law over the rows: laws 1 to 5 and 7 of spec/api.md, beside the may-violate law, `CheckInputs::surfaces`)", CHECK, "surface_laws"),
             consumer_at("check (the snapshot's check stage: the same laws over the snapshot's rows)", SNAPSHOT, "surface_laws"),
-            consumer_at("check (the laws of a serve site: an exposure named once, every receiver type bound, a receiver that outlives its exposure, a bound type the rows name, a stated queue)", CHECK, "serve_laws"),
+            consumer_at("check (the laws of a serve site: an exposure named once, every receiver type bound, a receiver that outlives its exposure, a bound type the rows name, a stated queue, no serve site in a main locus the program imports and builds)", CHECK, "serve_laws"),
             consumer_at("check (the snapshot's check stage: the serve-site laws over the snapshot's rows)", SNAPSHOT, "serve_laws"),
             consumer_at("the model (the `surfaces` and `surface_rows` tables, projected; the digest law)", MODEL_BUILDER, "inputs.surfaces"),
             consumer_at("build (a hub binding the expansion could not serve, and a serve site over a transport this compiler does not ship, are refused)", TLIB, "unserved_sites"),
@@ -1262,7 +1262,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("serve (the runtime's dispatch over a socket: Context, the digest check, requires before enqueue, decode by shape, R2b and R3)"),
             consumer_at("hubs (R5: a topic bound to a hub: the hub's literal made the standard library's, its listener, one adapter binding and JSON codec per stream row, the rows adapter and the description's pieces, written before the check by the desugar sequence)", HUB_EXPAND, "expand"),
             consumer("hubs (the runtime, api_hub.hl: admission against the row's requires, delivery from a queue of `bound` frames under `on_full`, expiry and revocation, `closed` at stop(), R5)"),
-            consumer("describe / call / watch / admin / mcp (over descriptions, R4)"),
+            consumer("describe / call / watch / admin / mcp --app (R4 C: each reads the exposure's description, `{\"describe\": true}` or `GET /.description`, and speaks the R0 wire; `crates/hale-cli/src/api_client.rs`, `mcp.rs`)"),
             consumer("ui (reserved)"),
         ],
         invariants: &[
