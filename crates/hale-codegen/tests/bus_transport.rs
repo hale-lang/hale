@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_runtime.rs"]
+mod api_runtime;
 #[path = "api_serve_build.rs"]
 mod api_serve_build;
 #[path = "mirror_ring.rs"]

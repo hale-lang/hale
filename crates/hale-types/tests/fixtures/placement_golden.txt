@@ -1198,6 +1198,14 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
 row	App@main1	App	main	default
 
+== crates/hale-codegen/tests/api_runtime.rs#9876407f
+root	App	the entry
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.probe	Probe	main	default
+row	App@literal1.svc	Svc	pool:work	entry	off owner
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == crates/hale-codegen/tests/api_serve_build.rs#1a23f61d
 root	Desk	the entry
 domain	pool:op	async_io
@@ -5873,6 +5881,33 @@ row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/placement_test.hl
+root	App	the entry
+domain	pool:far_pool	async_io
+domain	pool:bad_pool	async_io
+row	App@literal1	App	main	default
+row	App@literal1.far	Far	pool:far_pool	entry	off owner
+row	App@literal1.far_bad	FarBad	pool:bad_pool	entry	off owner
+row	App@literal1.near	Near	main	default
+row	App@literal1.near_bad	NearBad	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
+== tests/hale/api/replace_test.hl
+root	App	the entry
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.svc	Svc	pool:work	entry	off owner
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
+dynamic	Svc	on main
+
+== tests/hale/api/restart_test.hl
+root	App	the entry
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.svc	Svc	pool:work	entry	off owner
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/rpc_types_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -5896,6 +5931,21 @@ row	~.svc	Svc	main	inherited
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
 dynamic	Server	on main
+
+== tests/hale/api/witness_test.hl
+root	Desk	the entry
+domain	pool:desk	async_io
+domain	pool:partner	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.admin_roles	Grants	main	default
+row	Desk@literal1.audit	Audit	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.ledger	Ledger	pool:desk	entry	off owner
+row	Desk@literal1.orders	Orders	pool:desk	entry	off owner
+row	Desk@literal1.partner_orders	Orders	pool:partner	entry	off owner
+row	Desk@literal1.partner_roles	Grants	main	default
+row	Desk@literal1.public_roles	Grants	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api_bearer_roles_test.hl
 shared	Api@main2	Api #a23e2495

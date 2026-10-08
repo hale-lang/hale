@@ -1,0 +1,107 @@
+// GH #1417 (R2a, spec/api.md § Receiver failure and generations) — a bound
+// receiver that restarts in place.
+//
+// `arm` flips a flag the receiver's `run()` is waiting on; `run()` then
+// violates, and the owner's `on_failure` restarts the receiver (`birth()`
+// runs again, on the same instance, at the same address). Each incarnation
+// of a bound receiver is a generation, and a call is never run by one other
+// than the one it was admitted under:
+//
+//   * the call executing across the restart (`arm`, held for 60 ms) completes
+//     under the generation that ran it, and is answered;
+//   * the calls queued behind it were accepted under that generation, so they
+//     settle `unavailable` and never run, though the instance they would have
+//     reached is alive again, at the same address;
+//   * the next call runs in the new generation, and its `Context` says so,
+//     without the exposure being re-established.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+locus Svc {
+    params {
+        births: Int = 0;
+        runs: Int = 0;
+        armed: Bool = false;
+        ran_slow: Int = 0;
+        ran_fast: Int = 0;
+    }
+    closure fuse { captures: runs; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs == 1 {
+            let mut i = 0;
+            while !self.armed && i < 5000 { std::time::sleep(1ms); i = i + 1; }
+            violate fuse;
+        }
+    }
+    fn arm(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.armed = true;
+        std::time::sleep(60ms);
+        return Res { n: ctx.generation };
+    }
+    fn slow(r: Req) -> Res {
+        self.ran_slow = self.ran_slow + 1;
+        return Res { n: r.n };
+    }
+    fn fast(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.ran_fast = self.ran_fast + 1;
+        return Res { n: ctx.generation };
+    }
+}
+
+api S {
+    rpc Svc::arm;
+    rpc Svc::slow;
+    rpc Svc::fast;
+}
+
+main locus App {
+    params {
+        svc: Svc = Svc { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        failures: Int = 0;
+        answered_when_failed: Int = -1;
+    }
+    placement { svc: cooperative(pool = work) where async_io; }
+    on_failure(c: Svc, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        self.answered_when_failed = self.fixture.outcomes_of(2);
+        restart (c) for 3;
+    }
+
+    run() {
+        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        let f = self.fixture;
+
+        f.call_as_peer(1, "Svc::fast", "{\"n\":1}", 1000);
+        std::test::assert_eq_str(f.await_outcome(1, 2000), "result", "the first generation serves");
+        std::test::assert(std::str::contains(f.line(1), "\"value\":{\"n\":1}"), "and says it is the first");
+        std::test::assert_eq_int(self.svc.births, 1, "one incarnation so far");
+
+        // the call that arms the failure, and two calls queued behind it
+        f.call_as_peer(2, "Svc::arm", "{\"n\":2}", 1000);
+        f.call_as_peer(3, "Svc::slow", "{\"n\":3}", 1000);
+        f.call_as_peer(4, "Svc::fast", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(f.await_outcome(2, 3000), "result", "the call executing across the restart completes");
+        std::test::assert(std::str::contains(f.line(2), "\"value\":{\"n\":1}"), "under the generation that ran it");
+        std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
+        std::test::assert_eq_str(f.await_outcome(3, 3000), "refusal:unavailable", "a call queued behind it was accepted under the failed generation");
+        std::test::assert_eq_str(f.await_outcome(4, 3000), "refusal:unavailable", "and so was the next");
+        let mut i = 0;
+        while i < 3000 && self.svc.births < 2 { std::time::sleep(1ms); i = i + 1; }
+        std::test::assert_eq_int(self.svc.births, 2, "the receiver restarted: a new incarnation, the same instance");
+        std::test::assert_eq_int(self.svc.ran_slow, 0, "neither queued call ran, in either generation");
+        std::test::assert_eq_int(self.svc.ran_fast, 1, "only the first generation's fast call ran");
+
+        // the next call runs in the new generation
+        f.call_as_peer(5, "Svc::fast", "{\"n\":5}", 1000);
+        std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "the restarted receiver serves again, without re-establishing the exposure");
+        std::test::assert(std::str::contains(f.line(5), "\"value\":{\"n\":2}"), "in the second generation");
+        std::test::assert_eq_int(self.svc.ran_fast, 2, "it ran once");
+        h.stop();
+    }
+}
+
+fn main() { App { }; }

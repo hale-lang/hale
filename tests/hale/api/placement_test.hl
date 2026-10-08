@@ -1,0 +1,135 @@
+// GH #1417 (R2a, spec/api.md § The request lifecycle, 1) — waiting permits
+// supervision to progress, whether the receiver shares the exposure's pool
+// or runs on another.
+//
+// `Near` runs on the main pool, the exposure's own; `Far` on a pool of its
+// own. Each has a handler that waits (a sleep, which yields to the
+// scheduler), and each has a twin (`NearBad`, `FarBad`) with a handler that
+// violates, the owner's `on_failure` on the main pool. A reply wait that
+// held the pool the handler, the owner's `on_failure` or the completion
+// needs would deadlock here; the program completes instead, in the time
+// its waits take, and:
+//
+//   * a violation in either placement is the server error, answered after
+//     the owner's `on_failure` ran;
+//   * a call to `Near` is served while a `Far` call is held in its wait
+//     (the wait is a yield, not a block);
+//   * `stop()` called while a `Far` call is executing waits for it, and
+//     returns once the pool has delivered its outcome.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+locus Near {
+    fn wait(r: Req) -> Res {
+        std::time::sleep(20ms);
+        return Res { n: r.n };
+    }
+}
+
+locus Far {
+    params { entered: Int = 0; finished: Int = 0; }
+    fn wait(r: Req) -> Res {
+        self.entered = self.entered + 1;
+        std::time::sleep(60ms);
+        self.finished = self.finished + 1;
+        return Res { n: r.n };
+    }
+}
+
+locus NearBad {
+    params { entered: Int = 0; }
+    closure bad { captures: entered; epoch inline; }
+    fn boom(r: Req) -> Res fallible(ClosureViolation) {
+        self.entered = self.entered + 1;
+        violate bad;
+    }
+}
+
+locus FarBad {
+    params { entered: Int = 0; }
+    closure bad { captures: entered; epoch inline; }
+    fn boom(r: Req) -> Res fallible(ClosureViolation) {
+        self.entered = self.entered + 1;
+        violate bad;
+    }
+}
+
+api S {
+    rpc Near::wait;
+    rpc Far::wait;
+    rpc NearBad::boom;
+    rpc FarBad::boom;
+}
+
+main locus App {
+    params {
+        near: Near = Near { };
+        far: Far = Far { };
+        near_bad: NearBad = NearBad { };
+        far_bad: FarBad = FarBad { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        near_failed: Int = 0;
+        far_failed: Int = 0;
+        near_answered_first: Int = -1;
+        far_answered_first: Int = -1;
+    }
+    placement {
+        far: cooperative(pool = far_pool) where async_io;
+        far_bad: cooperative(pool = bad_pool) where async_io;
+    }
+    on_failure(n: NearBad, err: ClosureViolation) {
+        self.near_failed = self.near_failed + 1;
+        self.near_answered_first = self.fixture.outcomes_of(2);
+    }
+    on_failure(f: FarBad, err: ClosureViolation) {
+        self.far_failed = self.far_failed + 1;
+        self.far_answered_first = self.fixture.outcomes_of(4);
+    }
+
+    run() {
+        let h = api::serve(S, self.fixture, as: "svc", receivers: { Near: self.near, Far: self.far, NearBad: self.near_bad, FarBad: self.far_bad }, bound: 8, on_full: refuse);
+        let f = self.fixture;
+        let began = std::time::monotonic_ns();
+
+        // same pool: a wait, then a violation
+        f.call_as_peer(1, "Near::wait", "{\"n\":1}", 1000);
+        std::test::assert_eq_str(f.await_outcome(1, 3000), "result", "a same-pool call that waits completes");
+        f.call_as_peer(2, "NearBad::boom", "{\"n\":2}", 1000);
+        std::test::assert_eq_str(f.await_outcome(2, 3000), "server_error", "a same-pool violation is the server error");
+        std::test::assert_eq_int(self.near_failed, 1, "the owner's on_failure ran");
+        std::test::assert_eq_int(self.near_answered_first, 0, "before the caller was answered");
+
+        // another pool: a wait, then a violation
+        f.call_as_peer(3, "Far::wait", "{\"n\":3}", 1000);
+        std::test::assert_eq_str(f.await_outcome(3, 3000), "result", "a cross-pool call that waits completes");
+        f.call_as_peer(4, "FarBad::boom", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(f.await_outcome(4, 3000), "server_error", "a cross-pool violation is the server error");
+        std::test::assert_eq_int(self.far_failed, 1, "the owner's on_failure ran");
+        std::test::assert_eq_int(self.far_answered_first, 0, "before the caller was answered");
+
+        // a call to one placement while the other is held in a wait
+        f.call_as_peer(5, "Far::wait", "{\"n\":5}", 1000);
+        std::time::sleep(10ms);
+        std::test::assert_eq_int(self.far.entered, 2, "the Far call is held in its wait");
+        std::test::assert_eq_int(f.outcomes_of(5), 0, "unanswered");
+        f.call_as_peer(6, "Near::wait", "{\"n\":6}", 1000);
+        std::test::assert_eq_str(f.await_outcome(6, 3000), "result", "a same-pool call is served while a cross-pool one waits");
+        std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "and the held call completes");
+
+        // stop() while a Far call is executing waits for it, by yielding
+        f.call_as_peer(7, "Far::wait", "{\"n\":7}", 1000);
+        std::time::sleep(10ms);
+        let before = std::time::monotonic_ns();
+        h.stop();
+        std::test::assert_eq_str(f.outcome(7), "result", "stop() returned after the held call was answered");
+        std::test::assert(std::time::monotonic_ns() - before >= 20000000, "and it waited for it");
+        std::test::assert_eq_int(self.far.finished, 3, "every Far wait ran to completion");
+
+        // no wait cycle: the whole program took the time its waits take, not a timeout
+        let took = std::time::monotonic_ns() - began;
+        std::test::assert(took < 2500000000, "no wait held a pool another needed");
+    }
+}
+
+fn main() { App { }; }
