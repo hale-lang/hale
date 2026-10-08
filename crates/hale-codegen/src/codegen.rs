@@ -7509,6 +7509,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(f) => *f,
                     None => continue,
                 };
+                // The wrapper passes (self, payload[, context]). A fallible
+                // handler also takes result/error out-slots, which the
+                // check refuses; a build that skips the check must not
+                // emit a short call (LLVM's IPSCCP crashes on it).
+                if handler_fn.count_params() > 3 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "bus handler `{}.{}` cannot be fallible",
+                        locus_name, handler_name
+                    )));
+                }
                 let wname = format!("__hwrap_{}_{}", locus_name, handler_name);
                 let wty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
                 let wrap = self.module.add_function(&wname, wty, None);
