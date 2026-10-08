@@ -133,11 +133,14 @@ locus HeadCases {
         let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.api_port) + "/app.js", "", "");
         std::test::assert_eq_int(child_asset.status, 404, "the child has no webroot");
         // a proxied POST with the head's Origin reaches the child's api binding
-        // on its own HTTP transport (GH #1135): an empty object is its `malformed`
+        // on its own HTTP transport (GH #1135): a call whose payload does not decode is
+        // the exposure's own `malformed`; a bare `{}` is the relay's `not_a_call`
         let commands = APPLICATIONS + "/" + self.f.identity + "/commands";
-        let forwarded = self.f.http("POST", commands, self.f.command_headers(), "{}");
+        let forwarded = self.f.http("POST", commands, self.f.command_headers(), "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":1}}");
         std::test::assert_eq_int(forwarded.status, 400, forwarded.body);
-        std::test::assert(std::str::contains(forwarded.body, "\"kind\":\"malformed\"") && std::str::contains(forwarded.body, "\"via\":\"http\""), "the child's binding answered over its HTTP transport: " + forwarded.body);
+        std::test::assert(std::str::contains(forwarded.body, "\"kind\":\"malformed\"") && !std::str::contains(forwarded.body, "not_a_call"), "the child's binding answered over its HTTP transport: " + forwarded.body);
+        let bare = self.f.http("POST", commands, self.f.command_headers(), "{}");
+        std::test::assert(std::str::contains(bare.body, "\"reason\":\"not_a_call\""), "the relay refuses a line that is not a call: " + bare.body);
         self.f.error("POST", commands, "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + self.f.token(), "{}", 403, "invalid_origin");
         let missing = self.f.http("GET", APPLICATIONS + "/nope/dna/practices", "", "");
         std::test::assert_eq_int(missing.status, 404, "the child's own 404 passes through: " + missing.body);
