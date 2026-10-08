@@ -70,6 +70,8 @@ locus __StdIoH2Conn {
         fd: Int = -1;
         session: Int = 0;
         open: Bool = true;
+        // the connection's one writer is running (see `flush`)
+        flushing: Bool = false;
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
         // what a read brings, handed to the session and cleared: the
         // connection reads into one buffer for its whole life
@@ -94,7 +96,10 @@ locus __StdIoH2Conn {
         if self.open { self.settle(); }
         while self.open && !self.draining { self.step(); }
         // the connection is over: every stream of it is, and the descriptor
-        // is released
+        // is released once the writer, if one is parked in a send, is out of it.
+        // Every exit from the loop went through `hangup`, whose shutdown fails
+        // that send, so the wait is bounded
+        while self.flushing { std::time::sleep(1ms); }
         self.pump();
         __ApiH2EventT <- __StdIoH2Event { key: self.tid, conn: self.conn, kind: 7, stream: 0, code: 0, bytes: __h2_none() };
         if self.session != 0 {
@@ -119,7 +124,7 @@ locus __StdIoH2Conn {
         // the end of the stream, below 0 a read that failed: either ends it.
         let n = std::io::tcp::recv_into(self.fd, self.rx, 16384);
         if n <= 0 {
-            self.open = false;
+            self.hangup();
             return;
         }
         let used = std::io::h2::__feed(self.session, self.rx.view());
@@ -128,7 +133,7 @@ locus __StdIoH2Conn {
         self.settle();
         // a protocol error: the session has queued its GOAWAY, which
         // `settle` has written
-        if used < 0 { self.open = false; }
+        if used < 0 { self.hangup(); }
     }
     // The session's events, raised for the transport.
     @unbounded
@@ -147,17 +152,31 @@ locus __StdIoH2Conn {
     // stream done).
     fn settle() {
         self.flush();
-        if self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
+        // while the writer is parked in a send, what it has not yet written
+        // is not "nothing more": the writer settles when it has finished
+        if !self.flushing && self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
     }
+    // The connection's one writer, as the ws hub's connection has it: the
+    // session's output is the queue, and whoever finds no writer running
+    // becomes it. A write can park (a full socket buffer), and the pool then
+    // runs the other handlers of this connection, the read loop's among them;
+    // they feed or answer the session, find the writer running, and return,
+    // and the writer takes what they queued once the blob in its hands is
+    // wholly sent. The session is drained only between sends, so the bytes of
+    // two units (a response's frames come out of the session together) never
+    // meet on the wire, and nothing else on the connection calls `send`.
     @unbounded
     fn flush() {
-        if self.fd < 0 || self.session == 0 { return; }
+        if self.flushing || self.fd < 0 || self.session == 0 { return; }
+        self.flushing = true;
         let mut out = std::io::h2::__drain(self.session);
         while len(out) > 0 && self.open {
             // a write that fails ends this connection, and only this one
             self.stream.send_bytes(out) or { self.hangup(); };
-            if self.open { out = std::io::h2::__drain(self.session); }
+            if self.open && self.session != 0 { out = std::io::h2::__drain(self.session); }
         }
+        self.flushing = false;
+        if self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
     }
     fn on_cmd(c: __StdIoH2Cmd) {
         if !self.open || self.session == 0 { return; }
@@ -182,7 +201,9 @@ locus __StdIoH2Conn {
             self.settle();
         }
     }
-    // Stop reading: the shutdown wakes the reader, which ends the connection.
+    // End the connection: the shutdown wakes a reader and fails a send parked
+    // on a full buffer, so the writer returns; the descriptor and the session
+    // stay until `run` has seen it return.
     fn hangup() {
         self.open = false;
         if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }

@@ -476,6 +476,112 @@ fn rss_kb(pid: u32) -> u64 {
     status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok()).expect("VmRSS")
 }
 
+/// The `Public` program with a receipt that carries a megabyte: `memo`, `n`
+/// bytes of the alphabet starting `id % 26` letters in, so each call's
+/// answer says whose it is. (The position limit is out of the way.)
+fn big_source() -> String {
+    let mut s = source(64);
+    for (from, to) in [
+        ("type OrderReceipt { order: OrderId; notional: Money; }", "type OrderReceipt { order: OrderId; notional: Money; memo: String; }"),
+        ("if o.qty > 10000 { violate position_limit; }", "if o.qty > 100000000 { violate position_limit; }"),
+        ("return OrderReceipt { order: id, notional: o.limit * o.qty };", "return OrderReceipt { order: id, notional: o.limit * o.qty, memo: memo(Int(id), o.qty) };"),
+        (
+            "main locus Desk {",
+            "@unbounded\nfn memo(id: Int, n: Int) -> String {\n    let r = id % 26;\n    let a = \"abcdefghijklmnopqrstuvwxyz\";\n    let mut s = a[r..26] + a[0..r];\n    while len(s) < n { s = s + s; }\n    return s[0..n];\n}\n\nmain locus Desk {",
+        ),
+    ] {
+        assert!(s.contains(from), "{from}");
+        s = s.replacen(from, to, 1);
+    }
+    s
+}
+
+fn big() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let bin = harness::unique_bin("api_grpc_big");
+            build_opts::build_source(&big_source(), &bin, &build_opts::options()).expect("build the Public program with a large receipt");
+            bin
+        })
+        .clone()
+}
+
+#[test]
+fn large_answers_to_calls_in_flight_share_a_connection_without_interleaving() {
+    // Eight calls at once, each answered with a megabyte (eight in all,
+    // several times what the socket's buffers hold), to a client that reads
+    // nothing for a while and then in small pieces, with PINGs while the
+    // server's writes are parked. The connection has one writer: every
+    // message arrives whole and its own.
+    const MEMO: usize = 1_000_000;
+    let server = Server::start(&big(), &[]);
+    server.ready();
+    let mut c = Client::connect(server.port);
+    let streams: Vec<u32> = (0..8).map(|i| 2 * i + 1).collect();
+    let big_place = "{\"symbol\":\"ACME\",\"qty\":1000000,\"limit\":1}";
+    for s in &streams {
+        call(&mut c, *s, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(big_place));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    c.ping(*b"parked!!");
+    std::thread::sleep(Duration::from_millis(200));
+    c.ping(*b"parked2!");
+    c.slowly(&streams, Duration::from_secs(90), 8192, Duration::from_millis(1));
+    let mut orders = Vec::new();
+    for s in &streams {
+        let r = c.streams.get(s).cloned().unwrap_or_default();
+        assert_eq!(r.header("grpc-status"), Some("0"), "stream {s}: {} bytes of data, ended={}", r.data.len(), r.ended);
+        let text = text_of(&r);
+        let order: usize = text.strip_prefix("{\"order\":").and_then(|t| t.split(',').next()).and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("stream {s}: {}", &text[..text.len().min(80)]));
+        let memo = text.split("\"memo\":\"").nth(1).and_then(|m| m.strip_suffix("\"}")).expect("a memo");
+        assert_eq!(memo.len(), MEMO, "stream {s}");
+        let whole = memo.bytes().enumerate().all(|(i, b)| b == b'a' + ((i + order) % 26) as u8);
+        assert!(whole, "stream {s} (order {order}): a byte is not where its call put it");
+        orders.push(order);
+    }
+    orders.sort();
+    assert_eq!(orders, (41..49).collect::<Vec<_>>(), "eight calls, eight distinct orders");
+    c.idle(Duration::from_millis(200));
+    assert_eq!(c.pongs, 2, "both PINGs were acknowledged");
+    assert!(c.goaway.is_none() && !c.eof, "the connection is whole");
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn a_half_close_while_the_writer_is_parked_ends_the_connection() {
+    // Eight calls answered with a megabyte each, to a client that reads
+    // nothing: the connection's writer parks in a send. The client half-closes
+    // its write side, its read side open and unread; the server's connection
+    // ends in bounded time and gives its descriptor back, and another
+    // connection of the listener still answers.
+    let server = Server::start(&big(), &[]);
+    server.ready();
+    let fds = |pid: u32| std::fs::read_dir(format!("/proc/{pid}/fd")).expect("fd dir").count();
+    let mut b = Client::connect(server.port);
+    let place = "{\"symbol\":\"ACME\",\"qty\":1,\"limit\":1}";
+    call(&mut b, 1, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(place));
+    assert_eq!(b.response(1, Duration::from_secs(10)).header("grpc-status"), Some("0"));
+    let held = fds(server.pid());
+    let mut c = Client::connect(server.port);
+    assert_eq!(fds(server.pid()), held + 1, "the connection holds a descriptor");
+    let big_place = "{\"symbol\":\"ACME\",\"qty\":1000000,\"limit\":1}";
+    for s in (0..8).map(|i| 2 * i + 1) {
+        call(&mut c, s, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(big_place));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    c.half_close();
+    let start = std::time::Instant::now();
+    while fds(server.pid()) != held {
+        assert!(start.elapsed() < Duration::from_secs(10), "the descriptor of the half-closed connection is released");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    call(&mut b, 3, "/Public/Orders.place", Some("t-alice"), None, JSON, &message(place));
+    assert_eq!(b.response(3, Duration::from_secs(10)).header("grpc-status"), Some("0"), "the other connection is unaffected");
+    assert!(server.finish().status.success());
+    drop(c);
+}
+
 #[test]
 fn a_long_lived_connection_does_not_grow_with_the_calls_it_carries() {
     // One connection, call after call. Its read once allocated a blob out
