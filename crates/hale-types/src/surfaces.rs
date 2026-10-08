@@ -469,6 +469,123 @@ pub(crate) fn locus_serve_sites(l: &LocusDecl) -> Vec<ServeSite<'_>> {
     out
 }
 
+/// Where a selected member was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberOrigin {
+    /// A row of an `api` block.
+    Block,
+    /// An `@rpc` handler.
+    Rpc,
+}
+
+/// One member a surface holds, by names alone: no typed snapshot.
+#[derive(Debug, Clone)]
+pub struct SelectedMember {
+    pub surface: String,
+    /// The member as its author spelled it (`Echo::echo`, `toy::Echo::echo`,
+    /// a free fn's bare name).
+    pub member: String,
+    /// The locus; empty for a free fn.
+    pub locus: String,
+    pub method: String,
+    pub requires: Vec<(String, Span)>,
+    pub span: Span,
+    /// The span the surface takes from this member: the block's, or the
+    /// `@rpc` attribute's.
+    pub surface_span: Span,
+    pub origin: MemberOrigin,
+    /// The import alias of the seed that declares the locus, when it is
+    /// another seed's.
+    pub alias: Option<String>,
+    /// The position among the members selected, in source order.
+    pub written_at: usize,
+}
+
+/// The one selection rule of the `surface` family, shared by
+/// [`surface_rows`] (which types and hashes what it selects) and the
+/// `@rpc` adapter (`rpc_expand`, which expands it): which members belong
+/// to which surface. An `api` block's rows belong to the block's name. An
+/// `@rpc` handler of a locus another seed declares (`renames` names those
+/// loci) belongs to that seed's default surface, named by its import
+/// alias; one of the seed's own loci, or a free fn, belongs to the seed's
+/// default surface (`default_surface`). Rows that share a name are one
+/// surface, all kept, whatever the name equals. `surface` limits the
+/// result to one surface; `None` selects every surface's members.
+pub fn select_members(
+    programs: &[&Program],
+    surface: Option<&str>,
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> Vec<SelectedMember> {
+    let mut out: Vec<SelectedMember> = Vec::new();
+    let mut push = |m: SelectedMember| {
+        if surface.is_none_or(|s| s == m.surface) {
+            out.push(SelectedMember { written_at: out.len(), ..m });
+        }
+    };
+    for p in programs {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Api(a) => {
+                    for r in &a.rows {
+                        push(SelectedMember {
+                            surface: a.name.name.clone(),
+                            member: format!("{}::{}", r.written, r.method.name),
+                            locus: r.locus.name.clone(),
+                            method: r.method.name.clone(),
+                            requires: r.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                            span: r.span,
+                            surface_span: a.span,
+                            origin: MemberOrigin::Block,
+                            alias: None,
+                            written_at: 0,
+                        });
+                    }
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        let LocusMember::Fn(f) = m else { continue };
+                        let Some(attr) = &f.rpc else { continue };
+                        let (surface, written, alias) = match renames.iter().find(|(_, m)| *m == l.name.name) {
+                            Some((path, _)) => (path[0].clone(), path.join("::"), Some(path[0].clone())),
+                            None => (default_surface.to_string(), l.name.name.clone(), None),
+                        };
+                        push(SelectedMember {
+                            surface,
+                            member: format!("{written}::{}", f.name.name),
+                            locus: l.name.name.clone(),
+                            method: f.name.name.clone(),
+                            requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                            span: attr.span,
+                            surface_span: attr.span,
+                            origin: MemberOrigin::Rpc,
+                            alias,
+                            written_at: 0,
+                        });
+                    }
+                }
+                TopDecl::Fn(f) => {
+                    let Some(attr) = &f.rpc else { continue };
+                    push(SelectedMember {
+                        surface: default_surface.to_string(),
+                        member: f.name.name.clone(),
+                        locus: String::new(),
+                        method: f.name.name.clone(),
+                        requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                        span: attr.span,
+                        surface_span: attr.span,
+                        origin: MemberOrigin::Rpc,
+                        alias: None,
+                        written_at: 0,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// The `surface` family of `bundle` (spec/api.md § Surfaces and their
 /// rows): every row an `api` block or an `@rpc` handler declares,
 /// resolved against the loci it names; each surface's digest; the serve
@@ -557,67 +674,27 @@ pub fn surface_rows(
 
     // ---- the rows, as written ----
     let default_surface = seed_name(bundle);
-    let mut rows: Vec<Row> = Vec::new();
     let mut surface_spans: BTreeMap<String, Span> = BTreeMap::new();
+    let mut rows: Vec<Row> = Vec::new();
+    for m in select_members(&programs, None, &bundle.import_renames, &default_surface) {
+        surface_spans.entry(m.surface.clone()).or_insert(m.surface_span);
+        rows.push(Row {
+            handler: if m.locus.is_empty() { Handled::FreeFn } else { resolve(&m.locus, &m.method) },
+            surface: m.surface,
+            member: m.member,
+            locus: m.locus,
+            method: m.method,
+            requires: m.requires,
+            span: m.span,
+            from_attr: m.origin == MemberOrigin::Rpc,
+            written_at: m.written_at,
+        });
+    }
+    // a block with no rows is still a surface
     for p in &programs {
         for d in flat_decls(&p.items) {
-            match d {
-                TopDecl::Api(a) => {
-                    surface_spans.entry(a.name.name.clone()).or_insert(a.span);
-                    for r in &a.rows {
-                        rows.push(Row {
-                            surface: a.name.name.clone(),
-                            member: format!("{}::{}", r.written, r.method.name),
-                            locus: r.locus.name.clone(),
-                            method: r.method.name.clone(),
-                            requires: r.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
-                            span: r.span,
-                            from_attr: false,
-                            written_at: rows.len(),
-                            handler: resolve(&r.locus.name, &r.method.name),
-                        });
-                    }
-                }
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        let LocusMember::Fn(f) = m else { continue };
-                        let Some(attr) = &f.rpc else { continue };
-                        // A locus another seed declares feeds that seed's
-                        // default surface, named by its import alias.
-                        let (surface, written) = match bundle.import_renames.iter().find(|(_, m)| *m == l.name.name) {
-                            Some((path, _)) => (path[0].clone(), path.join("::")),
-                            None => (default_surface.clone(), l.name.name.clone()),
-                        };
-                        surface_spans.entry(surface.clone()).or_insert(attr.span);
-                        rows.push(Row {
-                            surface,
-                            member: format!("{written}::{}", f.name.name),
-                            locus: l.name.name.clone(),
-                            method: f.name.name.clone(),
-                            requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
-                            span: attr.span,
-                            from_attr: true,
-                            written_at: rows.len(),
-                            handler: resolve(&l.name.name, &f.name.name),
-                        });
-                    }
-                }
-                TopDecl::Fn(f) => {
-                    if let Some(attr) = &f.rpc {
-                        rows.push(Row {
-                            surface: default_surface.clone(),
-                            member: f.name.name.clone(),
-                            locus: String::new(),
-                            method: f.name.name.clone(),
-                            requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
-                            span: attr.span,
-                            from_attr: true,
-                            written_at: rows.len(),
-                            handler: Handled::FreeFn,
-                        });
-                    }
-                }
-                _ => {}
+            if let TopDecl::Api(a) = d {
+                surface_spans.entry(a.name.name.clone()).or_insert(a.span);
             }
         }
     }

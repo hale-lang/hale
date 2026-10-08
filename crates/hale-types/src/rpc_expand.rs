@@ -106,16 +106,12 @@ fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The rows of `surface`, as `surfaces::surface_rows` resolves them: the
-/// rows of its `api` blocks, and the `@rpc` handlers that feed it. An
-/// imported seed's loci (`renames` names them) feed that seed's default
-/// surface, named by its import alias, and a member there is spelled with
-/// the alias path (`toy::Echo::echo`); the seed's own loci feed its own
-/// default surface (`default_surface`, when it is no alias), whether or not
-/// an `api` block carries the same name: a block and the `@rpc` rows of
-/// the seed's own loci are one surface, both kept. A block of another
-/// name does not take them. In canonical order: member as bytes, then as
-/// written.
+/// The rows of `surface`: the members `surfaces::select_members` selects
+/// (the one rule, shared with `surface_rows`), read as the adapter needs
+/// them. A free fn is no receiver's; an `@rpc` row the pass cannot read is
+/// left out; an `api` row it cannot read leaves the whole surface
+/// unexpanded (the admission law reports it). In canonical order: member
+/// as bytes, then as written.
 fn rows_of_surface(
     programs: &[&Program],
     surface: &str,
@@ -133,7 +129,6 @@ fn rows_of_surface(
             }
         }
     }
-    let is_default = !renames.iter().any(|(path, _)| path[0] == surface) && surface == default_surface;
     let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize| -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
@@ -169,52 +164,15 @@ fn rows_of_surface(
         })
     };
     let mut rows: Vec<Row> = Vec::new();
-    for p in programs {
-        for d in flat_decls(&p.items) {
-            match d {
-                TopDecl::Api(a) if a.name.name == surface => {
-                    for r in &a.rows {
-                        if let Some(row) = row_of(
-                            format!("{}::{}", r.written, r.method.name),
-                            &r.locus.name,
-                            &r.method.name,
-                            r.requires.iter().map(|i| i.name.clone()).collect(),
-                            rows.len(),
-                        ) {
-                            rows.push(row);
-                        } else {
-                            // a row the pass cannot read: the admission law
-                            // reports it, and the surface is not expanded
-                            return Vec::new();
-                        }
-                    }
-                }
-                TopDecl::Locus(l) => {
-                    // an imported seed's locus feeds the seed's surface, by
-                    // alias; the seed's own feed its default surface, unless
-                    // an `api` block already is that name
-                    let written = match renames.iter().find(|(_, m)| *m == l.name.name) {
-                        Some((path, _)) if path[0] == surface => path.join("::"),
-                        Some(_) => continue,
-                        None if is_default => l.name.name.clone(),
-                        None => continue,
-                    };
-                    for m in &l.members {
-                        let LocusMember::Fn(f) = m else { continue };
-                        let Some(attr) = &f.rpc else { continue };
-                        if let Some(row) = row_of(
-                            format!("{written}::{}", f.name.name),
-                            &l.name.name,
-                            &f.name.name,
-                            attr.requires.iter().map(|i| i.name.clone()).collect(),
-                            rows.len(),
-                        ) {
-                            rows.push(row);
-                        }
-                    }
-                }
-                _ => {}
-            }
+    for m in crate::surfaces::select_members(programs, Some(surface), renames, default_surface) {
+        if m.locus.is_empty() {
+            continue;
+        }
+        let requires = m.requires.iter().map(|(n, _)| n.clone()).collect();
+        match row_of(m.member, &m.locus, &m.method, requires, m.written_at) {
+            Some(row) => rows.push(row),
+            None if m.origin == crate::surfaces::MemberOrigin::Block => return Vec::new(),
+            None => {}
         }
     }
     rows.sort_by(|a, b| (a.member.as_bytes(), a.written_at).cmp(&(b.member.as_bytes(), b.written_at)));
