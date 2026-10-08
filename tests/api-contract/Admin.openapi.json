@@ -50,7 +50,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -60,7 +60,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -70,7 +70,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -80,7 +80,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -90,7 +90,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -100,7 +100,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -110,7 +110,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -168,7 +168,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -178,7 +178,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -188,7 +188,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -198,7 +198,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -218,7 +218,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -228,7 +228,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Refusal"
+                  "$ref": "#/components/schemas/hale.Refusal"
                 }
               }
             }
@@ -314,7 +314,7 @@
           "moved"
         ]
       },
-      "Refusal": {
+      "hale.Refusal": {
         "type": "object",
         "properties": {
           "refusal": {

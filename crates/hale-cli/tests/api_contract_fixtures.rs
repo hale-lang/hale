@@ -1013,3 +1013,109 @@ fn the_surface_projections_are_their_fixtures() {
         assert_eq!(tools, members, "{surface}: a tool per row");
     }
 }
+
+// ------------------------------------------------------------------
+// The generators over programs of their own: what the fixture program
+// does not use (a builtin record, a user type named like a generated
+// component, a scalar request).
+
+/// `hale check <src> <args>` over a program written for the test.
+fn hale_over(name: &str, src: &str, args: &[&str]) -> Value {
+    let dir = std::env::temp_dir().join(format!("hale_api_gen_{name}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("program.hl");
+    std::fs::write(&file, src).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(&file)
+        .args(args)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "hale check {args:?}:\n{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).expect("JSON")
+}
+
+#[test]
+fn a_builtin_record_is_its_contract_shape_fields() {
+    let src = r#"
+locus Echo { fn echo(x: IndexError) -> IndexError { return x; } }
+type Wrap { e: IndexError; n: Int; }
+locus W { fn wrap(w: Wrap) -> Wrap { return w; } }
+api Public { rpc Echo::echo; rpc W::wrap; }
+fn main() { }
+"#;
+    let inv = hale_over("builtin", src, &["--api"]);
+    let schemas = &inv["schemas"];
+    assert_eq!(
+        schemas["IndexError"],
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"}, "index": {"type": "integer"}, "len": {"type": "integer"}
+            },
+            "required": ["kind", "index", "len"]
+        })
+    );
+    assert_eq!(schemas["Wrap"]["properties"]["e"], json!({"$ref": "#/schemas/IndexError"}));
+    assert_eq!(schemas["Wrap"]["properties"]["n"], json!({"type": "integer"}));
+    let members = inv["surfaces"][0]["members"].as_array().unwrap();
+    let echo = members.iter().find(|m| m["name"] == "Echo::echo").unwrap();
+    assert_eq!(echo["request"], json!({"$ref": "#/schemas/IndexError"}));
+    assert_eq!(echo["response"], json!({"$ref": "#/schemas/IndexError"}));
+}
+
+#[test]
+fn a_closure_violation_error_member_is_the_string_and_no_schema() {
+    let src = r#"
+locus Lv { fn go(x: Int) -> Int fallible(ClosureViolation) { return x; } }
+api Public { rpc Lv::go; }
+fn main() { }
+"#;
+    let inv = hale_over("violation", src, &["--api"]);
+    let go = &inv["surfaces"][0]["members"][0];
+    assert_eq!(go["error"], json!("ClosureViolation"));
+    assert!(inv["schemas"].get("ClosureViolation").is_none(), "{}", inv["schemas"]);
+}
+
+#[test]
+fn a_user_type_named_refusal_does_not_collide_with_the_generated_one() {
+    let src = r#"
+type Refusal { id: Int; }
+locus R { fn go(r: Refusal) -> Refusal { return r; } }
+api Public { rpc R::go; }
+fn main() { }
+"#;
+    let doc = hale_over("refusal", src, &["--api", "--surface", "Public", "--openapi"]);
+    let schemas = doc["components"]["schemas"].as_object().unwrap();
+    assert_eq!(schemas.keys().map(String::as_str).collect::<Vec<_>>(), ["Refusal", "hale.Refusal"]);
+    assert!(schemas["Refusal"]["properties"].get("id").is_some(), "the user's");
+    assert!(schemas["hale.Refusal"]["properties"].get("refusal").is_some(), "the generated one");
+    let op = &doc["paths"]["/call/R::go"]["post"];
+    let r = |v: &Value| v["content"]["application/json"]["schema"]["$ref"].clone();
+    assert_eq!(r(&op["requestBody"]), json!("#/components/schemas/Refusal"));
+    assert_eq!(r(&op["responses"]["200"]), json!("#/components/schemas/Refusal"));
+    assert_eq!(r(&op["responses"]["400"]), json!("#/components/schemas/hale.Refusal"));
+    assert_eq!(r(&op["responses"]["503"]), json!("#/components/schemas/hale.Refusal"));
+}
+
+#[test]
+fn an_mcp_input_is_an_object() {
+    let src = r#"
+type Order { id: Int; }
+locus S { fn echo(x: Int) -> Int { return x; } fn place(o: Order) -> Int { return o.id; } }
+api Public { rpc S::echo; rpc S::place; }
+fn main() { }
+"#;
+    let doc = hale_over("mcp", src, &["--api", "--surface", "Public", "--mcp"]);
+    let tool = |n: &str| doc["tools"].as_array().unwrap().iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(
+        tool("S__echo")["inputSchema"],
+        json!({"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]})
+    );
+    assert_eq!(
+        tool("S__place")["inputSchema"],
+        json!({"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]})
+    );
+}

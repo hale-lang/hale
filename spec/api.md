@@ -752,7 +752,14 @@ response, `422` its handler error, `500` a `ClosureViolation` row's
 server error, the refusals by their statuses, the digest as the
 `Hale-Surface-Digest` header), `--json-schema` (every type the rows name
 under `$defs`, each member's types by reference) and `--mcp` (a tool per
-row, its input the request's schema, self-contained); the fixture
+row, its input the request's schema, self-contained; a request whose
+schema is not an object is wrapped as an object with one required
+property named after the handler's parameter, which the MCP transport
+unwraps before decoding by shape, as MCP requires an object); a builtin
+record a row names (`IndexError`, …) is a schema of its contract-shape
+fields, under its name; every component a form adds that is not a user
+type is namespaced `hale.` (`hale.Refusal`), a name no Hale identifier
+can spell, so none collides with the program's types; the fixture
 program's are pinned beside the R0 documents
 (`<Surface>.<form>.json`). The structural path's forms (`hale describe
 --openapi`, `--mcp`) are unchanged until R4.

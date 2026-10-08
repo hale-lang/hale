@@ -610,6 +610,12 @@ fn requires_text(row: &Row) -> String {
     }
 }
 
+/// The component the generator adds for a refusal's body. Every component
+/// that is not a user type is under `hale.`: the dot is legal in a
+/// component name and impossible in a Hale identifier, so no type of the
+/// program collides with it.
+const REFUSAL: &str = "hale.Refusal";
+
 /// The OpenAPI 3.1 form of a surface: `POST /call/<member>` per row, the
 /// body its request, `200` its response, `422` its handler error, `500`
 /// the server error, the refusals by their statuses; the digest in
@@ -620,7 +626,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
     let mut book = Book::new(schemas);
     let content = |schema: J| ("content".to_string(), o(vec![("application/json", o(vec![("schema", schema)]))]));
     let refusal = |what: &str| {
-        J::Obj(vec![("description".to_string(), s(what)), content(o(vec![("$ref", s(&format!("{REFS}Refusal")))]))])
+        J::Obj(vec![("description".to_string(), s(what)), content(o(vec![("$ref", s(&format!("{REFS}{REFUSAL}")))]))])
     };
     let mut paths = Vec::new();
     for row in members {
@@ -682,7 +688,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
     // The body of a refusal and of the server error, as the HTTP
     // transport sends it: `{"refusal": {"kind": …, …}}`.
     component_schemas.push((
-        "Refusal".to_string(),
+        REFUSAL.to_string(),
         o(vec![
             ("type", s("object")),
             (
@@ -786,7 +792,17 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
                     }
                     J::Obj(root)
                 }
-                other => field_schema(&other, REFS),
+                // An MCP tool's input is an object: a request that is not
+                // one is wrapped under its parameter's name, and the
+                // transport unwraps it before decoding by shape.
+                other => {
+                    let param = h.params.first().map_or("request", |p| p.0.as_str());
+                    o(vec![
+                        ("type", s("object")),
+                        ("properties", o(vec![(param, field_schema(&other, REFS))])),
+                        ("required", strs([param])),
+                    ])
+                }
             },
             None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
         };

@@ -282,8 +282,9 @@ pub enum TypeClass<'a> {
     Named { name: &'a str, base: PrimType, unit: Option<String> },
     /// A declared struct.
     Struct { name: &'a str, fields: &'a [hale_syntax::ast::StructField] },
-    /// A builtin record (`ClosureViolation`, …).
-    Builtin,
+    /// A builtin record (`ClosureViolation`, …), by name; its fields are
+    /// [`Shapes::builtin_fields`].
+    Builtin(&'static str),
     Enum,
     /// Anything else: an array, a tuple, a generic, a name the program
     /// does not declare.
@@ -410,9 +411,17 @@ impl<'a> Shapes<'a> {
             }
         }
         if self.struct_fields(te, true).is_some() {
-            return TypeClass::Builtin;
+            if let Some(b) = crate::builtin_types::BUILTIN_TYPES.iter().find(|b| b.name == name) {
+                return TypeClass::Builtin(b.name);
+            }
         }
         TypeClass::Other
+    }
+
+    /// A builtin record's fields by name and type: the list the contract
+    /// shape renders.
+    pub fn builtin_fields(&self, te: &TypeExpr) -> Vec<(String, TypeExpr)> {
+        self.struct_fields(te, true).unwrap_or_default()
     }
 
     /// The primitive a chain of scalars and aliases ends at.

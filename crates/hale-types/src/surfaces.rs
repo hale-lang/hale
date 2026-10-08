@@ -870,7 +870,7 @@ fn json_refusal(
     match shapes.classify(te) {
         TypeClass::Prim(p) if carried(p) => None,
         TypeClass::Named { base, .. } if carried(base) => None,
-        TypeClass::Builtin => None,
+        TypeClass::Builtin(_) => None,
         TypeClass::Struct { name, fields } => {
             if !seen.insert(name.to_string()) {
                 return None;
@@ -1155,7 +1155,22 @@ impl<'a> Schemas<'a> {
                 }
                 FieldSchema::Ref(name.to_string())
             }
-            TypeClass::Builtin | TypeClass::Enum | TypeClass::Other => FieldSchema::Unformed,
+            TypeClass::Builtin(name) => {
+                // A builtin record is its fields, as the contract shape
+                // renders them; a user declaration of the name wins
+                // (`classify` sees it as a struct first).
+                if !out.contains_key(name) {
+                    let mut properties = Vec::new();
+                    let mut required = Vec::new();
+                    for (f, ty) in self.shapes.builtin_fields(te) {
+                        properties.push((f.clone(), self.type_ref(&ty, out)));
+                        required.push(f);
+                    }
+                    out.insert(name.to_string(), TypeSchema { properties, required });
+                }
+                FieldSchema::Ref(name.to_string())
+            }
+            TypeClass::Enum | TypeClass::Other => FieldSchema::Unformed,
         }
     }
 }
