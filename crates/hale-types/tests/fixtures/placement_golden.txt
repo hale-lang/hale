@@ -6210,6 +6210,9 @@ row	App@literal1.run_owner	RunOwner	main	default
 dynamic	Ender	on main
 dynamic	Parent	on main
 
+== tests/hale/time_return_test.hl
+row	Clock@main1	Clock	main	default
+
 == tests/hale/type_alias_test.hl
 row	Holder@main1	Holder	main	default
 row	Holder@main3	Holder	main	default
