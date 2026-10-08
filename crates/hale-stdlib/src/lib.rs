@@ -21,6 +21,17 @@
 //! This crate is deliberately dependency-free: it is source text and
 //! one name-mapping table, nothing else.
 
+/// GH #1417 (R2a): the runtime of `api::serve` and its in-process
+/// transport (`api_rpc.hl`). It is not part of [`AP_SOURCE`]: every stdlib
+/// declaration is lowered into every program, so a runtime that most
+/// programs never serve through would put its types and loci in all of
+/// their IR. A program that serves a surface, or that names a type of the
+/// runtime (`std::api::Request`, `std::api::test::Rpc`, …), has it
+/// appended to its own declarations before the check
+/// (`hale_types::rpc_expand`); the names it declares are mapped in
+/// [`PATH_RENAMES`] like the rest of `std::api`.
+pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -78,10 +89,6 @@ pub const AP_SOURCE: &str = concat!(
     // std::api (GH #1108): the principal and the handler context.
     // Two types and one fn; order is free.
     include_str!("../hl/api.hl"),
-    "\n",
-    // GH #1417 (R2a): the runtime of `api::serve` and its in-process
-    // transport; references api.hl's types, so it lands after.
-    include_str!("../hl/api_rpc.hl"),
     "\n",
     include_str!("../hl/test.hl"),
     "\n",
@@ -363,6 +370,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "RevisedRoleSource"], "__StdApiRevisedRoleSource"),
     (&["std", "api", "Revision"], "__StdApiRevision"),
     (&["std", "api", "ExpiringBearerSource"], "__StdApiExpiringBearerSource"),
+    (&["std", "api", "RevisedStaticRoles"], "__StdApiRevisedStaticRoles"),
+    (&["std", "api", "ServedContext"], "__StdApiServedContext"),
     (&["std", "api", "Request"], "__StdApiRequest"),
     (&["std", "api", "Outcome"], "__StdApiOutcome"),
     (&["std", "api", "Rpc"], "__StdApiRpc"),

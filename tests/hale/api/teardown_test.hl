@@ -1,0 +1,118 @@
+// GH #1417 (R2a, spec/api.md § The runtime boundaries, shutdown) — the
+// handle's dissolution drives the same shutdown `stop()` does, so cleanup
+// never depends on a caller's explicit `stop()`.
+//
+// The transport here is the program's own: a locus that implements `Rpc`,
+// which is also what the contract asks of a transport the stdlib lacks. It
+// reports what it is asked to deliver, and its release, on the bus, to a
+// collector the serving locus's owner holds, so the record outlives the
+// serving locus. `Server` serves `Svc::fast` and is never told to stop: its
+// owner replaces it, and the replaced exposure's teardown releases the
+// listener once. (A call executing and two queued at the teardown, with the
+// receiver on its own pool: `crates/hale-codegen/tests/api_runtime.rs`,
+// where the process's output is the evidence.)
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+type Said { correlation: Int; kind: String; }
+topic Answers { payload: Said; subject: "teardown.answers"; }
+type Closing { n: Int; }
+topic Closings { payload: Closing; subject: "teardown.closing"; }
+
+locus Svc {
+    params { ran: Int = 0; }
+    fn fast(r: Req) -> Res {
+        self.ran = self.ran + 1;
+        return Res { n: r.n };
+    }
+}
+
+api S { rpc Svc::fast; }
+
+// A transport the program writes.
+locus Probe {
+    params { exposure: Int = 0; }
+    bus {
+        publish Answers;
+        publish Closings;
+        publish "__api.rpc.ingress" of type std::api::RpcIngress;
+    }
+    fn attach(id: Int) -> String {
+        self.exposure = id;
+        return "probe";
+    }
+    // a message is the payload, from the Unix peer uid 1000
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        return std::api::Request {
+            kind: 0,
+            member: "Svc::fast",
+            bytes: raw,
+            correlation: correlation,
+            peer: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000 }
+        };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let mut kind = "other";
+        match outcome {
+            std::api::Outcome::Result(b) -> { kind = "result"; },
+            std::api::Outcome::HandlerError(b) -> { kind = "handler_error"; },
+            std::api::Outcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
+            std::api::Outcome::ServerError -> { kind = "server_error"; },
+            _ -> { kind = "other"; },
+        }
+        Answers <- Said { correlation: correlation, kind: kind };
+    }
+    fn close_connection(correlation: Int) { }
+    fn stop_listening() { Closings <- Closing { n: 1 }; }
+    fn push(correlation: Int, body: String) {
+        "__api.rpc.ingress" <- std::api::RpcIngress { exposure: self.exposure, correlation: correlation, raw: std::bytes::from_string(body) };
+    }
+}
+
+// What the transport said, held by the owner of the serving locus.
+locus Collector {
+    params { log: String = ""; closings: Int = 0; }
+    bus {
+        subscribe Answers as on_said;
+        subscribe Closings as on_closing;
+    }
+    @unbounded
+    fn on_said(s: Said) { self.log = self.log + to_string(s.correlation) + ":" + s.kind + ","; }
+    fn on_closing(c: Closing) { self.closings = self.closings + c.n; }
+}
+
+// Never calls stop(): its teardown must.
+locus Server {
+    params {
+        svc: Svc = Svc { };
+        probe: Probe = Probe { };
+    }
+    run() {
+        let h = api::serve(S, self.probe, as: "teardown", receivers: { Svc: self.svc }, bound: 3, on_full: refuse);
+    }
+}
+
+main locus App {
+    params {
+        collector: Collector = Collector { };
+        server: Server = Server { };
+    }
+
+    run() {
+        std::time::sleep(20ms);
+        self.server.probe.push(1, "{\"n\":1}");
+        let mut i = 0;
+        while i < 3000 && len(self.collector.log) == 0 { std::time::sleep(1ms); i = i + 1; }
+        std::test::assert_eq_str(self.collector.log, "1:result,", "the third-party transport is served: the call was answered");
+        std::test::assert_eq_int(self.collector.closings, 0, "the listener is open while the exposure lives");
+
+        // the owner replaces the serving locus: its teardown is the shutdown
+        self.server = Server { };
+
+        std::test::assert_eq_int(self.collector.closings, 1, "the listener was released once, without a stop()");
+        std::test::assert_eq_int(self.server.svc.ran, 0, "the replacement starts clean");
+    }
+}
+
+fn main() { App { }; }

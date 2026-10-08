@@ -203,7 +203,10 @@ a handler that may violate did, or a broken connection. A handler that
 may violate is declared `fallible(ClosureViolation)`; the owner's
 `on_failure` runs first and the caller is told only that the server
 failed. A receiver that is draining, restarting or replaced is
-`unavailable`, per receiver: the exposure's other members serve on.
+`unavailable`, per receiver: the exposure's other members serve on. A
+handler that wants to know which exposure a call came through, and which
+generation of its receiver admitted it, declares `ctx:
+std::api::ServedContext` where it would declare `std::api::Context`.
 
 Until the socket transports land, the binding below is how a program is
 served over a socket.

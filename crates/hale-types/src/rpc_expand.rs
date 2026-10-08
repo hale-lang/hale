@@ -71,6 +71,7 @@ struct Row {
     requires: Vec<String>,
     written_at: usize,
     takes_ctx: bool,
+    served_ctx: bool,
     request: Option<TypeExpr>,
     response: Option<TypeExpr>,
     error: Option<TypeExpr>,
@@ -123,7 +124,8 @@ fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
             LocusMember::Fn(f) if f.name.name == method => Some(f),
             _ => None,
         })?;
-        let takes_ctx = f.params.last().is_some_and(|p| hale_syntax::api_gen::is_context_type(&p.ty));
+        let served_ctx = f.params.last().is_some_and(|p| hale_syntax::api_gen::is_served_context_type(&p.ty));
+        let takes_ctx = served_ctx || f.params.last().is_some_and(|p| hale_syntax::api_gen::is_context_type(&p.ty));
         let value: Vec<&hale_syntax::ast::Param> =
             f.params.iter().take(f.params.len() - usize::from(takes_ctx)).collect();
         if value.len() > 1 {
@@ -143,6 +145,7 @@ fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
             requires,
             written_at: at,
             takes_ctx,
+            served_ctx,
             request: value.first().map(|p| p.ty.clone()),
             response,
             error: f.fallible.clone(),
@@ -315,8 +318,106 @@ impl Codec<'_> {
     }
 }
 
+/// What of `std::api` the runtime declares (`hale_stdlib::API_RUNTIME_SOURCE`).
+const RUNTIME_NAMES: &[&str] = &[
+    "Grants",
+    "RevisedRoleSource",
+    "RevisedStaticRoles",
+    "ServedContext",
+    "Revision",
+    "ExpiringBearerSource",
+    "Request",
+    "Outcome",
+    "Rpc",
+    "Handle",
+    "Surface",
+    "Exposure",
+    "RpcIngress",
+    "RpcLost",
+    "RpcCall",
+    "RpcHello",
+    "RpcEvent",
+    "test",
+];
+
+/// Whether the programs serve a surface (`api::serve`) or spell a name of
+/// the runtime (`std::api::Request`, `std::api::test::Rpc`, …): the
+/// runtime joins a program only then.
+fn mentions_runtime(programs: &[&mut Program]) -> bool {
+    use hale_syntax::names::{for_each_spelled_in_item, Spelled};
+    let mut found = false;
+    for p in programs {
+        for item in &p.items {
+            let mut window: [&str; 3] = ["", "", ""];
+            for_each_spelled_in_item(item, &mut |s| {
+                if let Spelled::Name(n) = s {
+                    window = [window[1], window[2], n];
+                    if (window[1] == "api" && window[2] == "serve")
+                        || (window[0] == "std" && window[1] == "api" && RUNTIME_NAMES.contains(&window[2]))
+                    {
+                        found = true;
+                    }
+                }
+            });
+            if found {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Append the runtime to the first program, once.
+fn inject_runtime(programs: &mut [&mut Program]) {
+    let have = programs.iter().any(|p| {
+        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiExposure"))
+    });
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_RUNTIME_SOURCE, API_SYNTH_BASE + 0x0400_0000) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the runtime did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+/// The five topics the runtime's wire subjects name, once: a keyed topic's
+/// routing (and the `or` of a send whose delivery no subscriber took)
+/// belongs to the program's topic rows, and the runtime's sends are by
+/// subject.
+fn inject_topics(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Topic(t) if t.name.name == "__ApiRpcCallT")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000) {
+        Ok(t) => programs[0].items.extend(t.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the runtime's topics did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
 /// Run the pass over a bundle's programs.
 pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
+    if !mentions_runtime(programs) {
+        return Vec::new();
+    }
+    inject_runtime(programs);
+    inject_topics(programs);
     // ---- the immutable phase: rows, digests, sites ----
     struct Plan {
         site: Site,
@@ -558,7 +659,6 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
             param: exposure_param(&site.name),
         });
     }
-    generated.push_str(TOPICS_SRC);
 
     // ---- mutate: the serving loci ----
     for (i, plan) in plans.iter().enumerate() {
@@ -716,6 +816,7 @@ fn inject_key(l: &mut LocusDecl, field: &str, key_param: &str, key: i64, span: S
                 }
             }
             LocusMember::Lifecycle(lc) => inject_block(&mut lc.body, field, &init),
+            LocusMember::Failure(fd) => inject_block(&mut fd.body, field, &init),
             LocusMember::Fn(f) => inject_block(&mut f.body, field, &init),
             LocusMember::Mode(md) => inject_block(&mut md.body, field, &init),
             _ => {}
@@ -908,8 +1009,12 @@ fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
         s.push_str(&codec.decode(te, "c.body", "__req", &bail));
         args.push_str("__req");
     }
+    if row.served_ctx {
+        s.push_str("let __ctx = std::api::ServedContext { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
+    } else if row.takes_ctx {
+        s.push_str("let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via };\n");
+    }
     if row.takes_ctx {
-        s.push_str("let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
         if !args.is_empty() {
             args.push_str(", ");
         }

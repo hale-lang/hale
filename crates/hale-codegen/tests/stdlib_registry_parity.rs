@@ -290,10 +290,12 @@ fn std_literals() -> BTreeSet<String> {
 }
 
 /// Every name the Hale-source stdlib declares (a fn, locus, type,
-/// interface or perspective).
+/// interface or perspective): the bundled source, and the runtime of
+/// `api::serve` (GH #1417), which joins a program that serves or names it.
 fn declared_names() -> BTreeSet<&'static str> {
     hale_stdlib::AP_SOURCE
         .lines()
+        .chain(hale_stdlib::API_RUNTIME_SOURCE.lines())
         .filter_map(|l| {
             // GH #436: skip leading decorators. A declaration may be
             // annotated (`@sealed locus X`, `@form(vec) locus Y`), and

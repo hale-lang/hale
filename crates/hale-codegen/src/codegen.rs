@@ -20346,8 +20346,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #534: an importer's `alias::Enum::Variant`
                     // resolves its first two segments through the
                     // per-build rename table.
-                    let aliased: Option<String> = if path.segments.len() == 3 {
-                        let head: Vec<&str> = path.segments[..2]
+                    // GH #1417 (R2a): so does a stdlib enum's public path,
+                    // `std::api::Outcome::Refusal(…)`.
+                    let aliased: Option<String> = if path.segments.len() >= 3 {
+                        let head: Vec<&str> = path.segments
+                            [..path.segments.len() - 1]
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect();
@@ -25646,6 +25649,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if segs == ["api", "serve"] {
             if let Some(handle) = serve_site_handle(args, qn.span) {
                 return self.lower_expr(&handle, scope);
+            }
+        }
+        // GH #1417 (R2a): a variant of an enum another seed or the stdlib
+        // declares, by its public path (`std::api::Outcome::Refusal(…)`):
+        // the enum's mangled name and the variant.
+        if segs.len() >= 3 {
+            let head = &segs[..segs.len() - 1];
+            if let Some(mangled) = self.mangled_for_path(head).filter(|m| self.user_enums.contains_key(m)) {
+                let variant = qn.segments[qn.segments.len() - 1].clone();
+                let rewritten = QualifiedName {
+                    segments: vec![hale_syntax::ast::Ident::new(mangled, qn.span), variant],
+                    span: qn.span,
+                };
+                return self.lower_path_call_expr(&rewritten, args, scope);
             }
         }
         if segs.first() == Some(&"std") {

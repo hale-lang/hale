@@ -5117,9 +5117,11 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
             continue;
         }
         declared_wires.insert(info.wire_subject.as_str());
-        // GH #1417 (R2a): the five topics a serve site's expansion declares
-        // (`rpc_expand`) are the runtime's; the stdlib holds the other end
-        // of each, outside the bundle this graph is built from.
+        // GH #1417 (R2a): the five topics the runtime declares
+        // (`rpc_expand`) are wired by the serve sites' expansions, and a
+        // program that names the runtime without serving a surface (or
+        // serves one over a transport this compiler does not ship) holds
+        // some ends of them and not others, by design.
         if info.wire_subject.starts_with("__api.rpc.") {
             continue;
         }

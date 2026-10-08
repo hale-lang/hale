@@ -315,7 +315,7 @@ fn seed_name(bundle: &Bundle<'_>) -> String {
 fn value_params(f: &FnDecl) -> Vec<(String, TypeExpr, Span)> {
     let mut ps: Vec<(String, TypeExpr, Span)> =
         f.params.iter().map(|p| (p.name.name.clone(), p.ty.clone(), p.span)).collect();
-    if ps.last().is_some_and(|(_, t, _)| hale_syntax::api_gen::is_context_type(t)) {
+    if ps.last().is_some_and(|(_, t, _)| hale_syntax::api_gen::is_context_type(t) || hale_syntax::api_gen::is_served_context_type(t)) {
         ps.pop();
     }
     ps

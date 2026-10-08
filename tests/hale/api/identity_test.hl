@@ -1,0 +1,114 @@
+// GH #1417 (R2a, spec/api.md § Identity sources) — the identity sources an
+// exposure reads at admission, and only at admission.
+//
+//   * a bearer source that states a credential's expiry (the optional
+//     `ExpiringBearerSource`) is read against the clock: a credential past
+//     it is `unauthenticated`, reason `expired`; one before it, and one
+//     that states none, are not;
+//   * a role source that answers a principal's grants and its revision as
+//     one pair (the optional `RevisedRoleSource`) is asked once per request
+//     and its pair decides: this one's `holds` says no to everyone and its
+//     `grants` says yes to alice, and alice is admitted; a source that
+//     answers only `holds` is asked `holds`, as it always was;
+//   * authorization is an admission-time check: a grant revoked after a
+//     call was accepted changes nothing about the accepted call.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+role trader;
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-old" || token == "t-new" || token == "t-open" {
+            return std::api::Principal { mode: "bearer", name: token };
+        }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+    // `t-old` expired in the first second of 1970
+    fn expiry(token: String) -> Int {
+        if token == "t-old" { return 1000000000; }
+        if token == "t-new" { return std::time::nanos(std::time::current()) + 3600000000000; }
+        return 0;
+    }
+}
+
+// holds: nobody. grants: alice, at revision 7.
+locus Revised {
+    params { revision: Int = 7; asked: Int = 0; }
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+    @unbounded
+    fn grants(p: std::api::Principal) -> std::api::Grants {
+        self.asked = self.asked + 1;
+        if p.name == "t-new" { return std::api::Grants { roles: "trader", revision: self.revision }; }
+        return std::api::Grants { roles: "", revision: self.revision };
+    }
+}
+
+// holds only, as sources were
+locus Plain {
+    params { asked: Int = 0; }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        self.asked = self.asked + 1;
+        return r == "trader" && p.name == "t-open";
+    }
+}
+
+locus Svc {
+    params { ran: Int = 0; }
+    fn trade(r: Req) -> Res {
+        self.ran = self.ran + 1;
+        return Res { n: r.n };
+    }
+}
+
+api Desk { rpc Svc::trade requires: [trader]; }
+
+main locus App {
+    params {
+        tokens: Tokens = Tokens { };
+        revised: Revised = Revised { };
+        plain: Plain = Plain { };
+        svc: Svc = Svc { };
+        revised_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.revised };
+        plain_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.plain };
+    }
+    placement { svc: cooperative(pool = work) where async_io; }
+
+    run() {
+        let a = api::serve(Desk, self.revised_f, as: "revised", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        let b = api::serve(Desk, self.plain_f, as: "plain", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        let r = self.revised_f;
+        let p = self.plain_f;
+
+        // expiry
+        r.call(1, "Svc::trade", "{\"n\":1}", "t-old");
+        std::test::assert_eq_str(r.await_outcome(1, 2000), "refusal:unauthenticated", "a credential past its expiry is refused");
+        std::test::assert(std::str::contains(r.line(1), "expired"), "saying why");
+        r.call(2, "Svc::trade", "{\"n\":2}", "t-new");
+        std::test::assert_eq_str(r.await_outcome(2, 2000), "result", "one before its expiry is not");
+        std::test::assert_eq_int(self.svc.ran, 1, "and only that one ran");
+
+        // the grants-and-revision pair decides, not holds
+        std::test::assert(self.revised.asked >= 1, "the source was asked for its pair");
+        r.call(3, "Svc::trade", "{\"n\":3}", "t-open");
+        std::test::assert_eq_str(r.await_outcome(3, 2000), "refusal:unauthorized", "a credential with no grant in the pair is refused, whatever holds says elsewhere");
+        std::test::assert_eq_int(self.svc.ran, 1, "without reaching the handler");
+
+        // a source that answers only `holds` is asked `holds`
+        p.call(4, "Svc::trade", "{\"n\":4}", "t-open");
+        std::test::assert_eq_str(p.await_outcome(4, 2000), "result", "holds says yes to t-open");
+        std::test::assert(self.plain.asked >= 1, "it was asked");
+        p.call(5, "Svc::trade", "{\"n\":5}", "t-new");
+        std::test::assert_eq_str(p.await_outcome(5, 2000), "refusal:unauthorized", "and no to the others");
+        // both exposures name the same bearer source, which states expiries
+        p.call(6, "Svc::trade", "{\"n\":6}", "t-old");
+        std::test::assert_eq_str(p.await_outcome(6, 2000), "refusal:unauthenticated", "so the plain-roles exposure refuses an expired credential too");
+
+        a.stop();
+        b.stop();
+    }
+}
+
+fn main() { App { }; }

@@ -9,9 +9,9 @@
 // file, is the in-process one.
 //
 // Nothing here waits on a receiver. The call travels on a keyed topic
-// ("__api.rpc.call", keyed by the receiver's number), the receiver's
+// (`__ApiRpcCallT`, keyed by the receiver's number), the receiver's
 // synthesized subscription runs the handler through the fallible ABI and
-// publishes the outcome on "__api.rpc.event" (keyed by the exposure),
+// publishes the outcome on `__ApiRpcEventT` (keyed by the exposure),
 // and the exposure's handler for that event completes the request. A
 // receiver announces each incarnation (`kind` 5, with its stamp) and its
 // dissolve (`kind` 6), so the exposure keeps a generation per receiver
@@ -19,6 +19,96 @@
 // handed to. The exposure hands a receiver one call at a time and holds
 // the rest itself, so what `stop()` and a receiver's failure refuse is
 // exactly what has not been handed over.
+
+// ---- the identity sources (spec/api.md § Identity sources) ----
+//
+// A role source may answer a principal's grants and its own revision as
+// ONE pair, so a check never reads grants from one revision and the number
+// from another; a bearer source may state when a credential expires. Both
+// are optional extensions of the interfaces api.hl declares, which stay
+// as they were: a source written for the structural path is a source
+// here. The runtime asks an extension of a source whose declaration states
+// it (the compiler wires it from the source's type), and nothing of one
+// that does not.
+
+/// A principal's direct grants and the source's revision, as one pair.
+type __StdApiGrants {
+    // the roles the principal holds directly, comma-joined
+    roles: String = "";
+    // changes when a grant is added or removed
+    revision: Int = 0;
+}
+
+/// A role source that states its revision with every answer.
+interface __StdApiRevisedRoleSource {
+    fn grants(p: std::api::Principal) -> std::api::Grants;
+}
+
+/// A role source's announcement that its revision changed, published on
+/// the wire subject `__api.roles.revision` (`publish "__api.roles.revision"
+/// of type std::api::Revision`; the stdlib declares no `topic`). R5 reads it
+/// to invalidate live subscriptions.
+type __StdApiRevision {
+    source: String = "";
+    revision: Int = 0;
+}
+
+/// A bearer source that states a credential's expiry: the instant it
+/// expires as nanoseconds since the Unix epoch (`std::time::nanos` of a
+/// `Time`), 0 for no expiry, read against the runtime's clock. (An `Int`,
+/// not a `Time`: a locus method that returns a `Time` does not lower yet.)
+interface __StdApiExpiringBearerSource {
+    fn expiry(token: String) -> Int;
+}
+
+/// The stdlib's static table (`std::api::StaticRoles`) with the revision
+/// of a table fixed for the process, answering the pair.
+locus __StdApiRevisedStaticRoles {
+    params {
+        inner: std::api::StaticRoles = std::api::StaticRoles { };
+        revision: Int = 0;
+    }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        return self.inner.holds(p, r);
+    }
+    fn grants(p: std::api::Principal) -> std::api::Grants {
+        let mut held = "";
+        let mut rest = self.inner.known;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let mut role = rest;
+            if sp >= 0 {
+                role = rest[0..sp];
+                rest = rest[(sp + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if len(role) > 0 && self.inner.holds(p, role) {
+                if len(held) > 0 {
+                    held = held + ",";
+                }
+                held = held + role;
+            }
+        }
+        return std::api::Grants { roles: held, revision: self.revision };
+    }
+}
+
+/// What a handler of a served surface may receive in place of `Context`
+/// (`fn cancel(c: CancelOrder, ctx: std::api::ServedContext)`): the same
+/// fields, and the name of the exposure the call came through and the
+/// execution generation of the receiver it was admitted under (spec/api.md
+/// § Receiver failure and generations). (`Context` itself is unchanged: a
+/// stdlib type is lowered into every program, so a field added to it would
+/// move the IR of programs that serve nothing.)
+type __StdApiServedContext {
+    caller: std::api::Principal = std::api::Principal { };
+    role: String = "";
+    request_id: Int = 0;
+    via: String = "local";
+    exposure: String = "";
+    generation: Int = 0;
+}
 
 /// The framed request a transport hands the runtime.
 type __StdApiRequest {
@@ -69,15 +159,17 @@ interface __StdApiSurface {
 
 // ---- the topics a transport, an exposure and a receiver share ----
 //
-// Five wire subjects, by string: "__api.rpc.ingress" and "__api.rpc.lost"
-// (keyed by `exposure`), "__api.rpc.call" and "__api.rpc.hello" (keyed by
-// `key`, `on_unmatched: fail`, so a delivery no subscriber took is the
-// publisher's to settle) and "__api.rpc.event" (keyed by `exposure`). The
-// bundled stdlib declares no `topic`: a program that serves a surface
-// declares these five beside its exposures (the compiler writes them,
-// `hale_types::rpc_expand`), because a keyed topic's routing belongs to
-// the program's topic rows. A program that serves nothing never sends on
-// them.
+// Five wire subjects: "__api.rpc.ingress" and "__api.rpc.lost" (keyed by
+// `exposure`), "__api.rpc.call" and "__api.rpc.hello" (keyed by `key`,
+// `on_unmatched: fail`, so a delivery no subscriber took is the
+// publisher's to settle) and "__api.rpc.event" (keyed by `exposure`). They
+// are declared as topics `__ApiRpcIngressT`, `__ApiRpcLostT`,
+// `__ApiRpcCallT`, `__ApiRpcHelloT` and `__ApiRpcEventT` by the compiler
+// (`hale_types::rpc_expand`) wherever this source joins a program, because
+// a keyed topic's routing, and the `or` of a send whose delivery no
+// subscriber took, belong to the program's topic rows. A transport the
+// program writes publishes the ingress by its subject
+// (`publish "__api.rpc.ingress" of type std::api::RpcIngress`).
 
 /// A transport's raw message, published for the exposure it was attached to.
 type __StdApiRpcIngress {
@@ -241,13 +333,19 @@ locus __StdApiExposure {
         slot_gen: [Int; 16] = [0; 16];
         slot_busy: [Int; 16] = [0; 16];
         hello_sent: [Int; 16] = [0; 16];
+        probe_ok: Bool = true;
+        // how long a shutdown waits for the calls executing: stop() waits
+        // for them (a handler may take a while); a teardown, which may be
+        // the process's, with the pools of its receivers gone, does not
+        stop_wait_ms: Int = 10000;
+        teardown_wait_ms: Int = 1000;
     }
     bus {
-        subscribe "__api.rpc.ingress" as on_ingress of type __StdApiRpcIngress where key == self.id;
-        subscribe "__api.rpc.lost" as on_lost of type __StdApiRpcLost where key == self.id;
-        subscribe "__api.rpc.event" as on_event of type __StdApiRpcEvent where key == self.id;
-        publish "__api.rpc.call" of type __StdApiRpcCall;
-        publish "__api.rpc.hello" of type __StdApiRpcHello;
+        subscribe __ApiRpcIngressT as on_ingress where key == self.id;
+        subscribe __ApiRpcLostT as on_lost where key == self.id;
+        subscribe __ApiRpcEventT as on_event where key == self.id;
+        publish __ApiRpcCallT;
+        publish __ApiRpcHelloT;
     }
     birth() {
         self.via = self.transport.attach(self.id);
@@ -258,15 +356,18 @@ locus __StdApiExposure {
             s = s + 1;
         }
     }
+    drain() {
+        self.shutdown(self.teardown_wait_ms);
+    }
     dissolve() {
-        self.stop();
+        self.shutdown(self.teardown_wait_ms);
     }
     fn key_of(slot: Int) -> Int {
         return self.id * 100 + slot;
     }
     fn hello(slot: Int) {
         self.hello_sent[slot] = 1;
-        "__api.rpc.hello" <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.gone(slot);
+        __ApiRpcHelloT <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.gone(slot);
     }
     fn refuse(corr: Int, rid: Int, who: std::api::Principal, kind: String, reason: String, extra: String) {
         self.transport.reply(corr, rid, who, __StdApiOutcome::Refusal(kind, reason, extra));
@@ -421,8 +522,18 @@ locus __StdApiExposure {
         }
         let slot = self.rows.receiver(m);
         if self.slot_state[slot] == 2 {
-            self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + r.member + " is unavailable; the call did not run", "");
-            return;
+            // The receiver was unavailable when last asked. It may be back
+            // (a restart lowers a failure's drain request and announces
+            // nothing): ask again, and the bus says at once whether anyone
+            // is there to answer.
+            self.probe_ok = true;
+            __ApiRpcHelloT <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.probe_failed();
+            if !self.probe_ok {
+                self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + r.member + " is unavailable; the call did not run", "");
+                return;
+            }
+            self.slot_state[slot] = 0;
+            self.hello_sent[slot] = 1;
         }
         self.inflight = self.inflight + 1;
         self.entries.push(__StdApiRpcEntry { rid: rid, state: 1, slot: slot, member: m, gen: self.slot_gen[slot], correlation: i.correlation, lost: false, body: body, caller: who, role: __api_rpc_first(req) });
@@ -478,6 +589,9 @@ locus __StdApiExposure {
             k = k + 1;
         }
     }
+    fn probe_failed() {
+        self.probe_ok = false;
+    }
     fn gone(slot: Int) {
         self.slot_state[slot] = 2;
         self.settle_slot(slot, 1);
@@ -516,7 +630,7 @@ locus __StdApiExposure {
         }
         self.entries.set(best, __api_rpc_entry_state(e, 2)) or discard;
         self.slot_busy[slot] = e.rid;
-        "__api.rpc.call" <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: e.caller, role: e.role } or self.gone_dispatch(slot);
+        __ApiRpcCallT <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: e.caller, role: e.role } or self.gone_dispatch(slot);
     }
     // The bus found no subscriber to hand the call to: the receiver is
     // draining or gone. The call, and every call queued behind it, did not run.
@@ -528,13 +642,21 @@ locus __StdApiExposure {
     }
     fn on_event(ev: __StdApiRpcEvent) {
         if ev.kind == 5 {
-            // an incarnation of the receiver is up
+            // an incarnation of the receiver is up. One announced twice (its
+            // birth, and its answer to the exposure's hello) is one
+            // incarnation: nothing about it is new.
+            if self.slot_state[ev.slot] == 1 && self.slot_stamp[ev.slot] == ev.stamp {
+                self.pump(ev.slot);
+                return;
+            }
             let was = self.slot_state[ev.slot];
             self.slot_stamp[ev.slot] = ev.stamp;
             self.slot_state[ev.slot] = 1;
             self.slot_gen[ev.slot] = self.slot_gen[ev.slot] + 1;
-            if was == 0 {
-                // the first word: calls admitted before it adopt its generation
+            if was != 1 {
+                // the first word, or the word of a receiver that was
+                // unavailable and is back: calls admitted while the exposure
+                // waited for it adopt its generation
                 let n = self.entries.len();
                 let mut k = 0;
                 while k < n {
@@ -553,9 +675,17 @@ locus __StdApiExposure {
             return;
         }
         if ev.kind == 6 {
+            // an incarnation went: the one the exposure knows, or an older
+            // one a successor has already replaced (whose departure is news
+            // to nobody)
+            if ev.stamp != self.slot_stamp[ev.slot] {
+                return;
+            }
             self.slot_state[ev.slot] = 2;
             self.settle_slot(ev.slot, 2);
             self.settle_slot(ev.slot, 1);
+            // (A call that started keeps its place: a violating handler's
+            // owner may dissolve the receiver before the thunk answers.)
             return;
         }
         let k = self.index_of(ev.rid);
@@ -585,8 +715,17 @@ locus __StdApiExposure {
         return c;
     }
     /// Close admission, refuse the queue, let the executing finish,
-    /// release the listener. Idempotent; the handle's dissolution runs it.
+    /// release the listener. Idempotent; the handle's dissolution and its
+    /// owner's teardown run it.
     fn stop() {
+        self.shutdown(self.stop_wait_ms);
+    }
+    // A call whose receiver cannot finish it (its pool was shut down under
+    // it, which a process teardown does) is not waited for forever: past
+    // `wait_ms` it is abandoned, and its caller observes the transport
+    // failure, never a refusal (spec/api.md § Receiver failure and
+    // generations: the outcome of a call that may have run is uncertain).
+    fn shutdown(wait_ms: Int) {
         if self.stopped { return; }
         self.stopped = true;
         self.accepting = false;
@@ -602,10 +741,24 @@ locus __StdApiExposure {
         // the executing calls finish: a sleep yields to the scheduler, so
         // the pool delivers their outcomes while this waits
         let started = std::time::monotonic_ns();
-        while self.executing() > 0 && std::time::monotonic_ns() - started < 10000000000 {
+        while self.executing() > 0 && std::time::monotonic_ns() - started < wait_ms * 1000000 {
             std::time::sleep(1ms);
         }
+        self.abandon_executing();
         self.transport.stop_listening();
+    }
+    // The calls that did not complete: no reply, the connection released.
+    fn abandon_executing() {
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.entries.get(k) or __StdApiRpcEntry { };
+            if e.state == 2 || e.state == 3 {
+                self.entries.set(k, __api_rpc_entry_lost(e)) or discard;
+                self.finish(k, __StdApiOutcome::ServerError);
+            }
+            k = k + 1;
+        }
     }
 }
 
@@ -654,8 +807,8 @@ locus __StdApiTestRpc {
         lines: String = "";
     }
     bus {
-        publish "__api.rpc.ingress" of type __StdApiRpcIngress;
-        publish "__api.rpc.lost" of type __StdApiRpcLost;
+        publish __ApiRpcIngressT;
+        publish __ApiRpcLostT;
     }
     fn attach(id: Int) -> String {
         self.exposure = id;
@@ -735,7 +888,7 @@ locus __StdApiTestRpc {
     }
     // ---- what a test drives ----
     fn send(correlation: Int, line: String) {
-        "__api.rpc.ingress" <- __StdApiRpcIngress { exposure: self.exposure, correlation: correlation, raw: std::bytes::from_string(line) };
+        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.exposure, correlation: correlation, raw: std::bytes::from_string(line) };
     }
     /// A call as a bearer (`credential`) or a Unix peer (`credential` ""
     /// and `uid` ≥ 0 under the name `uid:<n>`), with the digest the client
@@ -753,7 +906,7 @@ locus __StdApiTestRpc {
         self.send(correlation, "describe\t\t\t" + credential + "\tunix\tnobody\t-1\t");
     }
     fn lose(correlation: Int) {
-        "__api.rpc.lost" <- __StdApiRpcLost { exposure: self.exposure, correlation: correlation };
+        __ApiRpcLostT <- __StdApiRpcLost { exposure: self.exposure, correlation: correlation };
     }
     // ---- what a test reads ----
     fn outcomes_of(correlation: Int) -> Int {

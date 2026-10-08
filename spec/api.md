@@ -417,12 +417,18 @@ std::api::Context` receives the caller the serve site established
 came through (`via`: `unix`, `http`, `ws`, or `local` for a call made
 inside the program) and the authorizing role (`role`: the first role
 of the row's `requires` as written, empty for a row that requires
-none), the name of the exposure it came through (`exposure`, empty
-for a call made inside the program) and the execution generation of
-the receiver it was admitted under (`generation`, 0 inside the
-program; § Receiver failure and generations). It is for the checks no
-row can state; the row's `requires` has already held when the handler
-runs.
+none). It is for the checks no row can state; the row's `requires` has
+already held when the handler runs.
+
+A handler of a served surface may declare `ctx: std::api::ServedContext`
+instead: the same fields, and the name of the exposure the call came
+through (`exposure`) and the execution generation of the receiver it
+was admitted under (`generation`; § Receiver failure and generations),
+which a call made inside the program has no value for ("" and 0).
+`Context` itself is not extended: the standard library is lowered into
+every program, so a field added to a stdlib type moves the IR of
+programs that serve nothing; `ServedContext` is part of the runtime a
+program carries only when it serves (§ The runtime boundaries).
 
 **Descriptions read the rows dispatch reads.** Which members a
 caller's description lists is decided by the same rows and the same
@@ -523,6 +529,15 @@ through this one path.
 | **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
 | **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
 
+**The runtime is part of a program only when it serves.** Every stdlib
+declaration is lowered into every program, so the runtime of this
+section (`api_rpc.hl`: the types below, the `Exposure`, the fixture
+transport, the five topics) is not part of the bundled stdlib. The
+compiler appends it to a program that serves a surface (`api::serve`) or
+spells one of its names (`std::api::Request`, `std::api::test::Rpc`,
+`std::api::ServedContext`, …), before the check; a program that does
+neither lowers as it did before R2a, byte for byte.
+
 ```hale,fragment
 // The framed request: what Rpc.frame returns.
 type std::api::Request {
@@ -612,7 +627,15 @@ delivers their outcomes to the connections still open, then has the
 transport release its listener. The handle's dissolution and the serving
 locus's teardown run the same shutdown, so a program that never calls
 `stop()` still refuses its queue and lets its executing calls finish
-before the listener goes.
+before the listener goes. The wait is a yield to the scheduler (a
+sleep, which drains the pool's queue), not a block, and it is bounded:
+`stop()` waits ten seconds for a handler, a teardown one second, since a
+teardown may be the process's, and a process shuts the pools of its
+receivers down under the calls they are running. A call still executing
+when the wait ends is abandoned: its reply is dropped, the transport is
+told the connection is finished with (`close_connection`), its unit of
+the bound is released once, and its caller observes the transport
+failure, never a refusal (it may have run).
 
 **Describing.** The runtime answers a describe request from the
 exposure's live sources: the members the caller's `Context` may call
@@ -666,9 +689,13 @@ their use for live subscriptions (invalidation, delivery) stays R5's.
   add no re-authorization of queued calls and no cancellation of
   accepted work.
 
-The stdlib's two sources are updated: `StaticRoles` implements `grants`
-(the roles of its table the principal holds, revision 0, the table being
-fixed for the process) and `NoBearer` implements `expiry` (none).
+The stdlib's static table answers the pair as `std::api::RevisedStaticRoles`
+(an `inner: std::api::StaticRoles` and a `revision`, 0 for a table fixed
+for the process): its `grants` is the roles of the table the principal
+holds, `holds` is `inner`'s. `StaticRoles` and `NoBearer` themselves are not
+edited, for the reason `Context` is not (§ Serving): a stdlib locus is
+lowered into every program. A bearer source that states no expiry is any
+that has no `expiry`, `NoBearer` among them.
 
 The optional interfaces change no existing program: `Principal` and the
 two source interfaces keep the layout and the methods they had, so a
@@ -854,7 +881,20 @@ a delivery no subscriber took) and settles that call, and every call
 queued behind it, `unavailable`. A receiver whose stamp the exposure
 has not yet learned (it was born before the exposure, or has not
 answered) is asked, and its calls wait queued until it answers or the
-bus reports no subscriber to ask.
+bus reports no subscriber to ask. A receiver found unavailable is asked
+again when the next request for it arrives, since it may be back (a
+`restart(c)` lowers a failure's drain request and runs no `birth()`, so
+nothing is announced); one that answers is a new generation, which
+calls accepted before it do not enter. An announcement of an incarnation
+the exposure already knows changes nothing, and the departure of an
+incarnation a successor has already replaced is news to nobody.
+
+One cell the exposure cannot take back: a call already handed to a
+receiver (executing, § The runtime boundaries, dispatch) when another
+exposure's call makes it fail. Two exposures bound to one instance each
+hand it a call; the runtime has no primitive that withdraws a queued
+cell, so the second runs if the failing receiver's pool still delivers
+it, and is answered as it ends (R2b may narrow the window).
 
 The instance bound is addressed by the number the serve site gives it,
 which the compiler writes into every literal that builds the field's

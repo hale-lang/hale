@@ -484,6 +484,7 @@ std::api::Outcome | lookup=api@2 | locus=false | effects=- | sig=- | parks=false
 std::api::Principal | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Principal` | suggest=-
 std::api::Request | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Request` | suggest=-
 std::api::RevisedRoleSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RevisedRoleSource` | suggest=-
+std::api::RevisedStaticRoles | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RevisedStaticRoles` | suggest=-
 std::api::Revision | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Revision` | suggest=-
 std::api::RoleSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RoleSource` | suggest=-
 std::api::Rpc | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Rpc` | suggest=-
@@ -492,6 +493,7 @@ std::api::RpcEvent | lookup=api@2 | locus=false | effects=- | sig=- | parks=fals
 std::api::RpcHello | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RpcHello` | suggest=-
 std::api::RpcIngress | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RpcIngress` | suggest=-
 std::api::RpcLost | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RpcLost` | suggest=-
+std::api::ServedContext | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ServedContext` | suggest=-
 std::api::StaticRoles | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::StaticRoles` | suggest=-
 std::api::Surface | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Surface` | suggest=-
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
