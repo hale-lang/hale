@@ -34,6 +34,9 @@ case_ dna-suite   false true  crates/hale-cli/tests/dna_native_suite.rs
 case_ nextest-cfg false true  .config/nextest.toml
 case_ ts-fixture  false true  crates/hale-cli/tests/fixtures/ts-client/run.mjs
 case_ script      false true  scripts/other.sh
+case_ contract    false true  tests/api-contract/program.hl
+case_ replay      false true  tests/hale/api/client/replay/main.hl
+case_ hale-test   false false tests/hale/other_test.hl
 
 # a rename out of dna/ removes a source the fixtures import: both sides count
 git checkout -q "$base" && git checkout -q -B t-rename

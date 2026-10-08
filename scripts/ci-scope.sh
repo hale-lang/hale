@@ -40,7 +40,7 @@ prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|note
 # iris tree it embeds; every crate (all of them build in
 # `--workspace`); the workspace manifests; the workflows; and the
 # scripts those jobs call.
-dna='^(dna|iris|\.github/workflows|\.config|scripts)/|^Cargo\.(toml|lock)$|^crates/'
+dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hale/api/client)/|^Cargo\.(toml|lock)$|^crates/'
 # ...except test files nothing in DNA runs. The DNA suite itself
 # (hale-cli's dna_native_suite and its support code) is the exception.
 dna_not='^crates/[^/]+/tests/'
