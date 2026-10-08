@@ -1424,7 +1424,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
 crates/hale-stdlib/hl/api.hl e416474db56b5494
-crates/hale-stdlib/hl/api_rpc.hl 63faaea15764531a
+crates/hale-stdlib/hl/api_rpc.hl b7aaaf26805728ca
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
