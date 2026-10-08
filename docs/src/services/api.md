@@ -177,10 +177,11 @@ let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders:
 
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
-standard library ships three today. `std::api::test::Rpc` has no socket: a
+standard library ships four today. `std::api::test::Rpc` has no socket: a
 test hands it requests and reads the answers, through the same
 admission, dispatch and completion every transport uses. `unix::Rpc` is
-a Unix socket and `http::Rpc` an HTTP listener. The sources are fields of the
+a Unix socket, `http::Rpc` an HTTP listener and `mcp::Rpc` an MCP server
+over one. The sources are fields of the
 transport's literal, `principals:` for who a bearer token is and
 `roles:` for who holds a role; grants belong to the source the serve
 site names, never to a role's name, so one program can serve a surface
@@ -328,6 +329,41 @@ next call is checked against. A request that is neither is refused
 connection alone, and the listener and the other connections go on.
 `public.stop()` refuses what is queued, answers what is executing and
 closes the listener after the replies.
+
+### Serving to an MCP host
+
+`mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the
+surface as an MCP server over HTTP: a JSON-RPC message in `POST /mcp`,
+its answer in the response. The tools are the rows the caller may call
+(`tools/list` is the caller's description, filtered, each tool named as
+its member with `::` written `__`; an identifier's own underscores are
+escaped where they would run into that, as the spec says), and
+`tools/call` is a call, through
+the same admission as an HTTP body:
+
+```hale,fragment
+let public = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+```text
+POST /mcp HTTP/1.1
+Authorization: Bearer t-alice
+
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Orders__place","arguments":{"symbol":"ACME","qty":10,"limit":12500}}}
+
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"order\":41,\"notional\":125000}"}],"structuredContent":{"order":41,"notional":125000},"isError":false}}
+```
+
+A handler's own error and every refusal come back as a JSON-RPC error
+object (`code`, `message`, and the error or the refusal as `data`): `-32001`
+for the handler's error, `-32602` for a payload that does not decode,
+`-32005` for a call the role forbids, `-32603` for a handler that violated;
+an unauthenticated caller also gets HTTP `401`. The listener, its limits and
+its failure behaviour are `http::Rpc`'s, since it is the same listener.
+Not served: resources over streams, MCP over stdio, and a client that
+needs a session or an event stream. `grpc::Rpc` is not shipped; it needs
+an HTTP/2 primitive the runtime does not have. `hale mcp` is a server for
+the toolchain on stdio and is not a client of this endpoint.
 
 ### Streams: a topic bound to a hub
 

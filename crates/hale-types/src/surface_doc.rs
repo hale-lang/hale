@@ -226,6 +226,32 @@ fn outcomes(transport: &str) -> Result<J, String> {
             ("server_error", o(vec![("status", J::Int(500)), ("body", s("refusal"))])),
             ("transport_failure", s("the transport's own: the connection ends without a response")),
         ])),
+        "mcp" => Ok(o(vec![
+            ("transport", s("mcp")),
+            ("result", o(vec![("field", s("result")), ("body", s("response"))])),
+            ("handler_error", o(vec![("field", s("error")), ("code", J::Int(-32001)), ("data", s("error"))])),
+            (
+                "refusal",
+                o(vec![
+                    ("field", s("error")),
+                    ("data", s("refusal")),
+                    (
+                        "code",
+                        o(vec![
+                            ("malformed", J::Int(-32602)),
+                            ("digest_mismatch", J::Int(-32003)),
+                            ("unauthenticated", J::Int(-32004)),
+                            ("unauthorized", J::Int(-32005)),
+                            ("full", J::Int(-32006)),
+                            ("shutting_down", J::Int(-32007)),
+                            ("unavailable", J::Int(-32008)),
+                        ]),
+                    ),
+                ]),
+            ),
+            ("server_error", o(vec![("field", s("error")), ("code", J::Int(-32603)), ("data", s("refusal"))])),
+            ("transport_failure", s("the transport's own: the connection ends without a response")),
+        ])),
         "unix" => Ok(o(vec![
             ("transport", s("unix")),
             ("result", o(vec![("ok", J::Bool(true)), ("field", s("value"))])),
@@ -297,7 +323,7 @@ fn outcomes(transport: &str) -> Result<J, String> {
             ]))
         }
         other => Err(format!(
-            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, unix, and a hub's ws and udp)"
+            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, mcp, unix, and a hub's ws and udp)"
         )),
     }
 }
@@ -902,9 +928,25 @@ pub fn json_schema(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> 
     ]))
 }
 
+/// One identifier of a member in a tool name: itself, unless it holds `__`
+/// or starts or ends with `_` (which would read as, or run into, the `__`
+/// that joins the two), when each `_` is written `_-`. A `-` cannot occur
+/// in an identifier, so the names of two members never collide. The
+/// stdlib's `__api_mcp_ident` is the same function.
+fn tool_ident(id: &str) -> String {
+    if id.contains("__") || id.starts_with('_') || id.ends_with('_') {
+        id.replace('_', "_-")
+    } else {
+        id.to_string()
+    }
+}
+
 /// A tool name: the member with `::` spelled `__`.
 fn tool_name(member: &str) -> String {
-    member.replace("::", "__")
+    match member.split_once("::") {
+        Some((recv, method)) => format!("{}__{}", tool_ident(recv), tool_ident(method)),
+        None => member.to_string(),
+    }
 }
 
 /// The MCP form of a surface: every row a tool, its input schema the

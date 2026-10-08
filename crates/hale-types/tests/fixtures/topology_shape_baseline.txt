@@ -32,7 +32,7 @@ crates/hale-cli/tests/env_matrix.rs#0 2a2f5fd182496fe2
 crates/hale-cli/tests/env_matrix.rs#1 dca4d6b5b8aa87a0
 crates/hale-cli/tests/env_matrix.rs#2 db15bd17f8200c1b
 crates/hale-cli/tests/ffi_export_reentry.rs#2 367067d4491c583a
-crates/hale-cli/tests/fixtures/api_description/main.hl b9e86bda4d5d970b
+crates/hale-cli/tests/fixtures/api_description/main.hl e44ce9267db8a7c1
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826
 crates/hale-cli/tests/fixtures/form-hashmap-qualified-model/main.hl af67c9605fa68550
@@ -204,12 +204,13 @@ crates/hale-codegen/tests/alloc_model_rss.rs#6 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
-crates/hale-codegen/tests/api_http.rs#1 8a44cfc7da03f972
-crates/hale-codegen/tests/api_hub.rs#0 6f60b2e0c4537388
-crates/hale-codegen/tests/api_hub_desk.rs#0 e399abc887a018df
-crates/hale-codegen/tests/api_runtime.rs#0 8e3c64bf28d4bb1f
-crates/hale-codegen/tests/api_serve_build.rs#0 f3a5e18790ef3a88
-crates/hale-codegen/tests/api_unix_lifecycle.rs#0 d9d555350ae5532b
+crates/hale-codegen/tests/api_http.rs#1 f12bb1cac954b590
+crates/hale-codegen/tests/api_hub.rs#0 ecbb23fce024686d
+crates/hale-codegen/tests/api_hub_desk.rs#0 f0d38e651b067db7
+crates/hale-codegen/tests/api_mcp.rs#0 d0ed53bcce40d1dc
+crates/hale-codegen/tests/api_runtime.rs#0 f223b7d2c2517fb1
+crates/hale-codegen/tests/api_serve_build.rs#0 2cb19975fb6e2f4e
+crates/hale-codegen/tests/api_unix_lifecycle.rs#0 6bfdc631ed8bff28
 crates/hale-codegen/tests/array_repeat.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#2 3b217f0f698a6100
@@ -618,7 +619,7 @@ crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 35f
 crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 10752f290e4e7986
 crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl 530c777d0fe0f765
 crates/hale-codegen/tests/fixtures/examples/91-module-decls/main.hl 86745b4e2324e4a2
-crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl 5fe125fd9a609fd0
+crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl ba7998f823ef05c8
 crates/hale-codegen/tests/fixtures/examples/93-units/main.hl c44d33e5cd32e71b
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
@@ -1305,7 +1306,7 @@ crates/hale-codegen/tests/string_escapes.rs#1 865d341109268295
 crates/hale-codegen/tests/string_escapes.rs#2 f2c1228edb650960
 crates/hale-codegen/tests/struct_layout_with_i128.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/struct_layout_with_i128.rs#1 f2c1228edb650960
-crates/hale-codegen/tests/support/hub_witness.rs#0 a6c01d1c61b2d7dd
+crates/hale-codegen/tests/support/hub_witness.rs#0 0cd17a993f7e7084
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295
 crates/hale-codegen/tests/tcp_recv_bytes.rs#2 865d341109268295
@@ -1429,7 +1430,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
 crates/hale-stdlib/hl/api.hl e416474db56b5494
-crates/hale-stdlib/hl/api_rpc.hl 0d7c0c4f49bd938c
+crates/hale-stdlib/hl/api_rpc.hl 1973e826c19c0b1d
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
@@ -1839,8 +1840,8 @@ crates/hale-types/tests/self_containing_locus.rs#17 1d9bb2dd607e1c91
 crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
 crates/hale-types/tests/snapshot.rs#0 36036aa68555ae99
 crates/hale-types/tests/snapshot.rs#1 79c6c4f8b494f43b
-crates/hale-types/tests/snapshot.rs#2 9045c967426cc411
-crates/hale-types/tests/snapshot.rs#3 d88cc6d721c36aa3
+crates/hale-types/tests/snapshot.rs#2 2b251c6fd982cdc7
+crates/hale-types/tests/snapshot.rs#3 aa65b5809487878b
 crates/hale-types/tests/snapshot.rs#6 775b54d5615f0d98
 crates/hale-types/tests/stdlib_name_check.rs#2 865d341109268295
 crates/hale-types/tests/stdlib_name_check.rs#4 7ba49c53bd84fd5d
