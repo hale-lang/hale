@@ -1077,6 +1077,21 @@ jobs:
           cache: npm
           cache-dependency-path: dna/face/package-lock.json
 
+      # GH #1417 (R8a): the TypeScript client `hale api client --lang ts`
+      # generates compiles under `tsc --strict` and speaks the contract's wire
+      # on node's fetch and WebSocket against a server that replays
+      # tests/api-contract/wire. Node is set up above; TypeScript is installed
+      # beside it, not into the face's package.json. It runs in the same
+      # `scope`-classified job as the browser tests, and only when code changed.
+      - name: Generated TypeScript client
+        if: matrix.shard == '1'
+        env:
+          HALE_BIN: ${{ github.workspace }}/target/release/hale
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/typescript" typescript@5
+          TSC="$RUNNER_TEMP/typescript/node_modules/.bin/tsc" node crates/hale-cli/tests/fixtures/ts-client/run.mjs
+
       - name: Face browser integration (${{ matrix.shard }})
         working-directory: dna/face
         # The owner's DSN reaches only the fixtures that migrate or drop a

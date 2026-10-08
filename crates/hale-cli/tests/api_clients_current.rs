@@ -77,15 +77,17 @@ fn a_client_is_the_same_bytes_on_two_runs_and_two_checkouts() {
     let copy = elsewhere.join("program.hl");
     std::fs::copy(root().join("tests/api-contract/program.hl"), &copy).unwrap();
     let original = root().join("tests/api-contract/program.hl");
-    let run = |program: &Path| {
-        let out = hale(&["api", "client", "--surface", "Admin", "--lang", "hale", program.to_str().unwrap()]);
+    let run = |program: &Path, lang: &str| {
+        let out = hale(&["api", "client", "--surface", "Admin", "--lang", lang, program.to_str().unwrap()]);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         out.stdout
     };
-    let (a, b, c) = (run(&original), run(&original), run(&copy));
-    assert!(!a.is_empty());
-    assert_eq!(a, b, "two runs");
-    assert_eq!(a, c, "two checkouts");
-    assert!(!String::from_utf8_lossy(&a).contains("hale_api_client_det"), "no path of the checkout");
+    for lang in ["hale", "ts"] {
+        let (a, b, c) = (run(&original, lang), run(&original, lang), run(&copy, lang));
+        assert!(!a.is_empty());
+        assert_eq!(a, b, "{lang}: two runs");
+        assert_eq!(a, c, "{lang}: two checkouts");
+        assert!(!String::from_utf8_lossy(&a).contains("hale_api_client_det"), "{lang}: no path of the checkout");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

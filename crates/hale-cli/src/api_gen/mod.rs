@@ -6,6 +6,7 @@
 //! one program, generate the same bytes.
 
 pub(crate) mod hale_client;
+pub(crate) mod ts_client;
 
 /// The generators' refusal of a shape the codec does not carry: reported,
 /// never approximated.

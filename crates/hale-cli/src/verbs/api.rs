@@ -279,6 +279,7 @@ fn run_client(rest: &[String]) -> ExitCode {
     }
     let generate: fn(&surface_doc::ClientModel) -> Result<String, String> = match lang.as_str() {
         "hale" => crate::api_gen::hale_client::generate,
+        "ts" => crate::api_gen::ts_client::generate,
         other => {
             eprintln!("hale api client: no `{other}` client; the languages are `hale` and `ts`");
             return ExitCode::from(2);

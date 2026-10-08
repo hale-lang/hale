@@ -209,9 +209,11 @@ fn ws_step(listen_fd: Int, scenario: String) -> String {
         if len(chunk) == 0 { tries = tries + 1; } else { buf = buf + chunk; }
     }
     let mut bad = "";
-    if !std::str::starts_with(buf, "GET / HTTP/1.1") { bad = bad + " upgrade request line is not GET / in " + buf; }
-    if !std::str::contains(buf, "\r\nAuthorization: Bearer t-dave\r\n") { bad = bad + " the credential is not Authorization: Bearer t-dave in " + buf; }
-    let kp = std::str::index_of(buf, "Sec-WebSocket-Key: ");
+    // the credential rides the upgrade as a bearer header or as `?access_token=`
+    let by_header = std::str::starts_with(buf, "GET / HTTP/1.1") && std::str::contains(buf, "\r\nAuthorization: Bearer t-dave\r\n");
+    let by_query = std::str::starts_with(buf, "GET /?access_token=t-dave HTTP/1.1");
+    if !by_header && !by_query { bad = bad + " the credential t-dave is in neither form in " + buf; }
+    let kp = if std::str::index_of(buf, "Sec-WebSocket-Key: ") >= 0 { std::str::index_of(buf, "Sec-WebSocket-Key: ") } else { std::str::index_of(buf, "sec-websocket-key: ") };
     let rest = buf[(kp + 19)..len(buf)];
     let key = rest[0..std::str::index_of(rest, "\r\n")];
     let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
