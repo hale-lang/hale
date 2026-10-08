@@ -15,7 +15,6 @@ pub(crate) const VALUE_FLAGS: &[&str] = &[
     "--target",
     "--target-cpu",
     "--target-cache",
-    "--api",
     "--env",
     "-o",
     "--out",
@@ -40,7 +39,6 @@ pub(crate) const BUILD_ONLY_FLAGS: &[&str] = &[
 /// evaluations.
 pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
-    "--dump-api",
     "--api",
     "--dump-model",
     "--check-topology",
@@ -63,9 +61,6 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-effects-manifest", false),
     ("--dump-resource-budget", false),
     ("--dump-topology", false),
-    // GH #1107: the api binding's description, the model's first
-    // wire form. `=<path>` writes it, bare prints it.
-    ("--dump-api", false),
     // GH #1417 (R1): the surface rows' documents: the inventory, one
     // exposure's description for a caller, one surface's projections.
     ("--api", false),
@@ -222,27 +217,16 @@ pub(crate) fn parse_build_options(
                 opts.csrc_files.push(std::path::PathBuf::from(v));
                 i += 2;
             }
-            // GH #1106: the zero-code api path. Accepted by build and
-            // run alike; the entry it synthesizes is source-shaped, so
-            // the checker sees exactly what an author would write.
+            // GH #1417 (R4): the zero-code api path is retired with the
+            // binding it injected.
             "--api" => {
-                let v = args.get(i + 1).ok_or_else(|| {
-                    "--api requires a socket path (e.g. --api /run/app.sock)"
-                        .to_string()
-                })?;
-                let path = v.strip_prefix("unix:").unwrap_or(v);
-                if path.is_empty() || path.starts_with("--") {
-                    return Err(
-                        "--api requires a socket path (e.g. --api /run/app.sock)"
-                            .to_string(),
-                    );
-                }
-                opts.api = Some(path.to_string());
-                i += 2;
+                return Err("`--api <path>` is retired with `bindings { api: … }`: a program \
+                            serves a surface it declares, `api::serve(NAME, unix::Rpc { path: \
+                            \"…\" })` (spec/api.md); `hale check --api` prints its description"
+                    .to_string());
             }
             // GH #1109: the deployment target. Its constitution is
-            // adopted as `check --env` adopts it, and its role table
-            // is baked into the api binding.
+            // adopted as `check --env` adopts it.
             "--env" => {
                 let v = args.get(i + 1).ok_or_else(|| {
                     "--env requires an environment name from hale.toml (e.g. --env prod)"
@@ -600,26 +584,15 @@ pub(crate) fn link_refusals(row: &hale_types::capability::TargetRow, inputs: &[L
 }
 
 /// GH #1109: what `build --env` and `run --env` resolve before the
-/// program is parsed: the environment's section (for the constitution
-/// it binds) and, onto `options`, its role table, which the api binding
-/// bakes in and the fingerprint covers. Without `--env` there is no
-/// table: every gate refuses until `LOTUS_API_ROLES` says otherwise.
+/// program is parsed: the environment's section, for the constitution it
+/// binds.
 pub(crate) fn resolve_build_env(
     target: &Path,
-    options: &mut hale_codegen::BuildOptions,
+    options: &hale_codegen::BuildOptions,
 ) -> Result<Option<(crate::pkg::EnvSpec, Option<String>)>, String> {
     let Some(env) = options.env.clone() else { return Ok(None) };
     let (spec, base) = resolve_env_spec(target, &env)?;
-    options.api_roles = Some(env_roles(&spec));
     Ok(Some((spec, base)))
-}
-
-/// GH #1109: the role table an environment binds, the one line the api
-/// binding bakes in. `build --env`, `run --env`, `check --env` and the
-/// matrix's pair all take it from here, so the check judges the binding
-/// the build lowers (F.40 phase 4, A1).
-pub(crate) fn env_roles(spec: &crate::pkg::EnvSpec) -> String {
-    crate::pkg::roles_table(&spec.roles)
 }
 
 /// The options the execution identity is computed from (F.40 phase 4,
@@ -670,8 +643,8 @@ pub(crate) fn identity_options(
 
 /// GH #1109: the config a build's snapshot is loaded with, from its
 /// flags: the target it compiles for (`explicit` when `--target` named
-/// it, so it overrides a source declaration), `--api`, and `--env`'s
-/// role table and constitutions (resolved by [`resolve_build_env`]).
+/// it, so it overrides a source declaration), and `--env`'s constitutions
+/// (resolved by [`resolve_build_env`]).
 /// The environment is a pass of the snapshot's load and part of its key.
 pub(crate) fn build_config(
     options: &hale_codegen::BuildOptions,
@@ -680,8 +653,6 @@ pub(crate) fn build_config(
 ) -> hale_frontend::snapshot::Config {
     let target = configured_target(options.target, explicit);
     let mut config = hale_frontend::snapshot::Config::build(target);
-    config.api = options.api.clone();
-    config.api_roles = options.api_roles.clone();
     config.environment = env_spec.as_ref().map(|(spec, base)| hale_frontend::snapshot::Environment {
         name: options.env.clone().unwrap_or_default(),
         adopt: env_adopts(spec, base),
@@ -691,36 +662,15 @@ pub(crate) fn build_config(
     config
 }
 
-/// Say so, once, when the api binding the sequence generated gates an
-/// operation and no environment mapped its roles.
-pub(crate) fn note_unmapped_roles(
-    surface: Option<&hale_syntax::api_gen::ApiSurface>,
-    options: &hale_codegen::BuildOptions,
-) {
-    let Some(surface) = surface else { return };
-    let gated = surface.commands.iter().filter(|c| c.role.is_some()).count()
-        + surface.reads.iter().filter(|r| r.role.is_some()).count()
-        + surface.streams.iter().filter(|s| s.role.is_some()).count();
-    if gated > 0 && options.api_roles.is_none() && surface.binding.roles.is_none() {
-        eprintln!(
-            "note: {} gated operation(s) and no role table: pass `--env <name>` to bake \
-             `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run \
-             time; until then every gate refuses",
-            gated
-        );
-    }
-}
-
-/// Which constitutions does environment `env` require, and which role
-/// table does it bind? Walks up from the target for the nearest
+/// Which constitutions does environment `env` require? Walks up from the target for the nearest
 /// `hale.toml`, so `hale check apps/a --env prod` works from anywhere
 /// in the tree.
 pub(crate) fn resolve_env_check(
     target: &Path,
     env: &str,
-) -> Result<(Vec<String>, String), String> {
+) -> Result<Vec<String>, String> {
     let (spec, base) = resolve_env_spec(target, env)?;
-    Ok((env_adopts(&spec, &base), env_roles(&spec)))
+    Ok(env_adopts(&spec, &base))
 }
 
 /// The constitutions an environment binds: the workspace base first,

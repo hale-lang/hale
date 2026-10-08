@@ -1,9 +1,10 @@
 //! GH #1107: the generic clients of an api binding, and the forms
 //! its description takes.
 //!
-//! A program bound with `api: unix(...)` (spec/semantics.md § "The
-//! api binding") serves one JSON object per line on a Unix socket
-//! and answers `{"describe": true}` with its description: commands,
+//! (R4 A: the structural binding this module's wire spoke is retired;
+//! R4 C rebuilds the clients on the per-exposure description.) A
+//! program that served one JSON object per line on a Unix socket
+//! answered `{"describe": true}` with its description: commands,
 //! reads and streams with their schemas. Everything here reads only
 //! that document. `hale describe` prints it (or its OpenAPI 3.1 or
 //! MCP form), `hale call` sends a command or a read, `hale watch`

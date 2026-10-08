@@ -3420,7 +3420,7 @@ impl AuthorPositions {
     pub fn has(&self, site: &LeakSite) -> bool {
         use crate::snapshot::Origin;
         let at = site.span.start.0;
-        if at >= hale_syntax::api_gen::API_SYNTH_BASE {
+        if at >= hale_syntax::api_names::API_SYNTH_BASE {
             return false;
         }
         match self.synthesized.get(&site.owner) {
@@ -6196,7 +6196,7 @@ mod tests {
         };
         assert_eq!(reported(1 << 20), 3, "at an author offset, S's site reports");
         assert_eq!(
-            reported(hale_syntax::api_gen::API_SYNTH_BASE),
+            reported(hale_syntax::api_names::API_SYNTH_BASE),
             2,
             "at API_SYNTH_BASE, S's site has no position"
         );

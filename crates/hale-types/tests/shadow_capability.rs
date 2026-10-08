@@ -143,9 +143,8 @@ fn check(program: &Program, target: &ConfiguredTarget) -> Option<Checked> {
     let mut p = program.clone();
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut p],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
-    )
-    .ok()?;
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
     let ids = hale_types::snapshot::mint([("", &mut p)], &[]);
     let mut programs = BTreeMap::new();
     programs.insert(String::new(), &p);

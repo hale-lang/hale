@@ -1,35 +1,12 @@
 {
-  "notes": {
-    "gates": "a role gate is a boundary check at the binding, never a proof over the program's internal call paths",
-    "reads": "a read is a snapshot taken on the locus's own pool, carried with an as_of digest; a live view is a stream"
-  },
-  "resources": [
-    {
-      "description": "Read billing.ledger: a snapshot of a Ledger with its as_of digest, never a live view.",
-      "mimeType": "application/json",
-      "name": "billing.ledger",
-      "uri": "hale://read/billing.ledger"
-    },
-    {
-      "description": "Read ticks: a snapshot of a Int with its as_of digest, never a live view.",
-      "mimeType": "application/json",
-      "name": "ticks",
-      "uri": "hale://read/ticks"
-    },
-    {
-      "description": "Read uptime: a snapshot of a Uptime with its as_of digest, never a live view.",
-      "mimeType": "application/json",
-      "name": "uptime",
-      "uri": "hale://read/uptime"
-    }
-  ],
-  "streams": [
-    "Moved"
-  ],
+  "x-hale-surface": "Books",
+  "x-hale-digest": "fnv1a64:c2c7c22b5a1ed030",
   "tools": [
     {
-      "description": "Command Audits: sends a Audit to the program; the answer is `accepted` once it is dispatched. Needs the role auditor; a role gate is a boundary check at the binding, never a proof over the program's internal call paths.",
+      "name": "Billing__on_audit",
+      "description": "rpc Billing::on_audit of Books: returns nothing. Requires auditor under the exposure's role source; the server still authorizes every request.",
       "inputSchema": {
+        "type": "object",
         "properties": {
           "line": {
             "type": "string"
@@ -37,14 +14,17 @@
         },
         "required": [
           "line"
-        ],
-        "type": "object"
+        ]
       },
-      "name": "Audits"
+      "x-hale-requires": [
+        "auditor"
+      ]
     },
     {
-      "description": "Command Counts: sends a Count to the program and returns the Int its handler answers with.",
+      "name": "Billing__on_count",
+      "description": "rpc Billing::on_count of Books: returns Int. Requires no role; the server still authorizes every request.",
       "inputSchema": {
+        "type": "object",
         "properties": {
           "by": {
             "type": "integer"
@@ -52,16 +32,30 @@
         },
         "required": [
           "by"
-        ],
-        "type": "object"
+        ]
       },
-      "name": "Counts"
+      "x-hale-requires": []
     },
     {
-      "description": "Command Refunds: sends a Refund to the program and returns the RefundResult its handler answers with.",
+      "name": "Billing__on_refund",
+      "description": "rpc Billing::on_refund of Books: returns RefundResult. Requires no role; the server still authorizes every request.",
       "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "integer"
+          },
+          "money": {
+            "$ref": "#/$defs/Money"
+          }
+        },
+        "required": [
+          "order_id",
+          "money"
+        ],
         "$defs": {
           "Money": {
+            "type": "object",
             "properties": {
               "amount": {
                 "type": "integer"
@@ -72,44 +66,31 @@
             },
             "required": [
               "amount"
-            ],
-            "type": "object"
+            ]
           }
-        },
-        "properties": {
-          "money": {
-            "$ref": "#/$defs/Money"
-          },
-          "order_id": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "order_id",
-          "money"
-        ],
-        "type": "object"
+        }
       },
-      "name": "Refunds"
+      "x-hale-requires": []
     },
     {
-      "description": "Command Ticks: sends a Tick to the program; the answer is `accepted` once it is dispatched.",
+      "name": "Billing__read_ledger",
+      "description": "rpc Billing::read_ledger of Books: returns Ledger. Requires auditor under the exposure's role source; the server still authorizes every request.",
       "inputSchema": {
+        "type": "object",
         "properties": {
-          "n": {
-            "type": "integer"
-          },
-          "order_id": {
-            "type": "integer"
+          "who": {
+            "type": "string"
           }
         },
-        "required": [
-          "order_id",
-          "n"
-        ],
-        "type": "object"
+        "required": []
       },
-      "name": "Ticks"
+      "x-hale-requires": [
+        "auditor"
+      ]
     }
-  ]
+  ],
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
 }

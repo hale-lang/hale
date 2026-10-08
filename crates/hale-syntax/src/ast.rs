@@ -258,7 +258,7 @@ pub fn for_each_decl_mut(
 }
 
 /// GH #1109: `role refund_support;` / `role owner includes refund_support;`.
-/// A role a `@gated(role:)` annotation may name; `includes` is the
+/// A role a `requires` clause may name; `includes` is the
 /// hierarchy, grant-only and union-only: whoever holds the role holds
 /// every role it includes, transitively.
 #[derive(Debug, Clone, PartialEq)]
@@ -1540,14 +1540,6 @@ pub struct SpannedPlacementConstraint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BindingsBlock {
     pub entries: Vec<BindingEntry>,
-    /// GH #1106: the `api: unix(...)` entry, at most one per block.
-    /// It binds the program's API — every subscribed topic as a
-    /// command, every published topic as a stream, every `expose`
-    /// of the main locus and its default children as a read —
-    /// rather than one topic, so it is not a `BindingEntry`; the
-    /// pre-check synthesis pass (`api_gen`) reads it and the topic
-    /// walks over `entries` never see it.
-    pub api: Option<ApiBinding>,
     /// GH #1417: the topic bindings to a hub, `Fills: self.hub requires:
     /// [operator], bound: 64, on_full: drop_old;` (spec/api.md §
     /// Streams). A hub is a transport INSTANCE, a param of the locus,
@@ -1574,97 +1566,6 @@ pub struct HubBinding {
     /// `drop_old` or `drop_new`, as written.
     pub on_full: Option<Ident>,
     pub span: Span,
-}
-
-/// GH #1106: `api: unix("/run/app.sock", bound: 64, on_full: refuse)`.
-/// The request-side knobs `bound` / `on_full` are required (the
-/// checker says so, not the parser, so `hale fmt` and the LSP still
-/// see the entry); the watcher-side pair defaults to `bound` and
-/// `drop_old` when both are omitted.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApiBinding {
-    pub transport: ApiTransport,
-    /// GH #1109: `roles: <expr>` — a locus satisfying
-    /// `std::api::RoleSource` that answers whether a principal holds a
-    /// role; absent, the static table from `[environments.<env>.roles]`.
-    pub roles: Option<ApiRoles>,
-    pub bound: Option<(i64, Span)>,
-    pub on_full: Option<(ApiFullPolicy, Span)>,
-    pub watch_bound: Option<(i64, Span)>,
-    pub on_watch_full: Option<(ShedPolicy, Span)>,
-    /// GH #1109: what a caller lacking the role gets — a receipt
-    /// naming it (the default), or nothing.
-    pub on_unauthorized: Option<(ApiUnauthorizedPolicy, Span)>,
-    /// GH #1137: `serve: [param, …]` — main's params whose loci the
-    /// entry puts on the surface although another seed declared them.
-    /// The surface is the entrypoint seed's own loci plus these, and
-    /// nothing else: holding a locus never serves its bus.
-    pub serve: Vec<Ident>,
-    /// GH #1135: `http(host, port, principals: <source>)` — the binding's
-    /// HTTP transport beside its socket.
-    pub http: Option<ApiHttp>,
-    pub span: Span,
-}
-
-/// GH #1135: the binding's HTTP transport. `host` and `port` are
-/// expressions the main locus evaluates as param defaults, like the
-/// socket path; `principals` is a locus satisfying
-/// `std::api::BearerSource` (absent: `std::api::NoBearer`, which
-/// refuses every token).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApiHttp {
-    pub host: Expr,
-    pub port: Expr,
-    pub principals: Option<Expr>,
-    pub span: Span,
-}
-
-/// GH #1109: `on_unauthorized: refuse | drop`.
-impl ApiBinding {
-    /// Where the transport (the socket path expression) was written.
-    pub fn transport_span(&self) -> Span {
-        let ApiTransport::Unix { span, .. } = &self.transport;
-        *span
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiUnauthorizedPolicy {
-    /// An `unauthorized` receipt naming the missing role.
-    Refuse,
-    /// No answer at all: the request is dropped at the gate.
-    Drop,
-}
-
-/// GH #1109: `roles: <expr>` — the membership source, an expression
-/// evaluated on the main locus (review F6): a locus literal
-/// (`RecordRoles { }`, `lib::RecordRoles { }`) or a main param
-/// (`self.roles`), so the program builds the source with its own
-/// state and keeps a handle to it. The binding receives it as a
-/// `std::api::RoleSource`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApiRoles {
-    pub expr: Expr,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ApiTransport {
-    /// `unix(path, …)` — a Unix domain stream socket speaking one JSON
-    /// object per line. `path` is an expression the main locus evaluates
-    /// as a param default: a string literal, or `self.<param>` the
-    /// program computed (a per-record path under XDG_RUNTIME_DIR, say).
-    /// `LOTUS_API` overrides it at run time.
-    Unix { path: Expr, span: Span },
-}
-
-/// What the binding does with the request over `bound`. `refuse`
-/// answers the caller with an `over_bound` receipt; it is the only
-/// policy in v1 because a caller waiting for an answer cannot be
-/// shed silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiFullPolicy {
-    Refuse,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1983,9 +1884,6 @@ pub struct ContractMember {
     pub direction: ContractDirection,
     pub name: ContractName,
     pub ty: Option<TypeExpr>,
-    /// GH #1109: `@gated(role: R) expose x: T;` — a read of this member
-    /// through the api binding needs the role.
-    pub gated: Option<Ident>,
     pub span: Span,
 }
 
@@ -2104,9 +2002,6 @@ pub enum BusMember {
         /// `of type T` clause. Same constraint as `Subscribe.ty`.
         ty: Option<TypeExpr>,
         alias: Option<Ident>,
-        /// GH #1109: `@gated(role: R) publish T;` — attaching to this
-        /// stream through the api binding needs the role.
-        gated: Option<Ident>,
         span: Span,
         /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
         id: NodeId,
@@ -2807,10 +2702,6 @@ pub struct FnDecl {
     /// `alloc_per_call` — `stack_bytes`, `block_points`, `publish`,
     /// `fanout`. Checked in `hale-types::quantitative`.
     pub quantities: Vec<(QuantDim, u64)>,
-    /// GH #1109: `@gated(role: R)` — the role a caller must hold for a
-    /// message on this handler's subject to pass the api binding's
-    /// gate. Meaningful only on a subscribed handler; the checker says so.
-    pub gated: Option<Ident>,
     /// GH #1417: `@rpc` / `@rpc(requires: [R, …])` — the row this fn
     /// contributes to its seed's default surface. A locus fn's alone;
     /// the surface law says so of any other.

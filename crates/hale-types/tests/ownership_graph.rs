@@ -1045,7 +1045,7 @@ fn resolved_graph_resolves_an_imported_accept_type() {
     "#;
     let prog = parse_source(src).expect("parse failed");
     let renames = vec![(vec!["lib".to_string(), "Child".to_string()], "ImportedChild".to_string())];
-    let resolved = entries::resolve_program(&prog, &[], &renames, None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
+    let resolved = entries::resolve_program(&prog, &[], &renames, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolve");
     let want: std::collections::BTreeSet<String> = ["ImportedChild".to_string()].into();
     assert_eq!(resolved.ownership.accepts.get("Parent"), Some(&want));

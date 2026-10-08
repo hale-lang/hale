@@ -515,7 +515,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let target = hale_types::capability::target_row(&bundle);
     let uses = hale_types::capability::uses::derive_capability_uses(&bundle, &alloc_summary);
     let laws = hale_types::bundle_law_selection(&bundle);
-    let roles = hale_types::roles::role_rows(&bundle, &entry);
+    let roles = hale_types::roles::role_rows(&bundle);
     let units = hale_types::units::derive_unit_rows(&bundle);
     let surfaces = hale_types::surfaces::surface_rows(&bundle, &entry, &placement, &top.topics);
     let inputs = CheckInputs {
@@ -535,7 +535,6 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         uses: &uses,
         laws: &laws,
         roles: &roles,
-        api_surface: None,
         surfaces: &surfaces,
         units: &units,
     };

@@ -230,29 +230,23 @@ pub(crate) fn run_check_impl_env(
     gate_warnings: bool,
     adopt_env: &[String],
 ) -> u8 {
-    run_check_impl_labelled(target, gate_warnings, adopt_env, None, None)
+    run_check_impl_labelled(target, gate_warnings, adopt_env, None)
 }
 
-/// `env_roles` is the environment's role table (GH #1109), resolved by
-/// the function `build --env` uses (`options::env_roles`): the api
-/// binding the sequence generates bakes it in, so the check judges the
-/// binding the build lowers (F.40 phase 4, A1).
 pub(crate) fn run_check_impl_labelled(
     target: &Path,
     gate_warnings: bool,
     adopt_env: &[String],
     env_label: Option<&str>,
-    env_roles: Option<&str>,
 ) -> u8 {
-    match load_for_check(target, adopt_env, env_label, env_roles) {
+    match load_for_check(target, adopt_env, env_label) {
         Ok(snap) => check_loaded(target, gate_warnings, &snap),
         Err(code) => code,
     }
 }
 
 /// The check's snapshot of `target`, loaded as `hale check` loads it:
-/// the `--target` flag, the environment's constitutions and its role
-/// table. A load that fails has printed why, and `Err` is the exit
+/// the `--target` flag and the environment's constitutions. A load that fails has printed why, and `Err` is the exit
 /// code. The environment matrix keeps the snapshot its pair's check
 /// reads, and reads the identities and the roles from it too (F.40
 /// phase 4, A3).
@@ -260,7 +254,6 @@ pub(crate) fn load_for_check(
     target: &Path,
     adopt_env: &[String],
     env_label: Option<&str>,
-    env_roles: Option<&str>,
 ) -> Result<Snapshot, u8> {
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
@@ -300,7 +293,6 @@ pub(crate) fn load_for_check(
         name: name.to_string(),
         adopt: adopt_env.to_vec(),
     });
-    config.api_roles = env_roles.map(str::to_string);
     // F.40 phase 2.2a: one snapshot, and the check demanded from it.
     // `check` resolves cross-seed imports the same way `build` and
     // `run` do (an imported seed's bodies are in the program the
@@ -549,49 +541,6 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
                 }
             }
             None => print!("{}", artifact),
-        }
-    }
-    // GH #1107: the api binding's description. Same refusal rule as
-    // the artifact. A program with no `api:` entry prints nothing and
-    // succeeds: there is nothing to describe, and `hale describe` says
-    // so.
-    let dump_api = argv.iter().any(|a| a == "--dump-api");
-    let dump_api_to = argv
-        .iter()
-        .find_map(|a| a.strip_prefix("--dump-api="))
-        .filter(|v| !v.is_empty())
-        .map(|v| v.to_string());
-    if dump_api || dump_api_to.is_some() {
-        if let Some(d) = checked
-            .iter()
-            .find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
-        {
-            eprintln!(
-                "refusing to emit an api description: `{}` does not \
-                 typecheck, so its description would name a program \
-                 that does not exist. Fix the {} first.",
-                target.display(),
-                d.kind_str()
-            );
-            return 1;
-        }
-        // F.40 phase 2.3: the snapshot's surface, the one its desugar
-        // sequence generated the binding for, so the description is the
-        // binding's by construction. The bytes the binding serves, never
-        // re-serialized (a `Value` round trip would sort the keys;
-        // spec/model.md promises the two documents agree byte for byte).
-        let text = match snap.api_surface() {
-            Some(surface) => hale_syntax::api_gen::describe(surface) + "\n",
-            None => String::new(),
-        };
-        match &dump_api_to {
-            Some(path) => {
-                if let Err(e) = std::fs::write(path, &text) {
-                    eprintln!("could not write {}: {}", path, e);
-                    return 2;
-                }
-            }
-            None => print!("{}", text),
         }
     }
     // GH #1417 (R1): the surface rows' documents. Same refusal rule as

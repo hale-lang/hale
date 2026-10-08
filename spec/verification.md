@@ -1012,27 +1012,23 @@ locus` is an imported library's, or sits inside a `module { }`, is
 refused as a library is, and `--matrix` does not count it among the
 entrypoints it requires an environment for.
 
-**Roles (GH #1109).** `[environments.<name>.roles]` is the params half
-of authorization: `role = ["uid:1000", "gid:20", "user:riley",
-"group:ops", "*"]`, one key per role the entrypoint declares
-(`spec/types.md` § "Roles and `@gated`"). A key that is not an
+**Roles (GH #1109).** `[environments.<name>.roles]` is the deployment's
+record of who holds which role: `role = ["uid:1000", "gid:20",
+"user:riley", "group:ops", "*"]`, one key per role the entrypoint
+declares (`spec/types.md` § "Roles"). A key that is not an
 identifier, a member spelling outside those five, or an account name
 outside letters, digits, `.`, `_`, `-` and `@` (the table travels as
 one line, so a name may not carry a separator) is a manifest error. `--matrix` proves, per (entrypoint,
-environment) pair, that every role the entrypoint declares — and
-`owner`, once it has an api binding (the one generated from the
-deployed `main locus`, `spec/semantics.md` § "The api binding (GH
-#1106)": a second `main locus`'s `api:` entry adds no `owner`) — is
-mapped there (`[]` says
-explicitly that nobody holds it), and that nothing is mapped that the
-entrypoint does not declare: an omission is indistinguishable from a
-mistake, and a misspelt key would otherwise map nobody quietly. `hale
-check --env <name>`, `hale build --env <name>` and `hale run --env
-<name>` bind the same section to the program: each adopts its
-constitution and bakes its `roles` table into the api binding
-(`spec/semantics.md` § "The gate"), where `LOTUS_API_ROLES` may
-override it at run time, so the check judges the binding the build
-lowers; `--matrix` binds each pair's section the same way.
+environment) pair, that every role the entrypoint declares is mapped
+there (`[]` says explicitly that nobody holds it), and that nothing is
+mapped that the entrypoint does not declare: an omission is
+indistinguishable from a mistake, and a misspelt key would otherwise
+map nobody quietly. Since R4 (GH #1417) the compiler does not bake the
+section into the program: a served surface's role source is the one its
+serve site names (`spec/api.md` § Identity sources), and the stdlib's
+`std::api::StaticRoles` takes its table as a param or, at run time, from
+`LOTUS_API_ROLES`. `hale check --env <name>`, `hale build --env <name>`
+and `hale run --env <name>` adopt the environment's constitution.
 
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation
@@ -1661,17 +1657,9 @@ state), and zeroization.
 | **Module-nested entry** | a seed whose only `main locus` sits inside a `module { }`: it is not the entry (`spec/semantics.md` § "The entry locus"), and nothing else in the seed is, so the program would build with a `main locus` that never runs. Reported once, at that locus's name, read from the entry row; every other rule still judges the declaration | error | `module_nested_main_is_not_the_entry` (lowering laws) |
 | **Cross-pool spawn as a value** | a locus literal used as a value (let-bound, an argument, a field, a sub-expression) where the ownership graph's bubble plan posts it to an owner on another thread: a cross-pool spawn is fire-and-forget (`spec/semantics.md` § "accept bubbling"), so it may only be a bare statement. Judged at every place lowering builds the literal, a default's expansions included, from the ownership graph's sites and expansions and the typed bodies' omitted arguments | error | `cross_pool_spawn_used_as_a_value` (lowering laws) |
 | **Self-containing locus** | a locus whose params defaults construct one of its own kind by value, by a literal or through a fresh-factory call, so its construction has no floor (`spec/types.md` § "A locus may not contain itself by value"). Reported at the param that closes the cycle, naming the ring | error | `self_containing_locus` (lowering laws) |
-| **Role declared once** | a `role` declared twice (`spec/types.md` § "Roles and `@gated`"): a role is one name the deployment maps, not a merge. Reported at the second declaration, with the first as its witness | error | `declared_twice` (roles) |
-| **Declared role** | a role an `includes`, a free fn's `@gated`, a perspective fn's, a handler's, an `expose`'s or a `publish`'s names that no `role` declares; `owner` alone needs no declaration | error | `undeclared` (roles) |
+| **Role declared once** | a `role` declared twice (`spec/types.md` § "Roles"): a role is one name the deployment maps, not a merge. Reported at the second declaration, with the first as its witness | error | `declared_twice` (roles) |
+| **Declared role** | a role an `includes` names that no `role` declares (a row's `requires` is the surface laws') | error | `undeclared` (roles) |
 | **Acyclic role includes** | a role reachable from its own `includes` chain: composition is grant-only and union-only, so a cycle says nothing | error | `role_cycle` (roles) |
-| **Gate on a free fn** | `@gated(role:)` on a free fn, which the api binding never reaches | error | `gate_on_a_free_fn` (roles) |
-| **Gate on a perspective fn** | `@gated(role:)` on a perspective's fn, a signature the loci that serve the perspective answer, which the api binding never reaches | error | `gate_on_a_perspective_fn` (roles) |
-| **Gate on a plain method** | `@gated(role:)` on a locus fn that no `subscribe` line of its locus names, read from the bus graph's subscriptions | error | `gate_on_a_plain_method` (roles) |
-| **Gate on a bound topic** | a gated handler whose topic is also bound to a transport in `bindings { }`, which has no gate, read from the binding rows' bound topics, joined on the topic rows' wire subject | error | `gate_on_a_bound_topic` (roles) |
-| **Gates agree per topic** | subscribers (or publishers) of one topic, joined on its wire subject, that state different gates, an ungated one included: the binding refuses the message, not the handler. Reported at the first gated site, listing every site | error | `gates_disagree` (roles) |
-| **Role source is a locus** | an api entry's `roles:` that names, by a literal or `self.<param>`'s declared type, no locus of the bundle | error | `source_is_no_locus` (roles) |
-| **Role source has holds** | a role source's locus with no `fn holds` | error | `source_has_no_holds` (roles) |
-| **Role source signature** | a role source's `fn holds` that is not `std::api::RoleSource`'s as written (two parameters, a `std::api::Principal` and a `String`, returning `Bool`, not fallible), every way it is not listed, with the api entry as its witness | error | `holds_is_not_a_role_source` (roles) |
 | **Pool starvation** | two or more `run()` bodies that statically never return sharing one cooperative pool of the deployed root (the main locus's own `run()` counts on pool `main`): the pool runs each `run()` to completion in birth order, so the later ones never start (`spec/semantics.md` rules 7 and 8). Read from the placement table's rows and the flow rows' "never returns" column; not reported on a pool where the dead-receiver error fired | warning | `check_pool_starvation` |
 | **Birth-order trap** | a params field of the deployed root whose `run()` runs inline on the main thread and statically never returns, with params declared after it, which are then never born. Reported once, at the first such field, listing the fields it starves; read from the placement table's rows and the flow rows | warning | `check_birth_order` |
 | **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound, an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` silences | warning / error | `check_hot_path_alloc` |

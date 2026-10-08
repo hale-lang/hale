@@ -548,9 +548,7 @@ fn per_target_moves() {
     assert_eq!(moves, PINNED);
 }
 
-/// `dna/api` and `api_binding_run_test` lose the stdlib api helpers'
-/// `__api_json_str` local and `__api_http_header` return, consumed in a
-/// scratch-local fn; `factory_field_owner_test` loses `churn`'s in-loop
+/// `factory_field_owner_test` loses `churn`'s in-loop
 /// temporary; `dna/host` loses three of its own fns' (two in
 /// `magnitude_facets`), and gains the caller-arena sites of its CLI verbs
 /// and of `Host::run`'s tick (`exit_code` → `alive`): of those with an
@@ -568,14 +566,9 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/74-effect-contracts: 0 go, 0 appear; dump 7 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
-    // The current stack admits the API example and resolves the HTTP
-    // callback paths (E5). The latter expose caller-arena dump verdicts;
-    // their run-to-exit advisory suppression remains unchanged.
-    "crates/hale-codegen/tests/fixtures/examples/92-build-an-api: 2 go, 0 appear; dump 7 tags, 10 reclaim, 2 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 12 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/http-hello: 0 go, 0 appear; dump 0 tags, 0 reclaim, 7 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 2 go, 0 appear; dump 312 tags, 633 reclaim, 2 verdicts",
     "dna/core: 0 go, 0 appear; dump 253 tags, 560 reclaim, 0 verdicts",
     "dna/host: 3 go, 180 appear; dump 377 tags, 628 reclaim, 516 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
@@ -585,15 +578,13 @@ const PINNED: &[&str] = &[
     "dna/organization_source: 0 go, 0 appear; dump 253 tags, 560 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 14 tags, 19 reclaim, 0 verdicts",
     "dna/ui: 0 go, 0 appear; dump 255 tags, 560 reclaim, 0 verdicts",
-    "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 34 reclaim, 0 verdicts",
-    "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 19 reclaim, 0 verdicts",
-    "tests/hale/api_binding_run_test.hl: 2 go, 0 appear; dump 7 tags, 10 reclaim, 2 verdicts",
-    "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 36 reclaim, 0 verdicts",
-    "tests/hale/api_clients_test.hl: 0 go, 0 appear; dump 2 tags, 29 reclaim, 0 verdicts",
-    "tests/hale/api_context_test.hl: 0 go, 0 appear; dump 2 tags, 46 reclaim, 0 verdicts",
-    "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 47 reclaim, 0 verdicts",
-    "tests/hale/api_roles_xseed_test.hl: 0 go, 0 appear; dump 2 tags, 41 reclaim, 0 verdicts",
-    "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 29 reclaim, 0 verdicts",
+    "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
+    "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 21 reclaim, 0 verdicts",
+    "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 29 reclaim, 0 verdicts",
+    "tests/hale/api_context_test.hl: 0 go, 0 appear; dump 2 tags, 51 reclaim, 0 verdicts",
+    "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 42 reclaim, 0 verdicts",
+    "tests/hale/api_roles_xseed_test.hl: 0 go, 0 appear; dump 2 tags, 39 reclaim, 0 verdicts",
+    "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 28 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",

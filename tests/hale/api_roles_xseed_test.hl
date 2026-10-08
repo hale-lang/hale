@@ -1,23 +1,21 @@
-// GH #1109 — a role source from another seed, end to end.
+// GH #1109, retargeted in R4 (GH #1417) — a role source from another seed,
+// end to end.
 //
-// spec/semantics.md § "The gate": the entry names its membership source
-// with `roles: L { … }`, and `L` may be an imported locus named through
-// the alias exactly as an adapter is. The fixture builds a library
-// seed whose source answers `holds` from a table the entry hands it,
-// an app that imports it, and drives the binding: the gate answers and
-// refuses by the library's word, and the receipt names the role.
+// spec/api.md § Identity sources: the transport names its membership
+// source with `roles: L { … }`, and `L` may be an imported locus named
+// through the alias exactly as an adapter is. The fixture builds a library
+// seed whose source answers `holds` from a table the serve site hands it,
+// an app that imports it, and drives the exposure: the gate answers and
+// refuses by the library's word, and the handler's context names the role.
 
-fn lib_source(lib_sock: String) -> String {
+fn lib_source() -> String {
     return "// A source whose table is `role=member,member;…` over principal names.\n"
-    // The library is a program of its own too: a main locus with an api
-    // entry of its own. Imported, that main is inert — the app's binding
-    // is the app's, and this socket never appears (GH #1104 piece 5).
+    // The library is a program of its own too: it has a main locus.
+    // Imported, that main is inert (GH #1104 piece 5): it is not the
+    // app's entry and the app's exposures are the app's.
         + "type Ping { n: Int; }\n"
-        + "topic Pings { payload: Ping; subject: \"lib.ping\"; }\n"
         + "main locus LibHead {\n"
-        + "    bus { subscribe Pings as on_ping; }\n"
-        + "    fn on_ping(p: Ping) { }\n"
-        + "    bindings { api: unix(\"" + lib_sock + "\", bound: 8, on_full: refuse); }\n"
+        + "    fn on_ping(p: Ping) -> Ping { return p; }\n"
         + "}\n"
         + "fn main() { LibHead { }; }\n"
         + "locus TableRoles {\n"
@@ -35,22 +33,25 @@ fn app_source(sock: String, me: String) -> String {
         + "role support;\n"
         + "type Refund { order_id: Int; }\n"
         + "type Done { by: String; role: String; }\n"
-        + "topic Refunds { payload: Refund; subject: \"shop.refund\"; }\n"
         + "locus Desk {\n"
-        + "    bus { subscribe Refunds as on_refund; }\n"
-        + "    @gated(role: support)\n"
         + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Done { return Done { by: ctx.caller.name, role: ctx.role }; }\n"
         + "}\n"
-    // The app's own locus relays an imported topic: that command is the
-    // app's, described as `lib::Pings`, and a caller may write `Pings`.
+    // The app's own locus relays an imported type: that row is the app's,
+    // and its payload is spelled through the alias.
         + "locus Relay {\n"
-        + "    bus { subscribe lib::Pings as on_ping; }\n"
         + "    fn on_ping(p: lib::Ping) -> lib::Ping { return p; }\n"
+        + "}\n"
+        + "api Public {\n"
+        + "    rpc Desk::on_refund requires: [support];\n"
+        + "    rpc Relay::on_ping;\n"
         + "}\n"
         + "main locus App {\n"
         + "    params { desk: Desk = Desk { }; relay: Relay = Relay { }; }\n"
-        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse, roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me + "\" }); }\n"
-        + "    run() { std::time::sleep(8s); }\n"
+        + "    run() {\n"
+        + "        let h = api::serve(Public, unix::Rpc { path: \"" + sock + "\", roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me + "\" } }, as: \"shop\", receivers: { Desk: self.desk, Relay: self.relay }, bound: 8, on_full: refuse);\n"
+        + "        std::time::sleep(8s);\n"
+        + "        h.stop();\n"
+        + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
 }
@@ -97,6 +98,10 @@ locus Api {
         return true;
     }
 
+    fn call(member: String, payload: String) -> String {
+        return self.ask("{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-1\"}");
+    }
+
     fn ask(line: String) -> String {
         self.stream.send(line + "\n") or discard;
         let mut i = 0;
@@ -129,11 +134,10 @@ fn main() {
     let tag = to_string(std::process::pid());
     let root = "/tmp/hale-1109-xseed-" + tag;
     let sock = root + "/app.sock";
-    let lib_sock = root + "/lib.sock";
     std::io::fs::mkdir(root) or discard;
     std::io::fs::mkdir(root + "/lib") or discard;
     std::io::fs::mkdir(root + "/app") or discard;
-    std::io::fs::write_file(root + "/lib/roles.hl", lib_source(lib_sock)) or discard;
+    std::io::fs::write_file(root + "/lib/roles.hl", lib_source()) or discard;
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me)) or discard;
     let checked = run_tool(hale + "\ncheck\n" + root + "/app");
     std::test::assert_eq_int(checked.code, 0, "the app with an imported source checks: " + checked.stderr);
@@ -143,19 +147,15 @@ fn main() {
     std::test::assert(p.start(root + "/app/app"), "the app started");
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
-    let r1 = api.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1}}");
-    std::test::assert(std::str::contains(r1, "\"ok\":true") && std::str::contains(r1, ",\"role\":\"support\"}"), "the library's source authorizes, and the receipt names the role: " + r1);
-    std::test::assert(std::str::contains(r1, "\"role\":\"support\"}"), "the handler's context carries it: " + r1);
-    let d = api.ask("{\"id\":2,\"describe\":\"full\"}");
-    std::test::assert(std::str::contains(d, "\"ok\":true") && std::str::contains(d, "\"role\":\"support\""), "owner by the library's word reads the full description: " + d);
-    // the imported main's api entry is inert: its socket never appears,
-    // and its topic is not the app's command
-    std::test::assert(!std::io::fs::file_exists(lib_sock), "an imported main's binding binds nothing: " + lib_sock);
-    std::test::assert(!std::str::contains(d, "\"name\":\"Pings\"") && std::str::contains(d, "\"name\":\"lib::Pings\""), "the imported topic the app relays is the app's command, spelled by its seed: " + d);
-    let bare = api.ask("{\"id\":5,\"call\":\"Pings\",\"payload\":{\"n\":7}}");
-    std::test::assert(std::str::contains(bare, "\"ok\":true") && std::str::contains(bare, "\"n\":7"), "the bare tail names it when it is the only one: " + bare);
-    let qualified = api.ask("{\"id\":6,\"call\":\"lib::Pings\",\"payload\":{\"n\":8}}");
-    std::test::assert(std::str::contains(qualified, "\"ok\":true") && std::str::contains(qualified, "\"n\":8"), "and so does the description's spelling: " + qualified);
+    let r1 = api.call("Desk::on_refund", "{\"order_id\":1}");
+    std::test::assert(std::str::contains(r1, "\"ok\":true") && std::str::contains(r1, "\"role\":\"support\""), "the library's source authorizes, and the handler's context carries the role: " + r1);
+    let d = api.ask("{\"describe\":true}");
+    std::test::assert(std::str::contains(d, "\"ok\":true") && std::str::contains(d, "\"name\":\"Desk::on_refund\""), "the library's word puts the row in this caller's description: " + d);
+    // the imported main is not the app's entry: its handler is no member of
+    // the app's surface
+    std::test::assert(!std::str::contains(d, "LibHead::on_ping"), "the library's handler is no member of the app's surface: " + d);
+    let relayed = api.call("Relay::on_ping", "{\"n\":7}");
+    std::test::assert(std::str::contains(relayed, "\"ok\":true") && std::str::contains(relayed, "\"n\":7"), "the app's relay of the imported type answers: " + relayed);
     p.stop();
     std::io::fs::unlink(sock) or discard;
 
@@ -167,8 +167,8 @@ fn main() {
     std::test::assert(q.start(root + "/app/app"), "restarted");
     let api2 = Api { };
     std::test::assert(api2.connect(sock), "reconnected");
-    let r2 = api2.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1}}");
-    std::test::assert(std::str::contains(r2, "\"kind\":\"unknown\"") && !std::str::contains(r2, "support"), "the library's source refuses, and the item is unknown to a non-holder: " + r2);
+    let r2 = api2.call("Desk::on_refund", "{\"order_id\":1}");
+    std::test::assert(std::str::contains(r2, "\"kind\":\"unauthorized\"") && !std::str::contains(r2, "\"by\""), "the library's source refuses, and the handler never ran: " + r2);
     q.stop();
     std::io::fs::unlink(sock) or discard;
     let _rm = run_tool("rm\n-rf\n" + root);

@@ -184,16 +184,16 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         }
     }
 
-    // `--env X` binds the constitution `[environments.X]` requires and
-    // its role table, resolved from the nearest `hale.toml` at or above
-    // the target, as `build --env` resolves them.
-    let (adopt, roles) = match &env_name {
-        None => (Vec::new(), None),
+    // `--env X` binds the constitution `[environments.X]` requires,
+    // resolved from the nearest `hale.toml` at or above the target, as
+    // `build --env` resolves it.
+    let adopt = match &env_name {
+        None => Vec::new(),
         Some(e) => match resolve_env_check(
             &PathBuf::from(positionals[0]),
             e,
         ) {
-            Ok((c, r)) => (c, Some(r)),
+            Ok(c) => c,
             Err(msg) => {
                 eprintln!("{}", msg);
                 return ExitCode::from(2);
@@ -205,6 +205,5 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         verify,
         &adopt,
         env_name.as_deref(),
-        roles.as_deref(),
     ))
 }

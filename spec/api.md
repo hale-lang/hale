@@ -18,8 +18,8 @@ runtime (the interfaces of § The runtime boundaries, the identity
 sources, receiver failure, `api::serve` checked and lowered) over an
 in-process fixture transport, `std::api::test::Rpc`; `unix::Rpc` proves
 the same runtime over a socket in R2b and `http::Rpc` over HTTP in R3;
-hubs and stream authorization are R5's (`ws::Hub`, `udp::Hub`: § Streams); R4 retires the structural
-path (§ What this replaces). Each section names the step that ships it.
+hubs and stream authorization are R5's (`ws::Hub`, `udp::Hub`: § Streams); R4 retired the structural
+path (§ What this replaced). Each section names the step that ships it.
 Until R1, the
 fixtures under `tests/api-contract/` are what a consumer builds against:
 the consumer program of § The witness, its descriptions per exposure
@@ -1491,27 +1491,34 @@ fields, under its name; every component a form adds that is not a user
 type is namespaced `hale.` (`hale.Refusal`), a name no Hale identifier
 can spell, so none collides with the program's types; the fixture
 program's are pinned beside the R0 documents
-(`<Surface>.<form>.json`). The structural path's forms (`hale describe
---openapi`, `--mcp`) are unchanged until R4.
+(`<Surface>.<form>.json`).
 
-## What this replaces
+## What this replaced
 
-Today a program's API is a structural fact: one entry, `bindings { api:
-unix(…) }` on the main locus, puts on the surface every topic the
-seed's loci (and the loci `serve:` names) subscribe or publish and
-every `expose` member of main and its default children, gated by
-`@gated` on handlers and members; the entry is desugared before the
-check into envelope types, topics, synthesized subscriptions and two
-loci that own the socket, and the admission law reads locus rows. That
-path is `spec/semantics.md` § The api binding (GH #1106), and it stays
-the shipped behavior until R4 retires it: the entry, the synthesis, the
-exposed reads, `@gated` and `serve:` go, the thirteen sites and the DNA
-applications that declare the entry move to surfaces, and `hale call`,
-`watch`, `admin` and `mcp` read descriptions. What carries over is
+Before R4 a program's API was a structural fact: one entry, `bindings {
+api: unix(…) }` on the main locus, put on the surface every topic the
+seed's loci (and the loci its `serve:` clause named) subscribed or
+published and every `expose` member of main and its default children,
+gated by `@gated` on handlers and members; the entry was desugared before
+the check into envelope types, topics, synthesized subscriptions and two
+loci that owned the socket, and an admission law read locus rows
+(GH #1106). That path is retired in one cutover (R4), with no adapter, no
+dual route and no flag: the parser refuses `bindings { api: … }` and
+`@gated` with one diagnostic that names the replacement (an `api` block
+or `@rpc` with `requires`, `api::serve(…)`, a topic binding to a hub), the
+synthesis, the admission law over locus rows, the exposed reads, the
+`--api <path>` build flag and `hale check --dump-api` are gone, and the
+programs that declared the entry serve surfaces. A read is an `rpc` row
+whose handler returns the value (it carries no `as_of` digest); a stream
+is a topic bound to a hub; a call through a surface is a call of the
+row's handler, not a publish on a topic, so the topic's other
+subscribers never hear it; a caller lacking a role is refused
+`unauthorized` and told what the row requires. What carries over is
 restated above in these terms: the Unix wire's line framing,
 correlation and principal (§ Outcomes), the codec (§ Codecs), the
 publish contract's bearing on streams (§ Streams), `std::api::Context`
-and the two source interfaces (§ Serving).
+and the two source interfaces (§ Serving). `hale call`, `watch`, `admin`
+and `mcp` read per-exposure descriptions (R4 C).
 
 ## The witness
 

@@ -183,16 +183,9 @@ recorded under `--dev` replays only under `hale replay --dev`.
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
-  --api <path>                     bind the program's API to a Unix
-                                   socket at <path>: every subscribed
-                                   topic a command, every published
-                                   topic a stream, every expose a read
-                                   (dev defaults: bound 64, refuse)
   --env <name>                     the deployment target: adopt the
                                    constitution [environments.<name>]
-                                   binds and bake its `roles` table
-                                   into the api binding (LOTUS_API_ROLES
-                                   overrides it at run time)
+                                   binds
   --target <native>                `run` execs what it builds, so a
                                    target this host cannot execute
                                    (wasm32) is refused; build it
@@ -242,16 +235,9 @@ that is not a flag is the target, as in `hale check`:
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
-  --api <path>                     bind the program's API to a Unix
-                                   socket at <path>: every subscribed
-                                   topic a command, every published
-                                   topic a stream, every expose a read
-                                   (dev defaults: bound 64, refuse)
   --env <name>                     the deployment target: adopt the
                                    constitution [environments.<name>]
-                                   binds and bake its `roles` table
-                                   into the api binding (LOTUS_API_ROLES
-                                   overrides it at run time)
+                                   binds
   --wrap-main                      synthesize the wasm @export entry
                                    from `fn main` (--target wasm32)
   --locality-report                the per-locus working-set table,
@@ -434,10 +420,8 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 NOT connect seeds to each other.");
     println!("  --env <name>                   also adopt the constitution that");
     println!("                                 `[environments.<name>]` in hale.toml");
-    println!("                                 requires, and check the api binding");
-    println!("                                 with its roles table, as build bakes");
-    println!("                                 it. One entrypoint deployed to two");
-    println!("                                 environments is checked twice.");
+    println!("                                 requires. One entrypoint deployed to");
+    println!("                                 two environments is checked twice.");
     println!("  --matrix                       check every (entrypoint, environment)");
     println!("                                 pair the manifest declares. An");
     println!("                                 entrypoint listed in NO environment");

@@ -1,0 +1,184 @@
+{
+  "inventory": 1,
+  "app": "Shop",
+  "surfaces": [
+    {
+      "name": "Books",
+      "digest": "fnv1a64:c2c7c22b5a1ed030",
+      "members": [
+        {
+          "name": "Billing::on_audit",
+          "request": {
+            "$ref": "#/schemas/Audit"
+          },
+          "response": null,
+          "error": null,
+          "requires": [
+            "auditor"
+          ]
+        },
+        {
+          "name": "Billing::on_count",
+          "request": {
+            "$ref": "#/schemas/Count"
+          },
+          "response": {
+            "type": "integer"
+          },
+          "error": null,
+          "requires": []
+        },
+        {
+          "name": "Billing::on_refund",
+          "request": {
+            "$ref": "#/schemas/Refund"
+          },
+          "response": {
+            "$ref": "#/schemas/RefundResult"
+          },
+          "error": null,
+          "requires": []
+        },
+        {
+          "name": "Billing::read_ledger",
+          "request": {
+            "$ref": "#/schemas/Query"
+          },
+          "response": {
+            "$ref": "#/schemas/Ledger"
+          },
+          "error": null,
+          "requires": [
+            "auditor"
+          ]
+        }
+      ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposure": "Books@fnv1a64:c2c7c22b5a1ed030/books",
+      "name": "books",
+      "surface": "Books",
+      "digest": "fnv1a64:c2c7c22b5a1ed030",
+      "listener": {
+        "transport": "unix",
+        "address": "/tmp/hale-api-description-fixture.sock"
+      },
+      "codec": "json",
+      "principals": {
+        "source": "kernel"
+      },
+      "roles": {
+        "source": "self.staff",
+        "type": "std::api::StaticRoles"
+      },
+      "receivers": [
+        {
+          "type": "Billing",
+          "instance": "self.billing",
+          "binding": "explicit",
+          "pool": "work"
+        }
+      ]
+    }
+  ],
+  "hubs": [],
+  "schemas": {
+    "Audit": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "line"
+      ]
+    },
+    "Count": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "by"
+      ]
+    },
+    "Ledger": {
+      "type": "object",
+      "properties": {
+        "balance": {
+          "type": "integer"
+        },
+        "entries": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "balance",
+        "entries"
+      ]
+    },
+    "Money": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount"
+      ]
+    },
+    "Query": {
+      "type": "object",
+      "properties": {
+        "who": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "Refund": {
+      "type": "object",
+      "properties": {
+        "order_id": {
+          "type": "integer"
+        },
+        "money": {
+          "$ref": "#/schemas/Money"
+        }
+      },
+      "required": [
+        "order_id",
+        "money"
+      ]
+    },
+    "RefundResult": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "note"
+      ]
+    }
+  },
+  "notes": {
+    "inventory": "every exposure with its listener, its sources and its receivers: a deployment inventory, never an authorization statement for any caller",
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

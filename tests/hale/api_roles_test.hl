@@ -1,19 +1,24 @@
-// GH #1109 — roles at the binding.
+// GH #1109, retargeted in R4 (GH #1417) — roles at a served surface.
 //
-// spec/types.md § "Roles and @gated": `role` is declared vocabulary
-// with a grant-only hierarchy; `@gated(role: R)` on a subscribed
-// handler, an `expose` member or a `publish` means a call, a read or
-// a watch arriving through the api binding is refused unless the
-// caller holds R, directly or through a role that `includes` it.
-// The static table (`std::api::StaticRoles`) reads the environment's
-// `roles` — baked by `hale build --env`, overridden by
-// `LOTUS_API_ROLES` — in every member spelling; a refusal is a
-// receipt naming the missing role; an answer names the role that
-// authorized it, on the receipt and in the handler's context; the
-// description is served filtered to what the caller holds, and the
-// full one is a read gated on `owner`.
+// spec/api.md § Surfaces and their rows, § Identity sources: `role` is
+// declared vocabulary with a grant-only hierarchy; a row's `requires:
+// [R]` means a call arriving through the exposure is refused
+// `unauthorized` (naming what the row requires) unless the caller holds R,
+// directly or through a role that `includes` it. The static table
+// (`std::api::StaticRoles`), the source the transport's `roles:` names,
+// reads `LOTUS_API_ROLES` in every member spelling; the handler's context
+// names the role the row requires; the description is served filtered to
+// what the caller holds, and `hale check --api --exposure --caller` lists
+// the same members for the same caller.
+//
+// What the structural binding did that a served surface does not has no
+// test here: a gated read answered `unknown` so as not to disclose the
+// role (a refusal now names `requires`), `on_unauthorized: drop` (there is
+// no silent refusal), the `owner`-gated full description, the receipt's
+// `role` and a baked `[environments.<env>.roles]` table. Streams are topic
+// bindings to a hub (`crates/hale-codegen/tests/api_hub_streams.rs`).
 
-fn app_source(sock: String, extra: String) -> String {
+fn app_source(sock: String) -> String {
     return "role support;\n"
         + "role auditor;\n"
         + "role owner includes support;\n"
@@ -21,39 +26,36 @@ fn app_source(sock: String, extra: String) -> String {
         + "type Result { ok: Bool; by: String; role: String; }\n"
         + "type Note { text: String; }\n"
         + "type Ledger { balance: Int; }\n"
-        + "type Moved { balance: Int; }\n"
-        + "type Tick { n: Int; }\n"
-        + "topic Refunds { payload: Refund; subject: \"shop.refund\"; }\n"
-        + "topic Notes { payload: Note; subject: \"shop.note\"; }\n"
-        + "topic Moves { payload: Moved; subject: \"shop.moved\"; }\n"
-        + "topic Ticks { payload: Tick; subject: \"shop.tick\"; }\n"
+        + "type Count { n: Int; }\n"
+        + "type Query { who: String = \"\"; }\n"
         + "locus Billing {\n"
-        + "    contract {\n"
-        + "        @gated(role: auditor) expose ledger: Ledger;\n"
-        + "        expose count: Int;\n"
-        + "    }\n"
         + "    params { ledger: Ledger = Ledger { balance: 100 }; count: Int = 0; }\n"
-        + "    bus {\n"
-        + "        subscribe Refunds as on_refund;\n"
-        + "        subscribe Notes as on_note;\n"
-        + "        @gated(role: support) publish Moves;\n"
-        + "        publish Ticks;\n"
-        + "    }\n"
-        + "    @gated(role: support)\n"
         + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Result {\n"
         + "        self.ledger.balance = self.ledger.balance - r.amount;\n"
         + "        self.count = self.count + 1;\n"
-        + "        Moves <- Moved { balance: self.ledger.balance };\n"
         + "        return Result { ok: true, by: ctx.caller.name, role: ctx.role };\n"
         + "    }\n"
         + "    fn on_note(n: Note) { self.count = self.count + 1; }\n"
-        + "    run() { let mut i = 0; while !self.draining && i < 40 { std::time::sleep(250ms); Ticks <- Tick { n: i }; i = i + 1; } }\n"
+        + "    fn read_count(q: Query) -> Count { return Count { n: self.count }; }\n"
+        + "    fn read_ledger(q: Query) -> Ledger { return self.ledger; }\n"
+        + "}\n"
+        + "api Public {\n"
+        + "    rpc Billing::on_refund requires: [support];\n"
+        + "    rpc Billing::on_note;\n"
+        + "    rpc Billing::read_count;\n"
+        + "    rpc Billing::read_ledger requires: [auditor];\n"
         + "}\n"
         + "main locus Shop {\n"
-        + "    params { billing: Billing = Billing { }; }\n"
+        + "    params {\n"
+        + "        billing: Billing = Billing { };\n"
+        + "        roles: std::api::StaticRoles = std::api::StaticRoles { known: \"support auditor owner\" };\n"
+        + "    }\n"
         + "    placement { billing: cooperative(pool = work) where async_io; }\n"
-        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse" + extra + "); }\n"
-        + "    run() { std::time::sleep(12s); }\n"
+        + "    run() {\n"
+        + "        let h = api::serve(Public, unix::Rpc { path: \"" + sock + "\", roles: self.roles }, as: \"shop\", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);\n"
+        + "        std::time::sleep(12s);\n"
+        + "        h.stop();\n"
+        + "    }\n"
         + "}\n"
         + "fn main() { Shop { }; }\n";
 }
@@ -105,6 +107,7 @@ locus Api {
     params {
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
         buf: String = "";
+        n: Int = 0;
     }
 
     fn connect(sock: String) -> Bool {
@@ -117,7 +120,7 @@ locus Api {
         return true;
     }
 
-    fn ask(line: String) -> String {
+    fn ask_line(line: String) -> String {
         self.stream.send(line + "\n") or discard;
         let mut i = 0;
         while i < 15 {
@@ -135,6 +138,16 @@ locus Api {
             }
         }
         return "";
+    }
+
+    // A call of `member` with `payload`.
+    fn call(member: String, payload: String) -> String {
+        self.n = self.n + 1;
+        return self.ask_line("{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-" + to_string(self.n) + "\"}");
+    }
+
+    fn describe() -> String {
+        return self.ask_line("{\"describe\":true}");
     }
 }
 
@@ -163,9 +176,9 @@ fn nth_word(s: String, n: Int) -> String {
     return "";
 }
 
-// The names the description lists in one section, as `"name":"x"`.
-fn lists(desc: String, section: String, name: String) -> Bool {
-    let part = std::json::find_field_raw(desc, section);
+// Whether the description lists the member `name`.
+fn lists(desc: String, name: String) -> Bool {
+    let part = std::json::find_field_raw(desc, "members");
     return std::str::contains(part, "\"name\":\"" + name + "\"");
 }
 
@@ -180,15 +193,14 @@ fn main() {
     let sock = "/tmp/hale-roles-" + tag + ".sock";
     let src = std::io::fs::mktemp("/tmp/hale-1109-", ".hl") or "";
     std::test::assert(src != "", "a scratch source path");
-    std::io::fs::write_file(src, app_source(sock, "")) or discard;
+    std::io::fs::write_file(src, app_source(sock)) or discard;
     let built = run_tool(hale + "\nbuild\n" + src);
     std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
-    std::test::assert(has(built.stderr, "gated operation(s) and no role table"), "a build without --env says the gates refuse until a table arrives: " + built.stderr);
     let bin = src[0..(len(src) - 3)];
-    let full = run_tool(hale + "\ncheck\n--dump-api\n" + src);
-    std::test::assert_eq_int(full.code, 0, "hale check --dump-api: " + full.stderr);
-    let emitted = std::str::trim(full.stdout);
-    std::test::assert(has(emitted, "\"name\":\"Refunds\"") && has(emitted, "\"role\":\"support\""), "the emitted description carries the role requirement: " + emitted);
+    // What `hale check --api` says this caller may use, per exposure.
+    let emitted = run_tool(hale + "\ncheck\n--api\n--exposure\nshop\n--caller\nuid:" + me + "\n--holds\nsupport\n" + src);
+    std::test::assert_eq_int(emitted.code, 0, "hale check --api --exposure: " + emitted.stderr);
+    std::test::assert(has(emitted.stdout, "\"name\": \"Billing::on_refund\"") && !has(emitted.stdout, "\"name\": \"Billing::read_ledger\""), "the emitted description carries the role requirement: " + emitted.stdout);
 
     // Table A: this uid holds support (by user name), an auditor and an
     // owner who is someone else.
@@ -198,26 +210,25 @@ fn main() {
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
 
-    let r1 = api.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":4,\"amount\":5}}");
+    let r1 = api.call("Billing::on_refund", "{\"order_id\":4,\"amount\":5}");
     std::test::assert(has(r1, "\"ok\":true"), "a holder's call is answered: " + r1);
-    std::test::assert(has(r1, "\"role\":\"support\",\"by\":") || has(r1, "\"role\":\"support\"}"), "the handler's context named the authorizing role: " + r1);
-    std::test::assert(has(r1, ",\"role\":\"support\"}"), "the receipt names the authorizing role: " + r1);
-    let r2 = api.ask("{\"id\":2,\"read\":\"billing.ledger\"}");
-    std::test::assert(has(r2, "\"ok\":false") && has(r2, "\"kind\":\"unknown\"") && has(r2, "\"reason\":\"billing.ledger\"") && !has(r2, "auditor"), "a gated read outside the slice is unknown, and the role is not disclosed: " + r2);
-    let r3 = api.ask("{\"id\":3,\"read\":\"billing.count\"}");
-    std::test::assert(has(r3, "\"ok\":true") && has(r3, "\"value\":1"), "an ungated read answers: " + r3);
-    let r4 = api.ask("{\"id\":4,\"watch\":\"Moves\"}");
-    std::test::assert(has(r4, "\"attached\":\"Moves\"") && has(r4, ",\"role\":\"support\"}"), "a holder attaches to a gated stream: " + r4);
-    let r5 = api.ask("{\"id\":5,\"call\":\"Notes\",\"payload\":{\"text\":\"hi\"}}");
-    std::test::assert(has(r5, "\"accepted\":true") && !has(r5, "\"role\""), "an ungated command is accepted with no role: " + r5);
-    let d1 = api.ask("{\"id\":6,\"describe\":true}");
+    std::test::assert(has(r1, "\"role\":\"support\""), "the handler's context named the authorizing role: " + r1);
+    let r2 = api.call("Billing::read_ledger", "{}");
+    std::test::assert(has(r2, "\"ok\":false") && has(r2, "\"kind\":\"unauthorized\"") && has(r2, "\"requires\":[\"auditor\"]"), "a row the caller does not hold the role for is refused, naming what it requires: " + r2);
+    let r3 = api.call("Billing::read_count", "{}");
+    std::test::assert(has(r3, "\"ok\":true") && has(r3, "\"n\":1"), "an ungated row answers: " + r3);
+    let r5 = api.call("Billing::on_note", "{\"text\":\"hi\"}");
+    std::test::assert(has(r5, "\"ok\":true"), "an ungated command is answered with no role: " + r5);
+    let d1 = api.describe();
     let desc1 = std::json::find_field_raw(d1, "value");
-    std::test::assert(lists(desc1, "commands", "Refunds") && lists(desc1, "commands", "Notes"), "the description lists what this caller may call: " + desc1);
-    std::test::assert(!lists(desc1, "reads", "billing.ledger") && lists(desc1, "reads", "billing.count"), "the description hides the read this caller may not use: " + desc1);
-    std::test::assert(lists(desc1, "streams", "Moves") && lists(desc1, "streams", "Ticks"), "the description lists the streams this caller may watch: " + desc1);
-    std::test::assert(!has(std::json::find_field_raw(desc1, "schemas"), "\"Ledger\""), "a schema only a hidden item uses is hidden too: " + desc1);
-    let d2 = api.ask("{\"id\":7,\"describe\":\"full\"}");
-    std::test::assert(has(d2, "\"kind\":\"unauthorized\"") && has(d2, "\"role\":\"owner\""), "the full description is a read gated on owner: " + d2);
+    std::test::assert(lists(desc1, "Billing::on_refund") && lists(desc1, "Billing::on_note") && lists(desc1, "Billing::read_count"), "the description lists what this caller may call: " + desc1);
+    std::test::assert(!lists(desc1, "Billing::read_ledger"), "the description hides the row this caller may not use: " + desc1);
+    // The live answer and `hale check --api` list the same members for the
+    // same caller (the live document carries the identity, the caller and
+    // the members; the schemas stay the compiler's document's).
+    for m in ["Billing::on_refund", "Billing::on_note", "Billing::read_count", "Billing::read_ledger"] {
+        std::test::assert(lists(desc1, m) == has(emitted.stdout, "\"name\": \"" + m + "\""), "the live description and `check --api` agree on " + m);
+    }
     p.stop();
     std::io::fs::unlink(sock) or discard;
 
@@ -238,87 +249,46 @@ fn main() {
     std::test::assert(q.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin), "the app started under table B");
     let api2 = Api { };
     std::test::assert(api2.connect(sock), "connected under table B");
-    let b1 = api2.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":4,\"amount\":5}}");
-    std::test::assert(has(b1, "\"kind\":\"unknown\"") && !has(b1, "support"), "a non-holder's call is unknown to it: " + b1);
-    let b2 = api2.ask("{\"id\":2,\"watch\":\"Moves\"}");
-    std::test::assert(has(b2, "\"kind\":\"unknown\"") && !has(b2, "support"), "a non-holder cannot attach to a gated stream, and is not told it exists: " + b2);
-    let b3 = api2.ask("{\"id\":3,\"watch\":\"Ticks\"}");
-    std::test::assert(has(b3, "\"attached\":\"Ticks\""), "an ungated stream attaches: " + b3);
-    let b4 = api2.ask("{\"id\":4,\"read\":\"billing.ledger\"}");
-    std::test::assert(has(b4, "\"balance\":100") && has(b4, ",\"role\":\"auditor\"}"), "the auditor reads the gated field, by group membership (" + auditor_member + "): " + b4);
-    let d3 = std::json::find_field_raw(api2.ask("{\"id\":5,\"describe\":true}"), "value");
-    std::test::assert(!lists(d3, "commands", "Refunds") && lists(d3, "reads", "billing.ledger") && !lists(d3, "streams", "Moves"), "the description is this caller's slice: " + d3);
-    std::test::assert(has(std::json::find_field_raw(d3, "schemas"), "\"Ledger\"") && !has(std::json::find_field_raw(d3, "schemas"), "\"Refund\""), "schemas follow the items that show them: " + d3);
+    let b1 = api2.call("Billing::on_refund", "{\"order_id\":4,\"amount\":5}");
+    std::test::assert(has(b1, "\"kind\":\"unauthorized\"") && !has(b1, "\"by\""), "a non-holder's call is refused: " + b1);
+    let b4 = api2.call("Billing::read_ledger", "{}");
+    std::test::assert(has(b4, "\"balance\":100"), "the auditor reads the gated field, by group membership (" + auditor_member + "): " + b4);
+    let d3 = std::json::find_field_raw(api2.describe(), "value");
+    std::test::assert(!lists(d3, "Billing::on_refund") && lists(d3, "Billing::read_ledger"), "the description is this caller's slice: " + d3);
     q.stop();
     std::io::fs::unlink(sock) or discard;
 
-    // Table C: this uid is owner, which includes support; the full
-    // description is the emitted one, byte for byte.
+    // Table C: this uid is owner, which includes support.
     let table_c = "support=;auditor=;owner=uid:" + me;
     let w = Proc { };
     std::test::assert(w.start("env\nLOTUS_API_ROLES=" + table_c + "\n" + bin), "the app started under table C");
     let api3 = Api { };
     std::test::assert(api3.connect(sock), "connected under table C");
-    let c1 = api3.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
-    std::test::assert(has(c1, "\"ok\":true") && has(c1, ",\"role\":\"owner\"}"), "owner includes support, and the receipt says which role authorized: " + c1);
-    let c2 = api3.ask("{\"id\":2,\"describe\":\"full\"}");
-    std::test::assert_eq_str(std::json::find_field_raw(c2, "value"), emitted, "the full description is the emitted document");
-    let c3 = api3.ask("{\"id\":3,\"read\":\"billing.ledger\"}");
-    std::test::assert(has(c3, "\"kind\":\"unknown\""), "owner does not include auditor: " + c3);
+    let c1 = api3.call("Billing::on_refund", "{\"order_id\":1,\"amount\":1}");
+    std::test::assert(has(c1, "\"ok\":true") && has(c1, "\"role\":\"support\""), "owner includes support, and the handler sees the row's role: " + c1);
+    let c3 = api3.call("Billing::read_ledger", "{}");
+    std::test::assert(has(c3, "\"kind\":\"unauthorized\""), "owner does not include auditor: " + c3);
     w.stop();
     std::io::fs::unlink(sock) or discard;
     std::io::fs::unlink(bin) or discard;
     std::io::fs::unlink(src) or discard;
 
-    // `on_unauthorized: drop`: no receipt at all, and the connection
-    // stays usable.
-    let src_d = std::io::fs::mktemp("/tmp/hale-1109d-", ".hl") or "";
-    std::io::fs::write_file(src_d, app_source(sock, ", on_unauthorized: drop")) or discard;
-    let built_d = run_tool(hale + "\nbuild\n" + src_d);
-    std::test::assert_eq_int(built_d.code, 0, "the drop variant builds: " + built_d.stderr);
-    let bin_d = src_d[0..(len(src_d) - 3)];
-    let v = Proc { };
-    std::test::assert(v.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin_d), "the drop variant started");
-    let api4 = Api { };
-    std::test::assert(api4.connect(sock), "connected to the drop variant");
-    let e1 = api4.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
-    std::test::assert_eq_str(e1, "", "under drop an unauthorized call gets no answer");
-    let e2 = api4.ask("{\"id\":2,\"read\":\"billing.count\"}");
-    std::test::assert(has(e2, "\"ok\":true"), "the connection is still answered afterwards: " + e2);
-    v.stop();
-    std::io::fs::unlink(sock) or discard;
-    std::io::fs::unlink(bin_d) or discard;
-    std::io::fs::unlink(src_d) or discard;
-
-    // `hale build --env`: the table from hale.toml is baked in, so the
-    // binary needs no LOTUS_API_ROLES.
+    // The matrix still wants every declared role mapped in an
+    // environment (the manifest's table is the deployment's record).
     let dir = "/tmp/hale-1109-env-" + tag;
     std::io::fs::mkdir(dir) or discard;
     std::io::fs::write_file(dir + "/hale.toml",
         "[claims]\nno_base = true\n\n[environments.test]\nsource_only = true\nentrypoints = [\".\"]\n\n[environments.test.roles]\nsupport = [\"uid:" + me + "\"]\nauditor = []\nowner = []\n") or discard;
-    std::io::fs::write_file(dir + "/main.hl", app_source(sock, "")) or discard;
-    let built_e = run_tool(hale + "\nbuild\n--env\ntest\n" + dir + "/main.hl");
-    std::test::assert_eq_int(built_e.code, 0, "hale build --env test: " + built_e.stderr);
-    std::test::assert(!has(built_e.stderr, "no role table"), "with --env there is a table: " + built_e.stderr);
-    let u = Proc { };
-    std::test::assert(u.start(dir + "/main"), "the env-built app started");
-    let api5 = Api { };
-    std::test::assert(api5.connect(sock), "connected to the env-built app");
-    let f1 = api5.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
-    std::test::assert(has(f1, "\"ok\":true") && has(f1, ",\"role\":\"support\"}"), "the baked table grants support to this uid: " + f1);
-    let f2 = api5.ask("{\"id\":2,\"read\":\"billing.ledger\"}");
-    std::test::assert(has(f2, "\"kind\":\"unknown\""), "a role mapped to [] holds nobody: " + f2);
-    u.stop();
-    std::io::fs::unlink(sock) or discard;
+    std::io::fs::write_file(dir + "/main.hl", app_source(sock)) or discard;
     let matrix = run_tool(hale + "\ncheck\n--matrix\n" + dir);
     std::test::assert_eq_int(matrix.code, 0, "every declared role is mapped, so the matrix passes: " + matrix.stderr + matrix.stdout);
     let _rm = run_tool("rm\n-rf\n" + dir);
 
-    // A table the program cannot act on is refused at birth, whether it
-    // arrives baked or as LOTUS_API_ROLES: a role nothing declares, a
-    // member outside the five spellings.
+    // A table the program cannot act on is refused at birth, as
+    // LOTUS_API_ROLES: a role nothing declares, a member outside the five
+    // spellings.
     let bad_src = std::io::fs::mktemp("/tmp/hale-1109-bad-", ".hl") or "";
-    std::io::fs::write_file(bad_src, app_source(sock, "")) or discard;
+    std::io::fs::write_file(bad_src, app_source(sock)) or discard;
     std::test::assert_eq_int(run_tool(hale + "\nbuild\n" + bad_src).code, 0, "built for the refusals");
     let bad_bin = bad_src[0..(len(bad_src) - 3)];
     let x = Proc { };

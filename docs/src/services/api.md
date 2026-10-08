@@ -421,7 +421,7 @@ hands it out.
 Take a billing service as it is: a locus that subscribes a topic,
 publishes another, and exposes a field.
 
-```hale
+```hale,fragment
 type Verdict { review_id: Int; verdict: String; }
 type VerdictResult { ok: Bool; note: String; }
 type PriceMoved { sym: String; price: Float; }
@@ -561,7 +561,7 @@ says who a bearer token is (any locus satisfying `std::api::BearerSource`:
 `principal(token)` answers the caller, `refused()` the reason a token
 naming nobody gets):
 
-```hale
+```hale,fragment
 locus Tokens {
     fn principal(token: String) -> std::api::Principal {
         if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
@@ -721,7 +721,7 @@ program, true wherever it runs; who holds the role here is a
 deployment fact. So the requirement is written once, on the
 operation, and the mapping lives beside the socket path.
 
-```hale
+```hale,fragment
 type Ledger { balance: Int; entries: Int; }
 type Refund { order_id: Int; amount: Int; }
 type RefundResult { ok: Bool; by: String; }
@@ -808,7 +808,7 @@ An app can hand the binding its own source instead: a locus satisfying
 entry as an expression the main locus evaluates, so it can be built
 with the program's own state and kept as a handle:
 
-```hale
+```hale,fragment
 locus RecordRoles {                      // a std::api::RoleSource
     params { root: String = "."; }
     fn holds(p: std::api::Principal, r: String) -> Bool {

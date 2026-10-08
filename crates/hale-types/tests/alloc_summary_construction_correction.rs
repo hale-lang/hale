@@ -619,8 +619,9 @@ fn own_entries_run_to_exit_programs() {
     // U3's `tests/hale/unit_quantities_test.hl`; 88: U5's five acceptance
     // programs, `tests/hale/units_{identities,money,temperature,ticks,time}_test.hl`;
     // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
-    // `tests/hale/time_return_test.hl`.
-    assert_eq!(moved, 90, "the run-to-exit programs among the targets");
+    // `tests/hale/time_return_test.hl`; 89: `dna/api`, which serves a
+    // `handle` loop of its own, does not load until R4 B migrates it.
+    assert_eq!(moved, 89, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [
@@ -640,8 +641,11 @@ fn own_entries_run_to_exit_programs() {
             "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4224 InUnboundedLoop",
             "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4217 InUnboundedLoop",
             "crates/hale-codegen/tests/fixtures/examples/docs-server: __wrap_html_page StringConcat @3012..3462 InvokedUnboundedly",
-            "tests/hale/api_context_test.hl: main StringConcat @12358..12422 InUnboundedLoop",
-            "tests/hale/api_context_test.hl: main StringConcat @12358..12393 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @12899..12990 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @12899..12982 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10367..10392 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10367..10385 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
         ]
@@ -653,7 +657,6 @@ fn own_entries_run_to_exit_programs() {
 #[test]
 fn reached_a_started_loop_keeps_its_facts() {
     for (t, kept) in [
-        ("dna/api", &["Api::handle"][..]),
         ("dna/ui", &["Ui::handle"][..]),
         ("crates/hale-codegen/tests/fixtures/examples/69-http-router", &["Count::handle", "Hello::handle", "Stamp::after", "Stamp::before"][..]),
         ("tests/hale/router_middleware_test.hl", &["Hello::handle", "Stamp::after", "Stamp::before"][..]),

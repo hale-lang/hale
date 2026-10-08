@@ -33,7 +33,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::api_gen::API_SYNTH_BASE;
+use hale_syntax::api_names::API_SYNTH_BASE;
 use hale_syntax::ast::{
     flat_decls, Expr, Ident, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit, Program, QualifiedName,
     StructInit, TopDecl, TypeExpr,

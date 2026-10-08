@@ -1,10 +1,6 @@
-//! The role rows (F.40 phase 4, A4): the roles an environment maps and
-//! the vocabulary the api binding is generated with are projections of
-//! the rows, over every seed's snapshot. The binding is generated inside
-//! the desugar sequence, before the rows exist, so `hale-syntax` keeps
-//! the one function the surface computes its list with
-//! (`api_gen::role_vocabulary`), and this holds the rows' projection
-//! equal to it.
+//! The role rows (F.40 phase 4, A4; R4): the roles an environment maps
+//! are a projection of the rows, over every seed's snapshot, and the rows
+//! are what the program declares (an independent walk), built once.
 //!
 //! The seeds are the corpus (each program a bare snapshot), every
 //! `*_test.hl` under `tests/hale` and `dna/`, and every directory under
@@ -64,36 +60,38 @@ fn snapshots() -> impl Iterator<Item = (String, Snapshot)> {
 
 #[test]
 fn the_roles_an_environment_maps_are_a_projection_of_the_rows() {
-    let (mut seeds, mut with_roles, mut served, mut surfaces) = (0usize, 0usize, 0usize, 0usize);
+    fn declared(items: &[hale_syntax::ast::TopDecl], out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                hale_syntax::ast::TopDecl::Role(r) => {
+                    out.insert(r.name.name.clone());
+                }
+                hale_syntax::ast::TopDecl::Module(m) => declared(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let (mut seeds, mut with_roles) = (0usize, 0usize);
     let mut differ: Vec<String> = Vec::new();
     for (origin, s) in snapshots() {
         let Ok(rows) = s.demand_role_rows() else { continue };
         seeds += 1;
         let bundle = s.bundle();
-        let refs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-        let root = s.demand_entry().ok().and_then(|e| e.root()).and_then(|m| m.decl(&bundle));
-        let names = hale_syntax::api_gen::declared_roles(&refs, root);
+        let mut names = BTreeSet::new();
+        for p in bundle.programs.values() {
+            declared(&p.items, &mut names);
+        }
+        let names: Vec<String> = names.into_iter().collect();
         if rows.declared_roles() != names {
             differ.push(format!("{origin}: declared {:?} != {:?}", rows.declared_roles(), names));
         }
-        let vocabulary = |roles: &[hale_syntax::api_gen::ApiRole]| -> Vec<(String, Vec<String>)> {
-            roles.iter().map(|r| (r.name.clone(), r.includes.clone())).collect()
-        };
-        let list = vocabulary(&hale_syntax::api_gen::role_vocabulary(&refs, rows.served));
-        if rows.vocabulary() != list {
-            differ.push(format!("{origin}: vocabulary {:?} != {:?}", rows.vocabulary(), list));
-        }
-        if let Some(surface) = s.api_surface() {
-            surfaces += 1;
-            if rows.vocabulary() != vocabulary(&surface.roles) {
-                differ.push(format!("{origin}: the surface's roles differ from the rows'"));
-            }
+        if rows.vocabulary().len() != names.len() {
+            differ.push(format!("{origin}: the vocabulary names {} roles, the program {}", rows.vocabulary().len(), names.len()));
         }
         with_roles += usize::from(!rows.roles.is_empty());
-        served += usize::from(rows.served);
-        assert_eq!(s.builds()["api_surface"], 1, "{origin}: the rows are built once");
+        assert_eq!(s.builds()["role_rows"], 1, "{origin}: the rows are built once");
     }
-    eprintln!("{seeds} seeds, {with_roles} declaring a role, {served} served, {surfaces} surfaces");
+    eprintln!("{seeds} seeds, {with_roles} declaring a role");
     assert!(differ.is_empty(), "{}", differ.join("\n"));
-    assert!(seeds > 1000 && with_roles > 0 && surfaces > 0, "the seeds reached too little");
+    assert!(seeds > 1000 && with_roles > 0, "the seeds reached too little");
 }

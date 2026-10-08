@@ -15,7 +15,6 @@ use crate::shared::options::exec_digest;
 use crate::shared::options::identity_options;
 use crate::shared::workspace::find_workspace_root;
 use crate::shared::options::model_identity;
-use crate::shared::options::note_unmapped_roles;
 use crate::shared::options::parse_build_options;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
@@ -64,7 +63,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         }
     };
     // GH #1109: `--env` — the deployment target's role table and law.
-    let env_spec = match resolve_build_env(target, &mut options) {
+    let env_spec = match resolve_build_env(target, &options) {
         Ok(e) => e,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -98,7 +97,6 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    note_unmapped_roles(snap.api_surface(), &options);
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
 
     // The effective target (T1(b)): `--target`, else a written

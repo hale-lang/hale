@@ -136,7 +136,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // GH #904: one `BuildOptions`, from `hale build`'s parser, for
     // the fingerprint AND the compile below — a replay recompiles
     // the program, so it admits against what IT builds.
-    let mut build_options =
+    let build_options =
         match parse_exec_build_options("replay", &build_flags) {
             Ok(o) => o,
             Err(msg) => {
@@ -219,7 +219,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // adopted by the load. `replay` accepted the flag and bound nothing,
     // so a recording made under an environment was refused by the
     // replay that named it.
-    let env_spec = match resolve_build_env(&prog, &mut build_options) {
+    let env_spec = match resolve_build_env(&prog, &build_options) {
         Ok(e) => e,
         Err(msg) => {
             eprintln!("{}", msg);

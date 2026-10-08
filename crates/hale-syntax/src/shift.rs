@@ -399,33 +399,8 @@ impl Shift for PlacementSpec {
 
 shift_unit_enum!(PlacementConstraint { AsyncIo });
 shift_struct!(SpannedPlacementConstraint { kind, span });
-shift_struct!(BindingsBlock { entries, api, hubs, span });
+shift_struct!(BindingsBlock { entries, hubs, span });
 shift_struct!(HubBinding { topic, instance, requires, bound, on_full, span });
-shift_struct!(ApiBinding {
-    transport,
-    roles,
-    bound,
-    on_full,
-    watch_bound,
-    on_watch_full,
-    on_unauthorized,
-    serve,
-    http,
-    span,
-});
-shift_struct!(ApiHttp { host, port, principals, span });
-shift_unit_enum!(ApiUnauthorizedPolicy { Refuse, Drop });
-shift_struct!(ApiRoles { expr, span });
-
-impl Shift for ApiTransport {
-    fn shift(&mut self, d: Move) {
-        match self {
-            ApiTransport::Unix { path, span } => sh!(d; path, span),
-        }
-    }
-}
-
-shift_unit_enum!(ApiFullPolicy { Refuse });
 shift_struct!(BindingEntry { topic, transport, constraints, codec, span, id });
 shift_struct!(CodecSpec { locus, inits, span });
 shift_unit_enum!(BindingConstraint { IntraProcess, IntraMachine, CrossMachine, ZeroCopy });
@@ -474,7 +449,7 @@ impl Shift for ContractKind {
     }
 }
 
-shift_struct!(ContractMember { direction, name, ty, gated, span });
+shift_struct!(ContractMember { direction, name, ty, span });
 shift_unit_enum!(ContractDirection { Expose, Consume });
 
 impl Shift for ContractName {
@@ -504,8 +479,8 @@ impl Shift for BusMember {
             BusMember::Subscribe { subject, handler, ty, key_filter, bound, span, id } => {
                 sh!(d; subject, handler, ty, key_filter, bound, span, id)
             }
-            BusMember::Publish { subject, ty, alias, gated, span, id } => {
-                sh!(d; subject, ty, alias, gated, span, id)
+            BusMember::Publish { subject, ty, alias, span, id } => {
+                sh!(d; subject, ty, alias, span, id)
             }
         }
     }
@@ -670,7 +645,6 @@ shift_struct!(FnDecl {
     hot,
     effects,
     quantities,
-    gated,
     rpc,
     decorators,
     body,

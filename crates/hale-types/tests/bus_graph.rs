@@ -833,7 +833,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let prog = parse_source(src).expect("parse failed");
-    let resolved = entries::resolve_program(&prog, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
+    let resolved = entries::resolve_program(&prog, &[], &[], &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolves");
     assert_eq!(resolved.intra_locus.len(), 1, "{:?}", resolved.intra_locus);
     let rw = &resolved.intra_locus[0];
@@ -900,11 +900,10 @@ fn main() { App { }; }
     let mut prog = parse_source(src).expect("parse failed");
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut prog],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
-    )
-    .expect("no --api to refuse");
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
     hale_types::snapshot::mint([("app.hl", &mut prog)], &[]);
-    let resolved = entries::resolve_program(&prog, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
+    let resolved = entries::resolve_program(&prog, &[], &[], &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolves");
     assert!(resolved.intra_locus.is_empty(), "{:?}", resolved.intra_locus);
 

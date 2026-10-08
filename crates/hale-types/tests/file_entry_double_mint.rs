@@ -27,7 +27,7 @@ fn every_corpus_program_survives_a_mint_before_the_resolved_program() {
         // Then the resolved-program step, which runs every desugar and
         // mints again. A refusal (`Err`) is a program the resolver
         // refuses on its merits; a panic here is a copied identity.
-        if entries::resolve_program(&program, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default()).is_ok() {
+        if entries::resolve_program(&program, &[], &[], &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::placement::PlacementTable::default(), &hale_types::typed_bodies::TypedBodies::default()).is_ok() {
             resolved += 1;
         }
     }

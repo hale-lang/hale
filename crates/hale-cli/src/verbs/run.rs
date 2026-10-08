@@ -12,7 +12,6 @@ use crate::shared::options::exec_digest;
 use crate::shared::options::source_frames;
 use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
-use crate::shared::options::note_unmapped_roles;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
@@ -109,7 +108,7 @@ pub(crate) fn run_program(
     // set, from the same parser, that `hale build` takes. They are
     // fingerprinted into the execution identity below, so a
     // recording carries the options it was made under.
-    mut options: hale_codegen::BuildOptions,
+    options: hale_codegen::BuildOptions,
     // GH #527 B3 / GH #887: `--observe` publishes the program's
     // observation segment. It is the CHILD's setting, so it rides
     // down to the `Command` that starts the child rather than being
@@ -120,7 +119,7 @@ pub(crate) fn run_program(
     // part of the binary (and so of the fingerprint below), so it is
     // resolved first. The constitution it binds is adopted by the
     // snapshot's load.
-    let env_spec = match resolve_build_env(target, &mut options) {
+    let env_spec = match resolve_build_env(target, &options) {
         Ok(e) => e,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -150,7 +149,6 @@ pub(crate) fn run_program(
         eprintln!("{}", msg);
         return ExitCode::from(2);
     }
-    note_unmapped_roles(snap.api_surface(), &options);
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
     // The check, with the build's rules: the rename table reaches the
     // analysis through the snapshot's bundle, so "it ran" is not

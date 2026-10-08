@@ -769,7 +769,7 @@ hale admin: http://127.0.0.1:7474/?token=03ea1263780059750082ce32e8900ab1  (over
 
 ## The whole program
 
-```hale
+```hale,fragment
 // Build an API (docs/src/services/build-an-api.md): one program grown a
 // step at a time. A shop takes orders and answers each with a reply,
 // streams its shipments, exposes its stock as a read, knows who is
@@ -858,7 +858,7 @@ The compiler's example corpus builds this program on every change, as
   reads and the HTTP transport.
   [`spec/semantics.md` § The api binding](https://github.com/hale-lang/hale/blob/main/spec/semantics.md#the-api-binding-gh-1106)
 - Roles, `includes` and `@gated`.
-  [`spec/types.md` § Roles and `@gated`](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-and-gated-gh-1109)
+  [`spec/types.md` § Roles](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-gh-1109-1417)
 - `std::api`: `Principal`, `Context`, `RoleSource`, `BearerSource` and
   `StaticRoles`, in [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md),
   plus the source, `crates/hale-stdlib/hl/api.hl`.
