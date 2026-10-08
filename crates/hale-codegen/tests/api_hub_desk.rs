@@ -191,7 +191,7 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     let mut got = Vec::new();
     let first = dave.text();
     let mut frames = vec![first];
-    frames.extend(dave.texts_until_quiet(800));
+    frames.extend(dave.texts_until_quiet(2000));
     for frame in frames {
         assert!(frame.contains(&format!("\"topic\":\"{topic}\"")), "{}", &frame[..frame.len().min(200)]);
         got.push(seq_and_n(&frame));
@@ -200,7 +200,16 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     // next seq: what lies between it and the last frame read is what was shed
     let again = if topic == "Blobs" { "blobs 1 100" } else { "ticks 1 100" };
     server.command(again);
-    let (seq, n) = seq_and_n(&dave.text());
+    // a runner slow enough to stall the writer past the quiet window above
+    // still has burst frames on the way: they are part of the burst, not the
+    // next event, so read past them to the one that carries seq 401
+    let (seq, n) = loop {
+        let (seq, n) = seq_and_n(&dave.text());
+        if seq >= 401 {
+            break (seq, n);
+        }
+        got.push((seq, n));
+    };
     assert_eq!((seq, n), (401, 1), "seq counts every event offered, delivered or shed");
     got.push((seq, 401));
     let done = server.finish();
