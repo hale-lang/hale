@@ -529,6 +529,18 @@ through this one path.
 | **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
 | **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
 
+**A lost connection.** A reply for a request whose connection was lost
+before the request completed is dropped: completion (`finish`) sees the
+lost mark, delivers nothing, and tells the transport the connection is
+finished with (`close_connection`, once). A reply already written before
+the loss is not unwritten: the record is gone, the later loss finds
+nothing, and `close_connection` is not called. Either way the work ran
+once and the unit of the bound is released once. The fixture transport's
+`lose(correlation)` is synchronous with the mark: it returns once the
+exposure has handled the loss, so a test that gates its handler and opens
+the gate after `lose` holds the first order, and one that lets the handler
+complete first holds the second, whatever the runner's speed.
+
 **The runtime is part of a program only when it serves.** Every stdlib
 declaration is lowered into every program, so the runtime of this
 section (`api_rpc.hl`: the types below, the `Exposure`, the fixture

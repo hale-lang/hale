@@ -805,6 +805,7 @@ locus __StdApiTestRpc {
         listening: Bool = true;
         stops: Int = 0;
         lines: String = "";
+        probes: Int = 0;
     }
     bus {
         publish __ApiRpcIngressT;
@@ -905,8 +906,20 @@ locus __StdApiTestRpc {
     fn describe(correlation: Int, credential: String) {
         self.send(correlation, "describe\t\t\t" + credential + "\tunix\tnobody\t-1\t");
     }
+    // Returns once the exposure has marked the record: the loss and a probe
+    // go to the exposure's one queue in order, so the probe's reply (a
+    // malformed refusal, to a correlation no test uses) is written after the
+    // exposure handled the loss.
     fn lose(correlation: Int) {
         __ApiRpcLostT <- __StdApiRpcLost { exposure: self.exposure, correlation: correlation };
+        self.probes = self.probes + 1;
+        let probe = -1000000 - self.probes;
+        self.send(probe, "probe");
+        let mut i = 0;
+        while i < 3000 && self.outcomes_of(probe) == 0 {
+            std::time::sleep(1ms);
+            i = i + 1;
+        }
     }
     // ---- what a test reads ----
     fn outcomes_of(correlation: Int) -> Int {

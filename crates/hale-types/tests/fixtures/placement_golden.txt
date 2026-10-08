@@ -5936,10 +5936,12 @@ dynamic	Server	on main
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:partner	async_io
+domain	pool:gate	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.admin_roles	Grants	main	default
 row	Desk@literal1.audit	Audit	main	default
 row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.hold	Hold	pool:gate	entry	off owner
 row	Desk@literal1.ledger	Ledger	pool:desk	entry	off owner
 row	Desk@literal1.orders	Orders	pool:desk	entry	off owner
 row	Desk@literal1.partner_orders	Orders	pool:partner	entry	off owner
