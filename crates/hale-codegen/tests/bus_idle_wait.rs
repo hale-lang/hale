@@ -9,6 +9,8 @@ use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[test]
 fn a_foreign_enqueue_ends_the_wait_and_a_quiet_wait_ends_at_its_deadline() {
@@ -34,4 +36,31 @@ fn a_foreign_enqueue_ends_the_wait_and_a_quiet_wait_ends_at_its_deadline() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("ok "));
+}
+
+/// The duration of `std::time::__idle_wait` is evaluated once, whichever
+/// thread the call runs on: the main-queue wait and the `sleep` it falls
+/// back to take the same value. A duration that counts its calls would
+/// otherwise count twice on a pool worker, and sleep for the second value.
+#[test]
+fn the_duration_is_evaluated_once_for_both_wait_backends() {
+    let src = r#"
+fn next_delay() -> Duration {
+    print("delay asked");
+    return 1ms;
+}
+
+fn main() {
+    std::time::__idle_wait(next_delay());
+}
+"#;
+    let bin = harness::unique_bin("lotus_idle_wait_once");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    assert!(ir.contains("lotus_bus_idle_wait_main"), "the call lowers to the idle wait");
+    let calls = ir
+        .lines()
+        .filter(|l| l.contains("call i64 @next_delay("))
+        .count();
+    assert_eq!(calls, 1, "one call of the duration fn for the one site:\n{ir}");
 }

@@ -2,7 +2,7 @@
 //! `time::sleep` / `time::monotonic` from the m71/m79 era).
 
 use hale_syntax::ast::Expr;
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicValueEnum, IntValue};
 
 use crate::bus::runtime::BusRuntime;
 use crate::codegen::{
@@ -44,6 +44,11 @@ pub(crate) trait TimeStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError>;
+
+    /// The sleep itself, over a duration already evaluated: a caller that
+    /// has the value (`__idle_wait`'s fallback) must not evaluate its
+    /// expression a second time.
+    fn lower_time_sleep_ns(&mut self, ns: IntValue<'ctx>) -> Result<(), CodegenError>;
 
     fn lower_time_idle_wait(
         &mut self,
@@ -495,7 +500,7 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(did_wait, done_bb, sleep_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(sleep_bb);
-        self.lower_time_sleep(args, scope)?;
+        self.lower_time_sleep_ns(val.into_int_value())?;
         self.builder
             .build_unconditional_branch(done_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -538,10 +543,13 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 ty
             )));
         }
+        self.lower_time_sleep_ns(val.into_int_value())
+    }
+
+    fn lower_time_sleep_ns(&mut self, ns: IntValue<'ctx>) -> Result<(), CodegenError> {
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let ts_t = self.timespec_type();
-        let ns = val.into_int_value();
         let billion = i64_t.const_int(1_000_000_000, false);
         // 2026-05-29: chunk a long sleep into ≤100ms slices and drain
         // the cooperative bus queue after EACH slice. Previously the
