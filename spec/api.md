@@ -141,8 +141,13 @@ before anything is served:
 
 1. **A row names a handler.** `Locus::fn` resolves to a member fn of a
    declared locus: "rpc \`Orders::plcae\`: \`Orders\` declares no fn
-   \`plcae\`; did you mean \`place\`?". A lifecycle method, a mode or
-   `on_failure` is no handler.
+   \`plcae\`; did you mean \`place\`?", and "rpc \`Ordrs::place\`: no
+   locus \`Ordrs\` is declared; did you mean \`Orders\`?". A lifecycle
+   method, a mode or `on_failure` is no handler: "rpc \`Orders::run\`:
+   \`run\` is a lifecycle method of \`Orders\`, and a handler is a
+   member fn" (a mode and a failure handler are named so); and `@rpc`
+   goes on a locus fn: "\`@rpc\` on \`helper\`: a handler is a member fn
+   of a locus, and \`helper\` is a free fn".
 2. **A handler takes one request.** At most one value parameter beside
    a trailing `ctx: std::api::Context`: "rpc \`Orders::fill\`: a
    handler takes its request as one parameter, and \`fill\` takes two:
@@ -154,10 +159,16 @@ before anything is served:
    \`tradr\`, which no \`role\` declares; did you mean \`trader\`?".
 5. **Every shape has a codec form.** The request, response and error
    types encode under the serve sites' codecs (§ Codecs): "rpc
-   \`Ledger::export\`: its response \`Export\` has a field \`raw:
-   Bytes\`, which the JSON codec does not carry". A row is never left
-   out of a served surface with a warning: the row is the intent, and
-   an intent the program cannot honour is an error.
+   \`Ledger::dump\`: its response \`Export\` has a field \`raw:
+   Bytes\`, which the JSON codec does not carry" (a field of a nested
+   struct by its path, `inner.raw`), and for a type that is no struct
+   the codec carries, "rpc \`Ledger::dump\`: its request is
+   \`Bytes\`, which the JSON codec does not carry". A
+   `ClosureViolation` error carries no schema (law 6), so no form is
+   asked of it. R1 holds every row to the JSON codec, the one codec a
+   serve site has until R2 reads a serve site's own. A row is never
+   left out of a served surface with a warning: the row is the intent,
+   and an intent the program cannot honour is an error.
 6. **A row's error type decides its failure.** A row whose error type
    is `ClosureViolation` fails as the server error and its description
    lists no error schema; a row with any other error type fails as the
@@ -222,27 +233,21 @@ fold every FNV identity uses, `spec/registry.md` § `digests`) over the
 whole text, written `fnv1a64:` followed by sixteen lowercase hex
 digits: `fnv1a64:a8930d6e7998e986`.
 
-A type's **shape hash** is its payload contract's hash
-(`spec/model.md` § Sorts, the `payloads` table): the 64-bit FNV-1a fold
-of its canonical structural shape, the struct's fields in declaration
-order as `<field>:<tag>` joined by `;` (`order:i;notional:q(cent)`,
-the tags of `spec/units.md` § Layout and the wire), and for a type that
-is not a bare struct the fold of `opaque:<type>`.
-
-**Open (R1): the contract shape.** The payload contract renders a
-nested struct as the tag `struct` and every type that is not a bare
-struct by its name, so a field changed inside a nested type, or a
-variant added to an enum error type, moves no digest built on it,
-against the rule above. R1 states the shape the digest folds for every
-type a row names; the framing above does not change with it. Until
-then the digests in `tests/api-contract/` are computed with the payload
-contract as it stands for the fixture's own types (flat structs, which
-it renders whole) and are provisional; `tests/api-contract/digest.md`
-works them by hand. One shape is the contract's already, not today's
-compiler's: `ClosureViolation`'s contract shape is its record's fields,
-`locus:s;closure:s;diff:i`, folded like a flat struct; today's payload
-contract renders the builtin as `opaque:ClosureViolation`, and R1
-renders the fields, which is what the fixture digests fold.
+A type's **shape hash** is the hash of its **contract shape**
+(`spec/model.md` § The shape of a type): the 64-bit FNV-1a fold of a
+struct's fields in declaration order as `<field>:<tag>` joined by `;`
+(`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
+the wire), a nested struct or enum tagged by its own contract shape
+hash (`#<hash>`), an enum `=enum(<variants>)`, and any other type `=`
+and its tag. The form is deep, so a field changed inside a nested type,
+or a variant added to an enum error type, moves every digest built on
+it. A flat struct's contract shape is its payload contract's shape, so
+its shape hash is the one a topic carrying it has always had; the
+payload contract renders a nested field as the name-free tag `struct`
+and keeps doing so, since it is a wire identity of its own.
+`ClosureViolation`'s contract shape is its record's fields,
+`locus:s;closure:s;diff:i`, folded like a flat struct (its payload
+contract stays `opaque:ClosureViolation`).
 
 **Compatibility is equality (v1).** A description carries its
 surface's name and digest, and a generated client carries the digest
@@ -301,7 +306,11 @@ and makes an **exposure**:
 - the call returns the **handle**: what the serving locus holds, joins
   and stops (`stop()`, § The request lifecycle).
 
-The laws of a serve site (R1):
+The laws of a serve site (R2; R1 parses a serve site only as far as a
+description names it, its surface, its transport instance's kind,
+listener, codec and sources, `as:`, `receivers:`, `bound:` and
+`on_full:`, checks none of these laws and builds no program that holds
+one):
 
 1. **An exposure is named once.** "exposure \`public\` is served twice:
    \`as:\` names one exposure; name this one apart".
@@ -702,13 +711,58 @@ sources and its receivers, and every hub with its exposure identity,
 its stream digest, its listener, its sources and its stream rows. It is
 a deployment inventory, not an authorization statement for any caller.
 
+`hale check --api --exposure NAME --caller PRINCIPAL [--holds ROLE,…]`
+prints one exposure's description for one caller, from the same rows.
+What a caller holds is its role source's to say when the program runs
+(a role source is program code, `fn holds`, which the check does not
+run), so the roles it holds under that exposure's source are an input,
+and the description lists exactly what they admit; the caller's `roles`
+are those of them the exposure's rows and streams require. PRINCIPAL is
+the principal as the exposure establishes it, a name (its mode the
+transport's: `unix` over the Unix socket, `bearer` otherwise) or the
+JSON object (`{"mode": "unix", "name": "uid:1000", "uid": 1000, …}`).
+A served description is the server's, at `GET /.description` or `{"describe":
+true}` (R2), its caller and roles established at the request. From R1
+the compiler's documents for `tests/api-contract/program.hl` are the
+fixtures beside it, byte for byte.
+
+What R1 reads of a serve site, and only that: its surface (its first
+argument, a surface's name); its transport instance's kind (the
+literal's namespace, `http`, `unix`), its address (`bind:` or `path:`),
+its codec (`codec:`, `json` when it names none) and its bearer and role
+sources (`principals:` and `roles:`, each a `self.<param>` named with
+the param's type, `kernel` for the Unix transport's peer when it names
+no bearer source); `as:`; the `receivers:` it binds, and, for every
+other locus type the surface's rows name, the one instance the serving
+locus holds of it, inferred; `bound:` and `on_full:`. A receiver's pool
+is the placement table's. Of a hub: the param a stream row binds
+(`self.hub`), its literal's kind, `bind:`, `codec:` (`json` when none),
+sources and `as:`; of each stream row, its topic and wire subject, its
+direction (`out` when the program publishes the topic), the payload,
+`bound:`, `on_full:` and `requires:`, and no replay.
+
 Both are versioned (`"description": 1`, `"inventory": 1`); their format
 is `spec/api-description.schema.json`. A document is served as compact
 JSON, its keys in the schema's order; the fixtures are the same values
 pretty-printed, and a producer is held to them as values. The OpenAPI,
-JSON Schema and MCP forms of GH #1107 are projections of the
-description; a generated client is one per surface and carries the
-digest.
+JSON Schema and MCP forms of GH #1107 are projections of a surface's
+rows, one per surface, each carrying the digest: `hale check --api
+--surface NAME --openapi` (a `POST /call/<member>` per row, `200` its
+response, `422` its handler error, `500` a `ClosureViolation` row's
+server error, the refusals by their statuses, the digest as the
+`Hale-Surface-Digest` header), `--json-schema` (every type the rows name
+under `$defs`, each member's types by reference) and `--mcp` (a tool per
+row, its input the request's schema, self-contained; a request whose
+schema is not an object is wrapped as an object with one required
+property named after the handler's parameter, which the MCP transport
+unwraps before decoding by shape, as MCP requires an object); a builtin
+record a row names (`IndexError`, …) is a schema of its contract-shape
+fields, under its name; every component a form adds that is not a user
+type is namespaced `hale.` (`hale.Refusal`), a name no Hale identifier
+can spell, so none collides with the program's types; the fixture
+program's are pinned beside the R0 documents
+(`<Surface>.<form>.json`). The structural path's forms (`hale describe
+--openapi`, `--mcp`) are unchanged until R4.
 
 ## What this replaces
 
@@ -752,7 +806,10 @@ by hand:
 - `wire/unix/*.json`, `wire/http/*.json`: one request and its reply per
   outcome (result, handler error, each refusal kind, server error);
 - `digest.md`: `Public`'s digest worked byte for byte, `Admin`'s, and
-  the hub `fills`'s stream digest.
+  the hub `fills`'s stream digest;
+- `<Surface>.openapi.json`, `<Surface>.json-schema.json`,
+  `<Surface>.mcp.json` (R1): each surface's three projections, as the
+  compiler prints them.
 
 `crates/hale-cli/tests/api_contract_fixtures.rs` validates every
 document against the schema and holds the fixtures to this contract: an
@@ -765,15 +822,17 @@ form admits no member and no status; the digests, the stream digest
 among them, are the ones `digest.md` folds; a row whose error type is
 `ClosureViolation` carries no error schema and is the only kind of
 member a server error is recorded for; every wire record encodes its
-outcome as § Outcomes says. The plan's § 3 assertions that need a
+outcome as § Outcomes says. From R1 it also runs the compiler over
+`program.hl` and holds what it prints to the fixtures byte for byte:
+the inventory, each description for its caller, the model's digests and
+row shape hashes against `digest.md`, and each surface's projections.
+The plan's § 3 assertions that need a
 running program (refusals before a handler's counter moves, queued
 shutdown, a lost response, revocation while connected) are the exit
 criteria of R2, R3 and R5.
 
 ## Open points
 
-- **The contract shape** a digest folds for a nested type or an enum
-  (§ The contract digest; R1).
 - **Additive compatibility**: a client built against a subset of a
   surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,

@@ -187,6 +187,7 @@ pub fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
         T::Group(g) => Some(&g.name.name),
         T::Role(r) => Some(&r.name.name),
         T::Unit(u) => Some(&u.name.name),
+        T::Api(a) => Some(&a.name.name),
         T::Module(_) | T::Claims(_) | T::Constitution(_) => None,
     }
 }

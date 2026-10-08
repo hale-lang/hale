@@ -237,15 +237,17 @@ never builds a model from it.
 `spec/api.md` (GH #1417) replaces it with model rows: the `surface`
 family (`spec/registry.md`), one row per `rpc` line of an `api` block
 or `@rpc` handler — the surface, the member, the request, response and
-error types as payload contracts, the pool and the required roles —
-from which the surface's contract digest is folded and every
+error types with their contract shape hashes (§ The shape of a type),
+whether the error is the server error, the pools and the required
+roles — from which the surface's contract digest is folded and every
 description is rendered, per exposure, from the rows dispatch reads.
-The family is reserved until R1 produces it; the description above is
-today's.
+The model holds the surfaces and their rows (the `surfaces` and
+`surface_rows` tables, below) from R1; the description above stays the
+structural path's until R4 retires it.
 
 ## Sorts — the entity tables
 
-`Entities` holds fifteen tables. A row's **id is its index** in its
+`Entities` holds seventeen tables. A row's **id is its index** in its
 own table, wrapped in a newtype (`FunctionId`, `SubjectId`, …) —
 not a field stored on the row.
 
@@ -282,6 +284,16 @@ digest.
 | `types`, `interfaces` | type and interface declarations |
 | `effect_classes` | declared **or merely referenced** user effect classes — `declared: false` is "referenced, never declared". Built-ins are a separate fixed vocabulary (`BUILTIN_EFFECT_CLASSES`) and have no row |
 | `declarations` | the declaration universe, for coverage laws |
+| `surfaces` | an `api` block, or a seed's default surface its `@rpc` handlers feed, with its contract digest (`spec/api.md`, GH #1417) |
+| `surface_rows` | one row of a surface: the member as a caller names it, the handler's function, the request, response and error types (each its spelling, contract shape and hash), whether a failure is the server error, the pools the handler's locus runs on and the required roles as written |
+
+The surface family has one law of its own beside canonical order (by
+surface name; rows by surface, then member): a surface's digest is the
+fold of its rows (`hale_model::surface::surface_digest`, the framing
+of `spec/api.md` § The contract digest), so a row added, removed or
+changed without the digest moving is not a model. Neither table enters
+`shape_hash`: a program with no surface hashes as it did, and one with
+surfaces gains these rows and no hash.
 
 Two distinctions in that table are load-bearing:
 
@@ -296,6 +308,89 @@ Two distinctions in that table are load-bearing:
   arrangement. `LocusDecl::params` records what a locus may hold
   even where no instance is born; `LocusInstance::replica` is the
   0-based index the runtime pins, not a count.
+
+### The shape of a type
+
+A type has a **shape**, a string, and a **shape hash**, the 64-bit
+FNV-1a fold of the string's bytes (`hale_graph::identity::Fnv64`:
+offset basis `0xcbf29ce484222325`, prime `0x100000001b3`, each byte
+xor-ed in and then multiplied), written as sixteen lowercase hex
+digits. One renderer (`hale_types::topic_identity::Shapes`) renders it
+in two forms; the payload contract reads one and the surface rows the
+other, and neither renders a shape of its own.
+
+Both forms tag a field the same way when its type is flat:
+
+| field type | tag |
+|---|---|
+| `Int`, `Uint`, an identity, a range (`spec/units.md`) | `i` |
+| `Float` | `f` |
+| `Bool` | `b` |
+| `Decimal` | `d` |
+| `Time` | `t` |
+| `Duration` | `u` |
+| `String`, `StringView` | `s` |
+| `Bytes`, `BytesView`, `BytesMut` | `y` |
+| a quantity or a point | `q(<denomination>)`, `q(<denomination> point)`, `q(<denomination> point <origin>)` (`spec/units.md` § Layout and the wire) |
+
+A struct's shape is its fields in declaration order, each
+`<field>:<tag>`, joined by `;`. A **flat struct** is one whose every
+field has a tag of the table; it has one shape whichever form reads it,
+so one shape hash: `type OrderReceipt { order: OrderId; notional:
+Money; }` is `order:i;notional:q(cent)`, `bb4f99639cf069af`, in both.
+
+**The observation form** is the topic's observation identity (the
+`topics` section of the artifact, `PROTOCOL.md` §4, mirrored byte for
+byte by the runtime's `obs_fnv`, which folds the wire subject, `:` and
+this string) and the `payloads` table's contract. Only a bare,
+non-generic declared struct has one, and any field whose type is not
+in the table is tagged `struct`, name-free, so the hash never depends
+on a declaring binary's local type names. A payload with no observation
+shape (an enum, a scalar, an array, a builtin record, a type the seed
+cannot see) is the opaque contract `opaque:<type>`. This form is a wire
+identity and does not move.
+
+**The contract form** is what a surface row's request, response and
+error are, which the contract digest folds (`spec/api.md` § The
+contract digest). Every type has one, and it is deep, so a field
+changed inside a nested struct, or a variant added to an enum, moves
+the hash of every type that reaches it:
+
+- a declared struct: its fields, each `<field>:<tag>`, joined by `;`;
+- a builtin record (`ClosureViolation`, `IndexError`, … the records
+  the compiler declares, `hale_types::builtin_types`): its fields as a
+  struct's, `ClosureViolation` being `locus:s;closure:s;diff:i`
+  (`36c7f0561125943e`); a declaration of the name in the program
+  replaces it, as it does in the checker;
+- an enum: `=enum(` its variants in declaration order joined by `|`,
+  a variant written `<Name>` or `<Name>(<tag>,…)` `)`: `type Side =
+  enum { Buy, Sell(Int, String) }` is `=enum(Buy|Sell(i,s))`;
+- an alias, and a scalar that is neither an identity, a range, a
+  quantity nor a point (`distinct Float`): the shape of what it stands
+  for;
+- any other type: `=` and its tag (`=i` for an `OrderId` a row names
+  by itself, `=q(cent)` for a `Money`).
+
+A field's tag in the contract form is the table's, or:
+
+| field type | tag |
+|---|---|
+| a declared struct, a builtin record, an enum | `#` and its own contract shape hash: `body:#e661911904a01160` for a `body: Inner` with `type Inner { a: Bool; }` |
+| one of those already being rendered (a recursive type) | `rec(<k>)`, `k` the number of enclosing named types out to it: `type Node { v: Int; kids: [Node]; }` is `v:i;kids:[rec(1)]` |
+| an alias, and a scalar of the kind above | the tag of what it stands for |
+| `[T]`, `[T; N]` | `[<tag>]`, `[<tag>;<N>]` (`_` for a size that is not a literal) |
+| `bounded[T; N]` | `bounded[<tag>;<N>]` |
+| a tuple | `(<tag>,…)` |
+| a type the program declares nothing for | `opaque(<type as written>)` |
+
+The nested type's slot is its hash, not its fields inlined, so a
+type's contract shape is a function of its own fields and of the
+hashes of the types it names; and because a flat struct's fields are
+all tagged by the shared table, its contract shape is its observation
+shape and **no flat struct's hash differs between the two forms**. A
+struct with a compound field is the one kind whose two hashes differ:
+`type Outer { id: Int; body: Inner; }` is `id:i;body:struct` as a
+payload and `id:i;body:#e661911904a01160` as a row's type.
 
 ### The arrangement
 
@@ -872,6 +967,10 @@ Absorption: `StdlibAbsorption`, `AbsorbedNode`, `AbsorbedEvent`,
 `BindingRole`, `TransportKind`, `Group`, `TypeDecl`,
 `InterfaceDecl`, `EffectClassDecl`, `EffectClassDefinition`,
 `Declaration`, `DeclKind`.
+
+**`surface`** — the surface family (GH #1417): `Surface`,
+`SurfaceRow`, `RowType`, and the digest framings
+(`surface_digest_input`, `stream_digest_input`) with their folds.
 
 **`relation`** — the seventeen relation row types. Structure:
 `MemberOf`, `PhaseOf`, `DeclaredIn`, `Realizes`, `Owns`. Behaviour:

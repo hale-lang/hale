@@ -6,13 +6,14 @@
 // (digest.md). They are the handoff consumers build against before
 // any transport ships.
 //
-// This file is written as the program WILL read: `api` blocks, `rpc`
+// This file is written in spec/api.md's syntax: `api` blocks, `rpc`
 // rows with `requires:`, `api::serve(…)` sites, transport instances and
-// a topic bound to a hub with `requires:` are spec/api.md's syntax, and
-// the grammar parses them from R1 on. Today's grammar stops at the
-// first `api` block. It lexes, so `hale fmt --check .` holds it to the
-// canonical form, and no parse gate reads this directory: the corpus
-// (hale-corpus), the examples sweep and the in-language suite
+// a topic bound to a hub with `requires:`. From R1 it parses and checks,
+// and `hale check --api` prints its inventory and descriptions from its
+// rows (crates/hale-cli/tests/api_contract_fixtures.rs holds them to the
+// documents beside it); it does not build until its serve sites and its
+// hub are served (R2, R5). No other gate reads this directory: the
+// corpus (hale-corpus), the examples sweep and the in-language suite
 // (`tests/hale`) each walk directories of their own.
 //
 // What it exercises (spec/api.md § The witness): two surfaces sharing

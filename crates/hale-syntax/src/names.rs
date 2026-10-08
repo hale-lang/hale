@@ -183,6 +183,16 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
                 opt_name(target, f);
             }
         }
+        TopDecl::Api(a) => {
+            let ApiDecl { name: n, rows, span: _ } = a;
+            name(n, f);
+            for r in rows {
+                let RpcRow { locus, written: _, method, requires, span: _ } = r;
+                name(locus, f);
+                name(method, f);
+                names(requires, f);
+            }
+        }
     }
 }
 
@@ -381,7 +391,14 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             }
         }
         LocusMember::Bindings(bb) => {
-            let BindingsBlock { entries, api, span: _ } = bb;
+            let BindingsBlock { entries, api, hubs, span: _ } = bb;
+            for h in hubs {
+                let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
+                name(topic, f);
+                name(instance, f);
+                names(requires, f);
+                opt_name(on_full, f);
+            }
             for e in entries {
                 let BindingEntry { topic, transport, constraints: _, codec, span: _, id: _ } = e;
                 name(topic, f);
@@ -537,6 +554,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         effects,
         quantities: _,
         gated,
+        rpc,
         decorators,
         body,
         span: _,
@@ -565,6 +583,9 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         }
     }
     opt_name(gated, f);
+    if let Some(RpcAttr { requires, span: _ }) = rpc {
+        names(requires, f);
+    }
     for d in decorators {
         let FnDecorator { name: dn, span: _ } = d;
         f(Spelled::Name(dn));

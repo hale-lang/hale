@@ -61,6 +61,9 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "serve", "http", "principals",
     // GH #1109: roles at the boundary.
     "gated", "includes", "roles", "on_unauthorized",
+    // GH #1417: a surface's rows (`api NAME { rpc L::f requires: [r]; }`,
+    // `@rpc`), and a hub binding's `requires:`.
+    "rpc", "requires",
     "intra_process", "intra_machine", "cross_machine", "zero_copy",
     "serves", "reperspective",
     // GH #382: claims surface (phases 1-5) + effect families.

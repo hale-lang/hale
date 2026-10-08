@@ -320,7 +320,7 @@ pub fn violate_fallible_laws(bundle: &Bundle<'_>, summary: &AllocSummary) -> Vec
 
 /// The parenthesis of the message: the closure a direct `violate` names,
 /// or the callee the path goes through.
-fn how(key: &FnKey, may: &BTreeMap<FnKey, MayViolate>, decls: &BTreeMap<FnKey, FnDeclRow>) -> String {
+pub fn how(key: &FnKey, may: &BTreeMap<FnKey, MayViolate>, decls: &BTreeMap<FnKey, FnDeclRow>) -> String {
     match &may[key] {
         MayViolate::Direct { closure, .. } => format!("`violate {closure}`"),
         MayViolate::Through { callee, .. } => {

@@ -132,6 +132,9 @@ pub enum TopDecl {
     /// node of the unit graph, and the edge that relates it to
     /// another. Seed-global, as `role` is.
     Unit(UnitDecl),
+    /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }`
+    /// — a surface. Seed-global, as `role` is.
+    Api(ApiDecl),
 }
 
 impl TopDecl {
@@ -152,6 +155,7 @@ impl TopDecl {
             TopDecl::Claims(c) => c.span,
             TopDecl::Constitution(c) => c.span,
             TopDecl::Unit(u) => u.span,
+            TopDecl::Api(a) => a.span,
         }
     }
 }
@@ -262,6 +266,104 @@ pub struct RoleDecl {
     pub name: Ident,
     pub includes: Vec<Ident>,
     pub span: Span,
+}
+
+/// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }` — a
+/// surface, a named table of operations, each row naming a handler and
+/// the roles a caller must hold (spec/api.md § Surfaces and their rows).
+/// Seed-global, as `role` is: its name is the description's, never a
+/// mangled symbol.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiDecl {
+    pub name: Ident,
+    pub rows: Vec<RpcRow>,
+    pub span: Span,
+}
+
+/// One `rpc` line of an `api` block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcRow {
+    /// The handler's locus, its path joined by `::` into one identifier
+    /// (`Orders`, `lib::Orders`), canonicalized by the import renames as
+    /// a binding's topic is.
+    pub locus: Ident,
+    /// The locus as the author wrote it: the member's spelling
+    /// (`lib::Orders::cancel`), which no rename touches.
+    pub written: String,
+    /// The handler: a member fn of the locus.
+    pub method: Ident,
+    /// The roles a caller must hold, as written.
+    pub requires: Vec<Ident>,
+    pub span: Span,
+}
+
+/// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn: the
+/// row it contributes to the seed's default surface, named after the
+/// seed (spec/api.md § Surfaces and their rows).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcAttr {
+    pub requires: Vec<Ident>,
+    pub span: Span,
+}
+
+/// GH #1417: the struct literal an `api::serve(…)` call's named
+/// arguments ride in (`as:`, `receivers:`, `bound:`, `on_full:`), its
+/// last argument. R1 names a serve site and neither checks nor lowers it
+/// (R2), so the parser keeps the call an ordinary call and every walker
+/// reads the named arguments as the expressions they are.
+pub const SERVE_OPTIONS: &str = "__api_serve";
+/// The struct literal `receivers: { TYPE: INSTANCE, … }` rides in: one
+/// init per bound type, its name the type as written.
+pub const SERVE_RECEIVERS: &str = "__api_receivers";
+
+/// An `api::serve(SURFACE, TRANSPORT, as: NAME, receivers: { … }, bound:
+/// N, on_full: POLICY)` call, read back from the call it parsed to.
+#[derive(Debug, Clone, Copy)]
+pub struct ServeSite<'a> {
+    pub surface: &'a Expr,
+    pub transport: Option<&'a Expr>,
+    /// The named arguments, by name, as written.
+    pub options: &'a [StructInit],
+    pub span: Span,
+}
+
+impl<'a> ServeSite<'a> {
+    /// `expr` as a serve site: a call of the path `api::serve`.
+    pub fn of(expr: &'a Expr) -> Option<ServeSite<'a>> {
+        let Expr::Call { callee, args, span, .. } = expr else { return None };
+        let Expr::Path(qn) = callee.as_ref() else { return None };
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        if segs != ["api", "serve"] {
+            return None;
+        }
+        let surface = args.first()?;
+        let options: &[StructInit] = match args.last() {
+            Some(Expr::Struct { path, inits, .. })
+                if args.len() > 1 && path.segments.len() == 1 && path.segments[0].name == SERVE_OPTIONS =>
+            {
+                inits
+            }
+            _ => &[],
+        };
+        let transport = args.get(1).filter(|t| {
+            !matches!(t, Expr::Struct { path, .. } if path.segments.len() == 1 && path.segments[0].name == SERVE_OPTIONS)
+        });
+        Some(ServeSite { surface, transport, options, span: *span })
+    }
+
+    /// The named argument `name`'s value.
+    pub fn option(&self, name: &str) -> Option<&'a Expr> {
+        self.options.iter().find(|i| i.name.name == name).map(|i| &i.value)
+    }
+
+    /// The `receivers:` bindings, each the type as written and the
+    /// instance expression.
+    pub fn receivers(&self) -> &'a [StructInit] {
+        match self.option("receivers") {
+            Some(Expr::Struct { inits, .. }) => inits,
+            _ => &[],
+        }
+    }
 }
 
 /// GH #1076: `unit NAME;` | `unit NAME = N TARGET;` | `unit NAME = N/D;`.
@@ -1446,6 +1548,31 @@ pub struct BindingsBlock {
     /// pre-check synthesis pass (`api_gen`) reads it and the topic
     /// walks over `entries` never see it.
     pub api: Option<ApiBinding>,
+    /// GH #1417: the topic bindings to a hub, `Fills: self.hub requires:
+    /// [operator], bound: 64, on_full: drop_old;` (spec/api.md §
+    /// Streams). A hub is a transport INSTANCE, a param of the locus,
+    /// not a transport constructor, and nothing serves one before R5, so
+    /// these are not `BindingEntry`s either: the description reads them
+    /// as stream rows, and the topic walks over `entries` never see them.
+    pub hubs: Vec<HubBinding>,
+    pub span: Span,
+}
+
+/// GH #1417: one topic binding to a hub (spec/api.md § Streams): the
+/// stream row's topic, the hub param it is bound to, and the exposure's
+/// fields on the row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HubBinding {
+    /// The topic, its path joined by `::` as a binding's topic is.
+    pub topic: Ident,
+    /// The hub: the param `self.<instance>` names.
+    pub instance: Ident,
+    /// The roles a subscriber must hold, as written.
+    pub requires: Vec<Ident>,
+    /// The frames each admitted subscriber's queue holds.
+    pub bound: Option<(u64, Span)>,
+    /// `drop_old` or `drop_new`, as written.
+    pub on_full: Option<Ident>,
     pub span: Span,
 }
 
@@ -2684,6 +2811,10 @@ pub struct FnDecl {
     /// message on this handler's subject to pass the api binding's
     /// gate. Meaningful only on a subscribed handler; the checker says so.
     pub gated: Option<Ident>,
+    /// GH #1417: `@rpc` / `@rpc(requires: [R, …])` — the row this fn
+    /// contributes to its seed's default surface. A locus fn's alone;
+    /// the surface law says so of any other.
+    pub rpc: Option<RpcAttr>,
     /// GH #723: the contract decorators as written, in source order.
     /// Only the coherence check reads this; every other consumer reads
     /// the flattened fields. See [`FnDecorator`].

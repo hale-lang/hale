@@ -8414,6 +8414,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     export: false,
                     unbounded: false,
                     gated: None,
+                    rpc: None,
                     budget: None,
                     hot: false,
                     effects: Vec::new(),
@@ -12063,6 +12064,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 export: fd.export,
                 unbounded: fd.unbounded,
                 gated: fd.gated.clone(),
+                rpc: fd.rpc.clone(),
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
@@ -12281,6 +12283,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             export: template.export,
             unbounded: template.unbounded,
             gated: template.gated.clone(),
+            rpc: template.rpc.clone(),
             budget: template.budget,
             hot: template.hot,
             effects: Vec::new(),
@@ -12535,6 +12538,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Unit(_) => {
                     // GH #1076: a unit is a node of the catalogue the
                     // checker closes; it lowers to no code.
+                }
+                TopDecl::Api(_) => {
+                    // GH #1417: a surface is model rows; it lowers to no
+                    // code until a serve site serves it (R2).
                 }
             }
         }

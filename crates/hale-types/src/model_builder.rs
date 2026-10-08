@@ -227,6 +227,11 @@ pub struct ModelInputs<'a> {
     /// (`Snapshot::demand_dispatch_plan`), the one lowering lowers. The
     /// model holds it projected onto its own subjects and loci.
     pub dispatch_plan: &'a hale_model::dispatch_plan::DispatchPlan,
+    /// The surface rows (GH #1417, the `surface` family): the
+    /// snapshot's (`Snapshot::demand_surface_rows`). The model holds the
+    /// surfaces and their rows projected; serve sites and hubs are the
+    /// description's, not the model's, until R2 and R5 make them rows.
+    pub surfaces: &'a crate::surfaces::SurfaceRows,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -3452,6 +3457,56 @@ pub fn derive_application_model_over(
         .map(|r| r.decl.name.clone())
         .unwrap_or_else(|| "main".to_string());
 
+    // ---- the surface family (GH #1417), projected ----
+    // A row's handler joins its function by the declaration's site; a
+    // row that names no handler (a program the surface law refuses)
+    // keeps none. The digest is the producer's, which the model's law
+    // holds to the fold of these rows.
+    for s in &inputs.surfaces.surfaces {
+        let provenance = intern_span(&mut records, s.span);
+        e.surfaces.push(hale_model::Surface { name: s.name.clone(), digest: s.digest, provenance });
+    }
+    for row in &inputs.surfaces.rows {
+        let Some(sid) = e.surfaces.iter().position(|s| s.name == row.surface) else { continue };
+        let ty = |t: &crate::surfaces::RowTy| hale_model::RowType {
+            display: t.display.clone(),
+            shape: t.shape.clone(),
+            hash: t.hash,
+        };
+        let h = match &row.handler {
+            crate::surfaces::Handled::Fn(h) => Some(h),
+            _ => None,
+        };
+        let provenance = intern_span(&mut records, row.span);
+        e.surface_rows.push(hale_model::SurfaceRow {
+            surface: hale_model::SurfaceId(sid as u32),
+            member: row.member.clone(),
+            handler: h.and_then(|h| fid_of(&h.key)),
+            request: h.and_then(|h| h.request.as_ref()).map(ty),
+            response: h.and_then(|h| h.response.as_ref()).map(ty),
+            error: h.and_then(|h| h.error.as_ref()).map(ty),
+            server_error: h.is_some_and(|h| h.server_error),
+            pools: h.map(|h| h.pools.clone()).unwrap_or_default(),
+            requires: row.requires.iter().map(|(r, _)| r.clone()).collect(),
+            provenance,
+        });
+    }
+    // Two rows of one member in one surface are law 3's refusal; the
+    // model keeps one, the first written, so its table stays a set, and
+    // such a surface's digest is the fold of the rows it keeps (a
+    // program the law accepts has no such surface, and its digests are
+    // the producer's).
+    e.surface_rows.dedup_by(|b, a| a.surface == b.surface && a.member == b.member);
+    for (i, s) in e.surfaces.iter_mut().enumerate() {
+        let lines: Vec<hale_model::surface::DigestLine<'_>> = e
+            .surface_rows
+            .iter()
+            .filter(|r| r.surface.index() == i)
+            .map(hale_model::surface::DigestLine::from)
+            .collect();
+        s.digest = hale_model::surface::surface_digest(&lines);
+    }
+
     prov.records = records;
     let model = ApplicationModel {
         analyses: hale_model::Analyses {
@@ -3742,6 +3797,31 @@ pub fn render_internal(m: &ApplicationModel) -> String {
             sp.subscriber_domains.join(","),
             if sp.same_domain { " same-domain" } else { "" }
         ));
+    }
+    // GH #1417: the surface family, for a program that declares one (a
+    // program with none renders exactly what it did).
+    if !e.surfaces.is_empty() {
+        s.push_str(&format!("surfaces ({}):\n", e.surfaces.len()));
+        for (i, sf) in e.surfaces.iter().enumerate() {
+            s.push_str(&format!("  {} {}\n", sf.name, hale_model::surface::digest_text(sf.digest)));
+            for r in e.surface_rows.iter().filter(|r| r.surface.index() == i) {
+                let ty = |t: &Option<hale_model::RowType>| match t {
+                    Some(t) => format!("{} #{:016x}", t.display, t.hash),
+                    None => "-".to_string(),
+                };
+                s.push_str(&format!(
+                    "    {} handler {} request {} response {} error {}{} pools [{}] requires [{}]\n",
+                    r.member,
+                    r.handler.map_or_else(|| "-".to_string(), |f| e.functions[f.index()].display.clone()),
+                    ty(&r.request),
+                    ty(&r.response),
+                    ty(&r.error),
+                    if r.server_error { " (server error)" } else { "" },
+                    r.pools.join(","),
+                    r.requires.join(",")
+                ));
+            }
+        }
     }
     s
 }

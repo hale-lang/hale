@@ -73,6 +73,7 @@ pub mod quantitative;
 pub mod resolve;
 pub mod resolved;
 pub mod roles;
+pub mod surfaces;
 pub mod unit_graph;
 pub mod units;
 pub mod unit_values;
@@ -188,6 +189,9 @@ pub fn build_rule_diags(bundle: &Bundle<'_>, ownership: &ownership_graph::Owners
         &bundle.import_renames,
         ownership,
     );
+    // GH #1417: a serve site or a hub binding is described in R1 and
+    // served by nothing yet, so a build refuses it rather than drop it.
+    diags.extend(surfaces::unserved_sites(&programs));
     stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags
 }

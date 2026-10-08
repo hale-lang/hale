@@ -13,6 +13,12 @@ keeps a count of its stock. Every output below is what the commands
 printed, trimmed where marked `…`. The example's socket is
 `/tmp/shop.sock`, and the peer on it is uid 1000.
 
+This page builds the API on the structural path, the `api:` binding.
+Surfaces (`api` blocks and `@rpc`, [The API binding](./api.md#surfaces))
+are the rows that replace it: the compiler checks them and describes
+them today, and when they are served the binding is retired (step R4
+of GH #1417), and this page with it.
+
 ## 1. The domain
 
 Start with the shop itself: a payload type for each message, a topic

@@ -928,6 +928,16 @@ impl<'a> QualifiedRenameApplier<'a> {
             TopDecl::Unit(_) => {
                 // GH #1076: a unit and its target are bare vocabulary.
             }
+            TopDecl::Api(a) => {
+                // GH #1417: a row may name an IMPORTED locus
+                // (`rpc lib::Orders::cancel;`), its path joined into one
+                // ident as a binding's topic is; canonicalize it to the
+                // mangled decl the same way. The surface's name and the
+                // row's `written` spelling stay as the author wrote them.
+                for r in &mut a.rows {
+                    self.rewrite_joined_ident(&mut r.locus);
+                }
+            }
             TopDecl::Group(g) => {
                 // GH #382: canonicalize qualified group members the
                 // same way qualified topic refs are canonicalized
@@ -1263,7 +1273,10 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // GH #1076: a unit is seed-global — one catalogue closed over
         // every seed, and a literal suffix (`3bp`) that the rename
         // table could not reach anyway — so its name is never mangled.
-        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) | TopDecl::Unit(_) => {
+        // GH #1417: a surface's NAME is the description's (the exposure
+        // identity carries it), seed-global as a role's is, so it is
+        // never mangled either.
+        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) | TopDecl::Unit(_) | TopDecl::Api(_) => {
             None
         }
     }
@@ -1544,6 +1557,15 @@ impl<'a> Mangler<'a> {
                 // GH #1076: a unit is seed-global, as a role is: its
                 // name and its equation's target stay as written (see
                 // `top_decl_name`).
+            }
+            TopDecl::Api(a) => {
+                // GH #1417: a row names this seed's own locus, whose
+                // declaration was just mangled; follow it, as a
+                // binding's topic does. The surface's name stays.
+                for r in &mut a.rows {
+                    self.rewrite_alias_head_joined(&mut r.locus);
+                    self.rewrite_ident(&mut r.locus.name);
+                }
             }
             TopDecl::Group(g) => {
                 // GH #382: rewrite the decl name plus single-

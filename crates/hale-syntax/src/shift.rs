@@ -180,6 +180,7 @@ impl Shift for TopDecl {
             TopDecl::Claims(x) => x.shift(d),
             TopDecl::Constitution(x) => x.shift(d),
             TopDecl::Unit(x) => x.shift(d),
+            TopDecl::Api(x) => x.shift(d),
         }
     }
 }
@@ -187,6 +188,8 @@ impl Shift for TopDecl {
 // Claims vocabulary.
 
 shift_struct!(RoleDecl { name, includes, span });
+shift_struct!(ApiDecl { name, rows, span });
+shift_struct!(RpcRow { locus, written, method, requires, span });
 shift_struct!(UnitDecl { name, equation, span, id });
 shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });
@@ -396,7 +399,8 @@ impl Shift for PlacementSpec {
 
 shift_unit_enum!(PlacementConstraint { AsyncIo });
 shift_struct!(SpannedPlacementConstraint { kind, span });
-shift_struct!(BindingsBlock { entries, api, span });
+shift_struct!(BindingsBlock { entries, api, hubs, span });
+shift_struct!(HubBinding { topic, instance, requires, bound, on_full, span });
 shift_struct!(ApiBinding {
     transport,
     roles,
@@ -667,11 +671,13 @@ shift_struct!(FnDecl {
     effects,
     quantities,
     gated,
+    rpc,
     decorators,
     body,
     span,
     id,
 });
+shift_struct!(RpcAttr { requires, span });
 shift_struct!(ModuleDecl { name, items, span, id });
 shift_struct!(GenericParam { name, bound, span });
 shift_struct!(Param { name, ty, default, secret, span });

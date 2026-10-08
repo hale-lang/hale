@@ -32,7 +32,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `restart` | Layer 3 | Canonical | derivation | `handler_rows` | 0 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Canonical | law | `closure_event_rows` | 0 | Whether each closure's recovery-event clauses (`persists_through`, `resets_on`) are well formed and can take effect: every name in the closed alphabet, `dissolve` never persisted through, no event in both clauses, every event one a recovery of the closed world applies to the locus, and a persistence with something to keep. |
 | `api_surface` | Layer 3 | Canonical | derivation | `api_surface` | 0 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form; and the role rows: every `role` declaration, every `@gated` site and the api entry's role source, with or without an `api:` entry. |
-| `surface` | Layer 3 | Reserved | derivation | — | 0 | The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types, the handler's pool, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; the producers land in R1 (rows, digest), R2 (serve sites) and R5 (stream rows), and the family replaces `api_surface` at R4. |
+| `surface` | Layer 3 | Canonical | derivation | `surface_rows` | 0 | The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types with their contract shape hashes, whether a failure is the server error, the pools the handler's locus runs on, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; R1 produces the rows and digests and names the serve sites and hub bindings for the description, R2 checks and serves the sites, R5 the hubs, and the family replaces `api_surface` at R4. |
 | `sealability` | Layer 3 | Canonical | law | `record_param_access` | 0 | Which loci confine their state (`@sealed`), and which could. |
 | `runs_under` | Layer 3 | Reserved | derivation | — | 0 | On whose authority a locus runs: the relation `runs_under(locus, principal)`, with principals declared by the program. |
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
@@ -834,15 +834,17 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Spec.** spec/model.md § The description; spec/semantics.md § The api binding (GH #1106); spec/types.md § Roles and `@gated` (GH #1109)
 
-### `surface` — Reserved · derivation
+### `surface` — Canonical · derivation
 
-**Answers.** The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types, the handler's pool, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; the producers land in R1 (rows, digest), R2 (serve sites) and R5 (stream rows), and the family replaces `api_surface` at R4.
+**Answers.** The program's API as rows (GH #1417): one surface row per `rpc` line of an `api` block or `@rpc` handler (the surface, the member `Locus::fn`, the request, response and error types with their contract shape hashes, whether a failure is the server error, the pools the handler's locus runs on, the required roles), each surface's contract digest, each serve site's exposure (its surface, transport instance, `as:` name, sources and receivers), and each hub binding's stream row; R1 produces the rows and digests and names the serve sites and hub bindings for the description, R2 checks and serves the sites, R5 the hubs, and the family replaces `api_surface` at R4.
 
-**Inputs.** `api` blocks and `@rpc` handlers (R1); role declarations; the payload contracts (the shape hashes the digest folds); serve sites: `api::serve(…)`, `as:`, `receivers:` (R2); topic bindings to a hub with `requires:` (R5)
+**Inputs.** `api` blocks and `@rpc` handlers (the parse: `TopDecl::Api`, `FnDecl::rpc`); the locus declarations the rows name (their member fns, lifecycle methods, modes and failure handlers); the contract shapes (`topic_identity::Shapes`, the shape hashes the digest folds); placement (the pools the handlers' loci and the receivers run on); topics (a hub stream's wire subject); serve sites: `api::serve(…)` and its named arguments, named, not checked (R2 checks them); topic bindings to a hub with `requires:`, named, not served (R5)
 
-**Producer.** none: reserved, computes nothing.
+**Producer.** `crates/hale-types/src/surfaces.rs` · `surface_rows`
 
-**Consumers.** check (the admission law over the rows, R1; the serve-site laws); check --api (the inventory; the descriptions per exposure, R1); the contract digest (R1); the OpenAPI, JSON Schema and MCP generators (re-homed onto the rows, R1); serve (the runtime's dispatch: Context, the digest check, requires before enqueue, decode by shape, R2 and R3); hubs (stream admission, expiry and revocation, R5); describe / call / watch / admin / mcp (over descriptions, R4); ui (reserved)
+**Also owned.** `crates/hale-types/src/surfaces.rs` · `surface_rows`; `crates/hale-types/src/surfaces.rs` · `surface_laws`; `crates/hale-frontend/src/snapshot.rs` · `demand_surface_rows`
+
+**Consumers.** check (the admission law over the rows: laws 1 to 5 and 7 of spec/api.md, beside the may-violate law, `CheckInputs::surfaces`) (`crates/hale-types/src/check.rs` · `surface_laws`); check (the snapshot's check stage: the same laws over the snapshot's rows) (`crates/hale-frontend/src/snapshot.rs` · `surface_laws`); the model (the `surfaces` and `surface_rows` tables, projected; the digest law) (`crates/hale-types/src/model_builder.rs` · `inputs.surfaces`); build (a serve site and a hub binding are refused until served) (`crates/hale-types/src/lib.rs` · `unserved_sites`); check --api (the inventory; one exposure's description for a caller holding `--holds` under its role source; law 6's notes on stderr) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `api_document`); the OpenAPI, JSON Schema and MCP forms of one surface (`check --api --surface`), projections of its rows (`crates/hale-cli/src/surface_doc.rs` · `openapi`); serve (the runtime's dispatch: Context, the digest check, requires before enqueue, decode by shape, R2 and R3); hubs (stream admission, expiry and revocation, R5); describe / call / watch / admin / mcp (over descriptions, R4); ui (reserved)
 
 **Invariants.**
 
@@ -854,12 +856,21 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - descriptions read the rows dispatch reads: a caller's description under an exposure lists exactly the members whose `requires` that exposure's role source grants it
 - grants belong to the role-source instance a serve site names, never to a role name
 - the outcome mappings are fixed per transport (v1): no row carries a status and the digest hashes none
+- the rows have one producer (`surfaces::surface_rows`), demanded once per snapshot (`Snapshot::demand_surface_rows`, the `surface` count), not gated on the typing; a bundle no snapshot holds builds its own in the check's entry. Its columns: each row's surface, member (the locus in the row author's spelling), the locus and fn it resolves to, the roles as written with their spans, and what the handler resolves to (a member fn with its key, its value parameters past a trailing `ctx: std::api::Context`, the request, response and error types, whether the error is `ClosureViolation`, the pools; or no locus, no fn, a lifecycle method, mode or failure handler, a free fn); an `@rpc` row feeds the seed's default surface, named after the seed (an imported seed's by its import alias)
+- the admission law is a law over the rows (`surfaces::surface_laws`), in spec/api.md's wordings: a row names a handler (1), takes one request (2), is its surface's member once (3), requires declared roles (4), names types the JSON codec carries (5, the one codec a serve site has in R1), and a handler that may violate is `fallible(ClosureViolation)` whatever it returns (7, F.42's may-violate judgment over the summary); law 6 is a statement of the row (`server_error_notes`), not a refusal; the serve-site laws are R2's
+- the model holds the surfaces and their rows under one law: each surface's digest is the fold of its own rows; neither table enters `shape_hash`, so a program with no surface hashes as it did
+- a type's contract shape is `topic_identity::Shapes`' contract form, which agrees with the payload contract's observation form on every flat struct (spec/model.md § The shape of a type)
 
-**Missing data.** n/a
+**Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/api_contract_fixtures.rs
+**Focused tests.** crates/hale-cli/tests/api_contract_fixtures.rs; crates/hale-types/tests/api_rows_check.rs (one refusal per law in its wording, law 6's statement, the fixture admitted); crates/hale-types/tests/surface_rows.rs (the fixture's rows, digests and model rows; an `@rpc` row and an `rpc` line are one row); crates/hale-syntax/tests/api_surface_parse.rs (both spellings, the serve site, the hub binding, the refusals); crates/hale-model/src/surface.rs (the digest framings against digest.md)
 
-**Spec.** spec/api.md; spec/api-description.schema.json
+**Spec.** spec/api.md; spec/api-description.schema.json; spec/model.md § The shape of a type
+
+**Guarded seams.**
+
+- `surface_rows(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `surface_laws(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
 ### `sealability` — Canonical · law
 

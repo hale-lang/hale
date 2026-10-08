@@ -11,7 +11,9 @@
 //! contract's laws over the fixtures: an exposure's identity, a
 //! caller's description as exactly the filter of its surface's rows,
 //! the digests `digest.md` folds, and each wire record's encoding of its
-//! outcome. When R1 emits these documents, it is held to the same files.
+//! outcome. From R1 the compiler emits these documents, and the tests at
+//! the end of this file hold what `hale check --api` prints over
+//! `program.hl` to the same files, byte for byte.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -886,4 +888,234 @@ fn every_wire_record_encodes_its_outcome() {
     for transport in ["unix", "http"] {
         assert_eq!(seen.get(transport), Some(&every), "{transport}: one record per outcome and per refusal kind");
     }
+}
+
+// ------------------------------------------------------------------
+// R1: the compiler produces the documents from the rows (R1's exit
+// criterion: byte for byte the fixtures above).
+
+/// `hale <args>` over `program.hl`, its stdout; the run succeeded.
+fn hale(args: &[&str]) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(contract_dir().join("program.hl"))
+        .args(args)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    assert!(out.status.success(), "hale check {args:?}:\n{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).expect("UTF-8")
+}
+
+fn fixture_text(name: &str) -> String {
+    std::fs::read_to_string(contract_dir().join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
+}
+
+/// Each description fixture's exposure and caller: the principal the
+/// exposure establishes, and the roles the caller holds under that
+/// exposure's role source. What a caller holds is its role source's to
+/// say when the program runs (`Grants::holds` is program code), so the
+/// check takes it as an input (`--holds`); everything else is the rows'.
+const CALLERS: &[(&str, &str, &str, &str)] = &[
+    ("admin.uid-1000.description.json", "admin", r#"{"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}"#, "operator"),
+    ("admin.uid-1001.description.json", "admin", r#"{"mode": "unix", "name": "uid:1001", "uid": 1001, "gid": 1001, "pid": 4242}"#, ""),
+    ("fills.bob.description.json", "fills", "bob", ""),
+    ("fills.dave.description.json", "fills", "dave", "operator"),
+    ("partner.alice.description.json", "partner", "alice", ""),
+    ("partner.carol.description.json", "partner", "carol", "trader"),
+    ("public.alice.description.json", "public", "alice", "trader"),
+    ("public.bob.description.json", "public", "bob", ""),
+];
+
+#[test]
+fn the_compiler_prints_the_inventory_byte_for_byte() {
+    let got = hale(&["--api"]);
+    assert_eq!(got, fixture_text("inventory.json"), "`hale check --api program.hl` is inventory.json");
+    let doc: Value = serde_json::from_str(&got).expect("JSON");
+    assert!(errors_against_schema(&doc).is_empty());
+}
+
+#[test]
+fn the_compiler_prints_every_description_byte_for_byte() {
+    let docs = descriptions();
+    let named: BTreeSet<&str> = CALLERS.iter().map(|c| c.0).collect();
+    assert_eq!(named, docs.keys().map(String::as_str).collect(), "a caller for every description fixture");
+    for (file, exposure, caller, holds) in CALLERS {
+        let mut args = vec!["--api", "--exposure", exposure, "--caller", caller];
+        if !holds.is_empty() {
+            args.extend(["--holds", holds]);
+        }
+        let got = hale(&args);
+        assert_eq!(got, fixture_text(file), "{file}: the compiler's description is the fixture's, byte for byte");
+        let doc: Value = serde_json::from_str(&got).expect("JSON");
+        assert!(errors_against_schema(&doc).is_empty(), "{file}");
+    }
+}
+
+/// The model's digests are the ones digest.md folds by hand, and each
+/// row's shape hashes are digest.md's shapes.
+#[test]
+fn the_compilers_digests_are_digest_mds() {
+    let md = fixture_text("digest.md");
+    let dump = hale(&["--dump-model"]);
+    let section: Vec<&str> = dump.lines().skip_while(|l| !l.starts_with("surfaces (")).collect();
+    for (surface, digest) in [("Admin", "fnv1a64:40381db6685c9f75"), ("Public", "fnv1a64:a8930d6e7998e986")] {
+        assert!(md.contains(digest), "digest.md states {surface}'s digest");
+        assert!(section.contains(&format!("  {surface} {digest}").as_str()), "the model's {surface} digest is {digest}");
+    }
+    for line in block_after(&md, "shapes").lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let (ty, hash) = (f[0], f[2]);
+        if ty == "Fill" {
+            continue; // a stream's payload, no row's type
+        }
+        assert!(section.iter().any(|l| l.contains(&format!("{ty} #{hash}"))), "a row names {ty} with its shape hash {hash}");
+    }
+}
+
+/// The OpenAPI, JSON Schema and MCP forms of each surface are
+/// projections of its rows, pinned beside the R0 documents.
+#[test]
+fn the_surface_projections_are_their_fixtures() {
+    for surface in ["Admin", "Public"] {
+        for form in ["openapi", "json-schema", "mcp"] {
+            let file = format!("{surface}.{form}.json");
+            let got = hale(&["--api", "--surface", surface, &format!("--{form}")]);
+            assert_eq!(got, fixture_text(&file), "{file}");
+        }
+        // The forms carry the surface's digest and list exactly its rows.
+        let inv = inventory();
+        let s = surface_of(&inv, surface);
+        let members: BTreeSet<String> =
+            s["members"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap().to_string()).collect();
+        let openapi: Value = serde_json::from_str(&fixture_text(&format!("{surface}.openapi.json"))).unwrap();
+        assert_eq!(openapi["info"]["x-hale-digest"], s["digest"]);
+        let paths: BTreeSet<String> = openapi["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|p| p.strip_prefix("/call/").unwrap().to_string())
+            .collect();
+        assert_eq!(paths, members, "{surface}: a path per row");
+        for (name, op) in openapi["paths"].as_object().unwrap() {
+            let row = &s["members"].as_array().unwrap().iter().find(|m| format!("/call/{}", m["name"].as_str().unwrap()) == *name).unwrap();
+            let responses = op["post"]["responses"].as_object().unwrap();
+            assert_eq!(responses.contains_key("500"), row["error"] == json!(STRUCTURAL), "{surface} {name}: the server error is a ClosureViolation row's");
+            assert_eq!(responses.contains_key("422"), row["error"].is_object(), "{surface} {name}: the handler error is an E row's");
+        }
+        let mcp: Value = serde_json::from_str(&fixture_text(&format!("{surface}.mcp.json"))).unwrap();
+        let tools: BTreeSet<String> = mcp["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().replace("__", "::"))
+            .collect();
+        assert_eq!(tools, members, "{surface}: a tool per row");
+    }
+}
+
+// ------------------------------------------------------------------
+// The generators over programs of their own: what the fixture program
+// does not use (a builtin record, a user type named like a generated
+// component, a scalar request).
+
+/// `hale check <src> <args>` over a program written for the test.
+fn hale_over(name: &str, src: &str, args: &[&str]) -> Value {
+    let dir = std::env::temp_dir().join(format!("hale_api_gen_{name}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("program.hl");
+    std::fs::write(&file, src).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(&file)
+        .args(args)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "hale check {args:?}:\n{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).expect("JSON")
+}
+
+#[test]
+fn a_builtin_record_is_its_contract_shape_fields() {
+    let src = r#"
+locus Echo { fn echo(x: IndexError) -> IndexError { return x; } }
+type Wrap { e: IndexError; n: Int; }
+locus W { fn wrap(w: Wrap) -> Wrap { return w; } }
+api Public { rpc Echo::echo; rpc W::wrap; }
+fn main() { }
+"#;
+    let inv = hale_over("builtin", src, &["--api"]);
+    let schemas = &inv["schemas"];
+    assert_eq!(
+        schemas["IndexError"],
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"}, "index": {"type": "integer"}, "len": {"type": "integer"}
+            },
+            "required": ["kind", "index", "len"]
+        })
+    );
+    assert_eq!(schemas["Wrap"]["properties"]["e"], json!({"$ref": "#/schemas/IndexError"}));
+    assert_eq!(schemas["Wrap"]["properties"]["n"], json!({"type": "integer"}));
+    let members = inv["surfaces"][0]["members"].as_array().unwrap();
+    let echo = members.iter().find(|m| m["name"] == "Echo::echo").unwrap();
+    assert_eq!(echo["request"], json!({"$ref": "#/schemas/IndexError"}));
+    assert_eq!(echo["response"], json!({"$ref": "#/schemas/IndexError"}));
+}
+
+#[test]
+fn a_closure_violation_error_member_is_the_string_and_no_schema() {
+    let src = r#"
+locus Lv { fn go(x: Int) -> Int fallible(ClosureViolation) { return x; } }
+api Public { rpc Lv::go; }
+fn main() { }
+"#;
+    let inv = hale_over("violation", src, &["--api"]);
+    let go = &inv["surfaces"][0]["members"][0];
+    assert_eq!(go["error"], json!("ClosureViolation"));
+    assert!(inv["schemas"].get("ClosureViolation").is_none(), "{}", inv["schemas"]);
+}
+
+#[test]
+fn a_user_type_named_refusal_does_not_collide_with_the_generated_one() {
+    let src = r#"
+type Refusal { id: Int; }
+locus R { fn go(r: Refusal) -> Refusal { return r; } }
+api Public { rpc R::go; }
+fn main() { }
+"#;
+    let doc = hale_over("refusal", src, &["--api", "--surface", "Public", "--openapi"]);
+    let schemas = doc["components"]["schemas"].as_object().unwrap();
+    assert_eq!(schemas.keys().map(String::as_str).collect::<Vec<_>>(), ["Refusal", "hale.Refusal"]);
+    assert!(schemas["Refusal"]["properties"].get("id").is_some(), "the user's");
+    assert!(schemas["hale.Refusal"]["properties"].get("refusal").is_some(), "the generated one");
+    let op = &doc["paths"]["/call/R::go"]["post"];
+    let r = |v: &Value| v["content"]["application/json"]["schema"]["$ref"].clone();
+    assert_eq!(r(&op["requestBody"]), json!("#/components/schemas/Refusal"));
+    assert_eq!(r(&op["responses"]["200"]), json!("#/components/schemas/Refusal"));
+    assert_eq!(r(&op["responses"]["400"]), json!("#/components/schemas/hale.Refusal"));
+    assert_eq!(r(&op["responses"]["503"]), json!("#/components/schemas/hale.Refusal"));
+}
+
+#[test]
+fn an_mcp_input_is_an_object() {
+    let src = r#"
+type Order { id: Int; }
+locus S { fn echo(x: Int) -> Int { return x; } fn place(o: Order) -> Int { return o.id; } }
+api Public { rpc S::echo; rpc S::place; }
+fn main() { }
+"#;
+    let doc = hale_over("mcp", src, &["--api", "--surface", "Public", "--mcp"]);
+    let tool = |n: &str| doc["tools"].as_array().unwrap().iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(
+        tool("S__echo")["inputSchema"],
+        json!({"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]})
+    );
+    assert_eq!(
+        tool("S__place")["inputSchema"],
+        json!({"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]})
+    );
 }

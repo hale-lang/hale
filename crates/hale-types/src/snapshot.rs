@@ -374,7 +374,8 @@ impl<'p> UseScopes<'p, '_> {
                 | TopDecl::Role(_)
                 | TopDecl::Claims(_)
                 | TopDecl::Constitution(_)
-                | TopDecl::Unit(_) => {}
+                | TopDecl::Unit(_)
+                | TopDecl::Api(_) => {}
             }
         }
     }
