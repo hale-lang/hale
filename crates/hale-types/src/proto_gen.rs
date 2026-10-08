@@ -635,6 +635,20 @@ impl ProtoFile {
 
 // ---- the files every gRPC exposure serves beside the surface's ----
 
+/// Standard base64, padded.
+pub fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        o.push(A[(n >> 18) as usize & 63] as char);
+        o.push(A[(n >> 12) as usize & 63] as char);
+        o.push(if c.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
+        o.push(if c.len() > 2 { A[n as usize & 63] as char } else { '=' });
+    }
+    o
+}
+
 /// `hale.api.Description`: the reserved method that returns the description.
 pub fn description_file() -> ProtoFile {
     let mut doc = message("DescriptionDocument", vec![field("json", 1, Ty::Scalar(Scalar::String), Label::Plain)]);

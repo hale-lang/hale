@@ -73,6 +73,10 @@ struct JsonField {
     /// as `Int` and converted at the struct's construction, converted back
     /// where it is emitted (spec/units.md § Layout and the wire).
     conv: Option<Conv>,
+    /// GH #1417 (R8b): the field's protobuf number, its place among the
+    /// struct's declared fields counted from 1 (0 where no protobuf codec
+    /// is made).
+    pb_no: u32,
 }
 
 /// How a scalar of the unit dialect crosses the JSON wire as its `Int`.
@@ -251,6 +255,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                             kind,
                             default_src,
                             conv: None,
+                            pb_no: 0,
                         });
                     }
                     if ok && !jfields.is_empty() {
@@ -531,6 +536,154 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
     b
 }
 
+// ---- GH #1417 (R8b): the protobuf codec of a record ----------------------
+
+/// `__api_pb_decode_<T>`: the strict reading of proto3's wire format. The
+/// fields are read as the JSON decoder reads them (a field with no default
+/// that is absent is `missing_field`, one of the wrong wire type is
+/// `wrong_type`, the value of a unit-dialect scalar passes through its
+/// conversion), by field number; an unknown field is skipped by its wire
+/// type; the last of a field sent twice wins. The helpers (`__api_pb_vend`,
+/// `__api_pb_vval`, `__api_pb_skip`) are `api_grpc.hl`'s.
+fn generate_pb_parser_src(t: &JsonType) -> String {
+    let mut b = String::new();
+    let bad = "fail JsonError { kind: \"wrong_type\", field: \"payload\" };";
+    b.push_str(&format!("fn __api_pb_decode_{}(__b: Bytes) -> {} fallible(JsonError) {{\n", t.name, t.name));
+    b.push_str("    let __n = len(__b);\n");
+    for f in &t.fields {
+        match &f.kind {
+            FieldKind::Scalar(s) => {
+                let init = f.default_src.as_deref().unwrap_or_else(|| s.zero());
+                b.push_str(&format!("    let mut __f_{}: {} = {};\n", f.name, s.type_name(), init));
+            }
+            FieldKind::Nested(_) => {
+                b.push_str(&format!("    let mut __raw_{}: Bytes = std::bytes::from_string(\"\");\n", f.name));
+            }
+        }
+        if f.default_src.is_none() {
+            b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
+        }
+    }
+    b.push_str("    let mut __p = 0;\n");
+    b.push_str("    while __p < __n {\n");
+    b.push_str("        let __te = __api_pb_vend(__b, __p);\n");
+    b.push_str(&format!("        if __te < 0 {{ {bad} }}\n"));
+    b.push_str("        let __tag = __api_pb_vval(__b, __p, __te);\n");
+    b.push_str("        let __no = __tag >> 3;\n");
+    b.push_str("        let __wire = __tag & 7;\n");
+    b.push_str("        __p = __te;\n");
+    for (i, f) in t.fields.iter().enumerate() {
+        let kw = if i == 0 { "if" } else { "} else if" };
+        b.push_str(&format!("        {kw} __no == {} {{\n", f.pb_no));
+        let (want, what) = match &f.kind {
+            FieldKind::Scalar(ScalarTy::Float) => (1, "f64"),
+            FieldKind::Scalar(ScalarTy::Str) | FieldKind::Nested(_) => (2, "len"),
+            FieldKind::Scalar(_) => (0, "varint"),
+        };
+        b.push_str(&format!(
+            "            if __wire != {want} {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
+            f.key
+        ));
+        match what {
+            "f64" => {
+                b.push_str(&format!("            if __p + 8 > __n {{ {bad} }}\n"));
+                b.push_str(&format!("            __f_{} = std::bytes::read_f64_le(__b, __p) or 0.0;\n", f.name));
+                b.push_str("            __p = __p + 8;\n");
+            }
+            "len" => {
+                b.push_str("            let __e = __api_pb_vend(__b, __p);\n");
+                b.push_str(&format!("            if __e < 0 {{ {bad} }}\n"));
+                b.push_str("            let __l = __api_pb_vval(__b, __p, __e);\n");
+                b.push_str(&format!("            if __l < 0 || __e + __l > __n {{ {bad} }}\n"));
+                match &f.kind {
+                    FieldKind::Nested(_) => {
+                        b.push_str(&format!("            __raw_{} = std::bytes::slice(__b, __e, __e + __l);\n", f.name));
+                    }
+                    _ => {
+                        b.push_str("            let __s = std::str::from_bytes(std::bytes::slice(__b, __e, __e + __l));\n");
+                        b.push_str(&format!(
+                            "            if len(__s) != __l {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
+                            f.key
+                        ));
+                        b.push_str(&format!("            __f_{} = __s;\n", f.name));
+                    }
+                }
+                b.push_str("            __p = __e + __l;\n");
+            }
+            _ => {
+                b.push_str("            let __e = __api_pb_vend(__b, __p);\n");
+                b.push_str(&format!("            if __e < 0 {{ {bad} }}\n"));
+                let value = "__api_pb_vval(__b, __p, __e)";
+                if matches!(f.kind, FieldKind::Scalar(ScalarTy::Bool)) {
+                    b.push_str(&format!("            __f_{} = {value} != 0;\n", f.name));
+                } else {
+                    b.push_str(&format!("            __f_{} = {value};\n", f.name));
+                }
+                b.push_str("            __p = __e;\n");
+            }
+        }
+        if f.default_src.is_none() {
+            b.push_str(&format!("            __seen_{} = true;\n", f.name));
+        }
+    }
+    let kw = if t.fields.is_empty() { "" } else { "} else " };
+    b.push_str(&format!("        {kw}{{\n"));
+    b.push_str("            let __e = __api_pb_skip(__b, __p, __wire);\n");
+    b.push_str(&format!("            if __e < 0 {{ {bad} }}\n"));
+    b.push_str("            __p = __e;\n");
+    b.push_str("        }\n");
+    b.push_str("    }\n");
+    for f in &t.fields {
+        if f.default_src.is_none() {
+            b.push_str(&format!(
+                "    if !__seen_{} {{ fail JsonError {{ kind: \"missing_field\", field: \"{}\" }}; }}\n",
+                f.name, f.key
+            ));
+        }
+    }
+    for f in &t.fields {
+        if let FieldKind::Nested(tn) = &f.kind {
+            b.push_str(&format!("    let __p_{} = __api_pb_decode_{}(__raw_{}) or raise;\n", f.name, tn, f.name));
+        }
+    }
+    let inits: Vec<String> = t
+        .fields
+        .iter()
+        .map(|f| match (&f.kind, &f.conv) {
+            (FieldKind::Scalar(_), Some(c)) => format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key)),
+            (FieldKind::Scalar(_), None) => format!("{}: __f_{}", f.name, f.name),
+            (FieldKind::Nested(_), _) => format!("{}: __p_{}", f.name, f.name),
+        })
+        .collect();
+    b.push_str(&format!("    return {} {{ {} }};\n}}\n", t.name, inits.join(", ")));
+    b
+}
+
+/// `__api_pb_encode_<T>`: every field is written, in number order, whether
+/// or not it equals its default (the `.proto` marks every scalar `optional`,
+/// so a zero is a value).
+fn generate_pb_emit_src(t: &JsonType) -> String {
+    let mut b = String::new();
+    b.push_str(&format!("fn __api_pb_encode_{}(__v: {}) -> Bytes {{\n", t.name, t.name));
+    b.push_str("    let mut __o = std::bytes::from_string(\"\");\n");
+    for f in &t.fields {
+        let v = format!("__v.{}", f.name);
+        let put = match &f.kind {
+            FieldKind::Scalar(ScalarTy::Str) => format!("__api_pb_put_str({}, {v})", f.pb_no),
+            FieldKind::Scalar(ScalarTy::Float) => format!("__api_pb_put_f64({}, {v})", f.pb_no),
+            FieldKind::Scalar(ScalarTy::Bool) => format!("__api_pb_put_bool({}, {v})", f.pb_no),
+            FieldKind::Scalar(ScalarTy::Int) => match &f.conv {
+                Some(c) => format!("__api_pb_put_int({}, {})", f.pb_no, c.to_int(&v)),
+                None => format!("__api_pb_put_int({}, {v})", f.pb_no),
+            },
+            FieldKind::Nested(tn) => format!("__api_pb_put_msg({}, __api_pb_encode_{tn}({v}))", f.pb_no),
+        };
+        b.push_str(&format!("    __o = std::bytes::concat(__o, {put});\n"));
+    }
+    b.push_str("    return __o;\n}\n");
+    b
+}
+
 /// Synthesize `__json_parse_<T>` / `__json_to_json_<T>` / `JsonError`,
 /// inject them, then rewrite every `T::from_json(s)` and `T::to_json(o)`
 /// call to the generated function.
@@ -795,7 +948,22 @@ pub fn generate_rpc_codecs(
     names: &[String],
     builtins: &[(String, Vec<(String, PrimType)>)],
 ) {
-    generate_codecs(programs, main_idx, names, true, builtins);
+    generate_codecs(programs, main_idx, names, true, builtins, false);
+}
+
+/// GH #1417 (R8b): the protobuf codecs of the same type set, beside the JSON
+/// ones: `__api_pb_decode_<T>(Bytes) -> T fallible(JsonError)` and
+/// `__api_pb_encode_<T>(T) -> Bytes`, proto3's wire format with the field
+/// numbers of the struct's declaration order (spec/api.md § gRPC). The
+/// helpers they call are the gRPC transport's source (`api_grpc.hl`), so a
+/// program joins these only when it serves over `grpc::Rpc`.
+pub fn generate_rpc_pb_codecs(
+    programs: &mut [&mut Program],
+    main_idx: usize,
+    names: &[String],
+    builtins: &[(String, Vec<(String, PrimType)>)],
+) {
+    generate_codecs(programs, main_idx, names, true, builtins, true);
 }
 
 /// The plain aliases a bundle declares (`type Count = Int;`), by name.
@@ -831,6 +999,7 @@ fn generate_codecs(
     names: &[String],
     units: bool,
     builtins: &[(String, Vec<(String, PrimType)>)],
+    protobuf: bool,
 ) {
     let wanted: HashSet<String> = names.iter().cloned().collect();
     let mut types: Vec<JsonType> = Vec::new();
@@ -860,13 +1029,15 @@ fn generate_codecs(
     for (name, fields) in builtins {
         let jfields: Option<Vec<JsonField>> = fields
             .iter()
-            .map(|(f, p)| {
+            .enumerate()
+            .map(|(at, (f, p))| {
                 scalar_of(&TypeExpr::Primitive(*p, Span::new(0, 0))).map(|s| JsonField {
                     name: f.clone(),
                     key: f.clone(),
                     kind: FieldKind::Scalar(s),
                     default_src: None,
                     conv: None,
+                    pb_no: at as u32 + 1,
                 })
             })
             .collect();
@@ -875,10 +1046,19 @@ fn generate_codecs(
         }
     }
     let mut src = String::new();
-    if !have_jsonerror {
+    if !have_jsonerror && !protobuf {
         src.push_str("type JsonError { kind: String; field: String; }\n");
     }
     for t in &types {
+        if protobuf {
+            if !existing_fns.contains(&format!("__api_pb_decode_{}", t.name)) {
+                src.push_str(&generate_pb_parser_src(t));
+            }
+            if !existing_fns.contains(&format!("__api_pb_encode_{}", t.name)) {
+                src.push_str(&generate_pb_emit_src(t));
+            }
+            continue;
+        }
         if !existing_fns.contains(&format!("__api_decode_{}", t.name)) {
             src.push_str(&generate_parser_src_mode(t, "__api_decode_", true));
         }
@@ -936,7 +1116,7 @@ fn collect_api_types(
                 }
                 let TypeDeclBody::Struct(fields) = &td.body else { continue };
                 let mut jfields = Vec::new();
-                for f in fields {
+                for (at, f) in fields.iter().enumerate() {
                     let mut conv = None;
                     // a field typed by a plain alias is what the alias stands for
                     let ty = through_aliases(&f.ty, aliases);
@@ -961,6 +1141,7 @@ fn collect_api_types(
                         kind,
                         default_src,
                         conv,
+                        pb_no: at as u32 + 1,
                     });
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields });
