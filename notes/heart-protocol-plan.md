@@ -48,4 +48,4 @@ H0: the recipe above, measured as stated, on the Go reference service. The refer
 
 ## Order and size
 
-H0 first (it is what most hearts are), then H1, H2, H3; one PR each; H1 is mostly declaration and documentation (one pane), H2 adds the verb and the reference heart (two panes: the verb, the heart and its DNA test), H3 is documentation plus one DNA test. The `HeartHand`'s own calls (#987) land with H2.
+Item 4 first (the model change the rest stands on: one PR, mostly the record row, the per-name expression paths and the projection), then H0 (it is what most hearts are), then H1, H2, H3; one PR each; H1 is mostly declaration and documentation (one pane), H2 adds the verb and the reference heart (two panes: the verb, the heart and its DNA test), H3 is documentation plus one DNA test. The `HeartHand`'s own calls (#987) land with H2.
