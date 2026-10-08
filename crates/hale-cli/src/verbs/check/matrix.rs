@@ -216,8 +216,8 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
 }
 
 /// GH #1109: the role-coverage rule of `--matrix`, per (entrypoint,
-/// environment): the roles the entrypoint declares (plus `owner`
-/// when it has an api binding), the pair's role rows' projection
+/// environment): the roles the entrypoint declares, the pair's role
+/// rows' projection
 /// (`RoleRows::declared_roles`), against the environment's `roles`
 /// table. A declared role the table omits is a failure — an omission
 /// is indistinguishable from a mistake, and `[]` says "nobody" on

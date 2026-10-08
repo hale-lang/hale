@@ -84,8 +84,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // union of their imports. The load then runs the one sequence
     // `check` runs before its check: the wasm entry wrap, the
     // environment's constitutions, sync inference, the desugars (the
-    // JSON parsers and the api binding with the environment's roles
-    // among them), the mint.
+    // JSON parsers and the serve sites' expansion among them), the mint.
     let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
         Ok(s) => s,
         Err(LoadError::Load(f)) => {

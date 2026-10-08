@@ -155,13 +155,6 @@ struct JsonType {
     fields: Vec<JsonField>,
 }
 
-/// The scalar JSON kinds a field may have, by their Hale spelling
-/// (`Int`, `Float`, `Bool`, `String`); `None` for anything else. The
-/// api binding's surface classification (`api_gen`) shares this rule.
-pub fn scalar_name(te: &TypeExpr) -> Option<&'static str> {
-    scalar_of(te).map(|s| s.type_name())
-}
-
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
     match te {
         TypeExpr::Primitive(PrimType::Int, _) => Some(ScalarTy::Int),
@@ -783,21 +776,14 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
 }
 
 
-// ---- GH #1106: codecs for the api binding's type set --------------------
+// ---- GH #1417: codecs for a surface's type set --------------------------
 
-/// Generate strict decoders `__api_decode_<T>` and encoders
-/// `__api_encode_<T>` for every struct named in `names`, looked up
-/// across the bundle's programs, into `programs[main_idx]` beside the
-/// api binding. Fields are scalars or structs of the same set (the
-/// surface classification already refused anything else); a nested
-/// struct outside the set is left as a required nested field the
-/// generator cannot read, so callers pass the transitive closure.
-pub fn generate_api_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
-    generate_codecs(programs, main_idx, names, false, &[]);
-}
-
-/// GH #1417 (R2a): the codecs of a surface's rows. As
-/// [`generate_api_codecs`], and a field whose type is a scalar of the unit
+/// GH #1417 (R2a): the codecs of a surface's rows: strict decoders
+/// `__api_decode_<T>` and encoders `__api_encode_<T>` for every struct
+/// named in `names`, looked up across the bundle's programs, into
+/// `programs[main_idx]`, whose fields are scalars or structs of the same
+/// set (the surface laws already refused anything else; callers pass the
+/// transitive closure). A field whose type is a scalar of the unit
 /// dialect (an identity, a range, a quantity) is read and written as its
 /// `Int`, and one whose type is a plain alias as what the alias stands for
 /// (spec/api.md § Codecs). `builtins` are the builtin records in `names`

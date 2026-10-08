@@ -919,9 +919,9 @@ pub struct LocusDecl {
     pub name: Ident,
     /// GH #1104 piece 5: the locus came in through an `import`. Set by
     /// the cross-seed rename pass (its mangled name is a rename
-    /// target). The api binding serves the entrypoint seed's own loci
-    /// only: a library's internal bus is not the application's API,
-    /// however much of it the entrypoint composes.
+    /// target). A surface is named by its rows, so an imported seed's
+    /// loci are on the application's API only through the surface its
+    /// import alias names.
     pub imported: bool,
     /// GH #1137: an imported locus's name as its importer spells it
     /// (`api::Commands`), set with `imported`; the api description names
