@@ -44,7 +44,7 @@ impl Server {
         let trigger = dir.join("stop");
         assert!(sock.as_os_str().len() < 100, "the socket path is too long for sockaddr_un: {}", sock.display());
         let mut cmd = Command::new(bin);
-        cmd.env("SOCK", &sock).env("TRIGGER", &trigger).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.env("SOCK", &sock).env("SOCK2", dir.join("s2.sock")).env("SOCK3", dir.join("s3.sock")).env("TRIGGER", &trigger).stdout(Stdio::piped()).stderr(Stdio::piped());
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -59,19 +59,39 @@ impl Server {
     /// A connection to the socket, retrying while the program is still
     /// binding it.
     pub fn connect(&self) -> Conn {
+        self.connect_to(&self.sock)
+    }
+
+    /// A connection to the program's second (`SOCK2`) socket.
+    pub fn connect2(&self) -> Conn {
+        self.connect_to(&self.dir.join("s2.sock"))
+    }
+
+    /// A connection to the program's third (`SOCK3`) socket.
+    pub fn connect3(&self) -> Conn {
+        self.connect_to(&self.dir.join("s3.sock"))
+    }
+
+    /// Whether a socket file is still on disk.
+    pub fn has_socket(&self, which: u8) -> bool {
+        match which {
+            1 => self.sock.exists(),
+            2 => self.dir.join("s2.sock").exists(),
+            _ => self.dir.join("s3.sock").exists(),
+        }
+    }
+
+    fn connect_to(&self, sock: &Path) -> Conn {
         let start = Instant::now();
         loop {
-            match UnixStream::connect(&self.sock) {
+            match UnixStream::connect(sock) {
                 Ok(s) => {
                     s.set_read_timeout(Some(Duration::from_secs(10))).expect("read timeout");
-                    return Conn { s, buf: Vec::new() };
+                    return Conn { s, buf: Vec::new(), sent: Vec::new() };
                 }
                 Err(e) => {
                     if start.elapsed() > Duration::from_secs(20) {
-                        panic!("could not connect to {}: {e}", self.sock.display());
-                    }
-                    if let Some(c) = self.child.as_ref() {
-                        let _ = c;
+                        panic!("could not connect to {}: {e}", sock.display());
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -146,12 +166,14 @@ pub enum Recv {
 
 /// One client connection: lines out, lines in.
 pub struct Conn {
+    sent: Vec<String>,
     s: UnixStream,
     buf: Vec<u8>,
 }
 
 impl Conn {
     pub fn send(&mut self, line: &str) {
+        self.sent.push(line.to_string());
         self.s.write_all(line.as_bytes()).expect("write");
         self.s.write_all(b"\n").expect("write");
     }
@@ -190,7 +212,7 @@ impl Conn {
     pub fn line(&mut self) -> String {
         match self.recv_within(10_000) {
             Recv::Line(l) => l,
-            other => panic!("expected a reply line, got {other:?}"),
+            other => panic!("expected a reply line, got {other:?}; sent so far on this connection: {:#?}", self.sent),
         }
     }
 

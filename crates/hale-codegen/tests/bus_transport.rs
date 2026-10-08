@@ -11,6 +11,8 @@ mod api_runtime;
 mod api_serve_build;
 #[path = "api_unix.rs"]
 mod api_unix;
+#[path = "api_unix_lifecycle.rs"]
+mod api_unix_lifecycle;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]
