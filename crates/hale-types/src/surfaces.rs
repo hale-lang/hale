@@ -889,6 +889,25 @@ pub fn surface_rows(
     SurfaceRows { surfaces, rows, serves, hubs, app }
 }
 
+/// Whether a serve site's transport is the stdlib's Unix one: a literal
+/// written at the site, or a param the locus holds (`self.rpc`) whose
+/// declared type, or whose literal default, is `unix::Rpc`.
+fn is_unix_transport(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    let Some(t) = transport else { return false };
+    if let Expr::Struct { path, .. } = t {
+        return crate::rpc_expand::is_unix_rpc(path);
+    }
+    let Some(f) = self_field(t) else { return false };
+    l.members.iter().any(|m| match m {
+        LocusMember::Params(pb) => pb.params.iter().any(|p| {
+            p.name.name == f
+                && (matches!(&p.ty, Some(TypeExpr::Named { path, .. }) if crate::rpc_expand::is_unix_rpc(path))
+                    || matches!(&p.init, ParamInit::Value(Expr::Struct { path, .. }) if crate::rpc_expand::is_unix_rpc(path)))
+        }),
+        _ => false,
+    })
+}
+
 /// What a build refuses: a topic bound to a hub is named and described
 /// (spec/api.md § Streams) and served by nothing until R5, so a build that
 /// lowered the program would drop it silently. (A serve site is served
@@ -903,7 +922,7 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             // over a transport this compiler does not ship yet.
             for site in locus_serve_sites(l) {
                 let Some(Expr::Literal(hale_syntax::ast::Literal::String(name), _)) = site.option("as") else { continue };
-                if !l.is_main && matches!(site.transport, Some(Expr::Struct { path, .. }) if crate::rpc_expand::is_unix_rpc(path)) {
+                if !l.is_main && is_unix_transport(l, site.transport) {
                     diags.push(Diag::ty(
                         site.span,
                         format!(

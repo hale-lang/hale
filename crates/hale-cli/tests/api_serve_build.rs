@@ -51,3 +51,71 @@ fn a_check_admits_the_witness() {
         .expect("run hale check");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+/// `Server` is a plain locus holding or writing a `unix::Rpc` and serving
+/// over it; `App` is the main locus that holds it.
+fn unix_server(transport_param: &str, transport: &str) -> String {
+    format!(
+        r#"
+api Public {{ rpc Echo::echo; }}
+locus Echo {{ fn echo(n: Int) -> Int {{ return n; }} }}
+locus Server {{
+    params {{
+        echo: Echo = Echo {{ }};
+        {transport_param}
+    }}
+    run() {{
+        let h = api::serve(Public, {transport}, as: "public", bound: 2, on_full: refuse);
+        h.stop();
+    }}
+}}
+main locus App {{ params {{ server: Server = Server {{ }}; }} }}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn build_source(name: &str, src: &str) -> (bool, String) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let stem = format!("hale_api_serve_build_{}_{}_{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed), name);
+    let dir = std::env::temp_dir().join(&stem);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("main.hl");
+    std::fs::write(&file, src).unwrap();
+    let out_path = dir.join("out");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("build")
+        .arg(&file)
+        .arg("-o")
+        .arg(&out_path)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale build");
+    let _ = std::fs::remove_dir_all(&dir);
+    (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+const NON_MAIN: &str = "`api::serve` over `unix::Rpc` in `Server`: a socket's listener runs on a pool of its own";
+
+/// A Unix transport served from a locus that is not `main` has no listener
+/// (only the main locus places the pool it needs): refused whether the
+/// transport is written at the serve site or held as a param.
+#[test]
+fn a_unix_serve_outside_main_is_refused_written_or_held() {
+    let written = unix_server("", "unix::Rpc { path: \"/tmp/hale_r2b_a.sock\" }");
+    let (ok, err) = build_source("written", &written);
+    assert!(!ok && err.contains(NON_MAIN), "written: {err}");
+
+    let held = unix_server("rpc: std::api::unix::Rpc = std::api::unix::Rpc { path: \"/tmp/hale_r2b_b.sock\" };", "self.rpc");
+    let (ok, err) = build_source("held", &held);
+    assert!(!ok && err.contains(NON_MAIN), "held: {err}");
+
+    // the declared type alone says it: the default is built elsewhere
+    let typed = unix_server("rpc: std::api::unix::Rpc = make_rpc();", "self.rpc").replace(
+        "api Public",
+        "fn make_rpc() -> std::api::unix::Rpc { return std::api::unix::Rpc { path: \"/tmp/hale_r2b_c.sock\" }; }\napi Public",
+    );
+    let (ok, err) = build_source("typed", &typed);
+    assert!(!ok && err.contains(NON_MAIN), "typed: {err}");
+}
