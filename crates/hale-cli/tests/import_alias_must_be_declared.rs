@@ -74,6 +74,37 @@ fn repo_root() -> PathBuf {
 /// The library seed the app reaches, in both directions.
 const LIB: &str = "fn f() -> String { return \"from-lib\"; }\n";
 
+/// `api::serve(…)` is the language's serve site (spec/api.md § Serving), not
+/// a path through an import alias: a library that serves a surface keeps
+/// working in an application that names the library `api`.
+#[test]
+fn api_serve_is_the_language_not_an_alias_another_seed_declares() {
+    let lib = "type Ping { n: Int; }\n\
+               type Pong { n: Int; }\n\
+               api Echo { rpc Echoer::echo; }\n\
+               locus Echoer { fn echo(p: Ping) -> Pong { return Pong { n: p.n }; } }\n\
+               main locus Server {\n\
+               \x20   params { echoer: Echoer = Echoer { }; }\n\
+               \x20   run() {\n\
+               \x20       let h = api::serve(Echo, unix::Rpc { path: \"/tmp/never.sock\", roles: std::api::StaticRoles { } }, as: \"echo\", bound: 4, on_full: refuse);\n\
+               \x20       h.stop();\n\
+               \x20   }\n\
+               }\n";
+    let d = seed(
+        "serve",
+        &[
+            ("lib/main.hl", lib),
+            ("top/main.hl", "import \"../lib\" as api;\nfn main() { }\n"),
+        ],
+    );
+    let (ok, out) = hale(&d.join("top"), &["check", "."]);
+    assert!(
+        !out.contains("is not an import of this seed"),
+        "`api::serve` is not read as another seed's alias:\n{out}"
+    );
+    assert!(ok, "the application checks:\n{out}");
+}
+
 /// The issue's shape: `a` declares no imports at all and writes
 /// `u::f()`; `top` is the seed that declares `u`.
 #[test]

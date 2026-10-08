@@ -360,6 +360,20 @@ session may send is its describe slice.
 `call` on its topic, the reads (`/applications`, `/capabilities`,
 `/dna/context`) over HTTP, the socket's path from `api.socket`.
 
+**The first two operations are also a surface** (GH #1417, R3; `HeadCommands`
+in `commands.hl`). Beside the binding's socket the head serves `lookup` (a
+command by its request id, any authenticated peer) and `file_friction` (a
+friction entry on an attempt, `requires: [position]`) as rows over
+`unix::Rpc` on a socket of its own: the binding's name with `.rpc` for
+`.sock`, or `HALE_DNA_RPC_SOCKET`. They are the handlers the topics above run,
+unchanged (the surface's `Context` is the exposure's), under the same record's
+roles (an instance of `dna::RecordRoles` of the exposure's own), and the
+binding keeps serving every command, these two included, until the rest move
+(R4); no adapter stands between the two. A call is
+`{"call": "Commands::file_friction", "payload": {…}, "id": …}`, one line, and
+`{"describe": true}` lists the caller's members. The composed head
+(`practice_review`) serves the binding only, for now.
+
 **HTTP is the binding's own transport** (GH #1135; `bearer.hl`). The
 head's entry names it — `http("127.0.0.1", self.http_port, principals:
 self.bearer)`, on the port its launcher gives it in

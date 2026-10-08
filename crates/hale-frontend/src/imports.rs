@@ -1296,6 +1296,12 @@ pub fn unscoped_alias_uses(
             if u.head == "std" {
                 continue;
             }
+            // `api::serve(…)` is the language's serve site (spec/api.md §
+            // Serving), spelled as the surface-side docs spell it whatever
+            // alias another seed gives a library named `api`
+            if u.text == "api::serve" {
+                continue;
+            }
             if mine.is_some_and(|a| a.contains(u.head.as_str())) {
                 continue;
             }

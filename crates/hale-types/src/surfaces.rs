@@ -889,22 +889,34 @@ pub fn surface_rows(
     SurfaceRows { surfaces, rows, serves, hubs, app }
 }
 
-/// Whether a serve site's transport is the stdlib's Unix one: a literal
-/// written at the site, or a param the locus holds (`self.rpc`) whose
-/// declared type, or whose literal default, is `unix::Rpc`.
-fn is_unix_transport(l: &LocusDecl, transport: Option<&Expr>) -> bool {
-    let Some(t) = transport else { return false };
+/// The socket transport a serve site names, `"unix"` or `"http"`: a
+/// literal written at the site, or a param the locus holds (`self.rpc`)
+/// whose declared type, or whose literal default, is `unix::Rpc` or
+/// `http::Rpc`.
+fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static str> {
+    let kind_of = |path: &hale_syntax::ast::QualifiedName| {
+        if crate::rpc_expand::is_unix_rpc(path) {
+            Some("unix")
+        } else if crate::rpc_expand::is_http_rpc(path) {
+            Some("http")
+        } else {
+            None
+        }
+    };
+    let t = transport?;
     if let Expr::Struct { path, .. } = t {
-        return crate::rpc_expand::is_unix_rpc(path);
+        return kind_of(path);
     }
-    let Some(f) = self_field(t) else { return false };
-    l.members.iter().any(|m| match m {
-        LocusMember::Params(pb) => pb.params.iter().any(|p| {
-            p.name.name == f
-                && (matches!(&p.ty, Some(TypeExpr::Named { path, .. }) if crate::rpc_expand::is_unix_rpc(path))
-                    || matches!(&p.init, ParamInit::Value(Expr::Struct { path, .. }) if crate::rpc_expand::is_unix_rpc(path)))
+    let f = self_field(t)?;
+    l.members.iter().find_map(|m| match m {
+        LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == f).and_then(|p| {
+            match (&p.ty, &p.init) {
+                (Some(TypeExpr::Named { path, .. }), _) if kind_of(path).is_some() => kind_of(path),
+                (_, ParamInit::Value(Expr::Struct { path, .. })) => kind_of(path),
+                _ => None,
+            }
         }),
-        _ => false,
+        _ => None,
     })
 }
 
@@ -922,11 +934,11 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             // over a transport this compiler does not ship yet.
             for site in locus_serve_sites(l) {
                 let Some(Expr::Literal(hale_syntax::ast::Literal::String(name), _)) = site.option("as") else { continue };
-                if !l.is_main && is_unix_transport(l, site.transport) {
+                if let (false, Some(kind)) = (l.is_main, socket_transport(l, site.transport)) {
                     diags.push(Diag::ty(
                         site.span,
                         format!(
-                            "`api::serve` over `unix::Rpc` in `{}`: a socket's listener runs on a pool of its own, which \
+                            "`api::serve` over `{kind}::Rpc` in `{}`: a socket's listener runs on a pool of its own, which \
                              only the main locus places; serve from the main locus (spec/api.md § The `Rpc` interface)",
                             l.name.name
                         ),

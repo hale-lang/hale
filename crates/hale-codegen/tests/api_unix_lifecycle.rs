@@ -780,6 +780,21 @@ fn a_path_held_by_a_live_program_is_not_taken() {
 }
 
 #[test]
+fn an_exposure_given_no_path_listens_nowhere_and_the_program_runs() {
+    // a program that finds its path is another process's to hold hands the
+    // transport none: that exposure has no socket, the boot is not refused,
+    // and the program's other exposures serve
+    let (uid, _, _) = me();
+    let server = Server::start(&build(false), &[("OPERATOR", &format!("uid:{uid}")), ("PARTNER_OPERATOR", &format!("uid:{}", uid + 1)), ("MODE", "stop"), ("SOCK", "")]);
+    let mut other = server.connect2();
+    assert!(is_result(&other.ask(&call("Orders::stats", "{\"n\":0}", "s"))), "the other exposure serves");
+    assert!(!server.has_socket(1), "and the exposure with no path made no socket");
+    let done = server.finish();
+    assert!(done.status.success(), "the program ends cleanly: {}", done.stderr);
+    assert!(!done.stderr.contains("could not listen"), "{}", done.stderr);
+}
+
+#[test]
 fn the_lifecycle_program_runs_clean_under_asan() {
     // the same program under AddressSanitizer with the arena's chunk
     // recycling off: a reply that outlives its connection, a request that
