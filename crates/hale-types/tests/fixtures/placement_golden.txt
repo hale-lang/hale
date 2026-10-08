@@ -3534,6 +3534,9 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/recv_zero_alloc.rs#f4d31486
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
+== crates/hale-codegen/tests/recv_zero_alloc.rs#48d9b7a9
+row	Reader@main1	Reader	main	default
+
 == crates/hale-codegen/tests/release_generic_owner.rs#e7383174
 row	Pool_Alpha@main1	Pool_Alpha	main	default
 row	Pool_Beta@main2	Pool_Beta	main	default
