@@ -936,6 +936,15 @@ pub struct AllocSummary {
     /// as a value) only the stdlib's analysis copy takes: an alternative
     /// of a function-value dispatch the program alone does not have.
     pub analysis_copy_values: BTreeSet<String>,
+    /// The fns of the api runtime a serving program carries
+    /// (`rpc_expand`). They are summarized with the program (the walked
+    /// set and the summary set are one) and are stdlib source for the
+    /// ownership judgments only ([`Self::is_own`], [`Self::own_rows`]).
+    pub appended_runtime: BTreeSet<FnKey>,
+    /// The appended runtime's loci, likewise.
+    pub appended_runtime_loci: BTreeSet<String>,
+    /// The appended runtime's interfaces, likewise.
+    pub appended_runtime_interfaces: BTreeSet<String>,
     /// The program's bodies that are no fn's row, each summarized as a
     /// member of its declaration ([`DeclarationBody`]). No judgment reads
     /// them; the declaration dependents relation reads their call edges.
@@ -1005,12 +1014,29 @@ impl AllocSummary {
     /// Whether the fn `key` is the program's own, not the stdlib's
     /// analysis copy's.
     pub fn is_own(&self, key: &FnKey) -> bool {
-        !self.analysis_copy.contains(key)
+        !self.analysis_copy.contains(key) && !self.appended_runtime.contains(key)
     }
 
     /// Whether the locus `name` is the program's own.
     pub fn is_own_locus(&self, name: &str) -> bool {
-        !self.analysis_copy_loci.contains(name)
+        !self.analysis_copy_loci.contains(name) && !self.appended_runtime_loci.contains(name)
+    }
+
+    /// Whether the interface `name` is stdlib's: the analysis copy's, or
+    /// the appended api runtime's.
+    fn copy_interface(&self, name: &str, runtime_own: bool) -> bool {
+        self.analysis_copy_interfaces.contains(name) || (!runtime_own && self.appended_runtime_interfaces.contains(name))
+    }
+
+    /// [`Self::is_own`], the appended runtime counted as the program's
+    /// when `runtime_own`.
+    fn own_fn(&self, key: &FnKey, runtime_own: bool) -> bool {
+        !self.analysis_copy.contains(key) && (runtime_own || !self.appended_runtime.contains(key))
+    }
+
+    /// [`Self::is_own_locus`], likewise.
+    fn own_locus_of(&self, name: &str, runtime_own: bool) -> bool {
+        !self.analysis_copy_loci.contains(name) && (runtime_own || !self.appended_runtime_loci.contains(name))
     }
 
     /// Whether an alternative of a function-value dispatch
@@ -1019,9 +1045,13 @@ impl AllocSummary {
     /// program alone has no such alternative, and [`Self::own_rows`]
     /// leaves it out.
     pub fn copy_alternative(&self, e: &CallEdge) -> bool {
+        self.copy_alternative_in(e, false)
+    }
+
+    fn copy_alternative_in(&self, e: &CallEdge, runtime_own: bool) -> bool {
         e.via_value.is_some()
             && match &e.callee {
-                Callee::Resolved(k) => self.analysis_copy.contains(k),
+                Callee::Resolved(k) => !self.own_fn(k, runtime_own),
                 Callee::Unresolved(n) => self.analysis_copy_values.contains(n),
             }
     }
@@ -1029,9 +1059,13 @@ impl AllocSummary {
     /// The function-value dispatches of `fs` that keep an alternative
     /// of the program's own ([`Self::copy_alternative`]): by group.
     pub fn value_groups_kept(&self, fs: &FnSummary) -> BTreeSet<u32> {
+        self.value_groups_kept_in(fs, false)
+    }
+
+    fn value_groups_kept_in(&self, fs: &FnSummary, runtime_own: bool) -> BTreeSet<u32> {
         fs.calls
             .iter()
-            .filter(|c| c.via_value.is_some() && !self.copy_alternative(c))
+            .filter(|c| c.via_value.is_some() && !self.copy_alternative_in(c, runtime_own))
             .filter_map(|c| c.dispatch_group)
             .collect()
     }
@@ -1049,7 +1083,21 @@ impl AllocSummary {
     /// and replay identity, so it reads these rows and the program
     /// alone decides it.
     pub fn own_rows(&self) -> AllocSummary {
-        let copy = |k: &FnKey| self.analysis_copy.contains(k);
+        self.project(false)
+    }
+
+    /// The rows the model and the budget engines read: [`Self::own_rows`]
+    /// with the appended api runtime kept as the program's. The runtime
+    /// is declared in the program and walked with it, so the model's
+    /// coverage (the walked set is the summary set) takes its rows; only
+    /// the ownership judgments (`is_own`, `own_rows`) leave it out.
+    pub fn program_rows(&self) -> AllocSummary {
+        self.project(true)
+    }
+
+    fn project(&self, runtime_own: bool) -> AllocSummary {
+        let is_own = |k: &FnKey| self.own_fn(k, runtime_own);
+        let copy = |k: &FnKey| !is_own(k);
         // A group whose every alternative is the copy's, or whose
         // interface is the copy's, collapses to its written call.
         let mut collapsed: BTreeSet<u32> = BTreeSet::new();
@@ -1058,14 +1106,14 @@ impl AllocSummary {
         // is the indirect call as written, as the program alone resolves
         // it to nothing of its own.
         let mut value_own: BTreeSet<u32> = BTreeSet::new();
-        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
-            value_own.extend(self.value_groups_kept(f));
+        for f in self.fns.values().filter(|f| is_own(&f.key)) {
+            value_own.extend(self.value_groups_kept_in(f, runtime_own));
         }
-        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+        for f in self.fns.values().filter(|f| is_own(&f.key)) {
             let mut own_alt: BTreeMap<u32, bool> = BTreeMap::new();
             for c in f.calls.iter().filter(|c| c.via_value.is_none()) {
                 if let (Some(g), Callee::Resolved(k)) = (c.dispatch_group, &c.callee) {
-                    let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                    let through_copy = c.via_interface.as_ref().is_some_and(|i| self.copy_interface(i, runtime_own));
                     *own_alt.entry(g).or_default() |= !copy(k) && !through_copy;
                 }
             }
@@ -1075,13 +1123,13 @@ impl AllocSummary {
         let mut value_order: Vec<u32> = Vec::new();
         let mut emitted: BTreeSet<u32> = BTreeSet::new();
         let mut fns: BTreeMap<FnKey, FnSummary> = BTreeMap::new();
-        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+        for f in self.fns.values().filter(|f| is_own(&f.key)) {
             let mut calls: Vec<CallEdge> = Vec::with_capacity(f.calls.len());
             for c in &f.calls {
                 let mut e = c.clone();
                 if let (Some(written), Some(g)) = (&c.via_value, c.dispatch_group) {
                     if value_own.contains(&g) {
-                        if self.copy_alternative(c) {
+                        if self.copy_alternative_in(c, runtime_own) {
                             continue;
                         }
                         // Numbered below, after every interface group.
@@ -1106,7 +1154,7 @@ impl AllocSummary {
                         if !emitted.insert(g) {
                             continue;
                         }
-                        let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                        let through_copy = c.via_interface.as_ref().is_some_and(|i| self.copy_interface(i, runtime_own));
                         e.callee = Callee::Unresolved(k.fn_name.clone());
                         e.dispatch_group = None;
                         if through_copy {
@@ -1122,7 +1170,7 @@ impl AllocSummary {
                         e.callee = Callee::Unresolved(k.fn_name.clone());
                     }
                     (_, Callee::Unresolved(_)) => {
-                        if c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i)) {
+                        if c.via_interface.as_ref().is_some_and(|i| self.copy_interface(i, runtime_own)) {
                             e.via_interface = None;
                         }
                     }
@@ -1143,8 +1191,8 @@ impl AllocSummary {
                 }
             }
         }
-        let own_locus = |l: &String| self.is_own_locus(l);
-        let own_key = |k: &FnKey| self.is_own(k);
+        let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
+        let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
@@ -1161,6 +1209,9 @@ impl AllocSummary {
             analysis_copy_interfaces: BTreeSet::new(),
             declaration_bodies: self.declaration_bodies.clone(),
             analysis_copy_values: BTreeSet::new(),
+            appended_runtime: BTreeSet::new(),
+            appended_runtime_loci: BTreeSet::new(),
+            appended_runtime_interfaces: BTreeSet::new(),
             // Classified over the stdlib's declarations whether or not
             // the copy's rows are beside: the program's set either way.
             scratch_local: self.scratch_local.clone(),
@@ -1860,11 +1911,13 @@ pub fn summarize_identified(
         }
     }
     // The api runtime a serving program carries (`rpc_expand`) is stdlib
-    // source appended to the program: a declaration named in the runtime's
-    // parse window is the copy's, as the bundled stdlib's are, whichever
-    // snapshot minted it. `runtime_ids` holds its fns' and loci's ids, to
-    // mark their rows below.
+    // source appended to the program: it is summarized with the program
+    // (the walked set is the summary set), and a declaration named in the
+    // runtime's parse window is not the program's own, whichever snapshot
+    // minted it. `runtime_ids` holds its fns' and loci's ids, to mark
+    // their rows below.
     let mut runtime_ids: BTreeSet<hale_syntax::ast::NodeId> = BTreeSet::new();
+    let mut runtime_loci: BTreeSet<String> = BTreeSet::new();
     let in_runtime = |name: &hale_syntax::ast::Ident| crate::rpc_expand::is_runtime_pos(name.span.start.0);
     let shadowed = |ids: &crate::snapshot::Snapshot, item: &TopDecl| {
         is_stdlib_copy(ids)
@@ -2152,11 +2205,12 @@ pub fn summarize_identified(
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
-                    if is_stdlib_copy(ids) || in_runtime(&l.name) {
+                    if is_stdlib_copy(ids) {
                         analysis_copy_loci.insert(locus.clone());
                     }
                     if in_runtime(&l.name) {
                         runtime_ids.insert(l.id);
+                        runtime_loci.insert(locus.clone());
                     }
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
@@ -2472,6 +2526,7 @@ pub fn summarize_identified(
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
+    summary.appended_runtime_loci = runtime_loci;
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
@@ -2573,7 +2628,10 @@ pub fn summarize_identified(
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts);
-        if is_stdlib_copy(ids) || runtime_ids.contains(decl) {
+        if runtime_ids.contains(decl) {
+            summary.appended_runtime.insert(key.clone());
+        }
+        if is_stdlib_copy(ids) {
             summary.analysis_copy.insert(key.clone());
         } else {
             own.insert(key.clone());
@@ -2652,8 +2710,11 @@ pub fn summarize_identified(
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
-                    if is_stdlib_copy(ids) || in_runtime(&i.name) {
+                    if is_stdlib_copy(ids) {
                         summary.analysis_copy_interfaces.insert(i.name.name.clone());
+                    }
+                    if in_runtime(&i.name) {
+                        summary.appended_runtime_interfaces.insert(i.name.name.clone());
                     }
                     ifaces.insert(
                         i.name.name.clone(),
