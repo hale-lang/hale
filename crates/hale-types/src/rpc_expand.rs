@@ -262,14 +262,38 @@ fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     out
 }
 
-/// The struct names a type reaches, for the codecs.
-fn struct_closure(shapes: &Shapes<'_>, te: &TypeExpr, out: &mut BTreeSet<String>) {
-    if let TypeClass::Struct { name, fields } = shapes.classify(te) {
-        if out.insert(name.to_string()) {
-            for f in fields {
-                struct_closure(shapes, &f.ty, out);
+/// The struct names a type reaches, for the codecs: declared structs, and
+/// builtin records (`IndexError`, …) with the primitive fields the schema
+/// and the contract shape give them (`Shapes::builtin_fields`).
+fn struct_closure(
+    shapes: &Shapes<'_>,
+    te: &TypeExpr,
+    out: &mut BTreeSet<String>,
+    builtins: &mut BTreeMap<String, Vec<(String, hale_syntax::ast::PrimType)>>,
+) {
+    let te = shapes.dealias(te);
+    match shapes.classify(&te) {
+        TypeClass::Struct { name, fields } => {
+            if out.insert(name.to_string()) {
+                for f in fields {
+                    struct_closure(shapes, &f.ty, out, builtins);
+                }
             }
         }
+        TypeClass::Builtin(name) => {
+            if out.insert(name.to_string()) {
+                let fields = shapes
+                    .builtin_fields(&te)
+                    .into_iter()
+                    .filter_map(|(f, ty)| match ty {
+                        TypeExpr::Primitive(p, _) => Some((f, p)),
+                        _ => None,
+                    })
+                    .collect();
+                builtins.insert(name.to_string(), fields);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -284,10 +308,11 @@ impl Codec<'_> {
     /// The Hale expression rendering `v` (of type `te`) as JSON text.
     fn encode(&self, te: &TypeExpr, v: &str) -> String {
         use hale_syntax::ast::PrimType;
+        let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
             TypeClass::Prim(PrimType::String) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
             TypeClass::Prim(_) => format!("to_string({v})"),
-            TypeClass::Struct { name, .. } => format!("__api_encode_{name}({v})"),
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_encode_{name}({v})"),
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("to_string({})", c.to_int(v)),
                 None if base == PrimType::String => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
@@ -301,8 +326,10 @@ impl Codec<'_> {
     /// `bail` (a statement list ending in `return`) when it does not.
     fn decode(&self, te: &TypeExpr, body: &str, var: &str, bail: &str) -> String {
         use hale_syntax::ast::PrimType;
+        // a plain alias decodes as what it stands for
+        let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
-            TypeClass::Struct { name, .. } => {
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_decode_{name}({body}) or {{ {bail} }};\n")
             }
             // a scalar payload is its complete JSON token of the type's kind
@@ -465,6 +492,7 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
     let confer;
     let convs;
     let all_names: BTreeSet<String>;
+    let all_builtins;
     {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
@@ -472,6 +500,7 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
         confer = conferring(&ro);
         convs = hale_syntax::json_gen::scalar_convs(&ro);
         let mut names = BTreeSet::new();
+        let mut builtins = BTreeMap::new();
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         for p in &ro {
             for d in flat_decls(&p.items) {
@@ -617,7 +646,7 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
                     let digest = digest_of(&shapes, &rows);
                     for r in &rows {
                         for te in r.request.iter().chain(r.response.iter()).chain(r.error.iter().filter(|_| !r.server_error)) {
-                            struct_closure(&shapes, te, &mut names);
+                            struct_closure(&shapes, te, &mut names, &mut builtins);
                         }
                     }
                     plans.push(Plan {
@@ -642,6 +671,7 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
             }
         }
         all_names = names;
+        all_builtins = builtins;
     }
     if plans.is_empty() {
         return Vec::new();
@@ -651,7 +681,9 @@ pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) 
     {
         let names: Vec<String> = all_names.iter().cloned().collect();
         let first = plans[0].site.program;
-        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names);
+        let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
+            all_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
+        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins);
     }
 
     // ---- per exposure ----
@@ -921,7 +953,10 @@ fn surface_src(id: i64, rows: &[Row], slots: &[String], confer: &BTreeMap<String
     for (i, r) in rows.iter().enumerate() {
         if let Some(te) = &r.request {
             let bail = "return \"wrong_type: payload\";";
-            let is_struct = matches!(codec.shapes.classify(te), TypeClass::Struct { .. });
+            let is_struct = matches!(
+                codec.shapes.classify(&codec.shapes.dealias(te)),
+                TypeClass::Struct { .. } | TypeClass::Builtin(_)
+            );
             let bail = if is_struct { "return err.kind + \": \" + err.field;" } else { bail };
             s.push_str(&format!(
                 "        if i == {i} {{\n            {}            return \"\";\n        }}\n",

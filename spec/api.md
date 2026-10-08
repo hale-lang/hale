@@ -1062,7 +1062,9 @@ correlation field, the largest frame) are R5's.
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
 binding's was: `Int`, `Float`, `Bool`, `String` and nested structs of
-the same, with a `json:"key"` tag renaming a key; an identity, a range
+the same, with a `json:"key"` tag renaming a key; a plain alias
+(`type Count = Int;`) is what its chain ends at, and a builtin record
+(`IndexError`) its fields as the description gives them; an identity, a range
 and a quantity are their integer (`spec/units.md` § Layout and the
 wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),

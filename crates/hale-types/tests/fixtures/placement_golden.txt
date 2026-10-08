@@ -5926,6 +5926,12 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.sink	Sink	main	default
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/shapes_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.probe	Probe	main	default
+dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/surface_test.hl
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
