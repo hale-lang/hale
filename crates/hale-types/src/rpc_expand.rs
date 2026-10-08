@@ -106,15 +106,26 @@ fn q(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The rows of `surface`: its `api` blocks' rows, or, when no block is
-/// named so, the `@rpc` handlers of the program's loci (the seed's default
-/// surface). In canonical order: member as bytes, then as written.
-fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
+/// The rows of `surface`: the members `surfaces::select_members` selects
+/// (the one rule, shared with `surface_rows`), read as the adapter needs
+/// them. A free fn is no receiver's; an `@rpc` row the pass cannot read is
+/// left out; an `api` row it cannot read leaves the whole surface
+/// unexpanded (the admission law reports it). In canonical order: member
+/// as bytes, then as written.
+fn rows_of_surface(
+    programs: &[&Program],
+    surface: &str,
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> Vec<Row> {
     let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for p in programs {
         for d in flat_decls(&p.items) {
-            if let TopDecl::Locus(l) = d {
-                loci.insert(l.name.name.as_str(), l);
+            match d {
+                TopDecl::Locus(l) => {
+                    loci.insert(l.name.name.as_str(), l);
+                }
+                _ => {}
             }
         }
     }
@@ -153,54 +164,34 @@ fn rows_of_surface(programs: &[&Program], surface: &str) -> Vec<Row> {
         })
     };
     let mut rows: Vec<Row> = Vec::new();
-    let mut named = false;
-    for p in programs {
-        for d in flat_decls(&p.items) {
-            if let TopDecl::Api(a) = d {
-                if a.name.name != surface {
-                    continue;
-                }
-                named = true;
-                for r in &a.rows {
-                    if let Some(row) = row_of(
-                        format!("{}::{}", r.written, r.method.name),
-                        &r.locus.name,
-                        &r.method.name,
-                        r.requires.iter().map(|i| i.name.clone()).collect(),
-                        rows.len(),
-                    ) {
-                        rows.push(row);
-                    } else {
-                        // a row the pass cannot read: the admission law
-                        // reports it, and the surface is not expanded
-                        return Vec::new();
-                    }
-                }
-            }
+    for m in crate::surfaces::select_members(programs, Some(surface), renames, default_surface) {
+        if m.locus.is_empty() {
+            continue;
         }
-    }
-    if !named {
-        for p in programs {
-            for d in flat_decls(&p.items) {
-                let TopDecl::Locus(l) = d else { continue };
-                for m in &l.members {
-                    let LocusMember::Fn(f) = m else { continue };
-                    let Some(attr) = &f.rpc else { continue };
-                    if let Some(row) = row_of(
-                        format!("{}::{}", l.name.name, f.name.name),
-                        &l.name.name,
-                        &f.name.name,
-                        attr.requires.iter().map(|i| i.name.clone()).collect(),
-                        rows.len(),
-                    ) {
-                        rows.push(row);
-                    }
-                }
-            }
+        let requires = m.requires.iter().map(|(n, _)| n.clone()).collect();
+        match row_of(m.member, &m.locus, &m.method, requires, m.written_at) {
+            Some(row) => rows.push(row),
+            None if m.origin == crate::surfaces::MemberOrigin::Block => return Vec::new(),
+            None => {}
         }
     }
     rows.sort_by(|a, b| (a.member.as_bytes(), a.written_at).cmp(&(b.member.as_bytes(), b.written_at)));
     rows
+}
+
+/// The members and the contract digest of `surface`, as the adapter a
+/// serve site of it is built from reads them: the pass's own selection,
+/// for the agreement law with `surfaces::surface_rows` to pin.
+pub fn selection(
+    programs: &[&Program],
+    surface: &str,
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> (Vec<String>, u64) {
+    let rows = rows_of_surface(programs, surface, renames, default_surface);
+    let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
+    let shapes = Shapes::of_all(&slices);
+    (rows.iter().map(|r| r.member.clone()).collect(), digest_of(&shapes, &rows))
 }
 
 fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
@@ -250,14 +241,38 @@ fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     out
 }
 
-/// The struct names a type reaches, for the codecs.
-fn struct_closure(shapes: &Shapes<'_>, te: &TypeExpr, out: &mut BTreeSet<String>) {
-    if let TypeClass::Struct { name, fields } = shapes.classify(te) {
-        if out.insert(name.to_string()) {
-            for f in fields {
-                struct_closure(shapes, &f.ty, out);
+/// The struct names a type reaches, for the codecs: declared structs, and
+/// builtin records (`IndexError`, …) with the primitive fields the schema
+/// and the contract shape give them (`Shapes::builtin_fields`).
+fn struct_closure(
+    shapes: &Shapes<'_>,
+    te: &TypeExpr,
+    out: &mut BTreeSet<String>,
+    builtins: &mut BTreeMap<String, Vec<(String, hale_syntax::ast::PrimType)>>,
+) {
+    let te = shapes.dealias(te);
+    match shapes.classify(&te) {
+        TypeClass::Struct { name, fields } => {
+            if out.insert(name.to_string()) {
+                for f in fields {
+                    struct_closure(shapes, &f.ty, out, builtins);
+                }
             }
         }
+        TypeClass::Builtin(name) => {
+            if out.insert(name.to_string()) {
+                let fields = shapes
+                    .builtin_fields(&te)
+                    .into_iter()
+                    .filter_map(|(f, ty)| match ty {
+                        TypeExpr::Primitive(p, _) => Some((f, p)),
+                        _ => None,
+                    })
+                    .collect();
+                builtins.insert(name.to_string(), fields);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -272,10 +287,11 @@ impl Codec<'_> {
     /// The Hale expression rendering `v` (of type `te`) as JSON text.
     fn encode(&self, te: &TypeExpr, v: &str) -> String {
         use hale_syntax::ast::PrimType;
+        let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
             TypeClass::Prim(PrimType::String) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
             TypeClass::Prim(_) => format!("to_string({v})"),
-            TypeClass::Struct { name, .. } => format!("__api_encode_{name}({v})"),
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_encode_{name}({v})"),
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("to_string({})", c.to_int(v)),
                 None if base == PrimType::String => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
@@ -289,24 +305,32 @@ impl Codec<'_> {
     /// `bail` (a statement list ending in `return`) when it does not.
     fn decode(&self, te: &TypeExpr, body: &str, var: &str, bail: &str) -> String {
         use hale_syntax::ast::PrimType;
+        // a plain alias decodes as what it stands for
+        let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
-            TypeClass::Struct { name, .. } => {
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_decode_{name}({body}) or {{ {bail} }};\n")
             }
-            TypeClass::Prim(PrimType::Int) => {
-                format!("let {var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n")
-            }
-            TypeClass::Prim(PrimType::Float) => {
-                format!("let {var} = std::str::parse_float(std::str::trim({body})) or {{ {bail} }};\n")
-            }
-            TypeClass::Prim(PrimType::Bool) => format!("let {var} = std::str::trim({body}) == \"true\";\n"),
+            // a scalar payload is its complete JSON token of the type's kind
+            // (the runtime's `__api_json_is_*`), checked before it is converted
+            TypeClass::Prim(PrimType::Int) => format!(
+                "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
+            ),
+            TypeClass::Prim(PrimType::Float) => format!(
+                "if !__api_json_is_float(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::parse_float(std::str::trim({body})) or {{ {bail} }};\n"
+            ),
+            TypeClass::Prim(PrimType::Bool) => format!(
+                "if !__api_json_is_bool(std::str::trim({body})) {{ {bail} }}\nlet {var} = std::str::trim({body}) == \"true\";\n"
+            ),
             TypeClass::Prim(PrimType::String) => format!(
-                "let __t_{var} = std::str::trim({body});\nlet {var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\n"
+                "let __t_{var} = std::str::trim({body});\nif !__api_json_is_string(__t_{var}) {{ {bail} }}\nlet {var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\n"
             ),
             TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
                 let c = &self.convs[name];
                 let n = format!("__n_{var}");
-                let ins = format!("let {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n");
+                let ins = format!(
+                    "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
+                );
                 match c {
                     Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
@@ -368,6 +392,18 @@ fn mentions_runtime(programs: &[&mut Program]) -> bool {
     false
 }
 
+/// Where the appended runtime parses: its own window of the generated
+/// space, from here up to the topics'.
+const RUNTIME_BASE: u32 = API_SYNTH_BASE + 0x0400_0000;
+
+/// Whether an offset is in the appended runtime's source. The runtime is
+/// stdlib source in every judgment (the analysis copy's rows are not the
+/// program's own); this is how a pass that partitions program from stdlib
+/// knows it.
+pub fn is_runtime_pos(pos: u32) -> bool {
+    (RUNTIME_BASE..API_SYNTH_BASE + 0x0500_0000).contains(&pos)
+}
+
 /// Append the runtime to the first program, once.
 fn inject_runtime(programs: &mut [&mut Program]) {
     let have = programs.iter().any(|p| {
@@ -376,7 +412,7 @@ fn inject_runtime(programs: &mut [&mut Program]) {
     if have || programs.is_empty() {
         return;
     }
-    match parse_source_at(hale_stdlib::API_RUNTIME_SOURCE, API_SYNTH_BASE + 0x0400_0000) {
+    match parse_source_at(hale_stdlib::API_RUNTIME_SOURCE, RUNTIME_BASE) {
         Ok(rt) => {
             for mut item in rt.items {
                 if let TopDecl::Type(t) = &mut item {
@@ -413,7 +449,11 @@ fn inject_topics(programs: &mut [&mut Program]) {
 }
 
 /// Run the pass over a bundle's programs.
-pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
+pub fn expand(
+    programs: &mut [&mut Program],
+    renames: &[(Vec<String>, String)],
+    default_surface: &str,
+) -> Vec<Expansion> {
     if !mentions_runtime(programs) {
         return Vec::new();
     }
@@ -436,6 +476,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
     let confer;
     let convs;
     let all_names: BTreeSet<String>;
+    let all_builtins;
     {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
@@ -443,6 +484,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
         confer = conferring(&ro);
         convs = hale_syntax::json_gen::scalar_convs(&ro);
         let mut names = BTreeSet::new();
+        let mut builtins = BTreeMap::new();
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         for p in &ro {
             for d in flat_decls(&p.items) {
@@ -491,7 +533,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
                     }) {
                         continue;
                     }
-                    let rows = rows_of_surface(&ro, &surface);
+                    let rows = rows_of_surface(&ro, &surface, renames, default_surface);
                     if rows.is_empty() {
                         continue;
                     }
@@ -588,7 +630,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
                     let digest = digest_of(&shapes, &rows);
                     for r in &rows {
                         for te in r.request.iter().chain(r.response.iter()).chain(r.error.iter().filter(|_| !r.server_error)) {
-                            struct_closure(&shapes, te, &mut names);
+                            struct_closure(&shapes, te, &mut names, &mut builtins);
                         }
                     }
                     plans.push(Plan {
@@ -613,6 +655,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
             }
         }
         all_names = names;
+        all_builtins = builtins;
     }
     if plans.is_empty() {
         return Vec::new();
@@ -622,7 +665,9 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<Expansion> {
     {
         let names: Vec<String> = all_names.iter().cloned().collect();
         let first = plans[0].site.program;
-        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names);
+        let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
+            all_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
+        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins);
     }
 
     // ---- per exposure ----
@@ -1002,7 +1047,10 @@ fn surface_src(id: i64, rows: &[Row], slots: &[String], confer: &BTreeMap<String
     for (i, r) in rows.iter().enumerate() {
         if let Some(te) = &r.request {
             let bail = "return \"wrong_type: payload\";";
-            let is_struct = matches!(codec.shapes.classify(te), TypeClass::Struct { .. });
+            let is_struct = matches!(
+                codec.shapes.classify(&codec.shapes.dealias(te)),
+                TypeClass::Struct { .. } | TypeClass::Builtin(_)
+            );
             let bail = if is_struct { "return err.kind + \": \" + err.field;" } else { bail };
             s.push_str(&format!(
                 "        if i == {i} {{\n            {}            return \"\";\n        }}\n",

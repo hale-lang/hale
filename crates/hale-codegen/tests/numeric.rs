@@ -29,6 +29,8 @@ mod rand_primitives;
 mod struct_layout_with_i128;
 #[path = "time_now.rs"]
 mod time_now;
+#[path = "time_return.rs"]
+mod time_return;
 #[path = "unit_conversion_lowering.rs"]
 mod unit_conversion_lowering;
 #[path = "unit_quantity_lowering.rs"]

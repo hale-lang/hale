@@ -143,7 +143,7 @@ fn check(program: &Program, target: &ConfiguredTarget) -> Option<Checked> {
     let mut p = program.clone();
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut p],
-        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None, default_surface: "" },
     )
     .ok()?;
     let ids = hale_types::snapshot::mint([("", &mut p)], &[]);

@@ -425,7 +425,7 @@ fn causes_inner(
     if roots.is_empty() {
         return Vec::new();
     }
-    let summary = summary.own_rows();
+    let summary = summary.program_rows();
     let ffi: BTreeSet<String> = programs
         .iter()
         .flat_map(|p| p.items.iter())

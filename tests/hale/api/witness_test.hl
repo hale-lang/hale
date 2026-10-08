@@ -55,6 +55,10 @@ api Local {
     rpc Audit::ping;
 }
 
+api Gate {
+    rpc Hold::hold;
+}
+
 locus Tokens {
     fn principal(token: String) -> std::api::Principal {
         if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
@@ -129,6 +133,20 @@ locus Audit {
     }
 }
 
+// a receiver whose handler waits on a gate the test opens: the test decides
+// when the work completes, so the order of a lost connection and a completion
+// is the test's, never the runner's
+locus Hold {
+    params { gate: Int = 0; entered: Int = 0; finished: Int = 0; }
+    @unbounded
+    fn hold(p: Ping) -> Pong {
+        self.entered = self.entered + 1;
+        while self.gate == 0 { std::time::sleep(1ms); }
+        self.finished = self.finished + 1;
+        return Pong { n: p.n };
+    }
+}
+
 main locus Desk {
     params {
         bearer: Tokens = Tokens { };
@@ -139,10 +157,12 @@ main locus Desk {
         partner_orders: Orders = Orders { next: 9001 };
         ledger: Ledger = Ledger { };
         audit: Audit = Audit { };
+        hold: Hold = Hold { };
         public_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer, roles: self.public_roles };
         partner_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer, roles: self.partner_roles };
         admin_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
         local_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
+        gate_f: std::api::test::Rpc = std::api::test::Rpc { roles: self.admin_roles };
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
         answered_before_failure: Int = -1;
@@ -151,6 +171,15 @@ main locus Desk {
         orders: cooperative(pool = desk) where async_io;
         partner_orders: cooperative(pool = partner) where async_io;
         ledger: cooperative(pool = desk) where async_io;
+        hold: cooperative(pool = gate) where async_io;
+    }
+    fn await_entered(n: Int) {
+        let mut w = 0;
+        while self.hold.entered < n && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+    }
+    fn await_finished(n: Int) {
+        let mut w = 0;
+        while self.hold.finished < n && w < 3000 { std::time::sleep(1ms); w = w + 1; }
     }
     // the owner hears of a violation before the caller does
     on_failure(o: Orders, err: ClosureViolation) {
@@ -164,10 +193,12 @@ main locus Desk {
         let partner = api::serve(Public, self.partner_f, as: "partner", receivers: { Orders: self.partner_orders }, bound: 8, on_full: refuse);
         let admin = api::serve(Admin, self.admin_f, as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger }, bound: 8, on_full: refuse);
         let local = api::serve(Local, self.local_f, as: "local", bound: 8, on_full: refuse);
+        let gate = api::serve(Gate, self.gate_f, as: "gate", receivers: { Hold: self.hold }, bound: 1, on_full: refuse);
         let p = self.public_f;
         let q = self.partner_f;
         let a = self.admin_f;
         let l = self.local_f;
+        let g = self.gate_f;
         let order = "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}";
 
         // ---- the contract's digests ----
@@ -237,10 +268,41 @@ main locus Desk {
         std::test::assert_eq_str(a.await_outcome(31, 2000), "handler_error", "the handler's own error");
         std::test::assert(std::str::contains(a.line(31), "\"error\":{\"code\":\"unknown_order\",\"reason\":\"no order 999\"}"), "its body is OrderError by the codec");
         std::test::assert_eq_str(p.outcome(21), "refusal:unauthenticated", "a refusal");
-        p.call(32, "Orders::place", order, "t-alice");
-        p.lose(32);
-        std::time::sleep(50ms);
-        std::test::assert_eq_int(p.outcomes_of(32), 0, "a lost connection is the absence of a reply");
+
+        // ---- a lost connection: the rule, in both orders ----
+        // A reply for a request whose connection was lost before completion
+        // is dropped, and the transport is told the connection is finished
+        // with; a reply already written is not unwritten. `lose` returns
+        // once the exposure has marked the record (spec/api.md § The runtime
+        // boundaries) and the handler waits on the gate, so the order is the
+        // test's.
+        // lost before completion: no reply, the work ran once, the unit released once
+        g.call_as_peer(32, "Hold::hold", "{\"n\":1}", 1000);
+        self.await_entered(1);
+        g.lose(32);
+        self.hold.gate = 1;
+        self.await_finished(1);
+        let mut w = 0;
+        while g.closed < 1 && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+        std::test::assert_eq_int(g.outcomes_of(32), 0, "a lost connection is the absence of a reply");
+        std::test::assert_eq_int(self.hold.entered, 1, "the work ran once");
+        std::test::assert_eq_int(g.closed, 1, "and the transport was told the connection is finished with");
+        // the bound is 1: a unit released twice would admit the third call,
+        // one never released would refuse the second
+        self.hold.gate = 0;
+        g.call_as_peer(33, "Hold::hold", "{\"n\":2}", 1000);
+        self.await_entered(2);
+        g.call_as_peer(34, "Hold::hold", "{\"n\":3}", 1000);
+        std::test::assert_eq_str(g.await_outcome(34, 2000), "refusal:full", "the unit was released once: one call in flight, the next is over the bound");
+        self.hold.gate = 1;
+        std::test::assert_eq_str(g.await_outcome(33, 2000), "result", "and the call in flight answers");
+        // completion before lost: one reply, and a later loss changes nothing
+        g.call_as_peer(35, "Hold::hold", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(g.await_outcome(35, 2000), "result", "completed before the loss");
+        g.lose(35);
+        std::test::assert_eq_int(g.outcomes_of(35), 1, "a reply already written is not unwritten");
+        std::test::assert_eq_int(g.closed, 1, "and nothing is left to close");
+        std::test::assert_eq_int(self.hold.entered, 3, "the refused call never reached the handler");
 
         // ---- the description from the live sources agrees with admission ----
         p.describe(40, "t-alice");
@@ -286,6 +348,7 @@ main locus Desk {
         partner.stop();
         admin.stop();
         local.stop();
+        gate.stop();
     }
 }
 

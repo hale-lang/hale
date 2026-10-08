@@ -323,7 +323,7 @@ fn budget_report_inner(
 ) {
     // The program's own rows: a call into the stdlib's analysis copy
     // is the unresolved call the count has always treated it as.
-    let summary = summary.own_rows();
+    let summary = summary.program_rows();
     let mut diags = Vec::new();
     let mut rows = Vec::new();
     // Where each row's own diagnostics begin — how the grouped

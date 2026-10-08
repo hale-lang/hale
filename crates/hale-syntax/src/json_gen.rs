@@ -27,7 +27,7 @@ use crate::ast::{
     MatchStmt, OrDisposition, PrimType, Program, Stmt, TopDecl, TypeDeclBody,
     TypeExpr,
 };
-use crate::parse_source;
+use crate::{parse_source, Span};
 
 #[derive(Clone, Copy)]
 enum ScalarTy {
@@ -793,18 +793,59 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
 /// struct outside the set is left as a required nested field the
 /// generator cannot read, so callers pass the transitive closure.
 pub fn generate_api_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
-    generate_codecs(programs, main_idx, names, false);
+    generate_codecs(programs, main_idx, names, false, &[]);
 }
 
 /// GH #1417 (R2a): the codecs of a surface's rows. As
 /// [`generate_api_codecs`], and a field whose type is a scalar of the unit
 /// dialect (an identity, a range, a quantity) is read and written as its
-/// `Int` (spec/api.md § Codecs).
-pub fn generate_rpc_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
-    generate_codecs(programs, main_idx, names, true);
+/// `Int`, and one whose type is a plain alias as what the alias stands for
+/// (spec/api.md § Codecs). `builtins` are the builtin records in `names`
+/// (`IndexError`, …), each with the primitive fields the contract shape
+/// renders: no declaration carries them, so the caller names them.
+pub fn generate_rpc_codecs(
+    programs: &mut [&mut Program],
+    main_idx: usize,
+    names: &[String],
+    builtins: &[(String, Vec<(String, PrimType)>)],
+) {
+    generate_codecs(programs, main_idx, names, true, builtins);
 }
 
-fn generate_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String], units: bool) {
+/// The plain aliases a bundle declares (`type Count = Int;`), by name.
+fn collect_aliases(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, TypeExpr>) {
+    for item in items {
+        match item {
+            TopDecl::Type(td) => {
+                if let TypeDeclBody::Alias(t) = &td.body {
+                    out.insert(td.name.name.clone(), t.clone());
+                }
+            }
+            TopDecl::Module(m) => collect_aliases(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// What an alias chain ends at: `te` when it names no alias.
+fn through_aliases(te: &TypeExpr, aliases: &std::collections::BTreeMap<String, TypeExpr>) -> TypeExpr {
+    let mut cur = te.clone();
+    for _ in 0..=aliases.len() {
+        match named_single(&cur).and_then(|n| aliases.get(n)) {
+            Some(next) => cur = next.clone(),
+            None => break,
+        }
+    }
+    cur
+}
+
+fn generate_codecs(
+    programs: &mut [&mut Program],
+    main_idx: usize,
+    names: &[String],
+    units: bool,
+    builtins: &[(String, Vec<(String, PrimType)>)],
+) {
     let wanted: HashSet<String> = names.iter().cloned().collect();
     let mut types: Vec<JsonType> = Vec::new();
     let mut have_jsonerror = false;
@@ -815,13 +856,36 @@ fn generate_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[Stri
     } else {
         std::collections::BTreeMap::new()
     };
+    let mut aliases = std::collections::BTreeMap::new();
+    if units {
+        for p in programs.iter() {
+            collect_aliases(&p.items, &mut aliases);
+        }
+    }
     for p in programs.iter() {
-        collect_api_types(&p.items, &wanted, &scalars, &mut types);
+        collect_api_types(&p.items, &wanted, &scalars, &aliases, &mut types);
         walk_fns(&p.items, &mut |name| {
             existing_fns.insert(name.to_string());
         });
         if items_declare_type(&p.items, "JsonError") {
             have_jsonerror = true;
+        }
+    }
+    for (name, fields) in builtins {
+        let jfields: Option<Vec<JsonField>> = fields
+            .iter()
+            .map(|(f, p)| {
+                scalar_of(&TypeExpr::Primitive(*p, Span::new(0, 0))).map(|s| JsonField {
+                    name: f.clone(),
+                    key: f.clone(),
+                    kind: FieldKind::Scalar(s),
+                    default_src: None,
+                    conv: None,
+                })
+            })
+            .collect();
+        if let (Some(fields), false) = (jfields, types.iter().any(|t| &t.name == name)) {
+            types.push(JsonType { name: name.clone(), fields });
         }
     }
     let mut src = String::new();
@@ -872,6 +936,7 @@ fn collect_api_types(
     items: &[TopDecl],
     wanted: &HashSet<String>,
     scalars: &std::collections::BTreeMap<String, Conv>,
+    aliases: &std::collections::BTreeMap<String, TypeExpr>,
     out: &mut Vec<JsonType>,
 ) {
     for item in items {
@@ -887,13 +952,15 @@ fn collect_api_types(
                 let mut jfields = Vec::new();
                 for f in fields {
                     let mut conv = None;
-                    let kind = if let Some(s) = scalar_of(&f.ty) {
+                    // a field typed by a plain alias is what the alias stands for
+                    let ty = through_aliases(&f.ty, aliases);
+                    let kind = if let Some(s) = scalar_of(&ty) {
                         FieldKind::Scalar(s)
-                    } else if let Some(c) = named_single(&f.ty).and_then(|tn| scalars.get(tn)) {
+                    } else if let Some(c) = named_single(&ty).and_then(|tn| scalars.get(tn)) {
                         // a scalar of the unit dialect: its `Int` on the wire
                         conv = Some(c.clone());
                         FieldKind::Scalar(ScalarTy::Int)
-                    } else if let Some(tn) = named_single(&f.ty) {
+                    } else if let Some(tn) = named_single(&ty) {
                         FieldKind::Nested(tn.to_string())
                     } else {
                         continue;
@@ -912,7 +979,7 @@ fn collect_api_types(
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields });
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, out),
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, out),
             _ => {}
         }
     }

@@ -489,7 +489,7 @@ fn quantitative_report(
     // RESOLVES (the summary read the rename table), or its costs would
     // vanish behind the seed boundary; a call into the stdlib's
     // analysis copy is the unresolved call it has always been here.
-    let summary = summary.own_rows();
+    let summary = summary.program_rows();
     let frames = frame_map(programs);
     let classes = crate::effect_classes::EffectClassTable::of(programs);
     let mut diags = Vec::new();

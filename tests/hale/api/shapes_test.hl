@@ -1,0 +1,109 @@
+// GH #1417 (R2a) — a plain alias and a builtin record are served.
+//
+// `type Count = Int;` crosses the wire as the `Int` it stands for, an alias
+// of an alias or of an identity likewise, and a builtin record (`IndexError`)
+// as the fields the description gives it (`Shapes::builtin_fields`): one
+// shape for the schema, the contract digest and the decoder. Each is served
+// and called with a valid payload and with a wrong-shaped one, which is
+// refused `malformed` before the handler.
+
+unit cent;
+type OrderId = distinct Int;
+type Count = Int;
+type Total = Count;
+type Label = String;
+type Seat = OrderId;
+
+type Wrapped { n: Count; why: IndexError; label: Label; seat: Seat; }
+
+api Shapes {
+    rpc Probe::count;
+    rpc Probe::total;
+    rpc Probe::label;
+    rpc Probe::seat;
+    rpc Probe::index;
+    rpc Probe::wrap;
+}
+
+locus Probe {
+    params { entered: Int = 0; }
+    fn count(c: Count) -> Count {
+        self.entered = self.entered + 1;
+        return c;
+    }
+    fn total(t: Total) -> Total {
+        self.entered = self.entered + 1;
+        return t;
+    }
+    fn label(l: Label) -> Label {
+        self.entered = self.entered + 1;
+        return l;
+    }
+    fn seat(s: Seat) -> Seat {
+        self.entered = self.entered + 1;
+        return s;
+    }
+    fn index(e: IndexError) -> IndexError {
+        self.entered = self.entered + 1;
+        return e;
+    }
+    fn wrap(w: Wrapped) -> Wrapped {
+        self.entered = self.entered + 1;
+        return w;
+    }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        f: std::api::test::Rpc = std::api::test::Rpc { };
+    }
+
+    fn refused(id: Int, member: String, body: String, what: String) {
+        let before = self.probe.entered;
+        self.f.call_as_peer(id, member, body, 1000);
+        std::test::assert_eq_str(self.f.await_outcome(id, 2000), "refusal:malformed", what);
+        std::time::sleep(5ms);
+        std::test::assert_eq_int(self.probe.entered, before, what + ": the handler never ran");
+    }
+
+    fn ran(id: Int, member: String, body: String, value: String, what: String) {
+        let before = self.probe.entered;
+        self.f.call_as_peer(id, member, body, 1000);
+        std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
+        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value");
+        std::test::assert_eq_int(self.probe.entered, before + 1, what + ": the handler ran once");
+    }
+
+    run() {
+        let h = api::serve(Shapes, self.f, as: "shapes", receivers: { Probe: self.probe }, bound: 8, on_full: refuse);
+        let index = "{\"kind\":\"short\",\"index\":3,\"len\":2}";
+        let wrapped = "{\"n\":5,\"why\":" + index + ",\"label\":\"x\",\"seat\":9}";
+
+        // ---- an alias is what it stands for ----
+        self.ran(1, "Probe::count", "42", "42", "an alias of Int");
+        self.refused(2, "Probe::count", "\"42\"", "a string to an alias of Int");
+        self.refused(3, "Probe::count", "4.5", "a float to an alias of Int");
+        self.ran(4, "Probe::total", "7", "7", "an alias of an alias");
+        self.refused(5, "Probe::total", "true", "a Bool to an alias of an alias");
+        self.ran(6, "Probe::label", "\"hi\"", "\"hi\"", "an alias of String");
+        self.refused(7, "Probe::label", "5", "a number to an alias of String");
+        self.ran(8, "Probe::seat", "11", "11", "an alias of an identity, by its count");
+        self.refused(9, "Probe::seat", "\"11\"", "a string to an alias of an identity");
+
+        // ---- a builtin record is its fields ----
+        self.ran(10, "Probe::index", index, index, "a builtin record");
+        self.refused(11, "Probe::index", "{\"kind\":\"short\",\"index\":\"3\",\"len\":2}", "a field of the wrong kind");
+        std::test::assert(std::str::contains(self.f.line(11), "wrong_type: index"), "named by its field");
+        self.refused(12, "Probe::index", "{\"kind\":\"short\",\"index\":3}", "a field missing");
+        std::test::assert(std::str::contains(self.f.line(12), "missing_field: len"), "named by its field");
+        self.refused(13, "Probe::index", "7", "a scalar where the record is");
+
+        // ---- both in a struct ----
+        self.ran(14, "Probe::wrap", wrapped, wrapped, "a struct with an alias, a builtin record and an alias of an identity");
+        self.refused(15, "Probe::wrap", "{\"n\":\"5\",\"why\":" + index + ",\"label\":\"x\",\"seat\":9}", "its alias field of the wrong kind");
+        self.refused(16, "Probe::wrap", "{\"n\":5,\"why\":{\"kind\":\"short\",\"index\":\"3\",\"len\":2},\"label\":\"x\",\"seat\":9}", "its builtin field of the wrong shape");
+    }
+}
+
+fn main() { Desk { }; }

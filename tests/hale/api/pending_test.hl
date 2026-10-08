@@ -1,0 +1,117 @@
+// GH #1417 (R2a) — the pending table holds outstanding work only.
+//
+// An exposure keeps a record for each request accepted and not yet
+// answered. A completed request's record is freed for the next one, so the
+// table is never longer than the bound, however many requests have been
+// served; a request's id is its own (it only grows, whichever record it
+// takes), and the queue runs in the order of the ids, never of the records.
+//
+//   * `bound: 1`, many sequential completed calls: the table holds at most
+//     one record, and the ids of the calls are distinct and increasing;
+//   * a record that was freed and taken again is found by a lost connection
+//     (the work runs once, the reply is dropped, the transport hears
+//     `close_connection` once);
+//   * a request that takes an early, freed record still runs after the ones
+//     queued before it.
+
+api Quick {
+    rpc Quick::echo;
+}
+
+api Slow {
+    rpc Slow::go;
+}
+
+locus Quick {
+    fn echo(n: Int) -> Int { return n; }
+}
+
+// runs a call when the test's counter reaches its number, so the test
+// decides when each call completes
+locus Slow {
+    params { gate: Int = 0; entered: Int = 0; order: String = ""; }
+    @unbounded
+    fn go(n: Int) -> Int {
+        self.entered = self.entered + 1;
+        while self.gate < n { std::time::sleep(1ms); }
+        self.order = self.order + to_string(n) + ",";
+        return n;
+    }
+}
+
+main locus Desk {
+    params {
+        quick: Quick = Quick { };
+        slow: Slow = Slow { };
+        quick_f: std::api::test::Rpc = std::api::test::Rpc { };
+        slow_f: std::api::test::Rpc = std::api::test::Rpc { };
+    }
+    placement {
+        slow: cooperative(pool = slow) where async_io;
+    }
+
+    fn await_entered(n: Int) {
+        let mut w = 0;
+        while self.slow.entered < n && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+    }
+
+    run() {
+        let q = api::serve(Quick, self.quick_f, as: "quick", receivers: { Quick: self.quick }, bound: 1, on_full: refuse);
+        let s = api::serve(Slow, self.slow_f, as: "slow", receivers: { Slow: self.slow }, bound: 3, on_full: refuse);
+        let f = self.quick_f;
+        let g = self.slow_f;
+
+        // ---- many sequential completed calls, bound 1 ----
+        let mut i = 1;
+        let mut last = 0;
+        let mut increasing = true;
+        let mut widest = 0;
+        while i <= 24 {
+            f.call_as_peer(i, "Quick::echo", to_string(i), 1000);
+            std::test::assert_eq_str(f.await_outcome(i, 2000), "result", "call " + to_string(i) + " completes");
+            let rid = f.request_id(i);
+            if rid <= last { increasing = false; }
+            last = rid;
+            let held = self.__rpc_x_quick.table_len();
+            if held > widest { widest = held; }
+            i = i + 1;
+        }
+        std::test::assert(increasing, "the request ids of 24 sequential calls are distinct and increasing");
+        std::test::assert_eq_int(self.__rpc_x_quick.pending(), 0, "nothing is pending once they are answered");
+        std::test::assert_eq_int(widest, 1, "the table never held more than the bound");
+        std::test::assert_eq_int(self.__rpc_x_quick.table_len(), 1, "and does not grow with the calls served");
+
+        // ---- a freed record is taken again; the queue keeps the ids' order ----
+        g.call_as_peer(101, "Slow::go", "1", 1000);
+        self.await_entered(1);
+        g.call_as_peer(102, "Slow::go", "2", 1000);
+        g.call_as_peer(103, "Slow::go", "3", 1000);
+        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "three requests, three records");
+        self.slow.gate = 1;
+        std::test::assert_eq_str(g.await_outcome(101, 2000), "result", "the first answers");
+        self.await_entered(2);
+        // the first record is free, the second call is running, the third queued
+        g.call_as_peer(104, "Slow::go", "4", 1000);
+        std::test::assert_eq_int(self.__rpc_x_slow.pending(), 3, "the fourth is admitted: three accepted and not answered");
+        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "in the record the first left");
+        self.slow.gate = 4;
+        std::test::assert_eq_str(g.await_outcome(104, 2000), "result", "the fourth answers");
+        std::test::assert(g.request_id(104) > g.request_id(103), "with an id after the third's, whichever record it took");
+        std::test::assert_eq_str(self.slow.order, "1,2,3,4,", "and ran after the two queued before it, whatever record it took");
+
+        // ---- a lost connection finds its record, taken again ----
+        g.call_as_peer(105, "Slow::go", "500", 1000);
+        self.await_entered(5);
+        g.lose(105);
+        self.slow.gate = 500;
+        let mut w = 0;
+        while g.closed < 1 && w < 3000 { std::time::sleep(1ms); w = w + 1; }
+        std::test::assert_eq_int(g.closed, 1, "the transport was told the connection is finished with, once");
+        std::test::assert_eq_int(g.outcomes_of(105), 0, "and there is no reply");
+        std::test::assert_eq_str(self.slow.order, "1,2,3,4,500,", "the work ran once");
+        std::test::assert_eq_int(self.__rpc_x_slow.pending(), 0, "the record was freed");
+        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "and the table is still no longer than the bound");
+    }
+}
+
+fn main() { Desk { }; }

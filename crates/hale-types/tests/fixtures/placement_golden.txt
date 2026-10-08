@@ -580,7 +580,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#35cbc277
+== crates/hale-stdlib/hl/api_rpc.hl#5a0c3dee
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -5889,6 +5889,22 @@ row	App@literal1.b	Holder	main	default
 dynamic	Holder	on main
 dynamic	Zub	on main
 
+== tests/hale/api/alias_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.echo	__lib_tests__hale__api__surface_lib___main__Echo	main	default
+row	Desk@literal1.local	Local	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
+== tests/hale/api/combo_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.local	Local	main	default
+row	Desk@literal1.other	Other	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/identity_test.hl
 root	App	the entry
 domain	pool:work	async_io
@@ -5906,6 +5922,14 @@ domain	pool:work2	async_io
 row	App@literal1	App	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
+== tests/hale/api/pending_test.hl
+root	Desk	the entry
+domain	pool:slow	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.quick	Quick	main	default
+row	Desk@literal1.slow	Slow	pool:slow	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/placement_test.hl
@@ -5947,6 +5971,26 @@ row	~.revised	Revised	main	inherited
 dynamic	__StdApiNoBearer	on main
 dynamic	__StdApiStaticRoles	on main
 
+== tests/hale/api/scalars_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.sink	Sink	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
+== tests/hale/api/shapes_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.probe	Probe	main	default
+dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
+== tests/hale/api/surface_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.echo	__lib_tests__hale__api__surface_lib___main__Echo	main	default
+row	Desk@literal1.local	Local	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/teardown_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -5970,10 +6014,12 @@ dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved decla
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:partner	async_io
+domain	pool:gate	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.admin_roles	Grants	main	default
 row	Desk@literal1.audit	Audit	main	default
 row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.hold	Hold	pool:gate	entry	off owner
 row	Desk@literal1.ledger	Ledger	pool:desk	entry	off owner
 row	Desk@literal1.orders	Orders	pool:desk	entry	off owner
 row	Desk@literal1.partner_orders	Orders	pool:partner	entry	off owner
@@ -6345,6 +6391,9 @@ row	App@literal1.run_owner	RunOwner	main	default
 -- dynamic	sites in the seed
 dynamic	Ender	on main
 dynamic	Parent	on main
+
+== tests/hale/time_return_test.hl
+row	Clock@main1	Clock	main	default
 
 == tests/hale/type_alias_test.hl
 row	Holder@main1	Holder	main	default

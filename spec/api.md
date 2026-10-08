@@ -596,6 +596,18 @@ through this one path.
 | **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
 | **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
 
+**A lost connection.** A reply for a request whose connection was lost
+before the request completed is dropped: completion (`finish`) sees the
+lost mark, delivers nothing, and tells the transport the connection is
+finished with (`close_connection`, once). A reply already written before
+the loss is not unwritten: the record is gone, the later loss finds
+nothing, and `close_connection` is not called. Either way the work ran
+once and the unit of the bound is released once. The fixture transport's
+`lose(correlation)` is synchronous with the mark: it returns once the
+exposure has handled the loss, so a test that gates its handler and opens
+the gate after `lose` holds the first order, and one that lets the handler
+complete first holds the second, whatever the runner's speed.
+
 **The runtime is part of a program only when it serves.** Every stdlib
 declaration is lowered into every program, so the runtime of this
 section (`api_rpc.hl`: the types below, the `Exposure`, the fixture
@@ -684,7 +696,10 @@ whatever the transport does with its connection in between. A request
 reaches one terminal outcome (an outcome delivered, an outcome dropped
 because the connection was lost, or a refusal), and the record is
 removed and the unit of the bound released exactly once, in that one
-place; a second event for the same request id finds no record and does
+place (the table holds accepted requests and nothing else: a removed
+record's place is taken by the next request, so it is never longer than
+the bound, and the queue runs in the order of the request ids, not of the
+places); a second event for the same request id finds no record and does
 nothing.
 
 **Shutdown.** `stop()` (idempotent) closes admission (a request received
@@ -1117,14 +1132,21 @@ correlation field, the largest frame) are R5's.
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
 binding's was: `Int`, `Float`, `Bool`, `String` and nested structs of
-the same, with a `json:"key"` tag renaming a key; an identity, a range
+the same, with a `json:"key"` tag renaming a key; a plain alias
+(`type Count = Int;`) is what its chain ends at, and a builtin record
+(`IndexError`) its fields as the description gives them; an identity, a range
 and a quantity are their integer (`spec/units.md` § Layout and the
 wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
 refused by law 5. Decoding is strict: a value of the wrong JSON kind is
-`wrong_type`, a
+`wrong_type`
+(a payload that is one scalar is that scalar's complete JSON token: `true`
+or `false` for a `Bool`, one quoted and correctly escaped string for a
+`String`, a number for a `Float`, a number with no fraction or exponent for
+an `Int` and for the integer a unit scalar counts; anything else is
+refused before the request is queued), a
 missing field without a literal default is `missing_field`, and a
 handler only ever sees a decoded value. A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),

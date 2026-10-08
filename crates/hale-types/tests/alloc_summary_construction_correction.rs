@@ -618,8 +618,9 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/identities_and_ranges_test.hl` is one more again; 83:
     // U3's `tests/hale/unit_quantities_test.hl`; 88: U5's five acceptance
     // programs, `tests/hale/units_{identities,money,temperature,ticks,time}_test.hl`;
-    // 89: `tests/hale/float_widening_surfaces_test.hl`.
-    assert_eq!(moved, 89, "the run-to-exit programs among the targets");
+    // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
+    // `tests/hale/time_return_test.hl`.
+    assert_eq!(moved, 90, "the run-to-exit programs among the targets");
     assert_eq!(
         more,
         [

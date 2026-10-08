@@ -1738,6 +1738,8 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
     ) {
         for item in items {
             match item {
+                TopDecl::Fn(fd) if crate::rpc_expand::is_runtime_pos(fd.name.span.start.0) => {}
+                TopDecl::Locus(l) if crate::rpc_expand::is_runtime_pos(l.name.span.start.0) => {}
                 TopDecl::Fn(fd) => push(
                     format!("{}{}", prefix, fd.name.name),
                     fd,
@@ -1837,6 +1839,10 @@ pub fn effect_manifest_with_inference(
         let in_module = !prefix.is_empty();
         for item in items {
             match item {
+                // The appended api runtime is stdlib source: the manifest
+                // is the program's.
+                TopDecl::Fn(fd) if crate::rpc_expand::is_runtime_pos(fd.name.span.start.0) => {}
+                TopDecl::Locus(l) if crate::rpc_expand::is_runtime_pos(l.name.span.start.0) => {}
                 TopDecl::Fn(fd) => {
                     let n = format!("{}{}", prefix, fd.name.name);
                     let row = (!in_module).then(|| FnKey::free_fn(DeclId::user(fd.id), n.clone()));
