@@ -1,0 +1,88 @@
+// The program the generic clients are held against (`hale describe`, `call`,
+// `watch`, `admin` and `mcp --app`; crates/hale-cli/tests/api_clients.rs).
+// One surface, `Books`, served over the Unix socket, over HTTP and over MCP,
+// and one stream, `Ticks`, through a hub; the test fills in the addresses
+// (`@SOCK@`, `@HTTP@`, `@MCP@`, `@HUB@`) and the Unix operator (`@TRADER@`).
+//
+// Over the socket the caller holds `trader` when it is the test's own uid;
+// over HTTP and the hub the bearer `t-alice` is `alice`, who holds `trader`
+// and `operator`, and `t-bob` is `bob`, who holds neither.
+
+role trader;
+role operator;
+
+type Add { n: Int; }
+type Total { total: Int; }
+type Tick { n: Int; }
+type Oops { code: String; reason: String; }
+
+topic Ticks { payload: Tick; subject: "clients.ticks"; }
+
+api Books {
+    rpc Counter::add requires: [trader];
+    rpc Counter::peek;
+    rpc Counter::fail;
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        if token == "t-bob" { return std::api::Principal { mode: "bearer", name: "bob" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Grants {
+    params {
+        trader: String = "";
+        operator: String = "";
+    }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if r == "trader" { return len(self.trader) > 0 && p.name == self.trader; }
+        if r == "operator" { return len(self.operator) > 0 && p.name == self.operator; }
+        return false;
+    }
+}
+
+locus Counter {
+    params { total: Int = 0; }
+    bus { publish Ticks; }
+    fn add(a: Add) -> Total {
+        self.total = self.total + a.n;
+        Ticks <- Tick { n: self.total };
+        return Total { total: self.total };
+    }
+    fn peek(a: Add) -> Total { return Total { total: self.total }; }
+    fn fail(a: Add) -> Total fallible(Oops) {
+        if a.n >= 0 { fail Oops { code: "nope", reason: "this member always fails" }; }
+        return Total { total: 0 };
+    }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        unix_roles: Grants = Grants { trader: "@TRADER@" };
+        http_roles: Grants = Grants { trader: "alice" };
+        hub_roles: Grants = Grants { operator: "alice" };
+        counter: Counter = Counter { };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:@HUB@", principals: self.bearer, roles: self.hub_roles, as: "ticks" };
+    }
+    placement { counter: cooperative(pool = desk) where async_io; }
+    bindings {
+        Ticks: self.hub requires: [operator], bound: 16, on_full: drop_old;
+    }
+    run() {
+        let local = api::serve(Books, unix::Rpc { path: "@SOCK@", roles: self.unix_roles }, as: "local", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        let web = api::serve(Books, http::Rpc { bind: "127.0.0.1:@HTTP@", codec: json, principals: self.bearer, roles: self.http_roles }, as: "web", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        let agent = api::serve(Books, mcp::Rpc { bind: "127.0.0.1:@MCP@", principals: self.bearer, roles: self.http_roles }, as: "agent", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        local.stop();
+        web.stop();
+        agent.stop();
+        self.hub.stop();
+    }
+}
+
+fn main() { Desk { }; }

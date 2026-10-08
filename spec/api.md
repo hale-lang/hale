@@ -569,12 +569,15 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   (a reader that does not read for 5 seconds) end that connection: the
   requests it still has with the exposure are lost (§ The request
   lifecycle), and the listener and every other connection go on.
-- **`describe`** answers `{"ok": true, "value": <description>}`: the
-  exposure's identity, the caller the exposure established, and the members
-  that caller may call under the exposure's role source, from the same
-  rows and the same sources admission reads, so the two agree for the same
-  caller. (The listener, schemas and notes of the full document of § The
-  description are not in the live document yet.)
+- **`describe`** answers `{"ok": true, "value": <description>}`: the whole
+  document of § The description for the caller the exposure established
+  (the peer's kernel credentials, `mode: "unix"`), the document HTTP
+  answers: the exposure's identity, its listener (`unix` and the `path:`
+  text), the roles that caller holds, the members it may call under the
+  exposure's role source with their schemas, the outcome encoding of this
+  section and the notes, built from the same rows and the same sources
+  admission reads, so the two agree for the same caller. The in-process
+  fixture transport answers the same document, its listener `test`.
 - **`stop()`** closes the listener and every connection after the replies
   already sent: the queued requests are refused `shutting_down` and the
   executing ones are answered first, as § The request lifecycle states.
@@ -915,10 +918,11 @@ failure, never a refusal (it may have run).
 exposure's live sources: the members the caller's `Context` may call
 (`requires` held under this exposure's role source), by the rows the
 admission checks read, so a description and an admission of the same
-caller agree. The full document of § The description is what
-`hale check --api` prints from the rows; the exposure's live answer
-carries the identity, the caller and the members, and the schemas stay
-the document's.
+caller agree. The exposure's live answer is the full document of § The
+description for that caller, on every transport: the one the exposure
+builds from its rows, filtered by the sources; `hale check --api
+--exposure NAME --caller P --holds R` prints the same document from the
+rows alone.
 
 ## Identity sources
 

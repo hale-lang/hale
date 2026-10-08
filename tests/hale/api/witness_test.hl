@@ -308,8 +308,12 @@ main locus Desk {
         p.describe(40, "t-alice");
         p.describe(41, "t-bob");
         std::test::assert_eq_str(p.await_outcome(41, 2000), "result", "a description is a result");
-        std::test::assert(std::str::contains(p.line(40), "{\"name\":\"Orders::cancel\",\"requires\":[\"trader\"]}"), "alice may call cancel");
-        std::test::assert(std::str::contains(p.line(40), "{\"name\":\"Orders::place\",\"requires\":[]}"), "and place");
+        std::test::assert(std::str::contains(p.line(40), "\"name\":\"Orders::cancel\""), "alice may call cancel");
+        std::test::assert(std::str::contains(p.line(40), "\"requires\":[\"trader\"]"), "under trader");
+        std::test::assert(std::str::contains(p.line(40), "\"name\":\"Orders::place\""), "and place");
+        std::test::assert(std::str::contains(p.line(40), "\"listener\":{\"transport\":\"test\""), "the whole document: the listener");
+        std::test::assert(std::str::contains(p.line(40), "\"roles\":[\"trader\"]"), "the roles alice holds");
+        std::test::assert(std::str::contains(p.line(40), "\"schemas\":{\"CancelOrder\""), "and the schemas the members reach");
         std::test::assert(!std::str::contains(p.line(41), "Orders::cancel"), "bob may not call cancel, so it is not listed");
         std::test::assert(std::str::contains(p.line(41), "Orders::place"), "he may call place");
         std::test::assert(std::str::contains(p.line(41), "Public@fnv1a64:a8930d6e7998e986/public"), "the exposure's identity: surface, digest, name");

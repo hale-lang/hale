@@ -706,9 +706,23 @@ fn a_description_agrees_with_admission_for_the_same_caller() {
     let d_partner = partner.ask("{\"describe\":true,\"id\":\"d\"}");
     assert!(d_public.contains("\"exposure\":\"Public@fnv1a64:") && d_public.contains("/public\""), "{d_public}");
     assert!(d_partner.contains("/partner\""), "{d_partner}");
-    assert!(d_public.contains("{\"name\":\"Orders::cancel\",\"requires\":[\"operator\"]}"), "the operator may call cancel: {d_public}");
-    assert!(d_public.contains("{\"name\":\"Orders::place\",\"requires\":[]}"), "{d_public}");
-    assert!(!d_partner.contains("Orders::cancel") && d_partner.contains("Orders::place"), "partner may not: {d_partner}");
+    // the whole document (spec/api.md § The description): the members this
+    // caller may call, each with its `requires`
+    let members = |d: &str| -> Vec<(String, Vec<String>)> {
+        let v: serde_json::Value = serde_json::from_str(d).expect("json");
+        v["value"]["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .map(|m| {
+                let requires = m["requires"].as_array().unwrap().iter().map(|r| r.as_str().unwrap().to_string()).collect();
+                (m["name"].as_str().unwrap().to_string(), requires)
+            })
+            .collect()
+    };
+    assert!(members(&d_public).contains(&("Orders::cancel".to_string(), vec!["operator".to_string()])), "the operator may call cancel: {d_public}");
+    assert!(members(&d_public).contains(&("Orders::place".to_string(), vec![])), "{d_public}");
+    assert!(members(&d_partner).iter().all(|m| m.0 != "Orders::cancel") && members(&d_partner).iter().any(|m| m.0 == "Orders::place"), "partner may not: {d_partner}");
     // and admission says the same
     let c1 = public.ask(&call("Orders::cancel", "{\"order\":999}", "c"));
     assert!(c1.contains("\"error\":{\"code\":\"unknown_order\""), "admitted (the handler ran): {c1}");

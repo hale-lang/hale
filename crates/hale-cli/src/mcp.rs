@@ -493,55 +493,169 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
 }
 
 
-// ---- GH #1107: a running program's api binding as tools and resources ----
+// ---- GH #1107, #1417 (R4 C): a served exposure as tools ----
 
-/// `hale mcp --app <socket>`: the same stdio transport, but the tools
-/// are the program's commands and the resources its reads, read from
-/// the description the binding serves. A tool call is one `call`
-/// through the socket; its text is the answer's value, or the
-/// refusal with `isError`. Streams have no MCP shape; the server's
-/// instructions name them for `hale watch`.
-pub fn run_mcp_app(sock: &str) -> ExitCode {
-    use crate::api_client::{answer_value, mcp as mcp_form, tool_name, Client};
-    let desc = match Client::connect(sock).and_then(|mut c| c.describe()) {
+/// The tools of a description: a tool per member the caller may call,
+/// named as `hale check --api --mcp` names it (`surface_doc::tool_name`),
+/// its input the request's schema made self-contained (the types it
+/// reaches under `$defs`), `x-hale-requires` the roles. A member whose
+/// request is not an object has no tool, as over `mcp::Rpc`: the wrapped
+/// form needs the handler's parameter name, which a description does not
+/// carry.
+fn tools_of(doc: &Value) -> Vec<(String, String, Value)> {
+    let schemas = doc.get("schemas").and_then(Value::as_object);
+    let surface = doc.get("surface").and_then(Value::as_str).unwrap_or("the surface");
+    let mut tools = Vec::new();
+    for m in doc.get("members").and_then(Value::as_array).into_iter().flatten() {
+        let Some(name) = m.get("name").and_then(Value::as_str) else { continue };
+        let Some(req) = m.get("request") else { continue };
+        let Some(input) = self_contained(req, schemas) else { continue };
+        let requires: Vec<&str> = m
+            .get("requires")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let needs = if requires.is_empty() { "Requires no role".to_string() } else { format!("Requires {}", requires.join(", ")) };
+        let tool_name = hale_types::surface_doc::tool_name(name);
+        let tool = json!({
+            "name": tool_name,
+            "description": format!(
+                "rpc {} of {}. {} under the exposure's role source; the server still authorizes every request.",
+                name, surface, needs
+            ),
+            "inputSchema": input,
+            "x-hale-requires": requires,
+        });
+        tools.push((tool_name, name.to_string(), tool));
+    }
+    tools
+}
+
+/// `#/schemas/T` references rewritten to `#/$defs/T`.
+fn defs_refs(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, x)| match (k.as_str(), x.as_str().and_then(|s| s.strip_prefix("#/schemas/"))) {
+                    ("$ref", Some(t)) => (k.clone(), json!(format!("#/$defs/{}", t))),
+                    _ => (k.clone(), defs_refs(x)),
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(defs_refs).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The `#/$defs/T` names a schema refers to.
+fn def_names(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            if let Some(t) = m.get("$ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("#/$defs/")) {
+                out.push(t.to_string());
+            }
+            m.values().for_each(|x| def_names(x, out));
+        }
+        Value::Array(a) => a.iter().for_each(|x| def_names(x, out)),
+        _ => {}
+    }
+}
+
+/// A request schema as an MCP input schema: an object whose referenced
+/// types ride in `$defs`; `None` for a request that is not an object.
+fn self_contained(req: &Value, schemas: Option<&serde_json::Map<String, Value>>) -> Option<Value> {
+    let root_name = req.get("$ref").and_then(Value::as_str).and_then(|s| s.strip_prefix("#/schemas/"));
+    let mut root = match root_name {
+        Some(n) => defs_refs(schemas?.get(n)?),
+        None => defs_refs(req),
+    };
+    if root.get("type") != Some(&json!("object")) {
+        return None;
+    }
+    let mut defs = serde_json::Map::new();
+    let mut todo = Vec::new();
+    def_names(&root, &mut todo);
+    while let Some(t) = todo.pop() {
+        if defs.contains_key(&t) || Some(t.as_str()) == root_name {
+            continue;
+        }
+        let Some(s) = schemas.and_then(|m| m.get(&t)) else { continue };
+        let s = defs_refs(s);
+        def_names(&s, &mut todo);
+        defs.insert(t, s);
+    }
+    if !defs.is_empty() {
+        root.as_object_mut()?.insert("$defs".to_string(), Value::Object(defs));
+    }
+    Some(root)
+}
+
+/// `hale mcp --app <endpoint> [--token T]`: the same stdio transport, but
+/// the tools are the members of the exposure's description for the caller
+/// the endpoint names. A tool call is one call through the endpoint,
+/// naming the digest of the description read at start; its text is the
+/// response, or the handler error or refusal with `isError`. An
+/// `mcp://host:port` endpoint is an `mcp::Rpc` listener: its tools are its
+/// own `tools/list` and the bridge forwards the JSON-RPC.
+pub fn run_mcp_app(args: &[String]) -> ExitCode {
+    use crate::api_client::{call, fetch_description, member_names, stream_topics, Endpoint, Kind};
+    let mut args = args.to_vec();
+    let token = match args.iter().position(|a| a == "--token") {
+        Some(i) if i + 1 < args.len() => {
+            let t = args.remove(i + 1);
+            args.remove(i);
+            Some(t)
+        }
+        Some(_) => {
+            eprintln!("hale mcp --app: --token requires a value");
+            return ExitCode::from(2);
+        }
+        None => std::env::var("HALE_API_TOKEN").ok().filter(|t| !t.is_empty()),
+    };
+    let [target] = args.as_slice() else {
+        eprintln!("usage: hale mcp --app <endpoint> [--token T]");
+        return ExitCode::from(2);
+    };
+    let ep = match Endpoint::parse(target) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("hale mcp --app: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    if let Endpoint::Mcp(hp) = &ep {
+        return bridge_mcp(hp, token.as_deref());
+    }
+    let raw = match fetch_description(&ep, token.as_deref()) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("hale mcp --app: {}", e);
             return ExitCode::from(1);
         }
     };
-    let form = mcp_form(&desc);
-    let tools = form.get("tools").cloned().unwrap_or_else(|| json!([]));
-    let resources = form.get("resources").cloned().unwrap_or_else(|| json!([]));
-    let app = desc.get("app").and_then(Value::as_str).unwrap_or("app").to_string();
-    // Tool name -> topic name, since a cross-seed topic's `::` is
-    // outside the characters a tool name may use.
-    let topics: Vec<String> = desc
-        .get("commands")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_string)).collect())
-        .unwrap_or_default();
-    let reads: Vec<String> = desc
-        .get("reads")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_string)).collect())
-        .unwrap_or_default();
-    let streams: Vec<String> = form
-        .get("streams")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    let notes = desc.get("notes").cloned().unwrap_or(Value::Null);
+    let doc: Value = match serde_json::from_str(&raw) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("hale mcp --app: the description is not JSON: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    let tools = tools_of(&doc);
+    let list: Vec<Value> = tools.iter().map(|t| t.2.clone()).collect();
+    let digest = doc.get("digest").and_then(Value::as_str).map(str::to_string);
+    let exposure = doc.get("exposure").and_then(Value::as_str).unwrap_or("the exposure").to_string();
+    let streams = stream_topics(&doc);
+    let skipped: Vec<String> = member_names(&doc)
+        .into_iter()
+        .filter(|m| !tools.iter().any(|t| &t.1 == m))
+        .collect();
     let instructions = format!(
-        "{} over {}. Tools are the program's commands; resources are its reads (snapshots with an as_of digest). Streams ({}) have no MCP shape: `hale watch {} <stream>` tails one. {} {}",
-        app,
-        sock,
-        if streams.is_empty() { "none".to_string() } else { streams.join(", ") },
-        sock,
-        notes.get("gates").and_then(Value::as_str).unwrap_or(""),
-        notes.get("reads").and_then(Value::as_str).unwrap_or("")
+        "{} over {}. Tools are the members this caller may call; the server still authorizes every request. {}{}",
+        exposure,
+        ep.show(),
+        if streams.is_empty() { String::new() } else { format!("Streams ({}) have no tool: `hale watch` tails one. ", streams.join(", ")) },
+        if skipped.is_empty() { String::new() } else { format!("No tool for {} (a request that is not an object).", skipped.join(", ")) },
     );
-    let sock = sock.to_string();
     serve_stdio(move |method, msg| {
         Ok(match method {
             "initialize" => {
@@ -551,52 +665,60 @@ pub fn run_mcp_app(sock: &str) -> ExitCode {
                     .unwrap_or("2024-11-05");
                 json!({
                     "protocolVersion": proto,
-                    "capabilities": { "tools": {}, "resources": {} },
-                    "serverInfo": { "name": format!("hale-app:{}", app), "version": env!("CARGO_PKG_VERSION") },
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": format!("hale-app:{}", exposure), "version": env!("CARGO_PKG_VERSION") },
                     "instructions": instructions
                 })
             }
             "ping" => json!({}),
-            "tools/list" => json!({ "tools": tools }),
-            "resources/list" => json!({ "resources": resources }),
-            "resources/read" => {
-                let uri = msg.pointer("/params/uri").and_then(Value::as_str).unwrap_or("");
-                let Some(name) = uri.strip_prefix("hale://read/").filter(|n| reads.iter().any(|r| r == n)) else {
-                    return Err(RpcError(-32002, format!("resource not found: {}", uri)));
-                };
-                let mut req = serde_json::Map::new();
-                req.insert("read".to_string(), json!(name));
-                let got = Client::connect(&sock).and_then(|mut c| c.request(req, |_| {}));
-                match got {
-                    Ok(ans) => match answer_value(&ans) {
-                        Ok(v) => json!({ "contents": [{ "uri": uri, "mimeType": "application/json",
-                            "text": json!({ "value": v, "as_of": ans.get("as_of").cloned().unwrap_or(Value::Null) }).to_string() }] }),
-                        Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
-                    },
-                    Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
-                }
-            }
+            "tools/list" => json!({ "tools": list }),
             "tools/call" => {
                 let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
                 let args = msg.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
-                let topic = topics.iter().find(|t| tool_name(t) == name);
-                let outcome = match topic {
-                    None => Err(format!("`{}` is not a command of {}", name, app)),
-                    Some(topic) => {
-                        let mut req = serde_json::Map::new();
-                        req.insert("call".to_string(), json!(topic));
-                        req.insert("payload".to_string(), args);
-                        Client::connect(&sock)
-                            .and_then(|mut c| c.request(req, |_| {}))
-                            .and_then(|ans| answer_value(&ans))
-                    }
-                };
-                match outcome {
-                    Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }], "isError": false }),
-                    Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+                let text_of = |t: String, is_error: bool| json!({ "content": [{ "type": "text", "text": t }], "isError": is_error });
+                match tools.iter().find(|t| t.0 == name) {
+                    None => text_of(format!("`{}` is not a tool of {}", name, exposure), true),
+                    Some((_, member, _)) => match call(&ep, token.as_deref(), member, &args.to_string(), digest.as_deref()) {
+                        Ok(r) if r.kind == Kind::Result => text_of(r.body, false),
+                        Ok(r) => text_of(r.failure_text(), true),
+                        Err(e) => text_of(e, true),
+                    },
                 }
             }
             other => return Err(method_not_found(other)),
         })
+    })
+}
+
+/// stdio to an `mcp::Rpc` listener: `tools/list` and `tools/call` go to
+/// `POST /mcp` as they are; the answer's result (or error) comes back
+/// under the host's request id.
+fn bridge_mcp(hp: &str, token: Option<&str>) -> ExitCode {
+    use crate::api_client::http_request;
+    let hp = hp.to_string();
+    let token = token.map(str::to_string);
+    serve_stdio(move |method, msg| {
+        if !matches!(method, "initialize" | "ping" | "tools/list" | "tools/call") {
+            return Err(method_not_found(method));
+        }
+        let mut m = json!({ "jsonrpc": "2.0", "id": 1, "method": method });
+        if let Some(p) = msg.get("params") {
+            m["params"] = p.clone();
+        }
+        let headers: Vec<(&str, String)> = token.iter().map(|t| ("Authorization", format!("Bearer {}", t))).collect();
+        let r = http_request(&hp, "POST", "/mcp", &headers, Some(&m.to_string())).map_err(|e| RpcError(-32000, e))?;
+        let v: Value = serde_json::from_str(r.body.trim())
+            .map_err(|e| RpcError(-32000, format!("mcp::Rpc answered a body that is not JSON: {}", e)))?;
+        match v.get("error") {
+            Some(e) => Err(RpcError(
+                e.get("code").and_then(Value::as_i64).unwrap_or(-32000),
+                format!(
+                    "{}{}",
+                    e.get("message").and_then(Value::as_str).unwrap_or("error"),
+                    e.get("data").map(|d| format!(": {}", d)).unwrap_or_default()
+                ),
+            )),
+            None => Ok(v.get("result").cloned().unwrap_or_else(|| json!({}))),
+        }
     })
 }

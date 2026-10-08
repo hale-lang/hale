@@ -467,6 +467,32 @@ row	App@literal1.p	PluginHost	main	default
 row	~	Gateway	main	default
 row	~.s	Signer	main	inherited
 
+== crates/hale-cli/tests/fixtures/api_clients/main.hl#ab56e51e
+root	Desk	the entry
+domain	pool:desk	async_io
+domain	pool:__api_ws	async_io
+domain	pool:__api_unix	async_io
+domain	pool:__api_http	async_io
+domain	pinned:__StdApiHubStream@binding1
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	Desk@literal1.__rpc_h_3	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	Desk@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
+row	Desk@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.counter	Counter	pool:desk	entry	off owner
+row	Desk@literal1.http_roles	Grants	main	default
+row	Desk@literal1.hub_roles	Grants	main	default
+row	Desk@literal1.unix_roles	Grants	main	default
+row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+
 == crates/hale-cli/tests/fixtures/api_description/main.hl#d536b3f3
 root	Shop	the entry
 domain	pool:work	async_io
@@ -594,7 +620,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#a24090a3
+== crates/hale-stdlib/hl/api_rpc.hl#a30396a4
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 

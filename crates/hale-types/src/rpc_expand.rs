@@ -781,7 +781,7 @@ pub fn expand(
             };
             if let Some(t) = &site.transport {
                 push("transport", as_stdlib_unix(t, id));
-                if let Some(addr) = http_bind_of(l, site.transport.as_ref()) {
+                if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
                     push("address", addr);
                 }
             }

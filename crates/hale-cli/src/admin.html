@@ -17,64 +17,49 @@
   pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
   button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; margin-top: 6px; }
   button.quiet { background: transparent; color: var(--accent); }
-  .card.gated { opacity: .55; }
-  .card.gated button, .card.gated textarea { pointer-events: none; }
-  .card .needs { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
 <h1>hale admin</h1>
 <div class="note" id="head">loading the description…</div>
-<h2>Commands</h2><div id="commands"></div>
-<h2>Reads</h2><div id="reads"></div>
+<h2>Members</h2><div id="members"></div>
 <h2>Streams</h2><div id="streams"></div>
 <script>
-const SOCKET = "{{SOCKET}}";
+const ENDPOINT = {{ENDPOINT}};
 const TOKEN = "{{TOKEN}}";
 const headers = (extra = {}) => Object.assign({ "X-Hale-Admin": TOKEN }, extra);
 const $ = (s) => document.querySelector(s);
 const el = (t, a = {}, ...kids) => { const e = document.createElement(t); Object.assign(e, a); kids.forEach(k => e.append(k)); return e; };
 const show = (pre, v) => { pre.textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
 async function main() {
-  // The binding serves the slice this principal's roles show. An
-  // owner also gets the whole document, and what its slice lacks is
-  // shown greyed out with the role it needs.
+  // The exposure describes what this caller's roles show: a member or a
+  // stream listed is one the next call or subscription admits.
   const d = await (await fetch("/api/describe", { headers: headers() })).json();
   if (d.error) { $("#head").textContent = d.error; return; }
-  let full = null;
-  try { const f = await fetch("/api/describe?full=1", { headers: headers() }); if (f.ok) full = await f.json(); } catch (e) { full = null; }
-  const src = full || d;
-  const allowed = (section, name) => d[section].some((x) => x.name === name);
-  const card = (section, name, role) => { const ok = allowed(section, name); const c = el("div", { className: ok ? "card" : "card gated" }); if (!ok) c.append(el("div", { className: "needs", textContent: `needs role ${role}, which you do not hold` })); return c; };
-  $("#head").textContent = `${d.app} over ${SOCKET}. ${d.notes.gates}. ${d.notes.reads}.` + (full ? " You hold owner: greyed items need a role you do not hold." : "");
-  const sample = (ty) => { const s = src.schemas[ty]; if (!s) return {}; const o = {}; for (const [k, p] of Object.entries(s.properties || {})) { o[k] = p.type === "integer" || p.type === "number" ? 0 : p.type === "boolean" ? false : p.$ref ? sample(p.$ref.split("/").pop()) : ""; } return o; };
-  for (const c of src.commands) {
-    const ta = el("textarea", { value: JSON.stringify(sample(c.payload), null, 1) });
+  const who = d.caller && d.caller.principal ? d.caller.principal.name : "nobody";
+  const roles = d.caller && d.caller.roles.length ? d.caller.roles.join(", ") : "no role";
+  $("#head").textContent = `${d.exposure} over ${ENDPOINT}, as ${who} (${roles}). ` + Object.values(d.notes || {}).join(" ");
+  const resolve = (s) => (s && s.$ref ? (d.schemas || {})[s.$ref.split("/").pop()] : s) || {};
+  const sample = (s) => { s = resolve(s); if (s.type === "integer" || s.type === "number") return 0; if (s.type === "boolean") return false; if (s.type === "string") return ""; const o = {}; for (const [k, p] of Object.entries(s.properties || {})) o[k] = sample(p); return o; };
+  for (const m of d.members || []) {
+    const ta = el("textarea", { value: JSON.stringify(sample(m.request), null, 1) });
     const out = el("pre");
     const btn = el("button", { textContent: "call" });
-    btn.onclick = async () => { try { const r = await fetch("/api/call/" + c.name, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: ta.value }); show(out, await r.json()); } catch (e) { show(out, String(e)); } };
-    const cc = card("commands", c.name, c.role);
-    cc.append(el("div", {}, el("b", { textContent: c.name }), ` payload ${c.payload}` + (c.reply ? `, reply ${c.reply}` : ", accepted") + (c.role ? `, role ${c.role}` : "")), ta, btn, out);
-    $("#commands").append(cc);
+    btn.onclick = async () => { try { const r = await fetch("/api/call/" + encodeURIComponent(m.name), { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: ta.value }); show(out, await r.json()); } catch (e) { show(out, String(e)); } };
+    const c = el("div", { className: "card" });
+    c.append(el("div", {}, el("b", { textContent: m.name }), m.requires.length ? `, requires ${m.requires.join(", ")}` : ""), ta, btn, out);
+    $("#members").append(c);
   }
-  for (const r of src.reads) {
-    const out = el("pre");
-    const btn = el("button", { textContent: "read" });
-    btn.onclick = async () => { try { const x = await fetch("/api/read/" + r.name, { headers: headers() }); show(out, await x.json()); } catch (e) { show(out, String(e)); } };
-    const rc = card("reads", r.name, r.role);
-    rc.append(el("div", {}, el("b", { textContent: r.name }), ` ${r.type} (a snapshot with as_of)` + (r.role ? `, role ${r.role}` : "")), btn, out);
-    $("#reads").append(rc);
-  }
-  for (const s of src.streams) {
+  for (const s of d.streams || []) {
     const out = el("pre");
     let es = null;
     const btn = el("button", { textContent: "watch" });
     const stop = el("button", { textContent: "stop", className: "quiet" });
-    btn.onclick = () => { if (es) es.close(); out.textContent = ""; es = new EventSource("/api/watch/" + s.name + "?token=" + TOKEN); es.onmessage = (m) => { out.textContent += m.data + "\n"; out.scrollTop = out.scrollHeight; }; es.onerror = () => { out.textContent += "(closed)\n"; es.close(); }; };
+    btn.onclick = () => { if (es) es.close(); out.textContent = ""; es = new EventSource("/api/watch/" + encodeURIComponent(s.topic) + "?token=" + TOKEN); es.onmessage = (m) => { out.textContent += m.data + "\n"; out.scrollTop = out.scrollHeight; }; es.onerror = () => { out.textContent += "(closed)\n"; es.close(); }; };
     stop.onclick = () => { if (es) es.close(); };
-    const sc = card("streams", s.name, s.role);
-    sc.append(el("div", {}, el("b", { textContent: s.name }), ` ${s.payload}` + (s.role ? `, role ${s.role}` : "")), btn, stop, out);
-    $("#streams").append(sc);
+    const c = el("div", { className: "card" });
+    c.append(el("div", {}, el("b", { textContent: s.topic }), s.requires.length ? `, requires ${s.requires.join(", ")}` : ""), btn, stop, out);
+    $("#streams").append(c);
   }
 }
 main();

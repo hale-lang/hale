@@ -545,46 +545,17 @@ locus __StdApiExposure {
     fn principal_json(p: std::api::Principal) -> String {
         return "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\"}";
     }
-    // spec/api.md § The runtime boundaries, describing: the members the
-    // caller may call, by the rows admission reads.
-    fn describe(p: std::api::Principal) -> String {
-        let mut held = "";
-        if self.has_revised {
-            held = self.revised.grants(p).roles;
-        }
-        let n = self.rows.count();
-        let mut members = "";
-        let mut i = 0;
-        while i < n {
-            let req = self.rows.requires(i);
-            if len(self.missing_role(p, req)) == 0 {
-                if len(members) > 0 { members = members + ","; }
-                members = members + "{\"name\":\"" + self.rows.name_of(i) + "\",\"requires\":[";
-                let mut rest = req;
-                let mut first = true;
-                while len(rest) > 0 {
-                    let comma = std::str::index_of(rest, ",");
-                    let mut r = rest;
-                    if comma >= 0 {
-                        r = rest[0..comma];
-                        rest = rest[(comma + 1)..len(rest)];
-                    } else {
-                        rest = "";
-                    }
-                    if !first { members = members + ","; }
-                    members = members + "\"" + r + "\"";
-                    first = false;
-                }
-                members = members + "]}";
-            }
-            i = i + 1;
-        }
-        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"caller\":" + self.principal_json(p) + ",\"members\":[" + members + "]}";
+    // The principal as a description states it: a socket peer is its
+    // kernel credentials, a bearer its name.
+    fn principal_doc(p: std::api::Principal) -> String {
+        if p.mode == "unix" { return __api_caller_json(p, false); }
+        return self.principal_json(p);
     }
-    // The full document of spec/api.md § The description, for a transport
-    // that serves it whole (`http`): the caller's members and the schemas
-    // they reach, from the compiler's static parts, filtered by the same
-    // rows and sources admission reads.
+    // spec/api.md § The runtime boundaries, describing: the full document of
+    // § The description, the same for every transport (the outcome encoding
+    // is the transport's): the caller's members and the schemas they reach,
+    // from the compiler's static parts, filtered by the same rows and
+    // sources admission reads.
     fn describe_full(p: std::api::Principal) -> String {
         let mut held = "";
         if self.has_revised {
@@ -629,7 +600,7 @@ locus __StdApiExposure {
                 roles = roles + "\"" + r + "\"";
             }
         }
-        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_json(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + (if self.via == "mcp" { __api_mcp_outcomes() } else { __api_http_outcomes() }) + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
+        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_doc(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + (if self.via == "mcp" { __api_mcp_outcomes() } else { (if self.via == "http" { __api_http_outcomes() } else { __api_unix_outcomes() }) }) + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
     }
     fn on_ingress(i: __StdApiRpcIngress) {
         let rid = self.next_rid;
@@ -670,11 +641,7 @@ locus __StdApiExposure {
             return;
         }
         if r.kind == 1 {
-            if self.via == "http" || self.via == "mcp" {
-                self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
-            } else {
-                self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe(who)));
-            }
+            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
             return;
         }
         if len(r.digest) > 0 && r.digest != self.digest {
@@ -1026,6 +993,13 @@ fn __api_refusal_object(k: String, r: String, x: String) -> String {
 /// (spec/api.md § Outcomes).
 fn __api_http_outcomes() -> String {
     return "{\"transport\":\"http\",\"result\":{\"status\":200,\"body\":\"response\"},\"handler_error\":{\"status\":422,\"body\":\"error\"},\"refusal\":{\"body\":\"refusal\",\"status\":{\"malformed\":400,\"digest_mismatch\":409,\"unauthenticated\":401,\"unauthorized\":403,\"full\":429,\"shutting_down\":503,\"unavailable\":503}},\"server_error\":{\"status\":500,\"body\":\"refusal\"},\"transport_failure\":\"the transport's own: the connection ends without a response\"}";
+}
+
+/// The outcome encoding the Unix transport states in a description
+/// (spec/api.md § Outcomes); the in-process fixture transport states the
+/// same lines.
+fn __api_unix_outcomes() -> String {
+    return "{\"transport\":\"unix\",\"result\":{\"ok\":true,\"field\":\"value\"},\"handler_error\":{\"ok\":false,\"field\":\"error\"},\"refusal\":{\"ok\":false,\"field\":\"refusal\",\"kinds\":[\"malformed\",\"digest_mismatch\",\"unauthenticated\",\"unauthorized\",\"full\",\"shutting_down\",\"unavailable\"]},\"server_error\":{\"ok\":false,\"field\":\"refusal\",\"kind\":\"server\"},\"transport_failure\":\"eof\"}";
 }
 
 /// The notes of a description, in the document's own text.
