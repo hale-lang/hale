@@ -168,6 +168,21 @@ impl Ws {
         }
     }
 
+    /// Ping with `payload`, then every text frame that arrives before its
+    /// pong. The pong is written after the frames queued before the ping,
+    /// so what comes back is the connection's queue, drained.
+    pub fn texts_until_pong(&mut self, payload: &[u8]) -> Vec<String> {
+        self.send_ping(payload);
+        let mut out = Vec::new();
+        loop {
+            match self.recv_within(30_000) {
+                Frame::Text(t) => out.push(t),
+                Frame::Pong(p) if p == payload => return out,
+                other => panic!("expected a text frame or the pong, got {other:?} after {} frames", out.len()),
+            }
+        }
+    }
+
     /// The test expects nothing for `ms`.
     pub fn silence(&mut self, ms: u64) {
         match self.recv_within(ms) {

@@ -1197,7 +1197,7 @@ contract, which a consumer builds against; R5 delivers them as follows.
   `unauthenticated`.
 - **The WebSocket.** The upgrade is RFC 6455's (`Sec-WebSocket-Key` answered
   by the derived accept key). Client frames are masked text; a ping is
-  answered with a pong; a client's close frame is answered with one and the
+  answered with a pong, which is written after the frames queued before the ping; a client's close frame is answered with one and the
   connection closes; a fragmented message, or one past 64 KiB, closes the
   connection. The hub's frames are single unmasked text frames.
 - **`stop()`.** `hub.stop()` (and the stop of a serve handle for a surface
