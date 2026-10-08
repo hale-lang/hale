@@ -55,6 +55,9 @@ fn hale_native_suite_passes() {
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("test")
         .arg(&dir)
+        // A test reads the repo's fixtures by repo-relative path
+        // (`tests/api-contract/wire`), as it does when run from a checkout.
+        .current_dir(repo_root())
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .output()
         .expect("invoke hale test tests/hale");
