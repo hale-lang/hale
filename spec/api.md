@@ -629,7 +629,10 @@ whatever the transport does with its connection in between. A request
 reaches one terminal outcome (an outcome delivered, an outcome dropped
 because the connection was lost, or a refusal), and the record is
 removed and the unit of the bound released exactly once, in that one
-place; a second event for the same request id finds no record and does
+place (the table holds accepted requests and nothing else: a removed
+record's place is taken by the next request, so it is never longer than
+the bound, and the queue runs in the order of the request ids, not of the
+places); a second event for the same request id finds no record and does
 nothing.
 
 **Shutdown.** `stop()` (idempotent) closes admission (a request received

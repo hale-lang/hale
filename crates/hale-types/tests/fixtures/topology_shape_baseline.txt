@@ -205,8 +205,8 @@ crates/hale-codegen/tests/alloc_model_rss.rs#6 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
-crates/hale-codegen/tests/api_runtime.rs#0 567f0d9fd05a5a24
-crates/hale-codegen/tests/api_serve_build.rs#0 e63af66701b2ddbb
+crates/hale-codegen/tests/api_runtime.rs#0 8687e883a36231f4
+crates/hale-codegen/tests/api_serve_build.rs#0 4e8711723a314b5b
 crates/hale-codegen/tests/array_repeat.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#2 3b217f0f698a6100
@@ -1424,7 +1424,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
 crates/hale-stdlib/hl/api.hl e416474db56b5494
-crates/hale-stdlib/hl/api_rpc.hl b7aaaf26805728ca
+crates/hale-stdlib/hl/api_rpc.hl cd56812afe944bd1
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8

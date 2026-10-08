@@ -5881,6 +5881,14 @@ row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/pending_test.hl
+root	Desk	the entry
+domain	pool:slow	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.quick	Quick	main	default
+row	Desk@literal1.slow	Slow	pool:slow	entry	off owner
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/placement_test.hl
 root	App	the entry
 domain	pool:far_pool	async_io

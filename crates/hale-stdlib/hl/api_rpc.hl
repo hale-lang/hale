@@ -637,8 +637,35 @@ locus __StdApiExposure {
             self.hello_sent[slot] = 1;
         }
         self.inflight = self.inflight + 1;
-        self.entries.push(__StdApiRpcEntry { rid: rid, state: 1, slot: slot, member: m, gen: self.slot_gen[slot], correlation: i.correlation, lost: false, body: body, caller: who, role: __api_rpc_first(req) });
+        self.admit(__StdApiRpcEntry { rid: rid, state: 1, slot: slot, member: m, gen: self.slot_gen[slot], correlation: i.correlation, lost: false, body: body, caller: who, role: __api_rpc_first(req) });
         self.pump(slot);
+    }
+    // The pending table holds the requests accepted and not yet answered
+    // and nothing else: a request takes the first free record (`finish`
+    // frees it), so the table is never longer than the bound. A record's
+    // place is not its identity (the request id is, and it only grows), and
+    // the queue's order is the request ids', never the places'.
+    fn admit(e: __StdApiRpcEntry) {
+        let n = self.entries.len();
+        let mut k = 0;
+        while k < n {
+            let held = self.entries.get(k) or __StdApiRpcEntry { };
+            if held.state == 0 {
+                self.entries.set(k, e) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.entries.push(e);
+    }
+    /// The records the pending table holds, free ones included: never more
+    /// than the bound.
+    fn table_len() -> Int {
+        return self.entries.len();
+    }
+    /// The requests accepted and not yet answered.
+    fn pending() -> Int {
+        return self.inflight;
     }
     fn on_lost(l: __StdApiRpcLost) {
         let n = self.entries.len();
