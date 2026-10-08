@@ -1200,6 +1200,17 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
 row	App@main1	App	main	default
 
+== crates/hale-codegen/tests/api_hub.rs#067b6ae6
+root	Desk	the entry
+domain	pool:__api_ws	async_io
+domain	pinned:__StdApiWsStream@binding1
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.hub_roles	Grants	main	default
+row	Desk@literal1.maker	Maker	main	default
+row	__StdApiWsStream@binding1	__StdApiWsStream	pinned:__StdApiWsStream@binding1	binding
+
 == crates/hale-codegen/tests/api_runtime.rs#9876407f
 root	App	the entry
 domain	pool:work	async_io

@@ -434,6 +434,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("secret.hl", &["secret"]),
         ("api.hl", &["api"]),
         ("api_rpc.hl", &["api"]),
+        ("api_hub.hl", &["api"]),
         ("test.hl", &["test"]),
         ("log.hl", &["log"]),
         ("ts.hl", &["ts"]),

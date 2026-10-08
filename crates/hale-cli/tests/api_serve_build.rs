@@ -4,7 +4,8 @@
 //! (R1's description and the serve-site laws read it as written), and
 //! `hale build` says what it cannot serve yet, instead of dropping the
 //! sites (R2b: `unix::Rpc` is served, `http::Rpc` is not). A hub binding
-//! is refused likewise (R5).
+//! is served (R5): the witness's `Fills` through `ws::Hub` builds, so the
+//! only refusals are the two `http::Rpc` sites.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -38,7 +39,7 @@ fn a_build_refuses_a_serve_site_over_a_transport_it_does_not_ship() {
         "no refusal of `http::Rpc` in:\n{stderr}"
     );
     assert!(!stderr.contains("`api::serve` over `unix::Rpc`"), "`unix::Rpc` is served:\n{stderr}");
-    assert!(stderr.contains("`Fills` is bound to the hub `self.hub`"), "the hub binding is refused too:\n{stderr}");
+    assert!(!stderr.contains("is bound to the hub"), "the hub binding is served:\n{stderr}");
 }
 
 #[test]

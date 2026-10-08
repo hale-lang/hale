@@ -276,7 +276,8 @@ const LOWERING_LAWS: &str = "crates/hale-types/src/lowering_laws.rs";
 const ROLES: &str = "crates/hale-types/src/roles.rs";
 const SURFACES: &str = "crates/hale-types/src/surfaces.rs";
 const RPC_EXPAND: &str = "crates/hale-types/src/rpc_expand.rs";
-const SURFACE_DOC: &str = "crates/hale-cli/src/surface_doc.rs";
+const SURFACE_DOC: &str = "crates/hale-types/src/surface_doc.rs";
+const HUB_EXPAND: &str = "crates/hale-types/src/hub_expand.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -1256,7 +1257,7 @@ pub const FAMILIES: &[Family] = &[
             "placement (the pools the handlers' loci and the receivers run on)",
             "topics (a hub stream's wire subject)",
             "serve sites: `api::serve(…)` and its named arguments (R1 names them for the description; R2a checks them, the five laws, and builds each one's exposure)",
-            "topic bindings to a hub with `requires:`, named, not served (R5)",
+            "topic bindings to a hub with `requires:`, `bound:` and `on_full:`, and the `ws::Hub` literal they name (R5)",
         ],
         producer: Some(site(SURFACES, "surface_rows")),
         legacy: &[],
@@ -1266,13 +1267,14 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("check (the laws of a serve site: an exposure named once, every receiver type bound, a receiver that outlives its exposure, a bound type the rows name, a stated queue)", CHECK, "serve_laws"),
             consumer_at("check (the snapshot's check stage: the serve-site laws over the snapshot's rows)", SNAPSHOT, "serve_laws"),
             consumer_at("the model (the `surfaces` and `surface_rows` tables, projected; the digest law)", MODEL_BUILDER, "inputs.surfaces"),
-            consumer_at("build (a hub binding, and a serve site over a transport this compiler does not ship, are refused until served)", TLIB, "unserved_sites"),
+            consumer_at("build (a hub binding the expansion could not serve, and a serve site over a transport this compiler does not ship, are refused)", TLIB, "unserved_sites"),
             consumer_at("check --api (the inventory; one exposure's description for a caller holding `--holds` under its role source; law 6's notes on stderr)", V_CHECK, "api_document"),
             consumer_at("the OpenAPI, JSON Schema and MCP forms of one surface (`check --api --surface`), projections of its rows", SURFACE_DOC, "openapi"),
             consumer_at("serve (R2a: a serve site's exposure, its rows adapter, its receivers' plumbing and the codecs of what the rows carry, written before the check by the desugar sequence)", RPC_EXPAND, "expand"),
             consumer("serve (R2a: lowering reads the call as its exposure's handle, a read of the serving locus's param the expansion wrote; it reads no row)"),
             consumer("serve (the runtime's dispatch over a socket: Context, the digest check, requires before enqueue, decode by shape, R2b and R3)"),
-            consumer("hubs (stream admission, expiry and revocation, R5)"),
+            consumer_at("hubs (R5: a topic bound to a hub: the hub's literal made the standard library's, its listener, one adapter binding and JSON codec per stream row, the rows adapter and the description's pieces, written before the check by the desugar sequence)", HUB_EXPAND, "expand"),
+            consumer("hubs (the runtime, api_hub.hl: admission against the row's requires, delivery from a queue of `bound` frames under `on_full`, expiry and revocation, `closed` at stop(), R5)"),
             consumer("describe / call / watch / admin / mcp (over descriptions, R4)"),
             consumer("ui (reserved)"),
         ],
@@ -1281,6 +1283,7 @@ pub const FAMILIES: &[Family] = &[
             "the digest is the FNV-1a fold of the rows in canonical order (member, request, response and error shape hashes, sorted requires) and excludes the listener, the receivers, the serve site, the surface's name, the build identity and the incarnation",
             "a row whose error type is `ClosureViolation` (a handler that may violate, `fallible(ClosureViolation)` under F.42 with no exemption) fails as the server error and its description carries no error schema; a row with any other error type fails as the handler error with that type's schema; the digest's error slot folds `ClosureViolation`'s shape hash like any error type's",
             "a hub that serves no surface is an exposure of its stream rows, identified `hub@<stream digest>/<name>`; the stream digest is the FNV-1a fold of the stream rows sorted by topic (topic, payload shape hash, direction, codec, bound, on_full, replay, sorted requires) and excludes the listener, the hub's name and sources, the build identity and the incarnation; its description has no surface and no member, and its outcome form is the `ws` frames",
+            "a topic bound to a hub is a stream: the binding is one row of the hub (topic, payload shape, direction, codec, `bound`, `on_full`, no replay, `requires`) and joins the bus graph as an adapter binding, so the publish contract and the no-subscriber lint read it as bound outward; a stream's `on_full` is `drop_old` or `drop_new`, never `refuse`; a subscription is admitted against the row's `requires` from the Context established at connect, its queue holds at most `bound` frames and every event offered to it takes the next `seq`, delivered or shed; it ends, with one `unauthorized` frame and its buffer dropped, at the credential's expiry and at a role-source revision its `requires` no longer holds under, and nothing is delivered under an authorization older than the revision or past the expiry",
             "authorization is evaluated before enqueue: a refused request never reaches the handler's queue",
             "descriptions read the rows dispatch reads: a caller's description under an exposure lists exactly the members whose `requires` that exposure's role source grants it",
             "grants belong to the role-source instance a serve site names, never to a role name",
@@ -1294,6 +1297,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &[
             "crates/hale-cli/tests/api_contract_fixtures.rs",
+            "crates/hale-types/tests/api_hub_check.rs (one refusal per law of a hub binding in its wording, the binding admitted by the check and the build)",
+            "crates/hale-codegen/tests/api_hub.rs (a publish reaches the hub once each, the address bound in the program's birth, a stopped hub releases it)",
             "crates/hale-types/tests/api_rows_check.rs (one refusal per law in its wording, law 6's statement, the fixture admitted)",
             "crates/hale-types/tests/surface_rows.rs (the fixture's rows, digests and model rows; an `@rpc` row and an `rpc` line are one row)",
             "crates/hale-syntax/tests/api_surface_parse.rs (both spellings, the serve site, the hub binding, the refusals)",

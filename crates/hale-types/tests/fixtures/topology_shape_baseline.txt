@@ -205,6 +205,7 @@ crates/hale-codegen/tests/alloc_model_rss.rs#6 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
+crates/hale-codegen/tests/api_hub.rs#0 9d4e1a7899a52569
 crates/hale-codegen/tests/api_runtime.rs#0 68ca3e2b4e8ab367
 crates/hale-codegen/tests/api_serve_build.rs#0 6ce845e02ba1317a
 crates/hale-codegen/tests/api_unix_lifecycle.rs#0 39b8ee6d10c16ee4

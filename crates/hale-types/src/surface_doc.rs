@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::surface::digest_text;
-use hale_types::surfaces::{FieldSchema, Handled, Hub, Row, Schemas, Serve, Source, Stream, SurfaceRows, TypeSchema};
+use crate::surfaces::{FieldSchema, Handled, Hub, Row, Schemas, Serve, Source, Stream, SurfaceRows, TypeSchema};
 
 /// A JSON value whose objects keep their keys in the order written.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +100,44 @@ impl J {
                     out.push('\n');
                 }
                 pad(out, depth);
+                out.push('}');
+            }
+        }
+    }
+
+    /// The document compact, as a server writes it.
+    pub fn compact(&self) -> String {
+        let mut out = String::new();
+        self.write_compact(&mut out);
+        out
+    }
+
+    fn write_compact(&self, out: &mut String) {
+        match self {
+            J::Null => out.push_str("null"),
+            J::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            J::Int(n) => out.push_str(&n.to_string()),
+            J::Str(v) => quote(v, out),
+            J::Arr(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.write_compact(out);
+                }
+                out.push(']');
+            }
+            J::Obj(pairs) => {
+                out.push('{');
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    quote(k, out);
+                    out.push(':');
+                    v.write_compact(out);
+                }
                 out.push('}');
             }
         }
@@ -280,7 +318,7 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
     let Handled::Fn(h) = &row.handler else {
         return o(vec![("name", s(&row.member))]);
     };
-    let mut ty = |t: Option<&hale_types::surfaces::RowTy>| match t {
+    let mut ty = |t: Option<&crate::surfaces::RowTy>| match t {
         Some(t) => field_schema(&book.type_ref(&t.te), base),
         None => J::Null,
     };
@@ -588,6 +626,68 @@ pub fn description(
         "the program serves no exposure named `{exposure}`; its exposures: {}",
         if names.is_empty() { "none".to_string() } else { names.join(", ") }
     ))
+}
+
+/// The pieces a hub serves its live description from (spec/api.md § The
+/// description, a hub exposure's): everything of the document that does not
+/// depend on the caller, as compact JSON, and what does, as parts a caller's
+/// roles select. The runtime joins them in the document's key order:
+/// `head`, the caller's principal, `,"roles":[…]}`, `,"members":[],"streams":[`,
+/// the streams the caller may subscribe to, `],"outcomes":`, `outcomes`,
+/// `,"schemas":{`, the schemas those streams reach, `},"notes":`, `notes`, `}`.
+#[derive(Debug, Clone)]
+pub struct HubPieces {
+    /// The document up to and including `"caller":{"principal":`.
+    pub head: String,
+    /// Each stream, in binding order.
+    pub streams: Vec<String>,
+    /// Each type a stream reaches, by name in bytes order: its name, its
+    /// schema as `"Name":{…}`, and the streams that reach it (a bit each).
+    pub types: Vec<(String, String, u64)>,
+    pub outcomes: String,
+    pub notes: String,
+    /// The roles any stream requires, sorted: the roles a caller's `roles`
+    /// can list.
+    pub required: Vec<String>,
+}
+
+pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
+    let t = &hub.transport;
+    let name = t.name.as_deref().unwrap_or("");
+    let head = format!(
+        "{{\"description\":1,\"exposure\":{},\"name\":{},\"surface\":null,\"digest\":{},\"listener\":{},\"codec\":{},\"caller\":{{\"principal\":",
+        s(&hub_id(hub)).compact(),
+        s(name).compact(),
+        s(&digest_text(hub.digest())).compact(),
+        listener(&t.kind, t.address.as_deref()).compact(),
+        s(&t.codec).compact(),
+    );
+    let mut streams = Vec::new();
+    let mut types: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    for (i, st) in hub.streams.iter().enumerate() {
+        let mut book = Book::new(schemas);
+        streams.push(stream(st, &mut book, DOC_REFS).compact());
+        for (n, ts) in &book.types {
+            let json = format!("{}:{}", s(n).compact(), type_schema(ts, DOC_REFS).compact());
+            let e = types.entry(n.clone()).or_insert((json, 0));
+            e.1 |= 1u64 << i;
+        }
+    }
+    let required: BTreeSet<&str> =
+        hub.streams.iter().flat_map(|st| st.requires.iter()).map(|(r, _)| r.as_str()).collect();
+    HubPieces {
+        head,
+        streams,
+        types: types.into_iter().map(|(n, (j, m))| (n, j, m)).collect(),
+        outcomes: outcomes("ws").map(|j| j.compact()).unwrap_or_default(),
+        notes: o(vec![
+            ("authorization", s(HUB_AUTHORIZATION)),
+            ("lifecycle", s(HUB_LIFECYCLE)),
+            ("discovery", s(HUB_DISCOVERY)),
+        ])
+        .compact(),
+        required: required.into_iter().map(str::to_string).collect(),
+    }
 }
 
 // ---- the projections of one surface (GH #1107's forms, over the rows) ----
