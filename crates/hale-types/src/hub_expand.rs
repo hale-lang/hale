@@ -16,7 +16,7 @@
 //!   params, placed on the shared `async_io` pool `__api_ws`, so it is
 //!   born (and binds its socket, or fails the boot) before the hub;
 //! - for each stream, an adapter binding in the main locus's `bindings`
-//!   block (`Topic: __StdApiWsStream { hub: N, stream: I } codec(…)`), so
+//!   block (`Topic: __StdApiHubStream { hub: N, stream: I } codec(…)`), so
 //!   the publish fanout reaches the hub as it reaches any adapter, and the
 //!   publish contract and the no-subscriber lint read the topic as bound
 //!   outward; the codec is the JSON codec of the topic's payload;
@@ -67,6 +67,8 @@ struct StreamPlan {
 }
 
 struct HubPlan {
+    /// `ws` or `udp`.
+    kind: &'static str,
     program: usize,
     locus: String,
     param: String,
@@ -101,17 +103,28 @@ pub(crate) fn is_ws_hub(path: &QualifiedName) -> bool {
     matches!(segs.as_slice(), ["ws", "Hub"] | ["std", "api", "ws", "Hub"])
 }
 
+/// `udp::Hub` or `std::api::udp::Hub`.
+pub(crate) fn is_udp_hub(path: &QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["udp", "Hub"] | ["std", "api", "udp", "Hub"])
+}
+
+/// A hub's literal or type path: `ws::Hub` or `udp::Hub`.
+pub(crate) fn is_hub(path: &QualifiedName) -> bool {
+    is_ws_hub(path) || is_udp_hub(path)
+}
+
 /// Whether a hub param's literal is the one this pass wrote.
 pub(crate) fn is_built(init: &ParamInit) -> bool {
     matches!(init, ParamInit::Value(Expr::Struct { path, inits, .. })
-        if is_ws_hub(path) && path.segments.len() == 4 && inits.iter().any(|i| i.name.name == "tid"))
+        if is_hub(path) && path.segments.len() == 4 && inits.iter().any(|i| i.name.name == "tid"))
 }
 
 /// The hub's literal in `l`, by param name.
 fn hub_literal<'a>(l: &'a LocusDecl, field: &str) -> Option<&'a Expr> {
     l.members.iter().find_map(|m| match m {
         LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
-            ParamInit::Value(e @ Expr::Struct { path, .. }) if p.name.name == field && is_ws_hub(path) => Some(e),
+            ParamInit::Value(e @ Expr::Struct { path, .. }) if p.name.name == field && is_hub(path) => Some(e),
             _ => None,
         }),
         _ => None,
@@ -216,7 +229,8 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     }) {
                         continue;
                     }
-                    let Expr::Struct { inits, .. } = lit else { continue };
+                    let Expr::Struct { path: lit_path, inits, .. } = lit else { continue };
+                    let kind = if is_udp_hub(lit_path) { "udp" } else { "ws" };
                     let init = |n: &str| inits.iter().find(|i| i.name.name == n).map(|i| &i.value);
                     let Some(bind) = init("bind") else { continue };
                     let Some(Expr::Literal(Literal::String(name), _)) = init("as").or_else(|| init("name")) else {
@@ -297,7 +311,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     let doc_hub = crate::surfaces::Hub {
                         instance: format!("self.{field}"),
                         transport: crate::surfaces::Transport {
-                            kind: "ws".to_string(),
+                            kind: kind.to_string(),
                             address: match bind {
                                 Expr::Literal(Literal::String(a), _) => Some(a.clone()),
                                 _ => None,
@@ -329,6 +343,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     };
                     let pieces = crate::surface_doc::hub_pieces(&doc_hub, &schemas);
                     plans.push(HubPlan {
+                        kind,
                         program: pi,
                         locus: l.name.name.clone(),
                         param: field.to_string(),
@@ -384,18 +399,19 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
         for m in l.members.iter_mut() {
             let LocusMember::Params(pb) = m else { continue };
             for p in pb.params.iter_mut().filter(|p| p.name.name == plan.param) {
+                let std_path = ["std", "api", plan.kind, "Hub"];
                 if let Some(ty) = &mut p.ty {
                     if let TypeExpr::Named { path, .. } = ty {
-                        if is_ws_hub(path) {
-                            path.segments = ["std", "api", "ws", "Hub"].iter().map(|n| Ident::new(*n, span)).collect();
+                        if is_hub(path) {
+                            path.segments = std_path.iter().map(|n| Ident::new(*n, span)).collect();
                         }
                     }
                 }
                 let ParamInit::Value(Expr::Struct { path, inits, .. }) = &mut p.init else { continue };
-                if !is_ws_hub(path) {
+                if !is_hub(path) {
                     continue;
                 }
-                path.segments = ["std", "api", "ws", "Hub"].iter().map(|n| Ident::new(*n, span)).collect();
+                path.segments = std_path.iter().map(|n| Ident::new(*n, span)).collect();
                 // the exposure's name is `as:`; a locus has no param of that name
                 for i in inits.iter_mut().filter(|i| i.name.name == "as") {
                     i.name = Ident::new("name", i.name.span);
@@ -404,6 +420,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     inits.push(StructInit { name: Ident::new(name, span), value, span });
                 };
                 push("tid", lit_int(plan.id, span));
+                push("kind", Expr::Literal(Literal::String(plan.kind.to_string()), span));
                 if let Some(rows) = parse_expr(&format!("__HubRows_{} {{ }}", plan.id)) {
                     push("rows", rows);
                 }
@@ -422,7 +439,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
             }
         }
         // the listener: a param born first, on a pool of its own
-        if let Some((lp, entry)) = parse_listener(plan.id, fresh(&plan.bind), span) {
+        if let Some((lp, entry)) = parse_listener(plan.id, plan.kind, fresh(&plan.bind), span) {
             if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
                 pb.params.insert(0, lp);
             }
@@ -475,10 +492,11 @@ fn parse_expr(src: &str) -> Option<Expr> {
 }
 
 /// The listener of hub `id` and its placement.
-fn parse_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+fn parse_listener(id: i64, kind: &str, bind: Expr, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
     let field = format!("__rpc_w_{id}");
+    let ty = if kind == "udp" { "__StdApiUdpEndpoint" } else { "__StdApiWsListener" };
     let src = format!(
-        "main locus __Tmp {{ params {{ {field}: __StdApiWsListener = __StdApiWsListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_ws) where async_io; }} }}\n"
+        "main locus __Tmp {{ params {{ {field}: {ty} = {ty} {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_ws) where async_io; }} }}\n"
     );
     let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0A00_0000 + id as u32 * 0x100).ok()?;
     let mut param = None;
@@ -522,7 +540,7 @@ fn parse_binding(id: i64, i: usize, topic: &Ident, span: Span) -> Option<hale_sy
                     // is spelled with its prefix
                     let mut entry = bb.entries.into_iter().next()?;
                     if let hale_syntax::ast::TransportSpec::Adapter { locus, .. } = &mut entry.transport {
-                        locus.name = "__StdApiWsStream".to_string();
+                        locus.name = "__StdApiHubStream".to_string();
                     }
                     return Some(entry);
                 }

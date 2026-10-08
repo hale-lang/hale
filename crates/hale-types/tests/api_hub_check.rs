@@ -157,3 +157,25 @@ fn an_exposure_is_named_once_among_hubs_and_serve_sites() {
         "{e:?}"
     );
 }
+
+const UDP: &str = "hub: udp::Hub = udp::Hub { bind: \"127.0.0.1:9000\", principals: self.bearer, roles: self.roles, as: \"fills\" };";
+
+#[test]
+fn a_udp_hub_is_a_hub_and_carries_streams_only() {
+    let src = program(UDP, ROW);
+    assert!(errors(&src).is_empty(), "{:?}", errors(&src));
+    assert!(build_errors(&src).is_empty(), "{:?}", build_errors(&src));
+    // requests and replies over datagrams are not framed yet: a surface is not served over one
+    let src = program(UDP, ROW).replace(
+        "run() { self.maker.make(); }",
+        "run() { self.maker.make(); let s = api::serve(Public, self.hub, as: \"desk\", receivers: { Maker: self.maker }, bound: 4, on_full: refuse); s.stop(); }",
+    )
+    .replace("main locus Desk", "type Req { n: Int; }\ntype Res { n: Int; }\nlocus Svc { fn ask(r: Req) -> Res { return Res { n: r.n }; } }\napi Public { rpc Svc::ask; }\n\nmain locus Desk")
+    .replace("receivers: { Maker: self.maker }", "receivers: { Svc: self.svc }")
+    .replace("maker: Maker = Maker { };", "maker: Maker = Maker { };\n        svc: Svc = Svc { };");
+    let e = errors(&src);
+    assert!(
+        e.iter().any(|m| m.contains("serve of `Public` over a `udp::Hub`: a request and its reply over datagrams are not framed")),
+        "{e:?}"
+    );
+}

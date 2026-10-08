@@ -1464,6 +1464,24 @@ fn serve_laws_of(
                 format!("serve of `{surface}`: a serve site names the transport instance that carries it"),
             ));
         }
+        // rpcs are not framed over datagrams yet (R6): a `udp::Hub` carries streams
+        let over_udp = match site.transport {
+            Some(Expr::Struct { path, .. }) => crate::hub_expand::is_udp_hub(path),
+            Some(e) => self_field(e)
+                .and_then(|f| params.get(f))
+                .is_some_and(|t| t == "udp::Hub" || t == "std::api::udp::Hub"),
+            None => false,
+        };
+        if over_udp {
+            diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` over a `udp::Hub`: a request and its reply over datagrams are not framed in \
+                     this release, so a `udp::Hub` carries streams only; serve the surface over a `ws::Hub` or a socket \
+                     transport (spec/api.md § Streams)"
+                ),
+            ));
+        }
         let Some(name) = name else {
             diags.push(Diag::ty(
                 site.span,

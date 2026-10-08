@@ -51,7 +51,7 @@
         "caller": { "$ref": "#/$defs/caller" },
         "members": { "const": [] },
         "streams": { "type": "array", "items": { "$ref": "#/$defs/stream" } },
-        "outcomes": { "$ref": "#/$defs/outcomes_ws" },
+        "outcomes": { "oneOf": [{ "$ref": "#/$defs/outcomes_ws" }, { "$ref": "#/$defs/outcomes_udp" }] },
         "schemas": { "$ref": "#/$defs/schemas" },
         "notes": { "$ref": "#/$defs/description_notes" }
       }
@@ -247,6 +247,25 @@
         "unauthorized": { "const": { "type": "unauthorized", "fields": ["topic", "reason"], "reasons": ["expired", "revoked"] } },
         "closed": { "const": { "type": "closed", "fields": ["reason"], "reasons": ["shutting_down"] } },
         "transport_failure": { "const": "the connection closes without a closed frame" }
+      }
+    },
+    "outcomes_udp": {
+      "$comment": "The udp form: the ws frames minus the connection. Every datagram of a subscriber carries the id the subscriber chose in its subscribe; the credential rides the subscribe (token); the hub answers subscribed or refusal, then sends event frames whose seq increases by one per event offered to the subscription (a gap is the frames shed or lost on the way), unauthorized once when the subscription is invalidated, and closed at stop(); the subscriber ends its subscription with unsubscribe. No member, no status.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "subscribe", "subscribed", "refusal", "event", "unauthorized", "closed", "unsubscribe", "transport_failure"],
+      "properties": {
+        "transport": { "const": "udp" },
+        "subscribe": { "const": { "type": "subscribe", "fields": ["topic", "id", "token"] } },
+        "subscribed": { "const": { "type": "subscribed", "fields": ["topic", "id"] } },
+        "refusal": {
+          "const": { "type": "refusal", "fields": ["topic", "id", "refusal"], "kinds": ["malformed", "unauthenticated", "unauthorized", "shutting_down"] }
+        },
+        "event": { "const": { "type": "event", "fields": ["topic", "id", "seq", "payload"] } },
+        "unauthorized": { "const": { "type": "unauthorized", "fields": ["topic", "id", "reason"], "reasons": ["expired", "revoked"] } },
+        "closed": { "const": { "type": "closed", "fields": ["id", "reason"], "reasons": ["shutting_down"] } },
+        "unsubscribe": { "const": { "type": "unsubscribe", "fields": ["id"] } },
+        "transport_failure": { "const": "datagrams may be lost or reordered; a gap in seq is a frame shed or lost" }
       }
     },
     "listener": {

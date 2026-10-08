@@ -1,13 +1,15 @@
 // ---- the hub (spec/api.md § Streams; GH #1417, R5) ----
 //
-// A hub is a core and a listener. The core (`std::api::ws::Hub`) is the
+// A hub is a core and a listener. The core (`std::api::ws::Hub`, or
+// `std::api::udp::Hub`: one locus, told its transport by `kind`) is the
 // param the program writes: it holds the sources, admits subscriptions
 // against the rows of the topics bound to it, and is the `Rpc` a surface
 // is served over. The listener and a locus per connection run on an
-// `async_io` pool of their own (as `unix::Rpc`'s do), and the two talk
+// `async_io` pool of their own (as `unix::Rpc`'s do; over UDP the listener
+// is one socket and a locus per subscriber), and the two talk
 // over the bus: peers publish what a connection says (`__ApiHubUpT`),
 // the core answers (`__ApiHubOutT`), and each topic bound to the hub is an
-// adapter binding (`__StdApiWsStream`) that publishes the encoded event
+// adapter binding (`__StdApiHubStream`) that publishes the encoded event
 // (`__ApiHubEventT`) to the connections' queues.
 //
 // Who holds what. The core authenticates a connection once, when it
@@ -144,7 +146,7 @@ fn __api_hub_refusal(topic: String, kind: String, reason: String, requires: Stri
 /// A topic bound to a hub (`std::api::ws::Stream`): the adapter the compiler
 /// binds the topic to. `send` is the publish contract's delivery: it hands
 /// the event, encoded by the topic's codec, to every connection's queue.
-locus __StdApiWsStream {
+locus __StdApiHubStream {
     params {
         hub: Int = 0;
         stream: Int = 0;
@@ -179,6 +181,13 @@ locus __StdApiWsPeer {
         tid: Int = 0;
         route: Int = 0;
         fd: Int = -1;
+        // 0 a WebSocket connection (`fd`), 1 a UDP subscriber (the endpoint's
+        // socket `ufd`, the subscriber's address and the `id` it chose)
+        mode: Int = 0;
+        ufd: Int = -1;
+        host: String = "";
+        port: Int = 0;
+        cid: String = "null";
         open: Bool = true;
         live: Bool = false;
         connected: Bool = false;
@@ -211,12 +220,21 @@ locus __StdApiWsPeer {
         publish __ApiHubUpT;
     }
     birth() {
+        if self.mode == 1 {
+            // a datagram subscriber has no connection: it is live from its first datagram
+            self.live = true;
+            return;
+        }
         self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
         // a reader that never reads cannot hold this connection's writer for long
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
     @unbounded
     run() {
+        if self.mode == 1 {
+            self.subscriber();
+            return;
+        }
         self.serve();
         // the connection is over: the core forgets it, and the descriptor is released
         if self.connected {
@@ -228,6 +246,67 @@ locus __StdApiWsPeer {
             std::io::tcp::__close_fd(self.fd);
             self.fd = -1;
         }
+    }
+    // ---- a UDP subscriber ----
+    //
+    // It lives from its first datagram until it unsubscribes or the hub stops.
+    // Nothing reads for it: the endpoint hands it its datagrams over the bus,
+    // so its loop only keeps the clock for the credential's expiry.
+    @unbounded
+    fn subscriber() {
+        while self.open && !self.draining {
+            self.check_expiry();
+            let mut nap = 50000000;
+            if self.expiry != 0 && !self.expired {
+                let rem = self.expiry - std::time::nanos(std::time::current());
+                if rem < nap { nap = rem; }
+            }
+            if nap < 1000000 { nap = 1000000; }
+            std::time::sleep(nap * 1ns);
+        }
+        if self.connected {
+            self.say(4, 0, "");
+            self.connected = false;
+        }
+        self.open = false;
+    }
+    // One datagram of this subscriber: the frames of the `ws` form, each
+    // carrying the `id` the subscriber chose. The credential rides the first
+    // subscribe (there is no connection to authenticate once at connect).
+    fn datagram(text: String) {
+        if !self.open { return; }
+        if !std::json::valid_object(text) {
+            self.control(1, __api_hub_refusal("", "malformed", "a datagram is one JSON object", ""), false);
+            return;
+        }
+        let kind = std::json::find_string_field(text, "type");
+        if kind == "subscribe" || kind == "describe" {
+            if !self.connected {
+                self.connected = true;
+                self.say(1, 0, std::json::find_string_field(text, "token"));
+            }
+            if kind == "describe" {
+                self.say(6, 0, std::json::find_string_field(text, "token"));
+                return;
+            }
+            let topic = std::json::find_string_field(text, "topic");
+            if len(topic) == 0 {
+                self.control(1, __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""), false);
+                return;
+            }
+            self.say(2, 0, topic);
+            return;
+        }
+        if kind == "unsubscribe" {
+            self.open = false;
+            return;
+        }
+        self.control(1, __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""), false);
+    }
+    // `{"type":"event",…}` as `{"type":"event","id":ID,…}`
+    fn with_id(text: String) -> String {
+        let at = std::str::index_of(text[9..len(text)], "\"") + 9;
+        return text[0..(at + 1)] + ",\"id\":" + self.cid + text[(at + 1)..len(text)];
     }
     fn say(kind: Int, a: Int, text: String) {
         __ApiHubUpT <- __StdApiHubUp { key: self.tid, conn: self.conn, kind: kind, a: a, text: text, text2: "" };
@@ -466,8 +545,20 @@ locus __StdApiWsPeer {
             return;
         }
         if o.kind == 6 {
+            if self.mode == 1 {
+                if o.a == 200 {
+                    self.control(1, "{\"type\":\"description\",\"document\":" + o.text + "}", false);
+                } else {
+                    self.control(1, "{\"type\":\"description\",\"document\":null,\"refusal\":" + o.text + "}", false);
+                }
+                return;
+            }
             self.doc = o.text;
             self.doc_status = o.a;
+            return;
+        }
+        if o.kind == 20 {
+            self.datagram(o.text);
             return;
         }
         if o.kind == 9 {
@@ -643,6 +734,13 @@ locus __StdApiWsPeer {
     }
     // One WebSocket frame, unmasked, as a server writes it.
     fn write_frame(op: Int, text: String) {
+        if self.mode == 1 {
+            // a datagram out; a frame the network or the buffer refuses is lost
+            if op == 1 {
+                std::io::udp::send(self.ufd, self.host, self.port, self.with_id(text)) or discard;
+            }
+            return;
+        }
         if self.fd < 0 { return; }
         let mb = std::bytes::BytesBuilder { };
         mb.append_u8(128 + op);
@@ -664,7 +762,7 @@ locus __StdApiWsPeer {
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {
         self.open = false;
-        if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
+        if self.mode == 0 && self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
     }
 }
 
@@ -742,6 +840,145 @@ locus __StdApiWsListener {
     }
 }
 
+/// A subscriber the endpoint has made a locus for: its address and the `id`
+/// it chose, and the connection number the core knows it by. conn 0 is free.
+type __StdApiUdpKnown {
+    conn: Int = 0;
+    key: String = "";
+}
+
+@form(vec)
+locus __StdApiUdpKnowns {
+    capacity { heap items of __StdApiUdpKnown; }
+}
+
+/// The hub's UDP socket, on its own pool (`std::api::udp::Endpoint`; the
+/// compiler adds one to the main locus per `udp::Hub`). It reads datagrams
+/// and hands each to the subscriber it belongs to, made on the first
+/// `subscribe` or `describe` of an (address, id) pair.
+locus __StdApiUdpEndpoint {
+    params {
+        bind: String = "";
+        tid: Int = 0;
+        fd: Int = -1;
+        started: Bool = false;
+        stopped: Bool = false;
+        next_conn: Int = 1;
+        known: __StdApiUdpKnowns = __StdApiUdpKnowns { };
+    }
+    bus {
+        subscribe __ApiHubOutT as on_ctl where key == self.tid;
+        subscribe __ApiHubUpT as on_up where key == self.tid;
+        publish __ApiHubOutT;
+    }
+    birth() {
+        let colon = std::str::index_of(self.bind, ":");
+        let mut host = "127.0.0.1";
+        let mut port = 0;
+        if colon >= 0 {
+            host = self.bind[0..colon];
+            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or 0;
+        }
+        self.fd = std::io::udp::bind(host, port) or -1;
+        if self.fd < 0 {
+            // the structural failure of a binding that cannot be realized
+            eprintln("api: udp::Hub could not listen on " + self.bind);
+            std::process::exit(2);
+        }
+        // a read that gives up now and then, so the loop sees a stop
+        std::io::udp::set_recv_timeout(self.fd, 50ms) or discard;
+    }
+    @unbounded
+    run() {
+        // (as the WebSocket listener: nothing is read before the core is there)
+        while !self.started && !self.stopped && !self.draining {
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
+            std::time::sleep(2ms);
+        }
+        while !self.stopped && !self.draining {
+            let b = std::io::udp::recv_with_source(self.fd, 65536) or std::bytes::from_string("");
+            if self.stopped || self.draining { break; }
+            if len(b) > 0 {
+                self.route_datagram(std::str::from_bytes(b), std::io::udp::last_source_host(), std::io::udp::last_source_port());
+            }
+        }
+        // The subscribers send through this socket: it is theirs for the instant
+        // they take to say `closed` to each other's addresses, and then it is released.
+        std::time::sleep(150ms);
+        self.release_socket();
+    }
+    fn route_datagram(text: String, host: String, port: Int) {
+        if !std::json::valid_object(text) { return; }
+        let mut id = std::json::find_field_raw(text, "id");
+        if len(id) == 0 { id = "null"; }
+        let key = host + ":" + to_string(port) + "/" + id;
+        let mut conn = self.conn_of(key);
+        if conn == 0 {
+            // a subscriber exists from its first subscribe or describe; any other
+            // datagram of an unknown id is nobody's
+            let kind = std::json::find_string_field(text, "type");
+            if kind != "subscribe" && kind != "describe" { return; }
+            conn = self.next_conn;
+            self.next_conn = conn + 1;
+            self.remember(__StdApiUdpKnown { conn: conn, key: key });
+            __StdApiWsPeer { mode: 1, ufd: self.fd, host: host, port: port, cid: id, conn: conn, tid: self.tid, route: self.tid * 4294967296 + conn };
+        }
+        __ApiHubOutT <- __StdApiHubOut { key: self.tid * 4294967296 + conn, kind: 20, a: 0, b: 0, text: text };
+    }
+    fn conn_of(key: String) -> Int {
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.known.get(k) or __StdApiUdpKnown { };
+            if e.conn != 0 && e.key == key { return e.conn; }
+            k = k + 1;
+        }
+        return 0;
+    }
+    fn remember(e: __StdApiUdpKnown) {
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let held = self.known.get(k) or __StdApiUdpKnown { };
+            if held.conn == 0 {
+                self.known.set(k, e) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.known.push(e);
+    }
+    // a subscriber that has ended is forgotten, so its id may be used again
+    fn on_up(u: __StdApiHubUp) {
+        if u.kind != 4 { return; }
+        let n = self.known.len();
+        let mut k = 0;
+        while k < n {
+            let e = self.known.get(k) or __StdApiUdpKnown { };
+            if e.conn == u.conn {
+                self.known.set(k, __StdApiUdpKnown { }) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+    }
+    accept(c: __StdApiWsPeer) { }
+    release(c: __StdApiWsPeer) { }
+    fn on_ctl(o: __StdApiHubOut) {
+        if o.kind == 7 { self.started = true; }
+        if o.kind == 1 { self.stopped = true; }
+    }
+    fn release_socket() {
+        if self.fd < 0 { return; }
+        let fd = self.fd;
+        self.fd = -1;
+        let _ = std::io::udp::__close(fd);
+    }
+    dissolve() {
+        self.release_socket();
+    }
+}
+
 /// What the core knows of a connection: who the sources named at connect
 /// and the streams admitted to it (a bit per stream).
 type __StdApiHubConn {
@@ -773,12 +1010,14 @@ locus __StdApiHubPends {
 
 /// The hub (`std::api::ws::Hub`). `tid` and `rows` are the compiler's,
 /// written into the literal with the sources' optional extensions.
-locus __StdApiWsHub {
+locus __StdApiHub {
     params {
         bind: String = "";
         principals: std::api::BearerSource = std::api::NoBearer { };
         roles: std::api::RoleSource = __StdApiNoRoles { };
         name: String = "";
+        // "ws", or "udp" for a `udp::Hub` (the compiler writes it)
+        kind: String = "ws";
         tid: Int = 0;
         rows: std::api::HubRows = __StdApiNoHubRows { };
         expiring: std::api::ExpiringBearerSource = __StdApiNoExpiry { };
@@ -1084,7 +1323,7 @@ locus __StdApiWsHub {
     }
     fn attach(exposure: Int) -> String {
         self.rpc = exposure;
-        return "ws";
+        return self.kind;
     }
     // The raw message is the connection's credential, a tab, and the frame
     // the client sent.

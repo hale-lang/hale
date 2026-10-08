@@ -395,9 +395,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "unix", "Rpc"], "__StdApiUnixRpc"),
     (&["std", "api", "unix", "Listener"], "__StdApiUnixListener"),
     // GH #1417 (R5): the stream hub (api_hub.hl).
-    (&["std", "api", "ws", "Hub"], "__StdApiWsHub"),
+    (&["std", "api", "ws", "Hub"], "__StdApiHub"),
+    (&["std", "api", "udp", "Hub"], "__StdApiHub"),
     (&["std", "api", "ws", "Listener"], "__StdApiWsListener"),
-    (&["std", "api", "ws", "Stream"], "__StdApiWsStream"),
+    (&["std", "api", "udp", "Endpoint"], "__StdApiUdpEndpoint"),
     (&["std", "api", "HubRows"], "__StdApiHubRows"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),

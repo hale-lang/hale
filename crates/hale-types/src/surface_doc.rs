@@ -178,15 +178,23 @@ const REFUSALS: [&str; 7] =
 
 /// A stream row's loss statement: the publish contract's delivery and
 /// what its `on_full` sheds.
-fn loss(on_full: &str) -> String {
+fn loss(on_full: &str, transport: &str) -> String {
     let sheds = match on_full {
         "drop_new" => "drop_new sheds the frame being published",
         _ => "drop_old sheds the oldest undelivered frame",
     };
+    // over datagrams the network sheds too: a gap in seq is a frame shed here or lost on the way
+    let (order, gap) = if transport == "udp" {
+        (
+            "at most once per admitted subscriber, in publish order as sent (a datagram may be lost or reordered by the network)",
+            "so a gap in seq is the frames shed or lost",
+        )
+    } else {
+        ("at most once per admitted subscriber, in publish order", "so a gap in seq is the frames shed")
+    };
     format!(
-        "at most once per admitted subscriber, in publish order; {sheds}, and seq counts every event offered to the \
-         subscription, so a gap in seq is the frames shed; a subscription invalidated by expiry or revocation loses \
-         what it had buffered"
+        "{order}; {sheds}, and seq counts every event offered to the subscription, {gap}; a subscription invalidated by \
+         expiry or revocation loses what it had buffered"
     )
 }
 
@@ -256,8 +264,40 @@ fn outcomes(transport: &str) -> Result<J, String> {
                 ("transport_failure", s("the connection closes without a closed frame")),
             ]))
         }
+        "udp" => {
+            // the `ws` frames minus the connection: each datagram carries the id the subscriber chose
+            let frame = |t: &str, fields: &[&str]| o(vec![("type", s(t)), ("fields", strs(fields.iter().copied()))]);
+            Ok(o(vec![
+                ("transport", s("udp")),
+                ("subscribe", frame("subscribe", &["topic", "id", "token"])),
+                ("subscribed", frame("subscribed", &["topic", "id"])),
+                (
+                    "refusal",
+                    o(vec![
+                        ("type", s("refusal")),
+                        ("fields", strs(["topic", "id", "refusal"])),
+                        ("kinds", strs(["malformed", "unauthenticated", "unauthorized", "shutting_down"])),
+                    ]),
+                ),
+                ("event", frame("event", &["topic", "id", "seq", "payload"])),
+                (
+                    "unauthorized",
+                    o(vec![
+                        ("type", s("unauthorized")),
+                        ("fields", strs(["topic", "id", "reason"])),
+                        ("reasons", strs(["expired", "revoked"])),
+                    ]),
+                ),
+                (
+                    "closed",
+                    o(vec![("type", s("closed")), ("fields", strs(["id", "reason"])), ("reasons", strs(["shutting_down"]))]),
+                ),
+                ("unsubscribe", frame("unsubscribe", &["id"])),
+                ("transport_failure", s("datagrams may be lost or reordered; a gap in seq is a frame shed or lost")),
+            ]))
+        }
         other => Err(format!(
-            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, unix and a hub's ws)"
+            "the `{other}` transport has no outcome encoding in v1 (spec/api.md § Outcomes: http, unix, and a hub's ws and udp)"
         )),
     }
 }
@@ -354,7 +394,7 @@ fn source(src: Option<&Source>, kernel: bool) -> J {
     }
 }
 
-fn stream(st: &Stream, book: &mut Book<'_, '_>, base: &str) -> J {
+fn stream(st: &Stream, book: &mut Book<'_, '_>, base: &str, transport: &str) -> J {
     let on_full = st.on_full.as_deref().unwrap_or("drop_old");
     o(vec![
         ("topic", s(&st.topic)),
@@ -364,7 +404,7 @@ fn stream(st: &Stream, book: &mut Book<'_, '_>, base: &str) -> J {
         ("codec", s(&st.codec)),
         ("bound", J::Int(st.bound.unwrap_or(0) as i64)),
         ("on_full", s(on_full)),
-        ("loss", s(&loss(on_full))),
+        ("loss", s(&loss(on_full, transport))),
         ("replay", J::Bool(st.replay)),
         ("requires", strs(st.requires.iter().map(|(r, _)| r.as_str()))),
     ])
@@ -446,7 +486,7 @@ pub fn inventory(rows: &SurfaceRows, schemas: &Schemas<'_>) -> J {
         .into_iter()
         .map(|h| {
             let t = &h.transport;
-            let streams: Vec<J> = h.streams.iter().map(|st| stream(st, &mut book, DOC_REFS)).collect();
+            let streams: Vec<J> = h.streams.iter().map(|st| stream(st, &mut book, DOC_REFS, &t.kind)).collect();
             o(vec![
                 ("exposure", s(&hub_id(h))),
                 ("name", s(t.name.as_deref().unwrap_or(""))),
@@ -543,9 +583,9 @@ pub fn description(
             .collect();
         let streams: Vec<J> = hubs
             .iter()
-            .flat_map(|h| h.streams.iter())
-            .filter(|st| holds_all(holds, &st.requires))
-            .map(|st| stream(st, &mut book, DOC_REFS))
+            .flat_map(|h| h.streams.iter().map(move |st| (h, st)))
+            .filter(|(_, st)| holds_all(holds, &st.requires))
+            .map(|(h, st)| stream(st, &mut book, DOC_REFS, &h.transport.kind))
             .collect();
         return Ok(o(vec![
             ("description", J::Int(1)),
@@ -584,7 +624,7 @@ pub fn description(
             .streams
             .iter()
             .filter(|st| holds_all(holds, &st.requires))
-            .map(|st| stream(st, &mut book, DOC_REFS))
+            .map(|st| stream(st, &mut book, DOC_REFS, &t.kind))
             .collect();
         return Ok(o(vec![
             ("description", J::Int(1)),
@@ -603,7 +643,7 @@ pub fn description(
             ),
             ("members", J::Arr(Vec::new())),
             ("streams", J::Arr(streams)),
-            ("outcomes", outcomes("ws")?),
+            ("outcomes", outcomes(if t.kind == "udp" { "udp" } else { "ws" })?),
             ("schemas", book.render(DOC_REFS)),
             (
                 "notes",
@@ -666,7 +706,7 @@ pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
     let mut types: BTreeMap<String, (String, u64)> = BTreeMap::new();
     for (i, st) in hub.streams.iter().enumerate() {
         let mut book = Book::new(schemas);
-        streams.push(stream(st, &mut book, DOC_REFS).compact());
+        streams.push(stream(st, &mut book, DOC_REFS, &t.kind).compact());
         for (n, ts) in &book.types {
             let json = format!("{}:{}", s(n).compact(), type_schema(ts, DOC_REFS).compact());
             let e = types.entry(n.clone()).or_insert((json, 0));
@@ -679,7 +719,7 @@ pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
         head,
         streams,
         types: types.into_iter().map(|(n, (j, m))| (n, j, m)).collect(),
-        outcomes: outcomes("ws").map(|j| j.compact()).unwrap_or_default(),
+        outcomes: outcomes(if t.kind == "udp" { "udp" } else { "ws" }).map(|j| j.compact()).unwrap_or_default(),
         notes: o(vec![
             ("authorization", s(HUB_AUTHORIZATION)),
             ("lifecycle", s(HUB_LIFECYCLE)),
