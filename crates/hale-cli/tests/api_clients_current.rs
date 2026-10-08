@@ -91,3 +91,37 @@ fn a_client_is_the_same_bytes_on_two_runs_and_two_checkouts() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two JSON keys that spell one Hale identifier (`a-b`, `a_b`) are two fields of the client: the
+/// first keeps `a_b`, the second is `a_b_2`, the client checks, `--check` accepts it, and both
+/// wire keys round-trip.
+#[test]
+fn keys_that_spell_one_identifier_are_two_fields_with_both_wire_keys() {
+    let dir = std::env::temp_dir().join(format!("hale_api_client_keys_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("program.hl");
+    std::fs::write(
+        &program,
+        "type Payload {\n    a: Int `json:\"a-b\"`;\n    b: Int `json:\"a_b\"`;\n}\nlocus Echo { fn echo(p: Payload) -> Payload { return p; } }\napi Public { rpc Echo::echo; }\nfn main() { }\n",
+    )
+    .unwrap();
+    let client = dir.join("client.hl");
+    let (p, c) = (program.to_str().unwrap(), client.to_str().unwrap());
+    let made = hale(&["api", "client", "--surface", "Public", "--lang", "hale", "--out", c, p]);
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let text = std::fs::read_to_string(&client).unwrap();
+    assert!(text.contains("a_b: Int;") && text.contains("a_b_2: Int;"), "{text}");
+    let checked = hale(&["check", c]);
+    assert!(checked.status.success(), "{}{}", String::from_utf8_lossy(&checked.stdout), String::from_utf8_lossy(&checked.stderr));
+    let current = hale(&["api", "client", "--surface", "Public", "--lang", "hale", "--check", c, p]);
+    assert!(current.status.success(), "{}", String::from_utf8_lossy(&current.stderr));
+    // both keys cross the wire: the encoder writes them, the decoder reads them
+    let probe = dir.join("probe.hl");
+    let main = "\nfn main() {\n    println(api_enc_Payload(Payload { a_b: 1, a_b_2: 2 }));\n    let d = api_dec_Payload(\"{\\\"a-b\\\":5,\\\"a_b\\\":7}\");\n    println(to_string(d.a_b) + \" \" + to_string(d.a_b_2));\n}\n";
+    std::fs::write(&probe, format!("{text}{main}")).unwrap();
+    let ran = hale(&["run", probe.to_str().unwrap()]);
+    assert!(ran.status.success(), "{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "{\"a-b\":1,\"a_b\":2}\n5 7\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -301,6 +301,14 @@ fn run_client(rest: &[String]) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
+    // a generator that mishandles a shape must not hand out what the checker refuses, nor let it
+    // pass `--check` as current
+    if lang == "hale" {
+        if let Err(why) = check_generated_client(&text) {
+            eprintln!("hale api client: the {lang} client generated for {surface} does not check (a generator bug), so it is not written: {why}");
+            return ExitCode::from(1);
+        }
+    }
     if let Some(file) = check {
         let path = PathBuf::from(&file);
         return match std::fs::read_to_string(&path) {
@@ -341,5 +349,39 @@ fn run_client(rest: &[String]) -> ExitCode {
             print!("{text}");
             ExitCode::SUCCESS
         }
+    }
+}
+
+/// The checker's verdict on a generated Hale client: the first error, with its line.
+fn check_generated_client(text: &str) -> Result<(), String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!("hale_api_client_check_{}_{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a scratch directory: {e}"))?;
+    let file = dir.join("client.hl");
+    let verdict = std::fs::write(&file, text).map_err(|e| format!("cannot write the scratch client: {e}")).and_then(|()| {
+        let snap = load_for_check(&file, &[], None).map_err(|_| "the client does not load".to_string())?;
+        let diags = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        };
+        match diags.iter().find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim) {
+            Some(d) => Err(format!("line {}: {}", d.span.line_col(text).0, d.message)),
+            None => Ok(()),
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    verdict
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_generated_client;
+
+    #[test]
+    fn a_generated_client_that_does_not_check_is_refused() {
+        assert!(check_generated_client("type A {\n    a_b: Int;\n    b: Int;\n}\n").is_ok());
+        let why = check_generated_client("type A {\n    a_b: Int;\n    a_b: Int;\n}\n").unwrap_err();
+        assert!(why.contains("a_b") && why.contains("line 3"), "{why}");
     }
 }

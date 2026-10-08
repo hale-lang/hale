@@ -72,11 +72,33 @@ fn decode_field(f: &FieldSchema, json: &str, key: &str, what: &str) -> Result<St
     }
 }
 
+/// The field identifier of each JSON key of a struct, in key order. `field_ident` alone is not
+/// injective (`a-b` and `a_b` are both `a_b`), so the first key to want an identifier keeps it and a
+/// later one gets `_2`, `_3`, ...; the declaration, the encoder and the decoder all read this one
+/// mapping, and each wire key stays the one the row names.
+fn field_idents(t: &TypeSchema) -> Vec<String> {
+    let mut used = BTreeSet::new();
+    t.properties
+        .iter()
+        .map(|(key, _)| {
+            let natural = field_ident(key);
+            let mut ident = natural.clone();
+            let mut n = 2;
+            while !used.insert(ident.clone()) {
+                ident = format!("{natural}_{n}");
+                n += 1;
+            }
+            ident
+        })
+        .collect()
+}
+
 fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
     let ident = type_ident(name);
+    let idents = field_idents(t);
     let mut out = format!("type {ident} {{\n");
-    for (key, f) in &t.properties {
-        out.push_str(&format!("    {}: {};\n", field_ident(key), hale_type(f, &format!("{name}.{key}"))?));
+    for ((key, f), field) in t.properties.iter().zip(&idents) {
+        out.push_str(&format!("    {field}: {};\n", hale_type(f, &format!("{name}.{key}"))?));
     }
     out.push_str("}\n\n");
     // the encoder: one compact object, the fields in declaration order
@@ -85,9 +107,9 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
         out.push_str("    return \"{}\";\n");
     } else {
         let mut parts = Vec::new();
-        for (i, (key, f)) in t.properties.iter().enumerate() {
+        for (i, ((key, f), field)) in t.properties.iter().zip(&idents).enumerate() {
             let sep = if i == 0 { "{" } else { "," };
-            let value = encode(f, &format!("v.{}", field_ident(key)), &format!("{name}.{key}"))?;
+            let value = encode(f, &format!("v.{field}"), &format!("{name}.{key}"))?;
             parts.push(format!("{} + {value}", hale_lit(&format!("{sep}{}:", json_quote(key)))));
         }
         out.push_str(&format!("    return {} + \"}}\";\n", parts.join(" + ")));
@@ -96,8 +118,8 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
     // the decoder: every field read by its key, absent ones as the type's zero
     out.push_str(&format!("fn api_dec_{ident}(json: String) -> {ident} {{\n"));
     out.push_str(&format!("    return {ident} {{\n"));
-    for (key, f) in &t.properties {
-        out.push_str(&format!("        {}: {},\n", field_ident(key), decode_field(f, "json", key, &format!("{name}.{key}"))?));
+    for ((key, f), field) in t.properties.iter().zip(&idents) {
+        out.push_str(&format!("        {field}: {},\n", decode_field(f, "json", key, &format!("{name}.{key}"))?));
     }
     out.push_str("    };\n}\n\n");
     Ok(out)

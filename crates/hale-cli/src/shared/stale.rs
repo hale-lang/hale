@@ -361,7 +361,7 @@ mod tests {
         std::fs::remove_file(root.join("dna/core/legs/seed.hl")).unwrap();
         date(&root.join("dna/core/legs"), t0);
         assert_eq!(stale_dna(&root, &embedded, built), Some(Staleness::Stale), "the count");
-        std::fs::remove_dir(root.join("dna/core/legs")).unwrap();
+        std::fs::remove_dir_all(root.join("dna/core/legs")).unwrap();
         assert_eq!(stale_dna(&root, &embedded, built), None, "a missing directory is not digested");
         let _ = std::fs::remove_dir_all(&root);
 
