@@ -275,6 +275,30 @@ fn a_connection_that_fails_ends_that_connection_and_the_listener_serves_on() {
 }
 
 #[test]
+fn a_connection_that_resets_does_not_fail_a_read_in_progress_on_another() {
+    // Two connections of one listener share its pool, each parked in a read
+    // of a request head. One is reset (RST), failing its read; the other,
+    // half through its request, then finishes it and must be answered.
+    let server = Server::start(&public(16), &[]);
+    server.ready();
+    let rec = recording("result");
+    let text = request_text(&rec.method, &rec.path, &rec.headers, Some(&rec.body));
+    let (head, tail) = text.split_at(text.len() / 2);
+    for round in 0..6 {
+        let mut waiting = send(server.port, head);
+        let vanishing = send(server.port, "POST /call/Orders::place HTTP/1.1\r\nHost: x\r\nAuth");
+        std::thread::sleep(Duration::from_millis(80));
+        vanishing.reset();
+        std::thread::sleep(Duration::from_millis(80));
+        waiting.more(tail);
+        let got = waiting.response_within(15_000).unwrap_or_else(|| panic!("round {round}: closed without a response"));
+        assert_eq!(got.status, rec.status, "round {round}: the connection that was mid-read is served: {}", got.body);
+    }
+    let done = server.finish();
+    assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
+}
+
+#[test]
 fn a_listener_that_cannot_bind_fails_the_boot() {
     // a port something holds
     let held = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
