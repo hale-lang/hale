@@ -161,13 +161,19 @@ fn the_replay_gate_refuses_what_it_refused() {
     );
 }
 
-/// api: 6 of 353 rows.
+/// api: 6 of 361 rows. Since the head serves a surface (R3) the
+/// program-alone rows carry the surface's generated receiver methods
+/// (`Commands::birth`, `::dissolve`, `::__rpc_call_1`, `::__rpc_ev`,
+/// `::__rpc_hello_1`) and the rows adapter's `check`, plus `held_elsewhere`;
+/// the own-rows projection closing `decl_index` up restored the six
+/// generated ones the shifted index had dropped. The cross-seed rows are
+/// unchanged.
 #[test]
 fn api() {
     pinned(
         "api",
-        353,
-        355,
+        361,
+        363,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
