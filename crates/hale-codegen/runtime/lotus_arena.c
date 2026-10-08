@@ -6704,6 +6704,15 @@ typedef struct lotus_bus_queue {
      * owner-bound, matching the mailbox / pool-ring channels which
      * were always owner-executed. */
     pthread_t         owner;
+    /* The owner's bounded wait for work (lotus_bus_queue_idle_wait).
+     * `idle` is set while the owner waits; a foreign-thread enqueue
+     * that finds it set writes `wake_w`, which ends the wait. The same
+     * wake-fd pattern an async_io pool uses (an eventfd on Linux, a
+     * non-blocking pipe elsewhere); -1 when the fd could not be made,
+     * and the wait is then a plain bounded sleep. */
+    _Atomic int       idle;
+    int               wake_r;
+    int               wake_w;
 } lotus_bus_queue_t;
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
@@ -6781,6 +6790,23 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     q->tail = 0;
     pthread_mutex_init(&q->lock, NULL);
     q->owner = pthread_self();
+    atomic_init(&q->idle, 0);
+    q->wake_r = q->wake_w = -1;
+#if defined(__linux__)
+    q->wake_r = q->wake_w = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#elif !defined(__wasm__)
+    {
+        int fds[2];
+        if (pipe(fds) == 0) {
+            for (int i = 0; i < 2; i++) {
+                fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+                fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK);
+            }
+            q->wake_r = fds[0];
+            q->wake_w = fds[1];
+        }
+    }
+#endif
     return q;
 }
 
@@ -7374,7 +7400,19 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
-    if (locked) pthread_mutex_unlock(&q->lock);
+    if (locked) {
+        pthread_mutex_unlock(&q->lock);
+        /* The owner is waiting for work (lotus_bus_queue_idle_wait):
+         * end its wait. The cell is in the queue before this load, and
+         * the waiter sets `idle` before it looks, so one of us sees the
+         * other. */
+        if (atomic_load_explicit(&q->idle, memory_order_seq_cst)
+            && q->wake_w >= 0) {
+            uint64_t one = 1;
+            ssize_t w = write(q->wake_w, &one, sizeof one);
+            (void)w;
+        }
+    }
 }
 
 LOTUS_HOT_ALIGN
@@ -7979,8 +8017,45 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     }
 }
 
+/* The owner's bounded wait for work: returns when a foreign thread
+ * enqueues on `q`, or after `ns` nanoseconds, then drains the queue.
+ * The only place main waits on its queue; it is never unbounded and
+ * never a busy loop. A caller off the owner thread, or a queue with no
+ * wake fd, gets the same bounded wait without the wake. */
+void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
+    if (!q) return;
+    if (ns < 0) ns = 0;
+    int ready = 0;
+    int can_wake = q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner);
+    if (can_wake) {
+        atomic_store_explicit(&q->idle, 1, memory_order_seq_cst);
+        pthread_mutex_lock(&q->lock);
+        ready = q->head < q->tail;
+        pthread_mutex_unlock(&q->lock);
+    }
+    if (!ready && ns > 0) {
+        struct pollfd pfd = { .fd = can_wake ? q->wake_r : -1,
+                              .events = POLLIN, .revents = 0 };
+#if defined(__linux__)
+        struct timespec ts = { .tv_sec = ns / 1000000000,
+                               .tv_nsec = ns % 1000000000 };
+        ppoll(&pfd, 1, &ts, NULL);
+#else
+        poll(&pfd, 1, (int)((ns + 999999) / 1000000));
+#endif
+    }
+    if (can_wake) {
+        atomic_store_explicit(&q->idle, 0, memory_order_seq_cst);
+        uint64_t buf[8];
+        while (read(q->wake_r, buf, sizeof buf) > 0) {}
+    }
+    lotus_bus_queue_drain(q);
+}
+
 void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
     if (!q) return;
+    if (q->wake_r >= 0) close(q->wake_r);
+    if (q->wake_w >= 0 && q->wake_w != q->wake_r) close(q->wake_w);
     pthread_mutex_destroy(&q->lock);
     if (q->cells) free(q->cells);
     free(q);
@@ -10727,8 +10802,9 @@ static void lotus_failure_service_cell(void *self_ptr, void *payload) {
 
 /* Wake a domain that may be parked on its queue, without blocking: a
  * full queue means a consumer that is not parked, which services between
- * cells. Main is never parked on its queue; it, and every join and wait,
- * is woken by the post's broadcast. */
+ * cells. Main waits on its queue only inside lotus_bus_queue_idle_wait,
+ * a bounded wait that a foreign-thread delivery ends; it, and every join
+ * and wait, is woken by the post's broadcast. */
 static void lotus_domain_wake(lotus_domain_t *d) {
     lotus_bus_cell_t cell;
     memset(&cell, 0, offsetof(lotus_bus_cell_t, payload_inline));
