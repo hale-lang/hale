@@ -105,9 +105,22 @@ pub(crate) fn is_h2_symbol(name: &str) -> bool {
     name.starts_with("lotus_h2_")
 }
 
-/// Write the headers under `dir` unless a directory of that name is there.
+/// Whether `dir` holds every header, byte for byte.
+fn staged(dir: &std::path::Path) -> bool {
+    HEADERS.iter().all(|(name, text)| {
+        std::fs::read_to_string(dir.join(name))
+            .map(|t| t == *text)
+            .unwrap_or(false)
+    })
+}
+
+/// Write the headers under `dir` unless they are already there, complete.
+///
+/// A directory that is there but incomplete (a cache restored from a run
+/// whose staging was cut short, a staging killed midway) is moved aside and
+/// staged again: its presence alone proves nothing.
 fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
-    if dir.join("nghttp2/nghttp2.h").exists() {
+    if staged(dir) {
         return Ok(());
     }
     // One staging directory per call, not per process: two builds in one
@@ -116,7 +129,8 @@ fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
     // rename, and the directory that won could be missing a header.
     static STAGINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = STAGINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = dir.with_extension(format!("tmp{}-{n}", std::process::id()));
+    let pid = std::process::id();
+    let tmp = dir.with_extension(format!("tmp{pid}-{n}"));
     let io = |what: &str, e: std::io::Error| {
         CodegenError::Link(format!("stage the nghttp2 headers ({what}): {e}"))
     };
@@ -125,12 +139,18 @@ fn stage_headers(dir: &PathBuf) -> Result<(), CodegenError> {
     for (name, text) in HEADERS {
         std::fs::write(tmp.join(name), text).map_err(|e| io(name, e))?;
     }
+    if dir.exists() && !staged(dir) {
+        let aside = dir.with_extension(format!("broken{pid}-{n}"));
+        if std::fs::rename(dir, &aside).is_ok() {
+            let _ = std::fs::remove_dir_all(&aside);
+        }
+    }
     // a concurrent build may have put the directory there first: it holds
     // the same bytes
     if std::fs::rename(&tmp, dir).is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
-    if dir.join("nghttp2/nghttp2.h").exists() {
+    if staged(dir) {
         Ok(())
     } else {
         Err(CodegenError::Link(
@@ -223,6 +243,26 @@ mod tests {
                 );
             }
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory that is there but incomplete, as a cache restored from a
+    /// cut-short staging leaves it, is staged again rather than trusted.
+    #[test]
+    fn an_incomplete_directory_is_staged_again() {
+        let root =
+            std::env::temp_dir().join(format!("hale-h2-stage-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("inc");
+        std::fs::create_dir_all(dir.join("nghttp2")).unwrap();
+        std::fs::write(dir.join("nghttp2/nghttp2.h"), "not the header").unwrap();
+        stage_headers(&dir).unwrap();
+        assert!(staged(&dir));
+        let (name, text) = HEADERS[0];
+        std::fs::remove_file(dir.join(name)).unwrap();
+        assert!(!staged(&dir));
+        stage_headers(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
