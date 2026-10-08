@@ -161,19 +161,23 @@ fn the_replay_gate_refuses_what_it_refused() {
     );
 }
 
-/// api: 6 of 361 rows. Since the head serves a surface (R3) the
+/// api: 6 of 287 rows. Since the head serves a surface (R3) the
 /// program-alone rows carry the surface's generated receiver methods
 /// (`Commands::birth`, `::dissolve`, `::__rpc_call_1`, `::__rpc_ev`,
 /// `::__rpc_hello_1`) and the rows adapter's `check`, plus `held_elsewhere`;
 /// the own-rows projection closing `decl_index` up restored the six
 /// generated ones the shifted index had dropped. The cross-seed rows are
-/// unchanged.
+/// unchanged. The row total fell from 361 (363) to 287 (289) when the
+/// cutover (R4) removed the bus subscriptions from `dna/api`: the 13
+/// command topics and the 8 Knowledge topics, each a handler method
+/// with the fns only it reached, so the manifest lost 74 rows. None of
+/// the six cross-seed rows listed is among them.
 #[test]
 fn api() {
     pinned(
         "api",
-        361,
-        363,
+        287,
+        289,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
