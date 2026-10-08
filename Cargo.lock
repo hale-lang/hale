@@ -112,6 +112,7 @@ dependencies = [
  "hale-types",
  "inkwell",
  "libc",
+ "serde_json",
 ]
 
 [[package]]

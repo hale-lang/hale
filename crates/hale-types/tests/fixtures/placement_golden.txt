@@ -1210,6 +1210,39 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.maker	Maker	main	default
 row	__StdApiWsStream@binding1	__StdApiWsStream	pinned:__StdApiWsStream@binding1	binding
+shared	dynamic	sites in the seed #50900ea0
+
+== crates/hale-codegen/tests/api_hub_desk.rs#b1c8875a
+root	Desk	the entry
+domain	pool:__api_ws	async_io
+domain	pool:work	async_io
+domain	pinned:__StdApiWsStream@binding1
+domain	pinned:__StdApiWsStream@binding2
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.hub_roles	Grants	main	default
+row	Desk@literal1.maker	Maker	main	default
+row	Desk@literal1.orders	Orders	pool:work	entry	off owner
+row	__StdApiWsStream@binding1	__StdApiWsStream	pinned:__StdApiWsStream@binding1	binding
+row	__StdApiWsStream@binding2	__StdApiWsStream	pinned:__StdApiWsStream@binding2	binding
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
+dynamic	__StdApiWsPeer	on pool:__api_ws
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
+
+== crates/hale-codegen/tests/api_hub_streams.rs#b9bf63e6
+root	Desk	the entry
+domain	pool:__api_ws	async_io
+domain	pinned:__StdApiWsStream@binding1
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.hub_roles	Grants	main	default
+row	Desk@literal1.maker	Maker	main	default
+row	__StdApiWsStream@binding1	__StdApiWsStream	pinned:__StdApiWsStream@binding1	binding
+shared	dynamic	sites in the seed #50900ea0
 
 == crates/hale-codegen/tests/api_runtime.rs#9876407f
 root	App	the entry
@@ -15265,6 +15298,11 @@ dynamic	__lib_dna__core___workspace__MutationGateway	on main
 == shared sites in the seed #38f3010b
 dynamic	__ApiPeer	on pool:__api_io
 dynamic	__StdIoTcpStream	on pool:__api_io
+
+== shared sites in the seed #50900ea0
+dynamic	__StdApiWsPeer	on pool:__api_ws
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w

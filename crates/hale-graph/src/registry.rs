@@ -1299,6 +1299,8 @@ pub const FAMILIES: &[Family] = &[
             "crates/hale-cli/tests/api_contract_fixtures.rs",
             "crates/hale-types/tests/api_hub_check.rs (one refusal per law of a hub binding in its wording, the binding admitted by the check and the build)",
             "crates/hale-codegen/tests/api_hub.rs (a publish reaches the hub once each, the address bound in the program's birth, a stopped hub releases it)",
+            "crates/hale-codegen/tests/api_hub_streams.rs (the witness's stream half over sockets: admission and its refusals, delivery with increasing seq, revocation with nothing delivered after, expiry at its instant, closed at stop(), the served description against the fixtures, ASan)",
+            "crates/hale-codegen/tests/api_hub_desk.rs (drop_old and drop_new shedding with the seq gap, rpcs on a subscriber's connection, ASan)",
             "crates/hale-types/tests/api_rows_check.rs (one refusal per law in its wording, law 6's statement, the fixture admitted)",
             "crates/hale-types/tests/surface_rows.rs (the fixture's rows, digests and model rows; an `@rpc` row and an `rpc` line are one row)",
             "crates/hale-syntax/tests/api_surface_parse.rs (both spellings, the serve site, the hub binding, the refusals)",

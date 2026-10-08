@@ -737,7 +737,15 @@ fn program_declaration_stdlib_files_checked_as_themselves() {
                 let loops: Vec<_> = f.loops.iter().map(|l| (l.span.start.0, l.span.end.0)).collect();
                 (sites, loops)
             };
+            // A file that names the api runtime (`api_hub.hl`) has it appended
+            // before the check (`rpc_expand`), as a program that serves does;
+            // what the runtime declares is the stdlib's, never the file's own.
+            let runtime = top_level_names(&hale_syntax::parse_source(hale_stdlib::API_RUNTIME_SOURCE).expect("the runtime parses"));
             for (k, f) in &alone.fns {
+                let shown = k.display();
+                if runtime.iter().any(|n| shown == *n || shown.starts_with(&format!("{n}::"))) && t.ends_with("api_hub.hl") {
+                    continue;
+                }
                 let row = now.fns.get(k).unwrap_or_else(|| panic!("{t}: {} has no row", k.display()));
                 assert!(now.is_own(k), "{t}: {} is the copy's", k.display());
                 assert_eq!(spans(row), spans(f), "{t}: {} is not the program's body", k.display());
