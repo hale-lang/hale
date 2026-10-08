@@ -1680,6 +1680,80 @@ than the transport's outcome (§ Outcomes). `tests/api-contract/` is what
 they are held to, and `crates/hale-cli/tests/api_clients.rs` runs them
 against one program served over a socket, HTTP, MCP and a hub.
 
+### Generated specs and clients
+
+The rows carry everything a client needs: the shapes, the five outcomes
+(§ Outcomes), the digest, the roles of each member and the stream rows. A
+spec or a client of a surface is therefore **generated from the rows, never
+written by hand**, and a committed one names its surface's digest and is
+refused when it drifts.
+
+**`hale api export --surface NAME [--out DIR | --check DIR] [target]`** writes
+the surface's bundle:
+
+| file | content |
+|---|---|
+| `NAME.description.json` | the surface-wide document: `"inventory": 1` (the description schema's inventory form) restricted to the surface: its digest and every member with its `requires`, the exposures that serve it, every hub of the program with its stream rows, and the schemas they name |
+| `NAME.openapi.json`, `NAME.json-schema.json`, `NAME.mcp.json` | the forms of § The description, as `check --api --surface NAME --openapi`, `--json-schema` and `--mcp` print them |
+| `DIGEST` | two lines: the surface's digest (`fnv1a64:` and sixteen hex digits) and `hale <version>`, the compiler that wrote it |
+
+`--check DIR` writes nothing and exits 1 when the committed bundle is not what
+the surface now generates, naming the digest that moved (the first line of
+`DIGEST`) and each file that differs or is missing. The compiler's version in
+`DIGEST` is the bundle's provenance and is not compared: a bundle another
+release wrote that still reads the same is current.
+
+**The determinism rule.** A generator is a pure function of the rows and the
+schemas they name: it reads no path, no clock and no environment, so the same
+surface yields the same bytes on any run and any checkout. Two consequences
+bind the documents. An imported type is named by the path its declaration has
+under the import alias (`lib::Item`, in a schema's name, a `$ref` and an
+`x-hale-type`), never by the cross-seed mangled name, which embeds the
+library's location. And a tool, a path or a schema is named by what the
+program declares, in an order the rows fix (members by name as bytes, schemas
+by name).
+
+**`hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE]
+[target]`** writes a client of the surface (to stdout without `--out`). A
+client:
+
+- is typed by the rows: a type for every struct a member or a stream names (a
+  quantity, an identity or a range crosses as the integer it counts; an enum or
+  any shape the JSON codec does not carry is refused, never approximated), and
+  one function per member taking the endpoint, the bearer and the request;
+- sends the surface's digest on every call (`digest` in the line over a socket,
+  `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program
+  that changed under it answers `digest_mismatch` with the digest served;
+- returns the outcomes of § Outcomes: the result, the handler's error (only for a
+  row that declares one, with its schema), the refusal with its kind, reason,
+  the roles it requires and the digest served, the server error, and a
+  connection that never answered, which is never reported as a refusal;
+- subscribes to each stream row of the program's hubs over `ws://`, yielding
+  typed events with their `seq` (a gap is the frames shed) and ending with the
+  hub's `expired`, `revoked` or `closed` frame, a `refusal` when the subscription
+  was not admitted, and a lost connection when the hub ended it with no closed
+  frame.
+
+The **Hale client** is one module (a function `<locus>_<fn>` per member whose
+answer is the enum `<Member>Outcome` = `Result(T) | HandlerError(E) |
+Refusal(ApiRefusal) | ServerError | Lost(why)`, and a locus `<Topic>Subscription`
+per stream with `start`, `next`, `next_for`) speaking `unix:PATH`, `http://` and
+`ws://`; it adds `api_describe` and `api_lists`, which read the description the
+endpoint serves the caller. The **TypeScript client** is one `.ts` module with no
+dependency beyond `fetch` and `WebSocket` (`http://` and `ws://`; a socket is not
+spoken, `fetch` has none): an async function per member answering
+`{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
+`TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
+of events; the credential rides a hub upgrade as `?access_token=`. TLS is not
+spoken by either, and gRPC is the transport R8b adds.
+
+`--check FILE` writes nothing and exits 1 when the committed client is not what
+the surface now generates, naming the digest it was made against when that is
+not the surface's. A client never carries more than the contract: the recorded
+requests of `tests/api-contract/wire/` are what the generated clients write, and
+the recorded replies what they read
+(`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
+
 ## What this replaced
 
 Before R4 a program's API was a structural fact: one entry, `bindings {
