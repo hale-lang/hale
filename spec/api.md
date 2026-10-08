@@ -1727,7 +1727,9 @@ member's or a stream's name in advance. An **endpoint** is a Unix socket
 path (or `unix:PATH`), `http://host:port` (an `http::Rpc` listener, the
 caller named by `--token T` or `HALE_API_TOKEN` as the bearer), `ws://host:port`
 (a hub's listener) or, for `hale mcp --app` only, `mcp://host:port`; a
-TLS scheme is refused, saying so.
+TLS scheme is refused, saying so, and so is `grpc://`: a `grpc::Rpc`
+listener is described by `hale check --api` and called by any gRPC client
+(§ gRPC; Open points).
 
 - **`hale describe ENDPOINT`** prints the exposure's description for the
   caller the endpoint names, the bytes it served (`{"describe": true}`
@@ -1860,6 +1862,13 @@ values).
 
 ## Open points
 
+- **`grpc://` endpoints for `hale describe` and `hale call`**: the
+  clients are Rust and have no HTTP/2 stack (the runtime's nghttp2 is
+  linked into compiled programs, the test suite's client is hand-written
+  frames); a client would need HTTP/2 framing, HPACK, flow control and the
+  gRPC message framing, and the `Describe` method would be its discovery.
+  Until then a gRPC exposure's description is the program's
+  (`hale check --api`) and the stdlib's `hale.api.Description/Describe`.
 - **Additive compatibility**: a client built against a subset of a
   surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,
