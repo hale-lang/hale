@@ -9664,6 +9664,20 @@ dynamic	__lib_dna__host___host__NodeRelay	on unknown (`maximum` passed as a valu
 dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)
 dynamic	__StdIterLines	on unknown (`maximum` passed as a value)
 
+== dna/tests/knowledge_store_test.hl
+dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
+dynamic	__lib_dna__core___memory_store__Pq	on main	in tests
+-- App@main1	App
+row	~	App	main	default
+row	~.j	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.j.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.pg	__lib_dna__core___memory_store__Pq	main	inherited
+row	~.pg.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.pg.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
+shared	dynamic	sites in core #3932612c
+shared	dynamic	sites in core/pond/pq #39e83e0a
+
 == dna/tests/knowledge_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
