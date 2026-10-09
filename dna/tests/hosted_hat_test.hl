@@ -3,8 +3,9 @@
 // The head serves under OIDC (`dna.principal oidc`), the stub issuer in
 // this process. alice is a person the record maps (`dna.oidc.member`, and
 // her unix peer for the socket's commands) and seats at position:agent;
-// bob is a person who holds no lease. The leg presents an ID token from
-// the stub's grant, claims a judgment with it, and reads the hat: the lease is the visibility, so alice's brief carries the practices
+// bob is a person who holds no lease. The leg gets its ID token from
+// `hale dna work login` (the stub's grant, the client secret read from the
+// vault and never printed), claims a judgment with it, and reads the hat: the lease is the visibility, so alice's brief carries the practices
 // and the target. bob's read of the same Work, and alice's before she
 // claimed, are refused naming the lease.
 
@@ -135,8 +136,8 @@ main locus App {
         let deadline = std::time::now() + dna::wait_secs(30);
         let mut up = false;
         while !up && std::time::now() < deadline {
-            let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + self.api + "/api/hale/v1/applications");
-            up = probe.code == 0 && dna::trim_nl(probe.stdout) != "000";
+            let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + self.api + "/.well-known/hale-dna");
+            up = probe.code == 0 && dna::trim_nl(probe.stdout) == "200";
             if !up {
                 let state = std::process::try_wait(self.head) or - 1;
                 std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
@@ -146,9 +147,19 @@ main locus App {
         std::test::assert(up, "the head came up: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
 
         // ---- login: the verb mints alice's token from the stub, the secret never shown
-        let alices = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=alice-sub&client_id=dna-local&client_secret=hosted-hat-test-secret\n" + self.issuer + "/token");
-        let token = std::json::find_string_field(alices.stdout, "id_token");
-        std::test::assert(len(token) > 100, "the stub mints alice's token: " + alices.stdout);
+        let said = self.work("login\n--as\nalice", "", 0);
+        std::test::assert(std::str::contains(said, "export HALE_DNA_ID_TOKEN="), "login prints the export: " + said);
+        std::test::assert(!std::str::contains(said, "hosted-hat-test-secret"), "and never the client secret");
+        let token = dna::trim_nl(said[(std::str::index_of(said, "export HALE_DNA_ID_TOKEN=") + 25)..len(said)]);
+        std::test::assert(len(token) > 100 && !std::str::contains(token, "\n"), "the token is the ID token alone: " + token);
+        // the record maps two persons: none named is a usage the verb says; a person no subject maps is no token
+        let no_name = self.work("login", "", 1);
+        std::test::assert(std::str::contains(no_name, "name the person"), "two persons and none named: " + no_name);
+        let stranger = self.work("login\n--as\nzed", "", 1);
+        std::test::assert(std::str::contains(stranger, "maps no subject"), "no subject, no token: " + stranger);
+        // the vault holds no client secret: no token, and the verb says which entry
+        let bare = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2/empty\" HALE_DNA_API=\"$3\" && unset HALE_VAULT_ADDR && shift 3 && exec \"$@\" dna work login --as alice\nsh\n" + self.app + "\n" + self.vault + "\n" + self.api + "\n" + toolchain());
+        std::test::assert(bare.code == 1 && std::str::contains(bare.stdout, "oidc-client-dna-local"), "no secret in the vault, no token: " + bare.stdout + bare.stderr);
 
         // ---- before the claim nobody holds a lease: alice is refused, naming it
         let early = self.context(identity, work, token);

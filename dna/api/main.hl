@@ -216,6 +216,13 @@ locus Api {
         let mut subject = "";
         let mut serviced = false;
         if self.mode == "oidc" {
+            // which issuer signs this head's people in, for a leg that has no token
+            // yet (`hale dna work login`): what the sign-in redirect says anyway
+            if path == "/.well-known/hale-dna" {
+                let b = std::json::Builder { };
+                b.begin_object(); b.string_field("principal", "oidc"); b.string_field("issuer", self.auth.issuer); b.string_field("client", self.auth.client); b.string_field("login", "/auth/login"); b.end_object();
+                return std::http::Response { status: 200, content_type: "application/json", body: b.result() };
+            }
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
                 let ctx = std::http::build_context(req);

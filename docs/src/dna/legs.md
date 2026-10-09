@@ -27,6 +27,18 @@ verbs reach the head at `--api`, which defaults to `HALE_DNA_API`, else
 their commands over the socket the head names, where the kernel
 vouches for who you are.
 
+Where the head serves OIDC, get the token first. On the local stub
+issuer (the one `dna/face/start.sh` starts), `login` mints it for the
+person the record maps, with the client secret read from the vault
+and never printed:
+
+```sh
+eval "$(hale dna work login --as alice)"   # export HALE_DNA_ID_TOKEN=…
+```
+
+A real issuer is refused: `login` prints the head's `/auth/login` URL
+to sign in at in a browser, and mints nothing.
+
 ```sh
 hale dna task create --judgment assess whether the storage migration is safe to ship
 hale dna work next --as position:agent
@@ -62,6 +74,7 @@ verb's id. Every verb takes `--api`.
 
 | verb | what it does | its flags |
 | --- | --- | --- |
+| `login` | prints `export HALE_DNA_ID_TOKEN=…` for a head under the local stub issuer; the sign-in URL (and exit 1) for a real one | `--as <person>` (the record's only one when omitted), `--api` |
 | `next` | claims the next attempt for a position (`Commands::claim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `public internal`), `--orgs`, `--ttl` (600), `--effect`, `--worker` |
 | `brief` | reads the hat, or renders it | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
 | `renew` | extends the lease and keeps the token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (1, 2, … per renewal) |

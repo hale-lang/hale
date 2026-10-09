@@ -2135,7 +2135,15 @@ memory is named to it.
   allowance of attempts bounds the repeats; the calls are journaled all
   the same, for what was spent is spent.
 - **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
-  vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
+  vendored as `vendor/dna/legs`) are a leg as API clients: `login`
+  asks the head (`GET /.well-known/hale-dna`, unauthenticated under
+  OIDC: principal, issuer, client) who signs its people in, and where
+  that is the local stub (a loopback issuer, client `dna-local`) mints
+  an ID token for the subject the record's `dna.oidc.member` maps to
+  `--as <person>`, the client secret read from the vault entry
+  `oidc-client-dna-local` and never printed, and prints
+  `export HALE_DNA_ID_TOKEN=…`; for any other issuer it prints the
+  sign-in URL and exits 1; `next` is
   `dna.attempt.claim` for a position (`--as position:<name>`, the
   graph's id, never a free string), `brief` the hat read — or rendered
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,

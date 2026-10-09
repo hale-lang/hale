@@ -95,7 +95,11 @@ loopback is anyone's who can bind its port, so the record pins its key
   that started it. The session is an `HttpOnly` cookie that lasts eight
   hours or until `/auth/logout`. An unmapped subject gets no session.
   A program acting for a person presents its ID token as
-  `Authorization: Bearer <token>` instead.
+  `Authorization: Bearer <token>` instead; a leg gets one from
+  `hale dna work login` where the issuer is the local stub, and signs
+  in at `/auth/login` where it is not ([Legs, hands and voice](./legs.md)).
+  The head names its issuer and client at `/.well-known/hale-dna`,
+  unauthenticated, which is what the verb asks.
 - **A service**, a program with no person behind it, gets its own token
   from the issuer with the `client_credentials` grant and presents it
   as a bearer. Map it beside your members, with
