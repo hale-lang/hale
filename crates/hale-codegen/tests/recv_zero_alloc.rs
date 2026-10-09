@@ -82,3 +82,62 @@ fn recv_into_binding_is_zero_alloc() {
         out
     );
 }
+
+/// The bytes the residency dump reports across the arenas live at exit.
+fn resident_bytes(stderr: &str) -> u64 {
+    stderr
+        .lines()
+        .filter(|l| !l.contains("dump]"))
+        .filter_map(|l| {
+            let at = l.find("bytes=")? + "bytes=".len();
+            l[at..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok()
+        })
+        .sum()
+}
+
+#[test]
+fn recv_bytes_loop_allocates_in_the_callers_arena() {
+    // `__recv_bytes` reserves its buffer at the cap (4 KiB here) before
+    // it reads. Before the lowering set the caller arena, every call of
+    // a read loop landed in the retained payload arena: 1000 calls held
+    // about 4.4 MB at the dump. In the caller's arena the loop's buffers go
+    // with its scope, so residency does not scale with the call count.
+    let port = pick_free_port();
+    let src = r#"
+        locus Reader {
+            params { fd: Int = 0; }
+            fn pump() -> Int {
+                let mut i = 0;
+                let mut n = 0;
+                while i < 1000 {
+                    let b = std::io::tcp::__recv_bytes(self.fd, 4096);
+                    n = n + len(b);
+                    i = i + 1;
+                }
+                return n;
+            }
+        }
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or raise;
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let cfd = std::io::tcp::__connect("127.0.0.1", port);
+            let afd = std::io::tcp::__accept_one(lfd);
+            std::io::tcp::set_recv_timeout(afd, 1ms) or raise;
+            let r = Reader { fd: afd };
+            println("n=", r.pump());
+            std::process::dump_arena_residency();
+        }
+    "#;
+    let bin = harness::unique_bin("hale_recv_bytes_arena");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin)
+        .arg(port.to_string())
+        .env("LOTUS_ARENA_RESIDENCY", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "exit {:?}\n{stderr}", out.status);
+    let bytes = resident_bytes(&stderr);
+    assert!(bytes < 1_000_000, "1000 recv_bytes calls left {bytes} bytes resident:\n{stderr}");
+}

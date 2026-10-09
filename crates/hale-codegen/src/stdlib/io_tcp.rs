@@ -654,6 +654,10 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_tcp_recv_bytes")
             .expect("lotus_tcp_recv_bytes declared");
+        // The runtime allocates through lotus_caller_or_global_bytes_create;
+        // without the caller arena set, a read loop lands every buffer in
+        // the retained payload arena.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(f, &[fd_i32.into(), max_i32.into()], "recvb.ret")
