@@ -2696,6 +2696,43 @@ pub fn summarize_identified(
             pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params));
         }
     }
+    // GH #540: an expression evaluated outside any body above — a
+    // parameter default (built at the CALL site), a struct field default,
+    // a closure assertion — can build a locus too. Walk each for its
+    // slot stores alone; its rows are no declaration body.
+    {
+        let mut defaults: Vec<(FnKey, Block, &[Param], &crate::snapshot::Snapshot)> = Vec::new();
+        for (program, ids) in identified {
+            if is_stdlib_copy(ids) {
+                continue;
+            }
+            let mut found = Vec::new();
+            for item in flat_decls(&program.items) {
+                default_bodies_of(item, &mut found);
+            }
+            defaults.extend(found.into_iter().map(|(k, b, p)| (k, b, p, *ids)));
+        }
+        let mut next = 0;
+        while next < defaults.len() {
+            let (key, body, params, ids) = (defaults[next].0.clone(), defaults[next].1.clone(), defaults[next].2, defaults[next].3);
+            next += 1;
+            let (_, _, skipped) = walk(
+                &key,
+                &body,
+                None,
+                &key.locus,
+                &param_var_types(params),
+                &fn_typed_params(params),
+                &param_var_elem_types(params),
+                &param_names(params),
+                ids,
+                (false, false, usize::MAX),
+            );
+            if !skipped.is_empty() {
+                defaults.push((key, skipped_block(skipped), params, ids));
+            }
+        }
+    }
     summary.bounded_loci = bounded_loci;
     // Second pass: a locus holding a sync-bearing form can take that
     // form's lock, so calls into it are potentially blocking.
@@ -3094,6 +3131,69 @@ struct MemberBody<'p> {
     position: &'static str,
     body: Block,
     params: &'p [Param],
+}
+
+/// GH #540: the expressions of `item` that are evaluated outside every
+/// body the summary walks: each parameter default of a fn, method, hook,
+/// mode, failure handler or perspective fn, each struct field default and
+/// each closure assertion. A default is built where its fn is CALLED, so
+/// a locus literal in one is a store like any other. Each is a block of
+/// its expressions under the key of the member it sits in.
+fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Param])>) {
+    let block = |es: Vec<&Expr>| Block {
+        span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
+        stmts: es.into_iter().map(|e| Stmt::Expr(e.clone())).collect(),
+        tail: None,
+    };
+    let param_defaults = |params: &'p [Param]| -> Vec<&'p Expr> { params.iter().filter_map(|p| p.default.as_ref()).collect() };
+    let field_defaults = |td: &'p TypeDecl| -> Vec<&'p Expr> {
+        match &td.body {
+            TypeDeclBody::Struct(fields) => fields.iter().filter_map(|f| f.default.as_ref()).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let mut push = |key: FnKey, es: Vec<&Expr>, params: &'p [Param]| {
+        if !es.is_empty() {
+            out.push((key, block(es), params));
+        }
+    };
+    match item {
+        TopDecl::Fn(f) => push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), param_defaults(&f.params), &f.params),
+        TopDecl::Type(td) => push(FnKey::free_fn(DeclId::user(td.id), td.name.name.clone()), field_defaults(td), &[]),
+        TopDecl::Locus(l) => {
+            let locus = &l.name.name;
+            let method = |id: NodeId, name: &str| FnKey::method(DeclId::user(id), locus.clone(), name);
+            for m in &l.members {
+                match m {
+                    LocusMember::Fn(f) => push(method(f.id, &f.name.name), param_defaults(&f.params), &f.params),
+                    LocusMember::Lifecycle(lc) => {
+                        push(method(lc.id, &lifecycle_key(lc.kind).0), param_defaults(&lc.params), &lc.params)
+                    }
+                    LocusMember::Mode(md) => push(method(md.id, "mode"), param_defaults(&md.params), &md.params),
+                    LocusMember::Failure(fd) => push(method(fd.id, "on_failure"), param_defaults(&fd.params), &fd.params),
+                    LocusMember::Closure(c) => push(
+                        method(c.id, &c.name.name),
+                        c.assertion.iter().flat_map(|a| [&a.left, &a.right, &a.tolerance]).collect(),
+                        &[],
+                    ),
+                    LocusMember::Type(td) => push(method(td.id, &td.name.name), field_defaults(td), &[]),
+                    _ => {}
+                }
+            }
+        }
+        TopDecl::Perspective(p) => {
+            for m in &p.members {
+                if let PerspectiveMember::Fn(f) = m {
+                    push(
+                        FnKey::method(DeclId::user(f.id), p.name.name.clone(), f.name.name.clone()),
+                        param_defaults(&f.params),
+                        &f.params,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The bodies of `item` the reveal rule walks that are no row (a

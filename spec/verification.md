@@ -246,7 +246,9 @@ main locus Org {
   changes `shape_hash`. A call through a *field* of interface
   type narrows the fan-out to the impls the program stores into
   that field (GH #540): every `Locus { field: Impl { } }` literal at
-  any instantiation site, and the default literal when some literal
+  any instantiation site (a parameter default, a struct field
+  default and a closure assertion included: each is built where its
+  fn is called, so it is read as a site), and the default literal when some literal
   of the locus omits the field (or none is seen), intersected with
   the conformers. Only a struct literal of a locus narrows. A write
   the pre-pass cannot name — a literal field value that is a

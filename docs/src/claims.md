@@ -593,7 +593,9 @@ target — a sum would count phantom calls no execution performs.
 call through a *field* of interface type (`self.h.dep.apply(x)`)
 fans out to the loci the program stores into that field, not to
 every conformer: every `Locus { field:
-Impl { } }` literal at any instantiation site, and the declaration's
+Impl { } }` literal at any instantiation site (a parameter
+default is one: `fn take(h: Holder = Holder { dep: Real { } })` stores
+`Real` whenever `take()` omits the argument), and the declaration's
 default when some literal of the locus omits the field (or none is
 seen), intersected with the interface's conformers. Only a struct
 literal of a locus narrows. A field the program also writes from somewhere the

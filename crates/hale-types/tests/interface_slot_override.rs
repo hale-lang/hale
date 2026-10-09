@@ -182,3 +182,92 @@ fn main() { let m = Manifest { }; println(certified(m)); }
         ds
     );
 }
+
+/// GH #540, argument defaults: a program whose `Holder` is built by a
+/// parameter default. `decls` are the fns, `run` is what `App::run` does.
+fn default_program(decls: &str, run: &str) -> String {
+    format!(
+        r#"
+effect apply_it;
+interface Gate {{ fn apply(x: String) -> Bool; }}
+locus Real {{ @effects(is: {{ apply_it }}) fn apply(x: String) -> Bool {{ return true; }} }}
+locus Noop {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Holder {{
+    params {{ dep: Gate = Noop {{ }}; }}
+    fn use_it(x: String) -> Bool {{ return self.dep.apply(x); }}
+}}
+{decls}
+group organism = {{ App }};
+main locus App {{
+    claims {{ gated: forbid reaches(organism, effects(apply_it)); }}
+    {run}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn refused_through_the_slot(ds: &[String]) -> bool {
+    ds.iter().any(|m| {
+        m.contains("claim `gated` violated")
+            && m.contains("Holder::use_it")
+            && m.contains("dispatches Gate.apply")
+            && m.contains("Real::apply")
+    })
+}
+
+const TAKE: &str = r#"fn take(h: Holder = Holder { dep: Real { } }) -> Bool { return h.use_it("x"); }"#;
+
+/// A carrier built by an OMITTED argument is a store: the default is
+/// evaluated at the call site, so `take()` puts `Real` in the slot.
+#[test]
+fn omitted_argument_default_stores_the_carrier() {
+    let ds = diags(&default_program(TAKE, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// Control: the same carrier passed explicitly.
+#[test]
+fn explicit_argument_stores_the_carrier() {
+    let ds = diags(&default_program(TAKE, "run() { take(Holder { dep: Real { } }); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// Supplying a harmless impl, with a harmless default, holds.
+#[test]
+fn harmless_argument_and_default_hold() {
+    let ds = diags(&default_program(
+        r#"fn take(h: Holder = Holder { dep: Noop { } }) -> Bool { return h.use_it("x"); }"#,
+        "run() { take(Holder { dep: Noop { } }); }",
+    ));
+    assert!(!violated(&ds), "{:?}", ds);
+}
+
+/// A method's parameter default is a store as well.
+#[test]
+fn method_argument_default_stores_the_carrier() {
+    let run = r#"fn go(h: Holder = Holder { dep: Real { } }) -> Bool { return h.use_it("x"); }
+    run() { self.go(); }"#;
+    let ds = diags(&default_program("", run));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// A default that gets its literal through another fn's default.
+#[test]
+fn nested_argument_default_stores_the_carrier() {
+    let decls = r#"
+fn inner(h: Holder = Holder { dep: Real { } }) -> Holder { return h; }
+fn take(h: Holder = inner()) -> Bool { return h.use_it("x"); }"#;
+    let ds = diags(&default_program(decls, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// A literal inside a default's own literal is a store too.
+#[test]
+fn argument_default_nested_in_a_literal_stores_the_carrier() {
+    let decls = r#"
+locus Outer { params { held: Holder = Holder { }; } fn go() -> Bool { return self.held.use_it("x"); } }
+fn take(o: Outer = Outer { held: Holder { dep: Real { } } }) -> Bool { return o.go(); }"#;
+    let ds = diags(&default_program(decls, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
