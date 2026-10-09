@@ -2685,6 +2685,7 @@ locus Dna {
             if outcome != "approve" && (len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 || family == "library.family.declined") { return step_failed("declined: " + settled.body); }
             let refused = first_row(self.journal, "knowledge.refused", digest);
             if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
+            if family == "library.family.refused" { return step_failed("not ratified: " + native_json_string(first_row(self.journal, "library.family.refused", digest).body, "why") + "; propose the family again against the active version"); }
             return step_waits();
         }
         if key == "hat" {

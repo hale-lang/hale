@@ -1472,6 +1472,7 @@ record's.
 | `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its review |
 | `knowledge.retired` | record | a practice superseded by a later version |
+| `library.family.refused` | record | a library family approved while a member was refused (its predecessor was replaced); names the refused members |
 | `knowledge.consulted` | ledger | what a piece of work looked up today |
 | `grant.contracted` | record | authority narrowed, and what it leaves |
 | `grant.revoked` | record | the parent took the authority back |
@@ -3978,8 +3979,21 @@ The live half is memory's, projected from the record by the spine
   would have had of its own — `knowledge.ratified` (kind, target and
   class, `supersedes` when the idea replaces one, the retirement of what
   it replaces) — and then the family's own row,
-  `library.family.ratified <family digest>`; rejecting writes
-  `knowledge.declined` for each and `library.family.declined`. The
+  `library.family.ratified <family digest>` when every member was
+  ratified, or `library.family.refused <family digest>` (with `refused`,
+  a `<name> <digest>` line per refused member, and `why`) when the record
+  refused any — a member whose predecessor another approved revision
+  replaced — so the family is never reported ratified while incomplete;
+  rejecting writes `knowledge.declined` for each and
+  `library.family.declined`. A family's rows land as one batch: the
+  journal is read once, every member's outcome is decided against that
+  read (a member's ratification is what a later member's supersession
+  sees), and the rows — the members' in the family's order, each
+  retirement after the ratification it follows, then the family's own
+  row — are written by one `append_batch` at the revision they were
+  decided at. A batch that finds the record moved is decided again
+  against what landed, and a row already there is not written twice;
+  a practice ratified alone is still its own one-row write. The
   family's own row is what its `practice-ratify` execution waits for
   (its `hat` step is done once memory's projection holds the last idea,
   ratified); the per-idea rows are the shape the lanes already project,
@@ -5159,6 +5173,7 @@ otherwise.
 | `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
 | `HALE_DNA_LIBRARY_VERSION=<version>` | the toolchain's | The version the library is proposed under (`library/<node>@<version>`, and on each idea): a fixture's way to make a later toolchain out of the one binary it has, so `upgrade`'s supersession is exercised against real record history. |
 | `HALE_DNA_LIBRARY_SUFFIX=<text>` | unset | Appended to every library idea's text, so a later version's ideas differ from the earlier's (fixtures only). |
+| `HALE_DNA_LIBRARY_EARLIER_NAMES=1` | unset | The two moved chapters are proposed under their earlier names (`library/api`, `library/shaping`): a fixture's way to make a record the earlier toolchain would have seeded, so an upgrade is seen finding them (fixtures only). |
 | `HALE_DNA_INSTANCE=<id>` | unset | Set by a node on each instance it starts: which instance of its shape the process is. |
 | `HALE_DNA_BODY=<mark>` | unset | The body's mark: the host puts it in the environment of the processes it starts as a body (`body_mark`: holder, lease token, pid), and the body fence finds them by it. |
 | `HALE_DNA_SCAN_NEEDLE=<mark>` | unset | Set by the body fence's scan on a probe process: the mark it looks for in every other process's environment (`ps -E`) to find the body's processes. |

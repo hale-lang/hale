@@ -46,6 +46,7 @@ locus SourceStageJournal {
         if self.lost_reply && self.matches(kind, entity) && result.ok { self.fault(); self.lost_reply = false; return dna::AppendResult { error: "io" }; }
         return result;
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if self.blocked && self.matches(kind, entity) { self.fault(); return dna::AppendResult { error: "io" }; }
         let result = self.inner.append_exact(expected, kind, entity, body);

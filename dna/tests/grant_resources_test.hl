@@ -30,6 +30,7 @@ locus RacingJournal {
         self.race(kind, entity, body);
         return self.inner.append(self.inner.revision(), kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         self.race(kind, entity, body);
         return self.inner.append_exact(expected, kind, entity, body);
@@ -58,6 +59,7 @@ locus RefusingJournal {
         if self.refused(kind) { return dna::AppendResult { error: "io" }; }
         return self.inner.append(self.inner.revision(), kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if self.refused(kind) { return dna::AppendResult { error: "io" }; }
         return self.inner.append_exact(expected, kind, entity, body);

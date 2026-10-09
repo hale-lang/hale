@@ -86,6 +86,7 @@ locus Contended {
             works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
         });
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         let ask = std::json::find_string_field(body, "request");
         if kind == "workflow.admitted" && ask == "mine" && self.contended == 0 {

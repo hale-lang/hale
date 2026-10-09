@@ -1,0 +1,145 @@
+// dna/tests/library_family_batch_test.hl — a family's ratification is one
+// batch. Approving a three-member family (the first supersedes an active
+// version) reads the journal once and lands every member's rows, the
+// retirement and the family's own row through exactly one `append_batch`,
+// in the family's order and never through `append`. A batch that lost the
+// race (a row landed between the read and the write) is decided again
+// against what landed and ends with the same rows, each once.
+import "../core" as dna;
+
+// A MemJournal that counts how it was written to. `intrude` makes the first
+// batch find another writer's ratification of `n2` already in place.
+locus CountingJournal {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        appends: Int = 0;
+        batches: Int = 0;
+        intrude: String = "";
+        intruded: Bool = false;
+    }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn refresh() -> Bool { return false; }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        self.appends = self.appends + 1;
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    // The rows one by one through the memory journal's own append.
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        self.batches = self.batches + 1;
+        if len(self.intrude) > 0 && !self.intruded {
+            self.intruded = true;
+            let x = self.inner.append(self.inner.revision(), "knowledge.ratified", self.intrude, "{\"outcome\":\"approve\",\"kind\":\"idea\",\"target\":\"\",\"class\":\"\"}");
+        }
+        return dna::append_rows(self.inner, expected, rows);
+    }
+}
+
+fn kinds_from(j: dna::Journal, from: Int) -> String {
+    let mut out = "";
+    let mut i = from;
+    while i < j.revision() {
+        out = out + j.read(i).kind + " " + j.read(i).entity + "\n";
+        i = i + 1;
+    }
+    return out;
+}
+
+fn count_of(j: dna::Journal, kind: String, entity: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        if j.read(i).kind == kind && j.read(i).entity == entity { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// o1 active, three members: n1 supersedes o1, n2 and n3 are new. Returns
+// the family's digest; `ids` receives "o1 n1 n2 n3" digests.
+fn setup(kr: dna::KnowledgeRecord, j: dna::Journal) -> String {
+    let o1 = kr.propose(dna::Idea { id: "o1", kind: "idea", name: "library/n1", text: "n1 old", author: "org" }, "org");
+    let a = j.append(j.revision(), "knowledge.ratified", o1, "{\"outcome\":\"approve\",\"kind\":\"idea\"}");
+    let n1 = kr.propose(dna::Idea { id: "n1", kind: "idea", name: "library/n1", text: "n1 new", author: "org", supersedes: o1 }, "org");
+    let n2 = kr.propose(dna::Idea { id: "n2", kind: "idea", name: "library/n2", text: "n2 new", author: "org" }, "org");
+    let n3 = kr.propose(dna::Idea { id: "n3", kind: "idea", name: "library/n3", text: "n3 new", author: "org" }, "org");
+    let ideas = "library/n1 " + n1 + "\nlibrary/n2 " + n2 + "\nlibrary/n3 " + n3 + "\n";
+    let q = std::json::Builder { };
+    let doc = "{\"author\":\"org\",\"count\":3,\"ideas\":" + q.quote(ideas) + ",\"kind\":\"family\",\"name\":\"library/design@t\",\"provenance\":\"toolchain\",\"toolchain\":\"t\"}";
+    let raw = kr.receipts.store(doc);
+    let fd = "sha256:" + raw;
+    let rid = dna::knowledge_review_id(fd);
+    let r = std::json::Builder { };
+    r.begin_object();
+    r.string_field("knowledge_digest", fd);
+    r.string_field("subject_digest", fd);
+    r.string_field("kind", "family");
+    r.string_field("ideas", ideas);
+    r.end_object();
+    let e = j.append(j.revision(), "review.requested", "review:" + rid, r.result());
+    let s = j.append(j.revision(), "review.settled", rid, "approve by riley");
+    return fd;
+}
+
+fn member_digest(j: dna::Journal, fd: String, n: Int) -> String {
+    let ideas = dna::native_json_string(dna::first_row(j, "review.requested", "review:" + dna::knowledge_review_id(fd)).body, "ideas");
+    let mut rest = ideas;
+    let mut at = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        at = at + 1;
+        if at == n { return line[(std::str::index_of(line, " ") + 1)..len(line)]; }
+    }
+    return "";
+}
+
+main locus App {
+    run() {
+        let root = dna::scratch_root("library-family-batch");
+
+        // one batch, the rows in the family's order
+        let j = CountingJournal { };
+        let kr = dna::KnowledgeRecord { journal: j, receipts: dna::FileReceipts { dir: root + "/a" } };
+        let fd = setup(kr, j);
+        let n1 = member_digest(j, fd, 1);
+        let n2 = member_digest(j, fd, 2);
+        let n3 = member_digest(j, fd, 3);
+        let appends_before = j.appends;
+        let from = j.revision();
+        std::test::assert(kr.resume_result(dna::knowledge_review_id(fd), "approve", "riley"), "carried out");
+        let want = "knowledge.ratified " + n1 + "\nknowledge.retired " + dna::native_json_string(dna::first_row(j, "knowledge.proposed", n1).body, "supersedes") + "\nknowledge.ratified " + n2 + "\nknowledge.ratified " + n3 + "\nlibrary.family.ratified " + fd + "\n";
+        std::test::assert_eq_str(kinds_from(j, from), want, "the family's rows, in its order");
+        std::test::assert_eq_int(j.batches, 1, "one append_batch");
+        std::test::assert_eq_int(j.appends, appends_before, "no append");
+        let ratified = dna::first_row(j, "knowledge.ratified", n1);
+        std::test::assert_eq_str(dna::native_json_string(ratified.body, "supersedes"), dna::native_json_string(dna::first_row(j, "knowledge.proposed", n1).body, "supersedes"), "the first member carries what it supersedes");
+        // asking again writes nothing more
+        std::test::assert(kr.resume_result(dna::knowledge_review_id(fd), "approve", "riley"), "resumed");
+        std::test::assert_eq_int(j.batches, 1, "a settled family writes no batch");
+        std::test::assert_eq_str(kinds_from(j, from), want, "and no row");
+
+        // a row lands between the read and the batch: decided again, once
+        let k = CountingJournal { };
+        let krk = dna::KnowledgeRecord { journal: k, receipts: dna::FileReceipts { dir: root + "/b" } };
+        let fdk = setup(krk, k);
+        let m2 = member_digest(k, fdk, 2);
+        let k_appends = k.appends;
+        k.intrude = m2;
+        std::test::assert(krk.resume_result(dna::knowledge_review_id(fdk), "approve", "riley"), "carried out after the race");
+        std::test::assert_eq_int(k.batches, 2, "the stale batch was decided again");
+        std::test::assert_eq_int(k.appends, k_appends, "still no append");
+        std::test::assert_eq_int(count_of(k, "knowledge.ratified", m2), 1, "the member another writer ratified is not written again");
+        std::test::assert_eq_int(count_of(k, "knowledge.ratified", member_digest(k, fdk, 1)), 1, "the first member once");
+        std::test::assert_eq_int(count_of(k, "knowledge.ratified", member_digest(k, fdk, 3)), 1, "the third member once");
+        std::test::assert_eq_int(count_of(k, "knowledge.retired", dna::native_json_string(dna::first_row(k, "knowledge.proposed", member_digest(k, fdk, 1)).body, "supersedes")), 1, "the retirement once");
+        std::test::assert_eq_int(count_of(k, "library.family.ratified", fdk), 1, "the family row once");
+        dna::scratch_done(root);
+    }
+}
+
+fn main() { App { }; }

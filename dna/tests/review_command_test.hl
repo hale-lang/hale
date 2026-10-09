@@ -16,6 +16,7 @@ locus CommandFaultJournal {
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if kind == "review.command_decided" && self.fault == "before" {
             self.fault = "";
