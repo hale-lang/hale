@@ -2061,13 +2061,13 @@ field's schema:
 | `number` (`Float`) | a number: `--price 2.5` |
 | `boolean` (`Bool`) | `true` or `false`; the bare flag `--rush` is `true` |
 | `string` | the text: `--name alice` |
-| a record, a list, any other shape | JSON of that shape: `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
+| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
 
 `--field=value` is `--field value`; a field's `_` may be written `-`. A field
 not required and not given is not sent. The typed form is refused before
 anything is sent (exit 5, the field and its schema in the message) when a
 required field is missing, a flag names no field of the member's payload, a flag
-is given twice or a value does not parse as its field's type; so is `--json`
+is given twice or a value does not parse as its field's type (a record or list value is checked recursively; the message names the path, `ship.city` or `items[0]`); so is `--json`
 together with typed flags, a `--json` that is not JSON and a typed-flag call of
 a member the description does not list (the message lists the members it does).
 The names `json`, `bearer`, `id`, `digest` and `raw` are the verb's own: a

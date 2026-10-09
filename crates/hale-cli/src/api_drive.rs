@@ -4,6 +4,11 @@
 //! program: the verb reads the caller's description, types the payload by the
 //! member's schema, and speaks the wire of § The `Rpc` interface.
 //!
+//! A typed flag (`--ship '{"city":"Oslo"}'`) is checked, record fields and list
+//! items recursively, against the description's schemas before anything is sent.
+//! `--json` is the unchecked path: the payload goes as written and the server's
+//! answer is the contract.
+//!
 //! The endpoints are the two transports a verb can drive today:
 //!
 //! ```text
@@ -351,7 +356,8 @@ fn schema_text(schema: &Value) -> String {
 
 /// `text` as the value of a field with `schema`: Int, Float, Bool and String by
 /// their text, a quantity by its count, anything else (a record, a list) as
-/// JSON of the right shape.
+/// JSON that `check_value` holds to the description's schemas, nested records
+/// and lists included.
 fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> Result<Value, String> {
     let resolved = resolve(doc, schema);
     let kind = resolved.get("type").and_then(Value::as_str).unwrap_or("");
@@ -377,12 +383,55 @@ fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> 
                 "object" => v.is_object(),
                 _ => true,
             };
-            if shape_ok {
-                Ok(v)
-            } else {
-                Err(refuse(&format!("`{t}` is not a JSON {k}")))
+            if !shape_ok {
+                return Err(refuse(&format!("`{t}` is not a JSON {k}")));
+            }
+            check_value(doc, field, schema, &v).map_err(|why| refuse(&why))?;
+            Ok(v)
+        }
+    }
+}
+
+/// `v` against `schema` (references followed through the description's `schemas`), or
+/// the first place it does not fit, named by its path (`ship.city`, `items[0]`), the
+/// type expected there and what was given. A record is an object with every required
+/// field, no unknown field, each field fitting its type; a list is an array whose items
+/// all fit the item type; a quantity or a distinct integer fits by its count. A schema
+/// with no `type` constrains nothing.
+fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(), String> {
+    let resolved = resolve(doc, schema);
+    let misfit = |what: &str| format!("`{path}` is `{v}`, {what}; expected {}", type_label(doc, schema));
+    match resolved.get("type").and_then(Value::as_str) {
+        Some("integer") if !(v.is_i64() || v.is_u64()) => Err(misfit("not an integer")),
+        Some("number") if !v.is_number() => Err(misfit("not a number")),
+        Some("boolean") if !v.is_boolean() => Err(misfit("not true or false")),
+        Some("string") if !v.is_string() => Err(misfit("not a string")),
+        Some("array") => {
+            let Some(items) = v.as_array() else { return Err(misfit("not a list")) };
+            match resolved.get("items") {
+                Some(item) => items.iter().enumerate().try_for_each(|(i, x)| check_value(doc, &format!("{path}[{i}]"), item, x)),
+                None => Ok(()),
             }
         }
+        Some("object") => {
+            let Some(obj) = v.as_object() else { return Err(misfit("not a record")) };
+            let props = resolved.get("properties").and_then(Value::as_object);
+            let required = resolved.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+            for r in required {
+                if !obj.contains_key(r) {
+                    return Err(format!("`{path}` is `{v}`, which lacks the required field `{r}`; expected {}", type_label(doc, schema)));
+                }
+            }
+            for (k, x) in obj {
+                match props.and_then(|p| p.get(k)) {
+                    Some(fs) => check_value(doc, &format!("{path}.{k}"), fs, x)?,
+                    None if props.is_some() => return Err(format!("`{path}` is `{v}`, which has the unknown field `{k}`; expected {}", type_label(doc, schema))),
+                    None => {}
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 

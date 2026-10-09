@@ -449,6 +449,51 @@ fn a_flag_that_does_not_fit_its_field_is_refused_before_anything_is_sent() {
     assert_eq!(fake.calls().len(), sent, "nothing more was sent: {:?}", fake.calls());
 }
 
+/// `Shop::order` plus a list of records, each holding a record and an optional field.
+fn nested_doc() -> Value {
+    let mut doc = shop_doc();
+    doc["schemas"]["Order"]["properties"]["lines"] = serde_json::json!({"type": "array", "items": {"$ref": "#/schemas/Line"}});
+    doc["schemas"]["Line"] = serde_json::json!({"type": "object",
+        "properties": {"sku": {"type": "string"}, "qty": {"type": "integer", "x-hale-type": "Money", "x-hale-unit": "q(cent)"}, "to": {"$ref": "#/schemas/Address"}, "gift": {"type": "string"}},
+        "required": ["sku", "qty", "to"]});
+    doc
+}
+
+#[test]
+fn record_and_list_flags_are_checked_against_their_schemas_before_anything_is_sent() {
+    let fake = Fake::start(&nested_doc(), Answer::Result);
+    let call = |items: &str, ship: &str, lines: &str| -> Out {
+        run(&["api", "call", &fake.sock, "Shop::order", "--name", "a", "--qty", "1", "--price", "1", "--rush", "--limit", "5", "--items", items, "--ship", ship, "--lines", lines])
+    };
+    let city = r#"{"city":"o"}"#;
+    let good_line = r#"{"sku":"s","qty":2,"to":{"city":"Oslo"}}"#;
+    let good_lines = format!("[{good_line}]");
+    for (o, path, ty) in [
+        (call(r#"["x"]"#, city, &good_lines), "items[0]", "Int"),
+        (call("[1]", "{}", &good_lines), "required field `city`", "Address"),
+        (call("[1]", r#"{"city":7}"#, &good_lines), "ship.city", "String"),
+        (call("[1]", r#"{"city":"o","zip":1}"#, &good_lines), "unknown field `zip`", "Address"),
+        (call("[1]", city, r#"[{"sku":"s","qty":2,"to":{"city":3}}]"#), "lines[0].to.city", "String"),
+        (call("[1]", city, r#"[{"sku":"s","qty":1.5,"to":{"city":"o"}}]"#), "lines[0].qty", "Money"),
+        (call("[1]", city, r#"[{"sku":"s","to":{"city":"o"}}]"#), "required field `qty`", "Line"),
+    ] {
+        assert_eq!(o.code, 5, "{path}: {}", o.stderr);
+        assert!(o.stderr.contains(path) && o.stderr.contains(ty), "{path}: {}", o.stderr);
+    }
+    assert!(fake.calls().is_empty(), "nothing was sent: {:?}", fake.calls());
+
+    // a valid nested value is sent, and is the --json form byte for byte; the optional `gift` absent is not sent
+    let o = call("[1,2]", r#"{"city":"Oslo"}"#, &good_lines);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let body = format!(r#"{{"name":"a","qty":1,"price":1.0,"rush":true,"limit":5,"items":[1,2],"ship":{{"city":"Oslo"}},"lines":{good_lines}}}"#);
+    let o = run(&["api", "call", &fake.sock, "Shop::order", "--json", &body]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(mask_id(&calls[0]), mask_id(&calls[1]));
+    assert!(!calls[0].contains("gift"), "{}", calls[0]);
+}
+
 #[test]
 fn a_reply_that_is_not_the_requests_or_never_comes_is_a_transport_failure() {
     let other = Fake::start(&shop_doc(), Answer::OtherId);
