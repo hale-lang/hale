@@ -114,13 +114,18 @@ locus KnowledgeRecord {
     // A family's verdict (the toolchain's library): the one Review's outcome
     // is every idea it names, each ratified or declined by the rows it would
     // have had of its own (the same rows, the Review being the family's),
-    // then the family's own row, which is what its execution waits for.
+    // then the family's own row, which is what its execution waits for:
+    // `library.family.ratified` only when every member was ratified,
+    // `library.family.refused` (naming the refused members) when an approval
+    // left any refused, `library.family.declined` for a rejection.
     @unbounded
     fn resume_family(review_id: String, digest: String, outcome: String, reviewer: String) -> Bool {
         let doc = self.receipts.read(if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest });
         if len(doc) == 0 || digest_of(doc) != digest { return false; }
         let mut rest = native_json_string(doc, "ideas");
         let mut all = true;
+        let mut refused = "";
+        let mut why = "";
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
@@ -130,7 +135,13 @@ locus KnowledgeRecord {
             let member = line[(sp + 1)..len(line)];
             let proposal = first_row(self.journal, "knowledge.proposed", member);
             if len(proposal.kind) == 0 { all = false; continue; }
-            if !self.resume_one(review_id, member, native_json_string(proposal.body, "kind"), native_json_string(proposal.body, "target"), native_json_string(proposal.body, "class"), outcome, reviewer) { all = false; }
+            if !self.resume_one(review_id, member, native_json_string(proposal.body, "kind"), native_json_string(proposal.body, "target"), native_json_string(proposal.body, "class"), outcome, reviewer) { all = false; continue; }
+            // a member the record refused (its predecessor already replaced)
+            // is settled, but it is not ratified
+            if outcome == "approve" && !self.ratified(member) {
+                refused = refused + line[0..sp] + " " + member + "\n";
+                if len(why) == 0 { why = native_json_string(first_row(self.journal, "knowledge.refused", member).body, "why"); }
+            }
         }
         if !all { return false; }
         let b = std::json::Builder { };
@@ -141,6 +152,12 @@ locus KnowledgeRecord {
         b.string_field("outcome", outcome);
         b.string_field("decided_by", reviewer);
         b.int_field("count", std::json::find_int_field(doc, "count"));
+        if len(refused) > 0 {
+            b.string_field("refused", refused);
+            b.string_field("why", "member(s) refused: " + why);
+            b.end_object();
+            return append_once(self.journal, "library.family.refused", digest, b.result());
+        }
         b.end_object();
         return append_once(self.journal, if outcome == "approve" { "library.family.ratified" } else { "library.family.declined" }, digest, b.result());
     }
@@ -202,12 +219,14 @@ locus KnowledgeRecord {
         }
         return false;
     }
-    // The row that settled a family's Review (`library.family.ratified` or
-    // `library.family.declined`), "" while none has.
+    // The row that settled a family's Review (`library.family.ratified`,
+    // `.refused` or `.declined`), "" while none has.
     @unbounded
     fn family_row(digest: String) -> String {
         let ratified = first_row(self.journal, "library.family.ratified", digest);
         if len(ratified.kind) > 0 { return ratified.kind; }
+        let refused = first_row(self.journal, "library.family.refused", digest);
+        if len(refused.kind) > 0 { return refused.kind; }
         return first_row(self.journal, "library.family.declined", digest).kind;
     }
     // Whether the Review of `digest` is a family's (the toolchain's library).

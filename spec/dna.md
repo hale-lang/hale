@@ -1472,6 +1472,7 @@ record's.
 | `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its review |
 | `knowledge.retired` | record | a practice superseded by a later version |
+| `library.family.refused` | record | a library family approved while a member was refused (its predecessor was replaced); names the refused members |
 | `knowledge.consulted` | ledger | what a piece of work looked up today |
 | `grant.contracted` | record | authority narrowed, and what it leaves |
 | `grant.revoked` | record | the parent took the authority back |
@@ -3978,8 +3979,13 @@ The live half is memory's, projected from the record by the spine
   would have had of its own — `knowledge.ratified` (kind, target and
   class, `supersedes` when the idea replaces one, the retirement of what
   it replaces) — and then the family's own row,
-  `library.family.ratified <family digest>`; rejecting writes
-  `knowledge.declined` for each and `library.family.declined`. The
+  `library.family.ratified <family digest>` when every member was
+  ratified, or `library.family.refused <family digest>` (with `refused`,
+  a `<name> <digest>` line per refused member, and `why`) when the record
+  refused any — a member whose predecessor another approved revision
+  replaced — so the family is never reported ratified while incomplete;
+  rejecting writes `knowledge.declined` for each and
+  `library.family.declined`. The
   family's own row is what its `practice-ratify` execution waits for
   (its `hat` step is done once memory's projection holds the last idea,
   ratified); the per-idea rows are the shape the lanes already project,
