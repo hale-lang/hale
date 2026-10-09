@@ -396,6 +396,20 @@ locus App {
         // nothing awaits: a refusal, exit 1, the receipt printed
         let none = self.work_rc("next\n--as\nposition:human", 1);
         std::test::assert(self.state_of(none) == "refused" && std::str::contains(std::json::find_string_field(none, "reason"), "none of that kind"), "a refusal prints the receipt and exits 1: " + none);
+        std::test::assert(std::str::contains(std::json::find_string_field(none, "reason"), "--kind <kind>") && std::str::contains(std::json::find_string_field(none, "reason"), "outstanding for a leg"), "and names the kinds outstanding and the flag that claims one: " + none);
+        // a position the graph states names no performer kind of its own: it claims as an agent
+        let seat = dna::GitJournal { repo: self.app };
+        std::test::assert(seat.append(seat.revision(), "graph.node", "position:api/dev", "{}").ok, "the graph states a position");
+        let a_seat = self.ask();
+        let by_seat = self.work("next\n--as\nposition:api/dev");
+        std::test::assert(self.state_of(by_seat) == "claimed" && std::json::find_string_field(self.attempt_of(by_seat), "attempt_id") == a_seat, "a stated position claims what an agent does, with no --kind: " + by_seat);
+        let seat_done = self.work("submit\n--as\nposition:api/dev\n--attempt\n" + a_seat + "\n--token\n" + self.token_of(by_seat) + "\n--result\nassessment: ship it");
+        std::test::assert_eq_str(self.state_of(seat_done), "requested", "and hands it back: " + seat_done);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a_seat, "and the owner settles it");
+        // a position the record does not state is no position at all
+        let nobody = self.work_rc("next\n--as\nposition:nobody/dev", 1);
+        std::test::assert(std::str::contains(std::json::find_string_field(nobody, "reason"), "not a position the record knows"), "an unstated position is refused as before: " + nobody);
         // a leg that dies with its claim: the lease expires, the owner asks again, another leg claims
         let a3 = self.ask();
         let dying = self.work("next\n--as\nposition:leader\n--kind\nagent\n--ttl\n2");

@@ -721,8 +721,13 @@ class, the Work's history as facts, the Record head and memory's projection
 watermark it was rendered at, and a `digest` over all of it. It is never a
 prompt: rendering is a leg's, and the renderer's version is evidence of its own.
 
-The read is trusted-local, like the executions it is drawn from, and `id` is
-required. The position is the graph's `position:<name>` id (GH #1085): the
+`id` is required. Under a trusted-local head the read is open to the caller
+the head authenticates. Under OIDC it is the lease holder's: the person the
+record's member map gives the bearer, who took the Work's attempt lease
+(`attempt.claimed` names the principal) and whose lease has not lapsed or been
+given back; anyone else is refused `403 lease_required`, naming the Work and
+the caller. (The hat once asked for an "owning-service visibility provider";
+the claim row is that provider for the hat, so none is needed.) The position is the graph's `position:<name>` id (GH #1085): the
 performer kind of the attempt admitted last, or the kind the request selects
 before one is (`edit` is `position:editor`; a judgment is `position:agent`; a
 person's work `position:human`); its `charter` is the record's `graph.node`

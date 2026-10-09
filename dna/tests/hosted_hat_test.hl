@@ -1,0 +1,196 @@
+// dna/tests/hosted_hat_test.hl — a leg on a hosted head reads its hat.
+//
+// The head serves under OIDC (`dna.principal oidc`), the stub issuer in
+// this process. alice is a person the record maps (`dna.oidc.member`, and
+// her unix peer for the socket's commands) and seats at position:agent;
+// bob is a person who holds no lease. The leg gets its ID token from
+// `hale dna work login` (the stub's grant, the client secret read from the
+// vault and never printed), claims a judgment with it, and reads the hat: the lease is the visibility, so alice's brief carries the practices
+// and the target. bob's read of the same Work, and alice's before she
+// claimed, are refused naming the lease.
+
+import "../core" as dna;
+import "../operations" as ops;
+import "../oidc" as oidc;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn head_binary() -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
+    let seed = source() + "/dna/api/practice_review";
+    let out = dna::scratch_root("hosted-hat-head") + "/practice_review";
+    let built = dna::run_tool(toolchain() + "\nbuild\n" + seed + "\n-o\n" + out);
+    std::test::assert_eq_int(built.code, 0, "the head builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
+    return out;
+}
+
+// The last index of `c` in `s`, -1 when none.
+fn last_of(s: String, c: String) -> Int {
+    let mut i = len(s) - 1;
+    while i >= 0 { if s[i..(i + 1)] == c { return i; } i = i - 1; }
+    return -1;
+}
+fn status_of(r: dna::RunResult) -> String {
+    let t = dna::trim_nl(r.stdout);
+    let nl = last_of(t, "\n");
+    return if nl < 0 { t } else { t[(nl + 1)..len(t)] };
+}
+
+main locus App {
+    params {
+        issuer: String = "";
+        app: String = "";
+        api: String = "";
+        vault: String = "";
+        head: std::process::Child = std::process::Child { };
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("hosted-hat-placeholder") } } };
+        journal: dna::RoutedJournal = dna::RoutedJournal { };
+        server: std::http::Server = std::http::Server { port: 1, handler: oidc::StubIssuer { } };
+    }
+    placement { server: cooperative(pool = io); }
+    dissolve() { if self.head.pid > 0 { std::process::kill(self.head) or discard; } }
+
+    fn has_row(kind: String, entity: String) -> Bool {
+        let moved = self.journal.refresh();
+        let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { return true; } i = i + 1; }
+        return false;
+    }
+    @unbounded
+    fn wait_row(kind: String, entity: String, what: String) {
+        let mut tries = 0;
+        while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }
+        std::test::assert(self.has_row(kind, entity), what + ": no `" + kind + " " + entity + "` row within the deadline");
+    }
+    // the leg: `hale dna work …` in the project, against the head, under `token` ("" = none)
+    fn work(args: String, token: String, rc: Int) -> String {
+        let r = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2\" HALE_DNA_API=\"$3\" HALE_DNA_ID_TOKEN=\"$4\" && unset HALE_VAULT_ADDR && shift 4 && exec \"$@\"\nsh\n" + self.app + "\n" + self.vault + "\n" + self.api + "\n" + token + "\n" + toolchain() + "\ndna\nwork\n" + args);
+        std::test::assert_eq_int(r.code, rc, "hale dna work " + std::str::replace(args, "\n", " ") + ": " + r.stdout + r.stderr);
+        return dna::trim_nl(r.stdout);
+    }
+    // the hat read as a caller's bearer: the status and the body
+    fn context(identity: String, work: String, token: String) -> dna::RunResult {
+        return dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-H\nAuthorization: Bearer " + token + "\n" + self.api + "/api/hale/v1/applications/" + identity + "/dna/context?id=" + dna::url_encode(work));
+    }
+
+    @unbounded
+    run() {
+        let scratch = dna::scratch_root("hosted-hat");
+        let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + scratch + "\n" + toolchain());
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        self.app = scratch + "/app";
+        self.vault = scratch + "/vault";
+        std::io::fs::mkdir(self.vault) or discard;
+        // the stub's client secret, as the vault holds it (the leg reads it there)
+        std::io::fs::write_file(self.vault + "/oidc-client-dna-local", "hosted-hat-test-secret") or discard;
+        let git = dna::GitRecord { repo: self.app };
+        let identity = git.identity();
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local dna.oidc.key \"$3\" && git config --local --replace-all dna.unix.member \"uid:$4=alice\"\nsh\n" + self.app + "\n" + self.issuer + "\n" + oidc::STUB_SPKI + "\n" + me;
+        std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
+        let as_alice = dna::GitJournal { repo: self.app, author: "alice" };
+        std::test::assert(as_alice.append(as_alice.revision(), "intent.offered", "i-alice", "alice was here").ok, "alice is a person the record knows");
+        let as_bob = dna::GitJournal { repo: self.app, author: "bob" };
+        std::test::assert(as_bob.append(as_bob.revision(), "intent.offered", "i-bob", "bob was here").ok, "and so is bob");
+        let seat = ops::GraphEdge { kind: "holds" };
+        seat.member("position", "position:agent");
+        seat.member("holder", "alice");
+        let j = dna::GitJournal { repo: self.app };
+        std::test::assert(j.append(j.revision(), "graph.edge", seat.id(), seat.body()).ok, "alice holds position:agent");
+        std::io::fs::write_file(self.app + "/.hale/dna/authority.json", "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity + "\",\"grants\":[{\"mode\":\"oidc\",\"name\":\"alice\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}") or discard;
+
+        // ---- the owner asks a judgment of a leg relay
+        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
+        self.core = dna::Dna {
+            journal: self.journal,
+            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
+            claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
+            org_id: "legs"
+        };
+        std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
+        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" });
+        let work = t + "/wf1/s0/j";
+        let attempt = dna::attempt_id_of(work, 0);
+        self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and asks the leg relay for it");
+
+        // ---- the head, under OIDC
+        let port = dna::free_port(83);
+        self.api = "http://127.0.0.1:" + to_string(port);
+        let argv = "sh\n-c\ncd \"$1\" && export USER=alice GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.app + "\n" + head_binary() + "\n" + to_string(port);
+        let child = std::process::spawn(argv) or std::process::Child { };
+        self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
+        child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
+        std::test::assert(self.head.pid > 0, "the head spawned");
+        let watched = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(self.head.pid));
+        let deadline = std::time::now() + dna::wait_secs(30);
+        let mut up = false;
+        while !up && std::time::now() < deadline {
+            let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + self.api + "/.well-known/hale-dna");
+            up = probe.code == 0 && dna::trim_nl(probe.stdout) == "200";
+            if !up {
+                let state = std::process::try_wait(self.head) or - 1;
+                std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
+                std::time::sleep(200ms);
+            }
+        }
+        std::test::assert(up, "the head came up: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
+
+        // ---- login: the verb mints alice's token from the stub, the secret never shown
+        let said = self.work("login\n--as\nalice", "", 0);
+        std::test::assert(std::str::contains(said, "export HALE_DNA_ID_TOKEN="), "login prints the export: " + said);
+        std::test::assert(!std::str::contains(said, "hosted-hat-test-secret"), "and never the client secret");
+        let token = dna::trim_nl(said[(std::str::index_of(said, "export HALE_DNA_ID_TOKEN=") + 25)..len(said)]);
+        std::test::assert(len(token) > 100 && !std::str::contains(token, "\n"), "the token is the ID token alone: " + token);
+        // the record maps two persons: none named is a usage the verb says; a person no subject maps is no token
+        let no_name = self.work("login", "", 1);
+        std::test::assert(std::str::contains(no_name, "name the person"), "two persons and none named: " + no_name);
+        let stranger = self.work("login\n--as\nzed", "", 1);
+        std::test::assert(std::str::contains(stranger, "maps no subject"), "no subject, no token: " + stranger);
+        // the vault holds no client secret: no token, and the verb says which entry
+        let bare = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2/empty\" HALE_DNA_API=\"$3\" && unset HALE_VAULT_ADDR && shift 3 && exec \"$@\" dna work login --as alice\nsh\n" + self.app + "\n" + self.vault + "\n" + self.api + "\n" + toolchain());
+        std::test::assert(bare.code == 1 && std::str::contains(bare.stdout, "oidc-client-dna-local"), "no secret in the vault, no token: " + bare.stdout + bare.stderr);
+
+        // ---- before the claim nobody holds a lease: alice is refused, naming it
+        let early = self.context(identity, work, token);
+        std::test::assert(status_of(early) == "403" && std::str::contains(early.stdout, "lease_required"), "the hat is a lease holder's: " + early.stdout);
+
+        // ---- alice claims under her token, and reads the hat
+        let claimed = self.work("next\n--as\nposition:agent", token, 0);
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(claimed, "attempt"), "state"), "claimed", "alice claims the judgment: " + claimed);
+        let hat = self.work("brief\n--attempt\n" + attempt, token, 0);
+        std::test::assert(std::str::contains(hat, "\"practices\"") && std::str::contains(hat, "\"practices_status\"") && std::str::contains(hat, "\"target\""), "the leg reads its hat: practices and the target are in it: " + hat);
+        std::test::assert_eq_str(std::json::find_string_field(hat, "work_id"), work, "the hat is of the Work");
+        let rendered = self.work("brief\n--attempt\n" + attempt + "\n--render\nagent\n--plain", token, 0);
+        std::test::assert(std::str::contains(rendered, "assess the storage migration"), "and renders it: " + rendered);
+
+        // ---- bob holds no lease: refused, naming it; a token for nobody is no read at all
+        let bobs_token = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=bob-sub&client_id=dna-local&client_secret=hosted-hat-test-secret\n" + self.issuer + "/token");
+        let bob = std::json::find_string_field(bobs_token.stdout, "id_token");
+        std::test::assert(len(bob) > 0, "the stub mints bob's token");
+        let refused = self.context(identity, work, bob);
+        std::test::assert(status_of(refused) == "403" && std::str::contains(refused.stdout, "lease_required") && std::str::contains(refused.stdout, "bob"), "bob holds no lease on the Work: " + refused.stdout);
+        let brief_bob = self.work("brief\n--attempt\n" + attempt, bob, 1);
+        std::test::assert(std::str::contains(brief_bob, "lease_required"), "his leg's brief says why: " + brief_bob);
+
+        if self.head.pid > 0 { std::process::kill(self.head) or discard; }
+        self.head.pid = -1;
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() {
+    let port = dna::free_port(84);
+    let url = "http://127.0.0.1:" + to_string(port);
+    App { issuer: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url, secret: "hosted-hat-test-secret" } } };
+}

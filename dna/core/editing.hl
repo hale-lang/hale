@@ -37,7 +37,17 @@ locus WorktreeTools {
         if len(rel) == 0 { return false; }
         if rel[0..1] == "/" { return false; }
         if std::str::contains(rel, "..") { return false; }
-        return true;
+        return self.no_escape(rel, "access");
+    }
+    // The spelling is not the place: a directory in the worktree may be a
+    // link out of it. Each existing segment of `rel` that is a link must
+    // resolve (`pwd -P`) to a directory under the root's own real path; a
+    // link to a file never does. The `list` mode, the listing's, refuses
+    // every link: it never descends one. The stdlib cannot tell a link from
+    // a directory (`list_dir_count` follows it), so this asks `sh`.
+    fn no_escape(rel: String, mode: String) -> Bool {
+        let r = run_tool("sh\n-c\nset -f; rr=$(cd \"$1\" && pwd -P) || exit 2; cur=$1; IFS=/; for s in $2; do cur=$cur/$s; if [ -L \"$cur\" ]; then [ \"$3\" = list ] && exit 1; t=$(cd \"$cur\" 2>/dev/null && pwd -P) || exit 1; case \"$t\" in \"$rr\"|\"$rr\"/*) ;; *) exit 1;; esac; fi; done; exit 0\nsh\n" + self.root + "\n" + rel + "\n" + mode);
+        return r.code == 0;
     }
     // Each call is one Attempt's: bounded by the attempt cap of the
     // Work that owns the editor, not by anything the grant can see.
@@ -170,6 +180,14 @@ fn fitness_lines(answer: String) -> String {
     return out;
 }
 
+// The lines of a newline-terminated listing.
+fn lines_of(text: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < len(text) { if text[i..(i + 1)] == "\n" { n = n + 1; } i = i + 1; }
+    return n;
+}
+
 locus SourceEditor {
     params {
         name: String = "editor";
@@ -194,6 +212,7 @@ locus SourceEditor {
         // request itself stays the ask, and the attempt carries the hat's
         // digest instead of the practices folded into its objective
         practices: String = "";
+        located_why: String = ""; // why `locate` found no file: the grant lists none, the model could not be asked, or it named an unlisted one
     }
     fn kind() -> String { return "agent"; }
     fn brief(practices: String) { self.practices = practices; }
@@ -214,14 +233,27 @@ locus SourceEditor {
     fn grant() -> String { return "read edit fmt check @" + self.tools.root; }
     // The `.hl` files of the grant's root, newline-separated: what an
     // Attempt may inspect (nothing outside the grant is listed).
+    // Files below the root are listed by their path from it (`api/todo.hl`),
+    // four directories deep: a repository's code sits under its seeds, and a
+    // grant over the repository's root that listed only the root's own files
+    // listed nothing (the todo repository's `api/`). Hidden directories and
+    // the organization's own (`dna`, `vendor`) are not the grant's code.
     @unbounded
-    fn files() -> String {
-        let n = std::io::fs::list_dir_count(self.tools.root) or 0;
+    fn files() -> String { return self.files_under("", 0); }
+    @unbounded
+    fn files_under(rel: String, depth: Int) -> String {
+        let dir = if len(rel) == 0 { self.tools.root } else { self.tools.root + "/" + rel };
+        let n = std::io::fs::list_dir_count(dir) or 0;
         let mut out = "";
         let mut i = 0;
         while i < n {
-            let name = std::io::fs::list_dir_at(self.tools.root, i) or "";
-            if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" { out = out + name + "\n"; }
+            let name = std::io::fs::list_dir_at(dir, i) or "";
+            let path = if len(rel) == 0 { name } else { rel + "/" + name };
+            if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" {
+                if self.tools.no_escape(path, "access") { out = out + path + "\n"; }
+            } else if depth < 4 && len(name) > 0 && name[0..1] != "." && name != "dna" && name != "vendor" && name != "node_modules" && name != "target" && (std::io::fs::list_dir_count(self.tools.root + "/" + path) or 0) > 0 && self.tools.no_escape(path, "list") {
+                out = out + self.files_under(path, depth + 1);
+            }
             i = i + 1;
         }
         return out;
@@ -232,6 +264,11 @@ locus SourceEditor {
     @unbounded
     fn locate(attempt: String, objective: String) -> String {
         let listing = self.files();
+        self.located_why = "";
+        if len(listing) == 0 {
+            self.located_why = "the grant (" + self.seed_label() + ") lists no .hl file to edit";
+            return "";
+        }
         let mut rest = objective;
         while len(rest) > 0 {
             let sp = std::str::index_of(rest, " ");
@@ -240,7 +277,11 @@ locus SourceEditor {
             while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
                 tok = tok[0..(len(tok) - 1)];
             }
-            if len(tok) > 3 && std::str::contains(listing, tok + "\n") { return tok; }
+            if len(tok) > 3 {
+                let hit = self.match_entry(listing, tok);
+                if len(hit) > 0 { return hit; }
+                if len(self.located_why) > 0 { return ""; }
+            }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         let pick = self.models.ask(ModelRequest {
@@ -249,11 +290,44 @@ locus SourceEditor {
             context: listing, context_bytes: len(listing) + len(objective),
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
-        if !pick.ok { return ""; }
+        if !pick.ok {
+            self.located_why = "the model could not be asked which file (" + (if len(pick.refused) > 0 { pick.refused } else { "no answer" }) + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
+            return "";
+        }
         let name = trim_nl(pick.output);
-        if len(name) > 0 && std::str::contains(listing, name + "\n") { return name; }
+        let hit = self.match_entry(listing, name);
+        if len(hit) > 0 { return hit; }
+        if len(self.located_why) > 0 { return ""; }
+        self.located_why = "the model named `" + name + "`, which is not one of the grant's " + to_string(lines_of(listing)) + " listed file(s) (" + self.seed_label() + ")";
         return "";
     }
+    // The listed entry a name stands for: a complete line of the listing
+    // is itself; a bare file name (no `/`) is the one entry whose last
+    // segment it is. Two such entries make it ambiguous: "" with
+    // `located_why` naming both. A name no entry answers is "" with
+    // `located_why` left as it was. Never a suffix of a longer path.
+    @unbounded
+    fn match_entry(listing: String, name: String) -> String {
+        let mut first = "";
+        let mut second = "";
+        let mut rest = listing;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if line == name { return name; }
+            if !std::str::contains(name, "/") && len(line) > len(name) && line[(len(line) - len(name) - 1)..len(line)] == "/" + name {
+                if len(first) == 0 { first = line; } else if len(second) == 0 { second = line; }
+            }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+        if len(second) > 0 {
+            self.located_why = "`" + name + "` is ambiguous: " + first + " and " + second + " are both listed; name the path";
+            return "";
+        }
+        return first;
+    }
+    // The grant's seed, as a message names it.
+    fn seed_label() -> String { return if len(self.seed) == 0 { "the repository root" } else { self.seed }; }
     // The files an objective is about (GH #566 F3): every listed file the
     // objective names, else the quick tier's plan from the listing, one
     // per line — only listed files are ever targets. Space-separated.
@@ -269,7 +343,10 @@ locus SourceEditor {
             while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
                 tok = tok[0..(len(tok) - 1)];
             }
-            if len(tok) > 3 && std::str::contains(listing, tok + "\n") && !std::str::contains(named, tok + " ") { named = named + tok + " "; }
+            if len(tok) > 3 {
+                let hit = self.match_entry(listing, tok);
+                if len(hit) > 0 && !std::str::contains(" " + named, " " + hit + " ") { named = named + hit + " "; }
+            }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         if len(named) > 0 { return trim_nl(named); }
@@ -285,7 +362,8 @@ locus SourceEditor {
         while len(lines) > 0 {
             let nl = std::str::index_of(lines, "\n");
             let name = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
-            if len(name) > 0 && std::str::contains(listing, name + "\n") && !std::str::contains(out, name + " ") { out = out + name + " "; }
+            let hit = if len(name) > 0 { self.match_entry(listing, name) } else { "" };
+            if len(hit) > 0 && !std::str::contains(" " + out, " " + hit + " ") { out = out + hit + " "; }
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
         }
         return trim_nl(out);
