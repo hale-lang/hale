@@ -267,7 +267,11 @@ locus SourceEditor {
             while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
                 tok = tok[0..(len(tok) - 1)];
             }
-            if len(tok) > 3 && std::str::contains(listing, tok + "\n") { return tok; }
+            if len(tok) > 3 {
+                let hit = self.match_entry(listing, tok);
+                if len(hit) > 0 { return hit; }
+                if len(self.located_why) > 0 { return ""; }
+            }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         let pick = self.models.ask(ModelRequest {
@@ -281,9 +285,35 @@ locus SourceEditor {
             return "";
         }
         let name = trim_nl(pick.output);
-        if len(name) > 0 && std::str::contains(listing, name + "\n") { return name; }
+        let hit = self.match_entry(listing, name);
+        if len(hit) > 0 { return hit; }
+        if len(self.located_why) > 0 { return ""; }
         self.located_why = "the model named `" + name + "`, which is not one of the grant's " + to_string(lines_of(listing)) + " listed file(s) (" + self.seed_label() + ")";
         return "";
+    }
+    // The listed entry a name stands for: a complete line of the listing
+    // is itself; a bare file name (no `/`) is the one entry whose last
+    // segment it is. Two such entries make it ambiguous: "" with
+    // `located_why` naming both. A name no entry answers is "" with
+    // `located_why` left as it was. Never a suffix of a longer path.
+    fn match_entry(listing: String, name: String) -> String {
+        let mut first = "";
+        let mut second = "";
+        let mut rest = listing;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if line == name { return name; }
+            if !std::str::contains(name, "/") && len(line) > len(name) && line[(len(line) - len(name) - 1)..len(line)] == "/" + name {
+                if len(first) == 0 { first = line; } else if len(second) == 0 { second = line; }
+            }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+        if len(second) > 0 {
+            self.located_why = "`" + name + "` is ambiguous: " + first + " and " + second + " are both listed; name the path";
+            return "";
+        }
+        return first;
     }
     // The grant's seed, as a message names it.
     fn seed_label() -> String { return if len(self.seed) == 0 { "the repository root" } else { self.seed }; }
@@ -302,7 +332,10 @@ locus SourceEditor {
             while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
                 tok = tok[0..(len(tok) - 1)];
             }
-            if len(tok) > 3 && std::str::contains(listing, tok + "\n") && !std::str::contains(named, tok + " ") { named = named + tok + " "; }
+            if len(tok) > 3 {
+                let hit = self.match_entry(listing, tok);
+                if len(hit) > 0 && !std::str::contains(named, hit + " ") { named = named + hit + " "; }
+            }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         if len(named) > 0 { return trim_nl(named); }
@@ -318,7 +351,8 @@ locus SourceEditor {
         while len(lines) > 0 {
             let nl = std::str::index_of(lines, "\n");
             let name = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
-            if len(name) > 0 && std::str::contains(listing, name + "\n") && !std::str::contains(out, name + " ") { out = out + name + " "; }
+            let hit = if len(name) > 0 { self.match_entry(listing, name) } else { "" };
+            if len(hit) > 0 && !std::str::contains(out, hit + " ") { out = out + hit + " "; }
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
         }
         return trim_nl(out);

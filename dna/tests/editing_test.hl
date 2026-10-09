@@ -196,6 +196,39 @@ main locus App {
         };
         std::test::assert_eq_str(wrong.locate("a3", "add a Todos::count rpc"), "", "a file the model names that is not listed is no target");
         std::test::assert(std::str::contains(wrong.located_why, "`nowhere.hl`") && std::str::contains(wrong.located_why, "not one of the grant's 1 listed"), "and the failure says the model's answer was the cause, not the grant: " + wrong.located_why);
+        // a target is a complete listed path: the bare name resolves to the one
+        // entry it is the basename of, a suffix of nothing listed is no target,
+        // and two entries sharing the name make the bare name ambiguous
+        let bn = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(bn.locate("b1", "change todo.hl so it counts"), "api/todo.hl", "the basename in the objective resolves to the listed path: " + bn.located_why);
+        std::test::assert(bn.models.calls == 0, "and asks no model");
+        std::test::assert_eq_str(bn.plan("b2", "change todo.hl and api/todo.hl"), "api/todo.hl", "the plan resolves each named file the same way, once");
+        std::test::assert_eq_str(bn.locate("b3", "add a Todos::count rpc"), "api/todo.hl", "a basename in the model's answer resolves too: " + bn.located_why);
+        std::test::assert_eq_str(bn.plan("b4", "add a Todos::count rpc"), "api/todo.hl", "and in the model's plan");
+        std::test::assert_eq_str(bn.locate("b5", "change pi/todo.hl"), "api/todo.hl", "an unlisted path in the objective falls to the model, not to a suffix");
+        std::test::assert_eq_str(wrong.locate("b6", "change i/todo.hl"), "", "a suffix of a listed path is no target");
+        std::test::assert_eq_str(bn.tools.root, root4, "the grant is unchanged");
+        let root6 = dna::scratch_root("edit-dup");
+        std::io::fs::mkdir(root6 + "/a") or discard;
+        std::io::fs::mkdir(root6 + "/b") or discard;
+        std::io::fs::write_file(root6 + "/a/todo.hl", "fn a() { }\n") or discard;
+        std::io::fs::write_file(root6 + "/b/todo.hl", "fn b() { }\n") or discard;
+        let dup = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root6, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(dup.locate("c1", "change todo.hl"), "", "a bare name two files share is no target");
+        std::test::assert(std::str::contains(dup.located_why, "ambiguous") && std::str::contains(dup.located_why, "a/todo.hl") && std::str::contains(dup.located_why, "b/todo.hl") && dup.models.calls == 0, "the refusal names both: " + dup.located_why);
+        std::test::assert_eq_str(dup.locate("c2", "change b/todo.hl"), "b/todo.hl", "the full path is exact");
+        std::test::assert_eq_str(dup.locate("c3", "add a rpc"), "", "a model answer that is ambiguous is refused");
+        std::test::assert(std::str::contains(dup.located_why, "ambiguous"), "naming why: " + dup.located_why);
+        std::test::assert_eq_str(dup.plan("c4", "change a/todo.hl and todo.hl"), "a/todo.hl", "the plan keeps the exact path and drops the ambiguous name");
+        dna::scratch_done(root6);
         let root5 = dna::scratch_root("edit-empty");
         let empty = dna::SourceEditor {
             name: "editor",
