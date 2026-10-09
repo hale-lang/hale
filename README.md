@@ -1,36 +1,34 @@
 <p align="center">
-  <img src="assets/readme/banner.png" alt="hale" width="100%">
+  <img src="assets/readme/banner.png" alt="Hale" width="100%">
 </p>
 
-# Hale
+<p align="center">
+  <a href="https://github.com/hale-lang/hale/actions/workflows/tests.yml"><img src="https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://hale-lang.org/docs"><img src="https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://llvm.org/"><img src="https://img.shields.io/badge/LLVM-18-red.svg" alt="LLVM 18"></a>
+</p>
 
-**Loci all the way down. And all the way up.**
+<h3 align="center">Less language. More compiler.</h3>
 
-A locus is a system: made of smaller systems, serving a larger one. It is
-the unit of Hale's one recursive structural model, and that model holds its
-shape at every scale: a value, a component, a service, an application, a
-fleet of running binaries. When a boundary closes, Hale checks the model it
-can derive and emits evidence that the next scale out composes.
+<p align="center">
+  One language from a five-line script to a dynamic distributed system.
+</p>
 
-(Precisely: one *model*, not one syntactic form. A constitution and a fleet
-plan are not locus declarations — the plan is JSON. What recurs is the
-account of ownership, flow, closure, and law that each of them is a
-projection of.)
+<p align="center">
+  <a href="https://hale-lang.org"><b>hale-lang.org</b></a> ·
+  <a href="https://hale-lang.org/docs">Guide</a> ·
+  <a href="https://hale-lang.org/playground">Playground</a> ·
+  <a href="https://hale-lang.org/packages">Packages</a> ·
+  <a href="https://hale-lang.org/features">Features</a> ·
+  <a href="https://hale-lang.org/glossary">Glossary</a>
+</p>
 
-Most languages stop at the top of the file. Above that line your
-architecture stops being code and becomes diagrams, deployment YAML, and
-review comments that no compiler ever reads. Hale keeps going: the same
-construct describes a value and a deployment, so one checker walks both.
-
-> *Systems outgrow working memory, so the language should hold the
-> architecture.*
-
-**[hale-lang.org](https://hale-lang.org)**: docs, [playground](https://hale-lang.org/playground), packages, [features](https://hale-lang.org/features).
-
-[![Tests](https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg)](https://github.com/hale-lang/hale/actions/workflows/tests.yml)
-[![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.org/docs)
-[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
-[![LLVM](https://img.shields.io/badge/LLVM-18-red.svg)](https://llvm.org/)
+Hale is a compiled, general-purpose language. Every piece of state has one
+owner, and the parts of a program talk only over declared, typed message
+channels. That shape lets the compiler check a program's architecture the
+way it checks its types. It runs natively with no garbage collector and no
+borrow checker, and its concurrency has no locks and no data races.
 
 You know the feeling: you describe a service out loud, *"a chat room takes
 each message posted to it and relays it out to everyone in the room"*, and

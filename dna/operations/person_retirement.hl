@@ -41,6 +41,7 @@ locus RetirementPrefix {
     fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
     fn verify_chain() -> Bool { return self.valid; }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
 }
 locus PersonRetirementCodec {

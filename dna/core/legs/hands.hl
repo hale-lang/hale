@@ -113,7 +113,11 @@ locus ScratchGit {
         self.made = self.made + 1;
         let dir = dna::scratch_root("legs-git-" + to_string(self.made));
         self.roots = self.roots + dir + "\n";
-        let cloned = dna::run_tool("git\nclone\n--quiet\n" + repo + "\n" + dir);
+        // gc off in the scratch clone: a commit there can start git's
+        // detached auto-gc, which writes into the directory while `clean`
+        // removes it and leaves it behind; nothing in a scratch worktree
+        // is kept long enough to need packing
+        let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + repo + "\n" + dir);
         if cloned.code != 0 { return hand_result(cloned, ""); }
         if len(base) == 0 || base == "HEAD" { return HandResult { ok: true, output: dir }; }
         let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + base);

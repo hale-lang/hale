@@ -91,6 +91,7 @@ locus MemoryLedger {
         self.store.lease_token = self.token;
         return self.gated(self.store.append(expected, kind, entity, body));
     }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
         self.failure = "";

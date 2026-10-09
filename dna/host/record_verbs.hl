@@ -545,7 +545,11 @@ fn library_seed_verb(root: String, path: String, version_arg: String, upgrading:
         if len(family) == 0 || mode != 0 { continue; }
         cur_target = std::json::find_string_field(line, "target");
         let name = std::json::find_string_field(line, "name");
-        let st = states.get(name) or DesignState { };
+        let mut st = states.get(name) or DesignState { };
+        // a chapter the book moved is proposed under its new name over what
+        // the record holds under the earlier one
+        let earlier = std::json::find_string_field(line, "earlier");
+        if len(st.active) == 0 && len(earlier) > 0 { st = states.get(earlier) or DesignState { }; }
         let one = library_idea_row(keeps, name, std::json::find_string_field(line, "title"), std::json::find_string_field(line, "text"), cur_target, version, std::json::find_string_field(line, "digest"), st.active);
         cur_rows = cur_rows + one.row;
         cur_ideas = cur_ideas + name + " " + one.digest + "\n";

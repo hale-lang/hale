@@ -187,6 +187,24 @@ locus RoutedJournal {
         self.take_new();
         return AppendResult { ok: true, revision: self.order.len() };
     }
+    // Many rows at the tail in one write when they all belong to the
+    // record (the record's `append_batch`: one commit per row, the chain
+    // moved once); a batch with a Ledger row in it goes row by row, each to
+    // its own memory.
+    @unbounded
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        let rev = self.order.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut i = 0;
+        while i < rows.len() {
+            if self.to_ledger((rows.get(i) or Row { }).kind) { return append_rows(self, expected, rows); }
+            i = i + 1;
+        }
+        let r = self.record.append_batch(self.record.revision(), rows);
+        self.take_new();
+        if !r.ok { self.last_error = r.error; return AppendResult { error: r.error, expected: expected, actual: self.order.len() }; }
+        return AppendResult { ok: true, revision: self.order.len() };
+    }
     // Exact: neither memory may have moved since the caller read the
     // merged revision, and the memory's own swap is one attempt.
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {

@@ -889,6 +889,7 @@ main locus Host {
         readings_waiting: Bool = false; // said once that readings wait
         pulse_stopped: Bool = false; // GH #989: this outage of the heart's pulse is recorded
         nerves_on: Bool = false;
+        nerves_read_said: Bool = false; // the "reads its facts" line was said once, at start or later
         relay: NodeRelay = NodeRelay { };
         // when this node last stopped an organization (monotonic ns; 0
         // never): its pulls outlive it for a pull's life
@@ -1399,6 +1400,25 @@ main locus Host {
     // left behind counts for nothing until its life is over, so a pull
     // seen before then is not this organization's. Without nerves there
     // is nothing to read; an organization still running is all there is.
+    // Said once, whenever the organization is first seen reading its
+    // facts: inside the start window, or later from `tick` on a slow
+    // machine, so a reader waiting for the line (a fixture, a person)
+    // is not left with the window's note alone.
+    fn say_nerves_read() {
+        if self.nerves_read_said { return; }
+        self.nerves_read_said = true;
+        self.say("the organization reads its facts from the nerves (" + dna::nerves_stream(dna::nerves_org()) + ")");
+    }
+    // One quiet look: whether the organization's durable consumer has a
+    // pull outstanding now.
+    fn nerves_read_now() -> Bool {
+        if !self.nerves_on || exit_code(self.org) != -2 { return false; }
+        let c = nats::NatsClient { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "dna-node-probe", timeout: 2s };
+        if !c.open() { return false; }
+        let why = nerves_listening(c, dna::nerves_org(), owner_here(self.root));
+        c.close();
+        return len(why) == 0;
+    }
     fn wait_nerves(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
         if !self.nerves_on { return exit_code(self.org) == -2; }
@@ -1859,6 +1879,7 @@ main locus Host {
         // waits behind the sync, memory's work or the forge. A row another
         // clone wrote arrives with the sync below and is relayed on the
         // next tick; the sync below shares what this relay answers.
+        if self.nerves_on && !self.nerves_read_said && self.nerves_read_now() { self.say_nerves_read(); }
         let n = self.relay.relay(self.memory);
         if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
@@ -1971,9 +1992,10 @@ main locus Host {
             self.say("organization (pid " + to_string(self.org.pid) + ") from " + self.root + " under LOTUS_OBS=1");
         }
         // 3. the organization reads its facts from the nerves
-        let bound = self.wait_nerves(20);
-        if bound && self.nerves_on { self.say("the organization reads its facts from the nerves (" + dna::nerves_stream(dna::nerves_org()) + ")"); }
-        else if exit_code(self.org) == -2 && self.nerves_on { self.say("the organization did not come to read the nerves within 20s; the facts wait in the stream"); }
+        let window = dna::wait_secs(20);
+        let bound = self.wait_nerves(window);
+        if bound && self.nerves_on { self.say_nerves_read(); }
+        else if exit_code(self.org) == -2 && self.nerves_on { self.say("the organization did not come to read the nerves within " + to_string(window) + "s; the facts wait in the stream, and the host says when it reads them"); }
         // 4. dev: the application too, under this host — a repository has
         // none, and its organization runs alone
         if self.verb == "dev" && self.repository { self.say("a repository: no application runs under this host; the organization oversees its seeds"); }

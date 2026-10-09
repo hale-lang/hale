@@ -1,0 +1,102 @@
+// dna/tests/library_family_test.hl — a library family is ratified only when
+// every member was. Approving a family whose first member's predecessor was
+// replaced by another approved revision refuses that member (the record's
+// supersession rule), ratifies the second, and writes
+// `library.family.refused` naming the refused member — never
+// `library.family.ratified`. The ordinary approval still ratifies, and a
+// rejection still declines every member.
+import "../core" as dna;
+
+fn rows(j: dna::Journal, kind: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        if j.read(i).kind == kind { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// A record with two members `n1`, `n2`, each superseding an active version;
+// `replaced` puts another approved revision of the first one's predecessor
+// in the record, as an earlier approval would have. The family's Review is
+// settled by `outcome`.
+fn setup(kr: dna::KnowledgeRecord, j: dna::Journal, replaced: Bool, outcome: String) -> String {
+    let o1 = kr.propose(dna::Idea { id: "o1", kind: "idea", name: "library/n1", text: "n1 old", author: "org" }, "org");
+    let o2 = kr.propose(dna::Idea { id: "o2", kind: "idea", name: "library/n2", text: "n2 old", author: "org" }, "org");
+    let a = j.append(j.revision(), "knowledge.ratified", o1, "{\"outcome\":\"approve\",\"kind\":\"idea\"}");
+    let b = j.append(j.revision(), "knowledge.ratified", o2, "{\"outcome\":\"approve\",\"kind\":\"idea\"}");
+    if replaced {
+        let x = kr.propose(dna::Idea { id: "x", kind: "idea", name: "library/n1", text: "n1 by another", author: "org", supersedes: o1 }, "org");
+        let c = j.append(j.revision(), "knowledge.ratified", x, "{\"outcome\":\"approve\",\"kind\":\"idea\",\"supersedes\":\"" + o1 + "\"}");
+        let d = j.append(j.revision(), "knowledge.retired", o1, "{\"by\":\"" + x + "\"}");
+    }
+    let n1 = kr.propose(dna::Idea { id: "n1", kind: "idea", name: "library/n1", text: "n1 new", author: "org", supersedes: o1 }, "org");
+    let n2 = kr.propose(dna::Idea { id: "n2", kind: "idea", name: "library/n2", text: "n2 new", author: "org", supersedes: o2 }, "org");
+    let ideas = "library/n1 " + n1 + "\nlibrary/n2 " + n2 + "\n";
+    let q = std::json::Builder { };
+    let doc = "{\"author\":\"org\",\"count\":2,\"ideas\":" + q.quote(ideas) + ",\"kind\":\"family\",\"name\":\"library/design@t\",\"provenance\":\"toolchain\",\"toolchain\":\"t\"}";
+    let raw = kr.receipts.store(doc);
+    let fd = "sha256:" + raw;
+    let rid = dna::knowledge_review_id(fd);
+    let r = std::json::Builder { };
+    r.begin_object();
+    r.string_field("knowledge_digest", fd);
+    r.string_field("subject_digest", fd);
+    r.string_field("kind", "family");
+    r.string_field("ideas", ideas);
+    r.end_object();
+    let e = j.append(j.revision(), "review.requested", "review:" + rid, r.result());
+    let s = j.append(j.revision(), "review.settled", rid, outcome + " by riley");
+    return fd;
+}
+
+main locus App {
+    run() {
+        let root = dna::scratch_root("library-family");
+        // one member refused: the family is not ratified, and says which
+        let j = dna::MemJournal { };
+        let kr = dna::KnowledgeRecord { journal: j, receipts: dna::FileReceipts { dir: root + "/a" } };
+        let fd = setup(kr, j, true, "approve");
+        let rid = dna::knowledge_review_id(fd);
+        std::test::assert(kr.resume_result(rid, "approve", "riley"), "the verdict was carried out");
+        std::test::assert_eq_int(rows(j, "knowledge.refused"), 1, "the first member was refused");
+        std::test::assert_eq_int(rows(j, "library.family.ratified"), 0, "the family was NOT ratified");
+        std::test::assert_eq_str(kr.family_row(fd), "library.family.refused", "the family's own row is the refusal");
+        let fam = dna::first_row(j, "library.family.refused", fd);
+        std::test::assert(std::str::contains(fam.body, "library/n1 sha256:"), "it names the refused member: " + fam.body);
+        std::test::assert(!std::str::contains(fam.body, "library/n2 sha256:"), "and no other: " + fam.body);
+        std::test::assert(std::str::contains(fam.body, "propose again against the active version"), "and why: " + fam.body);
+        let ideas = dna::native_json_string(dna::first_row(j, "review.requested", "review:" + rid).body, "ideas");
+        let at = std::str::index_of(ideas, "\nlibrary/n2 ") + 11;
+        let n2 = ideas[(at + 1)..(len(ideas) - 1)];
+        let n1 = ideas[11..(at - 11)];
+        std::test::assert(len(dna::first_row(j, "knowledge.refused", n1).kind) > 0, "the first member's row is a refusal");
+        std::test::assert(std::str::contains(fam.body, n1), "the family row carries its digest");
+        std::test::assert(kr.ratified(n2), "the clean member is ratified");
+        // asking again writes nothing more
+        std::test::assert(kr.resume_result(rid, "approve", "riley"), "resumed");
+        std::test::assert_eq_int(rows(j, "library.family.refused"), 1, "once");
+
+        // every member clean: ratified
+        let j2 = dna::MemJournal { };
+        let kr2 = dna::KnowledgeRecord { journal: j2, receipts: dna::FileReceipts { dir: root + "/b" } };
+        let fd2 = setup(kr2, j2, false, "approve");
+        std::test::assert(kr2.resume_result(dna::knowledge_review_id(fd2), "approve", "riley"), "carried out");
+        std::test::assert_eq_int(rows(j2, "library.family.ratified"), 1, "the ordinary approval ratifies the family");
+        std::test::assert_eq_int(rows(j2, "library.family.refused"), 0, "and refuses nothing");
+        std::test::assert_eq_int(rows(j2, "knowledge.refused"), 0, "no member");
+
+        // a rejection declines every member, even beside a replaced one
+        let j3 = dna::MemJournal { };
+        let kr3 = dna::KnowledgeRecord { journal: j3, receipts: dna::FileReceipts { dir: root + "/c" } };
+        let fd3 = setup(kr3, j3, true, "reject");
+        std::test::assert(kr3.resume_result(dna::knowledge_review_id(fd3), "reject", "riley"), "carried out");
+        std::test::assert_eq_int(rows(j3, "knowledge.declined"), 2, "both members declined");
+        std::test::assert_eq_int(rows(j3, "library.family.declined"), 1, "the family declined");
+        std::test::assert_eq_int(rows(j3, "library.family.ratified") + rows(j3, "library.family.refused"), 0, "and nothing else");
+        dna::scratch_done(root);
+    }
+}
+
+fn main() { App { }; }

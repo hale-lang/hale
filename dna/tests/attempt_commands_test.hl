@@ -645,7 +645,11 @@ locus App {
 fn main() {
     if std::env::var("HALE_DNA_ATTEMPT_PHASE") == "2" { App { }; return; }
     let scratch = dna::scratch_root("attempts");
-    let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
+    // no library: this fixture is about attempts and leases, and the
+    // owner's restart rehydrates the whole record inside a 2 s lease (t3),
+    // so the record stays the size it was before the library seeded 400
+    // ideas into every new one
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp\n--no-library");
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
     let app = scratch + "/app";
     let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");

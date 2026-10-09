@@ -124,6 +124,40 @@ locus WorktreeTools {
     fn fmt() -> RunResult { return run_tool(self.hale_bin + "\nfmt\n" + self.root); }
     @effects(is: { toolchain_run })
     fn check() -> RunResult { return run_tool(self.hale_bin + "\ncheck\n" + self.root); }
+    // The format and the check in the seeds that hold the edited files
+    // (`seeds_of_files`): a repository's root holds no `.hl`, its code sits
+    // under its seeds. Each seed once, in order; the format keeps the first
+    // failure, the check stops at it.
+    @unbounded
+    @effects(is: { toolchain_run })
+    fn fmt_files(files: String) -> RunResult {
+        let mut out = RunResult { code: 0 };
+        let mut rest = seeds_of_files(self.root, files, " ");
+        while len(rest) > 0 {
+            let at = std::str::index_of(rest, "\n");
+            let seed = rest[0..at];
+            rest = rest[(at + 1)..len(rest)];
+            let r = run_tool(self.hale_bin + "\nfmt\n" + self.seed_dir(seed));
+            if r.code != 0 && out.code == 0 { out = r; }
+        }
+        return out;
+    }
+    @unbounded
+    @effects(is: { toolchain_run })
+    fn check_files(files: String) -> RunResult {
+        let mut out = RunResult { code: 0 };
+        let mut rest = seeds_of_files(self.root, files, " ");
+        while len(rest) > 0 && out.code == 0 {
+            let at = std::str::index_of(rest, "\n");
+            let seed = rest[0..at];
+            rest = rest[(at + 1)..len(rest)];
+            let r = run_tool(self.hale_bin + "\ncheck\n" + self.seed_dir(seed));
+            // the diagnostics name files from the seed, as an application's do
+            out = RunResult { code: r.code, stdout: r.stdout, stderr: strip_root(r.stderr, self.seed_dir(seed)) };
+        }
+        return out;
+    }
+    fn seed_dir(seed: String) -> String { return if seed == "." { self.root } else { self.root + "/" + seed }; }
 }
 
 // ---- the editing performer --------------------------------------------
@@ -515,8 +549,8 @@ locus SourceEditor {
             if len(files) == 0 {
                 return WorkResult { disposition: "failed", narrative: "the harness changed nothing under the grant (" + to_string(self.refused_outside) + " change(s) outside it left behind): " + self.last_summary, performer: self.name };
             }
-            let f = self.tools.fmt();
-            let c = self.tools.check();
+            let f = self.tools.fmt_files(files);
+            let c = self.tools.check_files(files);
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
@@ -606,8 +640,8 @@ locus SourceEditor {
             if len(failed) > 0 {
                 return WorkResult { disposition: "failed", narrative: failed, performer: self.name };
             }
-            let f = self.tools.fmt();
-            let c = self.tools.check();
+            let f = self.tools.fmt_files(files);
+            let c = self.tools.check_files(files);
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
