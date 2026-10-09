@@ -20,6 +20,30 @@ pub(crate) fn api_usage() -> &'static str {
     "\
 usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
        hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE] [file.hl | dir]
+       hale api describe <endpoint> [--json] [--bearer T]
+       hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
+                     [--bearer T] [--id ID] [--digest D] [--raw]
+
+`describe` asks a running program for the description it serves the caller and
+prints it: the exposure's identity (surface, digest, name), the caller and its
+roles, then a row per member the caller may call (payload fields with their
+types, result, `requires`). `--json` prints the document as the program wrote
+it. An endpoint is `unix:<path>` (the caller is the socket's peer) or
+`http://host:port` (the caller is `--bearer T`, else HALE_API_BEARER); a grpc://
+or mcp:// endpoint is refused. Exit: 0 answered, 2 refused, 4 nothing (or a
+program that is not a Hale exposure) answered, 5 usage.
+
+`call` sends one member to a running program. The payload is the JSON given
+(`--json`, `-` reads stdin) or built from one flag per payload field, typed by
+the member's schema in the description it reads first: Int, Float, Bool and
+String by their text (`--name alice`), a quantity by its count, a record or
+list as JSON (`--items '[...]'`); a missing required field, a flag naming no field or
+a value that does not parse is refused before anything is sent. The call names
+the description's digest (`--digest D` overrides) and a request id of its own
+(`--id`). A result prints its value on stdout (exit 0); any other outcome
+prints the wire outcome on stderr: handler error 1, refusal 2, server error 3;
+a transport failure (no reply, connection lost, the reply answering another id)
+is 4, usage 5. `--raw` prints the whole outcome on stdout whatever its kind.
 
 `export` writes a surface's bundle into DIR (the current directory by default):
   NAME.description.json   the surface-wide document: every member with its
@@ -90,6 +114,8 @@ pub(crate) fn run_api(rest: &[String]) -> ExitCode {
     match rest.first().map(String::as_str) {
         Some("export") => run_export(&rest[1..]),
         Some("client") => run_client(&rest[1..]),
+        Some("describe") => crate::api_drive::run_describe(&rest[1..]),
+        Some("call") => crate::api_drive::run_call(&rest[1..]),
         _ => {
             eprint!("{}", api_usage());
             ExitCode::from(2)

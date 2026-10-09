@@ -11,7 +11,7 @@ operations, each naming a handler and the roles a caller must hold
 a contract digest and prints what a caller can learn, without running
 anything. `api::serve` puts a surface on a transport (a Unix socket, an
 HTTP listener, an MCP endpoint, a WebSocket hub), and a client needs no
-code of its own: a served exposure describes itself, and `hale call`,
+code of its own: a served exposure describes itself, and `hale api call`,
 `hale watch`, `hale admin` and `hale mcp --app` read only that
 description. To see the pieces combined into one program, built step by
 step from an empty file to an API with roles, read
@@ -567,34 +567,74 @@ that say what a role check is and is not. Five verbs read only that
 document:
 
 ```sh
-hale describe /run/desk/admin.sock                  # the description, as the exposure wrote it
-hale describe http://127.0.0.1:8080 --token t-alice
+hale describe /run/desk/admin.sock                  # the description the exposure serves this caller
+hale describe http://127.0.0.1:8080 --bearer t-alice
 hale call /run/desk/admin.sock Orders::cancel '{"order": 41}'
-hale call http://127.0.0.1:8080 Orders::place '{"symbol": "ACME", "qty": 10, "limit": 12500}' --token t-alice
+hale call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 10 --limit 12500 --bearer t-alice
 hale watch ws://127.0.0.1:9000 Fills --token t-dave # frames, one JSON line each
 hale admin /run/desk/admin.sock                     # a page on 127.0.0.1:7473 over the description
 claude mcp add desk -- hale mcp --app http://127.0.0.1:8080 --token t-alice   # every member a tool
 ```
 
-An **endpoint** is a socket path, `http://host:port` (the caller is
-whoever the `--token` bearer is, or `HALE_API_TOKEN`), `ws://host:port`
-(a hub) or, for `hale mcp --app`, `mcp://host:port`. `hale call` reads the
-description first, so a member the caller may not call is not offered
-(the client lists the ones it may), and it names the **digest** it read,
-so a program that changed under the client refuses the call with
-`digest_mismatch` and the digest it serves. The response is printed on
-stdout; a handler's error or a refusal on stderr with its kind and reason
-and exit code 1, so a script can branch on it. `--receipt` prints the
-answer as the exposure wrote it: the reply line over a socket (the
-`request_id` it assigned and the `caller` it established), the status and
-the body over HTTP. `hale watch` prints `subscribed` and then each
+`hale describe` and `hale call` are the short forms of `hale api describe`
+and `hale api call` (below), with two conveniences: a bare path is
+`unix:<path>`, and a bare JSON payload after the member is `--json`. Their
+endpoint is a socket path, or `http://host:port` (the caller is whoever the
+`--bearer` token is, or `HALE_API_BEARER`). `hale watch` takes a
+`ws://host:port` hub and `hale mcp --app` also `mcp://host:port`. A call
+reads the description first, so a member the caller may not call is not
+offered, and it names the **digest** it read, so a program that changed under
+the client refuses the call with `digest_mismatch` and the digest it serves.
+`hale watch` prints `subscribed` and then each
 `event` until the hub closes the connection.
 
-`hale describe desk.hl` is `hale check --api`: the same document from the
-rows, with no program running, and the forms a client is generated from
+`hale check --api desk.hl` prints the same document from the rows, with no
+program running, and the forms a client is generated from
 (`--surface Public --openapi`, `--json-schema`, `--mcp`). The description
 carries what the exposure was given (its address) and what it
 established (the caller), and nothing of the deployment beyond that.
+
+### Driving a program from a terminal
+
+`hale api describe` and `hale api call` are the verbs for an operator and for
+scripts. They drive a running program over a Unix socket or HTTP, read the
+description it serves, and turn each outcome into an exit code. Against the
+desk of this chapter:
+
+```sh
+$ hale api describe http://127.0.0.1:8080 --bearer t-alice
+Public@fnv1a64:a8930d6e7998e986/public  [http 127.0.0.1:8080]
+caller: bearer alice; roles: trader
+  Orders::cancel(order: Int (OrderId)) -> Cancelled, error OrderError  requires: trader
+  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderReceipt, error ClosureViolation  requires: -
+
+$ hale api call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 3 --limit 125 --bearer t-alice
+{"order":41,"notional":375}
+$ hale api call http://127.0.0.1:8080 Orders::cancel --order 999 --bearer t-alice
+{"code":"unknown_order","reason":"no order 999"}
+$ echo $?
+1
+$ echo '{"book": "desk"}' | hale api call unix:/run/desk/admin.sock Ledger::rebalance --json -
+{"moved":1500}
+```
+
+Each member's payload is built from one flag per field, typed by the schema
+the description gave: an integer or a quantity's count (`--qty 3`), a number,
+`true` or `false`, a string (`--symbol ACME`), and JSON for a record or a list
+(`--items '[1, 2]'`). A flag that does not fit its field, a missing required
+field and a flag that names no field are refused before anything is sent, with
+the field's schema in the message. `--json '{…}'` (or `--json -` for stdin)
+sends a payload as given, unchecked: the server's answer is then the check.
+
+A result prints its value on stdout and exits 0. Everything else prints what the
+wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,
+`digest_mismatch`, `malformed` and the rest, with their reason), a server error
+3, a connection that broke or never answered 4, a call the verb would not send
+5. `--raw` prints the whole outcome on stdout instead, and the exit code stays.
+The endpoint is `unix:<path>` or `http://host:port`; `grpc://` and `mcp://`
+are refused with that message. The caller over HTTP is `--bearer T` (or
+`HALE_API_BEARER`); over a socket it is the peer. See *Driving a served
+program* in `spec/api.md` for the full table.
 
 ### Generated specs and clients
 
