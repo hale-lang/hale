@@ -1081,10 +1081,8 @@ locus Dna {
     // `organization`, the Board's; else the class the leader's plan names,
     // else `application`.
     fn edit_class_of(task_id: String) -> String {
-        let plan = self.ask_plan_of(task_id);
-        if !plan.parsed { return "application"; }
-        if plan.kind == "organism" { return "organization"; }
-        return if len(plan.change_class) > 0 { plan.change_class } else { "application" };
+        let adm = self.recorded_admission(task_id);
+        return if adm.ok { admission_edit_class(adm.value.inputs) } else { "application" };
     }
     // A human leaf's attempt from the workflow engine (card 16): a case
     // for a person, admitted once per attempt — `case.admitted <case>`,
@@ -3335,7 +3333,7 @@ locus Dna {
         // seed/pull: the target set, not the path alone — the codebase's
         // languages, `system:dna` when the class is the organization's, and
         // the editor's position
-        let targets = hat_knowledge_targets(self.journal, knowledge_target(change_class, self.boundary.child, seed), change_class == "organization", hat_position_of("edit"));
+        let targets = hat_knowledge_targets(self.journal, self.verification.receipts, knowledge_target(change_class, self.boundary.child, seed), change_class == "organization", hat_position_of("edit"));
         let pkg = self.knowledge_client.package_for(targets, objective);
         // GH #946 hardening: the ask stays the ask. The practices reach the
         // editor as its brief, and the attempt carries the hat — the

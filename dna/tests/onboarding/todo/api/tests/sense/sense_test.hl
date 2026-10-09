@@ -1,0 +1,115 @@
+// The sense, attached: an item that becomes overdue is said once on the
+// organism's nerves as `<org>.app.todo.concern.raised`, by the application's
+// own account (user and vault password on the CONNECT line), and an item
+// that is done or not yet due is not. The nerves are fake_nats.hl's
+// stand-in broker. The wiring in main.hl is `Sense`; the test builds the
+// same few lines, since main.hl holds the hub and cannot be imported.
+import "../../todo" as todo;
+import "../../auth" as auth;
+import "../../nerves" as nerves;
+import "../fake" as fake;
+
+/// The `source` field of the message `heard`.
+fn source_of(heard: String) -> String {
+    let key = "\"source\":\"";
+    let mut i = 0;
+    while i + len(key) <= len(heard) && heard[i..(i + len(key))] != key { i = i + 1; }
+    if i + len(key) > len(heard) { return ""; }
+    let start = i + len(key);
+    let mut j = start;
+    while j < len(heard) && heard[j..(j + 1)] != "\"" { j = j + 1; }
+    return heard[start..j];
+}
+
+// A copy of the rule the heart applies to a concern's source,
+// dna/host/pulse.hl::concern_source (this repository cannot import the
+// host): `/`-separated tokens of letters, digits, `-`, `_` and `.`, one of
+// them the application's name; "" when it is refused.
+fn concern_source(source: String, app: String) -> String {
+    if len(source) == 0 || len(source) > 128 { return ""; }
+    let mut named = false;
+    let mut seg = "";
+    let mut i = 0;
+    while i <= len(source) {
+        let c = if i < len(source) { source[i..(i + 1)] } else { "/" };
+        if c == "/" {
+            if len(seg) == 0 { return ""; }
+            if seg == app { named = true; }
+            seg = "";
+        } else {
+            let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+            if !ok { return ""; }
+            seg = seg + c;
+        }
+        i = i + 1;
+    }
+    return if named { source } else { "" };
+}
+
+main locus SenseDesk {
+    params {
+        port: Int = fake::free_port(0);
+        broker: fake::Broker = fake::Broker { port: self.port };
+        mailbox: fake::Mailbox = fake::Mailbox { };
+        list: todo::Todos = todo::Todos { };
+        door: std::api::test::Rpc = std::api::test::Rpc { principals: auth::Tokens { table: "ada=t-ada" }, roles: auth::Grants { table: "ada=t-ada" } };
+        sense: fake::Sense = fake::Sense {
+            nerves: nerves::Nerves {
+                url: "nats://127.0.0.1:" + to_string(self.port),
+                user: "app-todo",
+                credential: std::secret::Credential { vault: "todo-sense-test-vault-entry" },
+                org: "testorg"
+            }
+        };
+    }
+    placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
+
+    @unbounded
+    run() {
+        let entry = std::secret::vault_local_dir() + "/todo-sense-test-vault-entry";
+        std::io::fs::write_file(entry, "hunter2") or discard;
+
+        // three items: overdue and open, overdue and done at once, not yet due
+        let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
+        let d = self.door;
+        d.call(1, "Todos::add", "{\"title\":\"milk\",\"due\":\"2020-01-01T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(1, 2000), "result", "milk is added");
+        d.call(2, "Todos::add", "{\"title\":\"eggs\",\"due\":\"2020-01-02T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(2, 2000), "result", "eggs are added");
+        d.call(3, "Todos::complete", "{\"todo\":2}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(3, 2000), "result", "and done at once");
+        d.call(4, "Todos::add", "{\"title\":\"later\",\"due\":\"2200-01-01T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(4, 2000), "result", "later is not yet due");
+
+        let mut i = 0;
+        while self.mailbox.count == 0 && i < 100 {
+            std::time::sleep(50ms);
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.mailbox.count, 1, "the overdue item is said");
+        let heard = self.mailbox.last;
+        std::test::assert(std::str::contains(heard, "PUB testorg.app.todo.concern.raised "), "on the organism's subject: " + heard);
+        std::test::assert(std::str::contains(heard, "\"user\":\"app-todo\""), "as the application's account: " + heard);
+        std::test::assert(std::str::contains(heard, "\"pass\":\"hunter2\""), "with the vault's password: " + heard);
+        std::test::assert(std::str::contains(heard, "\"id\":\"overdue-1\""), "naming the item: " + heard);
+        std::test::assert(std::str::contains(heard, "\"source\":\"todo/overdue\""), "from the attached application: " + heard);
+        let source = source_of(heard);
+        std::test::assert_eq_str(source, "todo/overdue", "the recorded source");
+        std::test::assert_eq_str(concern_source(source, "todo"), source, "the heart admits it");
+        std::test::assert_eq_str(concern_source("app:todo", "todo"), "", "and refuses the colon spelling");
+        // the name follows the account the organism attached the application under
+        std::test::assert_eq_str(nerves::app_name("app-mytodo"), "mytodo", "a clone's own name");
+        std::test::assert_eq_str(nerves::app_name("app-my-todo"), "my-todo", "a dashed name");
+        std::test::assert_eq_str(nerves::app_name(""), "todo", "no account, the default");
+        std::test::assert(std::str::contains(heard, "\"event\":\"todo.overdue\"") && std::str::contains(heard, "\"title\":\"milk\""), "an overdue item, with the item as payload: " + heard);
+
+        // told once: more ticks, no second message; and the others were never told
+        std::time::sleep(2500ms);
+        std::test::assert_eq_int(self.mailbox.count, 1, "once, though the item stays overdue");
+        std::io::fs::unlink(entry) or discard;
+        ex.stop();
+        std::process::exit(0);
+    }
+}
+
+fn main() { SenseDesk { }; }

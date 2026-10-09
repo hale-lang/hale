@@ -614,7 +614,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let rows = journal(&app);
     // knowledge changed later work: the consult, the package on the evidence
     let consulted = rows.iter().find(|(_, k, e, _)| k == "knowledge.consulted" && e == "m1").unwrap_or_else(|| panic!("m1 consulted the service:\n{}", dump(&app)));
-    assert!(consulted.3.contains("\"target\": \"org/trio\"") && consulted.3.contains("\"included_n\": 1") && consulted.3.contains(&format!("\"included\": \"{kdigest}\"")), "the package for the trio carries the ratified concern: {}", consulted.3);
+    assert!(consulted.3.contains("\"target\": \"org/trio position:editor\"") && consulted.3.contains("\"included_n\": 1") && consulted.3.contains(&format!("\"included\": \"{kdigest}\"")), "the package for the trio carries the ratified concern: {}", consulted.3);
     let ev = rows.iter().find(|(_, k, e, b)| k == "model.called" && e == "m1/a0" && b.contains("\"knowledge_bindings\": \"package:")).unwrap_or_else(|| panic!("the editor's evidence names the package:\n{}", dump(&app)));
     assert!(ev.3.contains(&kdigest), "and the concern's digest: {}", ev.3);
     let cand1 = rows.iter().find(|(_, k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.3.clone()).unwrap_or_default();

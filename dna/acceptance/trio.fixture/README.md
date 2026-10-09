@@ -173,3 +173,24 @@ for the changed context alone. Each old context digest was reproduced
 from the new context, kept as a run's receipt, with the line taken back
 out, and each new key was the one the miss named. No fresh model call was
 made; every answer, token and cost field is unchanged.
+
+The branch that pulls knowledge to a hat by its targets changed what the
+hat carries: a hat now asks for a set of targets (the Work's path, its
+codebase's languages, the system for an organization change, and the
+performer's position), the editor's `PRACTICES (ratified knowledge for …)`
+header names the whole set, and the hat's JSON gains `targets`, which its
+digest covers. Four entries carry that header or the hat in their request.
+The editor's docs edit (`2f32bc2896d6…`, was `60d122ddbd49…`) and the
+editor's cross-service edit (`fe9d9e6e68f8…`, was `35b9375d83e3…`) are
+re-keyed for a moved `prompt_digest` (the context digests are unchanged);
+the two assessments that follow them (`7cd0bddc1816…`, was
+`2e5850792174…`; `cc1007e39566…`, was `c9521f468f24…`) are re-keyed for a
+moved `context_digest` (the prompt digest is unchanged). Each new key was
+the one the miss named, each old key was reproduced from its entry's fields
+before it was replaced, and the entries kept their `role`, `grant`, `tree`
+and `data_class`. No fresh model call was made; every answer, token and
+cost field is unchanged. In `rows.jsonl` three rows moved, the
+`knowledge.consulted` rows of `m1`, `m2` and `m3`, whose `target` now names
+the set (`org/trio position:editor`; `org system:dna position:editor` for
+the organization change `m2`; `org/trio position:editor`); the hat digest
+in them is normalized, so no row shows it.

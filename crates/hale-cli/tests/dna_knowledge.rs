@@ -217,7 +217,7 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     stop(&mut host);
     assert!(consulted, "the organization consulted memory for the ask:\n{}", rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(120).collect::<String>())).collect::<Vec<_>>().join("\n"));
     let c = rows.iter().find(|(k, e, _)| k == "knowledge.consulted" && e == "m1").unwrap();
-    assert!(c.2.contains("\"target\": \"org/knowing\"") && c.2.contains("\"included_n\": 1") && c.2.contains(&format!("\"included\": \"{digest}\"")), "the package for the application, with the ratified practice: {}", c.2);
+    assert!(c.2.contains("\"target\": \"org/knowing language:hale position:editor\"") && c.2.contains("\"included_n\": 1") && c.2.contains(&format!("\"included\": \"{digest}\"")), "the package for the application, with the ratified practice: {}", c.2);
     assert!(proposed, "three concerns became a proposal");
     let kp = rows.iter().filter(|(k, _, b)| k == "knowledge.proposed" && b.contains("\"class\": \"concern\"")).count();
     assert_eq!(kp, 1, "one concern proposed, by the source, bound to org/knowing");

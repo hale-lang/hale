@@ -1,0 +1,45 @@
+// The checked-in contract is the one the program's rows describe: the
+// exported bundle in ../../../spec and the TypeScript client in
+// ../../../ui/client are held to the surface by their own `--check`, which
+// exits 1 naming what drifted. Regenerate them with the two commands in the
+// README when a row changes.
+//
+// The seed is found from wherever `hale test` was started: beside this
+// file, or at the repository root, or at the api directory.
+
+fn seed_dir() -> String {
+    let candidates = ["api", "../..", "..", "dna/tests/onboarding/todo/api", "."];
+    let mut i = 0;
+    while i < 5 {
+        if std::io::fs::file_exists(candidates[i] + "/todo.hl") { return candidates[i]; }
+        i = i + 1;
+    }
+    return "";
+}
+
+fn hale(args: String) -> std::process::ProcessOutput {
+    return std::process::run("hale\n" + args) or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn main() {
+    let api = seed_dir();
+    std::test::assert(len(api) > 0, "the api seed is found from here");
+    let spec = api + "/../spec";
+    let client = api + "/../ui/client/todo.ts";
+
+    let exported = hale("api\nexport\n--surface\nTodo\n--check\n" + spec + "\n" + api);
+    std::test::assert_eq_int(exported.code, 0, "the exported bundle is current: " + exported.stdout + exported.stderr);
+
+    let typed = hale("api\nclient\n--surface\nTodo\n--lang\nts\n--check\n" + client + "\n" + api);
+    std::test::assert_eq_int(typed.code, 0, "the TypeScript client is current: " + typed.stdout + typed.stderr);
+
+    // the page a reader starts from names the digest the bundle carries
+    let stamp = std::io::fs::read_file(spec + "/DIGEST") or "";
+    let digest = std::str::trim(stamp[0..24]);
+    std::test::assert(std::str::starts_with(digest, "fnv1a64:"), "DIGEST starts with the surface digest: " + digest);
+    std::test::assert(std::str::contains(std::io::fs::read_file(spec + "/todo.md") or "", digest), "spec/todo.md names the digest " + digest);
+
+    // the checks bite: a bundle that is not this surface's is refused
+    let wrong = hale("api\nexport\n--surface\nTodo\n--check\n" + api + "\n" + api);
+    std::test::assert_eq_int(wrong.code, 1, "a directory that is not the bundle is a drift");
+}
