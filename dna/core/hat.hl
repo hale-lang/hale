@@ -103,11 +103,20 @@ fn hat_knowledge_target(target: String) -> String {
     return if target == "org" || std::str::starts_with(target, "org/") { target } else { "org" };
 }
 
+// The class an admission's inputs make an edit as (card 18), the one rule
+// the owner (`edit_class_of`) and the hat read: only a plan the leader
+// bound (`planned` true) speaks. An organism change is `organization`, the
+// Board's; else the class the plan names, else `application`.
+fn admission_edit_class(inputs: String) -> String {
+    if len(inputs) == 0 || std::str::trim(std::json::find_field_raw(inputs, "planned")) != "true" { return "application"; }
+    if std::json::find_string_field(inputs, "kind") == "organism" { return "organization"; }
+    let class = std::json::find_string_field(inputs, "class");
+    return if len(class) > 0 { class } else { "application" };
+}
+
 // Whether the Task's recorded admission states an organization change:
-// the leader's plan bound into it names an organism change (kind
-// `organism`, the class `organization` the owner edits the organization's
-// own seed under), as `edit_class_of` reads it. False when the Task has
-// no admission or no plan.
+// the class its plan makes the edit as (`admission_edit_class`) is
+// `organization`. False when the Task has no admission or no plan.
 @unbounded
 fn hat_organization_change(j: Journal, task_id: String) -> Bool {
     let mut i = 0;
@@ -115,9 +124,7 @@ fn hat_organization_change(j: Journal, task_id: String) -> Bool {
         let e = j.read(i);
         if e.kind == "workflow.admitted" && e.entity == task_id {
             let adm = decode_admission(e.body);
-            if !adm.ok || len(adm.value.inputs) == 0 { return false; }
-            let x = adm.value.inputs;
-            return std::json::find_string_field(x, "kind") == "organism" || std::json::find_string_field(x, "class") == "organization";
+            return adm.ok && admission_edit_class(adm.value.inputs) == "organization";
         }
         i = i + 1;
     }

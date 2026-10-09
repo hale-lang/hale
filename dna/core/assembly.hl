@@ -1081,10 +1081,8 @@ locus Dna {
     // `organization`, the Board's; else the class the leader's plan names,
     // else `application`.
     fn edit_class_of(task_id: String) -> String {
-        let plan = self.ask_plan_of(task_id);
-        if !plan.parsed { return "application"; }
-        if plan.kind == "organism" { return "organization"; }
-        return if len(plan.change_class) > 0 { plan.change_class } else { "application" };
+        let adm = self.recorded_admission(task_id);
+        return if adm.ok { admission_edit_class(adm.value.inputs) } else { "application" };
     }
     // A human leaf's attempt from the workflow engine (card 16): a case
     // for a person, admitted once per attempt — `case.admitted <case>`,
