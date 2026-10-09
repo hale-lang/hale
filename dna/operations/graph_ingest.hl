@@ -616,8 +616,9 @@ locus GraphIngest {
             }
         }
     }
-    // The surfaces the application serves and the streams it serves over a
-    // hub, from what `hale check --api` exports: each a contract the
+    // The surfaces the application serves (its `exposures`, not every
+    // declared `api`) and the streams it serves over a hub, from what
+    // `hale check --api` exports: each a contract the
     // application's seed `meets` as server. A surface whose stem names a
     // `spec/<stem>.md` or `.yaml` contract is that contract (the stem rule of
     // the descriptions); any other is `api:<Surface>`, and a stream is
@@ -627,10 +628,20 @@ locus GraphIngest {
     @unbounded
     fn surfaces_step() {
         if len(self.appseed) == 0 || len(self.description) == 0 { return; }
+        // only what the application serves: `surfaces` lists every declared
+        // api, `exposures` the ones a serve site exposes (one surface may be
+        // exposed several times; it is one contract)
+        let mut served = "\n";
+        let mut exposures = std::json::array_first(std::json::find_field_raw(self.description, "exposures"));
+        while !exposures.done {
+            let s = std::json::find_string_field(exposures.element, "surface");
+            if len(s) > 0 && !std::str::contains(served, "\n" + s + "\n") { served = served + s + "\n"; }
+            exposures = std::json::array_next(exposures);
+        }
         let mut surfaces = std::json::array_first(std::json::find_field_raw(self.description, "surfaces"));
         while !surfaces.done {
             let name = std::json::find_string_field(surfaces.element, "name");
-            if len(name) > 0 {
+            if len(name) > 0 && std::str::contains(served, "\n" + name + "\n") {
                 let matched = self.stem_contract(std::str::lower(name));
                 let c = if len(matched) > 0 { matched } else { self.node("contract", "api:" + name, "", "hale check --api") };
                 self.serves(c);

@@ -351,6 +351,14 @@ locus App {
         std::test::assert_eq_str(equipment_of(ha.proposals, "api/reviewer"), "reviewer", "requires: [reviewer] lands on api/reviewer");
         std::test::assert_eq_str(equipment_of(ha.proposals, "board"), "", "the board is fitted with nothing");
         std::test::assert(std::str::contains(ha.proposals, "ratify the position `api/reviewer` under seed api, signing its code and api:Todo, stream:TodoChanged"), "the reviewer signs the seed and every surface it serves: " + ha.proposals);
+        // a declared api no serve site exposes is no contract the seed serves,
+        // and its roles fit no position: only `exposures` say what is served
+        let unused = std::str::replace(exported, "\"surfaces\": [", "\"surfaces\": [{\"name\": \"Unused\", \"members\": [{\"requires\": [\"auditor\"]}]}, ");
+        std::test::assert(unused != exported, "the export lists its surfaces");
+        let gu = ops::GraphIngest { root: appdir, app: "api", declared: "api: keep the application correct.", description: unused };
+        std::test::assert_eq_str(gu.ingest().error, "", "an application with an unserved api reads");
+        std::test::assert(!std::str::contains(gu.rows, "api:Unused"), "the unserved api is no contract: " + gu.rows);
+        std::test::assert_eq_str(equipment_of(ops::graph_holes(gu, "").proposals, "api/dev"), "editor reader", "and its role fits nobody");
         // a surface a `spec/<stem>.md` contract already describes is that node
         let gs = ops::GraphIngest { root: described, app: "todo", declared: "todo: keep the application correct.", description: exported };
         std::test::assert_eq_str(gs.ingest().error, "", "the repository holding the application reads");
