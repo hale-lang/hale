@@ -480,7 +480,15 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
 fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
     // pgvector ranks inside the bound (K3) and pgcrypto seals protected
     // evidence (GH #606); a Postgres without either says so here
-    let ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    // Two migrations at once race here: Postgres checks `IF NOT EXISTS`
+    // before it takes the catalog lock, so the second to arrive fails
+    // with a duplicate key on pg_extension_name_index while the first
+    // is still creating what both wanted. Ask once more; the second
+    // look finds the extension and creates nothing.
+    let mut ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    if !ext.ok && std::str::contains(ext.err.detail, "pg_extension_name_index") {
+        ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    }
     if !ext.ok { return "extensions (vector, pgcrypto): " + ext.err.kind + " " + ext.err.detail; }
     // A store from before records were namespaced lives in `public`
     // and belongs to no record anyone can name. It is not migrated:
