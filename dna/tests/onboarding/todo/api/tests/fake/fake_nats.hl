@@ -1,0 +1,62 @@
+// The stand-ins the sense tests share: a broker on a free port that is only
+// there to be written to (it answers INFO, keeps what the client wrote up to
+// its PING and answers PONG), a mailbox for what it heard, and main.hl's
+// `Sense`, which main.hl holds beside the hub and so cannot be imported.
+import "../../todo" as todo;
+import "../../nerves" as nerves;
+
+type Wire { text: String; }
+topic Heard { payload: Wire; subject: "test.heard"; }
+
+/// A broker that is only there to be written to.
+locus Broker {
+    params { port: Int = 0; fd: Int = -1; }
+    bus { publish Heard; }
+    birth() { self.fd = std::io::tcp::__listen_socket("127.0.0.1", self.port); }
+    @unbounded
+    run() {
+        while self.fd >= 0 {
+            let conn = std::io::tcp::__accept_one(self.fd);
+            if conn < 0 { return; }
+            std::io::tcp::__set_recv_timeout_ns(conn, 200000000);
+            let s = std::io::tcp::Stream { conn_fd: conn, owns_fd: true };
+            s.send("INFO {\"server_id\":\"fake\",\"max_payload\":1048576}\r\n") or discard;
+            let mut got = "";
+            let mut tries = 0;
+            while !std::str::contains(got, "PING\r\n") && tries < 25 {
+                let chunk = s.recv(65536) or "";
+                if len(chunk) == 0 { tries = tries + 1; } else { got = got + chunk; }
+            }
+            s.send("PONG\r\n") or discard;
+            Heard <- Wire { text: got };
+        }
+    }
+}
+
+/// What the broker heard, in order.
+locus Mailbox {
+    params { count: Int = 0; last: String = ""; }
+    bus { subscribe Heard as on_heard; }
+    fn on_heard(w: Wire) {
+        self.count = self.count + 1;
+        self.last = w.text;
+    }
+}
+
+/// main.hl's Sense.
+locus Sense {
+    params { nerves: nerves::Nerves = nerves::Nerves { }; }
+    bus { subscribe todo::TodoOverdue as on_overdue; }
+    fn on_overdue(t: todo::Todo) { self.nerves.overdue(t.id, t.title, t.due); }
+}
+
+fn free_port(start: Int) -> Int {
+    let mut port = 30000 + (std::process::pid() * 11 + start) % 17000;
+    let mut probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    while probe < 0 {
+        port = port + 1;
+        probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    }
+    std::io::tcp::__close_fd(probe);
+    return port;
+}

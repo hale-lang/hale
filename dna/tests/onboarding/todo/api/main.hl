@@ -1,0 +1,95 @@
+// todo — a realtime todo list. One api (HTTP for people and scripts, MCP for
+// an agent), one stream (`TodoChanged` on a WebSocket hub, which every
+// browser observes), and a sense that tells the organization when an item
+// becomes overdue. See ../README.md.
+//
+// The seed is flat on purpose. A hub is bound to the topics and loci of its
+// own seed, so the list (todo.hl), its tokens (auth.hl) and its nerves
+// (nerves.hl) sit beside the process (this file), and each of the three is
+// one self-contained file the tests import by name.
+//
+//   TODO_TOKENS=ada=t-ada,bo:reader=t-bo  api [--host H] [--port N] [--mcp N] [--stream N]
+//
+// TODO_TOKENS is `name=token,…`; a name may carry its role, `name:reader`
+// or `name:editor`, and a bare name is an editor.
+
+/// The sense's wire: an item that became overdue goes to the nerves.
+locus Sense {
+    params { nerves: Nerves = Nerves { }; }
+    bus { subscribe TodoOverdue as on_overdue; }
+    fn on_overdue(t: Todo) { self.nerves.overdue(t.id, t.title, t.due); }
+}
+
+main locus App {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 8080;
+        mcp_port: Int = 8090;
+        stream_bind: String = "127.0.0.1:8081";
+        tokens: Tokens = Tokens { };
+        roles: Grants = Grants { };
+        list: Todos = Todos { };
+        // unattached, the sense says nothing
+        sense: Sense = Sense { };
+        hub: ws::Hub = ws::Hub { bind: self.stream_bind, principals: self.tokens, roles: self.roles, as: "stream" };
+    }
+    placement { list: cooperative(pool = work) where async_io; sense: pinned; }
+    bindings {
+        TodoChanged: self.hub requires: [reader], bound: 64, on_full: drop_old;
+    }
+    run() {
+        let web = api::serve(Todo, http::Rpc { bind: self.host + ":" + to_string(self.port), codec: json, principals: self.tokens, roles: self.roles }, as: "web", receivers: { Todos: self.list }, bound: 64, on_full: refuse);
+        let agent = api::serve(Todo, mcp::Rpc { bind: self.host + ":" + to_string(self.mcp_port), principals: self.tokens, roles: self.roles }, as: "agent", receivers: { Todos: self.list }, bound: 64, on_full: refuse);
+        println("todo: api on http://", self.host, ":", self.port, ", mcp on ", self.mcp_port, ", stream on ", self.stream_bind);
+        while !self.draining { std::time::sleep(100ms); }
+        web.stop();
+        agent.stop();
+        self.hub.stop();
+    }
+}
+
+fn env_or(name: String, otherwise: String) -> String {
+    return if std::env::var_exists(name) { std::env::var(name) } else { otherwise };
+}
+
+/// `api [--host H] [--port N] [--mcp N] [--stream N]`. The tokens are
+/// TODO_TOKENS; the nerves are the environment the host hands an attached
+/// application.
+fn main() {
+    let mut host = "127.0.0.1";
+    let mut port = 8080;
+    let mut mcp = 8090;
+    let mut stream = 8081;
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--host" {
+            host = value;
+        } else if flag == "--port" {
+            port = std::str::parse_int(value) or port;
+        } else if flag == "--mcp" {
+            mcp = std::str::parse_int(value) or mcp;
+        } else if flag == "--stream" {
+            stream = std::str::parse_int(value) or stream;
+        }
+        i = i + 2;
+    }
+    let table = env_or("TODO_TOKENS", "");
+    App {
+        host: host,
+        port: port,
+        mcp_port: mcp,
+        stream_bind: host + ":" + to_string(stream),
+        tokens: Tokens { table: table },
+        roles: Grants { table: table },
+        sense: Sense {
+            nerves: Nerves {
+                url: env_or("HALE_DNA_NATS_URL_APP", ""),
+                user: env_or("HALE_DNA_NATS_USER_APP", ""),
+                credential: std::secret::Credential { vault: env_or("HALE_DNA_NATS_VAULT_APP", "") },
+                org: env_or("HALE_DNA_NATS_ORG", "")
+            }
+        }
+    };
+}

@@ -1,0 +1,40 @@
+// The sense, not attached: the environment the host hands an attached
+// application is absent, so the nerves have no url, and an item that
+// becomes overdue is said nowhere. A stand-in broker listens all the same,
+// to hear any connection that should not be made (../sense/sense_test.hl is
+// the attached case).
+import "../../todo" as todo;
+import "../../auth" as auth;
+import "../../nerves" as nerves;
+import "../fake" as fake;
+
+main locus SilentDesk {
+    params {
+        port: Int = fake::free_port(5);
+        broker: fake::Broker = fake::Broker { port: self.port };
+        mailbox: fake::Mailbox = fake::Mailbox { };
+        list: todo::Todos = todo::Todos { };
+        door: std::api::test::Rpc = std::api::test::Rpc { principals: auth::Tokens { table: "ada=t-ada" }, roles: auth::Grants { table: "ada=t-ada" } };
+        // the url the host would have handed it is empty
+        sense: fake::Sense = fake::Sense { nerves: nerves::Nerves { url: "", user: "app-todo", org: "testorg" } };
+    }
+    placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
+
+    @unbounded
+    run() {
+        let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
+        let d = self.door;
+        d.call(1, "Todos::add", "{\"title\":\"milk\",\"due\":\"2020-01-01T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(1, 2000), "result", "an overdue item is added");
+        // let the one-second tick find it, twice over
+        std::time::sleep(2500ms);
+        d.call(2, "Todos::overdue", "{}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(2, 2000), "result", "the list still answers");
+        std::test::assert(std::str::contains(d.line(2), "\"count\":1"), "the item is overdue: " + d.line(2));
+        std::test::assert_eq_int(self.mailbox.count, 0, "and nothing was said anywhere");
+        ex.stop();
+        std::process::exit(0);
+    }
+}
+
+fn main() { SilentDesk { }; }
