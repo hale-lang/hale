@@ -67,6 +67,9 @@ concurrency:
 
 permissions:
   contents: read
+  # the CI images are pulled from the repository's own mirror on ghcr.io
+  # (mirror-images.yml), not anonymously from Docker Hub
+  packages: read
 
 env:
   LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
@@ -286,7 +289,10 @@ jobs:
     # DSN and skips the half when it is unset (a laptop without one).
     services:
       knowledge-db:
-        image: pgvector/pgvector:pg16
+        image: ghcr.io/hale-lang/ci-pgvector:pg16
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: dna
           POSTGRES_PASSWORD: dna
@@ -321,6 +327,16 @@ jobs:
       # GH #986: the nerves — NATS with JetStream, beside memory's
       # Postgres. A step, not a service: a service container cannot be
       # given the server's `-js` flag.
+      # The images the tests start (here, and through `hale dna dev`'s
+      # compose) come from the mirror and are tagged with their Docker Hub
+      # names, so nothing pulls anonymously from Docker Hub (rate-limited).
+      - name: Pull the CI images from the mirror
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for pair in ci-pgvector:pg16=pgvector/pgvector:pg16 ci-nats:2=nats:2 ci-prometheus:v3.5.0=prom/prometheus:v3.5.0; do
+            docker pull "ghcr.io/hale-lang/${pair%%=*}"
+            docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
+          done
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -631,7 +647,10 @@ jobs:
         part: [1, 2, 3, 4]
     services:
       knowledge-db:
-        image: pgvector/pgvector:pg16
+        image: ghcr.io/hale-lang/ci-pgvector:pg16
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: dna
           POSTGRES_PASSWORD: dna
@@ -661,6 +680,16 @@ jobs:
       # GH #986: the nerves — NATS with JetStream, beside memory's
       # Postgres. A step, not a service: a service container cannot be
       # given the server's `-js` flag.
+      # The images the tests start (here, and through `hale dna dev`'s
+      # compose) come from the mirror and are tagged with their Docker Hub
+      # names, so nothing pulls anonymously from Docker Hub (rate-limited).
+      - name: Pull the CI images from the mirror
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for pair in ci-pgvector:pg16=pgvector/pgvector:pg16 ci-nats:2=nats:2 ci-prometheus:v3.5.0=prom/prometheus:v3.5.0; do
+            docker pull "ghcr.io/hale-lang/${pair%%=*}"
+            docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
+          done
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -793,7 +822,10 @@ jobs:
     # they say so and exercise nothing.
     services:
       memory-db:
-        image: pgvector/pgvector:pg16
+        image: ghcr.io/hale-lang/ci-pgvector:pg16
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: dna
           POSTGRES_PASSWORD: dna
@@ -815,6 +847,16 @@ jobs:
       # GH #986: the nerves — NATS with JetStream, beside memory's
       # Postgres. A step, not a service: a service container cannot be
       # given the server's `-js` flag.
+      # The images the tests start (here, and through `hale dna dev`'s
+      # compose) come from the mirror and are tagged with their Docker Hub
+      # names, so nothing pulls anonymously from Docker Hub (rate-limited).
+      - name: Pull the CI images from the mirror
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for pair in ci-pgvector:pg16=pgvector/pgvector:pg16 ci-nats:2=nats:2 ci-prometheus:v3.5.0=prom/prometheus:v3.5.0; do
+            docker pull "ghcr.io/hale-lang/${pair%%=*}"
+            docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
+          done
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -948,7 +990,10 @@ jobs:
     # head's DSN alone; its teardown drops the record's schema and roles.
     services:
       memory-db:
-        image: pgvector/pgvector:pg16
+        image: ghcr.io/hale-lang/ci-pgvector:pg16
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: dna
           POSTGRES_PASSWORD: dna
@@ -968,6 +1013,16 @@ jobs:
       # GH #986: the nerves — NATS with JetStream, beside memory's
       # Postgres. A step, not a service: a service container cannot be
       # given the server's `-js` flag.
+      # The images the tests start (here, and through `hale dna dev`'s
+      # compose) come from the mirror and are tagged with their Docker Hub
+      # names, so nothing pulls anonymously from Docker Hub (rate-limited).
+      - name: Pull the CI images from the mirror
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for pair in ci-pgvector:pg16=pgvector/pgvector:pg16 ci-nats:2=nats:2 ci-prometheus:v3.5.0=prom/prometheus:v3.5.0; do
+            docker pull "ghcr.io/hale-lang/${pair%%=*}"
+            docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
+          done
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
