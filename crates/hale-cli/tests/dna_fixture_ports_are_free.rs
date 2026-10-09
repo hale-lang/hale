@@ -37,6 +37,12 @@ const PARKED: &[(&str, &str)] = &[
     ),
 ];
 
+/// Directories the scan leaves alone. `dna/tests/onboarding/<repo>/` are
+/// repositories of their own, shaped for a clone that has no `dna/` above it
+/// to import `dna::free_port` from, so each owns its ports (a bound probe
+/// from a fixed base, never a number derived from the pid).
+const EXEMPT_DIRS: &[&str] = &["dna/tests/onboarding/"];
+
 const PLACEHOLDER_BELOW: u64 = 1024;
 
 fn repo_root() -> PathBuf {
@@ -144,6 +150,9 @@ fn scanned_files() -> Vec<(String, String)> {
         .filter_map(|p| {
             let text = std::fs::read_to_string(&p).ok()?;
             let rel = p.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+            if EXEMPT_DIRS.iter().any(|d| rel.starts_with(d)) {
+                return None;
+            }
             Some((rel, text))
         })
         .collect()

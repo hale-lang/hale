@@ -1,0 +1,181 @@
+// The list, its surface and its stream. main.hl serves it; nerves.hl says
+// what the list notices.
+
+role reader;
+role editor includes reader;
+
+/// What a caller sees of an item. `due` is ISO-8601 UTC, empty for none:
+/// a `Time` has no JSON form, so the wire carries its text.
+type TodoItem { id: Int; title: String; done: Bool; due: String; overdue: Bool; }
+
+type AddTodo { title: String; due: String = ""; }
+/// Which item: `todo`, not `id`, because `hale api call` takes `--id` for itself.
+type TodoRef { todo: Int; }
+type ListQuery { open_only: Bool = false; }
+type Nothing { }
+/// The items as a JSON array of `TodoItem` objects in `json`: the codec carries
+/// no list, so the array travels as text, and `count` says how long it is.
+type TodoList { count: Int; json: String; }
+type TodoError { code: String; reason: String; }
+
+/// What happened to an item: `added`, `completed` or `removed`. The stream
+/// every browser observes.
+type Change { what: String; item: TodoItem; }
+
+topic TodoChanged { payload: Change; subject: "todo.changed"; }
+
+/// An item became overdue. The list says it once; the nerves carry it out.
+topic TodoOverdue { payload: TodoItem; subject: "todo.overdue"; }
+
+api Todo {
+    rpc Todos::add requires: [editor];
+    rpc Todos::complete requires: [editor];
+    rpc Todos::remove requires: [editor];
+    rpc Todos::list requires: [reader];
+    rpc Todos::overdue requires: [reader];
+}
+
+/// A JSON string literal: every control character, `"` and `\` escaped.
+fn jq(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+/// `t` as a JSON object.
+fn todo_json(t: TodoItem) -> String {
+    return "{\"id\":" + to_string(t.id) + ",\"title\":" + jq(t.title) + ",\"done\":" + (if t.done { "true" } else { "false" })
+        + ",\"due\":" + jq(t.due) + ",\"overdue\":" + (if t.overdue { "true" } else { "false" }) + "}";
+}
+
+fn add_to(list: TodoList, t: TodoItem) -> TodoList {
+    return TodoList { count: list.count + 1, json: list.json + (if list.count > 0 { "," } else { "" }) + todo_json(t) };
+}
+
+/// The list's own record of an item.
+type Item {
+    id: Int;
+    title: String;
+    done: Bool = false;
+    due: Time = `1970-01-01T00:00:00Z`;
+    has_due: Bool = false;
+    // the nerves were told it is overdue
+    told: Bool = false;
+}
+
+locus Todos {
+    params {
+        items: bounded[Item; 128];
+        next: Int = 1;
+    }
+    bus { publish TodoChanged; publish TodoOverdue; }
+
+    /// The sense runs on a one-second tick of its own.
+    run() {
+        while !self.draining {
+            std::time::sleep(1s);
+            self.sweep();
+        }
+    }
+
+    fn add(a: AddTodo) -> TodoItem fallible(TodoError) {
+        if len(a.title) == 0 { fail TodoError { code: "empty_title", reason: "a todo needs a title" }; }
+        let mut item = Item { id: self.next, title: a.title };
+        if len(a.due) > 0 {
+            // a Time is nanoseconds in an i64: it ends in 2262, and parses past it wrap
+            if len(a.due) < 4 || (std::str::parse_int(a.due[0..4]) or 0) > 2200 { fail TodoError { code: "bad_due", reason: "due is a year up to 2200, got " + a.due }; }
+            let t = std::time::parse_time(a.due) or fail TodoError { code: "bad_due", reason: "due is an ISO-8601 UTC time such as 2026-10-09T09:00:00Z, got " + a.due };
+            item.due = t;
+            item.has_due = true;
+        }
+        push(self.items, item) or fail TodoError { code: "full", reason: "the list holds 128 items" };
+        self.next = self.next + 1;
+        let seen = self.view(item);
+        TodoChanged <- Change { what: "added", item: seen };
+        return seen;
+    }
+
+    fn complete(r: TodoRef) -> TodoItem fallible(TodoError) {
+        let pos = self.find(r.todo);
+        if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
+        let mut item = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        item.done = true;
+        set(self.items, pos, item) or discard;
+        let seen = self.view(item);
+        TodoChanged <- Change { what: "completed", item: seen };
+        return seen;
+    }
+
+    fn remove(r: TodoRef) -> TodoItem fallible(TodoError) {
+        let pos = self.find(r.todo);
+        if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
+        let gone = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        // close the gap, then drop the last slot
+        let mut i = pos;
+        while i + 1 < count(self.items) {
+            let next = at(self.items, i + 1) or gone;
+            set(self.items, i, next) or discard;
+            i = i + 1;
+        }
+        truncate(self.items, count(self.items) - 1);
+        let seen = self.view(gone);
+        TodoChanged <- Change { what: "removed", item: seen };
+        return seen;
+    }
+
+    fn list(q: ListQuery) -> TodoList {
+        let mut out = TodoList { count: 0, json: "" };
+        for item in self.items {
+            if q.open_only && item.done { continue; }
+            out = add_to(out, self.view(item));
+        }
+        out.json = "[" + out.json + "]";
+        return out;
+    }
+
+    fn overdue(n: Nothing) -> TodoList {
+        let mut out = TodoList { count: 0, json: "" };
+        for item in self.items {
+            if self.is_overdue(item) { out = add_to(out, self.view(item)); }
+        }
+        out.json = "[" + out.json + "]";
+        return out;
+    }
+
+    /// The sense: tell the nerves about each item that has become overdue,
+    /// once. Called on a one-second tick.
+    fn sweep() {
+        let mut i = 0;
+        while i < count(self.items) {
+            let mut item = at(self.items, i) or Item { id: -1, title: "" };
+            if !item.told && self.is_overdue(item) {
+                item.told = true;
+                set(self.items, i, item) or discard;
+                TodoOverdue <- self.view(item);
+            }
+            i = i + 1;
+        }
+    }
+
+    fn is_overdue(item: Item) -> Bool {
+        return item.has_due && !item.done && item.due < std::time::current();
+    }
+
+    fn find(id: Int) -> Int {
+        let mut i = 0;
+        while i < count(self.items) {
+            let it = at(self.items, i) or Item { id: -1, title: "" };
+            if it.id == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn view(item: Item) -> TodoItem {
+        return TodoItem {
+            id: item.id,
+            title: item.title,
+            done: item.done,
+            due: if item.has_due { std::time::iso8601(item.due) } else { "" },
+            overdue: self.is_overdue(item)
+        };
+    }
+}

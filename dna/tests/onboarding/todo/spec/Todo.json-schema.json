@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hale:surface:Todo@fnv1a64:67bff1470a7912dc",
+  "title": "Todo surface",
+  "x-hale-surface": "Todo",
+  "x-hale-digest": "fnv1a64:67bff1470a7912dc",
+  "x-hale-members": {
+    "Todos::add": {
+      "name": "Todos::add",
+      "request": {
+        "$ref": "#/$defs/AddTodo"
+      },
+      "response": {
+        "$ref": "#/$defs/TodoItem"
+      },
+      "error": {
+        "$ref": "#/$defs/TodoError"
+      },
+      "requires": [
+        "editor"
+      ]
+    },
+    "Todos::complete": {
+      "name": "Todos::complete",
+      "request": {
+        "$ref": "#/$defs/TodoRef"
+      },
+      "response": {
+        "$ref": "#/$defs/TodoItem"
+      },
+      "error": {
+        "$ref": "#/$defs/TodoError"
+      },
+      "requires": [
+        "editor"
+      ]
+    },
+    "Todos::list": {
+      "name": "Todos::list",
+      "request": {
+        "$ref": "#/$defs/ListQuery"
+      },
+      "response": {
+        "$ref": "#/$defs/TodoList"
+      },
+      "error": null,
+      "requires": [
+        "reader"
+      ]
+    },
+    "Todos::overdue": {
+      "name": "Todos::overdue",
+      "request": {
+        "$ref": "#/$defs/Nothing"
+      },
+      "response": {
+        "$ref": "#/$defs/TodoList"
+      },
+      "error": null,
+      "requires": [
+        "reader"
+      ]
+    },
+    "Todos::remove": {
+      "name": "Todos::remove",
+      "request": {
+        "$ref": "#/$defs/TodoRef"
+      },
+      "response": {
+        "$ref": "#/$defs/TodoItem"
+      },
+      "error": {
+        "$ref": "#/$defs/TodoError"
+      },
+      "requires": [
+        "editor"
+      ]
+    }
+  },
+  "$defs": {
+    "AddTodo": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "due": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "ListQuery": {
+      "type": "object",
+      "properties": {
+        "open_only": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "Nothing": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "TodoError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "TodoItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "due": {
+          "type": "string"
+        },
+        "overdue": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "done",
+        "due",
+        "overdue"
+      ]
+    },
+    "TodoList": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "json": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "json"
+      ]
+    },
+    "TodoRef": {
+      "type": "object",
+      "properties": {
+        "todo": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo"
+      ]
+    }
+  }
+}

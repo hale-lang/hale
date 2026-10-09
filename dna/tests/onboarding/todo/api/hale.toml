@@ -1,0 +1,3 @@
+# hale.toml — the project manifest. The api needs nothing fetched.
+
+[deps]

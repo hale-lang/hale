@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>todo</title>
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; max-width: 34rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+  #status { color: #666; font-size: .85rem; margin-bottom: 1rem; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; gap: .6rem; align-items: baseline; padding: .35rem 0; border-bottom: 1px solid #eee; }
+  li.done .title { text-decoration: line-through; color: #888; }
+  li.overdue .due { color: #b00020; font-weight: 600; }
+  li.fresh { background: #fffbe0; }
+  .id { color: #999; font-variant-numeric: tabular-nums; min-width: 2rem; }
+  .due { margin-left: auto; font-size: .85rem; color: #666; white-space: nowrap; }
+  #empty { color: #888; }
+</style>
+</head>
+<body>
+<h1>todo</h1>
+<div id="status">connecting…</div>
+<ul id="items"></ul>
+<p id="empty" hidden>Nothing to do.</p>
+
+<script type="module">
+// One static page, no framework. It observes: the list comes from the hub
+// (a `list` call frame), and every later change from the stream the hub
+// binds to the TodoChanged topic, through the generated client. The token
+// is the page's URL: ?token=t-bo (&hub=ws://host:port when the hub is not
+// on this host's port 8081).
+import { subscribeTodoChanged } from "./client/todo.js";
+import { on_event, load_done } from "./seq.js";
+
+const params = new URLSearchParams(location.search);
+const token = params.get("token") ?? "";
+const hub = params.get("hub") ?? `ws://${location.hostname || "127.0.0.1"}:8081`;
+
+const status = document.getElementById("status");
+const list = document.getElementById("items");
+const empty = document.getElementById("empty");
+const items = new Map(); // id -> item, as the api sends it
+
+function render(freshId) {
+  const sorted = [...items.values()].sort((a, b) => a.id - b.id);
+  list.replaceChildren(...sorted.map((it) => {
+    const li = document.createElement("li");
+    li.className = [it.done ? "done" : "", it.overdue ? "overdue" : "", it.id === freshId ? "fresh" : ""].join(" ").trim();
+    for (const [cls, text] of [["id", "#" + it.id], ["title", it.title], ["due", it.due ? "due " + it.due : ""]]) {
+      const span = document.createElement("span");
+      span.className = cls;
+      span.textContent = text;
+      li.append(span);
+    }
+    return li;
+  }));
+  empty.hidden = items.size > 0;
+}
+
+function apply(change) {
+  if (change.what === "removed") items.delete(change.item.id);
+  else items.set(change.item.id, change.item);
+  render(change.what === "removed" ? -1 : change.item.id);
+}
+
+// The list as it stands: a call frame on its own connection (a page on
+// another origin cannot fetch the api, but a WebSocket crosses origins).
+function fetchList() {
+  return new Promise((resolve, reject) => {
+    const url = new URL(hub);
+    url.searchParams.set("access_token", token);
+    const ws = new WebSocket(url);
+    ws.onopen = () => ws.send(JSON.stringify({ type: "call", id: "list", call: "Todos::list", payload: {} }));
+    ws.onmessage = (m) => {
+      const frame = JSON.parse(m.data);
+      if (frame.type !== "reply" || frame.id !== "list") return;
+      ws.close();
+      if (frame.ok) resolve(JSON.parse(frame.value.json));
+      else reject(new Error("the list was refused: " + JSON.stringify(frame)));
+    };
+    ws.onerror = () => reject(new Error("the hub at " + hub + " cannot be reached"));
+  });
+}
+
+// Load the list and make it the page's state, then apply the changes that
+// arrived while it was on its way. `note` says why, when it was a catch-up.
+// `st` is seq.js's state: the seq of the event before, whether a list is on
+// its way, and whether a gap was seen while it was (the list may have been
+// read before the events that were shed, so it is read once more).
+let st = { last: null, loading: false, gap_seen: false };
+const early = []; // changes that arrive while the list is on its way
+function load(note) {
+  st = { ...st, loading: true };
+  fetchList().then((all) => {
+    items.clear();
+    for (const it of all) items.set(it.id, it);
+    for (const c of early.splice(0)) apply(c);
+    const done = load_done(st);
+    st = done.state;
+    render(-1);
+    if (done.relist) load("caught up after missed events");
+    else if (note) status.textContent = "live · " + hub + " · " + note;
+  }, (e) => { st = { ...st, loading: false, gap_seen: false }; status.textContent = String(e); });
+}
+
+async function run() {
+  const sub = subscribeTodoChanged({ endpoint: hub, bearer: token });
+  for await (const ev of sub) {
+    if (ev.kind === "subscribed") {
+      status.textContent = "live · " + hub;
+      load("");
+    } else if (ev.kind === "event") {
+      // events were shed (the hub drops the oldest of a full queue): what the
+      // page holds may be wrong, so read the list again before applying more
+      const r = on_event(st, ev.seq);
+      st = r.state;
+      if (r.act === "apply") apply(ev.payload);
+      else {
+        early.push(ev.payload);
+        if (r.act === "relist") load("caught up after missed events");
+      }
+    } else {
+      status.textContent = ev.kind === "refusal" ? "refused: " + ev.refusal.reason : "the stream ended (" + ev.kind + ")";
+    }
+  }
+}
+
+run().catch((e) => { status.textContent = String(e); });
+</script>
+</body>
+</html>

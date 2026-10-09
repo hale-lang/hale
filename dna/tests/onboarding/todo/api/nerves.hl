@@ -1,0 +1,94 @@
+// The list's one hookup to the organization it lives in: when it is
+// attached it says an overdue item on the organism's nerves, as
+// `<org>.app.todo.concern.raised`, which the heart reads as a concern
+// (a reading whose event is `concern.raised`). When it is not attached it
+// does nothing.
+//
+// Attached means the host handed the application HALE_DNA_NATS_URL_APP and
+// its companions. The client is the smallest piece of core NATS that says
+// one message and waits for the server to have it (a PING after the PUB, a
+// PONG back): a publish-only application needs no more, and none of the
+// organization's libraries.
+
+type NervesError { kind: String = ""; }
+
+/// A JSON string literal: every control character, `"` and `\` escaped.
+fn quoted(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+/// The application the account `user` belongs to: the name after `app-`,
+/// `todo` when the account does not say. The subject and the concern's
+/// source (`<name>/overdue`, the heart's path syntax) both carry it.
+fn app_name(user: String) -> String {
+    return if std::str::starts_with(user, "app-") && len(user) > 4 { user[4..len(user)] } else { "todo" };
+}
+
+locus Nerves {
+    params {
+        // nats://host:port; empty is not attached
+        url: String = "";
+        user: String = "";
+        // the vault entry holding `user`'s password, revealed on the CONNECT line alone
+        credential: std::secret::Credential = std::secret::Credential { };
+        // the organization's token: subjects travel as `<org>.app.todo.…`
+        org: String = "";
+        // what was said, and what the last failure was
+        said: Int = 0;
+        last_error: String = "";
+    }
+
+    fn attached() -> Bool { return len(self.url) > 0; }
+
+    /// An item has become overdue: a concern about the list, with the item
+    /// as its payload. Says nothing when the list is not attached.
+    @unbounded
+    fn overdue(id: Int, title: String, due: String) {
+        if !self.attached() { return; }
+        let body = "{\"id\":" + quoted("overdue-" + to_string(id))
+            + ",\"source\":" + quoted(app_name(self.user) + "/overdue")
+            + ",\"what\":" + quoted("todo " + to_string(id) + " \"" + title + "\" is overdue (due " + due + ")")
+            + ",\"severity\":1"
+            + ",\"event\":\"todo.overdue\""
+            + ",\"item\":{\"id\":" + to_string(id) + ",\"title\":" + quoted(title) + ",\"done\":false,\"due\":" + quoted(due) + "}}";
+        if self.say("concern.raised", body) {
+            self.said = self.said + 1;
+        } else {
+            eprintln("todo: the nerves did not take todo.overdue for item ", id, ": ", self.last_error);
+        }
+    }
+
+    /// One message on `<org>.app.todo.<event>`; true once the server has it.
+    // @unbounded: one message per overdue item, told once when it becomes
+    // overdue: the rate is people adding items, not a loop.
+    @unbounded
+    fn say(event: String, body: String) -> Bool {
+        let rest = if std::str::starts_with(self.url, "nats://") { self.url[7..len(self.url)] } else { self.url };
+        let colon = std::str::index_of(rest, ":");
+        let host = if colon >= 0 { rest[0..colon] } else { rest };
+        let port = if colon >= 0 { std::str::parse_int(rest[(colon + 1)..len(rest)]) or 4222 } else { 4222 };
+        let fd = std::io::tcp::connect(host, port) or - 1;
+        if fd < 0 { self.last_error = "no connection to " + self.url; return false; }
+        std::io::tcp::set_recv_timeout(fd, 2s) or discard;
+        let stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        // the application is named by its project, and its account is `app-<name>`:
+        // it may publish on `<org>.app.<name>.>` and nowhere else
+        let app = app_name(self.user);
+        let subject = self.org + ".app." + app + "." + event;
+        let connect = "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"todo\",\"user\":" + quoted(self.user) + ",\"pass\":";
+        let tail = "}\r\nPUB " + subject + " " + to_string(len(body)) + "\r\n" + body + "\r\nPING\r\n";
+        // the one place the sealed password is revealed: into the CONNECT it authenticates
+        stream.send(connect + "\"" + (if self.credential.ready() { self.credential.reveal_text() } else { "" }) + "\"" + tail) or discard;
+        let mut got = "";
+        let mut tries = 0;
+        while tries < 5 {
+            let chunk = stream.recv(4096) or "";
+            got = got + chunk;
+            if std::str::contains(got, "PONG") { return true; }
+            if std::str::contains(got, "-ERR") { self.last_error = got; return false; }
+            if len(chunk) == 0 { tries = tries + 1; }
+        }
+        self.last_error = "no PONG within the wait";
+        return false;
+    }
+}

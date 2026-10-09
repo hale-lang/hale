@@ -1,0 +1,40 @@
+# One job per part: the api (format, verify, its tests, which include the
+# exported contract and the TypeScript client held to the rows) and the page
+# (the generated client and the page's script typecheck).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: api
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hale
+      - name: Format
+        run: hale fmt --check api
+      - name: Verify
+        run: hale verify api
+      - name: Test
+        run: hale test api
+      - name: Build
+        run: hale build api
+
+  ui:
+    name: ui
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The generated client typechecks
+        run: npx -y -p typescript@5 tsc --noEmit --target es2022 --module es2022 --lib es2022,dom --strict ui/client/todo.ts

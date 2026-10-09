@@ -1,0 +1,59 @@
+// Who a bearer token is, and what that name may do. Both read one table,
+// TODO_TOKENS: `name[:role]=token,…`. A bare name is an editor; `name:reader`
+// is read-only.
+
+/// Who a bearer token is: a `std::api::BearerSource`.
+locus Tokens {
+    params { table: String = ""; }
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: entry_name(self.table, token) };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+/// What a name holds: a `std::api::RoleSource`. `editor` includes `reader`
+/// (the surface's `role` line), so the exposure asks only for the one an
+/// entry names.
+locus Grants {
+    params { table: String = ""; }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if len(p.name) == 0 { return false; }
+        return entry_role(self.table, p.name) == r;
+    }
+}
+
+/// The name a token has in `table`, empty when it has none.
+fn entry_name(table: String, token: String) -> String {
+    let mut rest = table;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let entry = if comma >= 0 { rest[0..comma] } else { rest };
+        rest = if comma >= 0 { rest[(comma + 1)..len(rest)] } else { "" };
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 && entry[(eq + 1)..len(entry)] == token {
+            let who = entry[0..eq];
+            let colon = std::str::index_of(who, ":");
+            return if colon >= 0 { who[0..colon] } else { who };
+        }
+    }
+    return "";
+}
+
+/// The role `name` holds in `table`: `editor` unless its entry says
+/// `:reader`. Empty when the name is not in the table.
+fn entry_role(table: String, name: String) -> String {
+    let mut rest = table;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let entry = if comma >= 0 { rest[0..comma] } else { rest };
+        rest = if comma >= 0 { rest[(comma + 1)..len(rest)] } else { "" };
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 {
+            let who = entry[0..eq];
+            let colon = std::str::index_of(who, ":");
+            let n = if colon >= 0 { who[0..colon] } else { who };
+            if n == name { return if colon >= 0 { who[(colon + 1)..len(who)] } else { "editor" }; }
+        }
+    }
+    return "";
+}

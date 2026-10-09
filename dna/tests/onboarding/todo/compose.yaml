@@ -1,0 +1,52 @@
+# todo on one machine: the api and the page that watches it.
+#
+#   hale build api -o bin/todo-api
+#   docker compose up
+#
+# The api is built by the toolchain on the host and this file runs that
+# binary, so build on a machine whose glibc is not newer than the image's.
+# It answers on 127.0.0.1:8080 (HTTP), 8090 (MCP) and 8081 (the stream); the
+# page on 127.0.0.1:8088 (http://127.0.0.1:8088/?token=t-bo). Nothing else is
+# published.
+#
+# The organism's own services (the record, the nerves, the host) are not
+# here: `hale dna dev` brings them up and hands the api its nerves. Without
+# them the api runs, and its sense says nothing.
+
+name: todo
+
+services:
+  api:
+    image: ubuntu:24.04
+    # the binary needs OpenSSL's runtime library, which the image lacks
+    command:
+      - sh
+      - -c
+      - >-
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends libssl3 ca-certificates >/dev/null
+        && exec todo-api --host 0.0.0.0 --port 8080 --mcp 8090 --stream 8081
+    environment:
+      TODO_TOKENS: ${TODO_TOKENS:-ada=t-ada,bo:reader=t-bo}
+    volumes:
+      - ./bin/todo-api:/usr/local/bin/todo-api:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:8081:8081"
+
+  ui:
+    image: node:22-alpine
+    # the generated client is TypeScript; a browser runs the JavaScript tsc makes of it
+    working_dir: /ui
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --no-save --silent typescript@5 http-server@14
+        && node --test seq.test.mjs
+        && npx tsc --target es2022 --module es2022 --lib es2022,dom --strict client/todo.ts
+        && exec npx http-server -a 0.0.0.0 -p 8088 -c-1 .
+    volumes:
+      - ./ui:/ui
+    ports:
+      - "127.0.0.1:8088:8088"
