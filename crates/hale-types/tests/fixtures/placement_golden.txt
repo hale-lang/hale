@@ -695,9 +695,6 @@ row	App@literal1.s	Sub	main	default
 == crates/hale-cli/tests/dna_apply.rs#ffcc9e2b
 dynamic	<hole>	on main|unresolved declaration `dna::AutonomyBoundary`|unresolved declaration `dna::Board`|unresolved declaration `dna::Dna`|unresolved declaration `dna::FakeModel`|unresolved declaration `dna::GitJournal`|unresolved declaration `dna::GitLeases`|unresolved declaration `dna::GitReceipts`|unresolved declaration `dna::Grant`|unresolved declaration `dna::HaleVerification`|unresolved declaration `dna::IsolatedWorktrees`|unresolved declaration `dna::LocalGit`|unresolved declaration `dna::ModelRouter`|unresolved declaration `dna::MutationGateway`|unresolved declaration `dna::OrgPolicy`|unresolved declaration `dna::SourceEditor`	in the seed
 
-== crates/hale-cli/tests/dna_design.rs#fdc4aa92
-dynamic	<hole>	on main|unresolved declaration `dna::GitJournal`|unresolved declaration `dna::MemoryKnowledge`	in the seed
-
 == crates/hale-cli/tests/dna_design.rs#61dbb499
 root	App	the entry
 row	App@literal1	App	main	default

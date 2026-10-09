@@ -50,7 +50,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     // clone A: the organism's home
-    let (ok, out) = hale_in(&["dna", "new", "orgsync"], &d);
+    let (ok, out) = hale_in(&["dna", "new", "orgsync", "--no-library"], &d);
     assert!(ok, "{out}");
     let a: PathBuf = d.join("orgsync");
     git(&["config", "user.name", "organism-host"], &a);
