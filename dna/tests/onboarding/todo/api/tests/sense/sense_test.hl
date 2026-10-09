@@ -55,6 +55,11 @@ main locus SenseDesk {
         std::test::assert(std::str::contains(heard, "\"user\":\"app-todo\""), "as the application's account: " + heard);
         std::test::assert(std::str::contains(heard, "\"pass\":\"hunter2\""), "with the vault's password: " + heard);
         std::test::assert(std::str::contains(heard, "\"id\":\"overdue-1\""), "naming the item: " + heard);
+        std::test::assert(std::str::contains(heard, "\"source\":\"app:todo\""), "from the attached application: " + heard);
+        // the name follows the account the organism attached the application under
+        std::test::assert_eq_str(nerves::app_name("app-mytodo"), "mytodo", "a clone's own name");
+        std::test::assert_eq_str(nerves::app_name("app-my-todo"), "my-todo", "a dashed name");
+        std::test::assert_eq_str(nerves::app_name(""), "todo", "no account, the default");
         std::test::assert(std::str::contains(heard, "\"event\":\"todo.overdue\"") && std::str::contains(heard, "\"title\":\"milk\""), "an overdue item, with the item as payload: " + heard);
 
         // told once: more ticks, no second message; and the others were never told

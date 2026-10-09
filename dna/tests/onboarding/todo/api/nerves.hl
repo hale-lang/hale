@@ -17,6 +17,13 @@ fn quoted(s: String) -> String {
     return "\"" + std::json::escape_string(s) + "\"";
 }
 
+/// The application the account `user` belongs to: the name after `app-`,
+/// `todo` when the account does not say. The subject and the concern's
+/// source both carry it.
+fn app_name(user: String) -> String {
+    return if std::str::starts_with(user, "app-") && len(user) > 4 { user[4..len(user)] } else { "todo" };
+}
+
 locus Nerves {
     params {
         // nats://host:port; empty is not attached
@@ -39,7 +46,7 @@ locus Nerves {
     fn overdue(id: Int, title: String, due: String) {
         if !self.attached() { return; }
         let body = "{\"id\":" + quoted("overdue-" + to_string(id))
-            + ",\"source\":" + quoted("todo/" + to_string(id))
+            + ",\"source\":" + quoted("app:" + app_name(self.user))
             + ",\"what\":" + quoted("todo " + to_string(id) + " \"" + title + "\" is overdue (due " + due + ")")
             + ",\"severity\":1"
             + ",\"event\":\"todo.overdue\""
@@ -66,7 +73,7 @@ locus Nerves {
         let stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
         // the application is named by its project, and its account is `app-<name>`:
         // it may publish on `<org>.app.<name>.>` and nowhere else
-        let app = if std::str::starts_with(self.user, "app-") { self.user[4..len(self.user)] } else { "todo" };
+        let app = app_name(self.user);
         let subject = self.org + ".app." + app + "." + event;
         let connect = "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"todo\",\"user\":" + quoted(self.user) + ",\"pass\":";
         let tail = "}\r\nPUB " + subject + " " + to_string(len(body)) + "\r\n" + body + "\r\nPING\r\n";
