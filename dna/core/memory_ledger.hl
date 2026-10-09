@@ -314,6 +314,10 @@ locus PqLedger {
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         return self.gate(-1, kind, entity, body);
     }
+    // The Ledger takes a batch as its rows, one by one: a Ledger row is
+    // its own fact, and nothing batches across it (the record batches
+    // only when no row is the Ledger's).
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.rows.len();
