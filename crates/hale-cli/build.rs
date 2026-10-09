@@ -66,7 +66,7 @@ fn embed_spec() {
 /// The chapters and sections bound to `system:dna` rather than
 /// `language:hale`: paths below the repository root, a directory prefix
 /// or a file.
-const LIBRARY_DNA: &[&str] = &["docs/src/dna/", "docs/src/parts/", "spec/dna.md", "spec/model.md"];
+const LIBRARY_DNA: &[&str] = &["docs/src/dna/", "docs/src/parts/organism.md", "docs/src/parts/habitat.md", "spec/dna.md", "spec/model.md"];
 
 fn walk_md(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };

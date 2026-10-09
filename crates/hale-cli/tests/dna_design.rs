@@ -605,7 +605,7 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     assert!(proposed.iter().any(|(_, b)| b["name"].as_str().unwrap().starts_with("library/spec/")), "the spec's sections");
     for (_, b) in &proposed {
         let name = b["name"].as_str().unwrap();
-        let want_target = if name.starts_with("library/dna/") || name.starts_with("library/parts/") || name.starts_with("library/spec/dna#") || name.starts_with("library/spec/model#") { "system:dna" } else { "language:hale" };
+        let want_target = if name.starts_with("library/dna/") || name == "library/parts/organism" || name == "library/parts/habitat" || name.starts_with("library/spec/dna#") || name.starts_with("library/spec/model#") { "system:dna" } else { "language:hale" };
         assert_eq!(b["target"], want_target, "{name}");
         assert!(b["kind"] == "idea" && b["class"] == "goal" && b["provenance"] == "toolchain", "{b}");
     }
