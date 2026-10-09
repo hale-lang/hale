@@ -49,3 +49,29 @@ locus Sense {
     bus { subscribe todo::TodoOverdue as on_overdue; }
     fn on_overdue(t: todo::TodoItem) { self.nerves.overdue(t.id, t.title, t.due); }
 }
+
+/// Where a broker's search for a port begins, and how far apart the
+/// callers' starts are. The rule is dna/core/workspace.hl::free_port's: a
+/// port is handed out only after a bind on it succeeded, and a taken one is
+/// stepped past. This repository cannot import the DNA core, so the rule is
+/// kept here, from a fixed base (no number derived from the pid).
+fn port_base() -> Int { return 31000; }
+fn port_spread() -> Int { return 64; }
+
+/// A port nothing holds: the first from `port_base() + index *
+/// port_spread()` on that binds (and is closed again, so the broker can
+/// have it). Give each broker its own `index`. -1 when none of the
+/// candidates would bind.
+fn free_port(index: Int) -> Int {
+    let mut port = port_base() + index * port_spread();
+    let stop = port + port_spread();
+    while port < stop {
+        let probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+        if probe >= 0 {
+            std::io::tcp::__close_fd(probe);
+            return port;
+        }
+        port = port + 1;
+    }
+    return -1;
+}

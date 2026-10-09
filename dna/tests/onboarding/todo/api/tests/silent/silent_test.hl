@@ -7,11 +7,10 @@ import "../../todo" as todo;
 import "../../auth" as auth;
 import "../../nerves" as nerves;
 import "../fake" as fake;
-import "../../../../../../core" as dna;
 
 main locus SilentDesk {
     params {
-        port: Int = dna::free_port(5);
+        port: Int = fake::free_port(1);
         broker: fake::Broker = fake::Broker { port: self.port };
         mailbox: fake::Mailbox = fake::Mailbox { };
         list: todo::Todos = todo::Todos { };
