@@ -157,7 +157,7 @@ main locus Desk {
         let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
         let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
         let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);
-        while !self.draining { std::time::sleep(100ms); }
+        std::api::run_until_stopped(public);
         public.stop();
         partner.stop();
         admin.stop();

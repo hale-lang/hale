@@ -6704,6 +6704,19 @@ typedef struct lotus_bus_queue {
      * owner-bound, matching the mailbox / pool-ring channels which
      * were always owner-executed. */
     pthread_t         owner;
+    /* The owner's bounded wait for work (lotus_bus_queue_idle_wait).
+     * `idle` is set while the owner waits; a foreign-thread enqueue
+     * that finds it set writes `wake_w`, which ends the wait. The same
+     * wake-fd pattern an async_io pool uses (an eventfd on Linux, a
+     * non-blocking pipe elsewhere); -1 when the fd could not be made,
+     * and the wait is then a plain bounded sleep. wasm32 has no wake fd
+     * and no idle wait: the fd, the enqueue's write, the wait and the
+     * destroy's close are compiled out. */
+#ifndef __wasm__
+    _Atomic int       idle;
+    int               wake_r;
+    int               wake_w;
+#endif
 } lotus_bus_queue_t;
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
@@ -6781,6 +6794,25 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     q->tail = 0;
     pthread_mutex_init(&q->lock, NULL);
     q->owner = pthread_self();
+#ifndef __wasm__
+    atomic_init(&q->idle, 0);
+    q->wake_r = q->wake_w = -1;
+#endif
+#if defined(__linux__)
+    q->wake_r = q->wake_w = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#elif !defined(__wasm__)
+    {
+        int fds[2];
+        if (pipe(fds) == 0) {
+            for (int i = 0; i < 2; i++) {
+                fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+                fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK);
+            }
+            q->wake_r = fds[0];
+            q->wake_w = fds[1];
+        }
+    }
+#endif
     return q;
 }
 
@@ -7374,7 +7406,21 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
-    if (locked) pthread_mutex_unlock(&q->lock);
+    if (locked) {
+        pthread_mutex_unlock(&q->lock);
+#ifndef __wasm__
+        /* The owner is waiting for work (lotus_bus_queue_idle_wait):
+         * end its wait. The cell is in the queue before this load, and
+         * the waiter sets `idle` before it looks, so one of us sees the
+         * other. */
+        if (atomic_load_explicit(&q->idle, memory_order_seq_cst)
+            && q->wake_w >= 0) {
+            uint64_t one = 1;
+            ssize_t w = write(q->wake_w, &one, sizeof one);
+            (void)w;
+        }
+#endif
+    }
 }
 
 LOTUS_HOT_ALIGN
@@ -7979,8 +8025,52 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     }
 }
 
+/* The owner's bounded wait for work: returns when a foreign thread
+ * enqueues on `q`, or after `ns` nanoseconds, then drains the queue.
+ * The only place main waits on its queue; it is never unbounded and
+ * never a busy loop. A caller off the owner thread, or a queue with no
+ * wake fd, gets the same bounded wait without the wake. */
+void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
+    if (!q) return;
+#ifdef __wasm__
+    (void)ns;
+    lotus_bus_queue_drain(q);
+#else
+    if (ns < 0) ns = 0;
+    int ready = 0;
+    int can_wake = q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner);
+    if (can_wake) {
+        atomic_store_explicit(&q->idle, 1, memory_order_seq_cst);
+        pthread_mutex_lock(&q->lock);
+        ready = q->head < q->tail;
+        pthread_mutex_unlock(&q->lock);
+    }
+    if (!ready && ns > 0) {
+        struct pollfd pfd = { .fd = can_wake ? q->wake_r : -1,
+                              .events = POLLIN, .revents = 0 };
+#if defined(__linux__)
+        struct timespec ts = { .tv_sec = ns / 1000000000,
+                               .tv_nsec = ns % 1000000000 };
+        ppoll(&pfd, 1, &ts, NULL);
+#else
+        poll(&pfd, 1, (int)((ns + 999999) / 1000000));
+#endif
+    }
+    if (can_wake) {
+        atomic_store_explicit(&q->idle, 0, memory_order_seq_cst);
+        uint64_t buf[8];
+        while (read(q->wake_r, buf, sizeof buf) > 0) {}
+    }
+    lotus_bus_queue_drain(q);
+#endif
+}
+
 void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
     if (!q) return;
+#ifndef __wasm__
+    if (q->wake_r >= 0) close(q->wake_r);
+    if (q->wake_w >= 0 && q->wake_w != q->wake_r) close(q->wake_w);
+#endif
     pthread_mutex_destroy(&q->lock);
     if (q->cells) free(q->cells);
     free(q);
@@ -8922,6 +9012,12 @@ typedef struct lotus_coro {
      * pointer (heap-use-after-free). NULL while running / not yet
      * parked. */
     lotus_arena_t    *saved_caller_arena;
+    /* The outcome of the last Stream send/recv this coro made (see
+     * lotus_io_status_set): a coro's I/O status is its own, because
+     * coros multiplex one worker thread and a thread-local would hand
+     * a read that parked the status of whichever read failed while it
+     * waited. */
+    int64_t           io_status;
     /* Intrusive list pointers — used for the pool's `parked_head`
      * chain (when this coro is waiting on epoll) and the pool's
      * free-list of reusable coro slots (later). */
@@ -10727,8 +10823,9 @@ static void lotus_failure_service_cell(void *self_ptr, void *payload) {
 
 /* Wake a domain that may be parked on its queue, without blocking: a
  * full queue means a consumer that is not parked, which services between
- * cells. Main is never parked on its queue; it, and every join and wait,
- * is woken by the post's broadcast. */
+ * cells. Main waits on its queue only inside lotus_bus_queue_idle_wait,
+ * a bounded wait that a foreign-thread delivery ends; it, and every join
+ * and wait, is woken by the post's broadcast. */
 static void lotus_domain_wake(lotus_domain_t *d) {
     lotus_bus_cell_t cell;
     memset(&cell, 0, offsetof(lotus_bus_cell_t, payload_inline));
@@ -11300,6 +11397,7 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->payload_region = NULL;
     c->payload_size   = 0;
     c->saved_caller_arena = NULL;
+    c->io_status   = 0;
     c->run_ticket  = NULL;
     c->next        = NULL;
     if (getcontext(&c->ctx) != 0) {
@@ -17988,7 +18086,23 @@ const char *lotus_io_error_kind(int32_t errno_val);
  * contract as lotus_get_errno / last_recv_kernel_ns. */
 static __thread int64_t g_tcp_last_io_status = 0;
 
+/* The status belongs to the coroutine that made the call, not to the
+ * thread: on an async_io pool many coros share one thread and
+ * interleave at their parks, so a read that parked and then
+ * succeeded used to find the status a neighbour's failed read had
+ * left. Off a coro (classic and pinned threads, main) the thread-local
+ * is still exactly the caller's own. */
+static void lotus_io_status_set(int64_t v) {
+#if LOTUS_HAVE_ASYNC_IO
+    if (g_current_coro_tls) { g_current_coro_tls->io_status = v; return; }
+#endif
+    g_tcp_last_io_status = v;
+}
+
 int64_t lotus_tcp_last_io_status(void) {
+#if LOTUS_HAVE_ASYNC_IO
+    if (g_current_coro_tls) return g_current_coro_tls->io_status;
+#endif
     return g_tcp_last_io_status;
 }
 
@@ -18057,15 +18171,15 @@ static int lotus_io_wait_writable(int fd) {
 }
 
 int lotus_tcp_send_str(int fd, const char *msg) {
-    g_tcp_last_io_status = 0;
+    lotus_io_status_set(0);
     if (fd < 0) {
         errno = EBADF;
-        g_tcp_last_io_status = EBADF;
+        lotus_io_status_set(EBADF);
         return -1;
     }
     if (!msg) {
         errno = EINVAL;
-        g_tcp_last_io_status = EINVAL;
+        lotus_io_status_set(EINVAL);
         return -1;
     }
     /* F.35 Slice 3: park on EPOLLOUT for async_io pools; the
@@ -18088,7 +18202,7 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_io_wait_writable(fd) == 0) continue;
         }
-        g_tcp_last_io_status = errno ? errno : EIO;
+        lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_str: write");
         return -1;
     }
@@ -18102,21 +18216,21 @@ int lotus_tcp_send_str(int fd, const char *msg) {
  * writes; returns 0 on full send, -1 on error.
  */
 int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
-    g_tcp_last_io_status = 0;
+    lotus_io_status_set(0);
     if (fd < 0) {
         errno = EBADF;
-        g_tcp_last_io_status = EBADF;
+        lotus_io_status_set(EBADF);
         return -1;
     }
     if (!bytes_ptr) {
         errno = EINVAL;
-        g_tcp_last_io_status = EINVAL;
+        lotus_io_status_set(EINVAL);
         return -1;
     }
     int64_t total = lotus_bytes_len(bytes_ptr);
     if (total < 0) {
         errno = EINVAL;
-        g_tcp_last_io_status = EINVAL;
+        lotus_io_status_set(EINVAL);
         return -1;
     }
     /* F.35 Slice 3: on async_io pools, park on EPOLLOUT when the
@@ -18139,7 +18253,7 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_io_wait_writable(fd) == 0) continue;
         }
-        g_tcp_last_io_status = errno ? errno : EIO;
+        lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_bytes: write");
         return -1;
     }
@@ -18151,9 +18265,9 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
      * but local to this function-family because m81 may run
      * before lotus_env_init has cleared the env globals. */
     static const char empty[1] = { 0 };
-    g_tcp_last_io_status = 0;
+    lotus_io_status_set(0);
     if (fd < 0 || max_bytes <= 0) {
-        g_tcp_last_io_status = (fd < 0) ? EBADF : EINVAL;
+        lotus_io_status_set((fd < 0) ? EBADF : EINVAL);
         return empty;
     }
     /* F.35 Slice 3: park on EAGAIN for async_io pools, classic
@@ -18170,7 +18284,7 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
     size_t cap = (size_t)max_bytes;
     char *buf = (char *)lotus_bus_payload_arena_alloc(cap + 1, 1);
     if (!buf) {
-        g_tcp_last_io_status = ENOMEM;
+        lotus_io_status_set(ENOMEM);
         return empty;
     }
     ssize_t n;
@@ -18191,7 +18305,7 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
         /* Genuine read error: empty return + errno in the status
          * TLS so the fallible Stream.recv wrapper can fail with
          * a real IoError instead of conflating error with EOF. */
-        g_tcp_last_io_status = errno ? errno : EIO;
+        lotus_io_status_set(errno ? errno : EIO);
         return empty;
     }
     /* NUL-terminate at the actual bytes-read offset; a zero-byte
@@ -20019,6 +20133,22 @@ static lotus_bus_queue_t *g_bus_queue_for_remote = NULL;
 
 void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
     g_bus_queue_for_remote = queue;
+}
+
+/* `std::time::__idle_wait` on the main thread: wait for work on main's
+ * queue for at most `ns`. 1 when it waited; 0 when this is not the
+ * queue's owner (a pool worker, a pinned thread), and the caller sleeps
+ * as `std::time::sleep` does. */
+int64_t lotus_bus_idle_wait_main(int64_t ns) {
+#ifdef __wasm__
+    (void)ns;
+    return 0;
+#else
+    lotus_bus_queue_t *q = g_bus_queue_for_remote;
+    if (!q || !pthread_equal(pthread_self(), q->owner)) return 0;
+    lotus_bus_queue_idle_wait(q, ns);
+    return 1;
+#endif
 }
 
 /* m59: reader-thread args. The entry back-reference carries the
@@ -24066,9 +24196,9 @@ int64_t lotus_bytes_is_alloc_fail(const void *blob) {
  * primitive is exactly the case where length-on-the-wire matters.
  */
 void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
-    g_tcp_last_io_status = 0;
+    lotus_io_status_set(0);
     if (fd < 0 || max_bytes <= 0) {
-        g_tcp_last_io_status = (fd < 0) ? EBADF : EINVAL;
+        lotus_io_status_set((fd < 0) ? EBADF : EINVAL);
         return lotus_bytes_empty_global();
     }
     /* F.35 Slice 3: same async_io park-on-EAGAIN dance as
@@ -24090,7 +24220,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
      * need the prefix corrected so callers see the true length. */
     void *blob = lotus_caller_or_global_bytes_create((int64_t)max_bytes);
     if (!blob) {
-        g_tcp_last_io_status = ENOMEM;
+        lotus_io_status_set(ENOMEM);
         return lotus_bytes_empty_global();
     }
     char *body = (char *)lotus_bytes_data(blob);
@@ -24114,7 +24244,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
          * with a real IoError instead of conflating error with
          * EOF. The reserved arena memory leaks until program exit
          * (matches recv_str's convention). */
-        g_tcp_last_io_status = errno ? errno : EIO;
+        lotus_io_status_set(errno ? errno : EIO);
         return lotus_bytes_empty_global();
     }
     /* Patch the length prefix down to the actual bytes read. */

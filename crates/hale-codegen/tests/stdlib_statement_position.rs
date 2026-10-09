@@ -115,6 +115,34 @@ fn a_renamed_body_that_returns_nothing_is_called_as_a_statement() {
     );
 }
 
+/// A `HaleBody` row that returns `Unit` (`std::api::run_until_stopped`,
+/// whose body is `Handle.wait()`) is a statement's whole call: the call's
+/// value is dropped, as `std::time::sleep(d);` drops its. Until the fix it
+/// answered "returns no value but is used in expression position" at a
+/// statement too, which broke every DNA head that parks in `run()`. A value
+/// position keeps its refusal (`hale check` admits the `let`; lowering is
+/// what refuses it, as for `std::process::adopt` above).
+#[test]
+fn a_hale_body_row_that_returns_unit_is_called_as_a_statement() {
+    let serve = "api Public { rpc Echo::echo; }\nlocus Echo { fn echo(n: Int) -> Int { return n; } }\n\
+         main locus Desk {\n    params { echo: Echo = Echo { }; f: std::api::test::Rpc = std::api::test::Rpc { }; }\n    \
+         run() {\n        let h = api::serve(Public, self.f, as: \"p\", receivers: { Echo: self.echo }, bound: 8, \
+         on_full: refuse);\n";
+    let tail = "    }\n}\nfn main() { Desk { }; }\n";
+    let statement = format!("{serve}        std::api::run_until_stopped(h);\n{tail}");
+    let bin = harness::unique_bin("stmt_unit_hale_body");
+    harness::build_source_ir_text(checks_clean(&statement), &bin)
+        .unwrap_or_else(|e| panic!("the statement form does not lower: {e:?}"));
+    let _ = std::fs::remove_file(&bin);
+    let value = format!("{serve}        let x = std::api::run_until_stopped(h);\n{tail}");
+    let (text, _) = lowering_error(&value, "value_unit_hale_body");
+    assert_eq!(
+        text,
+        "unsupported in codegen v0: stdlib path `std::api::run_until_stopped` returns no value but is used in \
+         expression position"
+    );
+}
+
 /// Build `source` without the check, and return lowering's refusal: its
 /// text and, when it is located, its span.
 fn lowering_error(source: &str, name: &str) -> (String, Option<hale_syntax::Span>) {

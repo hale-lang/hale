@@ -25,6 +25,8 @@ mod coop_pool_multi_locus;
 mod coop_pool_run_dispatch;
 #[path = "coop_to_pinned_mid_program.rs"]
 mod coop_to_pinned_mid_program;
+#[path = "io_status_per_coro.rs"]
+mod io_status_per_coro;
 #[path = "recv_into.rs"]
 mod recv_into;
 #[path = "recv_stamped.rs"]

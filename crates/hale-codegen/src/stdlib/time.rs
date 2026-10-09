@@ -2,7 +2,7 @@
 //! `time::sleep` / `time::monotonic` from the m71/m79 era).
 
 use hale_syntax::ast::Expr;
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicValueEnum, IntValue};
 
 use crate::bus::runtime::BusRuntime;
 use crate::codegen::{
@@ -40,6 +40,17 @@ pub(crate) trait TimeStdlib<'ctx> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
     fn lower_time_sleep(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError>;
+
+    /// The sleep itself, over a duration already evaluated: a caller that
+    /// has the value (`__idle_wait`'s fallback) must not evaluate its
+    /// expression a second time.
+    fn lower_time_sleep_ns(&mut self, ns: IntValue<'ctx>) -> Result<(), CodegenError>;
+
+    fn lower_time_idle_wait(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
@@ -429,6 +440,74 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         )
     }
 
+    /// Lower `std::time::__idle_wait(duration)`: on the main thread, a wait
+    /// on its bus queue that a foreign-thread delivery ends
+    /// (`lotus_bus_queue_idle_wait`); on any other thread, `sleep`.
+    fn lower_time_idle_wait(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "time::__idle_wait takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (val, ty) = self.lower_expr(&args[0], scope)?;
+        if ty != CodegenTy::Duration {
+            return Err(CodegenError::Unsupported(format!(
+                "time::__idle_wait expects Duration, got {:?}",
+                ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        // Declared here, not with the builtins, so a program that never
+        // names this call carries no new declaration.
+        let wait_main = self
+            .module
+            .get_function("lotus_bus_idle_wait_main")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "lotus_bus_idle_wait_main",
+                    i64_t.fn_type(&[i64_t.into()], false),
+                    None,
+                )
+            });
+        let waited = self
+            .builder
+            .build_call(wait_main, &[val.into()], "idle.wait.main")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let did_wait = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                waited,
+                i64_t.const_int(0, false),
+                "idle.waited",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering time::__idle_wait");
+        let sleep_bb = self.context.append_basic_block(func, "idle.sleep");
+        let done_bb = self.context.append_basic_block(func, "idle.done");
+        self.builder
+            .build_conditional_branch(did_wait, done_bb, sleep_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(sleep_bb);
+        self.lower_time_sleep_ns(val.into_int_value())?;
+        self.builder
+            .build_unconditional_branch(done_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(done_bb);
+        Ok(())
+    }
+
     /// Lower `time::sleep(duration)` to a monotonic-clock,
     /// EINTR-retrying `clock_nanosleep` call. The lowered IR is:
     ///
@@ -464,10 +543,13 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 ty
             )));
         }
+        self.lower_time_sleep_ns(val.into_int_value())
+    }
+
+    fn lower_time_sleep_ns(&mut self, ns: IntValue<'ctx>) -> Result<(), CodegenError> {
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let ts_t = self.timespec_type();
-        let ns = val.into_int_value();
         let billion = i64_t.const_int(1_000_000_000, false);
         // 2026-05-29: chunk a long sleep into ≤100ms slices and drain
         // the cooperative bus queue after EACH slice. Previously the

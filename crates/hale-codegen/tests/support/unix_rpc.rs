@@ -227,6 +227,12 @@ impl Conn {
         matches!(self.recv_within(ms), Recv::Eof)
     }
 
+    /// Go away with what the server sent unread: the server's next read of
+    /// this connection fails (ECONNRESET) rather than ending.
+    pub fn reset(self) {
+        drop(self);
+    }
+
     /// Close our end.
     pub fn close(self) {
         let _ = self.s.shutdown(std::net::Shutdown::Both);
