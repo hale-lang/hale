@@ -963,7 +963,7 @@ fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
     let mut host = start_org(&app);
     let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    finish(&app, &mut host, "the earlier-named library ratified", |rows| old.iter().all(|d| has_row(rows, "knowledge.ratified", d)));
+    finish(&app, &mut host, "the earlier-named library ratified, both families", |rows| old.iter().all(|d| has_row(rows, "knowledge.ratified", d)) && count_of(rows, "library.family.ratified") == 2);
 
     // the current toolchain's names: the two chapters supersede what the record holds
     let (ok, up) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-b")]);

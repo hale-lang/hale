@@ -5109,6 +5109,7 @@ otherwise.
 | `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
 | `HALE_DNA_LIBRARY_VERSION=<version>` | the toolchain's | The version the library is proposed under (`library/<node>@<version>`, and on each idea): a fixture's way to make a later toolchain out of the one binary it has, so `upgrade`'s supersession is exercised against real record history. |
 | `HALE_DNA_LIBRARY_SUFFIX=<text>` | unset | Appended to every library idea's text, so a later version's ideas differ from the earlier's (fixtures only). |
+| `HALE_DNA_LIBRARY_EARLIER_NAMES=1` | unset | The two moved chapters are proposed under their earlier names (`library/api`, `library/shaping`): a fixture's way to make a record the earlier toolchain would have seeded, so an upgrade is seen finding them (fixtures only). |
 | `HALE_DNA_INSTANCE=<id>` | unset | Set by a node on each instance it starts: which instance of its shape the process is. |
 | `HALE_DNA_BODY=<mark>` | unset | The body's mark: the host puts it in the environment of the processes it starts as a body (`body_mark`: holder, lease token, pid), and the body fence finds them by it. |
 | `HALE_DNA_SCAN_NEEDLE=<mark>` | unset | Set by the body fence's scan on a probe process: the mark it looks for in every other process's environment (`ps -E`) to find the body's processes. |

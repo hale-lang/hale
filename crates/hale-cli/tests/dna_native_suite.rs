@@ -950,6 +950,8 @@ fn dna_fixture_set_is_complete() {
             "ledger_test.hl",
             "leg_candidate_test.hl",
             "legs_test.hl",
+            "library_family_batch_test.hl",
+            "library_family_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",
             "nats_connect_password_test.hl",
