@@ -291,7 +291,9 @@ locus App {
         std::test::assert_eq_int(holes.code, 0, "the Board ratifies the holes: " + holes.stdout + holes.stderr);
         let design = self.dna("review\ndesign\napprove\n--as\nada\n--authority\nboard\n--no-wait");
         std::test::assert_eq_int(design.code, 0, "and the design, which holds the editor's mandate: " + design.stdout + design.stderr);
-        let after = self.show_org(head, 480, "reviewer(todo.md) {mandate: ratified; roles: reviewer}");
+        // wait for the last position's mandate: the ui reviewer's lands after the
+        // api's, so waiting on the api reviewer read a pending ui mandate
+        let after = self.show_org(head, 480, "reviewer(todo.md) {mandate: ratified}");
         std::test::assert(std::str::contains(after, "dev {mandate: ratified; roles: editor}") && std::str::contains(after, "reviewer(todo.md) {mandate: ratified; roles: reviewer}") && !std::str::contains(after, "{mandate: pending"), "every mandate ratified with its position: " + after);
 
         // ---- each mandate is a ratified idea bound to its position
