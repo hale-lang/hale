@@ -596,6 +596,48 @@ rows, with no program running, and the forms a client is generated from
 carries what the exposure was given (its address) and what it
 established (the caller), and nothing of the deployment beyond that.
 
+### Driving a program from a terminal
+
+`hale api describe` and `hale api call` are the verbs for an operator and for
+scripts. They drive a running program over a Unix socket or HTTP, read the
+description it serves, and turn each outcome into an exit code. Against the
+desk of this chapter:
+
+```sh
+$ hale api describe http://127.0.0.1:8080 --bearer t-alice
+Public@fnv1a64:a8930d6e7998e986/public  [http 127.0.0.1:8080]
+caller: bearer alice; roles: trader
+  Orders::cancel(order: Int (OrderId)) -> Cancelled, error OrderError  requires: trader
+  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderReceipt, error ClosureViolation  requires: -
+
+$ hale api call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 3 --limit 125 --bearer t-alice
+{"order":41,"notional":375}
+$ hale api call http://127.0.0.1:8080 Orders::cancel --order 999 --bearer t-alice
+{"code":"unknown_order","reason":"no order 999"}
+$ echo $?
+1
+$ echo '{"book": "desk"}' | hale api call unix:/run/desk/admin.sock Ledger::rebalance --json -
+{"moved":1500}
+```
+
+Each member's payload is built from one flag per field, typed by the schema
+the description gave: an integer or a quantity's count (`--qty 3`), a number,
+`true` or `false`, a string (`--symbol ACME`), and JSON for a record or a list
+(`--items '[1, 2]'`). A flag that does not fit its field, a missing required
+field and a flag that names no field are refused before anything is sent, with
+the field's schema in the message. `--json '{…}'` (or `--json -` for stdin)
+sends a payload as given, unchecked: the server's answer is then the check.
+
+A result prints its value on stdout and exits 0. Everything else prints what the
+wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,
+`digest_mismatch`, `malformed` and the rest, with their reason), a server error
+3, a connection that broke or never answered 4, a call the verb would not send
+5. `--raw` prints the whole outcome on stdout instead, and the exit code stays.
+The endpoint is `unix:<path>` or `http://host:port`; `grpc://` and `mcp://`
+are refused with that message. The caller over HTTP is `--bearer T` (or
+`HALE_API_BEARER`); over a socket it is the peer. See *Driving a served
+program* in `spec/api.md` for the full table.
+
 ### Generated specs and clients
 
 The rows carry everything a client needs (the shapes, the five outcomes,
