@@ -148,18 +148,24 @@ fn paths_outside(names: String, seed: String, fenced: String) -> String {
     return out;
 }
 
-// Whether `root` is itself a seed: it holds a `hale.toml` or a `.hl`
-// file of its own (an application's organization).
-fn root_is_seed(root: String) -> Bool {
-    if std::io::fs::file_exists(root + "/hale.toml") { return true; }
-    let n = std::io::fs::list_dir_count(root) or 0;
+// Whether `dir` holds a `.hl` file of its own — what `hale check <dir>`
+// reads; a manifest alone (a repository's DNA configuration) is not source.
+fn holds_source(dir: String) -> Bool {
+    let n = std::io::fs::list_dir_count(dir) or 0;
     let mut i = 0;
     while i < n {
-        let name = std::io::fs::list_dir_at(root, i) or "";
+        let name = std::io::fs::list_dir_at(dir, i) or "";
         if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" { return true; }
         i = i + 1;
     }
     return false;
+}
+
+// Whether `root` is itself a seed: it holds a `.hl` file of its own (an
+// application's organization). `hale dna init` writes a root `hale.toml`
+// in repository mode too, so the manifest does not decide it.
+fn root_is_seed(root: String) -> Bool {
+    return holds_source(root);
 }
 
 // The directory part of a root-relative path ("" for a file at the root).
@@ -178,7 +184,7 @@ fn parent_dir(rel: String) -> String {
 // line, each once, in order of first file. A root that is itself a seed
 // is the one seed, "." (an application's organization). Otherwise a
 // file's seed is its nearest ancestor under the root holding a
-// `hale.toml`, else its own directory — a repository's code sits under
+// `hale.toml` and a `.hl` of its own, else its own directory — a repository's code sits under
 // its seeds (`api/todo.hl`), and `hale check <repository>` finds no `.hl`.
 @unbounded
 fn seeds_of_files(root: String, files: String, sep: String) -> String {
@@ -195,7 +201,7 @@ fn seeds_of_files(root: String, files: String, sep: String) -> String {
         let mut seed = "";
         let mut found = false;
         while !found && len(dir) > 0 {
-            if std::io::fs::file_exists(root + "/" + dir + "/hale.toml") { found = true; seed = dir; } else { dir = parent_dir(dir); }
+            if std::io::fs::file_exists(root + "/" + dir + "/hale.toml") && holds_source(root + "/" + dir) { found = true; seed = dir; } else { dir = parent_dir(dir); }
         }
         if !found { seed = if len(own) > 0 { own } else { "." }; }
         if !std::str::contains("\n" + out, "\n" + seed + "\n") { out = out + seed + "\n"; }

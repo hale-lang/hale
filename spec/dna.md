@@ -3439,10 +3439,12 @@ no `.hl` file (no model is asked), the model could not be asked, or the
 model named a file the listing does not hold (`SourceEditor.located_why`).
 
 **Which seed is checked.** A root that is itself a seed (it holds a
-`hale.toml` or a `.hl` file: an application's organization) is checked
-and formatted whole. Otherwise (a repository, whose code sits under its
+`.hl` file of its own: an application's organization; the root
+`hale.toml` that `hale dna init` writes in repository mode is the
+organization's environments, not source, and does not make a seed) is
+checked and formatted whole. Otherwise (a repository, whose code sits under its
 seeds) each edited file's seed is its nearest ancestor directory under
-the root that holds a `hale.toml`, else the file's own directory; each
+the root that holds a `hale.toml` and a `.hl` file, else the file's own directory; each
 seed is formatted and checked once, in order of the first file edited in
 it, the first failure's diagnostics (named from the seed, not the
 worktree) feed the retry. The candidate's verification follows the same
