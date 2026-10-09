@@ -127,6 +127,27 @@ fn hole_line(doc: String, question: String, group: String, kind: String, name: S
     return b.result() + "\n";
 }
 
+// The mandate proposed right after position `name`: a knowledge idea of
+// kind `mandate`, authored by `hale dna init`, bound by its `target` to the
+// position's node, listed under `holes` directly after the position, so the
+// group's approval ratifies the position and then its mandate. The text is
+// the toolchain's (graph_mandates.hl); the binding is made at ratification
+// (memory_tail.hl), whether or not the node has landed.
+fn hole_mandate(name: String, text: String) -> String {
+    let target = graph_node_id("position", name);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("author", "hale dna init");
+    b.string_field("kind", "mandate");
+    b.string_field("name", "mandate/" + name);
+    b.string_field("provenance", "proposed");
+    b.string_field("target", target);
+    b.string_field("text", text);
+    b.end_object();
+    let question = "ratify the mandate of `" + name + "`: what it decides, what it may not, what it cites, how it writes, what it escalates";
+    return hole_line(b.result(), question, "holes", "mandate", "mandate/" + name, target);
+}
+
 // The `<a>\t<b>` lines of `pairs` whose `<a>` is `key`: their `<b>`s, one
 // per line.
 @unbounded
@@ -208,8 +229,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         d.question = "ratify the position `board` under the purpose: it ratifies what this organization becomes";
         d.unfold(g.purpose, d.node("position", "board", d.text));
         if len(d.error) > 0 { return HolesAnswer { error: d.error }; }
-        docs = docs + hole_line(d.document(), d.question, "holes", "graph", d.name, d.target);
-        out.count = out.count + 1;
+        docs = docs + hole_line(d.document(), d.question, "holes", "graph", d.name, d.target) + hole_mandate("board", mandate_board());
+        out.count = out.count + 2;
     }
     // the parts: the processes in order, then the seeds no process unfolds into
     let mut parts = "";
@@ -262,8 +283,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             dev.question = "ratify the position `" + p + "/dev` under " + hole_kind(part) + " " + p + ": it writes " + p;
             dev.unfold(part, dev.node("position", p + "/dev", dev.text));
             if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
-            docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
-            out.count = out.count + 1;
+            docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target) + hole_mandate(dev.name, mandate_dev(p));
+            out.count = out.count + 2;
             // two parts delivering one contract: one work item, the first's
             if deliverable == p || !std::str::contains(named, "\n" + deliverable + "\n") {
                 work = work + part + "\t" + deliverable + "\t" + gate + "\n";
@@ -292,8 +313,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             }
             rev.question = "ratify the position `" + p + "/reviewer` under " + hole_kind(part) + " " + p + ", signing " + (if len(seed) > 0 { "its code" + (if len(shown) > 0 { " and " } else { "" }) } else { "" }) + shown;
             if len(rev.error) > 0 { return HolesAnswer { error: rev.error }; }
-            docs = docs + hole_line(rev.document(), rev.question, "holes", "graph", rev.name, rev.target);
-            out.count = out.count + 1;
+            docs = docs + hole_line(rev.document(), rev.question, "holes", "graph", rev.name, rev.target) + hole_mandate(rev.name, mandate_reviewer(p));
+            out.count = out.count + 2;
         }
     }
     // a validated contract no part of the repository serves: its own dev and work
@@ -314,8 +335,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         dev.question = "ratify the position `" + c + "/dev` under contract " + c + ": it writes " + c;
         dev.unfold(node, dev.node("position", c + "/dev", dev.text));
         if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
-        docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
-        out.count = out.count + 1;
+        docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target) + hole_mandate(dev.name, mandate_dev(c));
+        out.count = out.count + 2;
         work = work + node + "\t" + c + "\t" + line[(t + 1)..len(line)] + "\n";
     }
     // an operator under each deployment, signing it; and the roles the project opts into, empty
@@ -334,8 +355,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         e.member("subject", deployment);
         op.row("graph.edge", e.id(), e.body());
         if len(op.error) > 0 { return HolesAnswer { error: op.error }; }
-        docs = docs + hole_line(op.document(), op.question, "holes", "graph", op.name, op.target);
-        out.count = out.count + 1;
+        docs = docs + hole_line(op.document(), op.question, "holes", "graph", op.name, op.target) + hole_mandate(op.name, mandate_operator(d));
+        out.count = out.count + 2;
         let mut k = 0;
         while len(dna::nth_word(opted, k)) > 0 {
             let role = dna::nth_word(opted, k);
@@ -344,8 +365,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             h.question = "ratify the position `" + h.name + "` under deployment " + d + ", proposed empty: the Board names who holds it";
             h.unfold(deployment, h.node("position", h.name, h.text));
             if len(h.error) > 0 { return HolesAnswer { error: h.error }; }
-            docs = docs + hole_line(h.document(), h.question, "holes", "graph", h.name, h.target);
-            out.count = out.count + 1;
+            docs = docs + hole_line(h.document(), h.question, "holes", "graph", h.name, h.target) + hole_mandate(h.name, mandate_role(role, d));
+            out.count = out.count + 2;
         }
     }
     // the work, done when the gate guarding it passes

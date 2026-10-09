@@ -262,7 +262,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
     assert!(ok, "{out}");
-    assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed") && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
+    assert!(out.contains("charter.hl") && out.contains("seeded  design (11 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed") && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
     assert!(app.join("dna/org/charter.hl").is_file(), "the charter is written beside the purpose");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -271,15 +271,15 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     // one Review per practice, listed under one heading
     let (ok, list) = hale(&["dna", "review"], &app);
     assert!(ok, "{list}");
-    assert!(list.contains("design — 8 seeded practice(s), each its own Review"), "{list}");
+    assert!(list.contains("design — 11 seeded practice(s), each its own Review"), "{list}");
     let ids = family_ids(&list, "design");
-    assert_eq!(ids.len(), 8, "{list}");
+    assert_eq!(ids.len(), 11, "{list}");
     // the operating family is its own set (GH #994), undecided throughout
     // this test: its practices stay proposals and never reach a package
     assert!(list.contains("operating — 7 seeded practice(s), each its own Review"), "{list}");
     assert_eq!(family_ids(&list, "operating").len(), 7, "{list}");
     let rows = journal(&app);
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 23, "twenty-three proposals: the purpose (GH #995), eight design, seven operating, seven using");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 26, "twenty-six proposals: the purpose (GH #995), eleven design (eight practices, three mandates), seven operating, seven using");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 0, "nothing ratified by the toolchain");
     let digest_of = |id: &str| -> String {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))
@@ -310,11 +310,11 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(ok && b.contains("settled: approve by riley"), "{b}");
     let (ok, rest) = hale(&["dna", "review", "design", "reject", "--as", "riley", "--authority", "board"], &app);
     assert!(ok, "{rest}");
-    assert_eq!(rest.matches("settled: reject by riley").count(), 6, "the six still pending, each its own verdict:\n{rest}");
-    finish(&app, &mut host, "two ratifications and six declines", |rows| count_of(rows, "knowledge.ratified") >= 2 && count_of(rows, "knowledge.declined") >= 6);
+    assert_eq!(rest.matches("settled: reject by riley").count(), 9, "the nine still pending, each its own verdict:\n{rest}");
+    finish(&app, &mut host, "two ratifications and nine declines", |rows| count_of(rows, "knowledge.ratified") >= 2 && count_of(rows, "knowledge.declined") >= 9);
     let rows = journal(&app);
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 2, "two ratified");
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.declined").count(), 6, "six declined");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.declined").count(), 9, "nine declined");
     // the package holds exactly the two, as memory holds the record
     let (included, ctx) = package(&app);
     let (d0, d1) = (digest_of(&ids[0]), digest_of(&ids[1]));
@@ -383,11 +383,11 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     // package serving old and new together.
     let (ok, up3) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a later toolchain)")]);
     assert!(ok, "{up3}");
-    // every text changed, so eight are proposed; only four names have
+    // every text changed, so eleven are proposed; only four names have
     // something ACTIVE to supersede (the two approved in the first
-    // round, the ratified principles, the old evolution) — the six
+    // round, the ratified principles, the old evolution) — the nine
     // rejected in the first round have nothing to retire
-    assert!(up3.contains("design  8 practice(s) proposed (4 superseding an earlier version)"), "every practice changed; those with an active predecessor supersede it: {up3}");
+    assert!(up3.contains("design  11 practice(s) proposed (4 superseding an earlier version)"), "every practice changed; those with an active predecessor supersede it: {up3}");
     let rows = journal(&app);
     let later: Vec<(String, String, String)> = rows
         .iter()
@@ -401,7 +401,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
             Some((id, b["name"].as_str()?.to_string(), b["knowledge_digest"].as_str()?.to_string()))
         })
         .collect();
-    assert_eq!(later.len(), 8, "{later:?}");
+    assert_eq!(later.len(), 11, "{later:?}");
     let (later_evolution, later_evolution_digest) = later.iter().find(|(_, n, _)| n == "design/evolution").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
     let (later_principles, later_principles_digest) = later.iter().find(|(_, n, _)| n == "design/principles").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
     assert_eq!(supersedes_of(&app, &later_evolution_digest), old_evolution, "the replacement of evolution supersedes the ACTIVE old version, not the rejected replacement");
@@ -420,22 +420,22 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(!included.contains(&old_evolution) && !included.contains(&digest_of(&new_evolution)), "neither the retired old version nor the rejected replacement is: {ctx}");
     assert_eq!(included.len(), 4, "two from the first round, the ratified principles, the later evolution: {ctx}");
 
-    // ---- one replacement at a time. Seven of the third round's
+    // ---- one replacement at a time. Ten of the third round's
     // proposals are still before the Board (principles among them,
     // superseding the ratified principles). A yet later toolchain
     // changes every text again: evolution, whose latest proposal was
-    // decided, is proposed superseding it; the seven wait — a second
+    // decided, is proposed superseding it; the ten wait — a second
     // pending replacement would name the same predecessor, and the
     // assembly refuses to ratify it once the first has retired that
     // (a review found both served, the first never retired).
     let (ok, up4) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
     assert!(ok, "{up4}");
     assert!(up4.contains("design  1 practice(s) proposed (1 superseding an earlier version)"), "only evolution, whose latest proposal is decided: {up4}");
-    assert!(up4.contains("design  7 practice(s) changed but wait: an earlier replacement is still before the Board"), "the rest wait: {up4}");
+    assert!(up4.contains("design  10 practice(s) changed but wait: an earlier replacement is still before the Board"), "the rest wait: {up4}");
     let proposals = |app: &Path| journal(app).iter().filter(|r| r.0 == "knowledge.proposed").count();
     let n4 = proposals(&app);
     let (ok, up4b) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
-    assert!(ok && !up4b.contains("practice(s) proposed") && up4b.contains("7 practice(s) changed but wait"), "again proposes nothing more: {up4b}");
+    assert!(ok && !up4b.contains("practice(s) proposed") && up4b.contains("10 practice(s) changed but wait"), "again proposes nothing more: {up4b}");
     assert_eq!(proposals(&app), n4, "and the record grew by nothing");
     // the Board decides the pending principles; the next upgrade
     // proposes the yet later principles against what is active NOW
@@ -447,7 +447,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     });
     let (ok, up5) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
     assert!(ok, "{up5}");
-    assert!(up5.contains("design  1 practice(s) proposed (1 superseding an earlier version)") && up5.contains("6 practice(s) changed but wait"), "{up5}");
+    assert!(up5.contains("design  1 practice(s) proposed (1 superseding an earlier version)") && up5.contains("9 practice(s) changed but wait"), "{up5}");
     let rows = journal(&app);
     let yet_principles = rows
         .iter()
@@ -520,7 +520,7 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let (ok, up) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a later toolchain)")]);
     assert!(ok, "{up}");
     assert!(up.contains("operating  7 practice(s) proposed (1 superseding an earlier version)"), "{up}");
-    assert!(up.contains("design  8 practice(s) changed but wait"), "{up}");
+    assert!(up.contains("design  11 practice(s) changed but wait"), "{up}");
     let later = review_of("operating/row-first");
     assert_ne!(later, row_first, "a new Review for the changed text");
     let new = digest_of(&later);
@@ -667,7 +667,7 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 0, "no node, no edge");
     assert!(library_proposals(&bare).is_empty(), "no library idea");
     assert!(library_families(&bare).is_empty(), "no library Review");
-    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 8 + 7 + 7, "the purpose and the twenty-two practices (the using family is a practice family, not the library)");
+    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 11 + 7 + 7, "the purpose and the twenty-five practices and mandates (the using family is a practice family, not the library)");
     let (_, list) = hale(&["dna", "review"], &d.join("bare"));
     assert!(!list.contains("library —"), "{list}");
     let _ = std::fs::remove_dir_all(&d);

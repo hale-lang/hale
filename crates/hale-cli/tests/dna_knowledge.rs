@@ -169,7 +169,7 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "429" && nerves_up()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "432" && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();

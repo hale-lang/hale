@@ -4,8 +4,8 @@
 // The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
 // under dna/tests/onboarding/voice. `hale dna init` proposes exactly what
 // its GRAPH.md lists under "The holes", each derived from the graph's edges:
-// 15 positions, 6 work items and the 4 practices DIRECTION.md marks
-// `derived` — 25 proposals, one Board Review
+// 15 positions, each followed by its mandate, 6 work items and the 4
+// practices DIRECTION.md marks `derived` — 40 proposals, one Board Review
 // each. Then the organism runs on the repository record — it has no
 // application, and runs its organization alone — the ledger is adopted
 // (GH #1150), the organization started again on it, and the Board decides
@@ -50,20 +50,35 @@ fn toolchain() -> String {
 // GRAPH.md at a32b295f, "The holes": the proposals, in the order init
 // makes them (`<group> <name>` per line).
 const PROPOSED: String = "holes board
+holes mandate/board
 holes postgres/dev
+holes mandate/postgres/dev
 holes postgres/reviewer
+holes mandate/postgres/reviewer
 holes api/dev
+holes mandate/api/dev
 holes api/reviewer
+holes mandate/api/reviewer
 holes brain/dev
+holes mandate/brain/dev
 holes brain/reviewer
+holes mandate/brain/reviewer
 holes node/dev
+holes mandate/node/dev
 holes node/reviewer
+holes mandate/node/reviewer
 holes spec/validate/dev
+holes mandate/spec/validate/dev
 holes ui/dev
+holes mandate/ui/dev
 holes ui/reviewer
+holes mandate/ui/reviewer
 holes compose/operator
+holes mandate/compose/operator
 holes personal/operator
+holes mandate/personal/operator
 holes scaled-out/operator
+holes mandate/scaled-out/operator
 holes store.md
 holes api
 holes brain
@@ -78,16 +93,16 @@ practices Projects and keys
 
 // GRAPH.md at a32b295f, the org chart once the proposals are ratified.
 const ORG: String = "purpose
-  board
-  postgres    dev, reviewer(store.md)
-  api         dev, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md)
-  brain       dev, reviewer(internal.yaml, store.md)
-  node        dev, reviewer(node.yaml, openapi.yaml, protocol.yaml)
-  compose     operator
-  validate    dev
-  ui          dev, reviewer(openapi.yaml)
-  personal    operator
-  scaled-out  operator
+  board {mandate: ratified}
+  postgres    dev {mandate: ratified}, reviewer(store.md) {mandate: ratified}
+  api         dev {mandate: ratified}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: ratified}
+  brain       dev {mandate: ratified}, reviewer(internal.yaml, store.md) {mandate: ratified}
+  node        dev {mandate: ratified}, reviewer(node.yaml, openapi.yaml, protocol.yaml) {mandate: ratified}
+  compose     operator {mandate: ratified}
+  validate    dev {mandate: ratified}
+  ui          dev {mandate: ratified}, reviewer(openapi.yaml) {mandate: ratified}
+  personal    operator {mandate: ratified}
+  scaled-out  operator {mandate: ratified}
 ";
 
 // The catalog the organism runs on: every backend a `dna::FakeModel`, so
@@ -218,7 +233,7 @@ locus App {
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.dna("init\n.");
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "; 25 proposal(s)"), "and proposes its holes: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "; 40 proposal(s)"), "and proposes its holes: " + init.stdout);
 
         // ---- the proposals, as the record holds them
         let j = dna::GitJournal { repo: self.repo };
@@ -251,7 +266,7 @@ locus App {
         let g = ops::GraphIngest { root: self.repo };
         std::test::assert_eq_str(g.ingest().error, "", "the graph reads again");
         let opted = ops::graph_holes(g, "support on-call");
-        std::test::assert_eq_int(opted.count, 31, "25 and two roles under each of three deployments: " + opted.proposals);
+        std::test::assert_eq_int(opted.count, 52, "40 and two roles, each with its mandate, under each of three deployments: " + opted.proposals);
         std::test::assert(std::str::contains(opted.proposals, "`compose/support` under deployment compose") && std::str::contains(opted.proposals, "`scaled-out/on-call` under deployment scaled-out"), "each role under each deployment: " + opted.proposals);
 
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
@@ -293,7 +308,7 @@ locus App {
 
         // ---- the Board decides through the review path, in the listing's order
         let listed = self.dna("review");
-        std::test::assert(std::str::contains(listed.stdout, "holes — 21 hole(s) the repository leaves, each its own Review:") && std::str::contains(listed.stdout, "practices — 4 practice(s) its documents mark"), "the holes and practices, each group listed together: " + listed.stdout);
+        std::test::assert(std::str::contains(listed.stdout, "holes — 36 hole(s) the repository leaves, each its own Review:") && std::str::contains(listed.stdout, "practices — 4 practice(s) its documents mark"), "the holes and practices, each group listed together: " + listed.stdout);
         // every verdict is written at once and the answers are followed in
         // the record, not in the CLI's wait: the organization answers behind
         // the practice-ratify execution each decision is (GH #995), its rows
@@ -306,17 +321,17 @@ locus App {
         // practice-ratify execution each verdict adopts (GH #995), so it
         // is waited for, bounded by what the slice allows
         let ratify_by = std::time::now() + 600;
-        while self.count_rows("knowledge.ratified") < 25 && std::time::now() <= ratify_by { std::time::sleep(1000ms); }
-        std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 25, "25 proposals ratified by the organism");
+        while self.count_rows("knowledge.ratified") < 40 && std::time::now() <= ratify_by { std::time::sleep(1000ms); }
+        std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 40, "40 proposals ratified by the organism");
         // every Board decision is an execution of practice-ratify that
         // settles once the hat has read what memory holds: admitted,
         // settled done, and its practice.read row; the hat waits for
-        // memory on the tick, so the 25 settle over minutes on a loaded runner
+        // memory on the tick, so the 40 settle over minutes on a loaded runner
         let executions_by = std::time::now() + 600;
-        while self.ratification_rows("settled") < 25 && std::time::now() <= executions_by { std::time::sleep(1000ms); }
-        std::test::assert_eq_int(self.ratification_rows("admitted"), 25, "each decision admitted as a practice-ratify execution");
-        std::test::assert_eq_int(self.ratification_rows("settled"), 25, "each settled done");
-        std::test::assert_eq_int(self.count_rows("practice.read"), 25, "and each wrote what the hat read, at which head");
+        while self.ratification_rows("settled") < 40 && std::time::now() <= executions_by { std::time::sleep(1000ms); }
+        std::test::assert_eq_int(self.ratification_rows("admitted"), 40, "each decision admitted as a practice-ratify execution");
+        std::test::assert_eq_int(self.ratification_rows("settled"), 40, "each settled done");
+        std::test::assert_eq_int(self.count_rows("practice.read"), 40, "and each wrote what the hat read, at which head");
         std::test::assert_eq_str(self.show_org(head, 240), ORG, "ratified in another order than proposed, the org chart is still GRAPH.md's");
 
         let k = dna::run_tool("kill\n" + body);

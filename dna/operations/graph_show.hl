@@ -29,9 +29,11 @@
 //   compose runs { postgres, nats, api, brain, node }
 //   leader convenes optimize-walk every 1d
 
-// The org chart, from `graph_perspective("org")`.
+// The org chart, from `graph_perspective("org")`. `pending` is the
+// positions (`\n`-wrapped node ids) whose mandate is proposed and awaits
+// the Board: the perspective knows only the ratified ones, bound in memory.
 @unbounded
-fn show_org(json: String) -> String {
+fn show_org(json: String, pending: String) -> String {
     // the nodes positions sit under, in order, and the widest name
     let mut parents = "\n";
     let mut width = 0;
@@ -75,6 +77,11 @@ fn show_org(json: String) -> String {
                 if len(reviews) > 0 { role = role + "(" + reviews + ")"; }
                 let holders = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "holders")), false);
                 if len(holders) > 0 { role = role + " [" + holders + "]"; }
+                // the mandate's state, and the API roles the position is fitted with
+                let id = std::json::find_string_field(p.element, "id");
+                let state = if std::json::find_string_field(p.element, "mandate") == "ratified" { "ratified" } else if std::str::contains(pending, "\n" + id + "\n") { "pending" } else { "none" };
+                let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "roles")), false);
+                role = role + " {mandate: " + state + (if len(fitted) > 0 { "; roles: " + fitted } else { "" }) + "}";
                 if graph_id_kind(under) == "purpose" { out = out + "  " + role + "\n"; }
                 else { roles = roles + (if len(roles) > 0 { ", " } else { "" }) + role; }
             }

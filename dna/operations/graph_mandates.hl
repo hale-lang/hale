@@ -1,0 +1,52 @@
+// dna/operations/graph_mandates.hl — the mandate of each position the
+// hole proposer knows (graph_holes.hl), as text the toolchain ships.
+//
+// A mandate is a knowledge idea (kind `mandate`) bound to its position's
+// node, proposed in the same seed right after the position it is for and
+// ratified through the ordinary knowledge path, so a performer holding the
+// position reads it in its hat (`hat_knowledge_targets` names the
+// position). Each text states, in this order, what the position decides,
+// what it may not, what it cites, how it writes and what it escalates.
+//
+// The authority defaults are the law's, cited and not re-implemented: the
+// organization's policy (dna/core/assembly.hl, `OrgPolicy`) makes a change
+// the Board's when its class is `organization`, `constitutional`,
+// `process-policy` or `topology`, or when it touches law, widens effects or
+// crosses ownership; every other change inside the grant is the Leader's,
+// and a position's signature is a Review's second reading, never a grant.
+// The charter refines these defaults; where it does, the charter wins.
+//
+// An API surface's `requires` names roles and so informs a position's
+// equipment (graph_holes.hl); it never determines the organization, and
+// no text here grants authority a surface asks for.
+
+// The shared closing of every mandate: where the defaults come from.
+const MANDATE_AUTHORITY: String = " Authority: these are the defaults the proposer derives from the law's change classes (`organization`, `constitutional`, `process-policy`, `topology` are the Board's, as is any change that touches law, widens effects or crosses ownership; the rest, inside the grant, is the Leader's); the charter refines them, and where it does the charter wins.";
+
+const MANDATE_BOARD: String = "The Board. Decides: what this organization becomes: it ratifies every proposal (positions, mandates, practices, holders, work) and every change of class `organization`, `constitutional`, `process-policy` or `topology`, and any change that touches law, widens effects or crosses ownership; money is the Board's alone. May not: decide by silence (a proposal nobody decided is not in force), or do a position's work for it: it ratifies what the positions propose and writes none of it. Cites: the purpose, the record's rows and the ratified practices; a decision names the row it rests on. Writes: a verdict is a row with its reason, never a conversation. Escalates: nothing above it; a question it cannot decide it leaves pending, in the open." + MANDATE_AUTHORITY;
+
+const MANDATE_DEV: String = "The maintainer of {part}. Decides: how {part} is written inside its contracts: structure, names, the order of its own work; it delivers the work items under it, done when the gate that guards them passes. May not: ratify anything, sign a change to {part} or to a contract it serves or consumes, or widen what {part} serves, consumes or touches; it is never the same holder as {part}/reviewer. Cites: the contracts {part} serves or consumes, the gate that guards it and the practices in force; a claim of done cites the run, not the author's word. Writes: a change as a candidate with its evidence first (what was run, against what, what it printed), small enough to read whole, naming its class and magnitude before the work starts. Escalates: to {part}/reviewer, with the candidate, anything that changes a contract or another part's work; to the Leader anything the plan did not foresee." + MANDATE_AUTHORITY;
+
+const MANDATE_REVIEWER: String = "The reviewer of {part}. Decides: whether a change to {part}'s code and to the contracts it serves or consumes may land: it signs, alone, a change of class `docs`, `refactor`, `feature` or `application` that stays inside {part}'s grant and touches no law, effect or ownership; a change to a contract {part} shares with another part needs that part's reviewer as a second. May not: sign a change it wrote, hold the same seat as {part}/dev, or sign for a class the Board holds; its signature never widens what {part} may do. Cites: the contract the change touches and the gate that guards {part}, with the run that shows it passing; a verdict without the evidence it read is returned. Writes: a verdict with its reason and the rows it rests on; a refusal says what would change it. Escalates: to the Board any change that crosses {part} (ownership), touches law or widens effects, any change of class `organization`, `constitutional`, `process-policy` or `topology`, and any contract the consuming side disputes." + MANDATE_AUTHORITY;
+
+const MANDATE_OPERATOR: String = "The operator of {deployment}. Decides: how {deployment} runs: when a change to the file it was read from takes effect, and its rollback; it signs, alone, a change to that file of class `docs`, `refactor` or `application` that is reversible and moves no state. May not: sign a change that moves state, is irreversible, widens effects or crosses ownership (those need a second signer or are the Board's), change what the processes do, or run what the Board did not ratify. Cites: the deployment file, the processes it runs and the settled Review a rollout rests on; a deploy is settled on the heart's own first event or rolled back. Writes: every action in {deployment} as a row before it is taken, with its reason. Escalates: an incident to the Board at once, with what was observed; any change to the deployment's topology (`topology` is the Board's)." + MANDATE_AUTHORITY;
+
+const MANDATE_ROLE: String = "The {role} of {deployment}. Decides: {scope}. May not: sign any change to code, contracts or the deployment: this position signs nothing and holds no authority until the Board grants it by ratifying a change to this mandate; it does not hold {deployment}'s operator seat. Cites: the rows its decision rests on and the practices in force. Writes: what it decided and why, as a row, so the next holder starts from the record and not from memory. Escalates: to the operator of {deployment} anything that touches the running system, and to the Board anything of class `organization`, `constitutional`, `process-policy` or `topology`, or any that moves money." + MANDATE_AUTHORITY;
+
+// What an operational role decides, by role (HOLE_ROLES).
+fn mandate_scope(role: String) -> String {
+    if role == "support" { return "how a person's request for help is answered and routed, and when it is closed"; }
+    if role == "accounts" { return "who has an account and what it is called; opening and closing them as the Board's practices say"; }
+    if role == "billing" { return "what is invoiced and when it is collected, inside the amounts the Board ratified"; }
+    if role == "on-call" { return "who answers an alarm and for how long, and in what order alarms are looked at"; }
+    return "what the role's name says, inside the practices in force";
+}
+
+// The mandates, with the part's or deployment's name substituted.
+fn mandate_board() -> String { return MANDATE_BOARD; }
+fn mandate_dev(part: String) -> String { return std::str::replace(MANDATE_DEV, "{part}", part); }
+fn mandate_reviewer(part: String) -> String { return std::str::replace(MANDATE_REVIEWER, "{part}", part); }
+fn mandate_operator(deployment: String) -> String { return std::str::replace(MANDATE_OPERATOR, "{deployment}", deployment); }
+fn mandate_role(role: String, deployment: String) -> String {
+    return std::str::replace(std::str::replace(std::str::replace(MANDATE_ROLE, "{scope}", mandate_scope(role)), "{role}", role), "{deployment}", deployment);
+}

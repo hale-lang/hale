@@ -182,7 +182,9 @@ fn graph_org_sql() -> String {
     let of_position = "FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' AND a.node = p.id JOIN graph_members x ON x.edge = e.id";
     return "SELECT coalesce(json_agg(json_build_object('id', p.id, 'name', p.name, 'under', coalesce(u.parent, ''), "
         + "'holders', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'holder' WHERE e.kind = 'holds'), '[]'::json), "
-        + "'reviews', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'subject' AND " + graph_live_sql("x.node") + " WHERE e.kind = 'reviews'), '[]'::json)) "
+        + "'reviews', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'subject' AND " + graph_live_sql("x.node") + " WHERE e.kind = 'reviews'), '[]'::json), "
+        + "'roles', coalesce(p.body::json -> 'equipment' -> 'roles', '[]'::json), "
+        + "'mandate', CASE WHEN EXISTS (SELECT 1 FROM knowledge_bindings mb JOIN knowledge_ideas mi ON mi.id = mb.idea WHERE mb.target = p.id AND mi.kind = 'mandate' AND mi.accepted) THEN 'ratified' ELSE '' END) "
         + "ORDER BY u.pseq IS NULL, u.pseq, p.seq, p.id), '[]'::json) FROM graph_nodes p "
         + "LEFT JOIN LATERAL (SELECT pm.node AS parent, n.seq AS pseq FROM graph_edges e JOIN graph_members cm ON cm.edge = e.id AND cm.role = 'child' AND cm.node = p.id JOIN graph_members pm ON pm.edge = e.id AND pm.role = 'parent' JOIN graph_nodes n ON n.id = pm.node WHERE e.kind = 'unfold' ORDER BY e.seq LIMIT 1) u ON true "
         + "WHERE p.kind = 'position'";
