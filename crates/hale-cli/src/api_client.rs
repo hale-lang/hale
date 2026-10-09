@@ -5,9 +5,10 @@
 //! exposure established and the roles that caller holds, the members it
 //! may call with their schemas, the streams of the hubs at that listener
 //! it may subscribe to, and the transport's outcome encoding. Everything
-//! here reads only that document. `hale describe` prints it, `hale call`
-//! sends one member, `hale watch` subscribes to a stream, `hale admin`
-//! serves a local page over it, and `hale mcp --app` (mcp.rs) turns it
+//! here reads only that document. `hale api describe` prints it and
+//! `hale api call` sends one member (api_drive.rs; `hale describe` and
+//! `hale call` are their short forms), `hale watch` subscribes to a
+//! stream, `hale admin` serves a local page over it, and `hale mcp --app` (mcp.rs) turns it
 //! into tools. None of them knows a member's name in advance: the
 //! description is the whole contract, and a client that presents the
 //! boundary check as a proof is misreading the note it carries.
@@ -27,8 +28,8 @@
 //! the description it read, so a program that changed under the client
 //! refuses it (`digest_mismatch`) instead of running a different
 //! contract. There is no other path: a program that serves no surface has
-//! no endpoint, and `hale describe <file>` prints what `hale check --api`
-//! prints from its rows.
+//! no endpoint; what `hale check --api` prints from its rows is the
+//! description of a program that is not running.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -108,12 +109,6 @@ fn take_flag(args: &mut Vec<String>, name: &str) -> Result<Option<String>, Strin
     let v = args.remove(i + 1);
     args.remove(i);
     Ok(Some(v))
-}
-
-fn take_switch(args: &mut Vec<String>, name: &str) -> bool {
-    let before = args.len();
-    args.retain(|a| a != name);
-    args.len() != before
 }
 
 // ---- the transports ------------------------------------------------------------
@@ -631,109 +626,6 @@ impl Ws {
 
 // ---- the verbs ------------------------------------------------------------------------------
 
-fn pretty(v: &Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_default()
-}
-
-fn is_program(target: &str) -> bool {
-    let p = std::path::Path::new(target);
-    (p.is_dir() || p.extension().map_or(false, |e| e == "hl")) && p.exists()
-}
-
-/// `hale describe <endpoint | file.hl | dir> [-o <path>] [--token T]`.
-///
-/// An endpoint answers its description for the caller it names. A
-/// program has no caller: `hale check --api` prints it from the rows, and
-/// the flags `--exposure/--caller/--holds` and the forms `--surface NAME
-/// --openapi|--json-schema|--mcp` go through to it.
-pub fn run_describe(rest: &[String]) -> ExitCode {
-    let mut args: Vec<String> = rest.to_vec();
-    let token = match take_token(&mut args) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("hale describe: {}", e);
-            return ExitCode::from(2);
-        }
-    };
-    let out = match take_flag(&mut args, "-o").and_then(|o| match o {
-        Some(o) => Ok(Some(o)),
-        None => take_flag(&mut args, "--out"),
-    }) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("hale describe: {}", e);
-            return ExitCode::from(2);
-        }
-    };
-    let Some(target) = args.iter().find(|a| !a.starts_with('-')).cloned() else {
-        eprintln!("usage: hale describe <endpoint | file.hl | dir> [--token T] [-o <path>]");
-        eprintln!("       endpoint: a socket path, http://host:port or ws://host:port; a program takes hale check --api's flags");
-        return ExitCode::from(2);
-    };
-    let text = if is_program(&target) {
-        let me = match std::env::current_exe() {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("hale describe: current exe: {}", e);
-                return ExitCode::from(1);
-            }
-        };
-        let mut cmd = std::process::Command::new(me);
-        cmd.arg("check").arg("--api");
-        for a in &args {
-            if *a != target {
-                cmd.arg(a);
-            }
-        }
-        cmd.arg(&target);
-        match cmd.output() {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            Ok(o) => {
-                eprint!("{}", String::from_utf8_lossy(&o.stderr));
-                return ExitCode::from(1);
-            }
-            Err(e) => {
-                eprintln!("hale describe: could not run hale check: {}", e);
-                return ExitCode::from(1);
-            }
-        }
-    } else {
-        if let Some(f) = args.iter().find(|a| a.starts_with('-')) {
-            eprintln!(
-                "hale describe: {} is a flag of a program's description (`hale describe <file.hl>`); an endpoint answers its own exposure's document for the caller it names",
-                f
-            );
-            return ExitCode::from(2);
-        }
-        let ep = match Endpoint::parse(&target) {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("hale describe: {}", e);
-                return ExitCode::from(2);
-            }
-        };
-        // The exposure's own bytes, never re-serialized: spec/model.md
-        // promises the served and the emitted document agree byte for byte.
-        match fetch_description(&ep, token.as_deref()) {
-            Ok(raw) => raw.trim().to_string() + "\n",
-            Err(e) => {
-                eprintln!("hale describe: {}", e);
-                return ExitCode::from(1);
-            }
-        }
-    };
-    match out {
-        Some(path) => {
-            if let Err(e) = std::fs::write(&path, text) {
-                eprintln!("hale describe: could not write {}: {}", path, e);
-                return ExitCode::from(2);
-            }
-        }
-        None => print!("{}", text),
-    }
-    ExitCode::SUCCESS
-}
-
 /// The member list as a refusal message: what the exposure shows this caller.
 fn not_a_member(verb: &str, what: &str, name: &str, doc: &Value) -> String {
     let listed = |names: Vec<String>| if names.is_empty() { "none".to_string() } else { names.join(", ") };
@@ -749,77 +641,6 @@ fn not_a_member(verb: &str, what: &str, name: &str, doc: &Value) -> String {
         text.push_str(&format!("\n  streams (use `hale watch`): {}", streams.join(", ")));
     }
     text
-}
-
-/// `hale call <endpoint> <member> [<json payload>] [--token T] [--receipt]`.
-pub fn run_call(rest: &[String]) -> ExitCode {
-    let mut args: Vec<String> = rest.to_vec();
-    let receipt = take_switch(&mut args, "--receipt");
-    let token = match take_token(&mut args) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("hale call: {}", e);
-            return ExitCode::from(2);
-        }
-    };
-    let (target, name, body) = match args.as_slice() {
-        [s, n] => (s.clone(), n.clone(), "{}".to_string()),
-        [s, n, b] => (s.clone(), n.clone(), b.clone()),
-        _ => {
-            eprintln!("usage: hale call <endpoint> <member> [<json payload>] [--token T] [--receipt]");
-            return ExitCode::from(2);
-        }
-    };
-    let ep = match Endpoint::parse(&target) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("hale call: {}", e);
-            return ExitCode::from(2);
-        }
-    };
-    let doc = match fetch_description(&ep, token.as_deref()).and_then(|raw| parse_doc(&raw)) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("hale call: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    // A hub's live description lists its streams only (spec/api.md § Open
-    // points), so a member is checked where the document lists members.
-    let on_hub = matches!(ep, Endpoint::Ws(_));
-    if !(on_hub && member_names(&doc).is_empty()) && !member_names(&doc).iter().any(|m| *m == name) {
-        eprintln!("{}", not_a_member("call", "a member this caller may call", &name, &doc));
-        return ExitCode::from(1);
-    }
-    // (a hub's document carries the stream digest, which is not the digest of
-    // a surface it carries rpcs for: a call over a hub names none)
-    let digest = if on_hub { None } else { doc.get("digest").and_then(Value::as_str).map(str::to_string) };
-    let reply = match call(&ep, token.as_deref(), &name, &body, digest.as_deref()) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("hale call: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    if receipt {
-        // The whole answer as the exposure wrote it: over the socket the
-        // reply line (request_id, the echoed id, the outcome, the caller);
-        // over HTTP the status and the body.
-        match reply.status {
-            Some(s) => println!("{}", json!({ "status": s, "body": serde_json::from_str::<Value>(&reply.raw).unwrap_or(Value::Null) })),
-            None => println!("{}", reply.raw),
-        }
-        return if reply.kind == Kind::Result { ExitCode::SUCCESS } else { ExitCode::from(1) };
-    }
-    if reply.kind == Kind::Result {
-        match serde_json::from_str::<Value>(&reply.body) {
-            Ok(v) => println!("{}", pretty(&v)),
-            Err(_) => println!("{}", reply.body),
-        }
-        return ExitCode::SUCCESS;
-    }
-    eprintln!("hale call: {}", reply.failure_text());
-    ExitCode::from(1)
 }
 
 /// `hale watch <ws://hub> <topic> [--token T]`: subscribe and print frames,

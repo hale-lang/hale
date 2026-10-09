@@ -49,10 +49,8 @@ pub(crate) fn usage() {
     eprintln!("    hale mcp                      stdio Model Context Protocol server (agent tools)");
     eprintln!("        [--app <endpoint>: a served exposure's members as tools, read from its description]");
     eprintln!();
-    eprintln!("    hale describe <endpoint|file> a served exposure's description: members, streams, schemas");
-    eprintln!("        [--token <t>] [-o <path>]");
-    eprintln!("    hale call  <endpoint> <member> send a member (with a JSON payload), print the answer");
-    eprintln!("        [<json>] [--token <t>]");
+    eprintln!("    hale describe <sock|endpoint> short form of `hale api describe` (a bare path is unix:<path>)");
+    eprintln!("    hale call  <sock|endpoint> <member> [<json>]  short form of `hale api call` (a bare payload is --json)");
     eprintln!("    hale watch <ws://hub> <topic>  subscribe to a stream, print frames as they arrive");
     eprintln!("    hale admin <endpoint>         a local page over the description, calling through the endpoint");
     eprintln!("        [--port <n>] [--token <t>]");
@@ -366,31 +364,18 @@ read. An `mcp://host:port` endpoint is an `mcp::Rpc` listener, whose own
 ",
         "api" => crate::verbs::api::api_usage(),
         "describe" => "\
-hale describe <endpoint | file.hl | dir> [--token <t>] [-o <path>]
+hale describe <sock|endpoint> [--json] [--bearer <t>]
 
-The description of a served exposure (spec/api.md § The description):
-its identity and digest, its listener, the caller it established and the
-roles that caller holds, the members it may call with their schemas, the
-streams it may subscribe to, the outcome encoding and the notes. An
-endpoint is a socket path, `http://host:port` (the caller is named by
-`--token` or HALE_API_TOKEN, a bearer) or `ws://host:port` (a hub), and
-the document is the bytes the exposure serves. From a program it is
-`hale check --api`: the inventory of every surface and exposure, or with
-`--exposure NAME --caller P [--holds R,...]` one exposure's description,
-or with `--surface NAME --openapi | --json-schema | --mcp | --proto` one surface's
-projection, all from the rows without running the program.
+The short form of `hale api describe`: the same output, exit codes and
+flags (run `hale api --help`). A bare path is `unix:<path>`. A program
+that is not running has its description from `hale check --api`.
 ",
         "call" => "\
-hale call <endpoint> <member> [<json payload>] [--token <t>] [--receipt]
+hale call <sock|endpoint> <member> [<json> | --<field> <value> ...]
 
-Calls one member of a served exposure and prints the response. The
-description is read first: a member the caller may not call is not
-listed, and the call names the digest read, so a program that changed
-refuses it (`digest_mismatch`). A handler error or a refusal is printed
-on stderr with its kind and reason (a refusal for a role names what the
-row requires) and the exit code is 1. `--receipt` prints the answer as
-the exposure wrote it: the reply line over a socket (request_id, the
-echoed id, the caller), `{status, body}` over HTTP.
+The short form of `hale api call`: the same output, exit codes and
+flags (run `hale api --help`). A bare path is `unix:<path>`, and a bare
+JSON payload after the member is `--json <payload>`.
 ",
         "watch" => "\
 hale watch <ws://host:port> <topic> [--token <t>]

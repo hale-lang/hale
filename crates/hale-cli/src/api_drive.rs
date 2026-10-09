@@ -266,6 +266,33 @@ fn split_args(rest: &[String], switches: &[&str]) -> Vec<Arg> {
     out
 }
 
+/// The short forms `hale describe` and `hale call`: the `api` verbs with two conveniences. A
+/// bare path (no `unix:` and no `scheme://`) is `unix:<path>`, and a bare positional payload after
+/// the member is `--json <payload>`. Everything else goes through as written.
+pub(crate) fn short_form(verb: &str, rest: &[String]) -> Vec<String> {
+    let switches: &[&str] = if verb == "call" { &["raw"] } else { &["json"] };
+    let mut out = Vec::new();
+    let mut at = 0;
+    for a in split_args(rest, switches) {
+        match a {
+            Arg::Flag(k, None) => out.push(format!("--{k}")),
+            Arg::Flag(k, Some(v)) => out.push(format!("--{k}={v}")),
+            Arg::Pos(p) => {
+                match at {
+                    0 if !p.starts_with("unix:") && !p.contains("://") => out.push(format!("unix:{p}")),
+                    2 if verb == "call" => {
+                        out.push("--json".to_string());
+                        out.push(p);
+                    }
+                    _ => out.push(p),
+                }
+                at += 1;
+            }
+        }
+    }
+    out
+}
+
 /// `hale api describe <endpoint> [--json] [--bearer T]`.
 pub(crate) fn run_describe(rest: &[String]) -> ExitCode {
     let mut json_out = false;

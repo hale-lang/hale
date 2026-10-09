@@ -37,7 +37,7 @@ program that is not a Hale exposure) answered, 5 usage.
 (`--json`, `-` reads stdin) or built from one flag per payload field, typed by
 the member's schema in the description it reads first: Int, Float, Bool and
 String by their text (`--name alice`), a quantity by its count, a record or
-list as JSON (`--items '[...]'`); a missing required field, an unknown flag or
+list as JSON (`--items '[...]'`); a missing required field, a flag naming no field or
 a value that does not parse is refused before anything is sent. The call names
 the description's digest (`--digest D` overrides) and a request id of its own
 (`--id`). A result prints its value on stdout (exit 0); any other outcome

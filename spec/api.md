@@ -1994,6 +1994,7 @@ held to `tests/api-contract/program.hl` served over both transports
 (`crates/hale-cli/tests/api_drive.rs`). They are the single-purpose, scriptable
 form of the generic clients of § The clients: an exit code per outcome, a
 payload typed by the member's schema, one request id of their own.
+`hale describe` and `hale call` are their short forms (a bare path is `unix:<path>`, a bare payload after the member is `--json`): the same output, exit codes and flags.
 
 ```text
 hale api describe <endpoint> [--json] [--bearer T]

@@ -592,3 +592,66 @@ fn call_over_http_prints_each_outcome_with_its_exit_code() {
     assert_eq!(o.code, 3, "{}", o.stderr);
     assert_eq!(json_of(&o.stderr)["refusal"], serde_json::json!({"kind": "server"}));
 }
+
+/// `hale describe` and `hale call` are the `api` verbs under their old names: a bare path is
+/// `unix:<path>`, a bare payload after the member is `--json`, and nothing else differs.
+#[test]
+fn the_short_forms_are_the_api_verbs_with_two_conveniences() {
+    let w = Witness::start();
+    let (bare, u) = (w.sock.clone(), w.unix());
+    let same = |short: &[&str], long: &[&str]| {
+        let (s, l) = (run(short), run(long));
+        // (the wire names the connecting process and a request counter: each client is its own peer)
+        let mask = |t: &str| {
+            let mut t = t.to_string();
+            for key in ["\"pid\":", "\"request_id\":", "\"id\":\"hale-"] {
+                let mut from = 0;
+                while let Some(at) = t[from..].find(key) {
+                    let start = from + at + key.len();
+                    let end = start + t[start..].find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len() - start);
+                    t.replace_range(start..end, "");
+                    from = start;
+                }
+            }
+            t
+        };
+        assert_eq!((s.code, mask(&s.stdout), mask(&s.stderr)), (l.code, mask(&l.stdout), mask(&l.stderr)), "{short:?} against {long:?}");
+        s
+    };
+    let book = r#"{"book": "desk"}"#;
+
+    // describe: the document, and the readable rendering
+    let o = same(&["describe", &bare, "--json"], &["api", "describe", &u, "--json"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(json_of(&o.stdout)["digest"], ADMIN_DIGEST);
+    same(&["describe", &bare], &["api", "describe", &u]);
+    same(&["describe", &u], &["api", "describe", &u]);
+
+    // a result: by typed flag, by a bare payload, by --json
+    let o = same(&["call", &bare, "Ledger::rebalance", "--book", "desk"], &["api", "call", &u, "Ledger::rebalance", "--book", "desk"]);
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"moved": 1500})), "{}", o.stderr);
+    let o = same(&["call", &bare, "Ledger::rebalance", book], &["api", "call", &u, "Ledger::rebalance", "--json", book]);
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"moved": 1500})), "{}", o.stderr);
+    // (--raw carries the server's request counter, which differs per call: check its shape)
+    let o = run(&["call", &bare, "Ledger::rebalance", book, "--raw", "--id", "c-1"]);
+    assert_eq!((o.code, json_of(&o.stdout)["id"].clone()), (0, serde_json::json!("c-1")), "{}", o.stderr);
+
+    // a refusal and a handler error
+    let bad = r#"{"order":"x"}"#;
+    let o = same(&["call", &bare, "Orders::cancel", bad], &["api", "call", &u, "Orders::cancel", "--json", bad]);
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    let o = same(&["call", &bare, "Orders::cancel", "--order", "999"], &["api", "call", &u, "Orders::cancel", "--order", "999"]);
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    // usage
+    let o = same(&["call", &bare], &["api", "call", &u]);
+    assert_eq!(o.code, 5);
+
+    // a dead endpoint, and a transport this client does not drive
+    let dead = format!("{}.gone", w.sock);
+    let o = same(&["describe", &dead], &["api", "describe", &format!("unix:{dead}")]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    let o = same(&["call", &dead, "Ledger::rebalance", "{}"], &["api", "call", &format!("unix:{dead}"), "Ledger::rebalance", "--json", "{}"]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    let o = same(&["describe", "grpc://127.0.0.1:1"], &["api", "describe", "grpc://127.0.0.1:1"]);
+    assert_eq!(o.code, 5, "{}", o.stderr);
+}

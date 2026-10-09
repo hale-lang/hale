@@ -139,8 +139,8 @@ pub(crate) fn run_mcp_cmd(args: &[String]) -> ExitCode {
 pub(crate) fn run_api_client(cmd: &str, args: &[String]) -> ExitCode {
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
     return match cmd {
-        "describe" => api_client::run_describe(&rest),
-        "call" => api_client::run_call(&rest),
+        "describe" => crate::api_drive::run_describe(&crate::api_drive::short_form("describe", &rest)),
+        "call" => crate::api_drive::run_call(&crate::api_drive::short_form("call", &rest)),
         "watch" => api_client::run_watch(&rest),
         _ => api_client::run_admin(&rest),
     };
