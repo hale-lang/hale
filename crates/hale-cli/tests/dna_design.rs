@@ -148,21 +148,17 @@ fn memory_dsn(app: &Path, line: &str) -> String {
     out.lines().find_map(|l| l.strip_prefix(line)).unwrap_or_else(|| panic!("no {line} in: {out}")).to_string()
 }
 
-/// A head's read of the package for a target set, as memory holds it.
-fn package_program(targets: &str) -> String {
-    format!(
-        r#"import "vendor/dna" as dna;
+/// A head's read of the package for `org`, as memory holds it.
+const PACKAGE: &str = r#"import "vendor/dna" as dna;
 
-fn main() {{
-    let k = dna::MemoryKnowledge {{ repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: 32 }};
-    let p = k.package_for("{targets}", "");
-    let j = dna::GitJournal {{ repo: "." }};
+fn main() {
+    let k = dna::MemoryKnowledge { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: 32 };
+    let p = k.package_for("org", "");
+    let j = dna::GitJournal { repo: "." };
     let moved = j.refresh();
     println(p.error + "\t" + to_string(p.revision) + "\t" + to_string(j.revision()) + "\t" + p.included);
-}}
-"#
-    )
 }
+"#;
 
 /// The package for `org`, read as a head once the spine has projected
 /// every row of the record: the organization runs until its projection
@@ -176,7 +172,7 @@ fn package(app: &Path) -> (Vec<String>, String) {
 fn package_for(app: &Path, targets: &str) -> (Vec<String>, String) {
     let _s = trace::Span::new("package", "the spine projects; a head reads");
     std::fs::create_dir_all(app.join("pkg")).unwrap();
-    std::fs::write(app.join("pkg/main.hl"), package_program(targets)).unwrap();
+    std::fs::write(app.join("pkg/main.hl"), PACKAGE.replace("package_for(\"org\", ", &format!("package_for(\"{targets}\", "))).unwrap();
     let head = memory_dsn(app, "HALE_DNA_MEMORY_DSN_HEAD=");
     let mut host = start_org(app);
     let mut last = String::new();

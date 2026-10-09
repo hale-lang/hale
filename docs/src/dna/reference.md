@@ -17,8 +17,11 @@ directory as an optional argument and default to the current one.
 [DNA, the building block](./dna.md).
 
 ```text
-hale dna init [app-dir]      attach the DNA to an existing application
-hale dna new <name>          a greenfield application with its DNA
+hale dna init [app-dir] [--no-library]
+                             attach the DNA to an existing application; the record starts with the language and system
+                             nodes and the toolchain's library proposed (--no-library leaves them out)
+hale dna new <name> [--no-library]
+                             a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
                              the profile sets the pieces (a remote, a body host); the combination is always detected
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain

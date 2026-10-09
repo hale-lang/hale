@@ -726,7 +726,10 @@ required. The position is the graph's `position:<name>` id (GH #1085): the
 performer kind of the attempt admitted last, or the kind the request selects
 before one is (`edit` is `position:editor`; a judgment is `position:agent`; a
 person's work `position:human`); its `charter` is the record's `graph.node`
-text for that id, `""` until the graph names it. The practices come from memory
+text for that id, `""` until the graph names it. `targets` names what the
+practices are drawn for, space-separated: the Work's locus path; `language:<l>`
+for every `written_in` edge of the attached application, or `system:dna`
+instead when the Work is an organization change; and the position. The practices come from memory
 under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`), as structure — `id`, `name`,
 `text`, `kind`, `author` — from one snapshot, the watermark read in the same
 transaction as the ranked bound, and the hat is kept in memory by its digest

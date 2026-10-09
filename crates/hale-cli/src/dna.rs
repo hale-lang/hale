@@ -918,7 +918,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
     eprintln!("       hale dna review              the pending Reviews");
-    eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
+    eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
+    eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
+    eprintln!("       hale dna review <family> approve|reject");
+    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, library");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
