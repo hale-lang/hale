@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  Source for the README banner, assets/readme/banner-dark.png and
+  banner-light.png. The README shows the one that matches the reader's
+  GitHub theme.
+
+  The art is hale-lang.org's: the mark from public/favicon.svg, the
+  wordmark set as the site header sets it, the palette from
+  src/styles/tokens.css, and the lotus field from src/lib/lotus-field.ts
+  as one still frame (the site's first frame, seed 7). Copy those again if
+  the site changes them.
+
+  Regenerate after editing, with any headless Chromium (Chrome, or
+  Playwright's chrome-headless-shell), at 2x so the hairlines stay sharp:
+    chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+      --window-size=1280,480 --virtual-time-budget=4000 \
+      --screenshot=assets/readme/banner-dark.png \
+      "file://$PWD/assets/readme/banner.html?theme=dark"
+  and again with theme=light into banner-light.png.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&display=block">
+<style>
+  :root {
+    --paper: #fbf6ec; --ink: #1c1814; --ink-3: #8a7e72;
+    --lotus-petal: #d04a86; --lotus-petal-2: #7b5bd6; --lotus-core: #d39a2b; --lotus-line: #5fa68a;
+    --wash-1: rgba(194, 37, 107, 0.08); --wash-2: rgba(211, 154, 43, 0.09);
+  }
+  :root[data-theme='dark'] {
+    --paper: #131015; --ink: #f1eae0; --ink-3: #7e7468;
+    --lotus-petal: #ff8fa5; --lotus-petal-2: #b39bff; --lotus-core: #ffd28a; --lotus-line: #59f2cf;
+    --wash-1: rgba(255, 143, 165, 0.1); --wash-2: rgba(255, 210, 138, 0.07);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 480px; overflow: hidden; }
+  body {
+    position: relative;
+    background:
+      radial-gradient(48% 80% at 76% 40%, var(--wash-1), transparent 70%),
+      radial-gradient(40% 70% at 12% 92%, var(--wash-2), transparent 70%),
+      var(--paper);
+    color: var(--ink);
+  }
+  canvas { position: absolute; inset: 0; width: 1280px; height: 480px; }
+  .brand {
+    position: absolute;
+    left: 112px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 28px;
+  }
+  .mark { width: 132px; height: 132px; flex: none; display: block; }
+  /* The mark is drawn for a dark ground: white-to-cyan strokes that
+     vanish on paper. On light, its lines take the light palette (jade,
+     rose, violet) and its four cardinal points the violet. */
+  :root[data-theme='light'] #hale-line stop:nth-of-type(1) { stop-color: #1e7a5a; }
+  :root[data-theme='light'] #hale-line stop:nth-of-type(2) { stop-color: #c2256b; }
+  :root[data-theme='light'] #hale-line stop:nth-of-type(3) { stop-color: #6a3fc9; }
+  :root[data-theme='light'] .mark g[fill="#f8fbff"] { fill: #6a3fc9; }
+  .name {
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-weight: 500;
+    font-size: 132px;
+    line-height: 1;
+    letter-spacing: 0.01em;
+  }
+</style>
+</head>
+<body>
+<canvas></canvas>
+<div class="brand">
+<svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" aria-hidden="true">
+<defs>
+  <linearGradient id="hale-line" x1="18" y1="22" x2="142" y2="140" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#72e7ff"/>
+    <stop offset="0.48" stop-color="#f7fbff"/>
+    <stop offset="1" stop-color="#9b7cff"/>
+  </linearGradient>
+  <radialGradient id="hale-core">
+    <stop offset="0" stop-color="#ffffff"/>
+    <stop offset="0.22" stop-color="#7ae8ff"/>
+    <stop offset="0.58" stop-color="#756dff" stop-opacity=".92"/>
+    <stop offset="1" stop-color="#756dff" stop-opacity="0"/>
+  </radialGradient>
+  <filter id="hale-glow" x="-80%" y="-80%" width="260%" height="260%">
+    <feGaussianBlur stdDeviation="3.1" result="blur"/>
+    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="hale-soft" x="-80%" y="-80%" width="260%" height="260%">
+    <feGaussianBlur stdDeviation="8"/>
+  </filter>
+</defs>
+<circle cx="80" cy="82" r="47" fill="#4b75ff" opacity=".08" filter="url(#hale-soft)"/>
+<g fill="none" stroke="url(#hale-line)" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="80" cy="80" r="54" stroke-width="1.15" opacity=".58"/>
+  <path d="M38 46A54 54 0 0 1 122 46M31 91A54 54 0 0 0 129 91" stroke-width=".75" opacity=".34" stroke-dasharray="2 5"/>
+  <path d="M80 18v14M80 128v14M18 80h14M128 80h14" stroke-width="1.2" opacity=".84"/>
+  <path d="M42 80h76M80 42v76" stroke-width=".52" opacity=".2"/>
+  <g stroke-width="1.75" filter="url(#hale-glow)">
+    <path d="M80 89C64 71 66 48 80 31c14 17 16 40 0 58Z"/>
+    <path d="M79.8 91C58 82 45 64 44 47c20 2 34 16 35.8 44Z"/>
+    <path d="M80.2 91C102 82 115 64 116 47c-20 2-34 16-35.8 44Z"/>
+    <path d="M80 103C53 102 34 88 29 69c23-6 43 5 51 34Z"/>
+    <path d="M80 103c27-1 46-15 51-34-23-6-43 5-51 34Z"/>
+    <path d="M80 103c-18 17-38 19-52 7 13-11 31-13 52-7Z"/>
+    <path d="M80 103c18 17 38 19 52 7-13-11-31-13-52-7Z"/>
+    <path d="M35 111c18 27 72 27 90 0"/>
+  </g>
+  <g stroke-width="1.12" opacity=".9">
+    <path d="M80 96C71 86 72 73 80 64c8 9 9 22 0 32Z"/>
+    <path d="M80 98c-12-5-19-14-20-24 12 1 19 9 20 24Z"/>
+    <path d="M80 98c12-5 19-14 20-24-12 1-19 9-20 24Z"/>
+  </g>
+</g>
+<g fill="#f8fbff" filter="url(#hale-glow)">
+  <circle cx="80" cy="18" r="2.7"/>
+  <circle cx="80" cy="142" r="2.7"/>
+  <circle cx="18" cy="80" r="2.7"/>
+  <circle cx="142" cy="80" r="2.7"/>
+</g>
+<circle cx="80" cy="94" r="14" fill="url(#hale-core)" opacity=".78"/>
+<circle cx="80" cy="94" r="2.7" fill="#ffffff" filter="url(#hale-glow)"/>
+</svg>
+  <div class="name">hale</div>
+</div>
+<script>
+document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
+
+// ---- from hale-lang.org src/lib/lotus-field.ts ----
+var TAU = Math.PI * 2;
+function seeded(seed) {
+  var s = seed >>> 0;
+  return function () {
+    s += 0x6d2b79f5; var v = s;
+    v = Math.imul(v ^ (v >>> 15), v | 1);
+    v ^= v + Math.imul(v ^ (v >>> 7), v | 61);
+    return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
+function q(a, c, b, t) { var u = 1 - t; return { x: u*u*a.x + 2*u*t*c.x + t*t*b.x, y: u*u*a.y + 2*u*t*c.y + t*t*b.y }; }
+function tangent(a, c, b, t) { return { x: 2*(1-t)*(c.x-a.x) + 2*t*(b.x-c.x), y: 2*(1-t)*(c.y-a.y) + 2*t*(b.y-c.y) }; }
+
+function ink() {
+  var cs = getComputedStyle(document.documentElement);
+  var v = function (n) { return cs.getPropertyValue(n).trim(); };
+  return { line: v('--lotus-line') || '#5fa68a', petal: v('--ink-3') || '#8a7e72', accent: v('--lotus-petal') || '#d04a86', violet: v('--lotus-petal-2') || '#7b5bd6', core: v('--lotus-core') || '#d39a2b', ink: v('--ink') || '#1c1814' };
+}
+function withAlpha(color, a) {
+  var c = color.trim();
+  if (c[0] === '#') {
+    var h = c.length === 4 ? c.slice(1).split('').map(function (x) { return x + x; }).join('') : c.slice(1);
+    var n = parseInt(h, 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + clamp(a, 0, 1) + ')';
+  }
+  return c;
+}
+
+/* ---- scene: one large lotus, built from small ones ----
+   Nodes sit on the petal curves of a macro lotus (two layers), at its
+   core, and along its cradle. Routes trace the petal outlines, join
+   neighbouring petals at the base, tie the inner layer to the core,
+   and tie the core to the cradle. On a short, wide band the flower
+   opens flat: central petals rise, outer ones sweep to the sides. */
+function build(W, H, seed) {
+  var rnd = seeded(seed + Math.round(W) * 17 + Math.round(H) * 31);
+  var short = H < 240, narrow = W < 560, mid = W < 900;
+  var outerN = short ? (narrow ? 3 : 7) : narrow ? 3 : mid ? 4 : 5;
+  var innerN = short ? (narrow ? 1 : 3) : narrow ? 2 : mid ? 2 : 3;
+  var bx, by, L, spread, innerSpread;
+  if (short) { bx = W * 0.5; by = H * 1.12; L = H * 0.92; spread = 84; innerSpread = 48; }
+  else if (narrow) { bx = W * 0.5; by = H * 0.98; L = H * 0.72; spread = 70; innerSpread = 40; }
+  else { bx = W * 0.745; by = H * 0.58; L = H * 0.52; spread = 70; innerSpread = 38; }
+  var nodes = [], edges = [], seen = {};
+  function node(x, y, radius, depth, extra) {
+    var n = { id: nodes.length, x: x + (rnd() - 0.5) * 4, y: y + (rnd() - 0.5) * 4, depth: depth, radius: radius, phase: rnd() * TAU, petals: rnd() > 0.5 ? 7 : 5, orbit: !!(extra && extra.orbit), energy: 0, hue: extra && extra.hue !== undefined ? extra.hue : (rnd() > 0.55 ? 1 : 0) };
+    nodes.push(n); return n.id;
+  }
+  function add(a, b, through) {
+    if (a === b) return; var lo = Math.min(a, b), hi = Math.max(a, b), key = lo + ":" + hi; if (seen[key]) return; seen[key] = 1;
+    var na = nodes[lo], nb = nodes[hi], dx = nb.x - na.x, dy = nb.y - na.y, d = Math.max(1, Math.hypot(dx, dy));
+    var c;
+    if (through) c = { x: 2 * through.x - (na.x + nb.x) / 2, y: 2 * through.y - (na.y + nb.y) / 2 };
+    else { var bend = (rnd() - 0.5) * Math.min(d * 0.3, 60); c = { x: (na.x + nb.x) / 2 - dy / d * bend, y: (na.y + nb.y) / 2 + dx / d * bend }; }
+    edges.push({ id: edges.length, a: lo, b: hi, hue: na.hue, depth: (na.depth + nb.depth) / 2, c: c, traffic: 0, phase: rnd() * TAU });
+  }
+  // the petal outline, in local coordinates with the petal pointing up; sgn picks the side
+  function onPetal(t, len, sgn) {
+    var w = len * 0.5, p0 = { x: 0, y: len * 0.23 }, p1 = { x: -w * 0.72 * sgn, y: -len * 0.03 }, p2 = { x: -w * 0.54 * sgn, y: -len * 0.70 }, p3 = { x: 0, y: -len };
+    var u = 1 - t;
+    return { x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x, y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y };
+  }
+  function place(p, deg) { var a = deg * Math.PI / 180; return { x: bx + p.x * Math.cos(a) - p.y * Math.sin(a), y: by + p.x * Math.sin(a) + p.y * Math.cos(a) }; }
+  function layer(count, spreadDeg, lenBase, depth, radiusScale) {
+    var out = [];
+    for (var k = 0; k < count; k++) {
+      var deg = count === 1 ? 0 : (k / (count - 1) - 0.5) * 2 * spreadDeg, s = Math.abs(Math.sin(deg * Math.PI / 180)), c = Math.cos(deg * Math.PI / 180);
+      var len = short ? lenBase * 0.9 + (W / 2 - lenBase * 0.9) * Math.pow(s, 1.5) : lenBase * (1 - 0.22 * s);
+      len = Math.min(len, (by - 14) / Math.max(0.08, c));
+      var at = function (t, sgn) { return place(onPetal(t, len, sgn), deg); };
+      var dTip = depth - (short ? s * 0.25 : 0), rs = (short ? 0.75 : 1) * radiusScale;
+      var l1 = at(0.32, 1), l2 = at(0.72, 1), tp = at(1, 1), r2 = at(0.72, -1), r1 = at(0.32, -1);
+      var iL1 = node(l1.x, l1.y, (6 + rnd() * 2) * rs, depth), iL2 = node(l2.x, l2.y, (7 + rnd() * 2) * rs, depth);
+      var iT = node(tp.x, tp.y, (11 + rnd() * 3) * rs, dTip, { orbit: rnd() > 0.5 });
+      var iR2 = node(r2.x, r2.y, (7 + rnd() * 2) * rs, depth), iR1 = node(r1.x, r1.y, (6 + rnd() * 2) * rs, depth);
+      add(iL1, iL2, at(0.52, 1)); add(iL2, iT, at(0.86, 1)); add(iT, iR2, at(0.86, -1)); add(iR2, iR1, at(0.52, -1));
+      out.push({ l: iL1, t: iT, r: iR1 });
+    }
+    for (var j = 1; j < out.length; j++) add(out[j - 1].r, out[j].l);
+    return out;
+  }
+  var core = node(bx, by - L * 0.12, short ? 14 : narrow ? 16 : 22, 1, { orbit: true, hue: 0 });
+  var outer = layer(outerN, spread, L, short ? 0.62 : 0.55, 1);
+  var inner = layer(innerN, innerSpread, L * 0.62, 0.82, 0.9);
+  inner.forEach(function (p) { add(p.l, core); });
+  inner.forEach(function (p, i) { var o = outer[Math.round((i + 0.5) / inner.length * (outer.length - 1))]; if (o) add(p.r, o.l); });
+  if (!short) {
+    var Lc = L * 0.55, prev = -1, cradle = [];
+    for (var t = 0.1; t <= 0.91; t += 0.2) {
+      var u = 1 - t, cx = u*u*u*(-Lc) + 3*u*u*t*(-0.54*Lc) + 3*u*t*t*(0.54*Lc) + t*t*t*Lc, cy = u*u*u*(0.3*Lc) + 3*u*u*t*(1.0*Lc) + 3*u*t*t*(1.0*Lc) + t*t*t*(0.3*Lc);
+      var id = node(bx + cx, by + cy - L * 0.05, 7 + rnd() * 2, 0.6); cradle.push(id); if (prev >= 0) add(prev, id); prev = id;
+    }
+    add(cradle[0], outer[0].l); add(cradle[cradle.length - 1], outer[outer.length - 1].r); add(cradle[Math.floor(cradle.length / 2)], core);
+  } else {
+    add(outer[0].l, core); add(outer[outer.length - 1].r, core);
+  }
+  nodes.forEach(function (n) { n.x = clamp(n.x, 6, W - 6); n.y = clamp(n.y, 6, H + 30); });
+  var packets = [], np = clamp(Math.round(edges.length * 0.4), 4, 26);
+  for (var p = 0; p < np; p++) { var e = edges[Math.floor(rnd() * edges.length)]; if (!e) break; packets.push({ edge: e.id, dir: rnd() > 0.5 ? 1 : -1, t: rnd(), speed: 0.06 + rnd() * 0.09, size: 1.8 + rnd() * 1.6, shape: p % 3, phase: rnd() * TAU }); }
+  var stars = []; var ns = clamp(Math.round((W * H) / 11000), 24, 140);
+  for (var s = 0; s < ns; s++) stars.push({ x: rnd() * W, y: rnd() * H, r: 0.5 + rnd() * 1.1, a: 0.25 + rnd() * 0.5, phase: rnd() * TAU, depth: 0.25 + rnd() * 0.3 });
+  return { W: W, H: H, nodes: nodes, edges: edges, packets: packets, stars: stars };
+}
+
+/* ---- drawing ---- */
+function petal(ctx, r, w) {
+  ctx.beginPath(); ctx.moveTo(0, r * 0.23);
+  ctx.bezierCurveTo(-w * 0.72, -r * 0.03, -w * 0.54, -r * 0.70, 0, -r);
+  ctx.bezierCurveTo(w * 0.54, -r * 0.70, w * 0.72, -r * 0.03, 0, r * 0.23);
+}
+function drawLotus(ctx, n, p, t, col) {
+  var d = n.depth, breath = 1 + Math.sin(t * 0.62 + n.phase) * 0.03, rec = clamp(n.energy, 0, 1), r = n.radius * breath;
+  var fade = 0.35 + d * 0.65, hc = n.hue ? col.violet : col.accent;
+  ctx.save(); ctx.translate(p.x, p.y);
+  if (n.orbit && r > 13) {
+    ctx.strokeStyle = withAlpha(col.line, 0.55 * fade); ctx.lineWidth = 0.7; ctx.setLineDash([r * 0.12, r * 0.17]); ctx.lineDashOffset = -t * 2.2 - n.phase * 3;
+    ctx.beginPath(); ctx.arc(0, 0, r * 1.32, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = withAlpha(col.petal, 0.7 * fade);
+    [[0, -1.55], [1.55, 0], [0, 1.55], [-1.55, 0]].forEach(function (pp) { ctx.beginPath(); ctx.arc(pp[0] * r, pp[1] * r, 1.3, 0, TAU); ctx.fill(); });
+  }
+  var layers = r < 14 ? 2 : 3;
+  for (var L = 0; L < layers; L++) {
+    var count = Math.max(3, n.petals - L * 2), lr = r * (1 - L * 0.25), w = lr * (0.55 - L * 0.05);
+    ctx.lineWidth = clamp(r * (0.045 - L * 0.006), 0.6, 1.4);
+    ctx.strokeStyle = withAlpha(L === 2 ? col.petal : hc, (L === 0 ? 0.7 : L === 1 ? 0.5 + rec * 0.3 : 0.5) * fade);
+    for (var pi = 0; pi < count; pi++) { var spread = count === 1 ? 0 : pi / (count - 1) - 0.5; ctx.save(); ctx.rotate(spread * Math.PI * 0.84); petal(ctx, lr, w); ctx.stroke(); ctx.restore(); }
+  }
+  ctx.strokeStyle = withAlpha(col.line, (0.7 + rec * 0.2) * fade); ctx.lineWidth = clamp(r * 0.048, 0.6, 1.4);
+  ctx.beginPath(); ctx.moveTo(-r * 1.02, r * 0.37); ctx.bezierCurveTo(-r * 0.54, r * 1.1, r * 0.54, r * 1.1, r * 1.02, r * 0.37); ctx.stroke();
+  ctx.fillStyle = withAlpha(col.core, (0.85 + rec * 0.15) * fade); ctx.beginPath(); ctx.arc(0, r * 0.1, clamp(r * 0.16, 1.8, 4.5), 0, TAU); ctx.fill();
+  if (rec > 0.02) { ctx.strokeStyle = withAlpha(hc, rec * 0.8 * fade); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, r * (1.3 + (1 - rec) * 0.9), 0, TAU); ctx.stroke(); }
+  ctx.restore();
+}
+function drawPacket(ctx, pk, pt, ang, col, fade, hc) {
+  ctx.save(); ctx.translate(pt.x, pt.y); ctx.rotate(ang);
+  ctx.fillStyle = withAlpha(hc, 0.95 * fade); ctx.strokeStyle = withAlpha(hc, 0.95 * fade); ctx.lineWidth = 1;
+  var s = pk.size;
+  if (pk.shape === 0) { ctx.beginPath(); ctx.arc(0, 0, s * 0.7, 0, TAU); ctx.fill(); }
+  else if (pk.shape === 1) { ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * 0.72, 0); ctx.lineTo(0, s); ctx.lineTo(-s * 0.72, 0); ctx.closePath(); ctx.fill(); }
+  else { ctx.beginPath(); ctx.arc(0, 0, s * 0.75, 0, TAU); ctx.stroke(); }
+  ctx.restore();
+}
+function step(sc, dt) {
+  sc.edges.forEach(function (e) { e.traffic *= Math.pow(0.15, dt); });
+  sc.nodes.forEach(function (n) { n.energy *= Math.pow(0.08, dt); });
+  sc.packets.forEach(function (pk) {
+    var e = sc.edges[pk.edge]; pk.t += pk.speed * dt * pk.dir; e.traffic = Math.min(1.4, e.traffic + 0.22);
+    if (pk.t >= 1 || pk.t <= 0) {
+      var at = pk.t >= 1 ? e.b : e.a; sc.nodes[at].energy = Math.min(1.3, sc.nodes[at].energy + 0.8);
+      var cands = sc.edges.filter(function (x) { return (x.a === at || x.b === at) && x.id !== e.id; });
+      if (!cands.length) cands = [e];
+      var nx = cands[Math.floor((pk.phase * 1000 + at) % cands.length)];
+      pk.edge = nx.id; pk.dir = nx.a === at ? 1 : -1; pk.t = pk.dir === 1 ? 0 : 1;
+    }
+  });
+}
+function draw(ctx, sc, t, col, cam) {
+  ctx.clearRect(0, 0, sc.W, sc.H);
+  var project = function (p, depth) { return { x: (p.x - sc.W / 2) * cam.zoom + sc.W / 2 + cam.x * depth, y: (p.y - sc.H / 2) * cam.zoom + sc.H / 2 + cam.y * depth }; };
+  sc.stars.forEach(function (s) { var tw = 0.5 + 0.5 * Math.sin(t * 0.7 + s.phase) * Math.sin(t * 0.7 + s.phase); var p = project(s, s.depth); ctx.fillStyle = withAlpha(col.petal, s.a * tw); ctx.beginPath(); ctx.arc(p.x, p.y, s.r, 0, TAU); ctx.fill(); });
+  var order = sc.edges.slice().sort(function (a, b) { return a.depth - b.depth; });
+  order.forEach(function (e) {
+    var a = project(sc.nodes[e.a], e.depth), b = project(sc.nodes[e.b], e.depth), c = project(e.c, e.depth), fade = 0.35 + e.depth * 0.65, pulse = 0.72 + Math.sin(t * 0.28 + e.phase) * 0.18;
+    ctx.strokeStyle = withAlpha(col.line, (0.55 + e.traffic * 0.35) * pulse * fade); ctx.lineWidth = (0.7 + e.traffic * 0.5) * (0.7 + e.depth * 0.3);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(c.x, c.y, b.x, b.y); ctx.stroke();
+    var m = q(a, c, b, 0.5); ctx.fillStyle = withAlpha(col.core, (0.5 + e.traffic * 0.4) * fade); ctx.beginPath(); ctx.arc(m.x, m.y, 1.1 + e.traffic, 0, TAU); ctx.fill();
+  });
+  sc.nodes.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (n) { drawLotus(ctx, n, project(n, n.depth), t, col); });
+  sc.packets.forEach(function (pk) { var e = sc.edges[pk.edge], a = project(sc.nodes[e.a], e.depth), b = project(sc.nodes[e.b], e.depth), c = project(e.c, e.depth), tt = clamp(pk.t, 0, 1), pt = q(a, c, b, tt), tg = tangent(a, c, b, tt); drawPacket(ctx, pk, pt, Math.atan2(tg.y, tg.x), col, 0.35 + e.depth * 0.65, col.core); });
+}
+// ---- the site's first frame, held still ----
+(function () {
+  var W = 1280, H = 480, k = 2;
+  var canvas = document.querySelector('canvas'), ctx = canvas.getContext('2d');
+  canvas.width = W * k; canvas.height = H * k; ctx.setTransform(k, 0, 0, k, 0, 0);
+  var cs = getComputedStyle(document.documentElement), v = function (n) { return cs.getPropertyValue(n).trim(); };
+  var col = { line: v('--lotus-line'), petal: v('--ink-3'), accent: v('--lotus-petal'), violet: v('--lotus-petal-2'), core: v('--lotus-core'), ink: v('--ink') };
+  var sc = build(W, H, 7);
+  step(sc, 2);
+  draw(ctx, sc, 0, col, { x: 0, y: 4, zoom: 1 });
+})();
+</script>
+</body>
+</html>
