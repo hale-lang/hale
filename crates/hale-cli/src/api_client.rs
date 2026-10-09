@@ -164,13 +164,13 @@ pub fn http_request(
     Ok(HttpResponse { status, body: body.to_string() })
 }
 
-fn bearer(token: Option<&str>) -> Vec<(&'static str, String)> {
+pub(crate) fn bearer(token: Option<&str>) -> Vec<(&'static str, String)> {
     token.map(|t| vec![("Authorization", format!("Bearer {}", t))]).unwrap_or_default()
 }
 
 /// Everything but the unreserved characters, so a member's `::` is one
 /// path segment.
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
@@ -202,7 +202,7 @@ pub fn percent_decode(s: &str) -> String {
 }
 
 /// One line out, one line back, on a connection of its own.
-fn unix_exchange(path: &str, req: &Value) -> Result<String, String> {
+pub(crate) fn unix_exchange(path: &str, req: &Value) -> Result<String, String> {
     let mut s = UnixStream::connect(path).map_err(|e| format!("could not connect to {}: {}", path, e))?;
     let _ = s.set_read_timeout(Some(READ_TIMEOUT));
     writeln!(s, "{}", req).map_err(|e| format!("write failed: {}", e))?;
@@ -412,7 +412,7 @@ impl Reply {
 }
 
 /// A Unix reply line (also a hub's `reply` frame) as an outcome.
-fn outcome_of_line(line: &str) -> Result<Reply, String> {
+pub(crate) fn outcome_of_line(line: &str) -> Result<Reply, String> {
     let v: Value = serde_json::from_str(line).map_err(|e| format!("the exposure sent a line that is not JSON: {} ({})", line, e))?;
     let field = |k: &str| raw_field(line, k).unwrap_or_else(|| "null".to_string());
     let (kind, body) = if v.get("ok") == Some(&json!(true)) {
@@ -430,7 +430,7 @@ fn outcome_of_line(line: &str) -> Result<Reply, String> {
 }
 
 /// An HTTP response as an outcome, by § Outcomes' HTTP column.
-fn outcome_of_http(r: HttpResponse) -> Result<Reply, String> {
+pub(crate) fn outcome_of_http(r: HttpResponse) -> Result<Reply, String> {
     let body = r.body.trim().to_string();
     let (kind, shown) = match r.status {
         200 => (Kind::Result, body.clone()),

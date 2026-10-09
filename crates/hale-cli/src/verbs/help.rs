@@ -58,6 +58,8 @@ pub(crate) fn usage() {
     eprintln!("        [--port <n>] [--token <t>]");
     eprintln!("    hale api export --surface <S> a surface's bundle: description, OpenAPI, JSON Schema, MCP, digest");
     eprintln!("        [--out <dir> | --check <dir>] [file | dir]");
+    eprintln!("    hale api describe <endpoint>  a running program's description for the caller: unix:<path> or http://host:port");
+    eprintln!("        [--json] [--bearer <t>]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");

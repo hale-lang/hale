@@ -20,6 +20,16 @@ pub(crate) fn api_usage() -> &'static str {
     "\
 usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
        hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE] [file.hl | dir]
+       hale api describe <endpoint> [--json] [--bearer T]
+
+`describe` asks a running program for the description it serves the caller and
+prints it: the exposure's identity (surface, digest, name), the caller and its
+roles, then a row per member the caller may call (payload fields with their
+types, result, `requires`). `--json` prints the document as the program wrote
+it. An endpoint is `unix:<path>` (the caller is the socket's peer) or
+`http://host:port` (the caller is `--bearer T`, else HALE_API_BEARER); a grpc://
+or mcp:// endpoint is refused. Exit: 0 answered, 2 refused, 4 nothing (or a
+program that is not a Hale exposure) answered, 5 usage.
 
 `export` writes a surface's bundle into DIR (the current directory by default):
   NAME.description.json   the surface-wide document: every member with its
@@ -90,6 +100,7 @@ pub(crate) fn run_api(rest: &[String]) -> ExitCode {
     match rest.first().map(String::as_str) {
         Some("export") => run_export(&rest[1..]),
         Some("client") => run_client(&rest[1..]),
+        Some("describe") => crate::api_drive::run_describe(&rest[1..]),
         _ => {
             eprint!("{}", api_usage());
             ExitCode::from(2)
