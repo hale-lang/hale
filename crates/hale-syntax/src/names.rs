@@ -158,7 +158,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             let GroupDecl { name: n, members, may_be_empty: _, span: _, id: _ } = g;
             name(n, f);
             for m in members {
-                let GroupMember { segments, glob: _, span: _ } = m;
+                let GroupMember { segments, glob: _, role: _, span: _ } = m;
                 names(segments, f);
             }
         }

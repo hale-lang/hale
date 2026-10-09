@@ -871,7 +871,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `surface_rows(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
-- `select_members(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×2, `crates/hale-types/src/rpc_expand.rs` ×1
+- `select_members(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×3, `crates/hale-types/src/rpc_expand.rs` ×1
 - `surface_laws(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `serve_laws(` may be referenced from: `crates/hale-types/src/surfaces.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1
 
@@ -1547,7 +1547,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
 - `type_expr_identity(` may be referenced from: `crates/hale-types/src/check.rs` ×7
-- `fn_id.get(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×8, `crates/hale-types/src/claim_lowering.rs` ×1
+- `fn_id.get(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×9, `crates/hale-types/src/claim_lowering.rs` ×1
 - `FnKey::method(None` may be referenced from: `crates/hale-types/src/frontier.rs` ×1
 
 ### `demand` — Canonical · derivation

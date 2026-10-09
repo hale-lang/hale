@@ -758,7 +758,11 @@ an error at the row. What `requires` means is exactly one thing: a call
 role, and the refusal names it. It is a gate at the boundary, not a proof
 about the program's insides; a handler that calls `refund` from some other
 path is not stopped by it, and the description says so in its notes, so no
-client presents the check as more than it is. The requirement is a
+client presents the check as more than it is. A program that wants the
+inside proved states it as a claim: `group read_side = { role reader };`
+names the handlers a `reader` may call, and `forbid reaches(read_side, …)`
+is checked over the paths behind them
+([claims](../claims.md#group--the-vocabulary)). The requirement is a
 property of the row, never of the handler, so one handler shared by two
 surfaces meets each surface's own.
 

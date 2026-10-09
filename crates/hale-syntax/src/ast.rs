@@ -437,12 +437,19 @@ pub struct GroupMember {
     pub segments: Vec<Ident>,
     /// True when the member ends in `::*`.
     pub glob: bool,
+    /// True for `role NAME`: `segments` is the one role name, and the
+    /// member is the handlers of the surface rows a holder of the role
+    /// may call (docs/src/claims.md § `group`).
+    pub role: bool,
     pub span: Span,
 }
 
 impl GroupMember {
     /// The member as written, for diagnostics.
     pub fn display(&self) -> String {
+        if self.role {
+            return format!("role {}", self.segments[0].name);
+        }
         let mut s = self
             .segments
             .iter()
