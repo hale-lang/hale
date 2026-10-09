@@ -38,6 +38,7 @@ mod fleet;
 mod dna;
 mod iris;
 mod api_client;
+mod api_drive;
 mod api_gen;
 use hale_types::surface_doc;
 mod mcp;

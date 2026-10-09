@@ -1,7 +1,7 @@
 # Build an API
 
 This page builds one program from an empty file to a working API with
-roles: a surface served on a socket that `hale call` drives, a handler
+roles: a surface served on a socket that `hale api call` drives, a handler
 that knows who called it, rows that name what only staff may do, an HTTP
 transport, a stream through a hub, and the tools that read the
 description on top. Each step adds one thing and then exercises it from
@@ -11,7 +11,10 @@ outside the program. The concepts behind each piece are in
 The program is a small shop. It takes orders, ships what it has, and
 keeps a count of its stock. Every output below is what the commands
 printed, trimmed where marked `…`. The example's socket is
-`/tmp/shop.sock`, and the peer on it is uid 1000.
+`/tmp/shop.sock`, and the peer on it is uid 1000. (`hale describe` and
+`hale call` are the short forms of `hale api describe` and `hale api
+call`: a bare path is `unix:<path>`, and a bare JSON payload after the
+member is `--json`. Same output, same exit codes.)
 
 ## 1. The domain
 
@@ -159,27 +162,30 @@ hale describe /tmp/shop.sock
 ```
 
 ```text
-{"description":1,"exposure":"Counter@fnv1a64:3c6a301bd526600d/counter","name":"counter","surface":"Counter","digest":"fnv1a64:3c6a301bd526600d","listener":{"transport":"unix","address":"/tmp/shop.sock"},"codec":"json","caller":{"principal":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981721},"roles":[]},"members":[{"name":"Shop::on_order","request":{"$ref":"#/schemas/Order"},"response":{"$ref":"#/schemas/Placed"},"error":null,"requires":[]}],"streams":[],"outcomes":{…},"schemas":{…},"notes":{…}}
+Counter@fnv1a64:3c6a301bd526600d/counter  [unix /tmp/shop.sock]
+caller: unix uid:1000; roles: none
+  Shop::on_order(item: String, qty: Int) -> Placed  requires: -
 ```
 
-That is the whole document for the caller the socket established (the
+That is the description for the caller the socket established (the
 peer's kernel credentials, `uid:1000`): the exposure's identity, where it
-listens, who the caller is and what it holds, the members it may call
-with their schemas, how an outcome is encoded, and two notes that say
-what a role check is and is not. `hale call` sends a member:
+listens, who the caller is and what it holds, and a row per member it may
+call with its payload fields and result. `hale describe --json` prints the
+document as the program wrote it: the same, with the schemas, how an
+outcome is encoded, and two notes that say what a role check is and is
+not. `hale call` sends one member. Its payload is one flag per field,
+typed by the schema the description gave:
 
 ```sh
-hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'
+hale call /tmp/shop.sock Shop::on_order --item lamp --qty 2
 ```
 
 ```text
-{
-  "on_hand": 8,
-  "order_id": 1
-}
+{"order_id":1,"on_hand":8}
 ```
 
-and the program's own output shows the handler ran:
+(`hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'`
+sends the same payload as JSON.) and the program's own output shows the handler ran:
 `order 1: 2 lamp`. The payload is decoded before the handler sees it,
 strictly: a string where an `Int` is declared is refused at the edge, and
 the handler never runs.
@@ -189,12 +195,15 @@ hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": "two"}'
 ```
 
 ```text
-hale call: refused: malformed: wrong_type: qty
+{"request_id":5,"id":"hale-502593","ok":false,"refusal":{"kind":"malformed","reason":"wrong_type: qty"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502593}}
 ```
 
-(The exit code is 1, so a script can branch on it.) An order the shop
-cannot fill is not a refusal: it is the value `on_order` returned,
-`{"on_hand": 8, "order_id": 0}`.
+(The outcome is on stderr and the exit code is 2, a refusal; a handler
+error is 1, a server error 3, a connection that broke 4, a call refused
+before it was sent 5. A script can branch on them. The typed form,
+`--qty two`, never reaches the server: it is refused at the client with
+the field's schema.) An order the shop cannot fill is not a refusal: it
+is the value `on_order` returned, `{"order_id":0,"on_hand":8}`.
 
 ## 3. A read
 
@@ -220,10 +229,7 @@ hale call /tmp/shop.sock Shop::stock_now
 ```
 
 ```text
-{
-  "on_hand": 8,
-  "orders": 1
-}
+{"on_hand":8,"orders":1}
 ```
 
 (A call with no payload sends `{}`, which `StockQuery` accepts because
@@ -251,23 +257,19 @@ Over the socket the caller is the peer's kernel credentials, as the
 kernel vouches for them:
 
 ```sh
-hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'
+hale call /tmp/shop.sock Shop::on_order --item lamp --qty 2
 ```
 
 ```text
-{
-  "by": "uid:1000",
-  "on_hand": 8,
-  "order_id": 1,
-  "via": "unix"
-}
+{"order_id":1,"on_hand":8,"by":"uid:1000","via":"unix"}
 ```
 
-`--receipt` prints the answer as the exposure wrote it, with the
-`request_id` it assigned and the `caller` it established:
+`--raw` prints the answer as the exposure wrote it, with the
+`request_id` it assigned, the `id` the client sent and the `caller` it
+established:
 
 ```text
-{"request_id":13,"id":1,"ok":true,"value":{"on_hand":13,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981229}}
+{"request_id":2,"id":"hale-502660","ok":true,"value":{"order_id":1,"on_hand":8,"by":"uid:1000","via":"unix"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502660}}
 ```
 
 `via` says which door a call came through (`unix`, `http`, `ws`, `mcp`),
@@ -323,13 +325,16 @@ says so: the rows this caller may not call are not listed.
 
 ```sh
 hale describe /tmp/shop.sock      # members: Shop::on_order only
-hale call /tmp/shop.sock Shop::stock_now '{}'
+hale call /tmp/shop.sock Shop::stock_now
 ```
 
 ```text
-hale call: `Shop::stock_now` is not a member this caller may call (the exposure describes the slice the caller's roles show)
-  members: Shop::on_order
+hale api call: Shop::stock_now is not a member this caller sees (members: Shop::on_order); --json sends a payload as given, and the server decides
 ```
+
+(The exit code is 5: nothing was sent. `--json '{}'` sends the call
+anyway, which is how to see the server's own answer: exit 2,
+`"refusal":{"kind":"unauthorized","reason":"Shop::stock_now requires clerk","requires":["clerk"]}`.)
 
 Make uid 1000 a clerk and the read appears; the restock still does not:
 
@@ -338,14 +343,10 @@ LOTUS_API_ROLES='clerk=uid:1000;manager=' ./shop
 ```
 
 ```text
-$ hale call /tmp/shop.sock Shop::stock_now '{}'
-{
-  "on_hand": 10,
-  "orders": 0
-}
-$ hale call /tmp/shop.sock Shop::on_restock '{"qty": 5}'
-hale call: `Shop::on_restock` is not a member this caller may call (the exposure describes the slice the caller's roles show)
-  members: Shop::on_order, Shop::stock_now
+$ hale call /tmp/shop.sock Shop::stock_now
+{"on_hand":10,"orders":0}
+$ hale call /tmp/shop.sock Shop::on_restock --qty 5
+hale api call: Shop::on_restock is not a member this caller sees (members: Shop::on_order, Shop::stock_now); --json sends a payload as given, and the server decides
 ```
 
 And as the manager, the restock is in the description and the handler
@@ -353,18 +354,18 @@ sees the row's role in `ctx.role`:
 
 ```sh
 LOTUS_API_ROLES='clerk=;manager=uid:1000' ./shop
-hale call --receipt /tmp/shop.sock Shop::on_restock '{"qty": 5}'
+hale call /tmp/shop.sock Shop::on_restock --qty 5 --raw
 ```
 
 ```text
-{"request_id":13,"id":1,"ok":true,"value":{"on_hand":13,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":3981229}}
+{"request_id":2,"id":"hale-502313","ok":true,"value":{"on_hand":15,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502313}}
 ```
 
-The client refuses what the description does not list, but the *server*
+The client declines to send flags for what the description does not list, but the *server*
 authorizes every request: a request for the restock from a caller who
 does not hold `manager` is refused `unauthorized`, naming what the row
 requires, before the handler is touched (the refusal is the exposure's,
-which the client's own check merely spares you). The check is a
+which the client's own check merely spares you; `--json` skips that check). The check is a
 boundary check at the serve site; it says nothing about the program's
 own call paths, and the description says so in its `notes`.
 
@@ -414,24 +415,27 @@ document. The clients do both for you:
 
 ```sh
 LOTUS_API_ROLES='clerk=bearer:front-desk;manager=' ./shop
-hale call http://127.0.0.1:8794 Shop::stock_now '{}' --token t-front-desk
-hale call --receipt http://127.0.0.1:8794 Shop::on_order '{"item": "lamp", "qty": 1}' --token t-front-desk
-hale call http://127.0.0.1:8794 Shop::on_order '{"item": "lamp", "qty": 1}' --token t-nobody
+hale describe http://127.0.0.1:8794 --bearer t-front-desk
+hale call http://127.0.0.1:8794 Shop::stock_now --bearer t-front-desk
+hale call http://127.0.0.1:8794 Shop::on_order --item lamp --qty 1 --bearer t-front-desk
+hale call http://127.0.0.1:8794 Shop::on_order --item lamp --qty 1 --bearer t-nobody
 ```
 
 ```text
-{
-  "on_hand": 10,
-  "orders": 0
-}
-{"body":{"by":"front-desk","on_hand":9,"order_id":1,"via":"http"},"status":200}
-hale call: http://127.0.0.1:8794 refused the description (HTTP 401): unauthenticated: no such token
+Counter@fnv1a64:01c0c908d101b3bf/web  [http 127.0.0.1:8794]
+caller: bearer front-desk; roles: clerk
+  Shop::on_order(item: String, qty: Int) -> Placed  requires: -
+  Shop::stock_now(item?: String) -> Stock  requires: clerk
+{"on_hand":10,"orders":0}
+{"order_id":1,"on_hand":9,"by":"front-desk","via":"http"}
+hale api call: refused: {"refusal":{"kind":"unauthenticated","reason":"no such token"}}
 ```
 
-(`--token` is the bearer; `HALE_API_TOKEN` sets it for a session. The
-status is the contract's: 200 for a result, 422 for the handler's error,
-and 400, 401, 403, 409, 429 or 503 for a refusal with its kind and
-reason in the body.) The handler saw the caller as `front-desk`, `via:
+(`--bearer` names the caller; `HALE_API_BEARER` sets it for a session.
+The exit code for the last is 2. Over HTTP the status is the contract's:
+200 for a result, 422 for the handler's error, and 400, 401, 403, 409,
+429 or 503 for a refusal with its kind and reason in the body; `--raw`
+prints the body.) The handler saw the caller as `front-desk`, `via:
 "http"`, and the program printed `order 1: 1 lamp for front-desk via http`.
 
 ## 7. A stream
@@ -471,11 +475,9 @@ hale watch ws://127.0.0.1:8796 Shipments --token t-front-desk
 
 while orders are placed through the surface. Every event offered to a
 subscription takes the next `seq`, delivered or shed, so a gap in `seq`
-is exactly the frames its queue shed. The hub describes itself too,
-`hale describe ws://127.0.0.1:8796 --token t-front-desk`: its stream rows
-the caller may subscribe to (a caller who holds no `clerk` sees none and
-`hale watch` says so), with the loss statement in the document's own
-words.
+is exactly the frames its queue shed. A caller who holds no `clerk` has no stream in the hub's description,
+and `hale watch` says so. (`hale describe` drives a `unix:` or `http://`
+exposure; a hub's stream rows are read by `hale watch`.)
 
 ## 8. Tools
 
@@ -629,5 +631,6 @@ The compiler's example corpus builds this program on every change, as
 - `std::api`: `Principal`, `Context`, `RoleSource`, `BearerSource` and
   `StaticRoles`, in [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md),
   plus the source, `crates/hale-stdlib/hl/api.hl`.
-- The clients (`hale describe`, `call`, `watch`, `admin`, `mcp --app`):
+- The clients (`hale api describe` and `call`, with `hale describe` and
+  `hale call` their short forms; `watch`, `admin`, `mcp --app`):
   [`spec/api.md` § The clients](https://github.com/hale-lang/hale/blob/main/spec/api.md#the-clients).

@@ -1846,36 +1846,41 @@ program's are pinned beside the R0 documents
 
 `hale describe`, `hale call`, `hale watch`, `hale admin` and `hale mcp
 --app` are clients of a served exposure, and read only its description
-(R4 C; `crates/hale-cli/src/api_client.rs`, `mcp.rs`). None knows a
-member's or a stream's name in advance. An **endpoint** is a Unix socket
-path (or `unix:PATH`), `http://host:port` (an `http::Rpc` listener, the
-caller named by `--token T` or `HALE_API_TOKEN` as the bearer), `ws://host:port`
-(a hub's listener) or, for `hale mcp --app` only, `mcp://host:port`; a
-TLS scheme is refused, saying so, and so is `grpc://`: a `grpc::Rpc`
-listener is described by `hale check --api` and called by any gRPC client
-(§ gRPC; Open points).
+(`crates/hale-cli/src/api_drive.rs` for the first two, `api_client.rs`
+for `watch` and `admin`, `mcp.rs`). None knows a member's or a stream's
+name in advance. `hale describe` and `hale call` are the short forms of
+`hale api describe` and `hale api call` (§ Driving a served program): an
+**endpoint** is `unix:PATH` (a bare path stands for it) or
+`http://host:port` (an `http::Rpc` listener, the caller named by
+`--bearer T` or `HALE_API_BEARER`); `grpc://`, `mcp://`, `ws://` and a
+TLS scheme are refused naming the two forms. `hale watch` and `hale
+admin` keep their own endpoint forms below (`ws://host:port` for a hub's
+listener; `--token T` or `HALE_API_TOKEN` for the bearer) until they
+join the api verbs. A `grpc::Rpc` listener is described by `hale check
+--api` and called by any gRPC client (§ gRPC; Open points).
 
-- **`hale describe ENDPOINT`** prints the exposure's description for the
-  caller the endpoint names, the bytes it served (`{"describe": true}`
-  over the socket, `GET /.description` over HTTP and a hub's listener),
-  never re-serialized. `hale describe FILE.hl` is `hale check --api`: the
-  inventory, or with `--exposure NAME --caller P [--holds R,…]` one
-  exposure, or with `--surface NAME --openapi | --json-schema | --mcp` one
-  surface's projection, all from the rows and without running the
-  program. The projections are the compiler's alone; an endpoint does
-  not print them.
-- **`hale call ENDPOINT MEMBER [JSON]`** reads the description, refuses a
-  member the caller may not call (the description does not list it) with
-  the members it does list, and calls it naming the **digest** it read in
-  the transport's own place (`digest` in the line, `Hale-Surface-Digest`
-  over HTTP): a program that changed under the client refuses with
-  `digest_mismatch` and the served digest, instead of running a
-  different contract. The response is printed on stdout; a handler error
-  or a refusal on stderr with its kind and reason (a role's refusal names
-  what the row `requires`) and exit 1. `--receipt` prints the answer as
-  the exposure wrote it (the reply line over a socket, `{"status",
-  "body"}` over HTTP). Over a hub's `ws://` listener a call is the `call`
-  frame of § Rpcs on a hub.
+- **`hale describe ENDPOINT`** is `hale api describe ENDPOINT`: the
+  exposure's description for the caller the endpoint names, with
+  `--json` the bytes it served (`{"describe": true}` over the socket,
+  `GET /.description` over HTTP), never re-serialized, else the readable
+  rendering; exit 0, 2 when the exposure refuses, 4 when the endpoint
+  does not answer, 5 usage. The compiler's projections of a surface (the
+  inventory, one exposure per caller, OpenAPI, JSON Schema, MCP,
+  `.proto`) are `hale check --api` and `hale api export`, from the rows
+  and without running the program; an endpoint does not print them.
+- **`hale call ENDPOINT MEMBER [JSON | --field VALUE …]`** is `hale api
+  call`: a bare JSON payload stands for `--json`. The description is read
+  first, and the call names the **digest** it read in the transport's own
+  place (`digest` in the line, `Hale-Surface-Digest` over HTTP), so a
+  program that changed under the client refuses with `digest_mismatch`
+  and the served digest instead of running a different contract. A
+  result's value is printed on stdout and exits 0; a handler error exits
+  1; a refusal 2, its kind and reason on stderr (a role's refusal names
+  what the row `requires`); a server error 3; a transport failure 4;
+  usage 5. `--raw` prints the outcome as the exposure wrote it (the reply
+  line over a socket, the body over HTTP). A hub's `ws://` listener is
+  not a call endpoint: its `call` frame is § Rpcs on a hub, driven by the
+  generated clients.
 - **`hale watch WS-ENDPOINT TOPIC`** reads the hub's description, refuses a
   topic the caller may not subscribe to (it is not listed), subscribes
   and prints each frame as one JSON line (`subscribed`, then `event`s
@@ -1890,6 +1895,10 @@ listener is described by `hale check --api` and called by any gRPC client
   is refused, and a call carries the digest of the description read at
   that moment.
 - **`hale mcp --app ENDPOINT`** is the MCP bridge of § The MCP transport.
+
+`hale api describe` and `hale api call` are the scriptable form of the first two
+verbs, with an exit code per outcome and a payload typed by the member's schema
+(§ Driving a served program).
 
 The clients speak the R0 wire and nothing else: there is no read verb, no
 `as_of`, no owner-only full form, and no reply to a call that carries more
@@ -1979,6 +1988,119 @@ not the surface's. A client never carries more than the contract: the recorded
 requests of `tests/api-contract/wire/` are what the generated clients write, and
 the recorded replies what they read
 (`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
+
+## Driving a served program
+
+`hale api describe` and `hale api call` are the operator's verbs: they drive any
+served program from the description it serves, with nothing generated and
+nothing in the program (`crates/hale-cli/src/api_drive.rs`). They speak the
+wire of § The `Rpc` interface and § Outcomes and nothing else, and they are
+held to `tests/api-contract/program.hl` served over both transports
+(`crates/hale-cli/tests/api_drive.rs`). They are the single-purpose, scriptable
+form of the generic clients of § The clients: an exit code per outcome, a
+payload typed by the member's schema, one request id of their own.
+`hale describe` and `hale call` are their short forms (a bare path is `unix:<path>`, a bare payload after the member is `--json`): the same output, exit codes and flags.
+
+```text
+hale api describe <endpoint> [--json] [--bearer T]
+hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> …]
+              [--bearer T] [--id ID] [--digest D] [--raw]
+```
+
+**Endpoints.** `unix:<path>` is a `unix::Rpc` socket, spoken as § The Unix
+transport states (`{"describe": true}`, `{"call": …}` lines; the caller is the
+peer's kernel credentials, so there is no bearer). `http://host:port` is an
+`http::Rpc` listener (`GET /.description`, `POST /call/<member>` with the
+digest in `Hale-Surface-Digest`); the caller is the bearer, `--bearer T`,
+else the environment's `HALE_API_BEARER`, and without either the request names
+nobody and is refused `unauthenticated`. A `grpc://` or `mcp://` endpoint, and
+anything that is neither form, is refused before any connection with one
+message that names the two forms the verbs drive today (`unix:<path>` and
+`http://host:port`): those transports have clients of their own protocol.
+
+**`describe`** prints the description the endpoint answers for the caller, and
+nothing it does not (it is the per-caller document of § The description,
+filtered by the roles that caller holds, as the transport answers it). `--json`
+prints the document as the program wrote it, one line, byte for byte. The
+default is a readable rendering: the exposure's identity line
+(`<surface>@<digest>/<name>` and the listener), the caller and its roles, then
+one row per member the caller may see:
+
+```text
+Public@fnv1a64:a8930d6e7998e986/public  [http 127.0.0.1:8080]
+caller: bearer alice; roles: trader
+  Orders::cancel(order: Int (OrderId)) -> Cancelled, error OrderError  requires: trader
+  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderReceipt, error ClosureViolation  requires: -
+```
+
+A payload field is `name: Type`, with `?` after the name when the schema does
+not require it; a type is the language's word (`Int`, `Float`, `Bool`,
+`String`, `[T]`, a record by its name), and a field of a distinct or quantity
+type adds the type's name and a quantity's unit in parentheses.
+
+**`call`** sends one member. What it reads from the description, and when: the
+description is fetched once per call, before the payload is built, and it is
+used for two things only: the member's payload schema, which types the flags,
+and the surface's `digest`, which the call names (in the line's `digest`, in
+`Hale-Surface-Digest`) so a program that changed under the verb is refused
+`digest_mismatch` and not run as another contract; `--digest D` names another.
+A description that cannot be fetched is a transport failure (exit 4). A
+description that is *refused* (HTTP 401) is the call's outcome when the payload
+needs it (typed flags: exit 2, the refusal as the wire says it); a payload given
+as `--json` goes on without it and the server's own answer to the call is the
+outcome, since the server authorizes every request whatever the description
+listed.
+
+The payload is either the JSON given (`--json '<payload>'`; `--json -` reads
+all of stdin) or built from typed flags, one per payload field, typed by the
+field's schema:
+
+| schema | flag value |
+|---|---|
+| `integer` (`Int`, a distinct integer, a quantity by its count) | an integer: `--qty 3`, `--limit 125` |
+| `number` (`Float`) | a number: `--price 2.5` |
+| `boolean` (`Bool`) | `true` or `false`; the bare flag `--rush` is `true` |
+| `string` | the text: `--name alice` |
+| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
+
+`--field=value` is `--field value`; a field's `_` may be written `-`. A field
+not required and not given is not sent. The typed form is refused before
+anything is sent (exit 5, the field and its schema in the message) when a
+required field is missing, a flag names no field of the member's payload, a flag
+is given twice or a value does not parse as its field's type (a record or list value is checked recursively; the message names the path, `ship.city` or `items[0]`); so is `--json`
+together with typed flags, a `--json` that is not JSON and a typed-flag call of
+a member the description does not list (the message lists the members it does).
+The names `json`, `bearer`, `id`, `digest` and `raw` are the verb's own: a
+payload field of one of those names is given with `--json`. A `--json` payload
+is not checked against the schema: the server decides, and its refusal
+(`wrong_type`, `missing_field`) is the answer. The typed form and `--json` of
+the same payload produce the same wire line (the payload serialized from the
+parsed value, so key order and whitespace of the input do not reach the wire).
+
+The request id is the verb's: `hale-<pid>` unless `--id ID` gives one, sent as a
+JSON string. Over the Unix socket the reply's `id` must be it: a reply that
+answers another request is a transport failure, as is a connection that ends
+with no reply. (HTTP carries no id; the connection is the correlation.)
+
+**Outcomes and exit codes.** Each outcome of § Outcomes is one exit code. A
+result prints its value as JSON on stdout; every other outcome prints the wire
+outcome as the transport wrote it (the whole reply line over the socket, the
+body over HTTP) on stderr. `--raw` prints the whole wire outcome on stdout
+whatever its kind, and nothing on stderr; the exit code does not change.
+
+| outcome | stdout / stderr | exit |
+|---|---|---|
+| result | the value on stdout | 0 |
+| handler error | the wire outcome on stderr | 1 |
+| refusal (any kind) | the wire outcome on stderr: the kind and the reason as the wire says them, `served` on `digest_mismatch`, `requires` on `unauthorized` | 2 |
+| server error | `{"refusal": {"kind": "server"}}` on stderr | 3 |
+| transport failure (nothing answered, the connection lost, a reply that is no outcome of the wire or another request's) | a message on stderr | 4 |
+| usage (an unknown flag, a refused endpoint form, a payload refused before it was sent) | a message on stderr | 5 |
+
+`describe` exits 0 when the endpoint answered a description, 2 when the
+exposure refused to describe (the wire refusal on stderr), 4 when nothing
+answered (a refused connection, no listener, a connection that closed) or what
+did answer is not a Hale exposure (the message says which), and 5 for usage.
 
 ## What this replaced
 

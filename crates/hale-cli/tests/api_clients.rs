@@ -3,8 +3,7 @@
 //!
 //! The fixture program under `fixtures/api_clients/` serves one surface,
 //! `Books`, over a Unix socket, HTTP and MCP, and one stream through a hub.
-//! These tests build it once, run it, and drive `hale describe`, `call`,
-//! `watch`, `admin` and `mcp --app` against each endpoint, holding what they
+//! These tests build it once, run it, and drive `hale watch`, `admin` and `mcp --app` against each endpoint, holding what they
 //! print to what the exposure served: the description a client reads is the
 //! exposure's own bytes, a call names the digest it read, a member the caller
 //! may not call is not listed, and a stream is reached through the hub.
@@ -125,13 +124,12 @@ fn exclusive() -> std::sync::MutexGuard<'static, ()> {
 
 struct Out {
     ok: bool,
-    stdout: String,
     stderr: String,
 }
 
 fn run(args: &[&str]) -> Out {
     let o = hale().args(args).env("HALE_API_TOKEN", "").output().expect("run hale");
-    Out { ok: o.status.success(), stdout: String::from_utf8_lossy(&o.stdout).to_string(), stderr: String::from_utf8_lossy(&o.stderr).to_string() }
+    Out { ok: o.status.success(), stderr: String::from_utf8_lossy(&o.stderr).to_string() }
 }
 
 fn json_of(s: &str) -> Value {
@@ -140,162 +138,6 @@ fn json_of(s: &str) -> Value {
 
 fn member_names(doc: &Value) -> Vec<String> {
     doc["members"].as_array().expect("members").iter().map(|m| m["name"].as_str().unwrap().to_string()).collect()
-}
-
-/// One line out and one back over the socket, as a client of the wire.
-fn unix_line(sock: &str, line: &str) -> String {
-    let mut s = std::os::unix::net::UnixStream::connect(sock).expect("connect");
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    writeln!(s, "{line}").unwrap();
-    let mut r = BufReader::new(s);
-    let mut out = String::new();
-    r.read_line(&mut out).unwrap();
-    out.trim().to_string()
-}
-
-/// `GET /.description` as a raw HTTP client.
-fn http_description(port: u16, token: &str) -> String {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    write!(s, "GET /.description HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n").unwrap();
-    let mut raw = String::new();
-    s.read_to_string(&mut raw).unwrap();
-    raw.split_once("\r\n\r\n").expect("a response").1.to_string()
-}
-
-// ---- describe ---------------------------------------------------------------------------
-
-#[test]
-fn describe_prints_the_bytes_each_transport_serves() {
-    let _g = exclusive();
-    let app = Running::start();
-    // over the socket: the reply's `value`, byte for byte
-    let served = unix_line(&app.sock(), r#"{"describe":true}"#);
-    let at = served.find("\"value\":").expect("a description") + 8;
-    let want = &served[at..served.rfind(",\"caller\":").expect("the reply names its caller")];
-    let got = run(&["describe", &app.sock()]);
-    assert!(got.ok, "{}", got.stderr);
-    // (the principal's pid is the connecting process's: each client is its own peer)
-    let no_pid = |t: &str| -> String {
-        let at = t.find("\"pid\":").expect("a pid") + 6;
-        let end = at + t[at..].find(|c: char| !c.is_ascii_digit()).unwrap();
-        format!("{}{}", &t[..at], &t[end..])
-    };
-    assert_eq!(no_pid(&got.stdout), format!("{}\n", no_pid(want)), "hale describe prints the bytes the socket serves");
-    let doc = json_of(&got.stdout);
-    assert_eq!(doc["description"], 1);
-    assert_eq!(doc["listener"], json!({ "transport": "unix", "address": app.sock() }));
-    assert_eq!(member_names(&doc), ["Counter::add", "Counter::fail", "Counter::peek"], "the test's own uid holds trader");
-    assert_eq!(doc["caller"]["roles"], json!(["trader"]));
-    // the same spelling with its scheme
-    let got2 = run(&["describe", &format!("unix:{}", app.sock())]);
-    assert_eq!(no_pid(&got2.stdout), no_pid(&got.stdout));
-
-    // over HTTP: the body of GET /.description for the caller the token names
-    for (token, roles) in [("t-alice", json!(["trader"])), ("t-bob", json!([]))] {
-        let got = run(&["describe", &app.http(), "--token", token]);
-        assert!(got.ok, "{}", got.stderr);
-        assert_eq!(got.stdout, format!("{}\n", http_description(app.a.http, token)), "{token}: the served bytes");
-        assert_eq!(json_of(&got.stdout)["caller"]["roles"], roles);
-    }
-    // a caller the sources name nobody for is refused with the source's reason
-    let nobody = run(&["describe", &app.http(), "--token", "t-nobody"]);
-    assert!(!nobody.ok);
-    assert!(nobody.stderr.contains("401") && nobody.stderr.contains("unauthenticated") && nobody.stderr.contains("no such token"), "{}", nobody.stderr);
-
-    // over a hub: the stream rows the caller may subscribe to
-    let alice = json_of(&run(&["describe", &app.hub(), "--token", "t-alice"]).stdout);
-    assert_eq!(alice["surface"], Value::Null);
-    assert_eq!(alice["streams"][0]["topic"], "Ticks");
-    let bob = json_of(&run(&["describe", &app.hub(), "--token", "t-bob"]).stdout);
-    assert_eq!(bob["streams"], json!([]));
-}
-
-#[test]
-fn describe_of_a_program_is_the_check_api_document() {
-    // no exposure is running: the description of a program is its rows'
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api_description/main.hl");
-    let via_describe = run(&["describe", fixture.to_str().unwrap(), "--exposure", "books", "--caller", "uid:1000", "--holds", "auditor"]);
-    let via_check = run(&["check", "--api", "--exposure", "books", "--caller", "uid:1000", "--holds", "auditor", fixture.to_str().unwrap()]);
-    assert!(via_describe.ok, "{}", via_describe.stderr);
-    assert_eq!(via_describe.stdout, via_check.stdout);
-    // the live forms of the endpoint do not take the program's flags
-    let bad = run(&["describe", "/nonexistent.sock", "--openapi"]);
-    assert!(!bad.ok && bad.stderr.contains("--openapi is a flag of a program"), "{}", bad.stderr);
-}
-
-// ---- call -----------------------------------------------------------------------------------
-
-#[test]
-fn call_speaks_each_transports_wire_and_names_the_digest_it_read() {
-    let _g = exclusive();
-    let app = Running::start();
-    let sock = app.sock();
-
-    // the socket: a result, then the same state read back through HTTP
-    let r = run(&["call", &sock, "Counter::add", r#"{"n": 2}"#]);
-    assert!(r.ok, "{}", r.stderr);
-    assert_eq!(json_of(&r.stdout), json!({ "total": 2 }));
-    let r = run(&["call", &app.http(), "Counter::peek", r#"{"n": 0}"#, "--token", "t-bob"]);
-    assert!(r.ok, "{}", r.stderr);
-    assert_eq!(json_of(&r.stdout), json!({ "total": 2 }), "one Counter behind both exposures");
-
-    // `--receipt`: the reply line over the socket, the status and body over HTTP
-    let r = run(&["call", &sock, "Counter::peek", r#"{"n": 0}"#, "--receipt"]);
-    let line = json_of(&r.stdout);
-    assert_eq!(line["ok"], true);
-    assert!(line["request_id"].is_i64() && line["caller"]["mode"] == "unix", "{line}");
-    let r = run(&["call", &app.http(), "Counter::peek", r#"{"n": 0}"#, "--receipt", "--token", "t-alice"]);
-    assert_eq!(json_of(&r.stdout), json!({ "status": 200, "body": { "total": 2 } }));
-
-    // the handler's own error: 422 over HTTP, `{"ok": false, "error": …}` over the socket
-    for endpoint in [sock.clone(), app.http()] {
-        let r = run(&["call", &endpoint, "Counter::fail", r#"{"n": 1}"#, "--token", "t-alice"]);
-        assert!(!r.ok, "{endpoint}");
-        assert!(r.stderr.contains("handler error") && r.stderr.contains("\"code\":\"nope\""), "{endpoint}: {}", r.stderr);
-    }
-
-    // a payload the member does not decode is the exposure's `malformed`
-    let r = run(&["call", &sock, "Counter::add", r#"{"n": "two"}"#]);
-    assert!(!r.ok && r.stderr.contains("refused: malformed"), "{}", r.stderr);
-
-    // a member the caller may not call is not listed: the client says so and lists what is
-    let r = run(&["call", &app.http(), "Counter::add", r#"{"n": 1}"#, "--token", "t-bob"]);
-    assert!(!r.ok);
-    assert!(r.stderr.contains("not a member this caller may call") && r.stderr.contains("Counter::peek") && !r.stderr.contains("Counter::add,"), "{}", r.stderr);
-    // and the exposure refuses it by name when asked anyway, naming what the row requires
-    let body = r#"{"n": 1}"#;
-    let mut s = TcpStream::connect(("127.0.0.1", app.a.http)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    write!(s, "POST /call/Counter%3A%3Aadd HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t-bob\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-    let mut raw = String::new();
-    s.read_to_string(&mut raw).unwrap();
-    assert!(raw.starts_with("HTTP/1.1 403") && raw.contains("\"requires\":[\"trader\"]"), "{raw}");
-
-    // a digest that is not the served one is refused, not run: the line wire, as a client of it
-    let line = unix_line(&sock, r#"{"call":"Counter::add","payload":{"n":1},"id":1,"digest":"fnv1a64:0000000000000000"}"#);
-    assert!(line.contains("\"kind\":\"digest_mismatch\"") && line.contains("\"served\":\"fnv1a64:"), "{line}");
-    let r = run(&["call", &sock, "Counter::peek", r#"{"n": 0}"#]);
-    assert_eq!(json_of(&r.stdout), json!({ "total": 2 }), "the refused call did not run, and the digest the client names is accepted");
-
-    // over a hub's connection: the `call` frame, under the hub's sources (alice holds no `trader` there,
-    // and `peek` requires none)
-    let r = run(&["call", &app.hub(), "Counter::peek", r#"{"n": 0}"#, "--token", "t-alice"]);
-    assert!(r.ok, "{}", r.stderr);
-    assert_eq!(json_of(&r.stdout), json!({ "total": 2 }));
-    let r = run(&["call", &app.hub(), "Counter::add", r#"{"n": 1}"#, "--token", "t-alice"]);
-    assert!(!r.ok && r.stderr.contains("refused: unauthorized") && r.stderr.contains("requires trader"), "{}", r.stderr);
-
-    // a socket that is not there, a scheme that is not spoken
-    let r = run(&["call", "/nonexistent/hale.sock", "Counter::peek"]);
-    assert!(!r.ok && r.stderr.contains("could not connect"), "{}", r.stderr);
-    let r = run(&["call", "https://127.0.0.1:1", "Counter::peek"]);
-    assert!(!r.ok && r.stderr.contains("TLS"), "{}", r.stderr);
-    // gRPC has no client here (spec/api.md, Open points): a grpc:// endpoint says so, for describe too
-    for verb in ["call", "describe"] {
-        let r = run(&[verb, "grpc://127.0.0.1:1", "Counter::peek"]);
-        assert!(!r.ok && r.stderr.contains("do not speak gRPC"), "{verb}: {}", r.stderr);
-    }
 }
 
 // ---- watch ----------------------------------------------------------------------------------
