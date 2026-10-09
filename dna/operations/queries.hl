@@ -495,6 +495,13 @@ locus Queries {
         }
         let digest = if len(r.knowledge_digest) > 0 { r.knowledge_digest } else { r.subject_digest };
         let status = self.receipt_status(digest);
+        // a library family's Review: its document names the ideas, and is no
+        // practice
+        if r.group == "library" && len(r.knowledge_digest) > 0 && r.knowledge_digest == r.subject_digest {
+            r.text_status = status; r.text_available = status == "available";
+            if !r.text_available { r.question = ""; r.settled = ""; r.reasoned = ""; r.has_reasoned = false; r.refusals = ""; }
+            return r;
+        }
         let knowledge = len(r.knowledge_digest) > 0 || self.has("knowledge.proposed", digest);
         let inconsistent = len(r.knowledge_digest) > 0 && len(r.subject_digest) > 0 && r.knowledge_digest != r.subject_digest;
         // Non-knowledge question text is declared directly in the Review row;

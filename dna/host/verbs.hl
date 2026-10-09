@@ -407,7 +407,7 @@ fn seeded_listing(p: Projection, ids: String, family: String) -> String {
         i = i + 1;
     }
     if count == 0 { return ""; }
-    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "library" { " library idea(s), each bound to its node" } else { " seeded practice(s)" }) + ", each its own Review" };
+    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
     return "  " + family + " — " + what + ":\n" + lines
         + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
 }
@@ -550,6 +550,21 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
     if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
     out = out + review_knowledge(p.root, r);
+    // a family Review names the ideas it ratifies, from its document
+    if r.group == "library" && len(r.subject_digest) > 0 {
+        let doc = receipt_read(p.root, if std::str::starts_with(r.subject_digest, "sha256:") { r.subject_digest[7..len(r.subject_digest)] } else { r.subject_digest });
+        if doc.present {
+            out = out + "  ratifies " + to_string(std::json::find_int_field(doc.text, "count")) + " idea(s), each bound to " + r.target + ":\n";
+            let mut rest = dna::native_json_string(doc.text, "ideas");
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                let sp = std::str::index_of(line, " ");
+                if sp > 0 { out = out + "    - " + line[0..sp] + "  " + short(line[(sp + 1)..len(line)]) + "\n"; }
+            }
+        }
+    }
     if !r.is_mutation {
         return answer(out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>]\n");
     }

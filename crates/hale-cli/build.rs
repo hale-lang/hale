@@ -63,6 +63,127 @@ fn embed_spec() {
     fs::write(dest, out).unwrap();
 }
 
+/// The chapters and sections bound to `system:dna` rather than
+/// `language:hale`: paths below the repository root, a directory prefix
+/// or a file.
+const LIBRARY_DNA: &[&str] = &["docs/src/dna/", "docs/src/parts/", "spec/dna.md", "spec/model.md"];
+
+fn walk_md(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            println!("cargo:rerun-if-changed={}", p.display());
+            walk_md(&p, out);
+        } else if p.extension().is_some_and(|x| x == "md") {
+            out.push(p);
+        }
+    }
+}
+
+/// A heading's slug: lowercase, every run of non-alphanumerics one `-`.
+fn slug(heading: &str) -> String {
+    let mut s = String::new();
+    for c in heading.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+        } else if !s.is_empty() && !s.ends_with('-') {
+            s.push('-');
+        }
+    }
+    s.trim_end_matches('-').to_string()
+}
+
+/// The toolchain's library (`hale dna init` seeds it): every chapter of the
+/// book and every `## ` section of the spec, one idea each, generated from
+/// the tree so a new chapter joins by existing. Generates
+/// OUT_DIR/library_embed.rs with a `LIBRARY` table of
+/// `(name, title, target, text, content digest)`; the book's chapters are
+/// `include_str!`, the spec's sections are split here, outside code fences.
+fn embed_library() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let root = manifest.join("../../").canonicalize().expect("repository root");
+    let docs = root.join("docs/src");
+    let spec = root.join("spec");
+    println!("cargo:rerun-if-changed={}", docs.display());
+    println!("cargo:rerun-if-changed={}", spec.display());
+    let target_of = |rel: &str| {
+        if LIBRARY_DNA.iter().any(|d| if d.ends_with('/') { rel.starts_with(d) } else { rel == *d }) {
+            "system:dna"
+        } else {
+            "language:hale"
+        }
+    };
+    let mut out = String::from("pub static LIBRARY: &[(&str, &str, &str, &str, &str)] = &[\n");
+    let mut chapters = Vec::new();
+    walk_md(&docs, &mut chapters);
+    chapters.sort();
+    for p in &chapters {
+        let rel = p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        if rel == "docs/src/SUMMARY.md" {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", p.display());
+        let text = fs::read_to_string(p).unwrap();
+        let title = text.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or("").trim().to_string();
+        let name = format!("library/{}", rel.strip_prefix("docs/src/").unwrap().strip_suffix(".md").unwrap());
+        let digest: String = sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        writeln!(
+            out,
+            "    ({name:?}, {title:?}, {:?}, include_str!({:?}), {:?}),",
+            target_of(&rel),
+            p.display().to_string(),
+            format!("sha256:{digest}")
+        )
+        .unwrap();
+    }
+    let mut files: Vec<PathBuf> = fs::read_dir(&spec)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect())
+        .unwrap_or_default();
+    files.sort();
+    for p in &files {
+        println!("cargo:rerun-if-changed={}", p.display());
+        let rel = p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let text = fs::read_to_string(p).unwrap();
+        let mut sections: Vec<(String, String)> = Vec::new(); // (heading, text)
+        let mut fenced = false;
+        for line in text.split_inclusive('\n') {
+            if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+                fenced = !fenced;
+            }
+            if !fenced && line.starts_with("## ") {
+                sections.push((line[3..].trim().to_string(), String::new()));
+            }
+            if let Some((_, body)) = sections.last_mut() {
+                body.push_str(line);
+            }
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for (heading, body) in sections {
+            let base = slug(&heading);
+            let mut s = base.clone();
+            let mut n = 1;
+            while seen.contains(&s) {
+                n += 1;
+                s = format!("{base}-{n}");
+            }
+            seen.push(s.clone());
+            let digest: String = sha256(body.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+            writeln!(
+                out,
+                "    ({:?}, {heading:?}, {:?}, {body:?}, {:?}),",
+                format!("library/spec/{stem}#{s}"),
+                target_of(&rel),
+                format!("sha256:{digest}")
+            )
+            .unwrap();
+        }
+    }
+    out.push_str("];\n");
+    fs::write(PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("library_embed.rs"), out).unwrap();
+}
+
 /// Minimal SHA-256 (no deps; build-script only). FIPS 180-4.
 fn sha256(data: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
@@ -225,6 +346,7 @@ fn stale_src_hash(workspace_root: &PathBuf) {
 
 fn main() {
     embed_spec();
+    embed_library();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR set by cargo");
     // crates/hale-cli/ -> crates/ -> <repo-root>/

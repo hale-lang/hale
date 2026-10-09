@@ -80,6 +80,27 @@ locus PracticeRecord {
         }
         return "";
     }
+    // practice-ratify's `hat` step for a family (the library): done once
+    // memory's projection holds the family's last idea, ratified.
+    @unbounded
+    fn family_hat(task: String, digest: String, last: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
+        let read = first_row(self.journal, "practice.read", digest);
+        if len(read.kind) > 0 { return step_done(digest, "memory read the family at row " + to_string(std::json::find_int_field(read.body, "head"))); }
+        if !knowledge.ready() { return step_failed("no memory is named (" + knowledge.dsn_env + " is not set): the library is memory's to read"); }
+        if len(last) == 0 { return step_failed("the family names no idea"); }
+        let at = knowledge.ratified_at(last);
+        if at < 0 { return step_waits(); }
+        if !memory_ready { return step_waits(); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.int_field("ratified_at", at);
+        b.int_field("head", self.journal.revision());
+        b.string_field("task", task);
+        b.end_object();
+        if !append_once(self.journal, "practice.read", digest, b.result()) { return step_waits(); }
+        return step_done(digest, "memory read the family at row " + to_string(self.journal.revision()));
+    }
     // practice-ratify's `hat` step for the proposal at `digest`: what the
     // hat reads once memory's projection holds the idea and its binding —
     // the package for the target at memory's head, and whether it carries
