@@ -2977,11 +2977,21 @@ pub fn judge_endpoints(
                         diags.push(Diag::ty(
                             row_span,
                             format!(
-                                "claim `{}` cannot be certified: {}",
+                                "claim `{}` is malformed: {}",
                                 row.name, reason
                             ),
                         ));
                         Verdict::Invalid
+                    }
+                    crate::route_coverage::Outcome::Uncertified(reason) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: {}",
+                                row.name, reason
+                            ),
+                        ));
+                        Verdict::Uncertified
                     }
                     crate::route_coverage::Outcome::Violated {
                         gaps,

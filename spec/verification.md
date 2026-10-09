@@ -361,13 +361,15 @@ The remaining verbs (#382 phases 2–5):
   other value") none does — so an `Int` key costs a handful of cases,
   not 2^64. A violation names every uncovered key or interval, or the
   registrations (handler, filter, instance path) that overlap on a
-  key. **Fail closed:** a filter whose value is not statically known
-  (`where key == self.id`) on a locus that has instances, a locus that
-  can also be born outside the arrangement, a hole hiding
-  subscriptions, instance counts or key filters on the topic, an
-  unkeyed topic, a topic with no publish site and no stated interval,
-  and a key interval for a non-`Int` key each make the claim
-  `invalid` with the reason — never `holds`. **What it proves:** in
+  key. **Fail closed:** where the graph has an unknown the claim is
+  `uncertified` with the reason — a filter whose value is not
+  statically known (`where key == self.id`) on a locus that has
+  instances, a locus that can also be born outside the arrangement
+  (an incomplete population), a hole hiding subscriptions, instance
+  counts or key filters on the topic, and a topic with no publish site
+  and no stated interval. Where the statement is malformed it is
+  `invalid`: an unkeyed topic, a key interval for a non-`Int` key, a
+  group with no locus members. Never `holds`. **What it proves:** in
   the modeled arrangement, each permitted key selects exactly one
   registration of the group. **What it does not:** a different
   arrangement (a replacement, a restart or a runtime birth changes the

@@ -200,7 +200,7 @@ fn main() { App { }; }
 }
 
 #[test]
-fn an_unknown_filter_is_invalid_never_holds() {
+fn an_unknown_filter_is_uncertified_never_holds() {
     let src = r#"
 type Order { shard: Int = 0; qty: Int = 0; }
 topic Orders { payload: Order; subject: "orders"; keyed_by shard; }
@@ -243,6 +243,7 @@ fn an_unknown_filter_outside_the_group_still_withdraws_the_answer() {
     );
     let ds = claim_diags(&src);
     assert_eq!(ds.len(), 1, "{:?}", ds);
+    assert!(ds[0].contains("cannot be certified"), "{}", ds[0]);
     assert!(ds[0].contains("Odd::on_odd"), "{}", ds[0]);
 }
 
@@ -330,16 +331,55 @@ fn main() { App { }; }
 "#;
     let ds = claim_diags(src);
     assert_eq!(ds.len(), 1, "{:?}", ds);
+    assert!(ds[0].contains("is malformed"), "{}", ds[0]);
     assert!(ds[0].contains("is not keyed"), "{}", ds[0]);
 }
 
 #[test]
-fn no_stated_interval_and_no_publisher_is_invalid() {
+fn an_interval_on_a_non_int_key_is_invalid() {
+    let src = r#"
+type Order { tag: String = ""; }
+topic Orders { payload: Order; subject: "orders"; keyed_by tag; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Orders as on_order where key == "a"; }
+    fn on_order(o: Order) { self.seen = self.seen + 1; }
+}
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    bus { publish Orders; }
+    claims {
+        route: cover keys(topic Orders in 0..=3): delivered_to(exactly_one workers);
+    }
+    run() { Orders <- Order { tag: "a" }; }
+}
+fn main() { App { }; }
+"#;
+    let ds = claim_diags(src);
+    assert_eq!(ds.len(), 1, "{:?}", diags(src));
+    assert!(ds[0].contains("is malformed"), "{}", ds[0]);
+    assert!(ds[0].contains("integer keys"), "{}", ds[0]);
+}
+
+#[test]
+fn a_group_with_no_locus_members_is_invalid() {
+    let src = sharded("", "", "Worker", "in 0..=3")
+        .replace("group workers = { Worker };", "group workers = { };");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?}", diags(&src));
+    assert!(ds[0].contains("is malformed"), "{}", ds[0]);
+    assert!(ds[0].contains("no locus members"), "{}", ds[0]);
+}
+
+#[test]
+fn no_stated_interval_and_no_publisher_is_uncertified() {
     let src = sharded("", "", "Worker", "in 0..=3").replace("bus { publish Orders; }", "");
     let src = src.replace("run() { Orders <- Order { shard: 1, qty: 2 }; }", "run() { }");
     let none = src.replace(" in 0..=3", "");
     let ds = claim_diags(&none);
     assert_eq!(ds.len(), 1, "{:?}", ds);
+    assert!(ds[0].contains("cannot be certified"), "{}", ds[0]);
     assert!(ds[0].contains("no publish site"), "{}", ds[0]);
 }
 
@@ -359,7 +399,7 @@ fn a_negative_bound_parses() {
 }
 
 #[test]
-fn a_subscriber_born_outside_the_arrangement_is_invalid() {
+fn a_subscriber_born_outside_the_arrangement_is_uncertified() {
     // A listed instance population is a lower bound once the locus
     // can also be born at runtime: the claim cannot count recipients.
     let src = sharded("", "", "Worker", "in 0..=3").replace(

@@ -565,18 +565,19 @@ recipients of key 7, and the overlap names both by instance path.
 Recipients are computed by the same query the `@budget(fanout)` budget
 uses, so the two cannot disagree about who a key reaches.
 
-**Fail-closed cases** (each is `invalid`, never `holds`, and the
-diagnostic says what to resolve):
+**Fail-closed cases** (never `holds`; the diagnostic says what to
+resolve). Where the graph has an unknown, the result is `uncertified`;
+where the statement itself is malformed, it is `invalid`:
 
-| condition | shape |
-|---|---|
-| a subscription's filter value is not statically known (`where key == self.id`) on a locus with instances | "the key filter of `X::h` is not statically known … write the filter as a literal or `replica`" |
-| a subscribing locus that can also be born outside the arrangement | "the instance population of `X` is incomplete" |
-| a hole hides subscriptions, instance counts or key filters on the topic | "the subscriber set of `T` is not fully modeled" |
-| the topic is not `keyed_by` | "topic `T` is not keyed" |
-| no publish site and no `in` interval | "no publish site of `T` is known … state them with `in LO..=HI`" |
-| `in` interval on a topic keyed by another type | "states integer keys, but …" |
-| a group with no locus members | "has no locus members" |
+| condition | result | shape |
+|---|---|---|
+| a subscription's filter value is not statically known (`where key == self.id`) on a locus with instances | uncertified | "the key filter of `X::h` is not statically known … write the filter as a literal or `replica`" |
+| a subscribing locus that can also be born outside the arrangement | uncertified | "the instance population of `X` is incomplete" |
+| a hole hides subscriptions, instance counts or key filters on the topic | uncertified | "the subscriber set of `T` is not fully modeled" |
+| the topic is not `keyed_by` | invalid | "topic `T` is not keyed" |
+| no publish site and no `in` interval | uncertified | "no publish site of `T` is known … state them with `in LO..=HI`" |
+| `in` interval on a topic keyed by another type | invalid | "states integer keys, but …" |
+| a group with no locus members | invalid | "has no locus members" |
 
 An unknown filter on a subscriber *outside* the group still withdraws
 the answer: a fallback hears only what no filter anywhere matched, so
@@ -723,6 +724,7 @@ The complete catalog, grouped by stage. Parse errors:
 | unknown claim verb | lists the six verbs |
 | `via { }` with no relations / unknown relation | "must name at least one relation" / "the composable relations are `calls` and `bus`" |
 | nested glob in a group member | "the glob is trailing-only" |
+| `cover keys` on an unkeyed topic, an interval on a non-`Int` key, a group with no locus members | `invalid`: "claim `x` is malformed: …", see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
 | empty key interval in `cover keys` | "the key interval `3..=0` is empty" |
 | negative bound or count | "expected an integer bound after `<=`" / "expected an integer after the comparison" |
 | empty or duplicate `domain` | "has no members" / "declared more than once" |
@@ -749,7 +751,7 @@ result is `invalid`):
 | `cover` over an alias with no topics | "the coverage domain would be empty" |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
-| `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, unkeyed topic, no permitted keys) | "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
+| `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, no publish site and no interval) | `uncertified`: "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
 
 Violations (the claim's result is `violated`):
 

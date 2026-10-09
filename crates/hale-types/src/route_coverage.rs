@@ -17,8 +17,9 @@
 //! the intervals (or "every other value") nobody names, so a topic
 //! keyed by an `Int` is judged in a handful of cases, not 2^64.
 //!
-//! Fail closed: an answer the model cannot count is `Invalid` with
-//! the reason, never `Holds`.
+//! Fail closed: an answer the model cannot count is `Uncertified`
+//! (the graph has an unknown) and a malformed statement is `Invalid`,
+//! each with the reason, never `Holds`.
 
 use std::collections::BTreeSet;
 
@@ -36,9 +37,11 @@ pub enum Outcome {
         gaps: Vec<String>,
         overlaps: Vec<String>,
     },
-    /// The claim cannot be decided from the model; the reason says
-    /// what to resolve.
+    /// The statement is malformed for this topic or group.
     Invalid(String),
+    /// The model has an unknown the claim needs; the reason says what
+    /// to resolve.
+    Uncertified(String),
 }
 
 fn key_text(v: &KeyValue) -> String {
@@ -132,7 +135,7 @@ pub fn judge(
         ));
     };
     if incomplete {
-        return Outcome::Invalid(format!(
+        return Outcome::Uncertified(format!(
             "the subscriber set of `{}` is not fully modeled — a hole \
              hides subscriptions, instance counts or key filters on it, \
              so exact coverage cannot be decided from the known rows",
@@ -194,7 +197,7 @@ pub fn judge(
             for d in &site_domains {
                 let d = match d {
                     KeyDomain::Unknown => {
-                        return Outcome::Invalid(format!(
+                        return Outcome::Uncertified(format!(
                             "a publish site of `{}` produces keys the \
                              model knows nothing about — state the \
                              permitted keys with `in LO..=HI`",
@@ -213,7 +216,7 @@ pub fn judge(
                 }
             }
             if domains.is_empty() {
-                return Outcome::Invalid(format!(
+                return Outcome::Uncertified(format!(
                     "no publish site of `{}` is known, so the permitted \
                      keys are unknown and a universal over them would \
                      hold vacuously — state them with `in LO..=HI`",
@@ -236,12 +239,12 @@ pub fn judge(
             .collect();
         let routing = match key_routing::classify(model, matching) {
             Ok(x) => x,
-            Err(u) => return Outcome::Invalid(why(model, &u)),
+            Err(u) => return Outcome::Uncertified(why(model, &u)),
         };
         let scenarios =
             match key_routing::scenarios(model, &routing, dom.as_ref()) {
                 Ok(x) => x,
-                Err(u) => return Outcome::Invalid(why(model, &u)),
+                Err(u) => return Outcome::Uncertified(why(model, &u)),
             };
         for sc in &scenarios {
             let (k, label) = match sc {
@@ -261,7 +264,7 @@ pub fn judge(
             };
             let recs = match key_routing::recipients(model, &routing, k) {
                 Ok(x) => x,
-                Err(u) => return Outcome::Invalid(why(model, &u)),
+                Err(u) => return Outcome::Uncertified(why(model, &u)),
             };
             let mut inside: Vec<String> = Vec::new();
             let mut outside: Vec<String> = Vec::new();
