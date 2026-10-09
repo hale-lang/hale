@@ -3367,7 +3367,7 @@ locus Dna {
             file = self.editor.locate(attempt_id_of(id, req.attempt_no), objective);
             if len(file) == 0 {
                 let x = self.gateway.remove(self.journal, id, lease.token, now);
-                return self.mutation_failed(id, "attempt: no file in the grant answers `" + objective + "`");
+                return self.mutation_failed(id, "attempt: no file to edit for `" + objective + "`: " + self.editor.located_why);
             }
             let x1 = self.journal.append(self.journal.revision(), "mutation.located", id, file + " under " + self.editor.grant());
         } else if len(file) > 0 {

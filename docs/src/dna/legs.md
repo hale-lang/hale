@@ -95,6 +95,13 @@ declare. Who you are comes from the socket: your uid, mapped to a
 person by `git config --local --add dna.unix.member "uid:<n>=<person>"`,
 which `new` and `init` write for whoever runs them.
 
+A claim matches attempts by performer kind, and `--kind` names it. The
+kinds the organization hands to legs are `agent`, `software` and the
+like; a position the graph states (`position:api/dev`, held or not)
+names no kind of its own yet, so with no `--kind` it claims what an
+`agent` does. When nothing matches, the refusal names the kinds that
+are outstanding for a leg and the flag that claims one.
+
 Exit codes: **0** the head admitted it, or the read answered; **1** a
 refusal (printed with `state: refused` and the reason), a verb outside
 your slice, an unreachable head, or a `run` that ends `unsettled` or

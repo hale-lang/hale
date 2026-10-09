@@ -166,6 +166,46 @@ main locus App {
         std::io::fs::write_file(root3 + "/gone.hl", "fn gone() { }\n") or discard;
         std::test::assert(tools.remove("gone.hl"), "a file that can go, goes");
         std::test::assert(!std::io::fs::file_exists(root3 + "/gone.hl"), "and is gone");
+        // ---- what a grant over a repository lists, and why nothing was found --
+        // a repository record's grant is its root, and its code sits under the
+        // seeds (the todo repository's `api/`): the listing reaches them by path;
+        // the organization's own seed, vendored code and hidden directories are
+        // not the grant's code
+        let root4 = dna::scratch_root("edit-repo");
+        std::io::fs::mkdir(root4 + "/api") or discard;
+        std::io::fs::mkdir(root4 + "/dna") or discard;
+        std::io::fs::mkdir(root4 + "/vendor") or discard;
+        std::io::fs::mkdir(root4 + "/.hale") or discard;
+        std::io::fs::write_file(root4 + "/api/todo.hl", "fn todo() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/dna/org.hl", "fn org() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/vendor/v.hl", "fn v() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/.hale/h.hl", "fn h() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/README.md", "todo\n") or discard;
+        let picks = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(picks.files(), "api/todo.hl\n", "the listing reaches the seed under the root, and nothing of the organization's: " + picks.files());
+        std::test::assert_eq_str(picks.locate("a1", "add a Todos::count rpc"), "api/todo.hl", "the model picks from the listing: " + picks.located_why);
+        std::test::assert_eq_str(picks.locate("a2", "change api/todo.hl so it counts"), "api/todo.hl", "and a file the ask names needs no model");
+        let wrong = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "nowhere.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(wrong.locate("a3", "add a Todos::count rpc"), "", "a file the model names that is not listed is no target");
+        std::test::assert(std::str::contains(wrong.located_why, "`nowhere.hl`") && std::str::contains(wrong.located_why, "not one of the grant's 1 listed"), "and the failure says the model's answer was the cause, not the grant: " + wrong.located_why);
+        let root5 = dna::scratch_root("edit-empty");
+        let empty = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "x.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root5, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(empty.locate("a4", "add a rpc"), "", "a grant that lists nothing finds nothing");
+        std::test::assert(std::str::contains(empty.located_why, "lists no .hl file") && empty.models.calls == 0, "and says so, asking no model: " + empty.located_why);
+        dna::scratch_done(root4);
+        dna::scratch_done(root5);
         dna::scratch_done(root);
         dna::scratch_done(root2);
         dna::scratch_done(root3);

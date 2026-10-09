@@ -2145,7 +2145,10 @@ memory is named to it.
   `export HALE_DNA_ID_TOKEN=…`; for any other issuer it prints the
   sign-in URL and exits 1; `next` is
   `dna.attempt.claim` for a position (`--as position:<name>`, the
-  graph's id, never a free string), `brief` the hat read — or rendered
+  graph's id, never a free string; a claim matches attempts by performer
+  kind, `--kind`, and a position the graph states that names no kind of
+  its own claims as an `agent`; a refusal names the kinds outstanding
+  and the flag), `brief` the hat read — or rendered
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,
   the digest of what was rendered and the renderer's version
   (`legs-render/1`) — `renew` is `dna.attempt.renew` (the lease
@@ -3422,6 +3425,14 @@ in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
 every try's model calls are evidence in the record. The result names
 the files changed and the tries taken; a proposal that does not check
 within the bound is a failed Attempt with the last diagnostics.
+
+The listing is the `.hl` files under the grant's root, by path from it,
+four directories deep; hidden directories and the organization's own
+(`dna`, `vendor`) are not listed, so a grant over a repository's root
+reaches the seeds under it (`api/todo.hl`). When no file is found the
+Mutation fails naming the cause, not the grant alone: the grant lists
+no `.hl` file (no model is asked), the model could not be asked, or the
+model named a file the listing does not hold (`SourceEditor.located_why`).
 
 ## Models
 
