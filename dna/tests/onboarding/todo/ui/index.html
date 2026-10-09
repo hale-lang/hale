@@ -31,6 +31,7 @@
 // is the page's URL: ?token=t-bo (&hub=ws://host:port when the hub is not
 // on this host's port 8081).
 import { subscribeTodoChanged } from "./client/todo.js";
+import { needs_resync } from "./seq.js";
 
 const params = new URLSearchParams(location.search);
 const token = params.get("token") ?? "";
@@ -82,21 +83,37 @@ function fetchList() {
   });
 }
 
+// Load the list and make it the page's state, then apply the changes that
+// arrived while it was on its way. `note` says why, when it was a catch-up.
+let loading = false;
+const early = []; // changes that arrive while the list is on its way
+function load(note) {
+  loading = true;
+  fetchList().then((all) => {
+    items.clear();
+    for (const it of all) items.set(it.id, it);
+    loading = false;
+    for (const c of early.splice(0)) apply(c);
+    render(-1);
+    if (note) status.textContent = "live · " + hub + " · " + note;
+  }, (e) => { loading = false; status.textContent = String(e); });
+}
+
 async function run() {
   const sub = subscribeTodoChanged({ endpoint: hub, bearer: token });
-  let snapshot = false;
-  const early = []; // changes that arrive before the list does
+  let last = null; // the seq of the event before
   for await (const ev of sub) {
     if (ev.kind === "subscribed") {
       status.textContent = "live · " + hub;
-      fetchList().then((all) => {
-        for (const it of all) items.set(it.id, it);
-        snapshot = true;
-        for (const c of early.splice(0)) apply(c);
-        render(-1);
-      }, (e) => { status.textContent = String(e); });
+      load("");
     } else if (ev.kind === "event") {
-      if (snapshot) apply(ev.payload); else early.push(ev.payload);
+      // events were shed (the hub drops the oldest of a full queue): what the
+      // page holds may be wrong, so read the list again before applying more
+      const gap = needs_resync(last, ev.seq);
+      last = ev.seq;
+      if (loading) early.push(ev.payload);
+      else if (gap) { early.push(ev.payload); load("caught up after missed events"); }
+      else apply(ev.payload);
     } else {
       status.textContent = ev.kind === "refusal" ? "refused: " + ev.refusal.reason : "the stream ended (" + ev.kind + ")";
     }

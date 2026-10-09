@@ -122,6 +122,15 @@ not the api's HTTP listener: a page on another origin cannot call the api (it
 answers no CORS preflight), but a WebSocket crosses origins, and the hub
 answers the `list` call too.
 
+The stream sheds the oldest event when a slow page lets its queue fill
+(`bound: 64, on_full: drop_old`), and each event carries a `seq`. The page
+keeps the last one it applied; when the next is not that plus one
+(`needs_resync` in [`ui/seq.js`](./ui/seq.js)) it reads the list again before
+applying more, and says so in its status line. The rule is a pure function
+with a test, `node --test ui/seq.test.mjs` (node's built-in runner, no
+dependency), which the `ui` service runs before it serves the page. No test
+drives a browser: the page's use of the function is checked by reading it.
+
 ## The contract
 
 | Document | What it specifies | Served by | Consumed by | Over |

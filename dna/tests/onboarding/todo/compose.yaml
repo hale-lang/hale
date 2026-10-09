@@ -43,6 +43,7 @@ services:
       - -c
       - >-
         npm install --no-save --silent typescript@5 http-server@14
+        && node --test seq.test.mjs
         && npx tsc --target es2022 --module es2022 --lib es2022,dom --strict client/todo.ts
         && exec npx http-server -a 0.0.0.0 -p 8088 -c-1 .
     volumes:
