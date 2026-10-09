@@ -37,6 +37,11 @@ const DESIGN: String = "sha256:design1";
 const DESIGN_TEXT: String = "add a position only when it serves the whole";
 const IDEA: String = "sha256:idea1";
 const IDEA_TEXT: String = "keep every comment on the pings a full sentence";
+// Ideas bound to graph nodes (seed/pull): one to the language, one to a
+// node whose id merely begins with the language's.
+const LANG: String = "sha256:lang1";
+const LANG_TEXT: String = "a locus owns its state and its children";
+const LANGX: String = "sha256:langx1";
 
 main locus App {
     params {
@@ -136,6 +141,28 @@ main locus App {
         let blind = dna::MemoryKnowledge { repo: repo, dsn_env: "HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY" };
         let off = blind.package_for("org/app", "x");
         std::test::assert(!blind.ready() && off.included_n == 0 && off.error == "no memory (HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY is not set)", "no memory: an empty package that says so: " + off.error);
+
+        // ---- targets are paths or graph nodes: a set of them is one read
+        std::test::assert(store.upsert(dna::Idea { id: LANG, kind: "idea", text: LANG_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about the language");
+        std::test::assert(store.bind(dna::KnowledgeBinding { idea: LANG, target: "language:hale", author: "org", class: dna::classify_binding("org", "language:hale") }), "bound to the language node");
+        std::test::assert(store.upsert(dna::Idea { id: LANGX, kind: "idea", text: "another language", author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about a node named like it");
+        std::test::assert(store.bind(dna::KnowledgeBinding { idea: LANGX, target: "language:hale-x", author: "org", class: dna::classify_binding("org", "language:hale-x") }), "bound to the other node");
+        std::test::assert_eq_str(dna::classify_binding("org", "language:hale"), "goal", "knowledge about a node flows down to what it describes");
+        let wide = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV, budget: 8 };
+        let with_node = wide.package_for("org/app/main language:hale", "the locus");
+        std::test::assert(std::str::contains(with_node.included, LANG) && !std::str::contains(with_node.included, LANGX), "a set holding the node has the idea bound to it, not its look-alike: " + with_node.included + " " + with_node.error);
+        std::test::assert(std::str::contains(with_node.included, IDEA) && std::str::contains(with_node.included, DESIGN), "and the paths still reach what is bound above them: " + with_node.included);
+        let path_only = wide.package_for("org/app/main", "the locus");
+        std::test::assert(!std::str::contains(path_only.included, LANG) && std::str::contains(path_only.included, IDEA), "a set holding only a path never gets a node's ideas: " + path_only.included);
+        let org_only = wide.package_for("org", "the locus");
+        std::test::assert(!std::str::contains(org_only.included, LANG), "nor does the organization's own: " + org_only.included);
+        let node_only = wide.package_for("language:hale", "");
+        std::test::assert_eq_str(node_only.included, LANG, "a node alone matches exactly its bindings, and no path binding");
+        let two_nodes = wide.package_for("language:hale-x language:hale", "");
+        std::test::assert(std::str::contains(two_nodes.included, LANG) && std::str::contains(two_nodes.included, LANGX), "two nodes, two ideas, each once: " + two_nodes.included);
+        std::test::assert_eq_str(wide.package_for("language:hale-x", "").included, LANGX, "language:hale does not match language:hale-x, nor the other way");
+        std::test::assert_eq_str(wide.package_for("language:hal", "").included, "", "and a prefix of a node id is nothing");
+        std::test::assert_eq_str(store.ranked_ids("org/app/main language:hale", 8, ""), store.context_ids("org/app/main language:hale", 8), "the set through the store: ranked with no query is ratification order");
 
         // ---- the organization, reading memory
         self.dna = dna::Dna {

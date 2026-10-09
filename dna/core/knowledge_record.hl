@@ -29,6 +29,10 @@ locus KnowledgeRecord {
             let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "lateral: `" + i.author + "` may not bind knowledge to `" + target + "` (siblings do not privately coordinate)");
             return "";
         }
+        if !target_known(self.journal, target) {
+            let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "unknown node: the record holds no graph.node row for `" + target + "`");
+            return "";
+        }
         let doc = knowledge_document(i, target);
         let raw = self.receipts.store(doc);
         if len(raw) != 64 || self.receipts.read(raw) != doc { return ""; }
@@ -234,6 +238,10 @@ locus KnowledgeRecord {
             let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "lateral knowledge binding is not permitted"));
             return false;
         }
+        if !target_known(self.journal, r.target) {
+            let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "unknown node: the record holds no graph.node row for `" + r.target + "`"));
+            return false;
+        }
         return append_once(self.journal, "knowledge.node.started", r.request_id, codec.started(r));
     }
     @unbounded
@@ -261,10 +269,11 @@ locus KnowledgeRecord {
         let codec = KnowledgeBindingCodec { };
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
         let lateral = classify_binding(r.author, r.target) == "lateral";
-        if wrong_digest || lateral {
+        let unknown = !lateral && !target_known(self.journal, r.target);
+        if wrong_digest || lateral || unknown {
             let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r,
-                if wrong_digest { "candidate_mismatch" } else { "lateral_binding" },
-                if wrong_digest { "The exact binding candidate digest does not match." } else { "Lateral knowledge binding is not permitted." }));
+                if wrong_digest { "candidate_mismatch" } else if unknown { "unknown_node" } else { "lateral_binding" },
+                if wrong_digest { "The exact binding candidate digest does not match." } else if unknown { "The record holds no graph.node row for `" + r.target + "`." } else { "Lateral knowledge binding is not permitted." }));
             return false;
         }
         if !append_once(self.journal, "knowledge.binding.started", r.request_id, codec.started(r)) { return false; }

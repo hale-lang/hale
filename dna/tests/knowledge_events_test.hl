@@ -116,6 +116,17 @@ main locus App {
         let d3 = self.again.propose_knowledge(dna::Idea { id: "p3", kind: "idea", text: "siblings coordinating", author: "org/a" }, "org/b");
         std::test::assert_eq_str(d3, "", "refused");
         std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "lateral"), "the reason");
+
+        // 7. a node target must be one the record holds (seed/pull): refused
+        //    naming the node until a graph.node row states it
+        let d4 = self.again.propose_knowledge(dna::Idea { id: "p4", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        std::test::assert_eq_str(d4, "", "no node, refused");
+        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "unknown node") && std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "language:hale"), "naming it: " + self.last(self.again.journal, "knowledge.refused").body);
+        let stated = self.again.journal.append(self.again.journal.revision(), "graph.node", "language:hale", "{\"kind\": \"language\", \"text\": \"Hale\"}");
+        std::test::assert(stated.ok, "the record states the node");
+        let d5 = self.again.propose_knowledge(dna::Idea { id: "p5", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        std::test::assert(len(d5) > 0, "the node stated, the proposal stands");
+        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"class\": \"goal\"") && std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"target\": \"language:hale\""), self.last(self.again.journal, "knowledge.proposed").body);
         dna::scratch_done(repo);
     }
 }

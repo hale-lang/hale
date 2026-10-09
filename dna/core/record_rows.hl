@@ -17,6 +17,23 @@ fn row_exists(j: Journal, kind: String, entity: String) -> Bool {
     return false;
 }
 
+// Whether the record can resolve a binding target: a locus path always,
+// a node id (`language:hale`) when the record holds a `graph.node` row for
+// it that no later `graph.retired` took back.
+@unbounded
+fn target_known(j: Journal, target: String) -> Bool {
+    if !is_node_target(target) { return true; }
+    let mut known = false;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.entity == target && e.kind == "graph.node" { known = true; }
+        if e.entity == target && e.kind == "graph.retired" { known = false; }
+        i = i + 1;
+    }
+    return known;
+}
+
 // The first `kind` row for `entity`; an empty Event when there is none.
 @unbounded
 fn first_row(j: Journal, kind: String, entity: String) -> Event {
