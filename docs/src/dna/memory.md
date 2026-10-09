@@ -389,6 +389,41 @@ behind the record they say how far on stderr (`memory has projected N
 of the record's M rows`) and show the graph as of that row. How positions are filled and routed is [The head and the
 face](./head.md) and [Shaping and governing it](./shaping.md).
 
+### What a Work is told, and by which node
+
+An idea is bound to a **target**, and a target is a locus path or a node
+of this graph. A path (`org`, `org/<child>`) reaches itself and
+everything under it. A node id (`language:hale`, `system:dna`,
+`position:leader`) reaches exactly that node: `language:hale` is not
+`language:hale-x`, and a prefix of an id is nothing. The package a Work's
+hat carries is read for a *set* of targets, in one query, and an idea
+that several of them reach arrives once. The hat's set is the Work's
+path; the languages the attached application is written in (its
+`written_in` edges); `system:dna` instead of the languages when the Work
+is a change to the organization itself; and the performer's position, so
+a mandate bound to the position arrives with the Work. The hat's JSON
+names them as `targets`, and they are part of its digest. A reviewer reads
+the same way: `hale dna review <id>` lists, under `knowledge for …`, the
+ideas ratified for the node the Review is bound to (or `system:dna` for a
+change to the organization), when memory is there to ask.
+
+`init` writes the two nodes everything hangs from, `language:hale` and
+`system:dna`, and for an attached application the node
+`application:<name>` with a `written_in` edge to the language. It also
+proposes the smallest library, one chapter of the book bound to each: the
+API chapter to `language:hale` and the shaping chapter to `system:dna`,
+as the family `library`, one Review per idea. Nothing arrives in a Work's
+brief until the Board decides them:
+
+```sh
+hale dna review                      # the library family is listed beside design and operating
+hale dna review library approve      # ratify both, and so bind both
+hale dna init --no-library           # a record with none of it (also `new --no-library`)
+```
+
+An idea whose target is a node the record has no node for is refused,
+naming it.
+
 ## Between records
 
 Sync copies your whole record to people inside it. Work that leaves

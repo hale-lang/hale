@@ -7,7 +7,8 @@
 //! "setting" is a constructor argument in a `.hl` file the project
 //! owns, and every generated fact carries its provenance.
 //!
-//!   hale dna init [app-dir]     attach the DNA to an existing app
+//!   hale dna init [app-dir] [--no-library]
+//!                               attach the DNA to an existing app
 //!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
 //!   hale dna run [project]      build, run under LOTUS_OBS, a node relaying onto the nerves; iris inspects the process
@@ -304,15 +305,16 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     match args.first().map(String::as_str) {
         Some("init") => {
-            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-            report(init(&dir))
+            // the directory is the first argument that is not a flag
+            let dir = args[1..].iter().find(|a| !a.starts_with("--")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            report(init(&dir, !args.iter().any(|a| a == "--no-library")))
         }
         Some("new") => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
                 // GH #617: `--profile local|remote-body [--remote <url>] [--body <user@host>]`
                 // sets the pieces the combination is detected from; nothing is stored as a label
                 let flag = |n: &str| args[2..].windows(2).find(|w| w[0] == n).map(|w| w[1].clone());
-                report(new_project(Path::new(name), flag("--profile").as_deref(), flag("--remote").as_deref(), flag("--body").as_deref()))
+                report(new_project(Path::new(name), flag("--profile").as_deref(), flag("--remote").as_deref(), flag("--body").as_deref(), !args.iter().any(|a| a == "--no-library")))
             }
             _ => usage(2),
         },
@@ -804,8 +806,11 @@ fn print_embedded_provenance(dir: &Path) {
 }
 
 fn usage(code: u8) -> ExitCode {
-    eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
-    eprintln!("       hale dna new <name>          a greenfield application with its DNA");
+    eprintln!("usage: hale dna init [app-dir] [--no-library]");
+    eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
+    eprintln!("                                    nodes and the toolchain's library proposed as the `library` family (--no-library leaves them out)");
+    eprintln!("       hale dna new <name> [--no-library]");
+    eprintln!("                                    a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
     eprintln!("       hale dna memory migrate [dir]");
     eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
@@ -913,7 +918,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
     eprintln!("       hale dna review              the pending Reviews");
-    eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
+    eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
+    eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
+    eprintln!("       hale dna review <family> approve|reject");
+    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, library");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -1134,7 +1142,7 @@ fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-fn init(app_dir: &Path) -> Result<Vec<String>, String> {
+fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     // an application, or (GH #1090) a repository with none at its root
     let app = match repository_root(app_dir)? {
         Some(_) => None,
@@ -1305,6 +1313,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         for (family, practices) in SEEDED {
             let (d, _, _) = design_upgrade(&root, practices)?;
             out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
+        }
+        // seed/pull: the nodes knowledge is about, and the smallest library bound to them
+        if library {
+            out.extend(seed_library(&root, app.as_ref())?);
+        } else {
+            out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
         }
     }
     // 8. .gitignore hygiene
@@ -2367,7 +2381,7 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 // new
 // ---------------------------------------------------------------
 
-fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>) -> Result<Vec<String>, String> {
+fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>, library: bool) -> Result<Vec<String>, String> {
     match profile {
         None | Some("local") => {
             if remote.is_some() || body.is_some() {
@@ -2450,7 +2464,7 @@ fn main() {{
         fs::write(&p, c).map_err(|e| format!("write {}: {e}", p.display()))?;
         out.push(format!("created {}", p.display()));
     }
-    let mut rest = init(dir)?;
+    let mut rest = init(dir, library)?;
     out.append(&mut rest);
     if let Some(url) = remote {
         git(dir, &["remote", "add", "origin", url])?;
@@ -3136,6 +3150,81 @@ const OPERATING: &[SeededPractice] = &[
     SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "" },
     SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
 ];
+
+/// The toolchain's library: ideas the record is seeded with, each its text
+/// as the toolchain ships it, bound to the graph node it is about and
+/// proposed under a family (the Board's `hale dna review <family> approve`).
+/// `(path in the repository, target node, family, text)`; seed/library
+/// fills the table out.
+const LIBRARY: &[(&str, &str, &str, &str)] = &[
+    ("docs/src/services/api.md", "language:hale", "library", include_str!("../../../docs/src/services/api.md")),
+    ("docs/src/dna/shaping.md", "system:dna", "library", include_str!("../../../docs/src/dna/shaping.md")),
+];
+
+/// The idea's stable name: the family, then the chapter's file stem
+/// (`library/api`), which is what the family's Review is listed under.
+fn library_name(path: &str, family: &str) -> String {
+    let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    format!("{family}/{stem}")
+}
+
+/// seed/pull: the nodes `language:hale` and `system:dna` (and, for an
+/// attached application, `application:<account name>` — the record names
+/// the application by `application.attached`, never by a graph node, so the
+/// node is added here — with a `written_in` edge to the language), then the
+/// library as proposals, one Review per idea under the family `library`.
+fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let mut lines: Vec<(String, String, String)> = Vec::new();
+    let node = |kind: &str, name: &str, text: &str| {
+        let body = serde_json::json!({"kind": kind, "name": name, "text": text}).to_string();
+        ("graph.node".to_string(), format!("{kind}:{name}"), body)
+    };
+    lines.push(node("language", "hale", &format!("Hale {TOOLCHAIN}: the language this toolchain compiles")));
+    lines.push(node("system", "dna", &format!("DNA {TOOLCHAIN}: the design of a software organization as a record, a graph and a Board")));
+    let mut nodes = vec!["language:hale".to_string(), "system:dna".to_string()];
+    if let Some(app) = app {
+        let name = app_account_name(&app.project);
+        let id = format!("application:{name}");
+        lines.push(node("application", &name, &format!("the attached application, {}", app.main_name)));
+        let edge = serde_json::json!({"kind": "written_in", "members": [{"role": "application", "node": id}, {"role": "language", "node": "language:hale"}]}).to_string();
+        lines.push(("graph.edge".to_string(), format!("written_in:{id}|language:hale"), edge));
+        nodes.push(id);
+    }
+    let mut text = String::new();
+    for (kind, entity, body) in &lines {
+        text.push_str(&serde_json::json!({"kind": kind, "entity": entity, "body": body}).to_string());
+        text.push('\n');
+    }
+    let rows = dna_dir.join(format!("library-rows.{}.jsonl", std::process::id()));
+    fs::write(&rows, text).map_err(|e| e.to_string())?;
+    let seeded = host_run("record-seed", root, &[rows.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&rows);
+    let n: usize = seeded?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
+    if n != lines.len() {
+        return Err(format!("record-seed appended {n} of {} library rows", lines.len()));
+    }
+    let ideas = dna_dir.join(format!("library.{}.jsonl", std::process::id()));
+    let mut text = String::new();
+    for (path, target, family, body) in LIBRARY {
+        text.push_str(&serde_json::json!({"name": library_name(path, family), "text": body, "target": target}).to_string());
+        text.push('\n');
+    }
+    fs::write(&ideas, text).map_err(|e| e.to_string())?;
+    let out = host_run("library-seed", root, &[ideas.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&ideas);
+    let out = out?;
+    let proposed: usize = out.split_whitespace().find_map(|w| w.strip_prefix("proposed=")).and_then(|v| v.parse().ok()).ok_or_else(|| format!("library-seed answered oddly: {out}"))?;
+    if proposed != LIBRARY.len() {
+        return Err(format!("library-seed proposed {proposed} of {} ideas", LIBRARY.len()));
+    }
+    Ok(vec![
+        format!("seeded  graph ({}; the nodes knowledge is about)", nodes.join(", ")),
+        if app.is_some() { "seeded  edge (written_in: the application is written in language:hale)".to_string() } else { "skipped edge (no attached application)".to_string() },
+        format!("seeded  library ({proposed} idea(s) proposed, one Board Review each, bound to their nodes: `hale dna review` lists them under `library`)"),
+    ])
+}
 
 /// Every seeded family, by the name the Board lists it under.
 const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING)];

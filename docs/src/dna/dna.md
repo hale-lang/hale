@@ -286,6 +286,16 @@ and does not reseed a record that exists.
 | `dna/nats.secrets.conf` | `init`, `upgrade` | the vault | the nerves' passwords; mode 600, never tracked ([The skin](./skin.md)) |
 | `dna/postgres.secrets` | `init`, `upgrade` | the vault | the compose database's superuser password; mode 600, never tracked |
 
+Beside the files, `init` writes these rows into the record, unless it is
+run with `--no-library` (`new` takes the flag too):
+
+| row | what it is |
+|---|---|
+| `graph.node language:hale`, `graph.node system:dna` | the nodes knowledge is about: the language this toolchain compiles, and the design the organism is an instance of |
+| `graph.node application:<name>`, `graph.edge written_in:application:<name>\|language:hale` | for an attached application: its node, and the edge that says it is written in Hale (a repository with no application gets the two nodes alone) |
+| two `knowledge.proposed` rows, `library/api` and `library/shaping` | the API chapter bound to `language:hale`, the shaping chapter bound to `system:dna`, with the toolchain's version |
+| two `review.requested` rows, group `library` | one Board Review per idea: `hale dna review library approve` ratifies and binds both ([What a Work is told](./memory.md#what-a-work-is-told-and-by-which-node)) |
+
 Outside the files, `init` also:
 
 - makes the directory a git repository if it is not one: the record is

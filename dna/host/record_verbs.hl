@@ -365,6 +365,79 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     return review_id;
 }
 
+// A library idea's document: the toolchain's text about a node of the
+// graph (`language:hale`, `system:dna`), authored above it, bound to it by
+// its own `target`. Its digest is the Review's name.
+fn library_document(name: String, text: String, target: String, toolchain: String) -> String {
+    let q = std::json::Builder { };
+    return "{\"author\":\"org\",\"kind\":\"idea\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\",\"target\":" + q.quote(target) + ",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+}
+
+// Propose one library idea: its receipt, a `knowledge.proposed` row bound
+// to its node, and a Review of its own under the group `library` (the part
+// of its name before the slash). The review id, "" when the record refused.
+fn propose_library(root: String, name: String, text: String, target: String, toolchain: String, memory: dna::Memory) -> String {
+    let raw = rec(root).keep(library_document(name, text, target, toolchain));
+    if len(raw) == 0 { return ""; }
+    let digest = "sha256:" + raw;
+    let review_id = "k:" + raw[0..12];
+    let class = dna::classify_binding("org", target);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("digest", digest);
+    b.string_field("review_id", review_id);
+    b.string_field("kind", "idea");
+    b.string_field("author", "org");
+    b.string_field("target", target);
+    b.string_field("class", class);
+    b.string_field("provenance", "toolchain");
+    b.string_field("name", name);
+    b.string_field("supersedes", "");
+    b.end_object();
+    if !append_as(root, "knowledge.proposed", digest, b.result(), "", memory) { return ""; }
+    let q = std::json::Builder { };
+    // the chapter's own first words, on one line
+    let flat = std::str::replace(std::str::replace(text, "\n", " "), "#", "");
+    q.begin_object();
+    q.string_field("question", "ratify the " + seeded_family(name) + " idea `" + name + "` for `" + target + "`:" + (if len(flat) > 72 { flat[0..72] + "…" } else { flat }));
+    q.string_field("subject_digest", digest);
+    q.string_field("required_authority", "board");
+    q.string_field("author", "org");
+    q.string_field("knowledge_digest", digest);
+    q.string_field("kind", "idea");
+    q.string_field("target", target);
+    q.string_field("class", class);
+    q.string_field("group", seeded_family(name));
+    q.string_field("name", name);
+    q.end_object();
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "", memory) { return ""; }
+    return review_id;
+}
+
+// `library-seed <ideas>`: the toolchain's library as proposals, one JSON
+// object per line (`name`, `text`, `target`), each bound to its node and
+// asked of the Board in its own Review. Prints `proposed=<n>`.
+@unbounded
+fn library_seed_verb(root: String, path: String, toolchain: String, memory: dna::Memory) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let ideas = std::io::fs::read_file(path) or "";
+    if len(ideas) == 0 { return fail("library-seed: no ideas at " + path); }
+    let mut proposed = 0;
+    let mut rest = ideas;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let name = std::json::find_string_field(line, "name");
+        let target = std::json::find_string_field(line, "target");
+        if len(propose_library(root, name, std::json::find_string_field(line, "text"), target, toolchain, memory)) == 0 { return fail("library-seed: the record refused the proposal of " + name + " for " + target); }
+        proposed = proposed + 1;
+    }
+    return answer("proposed=" + to_string(proposed) + "\n");
+}
+
 // The rows that propose the declared purpose (GH #995), one JSON object
 // per line as `seed_rows` takes them: its receipt kept, a
 // `knowledge.proposed` row — kind `purpose`, the organization's, for

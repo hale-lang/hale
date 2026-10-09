@@ -13,6 +13,9 @@ import "./fixture" as fixture;
 const ROOT: String = "hat-close";
 const STEP: String = "hat-close/wf1/s0";
 const WORK: String = "hat-close/wf1/s0/judge";
+const ORG_ROOT: String = "hat-org";
+const ORG_STEP: String = "hat-org/wf1/s0";
+const ORG_WORK: String = "hat-org/wf1/s0/judge";
 const CHARTER: String = "Judges what the organization asks of it, by its ratified practices; proposes, never applies.";
 
 locus HatCases {
@@ -34,11 +37,37 @@ locus HatCases {
         std::test::assert(bound.ok, "bound recipe: " + bound.why);
         // the graph names the position and its charter (GH #1085); the hat reads it from the record
         self.f.append("graph.node", "position:agent", "{\"kind\": \"position\", \"name\": \"agent\", \"text\": " + dna::record_json_quote(CHARTER) + "}");
+        // the record attaches an application written in Hale (what `init` seeds)
+        self.f.append("application.attached", ".", "{\"name\": \"hatapp\"}");
+        self.f.append("graph.node", "language:hale", "{\"kind\": \"language\", \"name\": \"hale\"}");
+        self.f.append("graph.node", "application:hatapp", "{\"kind\": \"application\", \"name\": \"hatapp\"}");
+        self.f.append("graph.edge", "written_in:application:hatapp|language:hale", "{\"kind\": \"written_in\", \"members\": [{\"role\": \"application\", \"node\": \"application:hatapp\"}, {\"role\": \"language\", \"node\": \"language:hale\"}]}");
         self.f.append("task.born", ROOT, "hat-ask: judge (workflow)");
         self.f.append("workflow.admitted", ROOT, dna::encode_admission(dna::AdmittedWorkflow { task_id: ROOT, definition: "judge", revision: 1, recipe: cat.encode_bound(), limits: limits, works: 1, tasks: 1, steps: 1, depth: 1 }));
         self.f.append("step.registered", STEP, dna::encode_members(dna::RegisteredMembers { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, members: "judge:leaf:" + WORK }));
         self.f.append("step.activated", STEP, dna::encode_activation(dna::ActivatedStep { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, dispatched: "judge" }));
         self.f.append("attempt.admitted", dna::attempt_id_of(WORK, 0), dna::encode_attempt(dna::AdmittedAttempt { attempt_id: dna::attempt_id_of(WORK, 0), work_id: WORK, step_id: STEP, task_id: ROOT, attempt_no: 0, performer_kind: "agent", request: request }));
+    }
+    // A second Task whose admission carries the leader's plan for an
+    // organism change: its Work is the organization's, not the application's.
+    fn seed_change(root: String, inputs: String) {
+        let step = root + "/wf1/s0";
+        let work = step + "/judge";
+        let cat = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(cat.define("judge", 1, "record", "one judgment"), "", "definition");
+        let request = dna::WorkRequest { objective: "shape the genome by a proposal", target: "org", requires: "judgment", output_contract: "Assessment" };
+        std::test::assert_eq_str(cat.leaf("judge", 1, 0, "judge", request, 2), "", "leaf");
+        let limits = dna::AdmissionLimits { };
+        let bound = cat.expand(root, "judge", 1, limits);
+        std::test::assert(bound.ok, "bound recipe: " + bound.why);
+        self.f.append("task.born", root, "hat-org-ask: judge (workflow)");
+        self.f.append("workflow.admitted", root, dna::encode_admission(dna::AdmittedWorkflow { task_id: root, definition: "judge", revision: 1, recipe: cat.encode_bound(), inputs: inputs, limits: limits, works: 1, tasks: 1, steps: 1, depth: 1 }));
+        self.f.append("step.registered", step, dna::encode_members(dna::RegisteredMembers { step_id: step, task_id: root, workflow_id: root + "/wf1", step_index: 0, members: "judge:leaf:" + work }));
+        self.f.append("step.activated", step, dna::encode_activation(dna::ActivatedStep { step_id: step, task_id: root, workflow_id: root + "/wf1", step_index: 0, dispatched: "judge" }));
+        self.f.append("attempt.admitted", dna::attempt_id_of(work, 0), dna::encode_attempt(dna::AdmittedAttempt { attempt_id: dna::attempt_id_of(work, 0), work_id: work, step_id: step, task_id: root, attempt_no: 0, performer_kind: "agent", request: request }));
+    }
+    fn seed_organization_change() {
+        self.seed_change(ORG_ROOT, "{\"planned\": true, \"kind\": \"organism\", \"class\": \"organization\"}");
     }
     fn run_cases() {
         self.seed();
@@ -61,6 +90,13 @@ locus HatCases {
         self.json.eq(hat, "tool_grant", "");
         self.json.eq(hat, "knowledge_bindings", "package:sha256:none");
         self.json.eq(hat, "head", self.json.string(self.json.raw(first, "source"), "record_head"));
+        // the targets the package is drawn for (seed/pull): the Work's path, the
+        // codebase's language, the performer's position — and the digest covers them
+        self.json.eq(hat, "targets", "org language:hale position:agent");
+        let narrower = dna::Hat { ok: true, work_id: WORK, targets: "org position:agent" };
+        let wider = dna::Hat { ok: true, work_id: WORK, targets: "org language:hale position:agent" };
+        std::test::assert(dna::hat_digest(narrower) != dna::hat_digest(wider), "the hat digest changes when the target set does");
+        std::test::assert_eq_str(dna::hat_digest(wider), dna::hat_digest(dna::Hat { ok: true, work_id: WORK, targets: "org language:hale position:agent" }), "and only then");
         let status = self.json.string(hat, "practices_status");
         std::test::assert(status == "no memory" || status == "resolved" || status == "unavailable", "the hat says how its practices were read: " + status);
         if status != "resolved" { self.json.eq(hat, "watermark", "-1"); std::test::assert_eq_str(self.json.raw(hat, "practices"), "[]", "no practices without memory"); }
@@ -79,6 +115,41 @@ locus HatCases {
         let moved = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
         std::test::assert(self.json.string(self.json.data(moved), "head") != self.json.string(hat, "head"), "the head moved");
         std::test::assert(self.json.string(self.json.data(moved), "digest") != digest, "and so did the digest");
+        // an organization change is the design's, not the application's: its
+        // set holds system:dna and no language
+        self.seed_organization_change();
+        let org = self.get(service, "/dna/context?id=" + dna::url_encode(ORG_WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(org), "targets", "org system:dna position:agent");
+        // an organization change needs a recorded plan, as the owner's edit
+        // class reads it: an admission that is not planned is application work
+        let shapes = ["{\"planned\": false, \"kind\": \"organism\"}", "{\"kind\": \"organism\"}", "{\"class\": \"organization\"}"];
+        let mut n = 0;
+        while n < 3 {
+            let root = "hat-unplanned" + to_string(n);
+            self.seed_change(root, shapes[n]);
+            let unplanned = self.get(service, "/dna/context?id=" + dna::url_encode(root + "/wf1/s0/judge"), 200, "ContextResponse");
+            self.json.eq(self.json.data(unplanned), "targets", "org language:hale position:agent");
+            n = n + 1;
+        }
+        // an edge contributes its language only while both its nodes are live:
+        // retiring the language node, or the application node, takes it out
+        // though the edge row stays; stating the node again brings it back
+        self.f.append("graph.retired", "language:hale", "{}");
+        let no_language = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(no_language), "targets", "org position:agent");
+        self.f.append("graph.node", "language:hale", "{\"kind\": \"language\", \"name\": \"hale\"}");
+        let language_back = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(language_back), "targets", "org language:hale position:agent");
+        self.f.append("graph.retired", "application:hatapp", "{}");
+        let no_application = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(no_application), "targets", "org position:agent");
+        self.f.append("graph.node", "application:hatapp", "{\"kind\": \"application\", \"name\": \"hatapp\"}");
+        let application_back = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(application_back), "targets", "org language:hale position:agent");
+        // a retired edge leaves the set, and the digest with it
+        self.f.append("graph.retired", "written_in:application:hatapp|language:hale", "{}");
+        let unwritten = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(unwritten), "targets", "org position:agent");
         // a Work the record does not bind, and a read that names none
         self.get(service, "/dna/context?id=hat-close%2Fwf1%2Fs0%2Fnobody", 404, "ErrorResponse");
         self.get(service, "/dna/context", 400, "ErrorResponse");

@@ -9455,6 +9455,8 @@ dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___editing__SourceEditor	on main
 dynamic	__lib_dna__core___editing__WorktreeTools	on main
+dynamic	__lib_dna__core___journal__FileReceipts	on main
+dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
@@ -12681,6 +12683,7 @@ dynamic	__lib_dna__core___memory_embed__Words	on main
 dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
 dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitLeases	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
@@ -12707,6 +12710,7 @@ dynamic	__lib_dna__core___forge__NoForge	on main
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
+dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main

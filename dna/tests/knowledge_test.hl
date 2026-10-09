@@ -23,6 +23,8 @@ main locus App {
         std::test::assert_eq_str(self.k.bind("i2", "app/support", "app/support"), "initiative", "self-authored, bound locally = initiative");
         std::test::assert_eq_str(self.k.bind("i2", "app/billing", "app/support"), "lateral", "sibling binding refused");
         std::test::assert_eq_int(self.k.refused_lateral, 1, "refusal counted");
+        std::test::assert_eq_str(self.k.bind("i1", "language:hale", "app"), "goal", "a node is bound from above, never laterally");
+        std::test::assert_eq_str(dna::classify_binding("language:hale", "language:hale"), "initiative", "the same id is local");
 
         // proposals do not write; distillation does, and not by the author
         let p = self.k.propose(dna::Idea { id: "i3", kind: "idea", text: "retry the payment gateway once", author: "app/support/attempt-7" });

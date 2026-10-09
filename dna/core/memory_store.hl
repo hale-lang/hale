@@ -78,7 +78,9 @@ interface KnowledgeStore {
     fn idea(id: String) -> Stored;
     // Ids of accepted ideas bound to `target` or any of its ancestors
     // (goals flow down), space-separated, at most `budget`, in
-    // ratification order.
+    // ratification order. `target` may be a space-separated set: a word
+    // holding `:` is a graph node id and matches exactly, a path matches by
+    // prefix (the ideas bound to any word's match, once each).
     fn context_ids(target: String, budget: Int) -> String;
     // The same bounded set, ranked by similarity to `query_vec` (an
     // `embed_text` literal) so the budget keeps the most relevant;
@@ -151,6 +153,13 @@ type Signal { kind: String = ""; source: String = ""; what: String = ""; count: 
 // at, from one transaction (GH #946).
 type Ranked { ok: Bool = false; ids: String = ""; watermark: Int = 0; }
 type Structure { kind: String = ""; name: String = ""; seq: Int = 0; }
+
+// The accepted ideas bound to a set of targets, `$1` space-separated (GH
+// #583, seed/pull): a target holding `:` is a graph node id and matches a
+// binding to exactly that id; one without is a locus path and matches a
+// binding to it or to any ancestor, as it always has. A set of one path is
+// the tower rule unchanged.
+const BOUND_BY_TARGETS: String = "EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND EXISTS (SELECT 1 FROM unnest(string_to_array($1, ' ')) AS t(x) WHERE x <> '' AND (x = b.target OR (position(':' in x) = 0 AND left(x, length(b.target) + 1) = b.target || '/'))))";
 
 // The nodes the edge `e` joins in `role`, as a JSON array in member
 // order; and the first of them, as text. A member whose node was retired
@@ -797,7 +806,7 @@ locus Pq {
         let a = db::Args { };
         a.add(target);
         a.add(to_string(budget));
-        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND " + BOUND_BY_TARGETS + " ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
         if !rows.ok { self.note("context", rows.err); return ""; }
         return ids_of(rows.csv);
     }
@@ -808,7 +817,7 @@ locus Pq {
         a.add(target);
         a.add(query_vec);
         a.add(to_string(budget));
-        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND " + BOUND_BY_TARGETS + " ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
         if !rows.ok { self.note("ranked", rows.err); return ""; }
         return ids_of(rows.csv);
     }

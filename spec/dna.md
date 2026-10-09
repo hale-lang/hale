@@ -1985,7 +1985,9 @@ memory is named to it.
   the attempt admitted last names, or the kind the request selects
   before one is — and its charter (the record's `graph.node` text for
   that id, `""` until the graph names it); the practices ratified for
-  the Work's target, from memory under the reader's role, resolved to
+  the Work's targets (`targets`: its path, its codebase's languages,
+  `system:dna` for an organization change, the position — **The hat's
+  target set**), from memory under the reader's role, resolved to
   text with their ids; the knowledge bindings; the tool grant; the
   output contract; the data class; the Work's history as facts; the
   record head and memory's projection watermark it was rendered at
@@ -3731,7 +3733,9 @@ The live half is memory's, projected from the record by the spine
   the digest), `retire`, `bind`, `unbind`, `link`, `unlink`,
   `idea(id)`, `context_ids(target, budget)` (accepted ideas bound to
   the target or any prefix of its path — goals flow down, initiatives
-  stay local — in ratification order), `ranked_ids`, `count(what)`, and
+  stay local — in ratification order; `target` is one target or a
+  space-separated set, **Targets are paths or nodes**, below),
+  `ranked_ids`, `count(what)`, and
   the structure and signals of K3, and the repository's graph (below).
   `Pq` is Postgres (nine tables: `knowledge_meta`, `knowledge_ideas`,
   `knowledge_bindings`, `knowledge_edges`, `knowledge_structure`,
@@ -3869,6 +3873,72 @@ The live half is memory's, projected from the record by the spine
   the practice declares when it is ratified (**Schedules**):
   `operating/optimize-cadence` carries the optimize pass's, convened by
   the Board once a day (**The optimize pass**).
+- **Targets are paths or nodes (seed/pull).** A binding's target is a
+  locus path (`org`, `org/<child>`) or a graph node id
+  (`language:hale`, `system:dna`, `position:leader`: **The repository's graph**, below).
+  The match rule is one query, `ranked_ids` and `context_ids` taking a
+  space-separated *set* of targets: a word holding `:` is a node id and
+  matches a binding to exactly that id (`language:hale` is not
+  `language:hale-x`, and a prefix of an id is nothing); a word without
+  one is a path and matches a binding to it or to any ancestor, as it
+  always has. An accepted idea is in the package once however many
+  words match it, and a set of one path is the tower rule unchanged.
+  A node is bound from above, never beside: `classify_binding` calls a
+  binding to a node a `goal` when its author is a path, so it is never
+  `lateral`. A proposal or a binding request whose target is a node the
+  record holds no `graph.node` row for (and no later `graph.retired`
+  took back) is refused naming it: `knowledge.refused` for a proposal,
+  `knowledge.binding.refused` with reason `unknown_node` for a binding
+  request. The projection's `knowledge_bindings` rows carry the target
+  unchanged — no migration; a node id is just another value of the
+  column — and `ranked_ids` keeps their ordering and budget.
+- **The hat's target set (seed/pull).** The hat's package is asked for a
+  set, in this order (`hat_knowledge_targets`, dna/core/hat.hl): the
+  Work's locus path (`hat_knowledge_target`: `org` or `org/…`, else
+  `org`); `language:<l>` for every `written_in` edge of the attached
+  application (`application.attached`'s name, the node
+  `application:<name>`), unless the Work is an organization change; then
+  `system:dna` in their place when it is one — the Work's Task admission
+  carries the leader's plan with kind `organism` (class `organization`),
+  the same word `edit_class_of` reads to edit the organization's own
+  seed; and `position:<name>` for the position the hat names
+  (`hat_position_of`), so a mandate bound to the position arrives with
+  the Work. The hat's JSON names them as `targets` (a space-separated
+  string) and its digest covers them, so a hat is a different hat when
+  its set is. The owner's edit path asks the same set for its package,
+  and `PRACTICES (ratified knowledge for <targets>, package <digest>)`
+  names it. A reviewer's brief is the same read: `hale dna review <id>`
+  prints, under `knowledge for <targets>`, the names of the ideas
+  ratified for the subject's targets — the node a knowledge Review is
+  bound to when it is one, `system:dna` for a mutation of class
+  `organization` — ranked by the Review's question and bounded by the
+  package's budget; without memory (`HALE_DNA_MEMORY_DSN_HEAD`) it says
+  the knowledge was not read, and a subject with no node prints nothing.
+- **The nodes knowledge is about, and the library (seed/pull).** `init`
+  writes `graph.node` rows for `language:hale` (kind `language`, text
+  `Hale <toolchain version>…`) and `system:dna` (kind `system`) and, for
+  an attached application, `application:<account name>` (kind
+  `application`, the name `application.attached` carries — the record
+  named the application by that row alone before) with a `written_in`
+  edge from it to the language
+  (`written_in:application:<name>|language:hale`); a repository with
+  no application gets the two nodes and no edge. Beside them it proposes
+  the toolchain's library, `LIBRARY` in `crates/hale-cli/src/dna.rs`
+  (path, target node, family, text embedded with `include_str!`): the
+  API chapter (`docs/src/services/api.md`, `library/api`, bound to
+  `language:hale`) and the shaping chapter (`docs/src/dna/shaping.md`,
+  `library/shaping`, bound to `system:dna`) — each a
+  `knowledge.proposed` row of kind `idea`, provenance `toolchain`, whose
+  receipt carries the chapter's text, its `target` and the toolchain
+  version, and **one Review per idea** like the design's (grouped
+  `library`; `hale dna review library approve|reject` decides each
+  pending one in turn). The proposal's `target` is the binding: ratifying
+  it binds the idea there, so a library idea has no separate
+  `knowledge.binding.proposed` row (a binding request needs a ratified
+  subject). `init --no-library` (and `new --no-library`) seeds none of
+  the nodes, the edge or the ideas; `upgrade` does not touch the
+  library. `language`, `system` and `application` are node kinds and
+  `written_in(application, language)` an edge kind (**The repository's graph**).
 - **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
@@ -4053,7 +4123,10 @@ The live half is memory's, projected from the record by the spine
   `process`, `seed`, `contract`, `noun`, `deployment`, `practice`,
   `gate`, `document`, `witness`, `position`, `work`, `organization`
   (a firm, GH #1123), `definition` (a workflow catalog definition a
-  schedule convenes, GH #1143); a node's id is `<kind>:<name>`. **Hyperedge
+  schedule convenes, GH #1143), and what knowledge is about (seed/pull):
+  `language` (`language:hale`), `system` (`system:dna`) and
+  `application` (`application:<name>`), which `init` seeds and an ingest
+  of a repository never reads; a node's id is `<kind>:<name>`. **Hyperedge
   kinds**, arity two or more, each a list of members `{role, node}`
   whose first is its anchor:
   `unfold(parent, child)`, `meets(contract; server…, consumer…, carrier…)`,
@@ -4068,7 +4141,10 @@ The live half is memory's, projected from the record by the spine
   when a schedule is declared (**Schedules**), its body carrying the
   `cadence` (`every 1d`, `every 90s`, `cron <expr>`) and the
   `schedule`; its `position` is a `position` node and its `definition`
-  a `definition` node. A `holds` edge is a seat or a membership
+  a `definition` node, and `written_in(application, language)`
+  (seed/pull), the codebase an application is written in — an
+  `application` node and a `language` node, keyed by both, the edge a
+  hat reads its language targets from. A `holds` edge is a seat or a membership
   (GH #1123): `holds(position:<p>, <person>)` is a person's seat,
   `holds(position:<p>, organization:<o>)` is organization `o` owning
   position `p`, and `holds(organization:<o>, <person>)` is the person's
@@ -4078,7 +4154,7 @@ The live half is memory's, projected from the record by the spine
   organization (**Owners**). A position has one owning organization and
   a person one: memory refuses a second of either as a `hold.refused`
   row, and `hale dna fill` refuses to propose it. A pair kind (`unfold`, `refers`,
-  `holds`, `reviews`, `convenes`) is exactly its two members and is keyed by both,
+  `holds`, `reviews`, `convenes`, `written_in`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says
   who meets there. An edge's id is `<kind>:<anchor>` or

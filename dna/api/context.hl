@@ -20,7 +20,7 @@ locus ContextWire {
         // execution facts live there; the hat reads them under the head's role
         let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
         let j = dna::RoutedJournal { record: record, ledger: ledger };
-        let reader = ops::HatReader { j: j, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
+        let reader = ops::HatReader { j: j, receipts: dna::GitReceipts { repo: root }, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
         let hat = reader.read(query.id);
         if !hat.ok {
             if hat.code == "work_not_found" { return http.error(404, hat.code, hat.why, false); }

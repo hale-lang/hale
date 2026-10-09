@@ -165,9 +165,14 @@ fn main() {
 /// reaches the record's head, the head reads, the organization stops.
 /// The digests included, and the raw answer.
 fn package(app: &Path) -> (Vec<String>, String) {
+    package_for(app, "org")
+}
+
+/// The same, for a set of targets (space-separated paths and node ids).
+fn package_for(app: &Path, targets: &str) -> (Vec<String>, String) {
     let _s = trace::Span::new("package", "the spine projects; a head reads");
     std::fs::create_dir_all(app.join("pkg")).unwrap();
-    std::fs::write(app.join("pkg/main.hl"), PACKAGE).unwrap();
+    std::fs::write(app.join("pkg/main.hl"), PACKAGE.replace("package_for(\"org\", ", &format!("package_for(\"{targets}\", "))).unwrap();
     let head = memory_dsn(app, "HALE_DNA_MEMORY_DSN_HEAD=");
     let mut host = start_org(app);
     let mut last = String::new();
@@ -255,7 +260,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "designed"], &d);
+    let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
     assert!(ok, "{out}");
     assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
@@ -526,6 +531,155 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     finish(&app, &mut host, "the replacement ratified and the old version retired", |rows| has_row(rows, "knowledge.ratified", &new) && has_row(rows, "knowledge.retired", &old));
     let (included, ctx) = package(&app);
     assert_eq!(included, vec![new], "the replacement, and not the retired version: {ctx}");
+    unmigrate(&app, &owner);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The receipt document a proposal's digest names, as JSON.
+fn receipt(app: &Path, digest: &str) -> serde_json::Value {
+    let raw = digest.strip_prefix("sha256:").unwrap_or(digest);
+    let out = Command::new("git").args(["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]).current_dir(app).output().unwrap();
+    serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or(serde_json::Value::Null)
+}
+
+/// The proposals of the family `library`, as (digest, body).
+fn library_proposals(rows: &Rows) -> Vec<(String, serde_json::Value)> {
+    rows.iter()
+        .filter(|r| r.0 == "knowledge.proposed")
+        .filter_map(|r| serde_json::from_str::<serde_json::Value>(&r.2).ok().map(|b| (r.1.clone(), b)))
+        .filter(|(_, b)| b["name"].as_str().unwrap_or("").starts_with("library/"))
+        .collect()
+}
+
+/// seed/pull — a default `init` writes the nodes knowledge is about, the
+/// edge from the application to its language, and the smallest library as
+/// proposals bound to those nodes, one Review per idea under `library`;
+/// `--no-library` writes none of it.
+#[test]
+fn init_seeds_the_language_and_system_nodes_and_the_library() {
+    let _t = trace::test("dna_design::library_seed");
+    let d = std::env::temp_dir().join(format!("hale_dna_library_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "libbed"], &d);
+    assert!(ok, "{out}");
+    assert!(out.contains("seeded  graph (language:hale, system:dna, application:libbed") && out.contains("seeded  edge (written_in") && out.contains("seeded  library (2 idea(s) proposed"), "{out}");
+    let app: PathBuf = d.join("libbed");
+    let rows = journal(&app);
+    let body = |kind: &str, entity: &str| -> serde_json::Value {
+        let r = rows.iter().find(|r| r.0 == kind && r.1 == entity).unwrap_or_else(|| panic!("no {kind} {entity}"));
+        serde_json::from_str(&r.2).unwrap()
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    let language = body("graph.node", "language:hale");
+    assert!(language["kind"] == "language" && language["name"] == "hale" && language["text"].as_str().unwrap().contains(&format!("Hale {version}")), "{language}");
+    assert_eq!(body("graph.node", "system:dna")["kind"], "system");
+    // the record has no node for an attached application: the seed adds
+    // `application:<account name>` beside the edge that uses it
+    assert_eq!(body("graph.node", "application:libbed")["kind"], "application");
+    let edge = body("graph.edge", "written_in:application:libbed|language:hale");
+    assert_eq!(edge["members"][0]["node"], "application:libbed");
+    assert_eq!(edge["members"][1]["node"], "language:hale");
+    assert_eq!(count_of(&rows, "graph.node"), 3, "the two nodes and the application");
+    assert_eq!(count_of(&rows, "graph.edge"), 1);
+
+    // two ideas, each bound to its node by the proposal's target, each with
+    // its own Review under the family `library`
+    let proposed = library_proposals(&rows);
+    assert_eq!(proposed.len(), 2, "two library proposals: {proposed:?}");
+    for (digest, b) in &proposed {
+        let (want_text, want_target) = if b["name"] == "library/api" {
+            (include_str!("../../../docs/src/services/api.md"), "language:hale")
+        } else {
+            (include_str!("../../../docs/src/dna/shaping.md"), "system:dna")
+        };
+        assert_eq!(b["target"], want_target, "{b}");
+        assert!(b["kind"] == "idea" && b["class"] == "goal" && b["provenance"] == "toolchain", "{b}");
+        let doc = receipt(&app, digest);
+        assert_eq!(doc["text"], want_text, "the chapter's text, as the toolchain ships it");
+        assert_eq!(doc["toolchain"], version, "the toolchain's version is on the idea");
+        assert_eq!(doc["target"], want_target);
+        let review = rows
+            .iter()
+            .find(|r| r.0 == "review.requested" && serde_json::from_str::<serde_json::Value>(&r.2).map(|q| q["knowledge_digest"] == digest.as_str()).unwrap_or(false))
+            .expect("its Review");
+        let q: serde_json::Value = serde_json::from_str(&review.2).unwrap();
+        assert!(q["group"] == "library" && q["required_authority"] == "board" && q["target"] == want_target, "{q}");
+    }
+    // `hale dna review` lists the family, and a group verdict names it
+    let (ok, list) = hale(&["dna", "review"], &app);
+    assert!(ok && family_ids(&list, "library").len() == 2 && list.contains("library — 2 library idea(s)") && list.contains("hale dna review library approve|reject"), "{list}");
+
+    // a Review of a node's idea renders the reviewer's brief for that node:
+    // read from memory, so without it the line says it was not read
+    let api_review = rows.iter().find(|r| r.0 == "review.requested" && r.2.contains("library/api")).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let (ok, view) = hale(&["dna", "review", &api_review], &app);
+    assert!(ok && view.contains("knowledge for language:hale: not read (no memory:"), "{view}");
+    let design_review = rows.iter().find(|r| r.0 == "review.requested" && r.2.contains("design/principles")).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let (ok, view) = hale(&["dna", "review", &design_review], &app);
+    assert!(ok && !view.contains("knowledge for"), "a practice bound to a path has no node to read for: {view}");
+
+    // --no-library: none of it, and the output says so
+    let (ok, out) = hale(&["dna", "new", "bare", "--no-library"], &d);
+    assert!(ok && out.contains("skipped library") && !out.contains("seeded  library"), "{out}");
+    let bare = journal(&d.join("bare"));
+    assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 0, "no node, no edge");
+    assert!(library_proposals(&bare).is_empty(), "no library idea");
+    assert!(!bare.iter().any(|r| r.0 == "review.requested" && r.2.replace(' ', "").contains("\"group\":\"library\"")), "no library Review");
+    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 8 + 7, "the purpose and the fifteen practices, as before");
+    let (_, list) = hale(&["dna", "review"], &d.join("bare"));
+    assert!(!list.contains("library —"), "{list}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// seed/pull — `hale dna review library approve` ratifies both ideas and
+/// binds both: a package for the node is the idea bound to it, a package for
+/// a path is neither, and `language:hale` is not `language:hale-x`.
+#[test]
+fn approving_the_library_ratifies_and_binds_both_ideas() {
+    let _t = trace::test("dna_design::library_approve");
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
+    let d = std::env::temp_dir().join(format!("hale_dna_libapprove_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "libapp"], &d);
+    assert!(ok && out.contains("seeded  library (2 idea(s) proposed"), "{out}");
+    let app: PathBuf = d.join("libapp");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    let proposed = library_proposals(&journal(&app));
+    let digest_named = |name: &str| -> String { proposed.iter().find(|(_, b)| b["name"] == name).map(|(d, _)| d.clone()).unwrap() };
+    let (api, shaping) = (digest_named("library/api"), digest_named("library/shaping"));
+    let mut host = start_org(&app);
+    let (ok, rest) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: approve by riley").count() == 2, "both, each its own verdict:\n{rest}");
+    finish(&app, &mut host, "both library ideas ratified", |rows| has_row(rows, "knowledge.ratified", &api) && has_row(rows, "knowledge.ratified", &shaping));
+    assert_eq!(package_for(&app, "language:hale").0, vec![api.clone()], "the node's idea, and not the other's");
+    assert_eq!(package_for(&app, "system:dna").0, vec![shaping.clone()]);
+    assert_eq!(package_for(&app, "org").0, Vec::<String>::new(), "a path is neither: nothing is bound to org");
+    assert_eq!(package_for(&app, "org language:hale-x").0, Vec::<String>::new(), "language:hale-x is not language:hale");
+    let both = package_for(&app, "org/app/main language:hale system:dna").0;
+    assert!(both.len() == 2 && both.contains(&api) && both.contains(&shaping), "a set of targets is one package: {both:?}");
+    // the reviewer's brief for a Review of a node's idea names the ideas
+    // already ratified for the node
+    let api_review = journal(&app).iter().find(|r| r.0 == "review.requested" && r.2.contains(api.as_str())).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let head = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
+    let mut host = start_org(&app);
+    let mut brief = String::new();
+    trace::wait_until("the reviewer's brief names the ratified idea", Duration::from_secs(120), Duration::from_millis(250), || {
+        let (ok, out) = hale_env(&["dna", "review", &api_review], &app, &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())]);
+        brief = out;
+        ok && brief.contains("- library/api")
+    });
+    finish(&app, &mut host, "the record", |_| true);
+    assert!(brief.contains("knowledge for language:hale (1 idea(s), package "), "{brief}");
     unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -31,6 +31,10 @@ type Hat {
     charter: String = ""; // the position node's text; "" when the record holds no node for it
     objective: String = "";
     target: String = "";
+    // the targets the package was drawn for, space-separated (`hat_knowledge_targets`):
+    // the locus path, the codebase's language nodes, `system:dna` for an
+    // organization change, the performer's position node
+    targets: String = "";
     output_contract: String = "";
     data_class: String = "internal";
     requires: String = "";
@@ -99,6 +103,88 @@ fn hat_knowledge_target(target: String) -> String {
     return if target == "org" || std::str::starts_with(target, "org/") { target } else { "org" };
 }
 
+// The class an admission's inputs make an edit as (card 18), the one rule
+// the owner (`edit_class_of`) and the hat read: only a plan the leader
+// bound (`planned` true) speaks. An organism change is `organization`, the
+// Board's; else the class the plan names, else `application`.
+fn admission_edit_class(inputs: String) -> String {
+    if len(inputs) == 0 || std::str::trim(std::json::find_field_raw(inputs, "planned")) != "true" { return "application"; }
+    if std::json::find_string_field(inputs, "kind") == "organism" { return "organization"; }
+    let class = std::json::find_string_field(inputs, "class");
+    return if len(class) > 0 { class } else { "application" };
+}
+
+// Whether the Task's recorded admission states an organization change:
+// the class its plan makes the edit as (`admission_edit_class`) is
+// `organization`. False when the Task has no admission or no plan.
+@unbounded
+fn hat_organization_change(j: Journal, task_id: String) -> Bool {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted" && e.entity == task_id {
+            let adm = decode_admission(e.body);
+            return adm.ok && admission_edit_class(adm.value.inputs) == "organization";
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The language nodes of the codebase the attached application is written
+// in, space-separated: every `written_in` edge of the application's node
+// whose application node and language node are both live in the graph the
+// record states (`record_graph`) -- a retired node takes its edges out of
+// the perspective, whatever edge rows remain. The record names the
+// application by `application.attached` (its account name) and, from
+// `init`, by the node `application:<name>`; an edge retired since is gone.
+// "" when the record attaches none or states no edge.
+@unbounded
+fn hat_languages(j: Journal, receipts: Receipts) -> String {
+    let mut name = "";
+    let mut i = 0;
+    while i < j.revision() && len(name) == 0 {
+        let e = j.read(i);
+        if e.kind == "application.attached" { name = std::json::find_string_field(e.body, "name"); }
+        i = i + 1;
+    }
+    if len(name) == 0 { return ""; }
+    let g = record_graph(j, receipts);
+    if !record_graph_has(g.nodes, "application:" + name) { return ""; }
+    let prefix = "written_in:application:" + name + "|";
+    let mut out = " ";
+    let mut rest = g.edges;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let id = body[0..nl];
+        rest = body[nl..len(body)];
+        if std::str::starts_with(id, prefix) {
+            let language = id[len(prefix)..len(id)];
+            if record_graph_has(g.nodes, language) && !std::str::contains(out, " " + language + " ") { out = out + language + " "; }
+        }
+    }
+    return std::str::trim(out);
+}
+
+// The targets a hat's knowledge is drawn for, in this order: the Work's
+// locus path (`hat_knowledge_target`); the codebase's languages
+// (`hat_languages`) unless the Work is an organization change, which is
+// not the application's; `system:dna` for an organization change; and the
+// performer's position node, so a mandate bound to the position arrives
+// with the Work. Space-separated; a path matches by prefix and a node id
+// exactly (memory's `BOUND_BY_TARGETS`).
+fn hat_knowledge_targets(j: Journal, receipts: Receipts, target: String, organization: Bool, position: String) -> String {
+    let mut out = hat_knowledge_target(target);
+    if organization {
+        out = out + " system:dna";
+    } else {
+        let languages = hat_languages(j, receipts);
+        if len(languages) > 0 { out = out + " " + languages; }
+    }
+    return out + " " + position;
+}
+
 // The text of the record's graph node for an id ("" when none): the
 // latest `graph.node` row for it, a retirement taking it back.
 @unbounded
@@ -143,6 +229,7 @@ fn hat_body(h: Hat) -> String {
     b.end_object();
     b.string_field("objective", h.objective);
     b.string_field("target", h.target);
+    b.string_field("targets", h.targets);
     b.string_field("output_contract", h.output_contract);
     b.string_field("data_class", h.data_class);
     b.string_field("requires", h.requires);
