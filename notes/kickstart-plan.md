@@ -10,13 +10,15 @@ What a new organism's record holds the moment `hale dna init` finishes, so that 
 - **Proposed and ratified per family.** `library/language`, `library/design` and `using` are three proposals with one Board Review each (`hale dna review library approve`), since sixteen Reviews at init is already the ceiling of what a Board reads one by one. An upgrade of the toolchain proposes the new version's set as one proposal per family and retires the old bindings when no codebase pins that version.
 - **Shipped in the binary,** as the DNA core and host already are, and seeded by every `init`; `init --no-library` leaves it out (fixtures that count seeded rows, an empty record on purpose). The book goes in per chapter and the spec per section, about 400 ideas and 3.6 MB of text per toolchain version, stored as every idea is (the record's receipts, the lanes), which is what makes replay and ranking work.
 
-## 2. The structure family: positions, mandates, equipment (seed/structure)
+## 2. The structure family: mandates and equipment on the holes the record already proposes (seed/structure)
 
-- **Positions as nodes with mandates.** A default chart: board, leader, architect, reviewer per part, maintainer, operator, release owner. Each position's mandate is a knowledge node bound to the position node: what it decides, what it may not, what it cites, how it writes and what it escalates. The Leader's brief reads its own mandate with the charter; a reviewer's brief reads the reviewer's.
-- **Authority defaults.** Which change classes and magnitudes each position may ratify, which need a second, which are money: rows the record states and the charter refines, where today the charter and the law carry them alone.
+The record already proposes its structure at birth: `hale dna init` on a repository reads it into the graph (GH #1090) and proposes the holes the structure implies (GH #1091): positions, `reviews` edges, operational roles, work items, practices as advice; review routing (GH #1087), the per-position brief (GH #1088) and evidence, verdicts and re-ingest from the CLI (GH #1089) build on those rows. An application's `init` is narrower today: it observes loci and topics and proposes responsibilities, no positions. This item enriches that one path through the same graph and proposal machinery; it adds no starter chart and no second initialization.
+
+- **An application proposes its holes too.** The hole-proposer that runs for a repository runs for an attached application, reading the structure `init` already observed (its loci and topics, its contracts), so an application's record starts with the positions, `reviews` edges and operational roles its structure implies, as proposals. A founder alone fills several; the seeded design practices say the rest: minimal structure, growth by proposal.
+- **Mandates bound to positions.** Each proposed position carries a mandate as a knowledge node bound to the position node: what it decides, what it may not, what it cites, how it writes and what it escalates. The toolchain ships the mandates for the positions the proposer knows (board, leader, architect, reviewer of a part, maintainer, operator), proposed with the position and ratified with it. The Leader's brief reads its own mandate with the charter; a reviewer's brief reads the reviewer's; the per-position AGENTS.md renders it.
+- **Authority stays where it is granted.** Which change classes and magnitudes a position may ratify, which need a second, which are money, are the charter's and the law's; the record states the defaults the proposer derives for a position and the charter refines them. An API surface's `requires` names roles and informs contract relationships (a `reviews` edge for the surface's part); it never determines the organization or grants authority.
 - **Standard equipment.** What a position is fitted with on fill: the API roles a surface's `requires` names, so `requires: [reviewer]` resolves to a position the record knows; the broker account; the vault names. The seeded practice `design/standard-equipment` already says a supervising part is born with its architect; this is the equipment list it lacked.
-- **Holders stay empty.** Filling is a human act: the seed proposes the chart, and `hale dna fill board <you>` is the organization's first decision.
-- **The minimal chart, always.** `init` seeds one chart, the smallest: a founder expected to hold several positions. The larger charts (a small product team; platform plus product) are proposals the Board adopts later (`hale dna propose shape team`), as the seeded design practices say: minimal structure, growth by proposal. No flag at init.
+- **Holders stay empty.** Filling is a human act: `hale dna fill board <you>` is the organization's first decision.
 
 ## 3. The use-site pull rule (seed/pull)
 
@@ -26,8 +28,21 @@ What a new organism's record holds the moment `hale dna init` finishes, so that 
 
 ## Exit criteria
 
-A fresh `hale dna init` of an application leaves the record with the library, the `using` practices and the minimal chart as proposals; `hale dna review library approve`, `using approve` and `structure approve` ratify them; `hale dna fill board <you>` holds. A Work's brief for a Hale codebase cites the chapter that applies and no other; a reviewer's brief cites the reviewer's mandate; a foreign codebase bound to `language:go` with chapters of its own pulls them through the same path, with no Hale-specific branch in the brief. The DNA suite holds a fixture per claim.
+A fresh `hale dna init` of an application leaves the record with the library, the `using` practices and the holes its structure implies, each position with its mandate, all as proposals; `hale dna review library approve`, `using approve` and the structure's Reviews ratify them; `hale dna fill board <you>` holds. A Work's brief for a Hale codebase cites the chapter that applies and no other; a reviewer's brief cites the reviewer's mandate; a foreign codebase bound to `language:go` with chapters of its own pulls them through the same path, with no Hale-specific branch in the brief. The DNA suite holds a fixture per claim. Voice stays the repository-ingestion regression fixture (GH #1092); the todo organization below is the application-side one.
+
+## The first user: the todo organization
+
+A realtime todo list in Hale, started from scratch in local mode (`hale dna dev` over `dna/compose.yaml`), torn down and started over until the loop is seamless. It is an organizational test first and a CRUD-and-realtime test second, and it supplies the two pieces of acceptance evidence GH #1092 still lacks: a complete change-delivery and CLI-evidence walkthrough (deferred by #1153) and the later-commit re-ingest and diff.
+
+1. Initialize the repository with its purpose, constraints and application structure; the record holds the library and the holes.
+2. Ratify the relevant proposals and fill the working positions.
+3. Give the organization one real feature to deliver.
+4. An agent claims it, receives its brief (claiming and reading the brief are two recorded acts), implements it and submits candidate-specific evidence from the CLI.
+5. Review routes to the position the graph names; the work settles.
+6. Change an application contract at a later commit; re-ingest; verify the graph is maintained through reviewed proposals, with the diff the record states.
+
+Alongside, an agent operates the todo app through its API (`hale api call`, MCP) while browsers observe the changes through the realtime stream. The app's todo items and the organization's development Work are separate records. The organization and process views come from the same graph.
 
 ## Order and size
 
-seed/pull first with the smallest library (one chapter bound to `language:hale`, one to `system:dna`), since the pull rule is the mechanism the other two are proven through; then seed/library whole (the embedding, the three families, upgrade as rebind); then seed/structure (the chart, mandates, equipment). One PR each, the `using` practices as prose in seed/library's PR. The items are named `seed/…` because K1 to K3 already name the knowledge lanes (GH #583). This lands before the todo organization dogfood, which is its first user.
+seed/pull first with the smallest library (one chapter bound to `language:hale`, one to `system:dna`), since the pull rule is the mechanism the other two are proven through; then seed/library whole (the embedding, the three families, upgrade as rebind); then seed/structure (the application-side holes, the mandates, the equipment). One PR each, the `using` practices as prose in seed/library's PR. The items are named `seed/…` because K1 to K3 already name the knowledge lanes (GH #583). This lands before the todo organization dogfood, which is its first user.
