@@ -204,7 +204,9 @@ fn host() {
         Host::build_genome  does={syscall,block,env,alloc}
         Host::build_seed  does={syscall,block,env,alloc}
         Host::cut_artifact  does={syscall,block,alloc}
+        Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}
+        Host::say_nerves_read  does={syscall,env,alloc}
         Host::sha12  does={syscall,block,alloc}
         Host::start_memory  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::start_organization_launch  does={syscall,block,time,env,alloc}
