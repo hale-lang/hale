@@ -158,8 +158,14 @@ fn structure_roles(root: String) -> String {
     return dna::trim_nl(std::str::trim(lit[0..end]));
 }
 
-fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer {
-    let g = ops::GraphIngest { root: root };
+// An application's (`hale dna init`, the application attached): `rows_path`
+// is a file of the artifact's rows, which land first; `app` names the
+// application's root seed; `description_path` is a file holding what
+// `hale check --api` exports.
+fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String, description_path: String, memory: dna::Memory) -> Answer {
+    let described = if len(description_path) > 0 { std::io::fs::read_file(description_path) or "" } else { "" };
+    let declared = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
+    let g = ops::GraphIngest { root: root, app: app, description: described, declared: declared };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
     // GH #1091: the holes, proposed in the same seed as the graph, with the
@@ -177,7 +183,10 @@ fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer
     // GH #995: the declared purpose, proposed in the same checked seed, so
     // a repository with nothing to ingest still has its record
     let purpose = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
-    let before = if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" };
+    let observed = if len(rows_path) > 0 { std::io::fs::read_file(rows_path) or "" } else { "" };
+    if len(rows_path) > 0 && len(observed) == 0 { return fail("graph-ingest: no rows at " + rows_path); }
+    let head = if len(observed) > 0 && !std::str::ends_with(observed, "\n") { observed + "\n" } else { observed };
+    let before = head + (if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" });
     if !keeps_flush(root, keeps) { return fail("graph-ingest: the receipts could not be kept; nothing was seeded"); }
     let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }

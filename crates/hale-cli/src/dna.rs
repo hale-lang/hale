@@ -1250,11 +1250,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("own_workflows.hl"), OWN_WORKFLOWS_HL)?;
     // GH #1091 (B): the one structure policy — the operational roles the
     // project opts into, none by default; the holes follow the graph's
-    // edges. A repository's alone: its record is born with the holes. One
-    // written before `init` is kept, and is what the holes read.
-    if app.is_none() {
-        created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
-    }
+    // edges. A repository's record and an application's are both born with
+    // the holes. One written before `init` is kept, and is what they read.
+    created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
@@ -1292,8 +1290,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
-                let n = seed_journal(&app.root, app, art, &purpose_text)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, the purpose proposed)"));
+                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
+                out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
                 out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
@@ -2896,7 +2895,29 @@ fn app_account_name(project: &str) -> String {
     project.chars().take(32).map(|c| c.to_ascii_lowercase()).map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '_' }).collect()
 }
 
-fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<usize, String> {
+/// What `hale check --api` exports for the application: the surfaces it
+/// serves and the streams over a hub, as the document the graph ingest reads.
+/// None when the toolchain cannot describe it (the graph then holds no
+/// surface contract, and the artifact's rows are unchanged).
+fn api_description(app: &App) -> Option<String> {
+    let me = std::env::current_exe().ok()?;
+    let out = Command::new(me).arg("check").arg("--api").arg(&app.seed).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() && text.trim_start().starts_with('{') { Some(text) } else { None }
+}
+
+/// The application's root seed in the graph: its project directory, or the
+/// directory it sits in when the application is not the repository's root.
+fn app_seed_name(app: &App) -> String {
+    if app.seed_rel == "." { app.project.clone() } else { app.seed_rel.clone() }
+}
+
+/// An application's record, seeded in one checked call: the artifact's rows
+/// (what it observed), the purpose's proposal, then the graph its directory
+/// holds and the holes that graph implies (as for a repository, with the
+/// application as the root seed and its API surfaces as contracts). Returns
+/// the artifact's row count and what the ingest read.
+fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(usize, String), String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -2997,14 +3018,18 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<us
     // knowledge proposal and the Board's Review: two rows)
     let purpose_path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
     fs::write(&purpose_path, purpose).map_err(|e| e.to_string())?;
-    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string(), purpose_path.to_string_lossy().to_string()]);
+    let mut args = vec![purpose_path.to_string_lossy().to_string(), "--rows".to_string(), path.to_string_lossy().to_string(), "--app".to_string(), app_seed_name(app)];
+    let description_path = dna_dir.join(format!("api.{}.json", std::process::id()));
+    if let Some(d) = api_description(app) {
+        fs::write(&description_path, d).map_err(|e| e.to_string())?;
+        args.push("--description".to_string());
+        args.push(description_path.to_string_lossy().to_string());
+    }
+    let out = host_run("graph-ingest", root, &args);
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&purpose_path);
-    let n: usize = out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
-    if n != c.lines.len() + 2 {
-        return Err(format!("record-seed appended {n} of {} rows", c.lines.len() + 2));
-    }
-    Ok(n)
+    let _ = fs::remove_file(&description_path);
+    Ok((c.lines.len(), out?))
 }
 
 /// GH #1090: a repository's record — the declared purpose's proposal

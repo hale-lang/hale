@@ -272,6 +272,13 @@ type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: S
 locus GraphIngest {
     params {
         root: String = ".";
+        // an application's graph (`hale dna init` on an application): its
+        // own name, the root seed (the repository path's root is not one
+        // seed, and `app` stays empty), and what `hale check --api` exports
+        // for it, the surfaces it serves and the streams over a hub
+        app: String = "";
+        declared: String = ""; // the purpose `init` declares, for an application with no README
+        description: String = "";
         files: String = "\n"; // tracked, one per line
         rows: String = "";
         ids: String = "\n";
@@ -291,6 +298,7 @@ locus GraphIngest {
         consumed: String = "";
         guards: String = "";
         unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
+        appseed: String = ""; // the application's root seed node, "" for a repository
         // the API roles a contract's surface requires (`<contract>\t<role>`
         // per line, once each), read from the description the toolchain
         // exports beside it (`spec/<Stem>.description.json`): the equipment
@@ -377,10 +385,14 @@ locus GraphIngest {
 
     // ---- structure ----------------------------------------------------
     // The purpose: the README's title and its first paragraph. A
-    // repository with no README declares no purpose.
+    // repository with no README declares no purpose; an application with none
+    // is for the purpose `init` declares for it.
     @unbounded
     fn purpose_step() {
-        if !self.tracked("README.md") { return; }
+        if !self.tracked("README.md") {
+            if len(self.app) > 0 && len(self.declared) > 0 { self.purpose = self.node("purpose", self.app, self.declared, "dna/org/purpose.hl"); }
+            return;
+        }
         let text = self.read("README.md");
         let it = std::iter::Lines { };
         let mut from = 0;
@@ -460,10 +472,26 @@ locus GraphIngest {
             if std::str::starts_with(m, "process\t") && len(deployment) > 0 { self.runs = self.runs + deployment + "\t" + m[8..len(m)] + "\n"; }
         }
     }
+    // An application's own seed: the root, named by the project directory
+    // (the application at a deeper directory is that directory's seed, which
+    // the walk below finds by its manifest). A compose process of its name
+    // unfolds into it, as into any seed.
+    fn app_step() {
+        if len(self.app) == 0 { return; }
+        self.appseed = self.node("seed", self.app, "", self.app);
+        if len(self.appseed) > 0 && std::str::contains(self.processes, "\n" + self.app + "\n") && !self.written("unfold:process:" + self.app + "|" + self.appseed) {
+            let u = GraphEdge { kind: "unfold" };
+            self.add(u, "parent", "process:" + self.app);
+            self.add(u, "child", self.appseed);
+            self.edge(u);
+            self.unfolds = self.unfolds + "process:" + self.app + "\t" + self.appseed + "\n";
+        }
+    }
     // The seeds: a directory with a manifest, the outermost one; a process
     // unfolds into the seed of its name.
     @unbounded
     fn seeds_step() {
+        self.app_step();
         let mut dirs = "\n";
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -492,7 +520,7 @@ locus GraphIngest {
             if !outer { continue; }
             let seed = self.node("seed", d, "", d);
             self.seeds = self.seeds + d + "\n";
-            if std::str::contains(self.processes, "\n" + d + "\n") {
+            if std::str::contains(self.processes, "\n" + d + "\n") && !self.written("unfold:process:" + d + "|" + seed) {
                 let u = GraphEdge { kind: "unfold" };
                 self.add(u, "parent", "process:" + d);
                 self.add(u, "child", seed);
@@ -532,6 +560,26 @@ locus GraphIngest {
             if ingest_ext(f, "md") { self.tables_of(c, self.read(f)); } else { self.schemas_of(c, self.read(f)); }
         }
     }
+    // The `.md` or `.yaml` contract whose stem is `stem` (lower-case), as
+    // its node; "" when none.
+    @unbounded
+    fn stem_contract(stem: String) -> String {
+        let mut cs = self.contracts;
+        while len(cs) > 1 {
+            cs = cs[1..len(cs)];
+            let n2 = std::str::index_of(cs, "\n");
+            let c = cs[0..n2];
+            cs = cs[n2..len(cs)];
+            if !ingest_ext(c, "md yaml yml") { continue; }
+            let name = std::str::lower(c);
+            if name == "spec/" + stem + ".md" || name == "spec/" + stem + ".yaml" || name == "spec/" + stem + ".yml" { return "contract:" + c; }
+        }
+        return "";
+    }
+    fn add_role(node: String, role: String) {
+        let line = node + "\t" + role + "\n";
+        if graph_text_ok(role) && !std::str::contains("\n" + self.roles, "\n" + line) { self.roles = self.roles + line; }
+    }
     // The roles each contract's surface requires. `spec/<Stem>.description.json`
     // is what `hale api describe` writes for a surface: the contract's own
     // roles, not a contract of its own (no node), read for the `.md` or
@@ -548,17 +596,7 @@ locus GraphIngest {
             if !std::str::starts_with(f, "spec/") || !std::str::ends_with(f, ".description.json") { continue; }
             let stem = std::str::lower(f[5..(len(f) - 17)]);
             if len(stem) == 0 || std::str::contains(stem, "/") { continue; }
-            let mut matched = "";
-            let mut cs = self.contracts;
-            while len(cs) > 1 {
-                cs = cs[1..len(cs)];
-                let n2 = std::str::index_of(cs, "\n");
-                let c = cs[0..n2];
-                cs = cs[n2..len(cs)];
-                if !ingest_ext(c, "md yaml yml") { continue; }
-                let name = std::str::lower(c);
-                if name == "spec/" + stem + ".md" || name == "spec/" + stem + ".yaml" || name == "spec/" + stem + ".yml" { matched = "contract:" + c; cs = ""; }
-            }
+            let matched = self.stem_contract(stem);
             if len(matched) == 0 { continue; }
             let mut surfaces = std::json::array_first(std::json::find_field_raw(self.read(f), "surfaces"));
             while !surfaces.done {
@@ -568,9 +606,7 @@ locus GraphIngest {
                     while !required.done {
                         let e = std::str::trim(required.element);
                         if len(e) >= 3 && std::str::starts_with(e, "\"") {
-                            let role = std::json::unescape_string(e[1..(len(e) - 1)]);
-                            let line = matched + "\t" + role + "\n";
-                            if graph_text_ok(role) && !std::str::contains("\n" + self.roles, "\n" + line) { self.roles = self.roles + line; }
+                            self.add_role(matched, std::json::unescape_string(e[1..(len(e) - 1)]));
                         }
                         required = std::json::array_next(required);
                     }
@@ -578,6 +614,70 @@ locus GraphIngest {
                 }
                 surfaces = std::json::array_next(surfaces);
             }
+        }
+    }
+    // The surfaces the application serves and the streams it serves over a
+    // hub, from what `hale check --api` exports: each a contract the
+    // application's seed `meets` as server. A surface whose stem names a
+    // `spec/<stem>.md` or `.yaml` contract is that contract (the stem rule of
+    // the descriptions); any other is `api:<Surface>`, and a stream is
+    // `stream:<Topic>`. A contract a table already declares keeps the
+    // table's `meets`. The `requires` of its members are the equipment of
+    // the positions that serve it, never an organization.
+    @unbounded
+    fn surfaces_step() {
+        if len(self.appseed) == 0 || len(self.description) == 0 { return; }
+        let mut surfaces = std::json::array_first(std::json::find_field_raw(self.description, "surfaces"));
+        while !surfaces.done {
+            let name = std::json::find_string_field(surfaces.element, "name");
+            if len(name) > 0 {
+                let matched = self.stem_contract(std::str::lower(name));
+                let c = if len(matched) > 0 { matched } else { self.node("contract", "api:" + name, "", "hale check --api") };
+                self.serves(c);
+                let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
+                while !members.done {
+                    self.requires(c, members.element);
+                    members = std::json::array_next(members);
+                }
+            }
+            surfaces = std::json::array_next(surfaces);
+        }
+        let mut hubs = std::json::array_first(std::json::find_field_raw(self.description, "hubs"));
+        while !hubs.done {
+            let mut streams = std::json::array_first(std::json::find_field_raw(hubs.element, "streams"));
+            while !streams.done {
+                let topic = std::json::find_string_field(streams.element, "topic");
+                if len(topic) > 0 {
+                    let c = self.node("contract", "stream:" + topic, "", "hale check --api");
+                    self.serves(c);
+                    self.requires(c, streams.element);
+                }
+                streams = std::json::array_next(streams);
+            }
+            hubs = std::json::array_next(hubs);
+        }
+    }
+    // The application's seed serves contract `c`.
+    fn serves(c: String) {
+        if len(c) == 0 { return; }
+        let line = self.appseed + "\t" + c + "\n";
+        if std::str::contains("\n" + self.served, "\n" + line) { return; }
+        if !self.written("meets:" + c) {
+            let e = GraphEdge { kind: "meets" };
+            self.add(e, "contract", c);
+            self.add(e, "server", self.appseed);
+            self.edge(e);
+        }
+        self.served = self.served + line;
+    }
+    // The roles `holder` (a member, or a stream) requires of its callers.
+    @unbounded
+    fn requires(c: String, holder: String) {
+        let mut required = std::json::array_first(std::json::find_field_raw(holder, "requires"));
+        while !required.done {
+            let e = std::str::trim(required.element);
+            if len(e) >= 3 && std::str::starts_with(e, "\"") { self.add_role(c, std::json::unescape_string(e[1..(len(e) - 1)])); }
+            required = std::json::array_next(required);
         }
     }
     // A YAML matched's `components.schemas`: each a noun; then each local
@@ -1009,7 +1109,7 @@ locus GraphIngest {
             words = words[(sp + 1)..len(words)];
             if len(w) == 0 { continue; }
             while std::str::ends_with(w, ":") || std::str::ends_with(w, "/") { w = w[0..(len(w) - 1)]; }
-            let node = if w == "compose" && last == "docker" { "deployment:compose" } else { self.resolve(ingest_join("", w)) };
+            let node = if w == "compose" && last == "docker" { "deployment:compose" } else if w == "." && len(self.appseed) > 0 { self.appseed } else { self.resolve(ingest_join("", w)) };
             last = w;
             if std::str::starts_with(node, "seed:") || std::str::starts_with(node, "contract:") || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0) {
                 self.add(e, "guarded", node);
@@ -1121,6 +1221,7 @@ locus GraphIngest {
         self.descriptions_step();
         self.documents_step();
         self.markdown_step();
+        self.surfaces_step();
         self.gates_step();
         self.witnesses_step();
         if len(self.error) > 0 { return IngestAnswer { error: self.error }; }
