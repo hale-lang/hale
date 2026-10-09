@@ -465,7 +465,7 @@ fn bring_up() -> Fixture {
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
-    let (ok, out) = f.hale(&["dna", "init", "."], &app);
+    let (ok, out) = f.hale(&["dna", "init", ".", "--no-library"], &app);
     assert!(ok, "init: {out}");
     std::fs::write(app.join("dna/org/models.hl"), std::fs::read_to_string(repo.join("dna/acceptance/trio.fixture/catalog.hl")).unwrap()).unwrap();
     let (ok, out) = f.hale(&["check", "--matrix", "."], &app);
