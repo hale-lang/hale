@@ -50,15 +50,27 @@ fn journal(app: String) -> String {
     return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
 }
 
+// The end of the line that starts at `from` in `v`: the index of its
+// newline, or the text's end. The journal is scanned by offset, never by
+// re-slicing its tail: `rest = rest[(nl + 1)..len(rest)]` copies the whole
+// remainder into the arena once per row, and the arena keeps every copy
+// until the program ends (rows x size per scan, ~10 GB over a run).
+fn line_end(v: std::str::ByteView, from: Int) -> Int {
+    let mut i = from;
+    while i < v.n && std::str::byte_at(v, i) != 10 { i = i + 1; }
+    return i;
+}
+
 // Rows of `kind` about `entity` ("" = any) whose body contains `needle`.
 @unbounded
 fn count(app: String, kind: String, entity: String, needle: String) -> Int {
     let mut n = 0;
-    let mut rest = journal(app);
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
+    let v = std::str::bytes_view(journal(app));
+    let mut at = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         if std::json::find_string_field(line, "kind") != kind { continue; }
         if len(entity) > 0 && std::json::find_string_field(line, "entity") != entity { continue; }
         if len(needle) > 0 && !std::str::contains(std::json::find_string_field(line, "body"), needle) { continue; }
@@ -73,11 +85,12 @@ fn count(app: String, kind: String, entity: String, needle: String) -> Int {
 @unbounded
 fn rows_about(app: String, entity: String) -> String {
     let mut out = "";
-    let mut rest = journal(app);
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
+    let v = std::str::bytes_view(journal(app));
+    let mut at = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         if std::str::contains(line, "\"entity\": \"" + entity + "\"") { out = out + line[0..(if len(line) > 220 { 220 } else { len(line) })] + "\n"; }
     }
     return out;
@@ -86,11 +99,12 @@ fn rows_about(app: String, entity: String) -> String {
 @unbounded
 fn body(app: String, kind: String, entity: String) -> String {
     let mut out = "";
-    let mut rest = journal(app);
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
+    let v = std::str::bytes_view(journal(app));
+    let mut at = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { out = std::json::find_string_field(line, "body"); }
     }
     return out;
@@ -109,21 +123,21 @@ const ADOPT: Int = 300;
 // names the intent.
 @unbounded
 fn case_of(app: String, bill: String) -> String {
-    let rows = journal(app);
+    let v = std::str::bytes_view(journal(app));
     let mut intent = "";
-    let mut rest = rows;
-    while len(rest) > 0 && len(intent) == 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
+    let mut at = 0;
+    while at < v.n && len(intent) == 0 {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         if std::json::find_string_field(line, "kind") == "intent.offered" && std::str::contains(std::json::find_string_field(line, "body"), "bill " + bill + " ") { intent = std::json::find_string_field(line, "entity"); }
     }
     if len(intent) == 0 { return ""; }
-    rest = rows;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
+    at = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         if std::json::find_string_field(line, "kind") == "workflow.admitted" && std::json::find_string_field(std::json::find_string_field(line, "body"), "request") == intent { return std::json::find_string_field(line, "entity") + ".s0.p"; }
     }
     return "";
