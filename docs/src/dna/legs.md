@@ -27,6 +27,18 @@ verbs reach the head at `--api`, which defaults to `HALE_DNA_API`, else
 their commands over the socket the head names, where the kernel
 vouches for who you are.
 
+Where the head serves OIDC, get the token first. On the local stub
+issuer (the one `dna/face/start.sh` starts), `login` mints it for the
+person the record maps, with the client secret read from the vault
+and never printed:
+
+```sh
+eval "$(hale dna work login --as alice)"   # export HALE_DNA_ID_TOKEN=…
+```
+
+A real issuer is refused: `login` prints the head's `/auth/login` URL
+to sign in at in a browser, and mints nothing.
+
 ```sh
 hale dna task create --judgment assess whether the storage migration is safe to ship
 hale dna work next --as position:agent
@@ -62,6 +74,7 @@ verb's id. Every verb takes `--api`.
 
 | verb | what it does | its flags |
 | --- | --- | --- |
+| `login` | prints `export HALE_DNA_ID_TOKEN=…` for a head under the local stub issuer; the sign-in URL (and exit 1) for a real one | `--as <person>` (the record's only one when omitted), `--api` |
 | `next` | claims the next attempt for a position (`Commands::claim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `public internal`), `--orgs`, `--ttl` (600), `--effect`, `--worker` |
 | `brief` | reads the hat, or renders it | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
 | `renew` | extends the lease and keeps the token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (1, 2, … per renewal) |
@@ -81,6 +94,13 @@ declares `dna.trust = local`, as `hale dna new` and `hale dna init`
 declare. Who you are comes from the socket: your uid, mapped to a
 person by `git config --local --add dna.unix.member "uid:<n>=<person>"`,
 which `new` and `init` write for whoever runs them.
+
+A claim matches attempts by performer kind, and `--kind` names it. The
+kinds the organization hands to legs are `agent`, `software` and the
+like; a position the graph states (`position:api/dev`, held or not)
+names no kind of its own yet, so with no `--kind` it claims what an
+`agent` does. When nothing matches, the refusal names the kinds that
+are outstanding for a leg and the flag that claims one.
 
 Exit codes: **0** the head admitted it, or the read answered; **1** a
 refusal (printed with `state: refused` and the reason), a verb outside
@@ -206,6 +226,13 @@ data class and requirement; the effect classes the Work admits, its
 cost ceiling, tool grant and knowledge bindings; the Work's history;
 and the record head and memory watermark it was read at, with its
 digest.
+
+On a head that serves OIDC the hat is the lease holder's: the person your
+token maps to, who claimed the attempt and still holds the lease, reads it
+exactly as on a local head. Anyone else, and you before `next` claims, is
+refused `lease_required`, naming the Work. The claim row is the record's own
+answer to who may see this Work's hat; nothing outside the record has to
+vouch for it.
 
 The hat reads no clock, no environment value and no random id, so read
 twice at one head it is one digest. Rendering is the leg's: `text` for

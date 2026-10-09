@@ -11,6 +11,9 @@
 //   settle    read whether the owner settled it         (WorkSettle, the command's lookup)
 //   release   give the lease back without an outcome    (WorkRelease, dna.attempt.release)
 //   friction  file what got in the position's way       (FrictionFiled, dna.friction.file)
+//   login     mint an ID token for the person the record maps, where the head's
+//             issuer is the local stub (`export HALE_DNA_ID_TOKEN=…`, expiry);
+//             a real issuer: the sign-in URL, and no token
 //   run       one cycle: next, brief, perform, submit, settle
 //   loop      worker mode: --parallel N supervised children, each `run` as its own holder,
 //             one JSON line per child as it ends; SIGTERM/SIGINT or `loop --drain` ends it
@@ -155,6 +158,66 @@ fn error_json(verb: String, error: String) -> String {
     return b.result();
 }
 
+// The stub issuer's client secret (the vault's `oidc-client-<client>`, the
+// one the head's own sign-in sends): revealed in the one statement that
+// posts the token request and nowhere else — no field, no `let`, never
+// printed (spec/semantics.md § "@sealed").
+@sealed locus StubMint {
+    fn vault_of(client: String) -> String { return "oidc-client-" + client; }
+    fn ready(client: String) -> Bool { return std::secret::Credential { vault: self.vault_of(client) }.ready(); }
+    // The issuer's answer to the stub grant for `subject` (`id_token`, `expires_in`), or "".
+    fn mint(issuer: String, client: String, subject: String) -> String {
+        let resp = std::http::post(
+            issuer + "/token",
+            std::bytes::from_string("grant_type=urn:hale:dna:stub&sub=" + dna::url_encode(subject) + "&client_id=" + dna::url_encode(client)
+                    + "&client_secret=" + dna::url_encode(std::secret::Credential { vault: self.vault_of(client) }.reveal_text())),
+            "application/x-www-form-urlencoded"
+        ) or stub_failed(err);
+        if resp.status != 200 { return ""; }
+        return std::str::from_bytes(resp.body);
+    }
+}
+fn stub_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+    return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
+}
+
+// The issuer the local sign-in is served by: a stub on this machine, the
+// `dna-local` client `dna/face/start.sh` configures.
+fn stub_issuer(issuer: String, client: String) -> Bool {
+    return client == "dna-local" && (std::str::starts_with(issuer, "http://127.0.0.1:") || std::str::starts_with(issuer, "http://localhost:"));
+}
+
+// The subject the record's `dna.oidc.member` lines (`<subject>=<person>`) map to `person`.
+@unbounded
+fn subject_of(mapping: String, person: String) -> String {
+    let mut rest = mapping + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        let eq = std::str::index_of(line, "=");
+        if eq > 0 && std::str::trim(line[(eq + 1)..len(line)]) == person { return std::str::trim(line[0..eq]); }
+    }
+    return "";
+}
+// The persons the mapping names, space-separated.
+@unbounded
+fn members_in(mapping: String) -> String {
+    let mut out = "";
+    let mut rest = mapping + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        let eq = std::str::index_of(line, "=");
+        if eq > 0 {
+            let who = std::str::trim(line[(eq + 1)..len(line)]);
+            if !dna::word_in(who, out) { out = out + (if len(out) > 0 { " " } else { "" }) + who; }
+        }
+    }
+    return out;
+}
+
 // The leg's one run: parse, attach to the head, do the verb, print.
 locus Leg {
     params {
@@ -168,7 +231,7 @@ locus Leg {
     }
     fn usage(why: String) -> Int {
         eprintln("hale dna work: ", why);
-        eprintln("usage: hale dna work next|brief|renew|allowance|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
+        eprintln("usage: hale dna work next|brief|login|renew|allowance|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
         return 2;
     }
     fn fail(verb: String, error: String) -> Int { println(error_json(verb, error)); return 1; }
@@ -183,6 +246,51 @@ locus Leg {
         if !std::str::starts_with(self.as_position, "position:") || len(self.as_position) < 10 { return false; }
         self.holder = worker_holder(self.as_position, int_flag(self.a, "--worker", 0));
         return true;
+    }
+    // ---- login: an ID token for a hosted head (`dna.principal oidc`), minted
+    // where the issuer is the local stub; the sign-in URL where it is not. The
+    // head names its issuer on an unauthenticated route (nothing a sign-in
+    // redirect does not already say); the person is `--as <person>` (the
+    // record's only one when omitted), their subject the record's own
+    // `dna.oidc.member` mapping read in the project this runs in. The token is
+    // printed as `export HALE_DNA_ID_TOKEN=…` for `eval "$(hale dna work
+    // login)"`, an expiry comment before it; the client secret goes from the
+    // vault into the request and is never shown.
+    fn login() -> Int {
+        let found = self.head.http("GET", self.head.api + "/.well-known/hale-dna", "Accept: application/json", "") or self.head.transport_failed(err);
+        if found.status == 0 { return self.fail("login", "the head at " + self.head.api + " cannot be reached: " + std::str::from_bytes(found.body)); }
+        let text = std::str::from_bytes(found.body);
+        if found.status != 200 || std::json::find_string_field(text, "principal") != "oidc" { return self.fail("login", "the head at " + self.head.api + " does not serve OIDC: its reads need no token (a local head), or it is an older head"); }
+        let issuer = std::json::find_string_field(text, "issuer");
+        let client = std::json::find_string_field(text, "client");
+        if !stub_issuer(issuer, client) {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("verb", "login");
+            b.string_field("state", "refused");
+            b.string_field("error", "the issuer " + issuer + " is a real one: sign in at the URL below in a browser; this verb mints only for the local stub");
+            b.string_field("sign_in", self.head.api + "/auth/login");
+            b.end_object();
+            println(b.result());
+            return 1;
+        }
+        let mapping = dna::GitRecord { repo: "." }.git("config\n--local\n--get-all\ndna.oidc.member");
+        let known = if mapping.code == 0 { mapping.stdout } else { "" };
+        let mut person = flag(self.a, "--as");
+        if len(person) == 0 {
+            let all = members_in(known);
+            if dna::word_count(all) != 1 { return self.fail("login", "name the person: --as <person> (" + (if len(all) > 0 { "the record maps " + all } else { "the record, in the project this runs in, maps no one: `git config --local --add dna.oidc.member \"<subject>=<person>\"`" }) + ")"); }
+            person = all;
+        }
+        let subject = subject_of(known, person);
+        if len(subject) == 0 { return self.fail("login", "the record maps no subject to `" + person + "` (`dna.oidc.member`)"); }
+        let minter = StubMint { };
+        if !minter.ready(client) { return self.fail("login", "the vault holds no `oidc-client-" + client + "` (the stub's client secret; the face's launch script provisions it)"); }
+        let token = std::json::find_string_field(minter.mint(issuer, client, subject), "id_token");
+        if len(token) == 0 { return self.fail("login", "the issuer " + issuer + " refused to mint for `" + subject + "`"); }
+        println("# " + person + " (" + subject + "), signed in by the stub issuer; the token lasts until it expires (ask again then)");
+        println("export HALE_DNA_ID_TOKEN=" + token);
+        return 0;
     }
     // ---- next: WorkClaim
     fn next() -> Int {
@@ -629,7 +737,7 @@ locus Leg {
         self.a = parse_args();
         if len(self.a.error) > 0 { return self.usage(self.a.error); }
         let verb = self.a.verb;
-        if verb != "next" && verb != "brief" && verb != "renew" && verb != "allowance" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
+        if verb != "login" && verb != "next" && verb != "brief" && verb != "renew" && verb != "allowance" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
         // no default effect class: a catalog with a performer that declares
         // none is refused before a claim or an outcome — the verbs that
         // carry a class — and nowhere else, so a leg rebuilt under a
@@ -640,6 +748,11 @@ locus Leg {
                 eprintln("hale dna work: dna/org/work.hl: ", unseated, "; every performer declares one: effect_free, idempotent or uncertain");
                 return 2;
             }
+        }
+        if verb == "login" {
+            // `--as` is a person here, not a position: judged apart
+            self.head.api = flag_or(self.a, "--api", if std::env::var_exists("HALE_DNA_API") { std::env::var("HALE_DNA_API") } else { "http://127.0.0.1:8793" });
+            return self.login();
         }
         let wrong = self.precheck(verb);
         if len(wrong) > 0 { return self.usage(wrong); }

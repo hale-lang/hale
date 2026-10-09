@@ -1984,10 +1984,13 @@ memory is named to it.
   identity — the graph's `position:<name>` id, from the performer kind
   the attempt admitted last names, or the kind the request selects
   before one is — and its charter (the record's `graph.node` text for
-  that id, `""` until the graph names it); the practices ratified for
-  the Work's targets (`targets`: its path, its codebase's languages,
-  `system:dna` for an organization change, the position — **The hat's
-  target set**), from memory under the reader's role, resolved to
+  that id, `""` until the graph names it); read under OIDC, it is the
+  lease holder's — the person the record maps the bearer to, whose
+  `attempt.claimed` row is the Work's current, unexpired, unreleased
+  lease; any other caller is refused `403 lease_required`; the practices
+  ratified for the Work's targets (`targets`: its path, its codebase's
+  languages, `system:dna` for an organization change, the position —
+  **The hat's target set**), from memory under the reader's role, resolved to
   text with their ids; the knowledge bindings; the tool grant; the
   output contract; the data class; the Work's history as facts; the
   record head and memory's projection watermark it was rendered at
@@ -2134,9 +2137,20 @@ memory is named to it.
   allowance of attempts bounds the repeats; the calls are journaled all
   the same, for what was spent is spent.
 - **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
-  vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
+  vendored as `vendor/dna/legs`) are a leg as API clients: `login`
+  asks the head (`GET /.well-known/hale-dna`, unauthenticated under
+  OIDC: principal, issuer, client) who signs its people in, and where
+  that is the local stub (a loopback issuer, client `dna-local`) mints
+  an ID token for the subject the record's `dna.oidc.member` maps to
+  `--as <person>`, the client secret read from the vault entry
+  `oidc-client-dna-local` and never printed, and prints
+  `export HALE_DNA_ID_TOKEN=…`; for any other issuer it prints the
+  sign-in URL and exits 1; `next` is
   `dna.attempt.claim` for a position (`--as position:<name>`, the
-  graph's id, never a free string), `brief` the hat read — or rendered
+  graph's id, never a free string; a claim matches attempts by performer
+  kind, `--kind`, and a position the graph states that names no kind of
+  its own claims as an `agent`; a refusal names the kinds outstanding
+  and the flag), `brief` the hat read — or rendered
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,
   the digest of what was rendered and the renderer's version
   (`legs-render/1`) — `renew` is `dna.attempt.renew` (the lease
@@ -3413,6 +3427,14 @@ in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
 every try's model calls are evidence in the record. The result names
 the files changed and the tries taken; a proposal that does not check
 within the bound is a failed Attempt with the last diagnostics.
+
+The listing is the `.hl` files under the grant's root, by path from it,
+four directories deep; hidden directories and the organization's own
+(`dna`, `vendor`) are not listed, so a grant over a repository's root
+reaches the seeds under it (`api/todo.hl`). When no file is found the
+Mutation fails naming the cause, not the grant alone: the grant lists
+no `.hl` file (no model is asked), the model could not be asked, or the
+model named a file the listing does not hold (`SourceEditor.located_why`).
 
 ## Models
 

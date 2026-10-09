@@ -95,7 +95,11 @@ loopback is anyone's who can bind its port, so the record pins its key
   that started it. The session is an `HttpOnly` cookie that lasts eight
   hours or until `/auth/logout`. An unmapped subject gets no session.
   A program acting for a person presents its ID token as
-  `Authorization: Bearer <token>` instead.
+  `Authorization: Bearer <token>` instead; a leg gets one from
+  `hale dna work login` where the issuer is the local stub, and signs
+  in at `/auth/login` where it is not ([Legs, hands and voice](./legs.md)).
+  The head names its issuer and client at `/.well-known/hale-dna`,
+  unauthenticated, which is what the verb asks.
 - **A service**, a program with no person behind it, gets its own token
   from the issuer with the `client_credentials` grant and presents it
   as a bearer. Map it beside your members, with
@@ -103,6 +107,12 @@ loopback is anyone's who can bind its port, so the record pins its key
   It reads as `service:<service>`, gets no session, and sends no
   commands: a command is a person's, and a service holds no position.
   A subject is a person or a service, never both.
+
+What a person's token reads is the record's to say. The hat of a Work
+(`…/dna/context`, what `hale dna work brief` prints) is read by the person
+who holds that Work's attempt lease and by no one else: the member map
+names the person, and the claim row names who holds the lease
+([Legs, hands and voice](./legs.md)).
 
 **Local mode is OIDC too.** `dna/face/start.sh` starts the stub
 provider on the loopback and signs you in through it as the subject

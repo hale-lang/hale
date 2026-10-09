@@ -182,6 +182,7 @@ fn api() {
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,journal_io}
+        ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
         launch_token  does={syscall,block,alloc}
@@ -296,8 +297,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        452,
-        469,
+        454,
+        471,
         "
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}

@@ -10,9 +10,8 @@ import "../operations" as ops;
 
 locus ContextWire {
     params { }
-    fn read(root: String, mode: String, source: Source, query: Query) -> std::http::Response {
+    fn read(root: String, mode: String, actor: String, source: Source, query: Query) -> std::http::Response {
         let http = Http { };
-        if mode != "local" { return http.error(403, "context_source_unavailable", "hosted context reads require an owning-service visibility provider", false); }
         if len(query.id) == 0 { return http.error(400, "invalid_query", "the context read names one Work by id", false); }
         let record = dna::GitJournal { repo: root };
         if record.head() != source.head || record.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the context", true); }
@@ -22,6 +21,13 @@ locus ContextWire {
         let j = dna::RoutedJournal { record: record, ledger: ledger };
         let reader = ops::HatReader { j: j, receipts: dna::GitReceipts { repo: root }, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
         let hat = reader.read(query.id);
+        if mode != "local" {
+            // the lease is the visibility; a Work that does not exist is refused the same way
+            // (a caller learns nothing of a Work they hold no lease on)
+            let claim = if hat.ok && len(hat.attempt_id) > 0 { dna::recorded_leg_claim(j, hat.attempt_id, j.revision()) } else { dna::LegClaim { } };
+            let held = claim.present && len(actor) > 0 && claim.principal_name == actor && claim.expires > std::time::now();
+            if !held { return http.error(403, "lease_required", "a hosted hat is read by the person who holds the Work's attempt lease (`work next` claims one); `" + actor + "` holds none on `" + query.id + "`", false); }
+        }
         if !hat.ok {
             if hat.code == "work_not_found" { return http.error(404, hat.code, hat.why, false); }
             return http.error(503, hat.code, hat.why, hat.code == "context_source_unavailable");

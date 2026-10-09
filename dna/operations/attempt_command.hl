@@ -75,6 +75,7 @@ type AttemptCandidates {
     unresolved: Int = 0; // ... an uncertain performer holds or held with no outcome: a person's to resolve
     classed: Int = 0; // ... of a data class the leg may not see
     owned: Int = 0; // ... under an owner the leg does not work for
+    kinds: String = ""; // the performer kinds of the attempts outstanding for a leg at all, space-separated
 }
 
 // A leg's identity is a position: the graph's `position:<name>` id,
@@ -446,6 +447,23 @@ locus AttemptCommandCodec {
         }
         return false;
     }
+    // Whether an attempt is outstanding for some leg: asked to run, relayed to legs, no outcome.
+    fn relayed_outstanding(j: dna::Journal, attempt_id: String) -> Bool {
+        return self.has_row(j, "effect.requested", "attempt:" + attempt_id) && !self.has_row(j, "attempt.outcome", attempt_id) && self.has_row(j, "effect.relayed", "attempt:" + attempt_id);
+    }
+    // The performer kind a claim matches attempts by. A leg that names no
+    // kind of its own claims by its position's name (`position:api/dev` is
+    // kind `api/dev`), which no attempt carries: a position the graph states
+    // names no performer kind yet (the kickstart's structure item will give
+    // positions theirs), so until then it claims what an agent does. A
+    // position the organization generates (`leader`, `editor`, ...) and a
+    // kind a leg names with `--kind` are taken as they are.
+    fn claim_kind(j: dna::Journal, location: String, c: GovernanceCommand) -> String {
+        let base = holder_base(c.performer);
+        if len(base) < 10 || c.performer_kind != base[9..len(base)] || base == "position:leader" { return c.performer_kind; }
+        if dna::word_in(c.performer_kind, "edit editor agent human service software") { return c.performer_kind; }
+        return if self.known_position(j, location, c.performer) { "agent" } else { c.performer_kind };
+    }
     // Whether the record says another leg holds the attempt under a lease
     // that is still live.
     fn held_by_another(j: dna::Journal, attempt_id: String, performer: String, now: Int) -> Bool {
@@ -465,6 +483,7 @@ locus AttemptCommandCodec {
                 let d = dna::decode_attempt(e.body);
                 if d.ok && d.value.attempt_id == e.entity {
                     let why = self.excluded_by(j, d.value, c);
+                    if why == "kind" && self.relayed_outstanding(j, d.value.attempt_id) && !dna::word_in(d.value.performer_kind, out.kinds) { out.kinds = out.kinds + (if len(out.kinds) > 0 { " " } else { "" }) + d.value.performer_kind; }
                     if len(why) == 0 { out.names = out.names + e.entity + "\n"; }
                     if why != "kind" && why != "settled" { out.of_kind = out.of_kind + 1; }
                     if why == "in_process" { out.in_process = out.in_process + 1; }
@@ -483,7 +502,10 @@ locus AttemptCommandCodec {
     // Why nothing awaits the leg, from what the scan found.
     fn nothing_awaits(c: GovernanceCommand, found: AttemptCandidates) -> String {
         let mut why = "no admitted attempt awaits a " + c.performer_kind + " leg with capabilities `" + c.capabilities + "`";
-        if found.of_kind == 0 { return why + ": none of that kind is outstanding"; }
+        if found.of_kind == 0 {
+            let outstanding = if len(found.kinds) > 0 { "the kinds outstanding for a leg: " + found.kinds } else { "no kind is outstanding for a leg" };
+            return why + ": none of that kind is outstanding (" + outstanding + "; a leg claims a kind with --kind <kind>)";
+        }
         why = why + ": " + to_string(found.of_kind) + " of that kind outstanding";
         if found.in_process > 0 { why = why + ", " + to_string(found.in_process) + " performed in the organism, not relayed to a leg (an edit its editor holds, a case a person does)"; }
         if found.awaiting > 0 { why = why + ", " + to_string(found.awaiting) + " with an outcome handed back that awaits the owner"; }

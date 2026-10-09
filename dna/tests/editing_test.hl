@@ -166,6 +166,119 @@ main locus App {
         std::io::fs::write_file(root3 + "/gone.hl", "fn gone() { }\n") or discard;
         std::test::assert(tools.remove("gone.hl"), "a file that can go, goes");
         std::test::assert(!std::io::fs::file_exists(root3 + "/gone.hl"), "and is gone");
+        // ---- what a grant over a repository lists, and why nothing was found --
+        // a repository record's grant is its root, and its code sits under the
+        // seeds (the todo repository's `api/`): the listing reaches them by path;
+        // the organization's own seed, vendored code and hidden directories are
+        // not the grant's code
+        let root4 = dna::scratch_root("edit-repo");
+        std::io::fs::mkdir(root4 + "/api") or discard;
+        std::io::fs::mkdir(root4 + "/dna") or discard;
+        std::io::fs::mkdir(root4 + "/vendor") or discard;
+        std::io::fs::mkdir(root4 + "/.hale") or discard;
+        std::io::fs::write_file(root4 + "/api/todo.hl", "fn todo() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/dna/org.hl", "fn org() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/vendor/v.hl", "fn v() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/.hale/h.hl", "fn h() { }\n") or discard;
+        std::io::fs::write_file(root4 + "/README.md", "todo\n") or discard;
+        let picks = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(picks.files(), "api/todo.hl\n", "the listing reaches the seed under the root, and nothing of the organization's: " + picks.files());
+        std::test::assert_eq_str(picks.locate("a1", "add a Todos::count rpc"), "api/todo.hl", "the model picks from the listing: " + picks.located_why);
+        std::test::assert_eq_str(picks.locate("a2", "change api/todo.hl so it counts"), "api/todo.hl", "and a file the ask names needs no model");
+        let wrong = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "nowhere.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(wrong.locate("a3", "add a Todos::count rpc"), "", "a file the model names that is not listed is no target");
+        std::test::assert(std::str::contains(wrong.located_why, "`nowhere.hl`") && std::str::contains(wrong.located_why, "not one of the grant's 1 listed"), "and the failure says the model's answer was the cause, not the grant: " + wrong.located_why);
+        // a target is a complete listed path: the bare name resolves to the one
+        // entry it is the basename of, a suffix of nothing listed is no target,
+        // and two entries sharing the name make the bare name ambiguous
+        let bn = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(bn.locate("b1", "change todo.hl so it counts"), "api/todo.hl", "the basename in the objective resolves to the listed path: " + bn.located_why);
+        std::test::assert(bn.models.calls == 0, "and asks no model");
+        std::test::assert_eq_str(bn.plan("b2", "change todo.hl and api/todo.hl"), "api/todo.hl", "the plan resolves each named file the same way, once");
+        std::test::assert_eq_str(bn.locate("b3", "add a Todos::count rpc"), "api/todo.hl", "a basename in the model's answer resolves too: " + bn.located_why);
+        std::test::assert_eq_str(bn.plan("b4", "add a Todos::count rpc"), "api/todo.hl", "and in the model's plan");
+        std::test::assert_eq_str(bn.locate("b5", "change pi/todo.hl"), "api/todo.hl", "an unlisted path in the objective falls to the model, not to a suffix");
+        std::test::assert_eq_str(wrong.locate("b6", "change i/todo.hl"), "", "a suffix of a listed path is no target");
+        std::test::assert_eq_str(bn.tools.root, root4, "the grant is unchanged");
+        let root6 = dna::scratch_root("edit-dup");
+        std::io::fs::mkdir(root6 + "/a") or discard;
+        std::io::fs::mkdir(root6 + "/b") or discard;
+        std::io::fs::write_file(root6 + "/a/todo.hl", "fn a() { }\n") or discard;
+        std::io::fs::write_file(root6 + "/b/todo.hl", "fn b() { }\n") or discard;
+        let dup = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root6, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(dup.locate("c1", "change todo.hl"), "", "a bare name two files share is no target");
+        std::test::assert(std::str::contains(dup.located_why, "ambiguous") && std::str::contains(dup.located_why, "a/todo.hl") && std::str::contains(dup.located_why, "b/todo.hl") && dup.models.calls == 0, "the refusal names both: " + dup.located_why);
+        std::test::assert_eq_str(dup.locate("c2", "change b/todo.hl"), "b/todo.hl", "the full path is exact");
+        std::test::assert_eq_str(dup.locate("c3", "add a rpc"), "", "a model answer that is ambiguous is refused");
+        std::test::assert(std::str::contains(dup.located_why, "ambiguous"), "naming why: " + dup.located_why);
+        std::test::assert_eq_str(dup.plan("c4", "change a/todo.hl and todo.hl"), "a/todo.hl", "the plan keeps the exact path and drops the ambiguous name");
+        dna::scratch_done(root6);
+        // a plan keeps every complete entry it names: a root file and a nested
+        // file of the same basename are two targets, in the order named, and
+        // one is never dropped for being a suffix of the other
+        let root8 = dna::scratch_root("edit-both");
+        std::io::fs::mkdir(root8 + "/api") or discard;
+        std::io::fs::write_file(root8 + "/todo.hl", "fn root() { }\n") or discard;
+        std::io::fs::write_file(root8 + "/api/todo.hl", "fn nested() { }\n") or discard;
+        let both = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl\ntodo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root8, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(both.plan("d1", "change api/todo.hl and todo.hl"), "api/todo.hl todo.hl", "the nested path first keeps the root file");
+        std::test::assert_eq_str(both.plan("d2", "change todo.hl and api/todo.hl"), "todo.hl api/todo.hl", "and the root file first keeps the nested one");
+        std::test::assert_eq_str(both.plan("d3", "add a rpc to both"), "api/todo.hl todo.hl", "a model plan naming both keeps both");
+        dna::scratch_done(root8);
+        // the listing stays inside the grant: a directory that links out of the
+        // worktree is not descended, and its files can be neither read nor edited
+        let outside = dna::scratch_root("edit-outside");
+        std::io::fs::write_file(outside + "/private.hl", "fn private() { }\n") or discard;
+        let root7 = dna::scratch_root("edit-link");
+        std::io::fs::mkdir(root7 + "/real") or discard;
+        std::io::fs::write_file(root7 + "/real/x.hl", "fn x() { }\n") or discard;
+        let ln = dna::run_tool("ln\n-s\n" + outside + "\n" + root7 + "/linked");
+        std::test::assert(ln.code == 0, "the link is made: " + ln.stderr);
+        let lk = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "linked/private.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root7, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(lk.files(), "real/x.hl\n", "a real nested directory lists, a linked one lists nothing: " + lk.files());
+        std::test::assert_eq_str(lk.locate("d1", "add a rpc"), "", "and the model naming a path through the link has no target");
+        std::test::assert_eq_str(lk.tools.read("linked/private.hl"), "", "a read through the link is refused");
+        std::test::assert(lk.tools.refused == 1 && std::str::contains(lk.tools.last_refusal, "outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
+        std::test::assert(!lk.tools.edit("linked/private.hl", "fn pwned() { }\n"), "an edit through the link is refused");
+        std::test::assert(lk.tools.refused == 2 && std::str::contains(lk.tools.last_refusal, "edit outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
+        std::test::assert_eq_str(std::io::fs::read_file(outside + "/private.hl") or "", "fn private() { }\n", "the file outside is untouched");
+        std::test::assert_eq_str(lk.tools.read("real/x.hl"), "fn x() { }\n", "a real file is still read");
+        dna::scratch_done(root7);
+        dna::scratch_done(outside);
+        let root5 = dna::scratch_root("edit-empty");
+        let empty = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "x.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root5, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(empty.locate("a4", "add a rpc"), "", "a grant that lists nothing finds nothing");
+        std::test::assert(std::str::contains(empty.located_why, "lists no .hl file") && empty.models.calls == 0, "and says so, asking no model: " + empty.located_why);
+        dna::scratch_done(root4);
+        dna::scratch_done(root5);
         dna::scratch_done(root);
         dna::scratch_done(root2);
         dna::scratch_done(root3);
