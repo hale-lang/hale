@@ -1145,6 +1145,7 @@ fn rewrite_claim_topic_refs(
                 }
             }
             ClaimForm::Require { topic, .. }
+            | ClaimForm::RouteCoverage { topic, .. }
             | ClaimForm::Count { topic, .. } => {
                 rewrite(topic);
             }
@@ -1721,6 +1722,16 @@ impl<'a> Mangler<'a> {
                     ClaimForm::RequireSealed { group }
                     | ClaimForm::Cover { group, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);
+                    }
+                    ClaimForm::RouteCoverage { group, topic, .. } => {
+                        self.rewrite_group_ident(&mut group.name, bind);
+                        if topic.segments.len() == 1 {
+                            self.rewrite_ident(
+                                &mut topic.segments[0].name,
+                            );
+                        } else {
+                            self.rewrite_alias_head(&mut topic.segments);
+                        }
                     }
                     // Names an effect CLASS, not a group or topic;
                     // nothing to rewrite.

@@ -247,6 +247,10 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
             name(alias, f);
             name(group, f);
         }
+        ClaimForm::RouteCoverage { topic, range: _, group } => {
+            topic_ref(topic, f);
+            name(group, f);
+        }
         ClaimForm::Count { publishers: _, topic, cmp: _, n: _ } => topic_ref(topic, f),
     }
 }

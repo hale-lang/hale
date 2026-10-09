@@ -2145,6 +2145,9 @@ impl Parser {
     /// `cover topic in seed(a): subscribed_by(some G)`.
     fn parse_cover_form(&mut self) -> Result<ClaimForm, Diag> {
         self.bump(); // `cover`
+        if matches!(&self.peek_token().kind, TokenKind::Ident(s) if s == "keys") {
+            return self.parse_route_coverage_form();
+        }
         self.expect_contextual("topic")?;
         self.expect(TokenKind::In, "in")?;
         self.expect_contextual("seed")?;
@@ -2169,6 +2172,56 @@ impl Parser {
         let group = self.expect_ident("group name")?;
         self.expect(TokenKind::RParen, ")")?;
         Ok(ClaimForm::Cover { alias, group })
+    }
+
+    /// `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G)`
+    /// — the `cover` keyword already consumed.
+    fn parse_route_coverage_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `keys`
+        self.expect(TokenKind::LParen, "(")?;
+        self.expect_contextual("topic")?;
+        let topic = self.parse_topic_ref()?;
+        let range = if self.eat(&TokenKind::In) {
+            let lo = self.parse_claim_signed_int()?;
+            self.expect(TokenKind::DotDotEq, "..=")?;
+            let hi_tok = self.peek_token().clone();
+            let hi = self.parse_claim_signed_int()?;
+            if hi < lo {
+                return Err(Diag::parse(
+                    hi_tok.span,
+                    format!(
+                        "the key interval `{}..={}` is empty — an empty \
+                         permitted set would hold vacuously",
+                        lo, hi
+                    ),
+                ));
+            }
+            Some((lo, hi))
+        } else {
+            None
+        };
+        self.expect(TokenKind::RParen, ")")?;
+        self.expect(TokenKind::Colon, ":")?;
+        self.expect_contextual("delivered_to")?;
+        self.expect(TokenKind::LParen, "(")?;
+        self.expect_contextual("exactly_one")?;
+        let group = self.expect_ident("group name")?;
+        self.expect(TokenKind::RParen, ")")?;
+        Ok(ClaimForm::RouteCoverage { topic, range, group })
+    }
+
+    /// An integer literal with an optional leading `-`.
+    fn parse_claim_signed_int(&mut self) -> Result<i64, Diag> {
+        let neg = self.eat(&TokenKind::Minus);
+        let tok = self.peek_token().clone();
+        let TokenKind::IntLit(n) = tok.kind else {
+            return Err(Diag::parse(
+                tok.span,
+                "expected an integer key bound",
+            ));
+        };
+        self.bump();
+        Ok(if neg { n.wrapping_neg() } else { n })
     }
 
     /// `count publishers(topic T) == N` (`<=`, `>=`); also

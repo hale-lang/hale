@@ -2428,6 +2428,7 @@ pub fn judge_endpoints(
         let refused_domain = match &row.law {
             ClaimIr::RequireEndpoint { group, .. }
             | ClaimIr::RequireSealed { group }
+            | ClaimIr::RouteCoverage { group, .. }
             | ClaimIr::Cover { group, .. } => {
                 !domain_is_judgable(table, group)
             }
@@ -2927,6 +2928,99 @@ pub fn judge_endpoints(
                 out.push(Judged {
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
+                    diags,
+                    foreign: Vec::new(),
+                });
+            }
+            ClaimIr::RouteCoverage {
+                topic,
+                range,
+                group,
+            } => {
+                let mut ok = check_group(group, &mut diags);
+                ok &= check_topic(topic, &mut diags);
+                if !ok {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                        foreign: Vec::new(),
+                    });
+                    continue;
+                }
+                let g_loci = group_loci(group.group.unwrap());
+                let tix = topic_by_name[topic.name.raw.as_str()];
+                let wire = e.subjects[e.topics[tix as usize].subject.index()]
+                    .pattern
+                    .as_str();
+                // Who receives a key is decided by the SUBSCRIBES
+                // rows, their instance counts and their key filters:
+                // a hole hiding any of them on this topic withdraws
+                // the answer.
+                let incomplete = bus_holes.blocks(
+                    hale_model::RelationSet::SUBSCRIBES
+                        .union(hale_model::RelationSet::CARDINALITY)
+                        .union(hale_model::RelationSet::KEY_FILTERS),
+                    Some(tix),
+                    Some(wire),
+                );
+                let verdict = match crate::route_coverage::judge(
+                    model,
+                    tix as usize,
+                    *range,
+                    &g_loci,
+                    &group.name.display,
+                    incomplete,
+                ) {
+                    crate::route_coverage::Outcome::Holds => Verdict::Holds,
+                    crate::route_coverage::Outcome::Invalid(reason) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: {}",
+                                row.name, reason
+                            ),
+                        ));
+                        Verdict::Invalid
+                    }
+                    crate::route_coverage::Outcome::Violated {
+                        gaps,
+                        overlaps,
+                    } => {
+                        const SHOWN: usize = 8;
+                        let mut lines: Vec<String> = Vec::new();
+                        for (kind, items) in
+                            [("uncovered", &gaps), ("overlapping", &overlaps)]
+                        {
+                            for it in items.iter().take(SHOWN) {
+                                lines.push(format!("{}: {}", kind, it));
+                            }
+                            if items.len() > SHOWN {
+                                lines.push(format!(
+                                    "{}: … and {} more",
+                                    kind,
+                                    items.len() - SHOWN
+                                ));
+                            }
+                        }
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` violated: not every key of `{}` \
+                                 reaches exactly one registration of `{}` \
+                                 — {}",
+                                row.name,
+                                topic.name.display,
+                                group.name.display,
+                                lines.join("; ")
+                            ),
+                        ));
+                        Verdict::Violated
+                    }
+                };
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict,
                     diags,
                     foreign: Vec::new(),
                 });

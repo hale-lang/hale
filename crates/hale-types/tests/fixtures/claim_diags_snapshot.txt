@@ -107,6 +107,16 @@ Claim [792..798] claim `tagged` violated: a fn performs `syscall` with no declar
 Claim [104..109] claim `quiet` violated: counted 1 subscriber(s) (`Worker`) of `Evt`, claim requires == 0
 --- crates/hale-types/tests/claim_lowering.rs#2 ---
 Claim [37..44] unknown constitution `Missing` — nothing declares it
+--- crates/hale-types/tests/claim_route_coverage.rs#1 ---
+Claim [791..796] claim `route` violated: not every key of `Orders` reaches exactly one registration of `workers` — overlapping: 2 registrations of `workers` receive key 0: `Alpha::on_alpha` (where key == 0) at `App.a`; `Beta::on_beta` (where key == 0) at `App.b`
+--- crates/hale-types/tests/claim_route_coverage.rs#2 ---
+Claim [436..441] claim `route` violated: not every key of `Orders` reaches exactly one registration of `workers` — overlapping: 2 registrations of `workers` receive key 7: `Worker::on_order` (where key == 7) at `App.a`; `Worker::on_order` (where key == 7) at `App.b`
+--- crates/hale-types/tests/claim_route_coverage.rs#3 ---
+Claim [437..442] claim `route` cannot be certified: the key filter of `Worker::on_order` is not statically known (it may or may not receive any given key), so the recipients of a key cannot be counted — write the filter as a literal or `replica`
+--- crates/hale-types/tests/claim_route_coverage.rs#5 ---
+Claim [607..612] claim `route` violated: not every key of `Orders` reaches exactly one registration of `workers` — uncovered: no registration of `workers` receives keys 1..=2 (only the fallback subscriber hears it; its recipients lie outside the group: `Rest::on_rest`)
+--- crates/hale-types/tests/claim_route_coverage.rs#6 ---
+Claim [357..362] claim `route` cannot be certified: topic `Orders` is not keyed — routing coverage is a claim about `keyed_by` topics (an unkeyed topic delivers to every subscriber; use `count subscribers` for that)
 --- crates/hale-types/tests/claims.rs#1 ---
 Claim [330..333] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `B::work`
 Claim [159..173] claim `iso`: the boundary into `b_side` is crossed by this call

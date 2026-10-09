@@ -341,6 +341,44 @@ The remaining verbs (#382 phases 2–5):
   cardinality family over distinct loci; `== 1` is the invariant
   behind every single-writer pattern, and a violation names the
   competing writers.
+- **`cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G)`**
+  (GH #1327 §1) — routing coverage and exclusivity. For every
+  permitted key `k` of the `keyed_by` topic `T`, the registrations of
+  group `G` that receive `k` number exactly one: `|R_G(k)| = 1`. A
+  *registration* is one instance of a subscribing locus — three
+  arranged replicas of one `subscribe` are three. Recipients outside
+  `G` are not counted (an audit subscriber does not break a worker
+  group's uniqueness), but they take part in routing: a
+  `where key == _` fallback hears only the keys no filter, in any
+  group, matched. The *permitted keys* are the stated integer interval
+  `in LO..=HI` (inclusive; written `-3..=3` with a sign), or, without
+  it, what the topic's publish sites can produce — the whole `Int`
+  range, `{false, true}` for `Bool`, every value of any other key
+  type. The recipient rule is the one the `@budget(fanout)` account
+  uses (`key_routing`): one query, two callers. Keys are decided
+  symbolically — the permitted domain is cut by the registrations that
+  exist into the keys some filter names and the intervals (or "every
+  other value") none does — so an `Int` key costs a handful of cases,
+  not 2^64. A violation names every uncovered key or interval, or the
+  registrations (handler, filter, instance path) that overlap on a
+  key. **Fail closed:** a filter whose value is not statically known
+  (`where key == self.id`) on a locus that has instances, a locus that
+  can also be born outside the arrangement, a hole hiding
+  subscriptions, instance counts or key filters on the topic, an
+  unkeyed topic, a topic with no publish site and no stated interval,
+  and a key interval for a non-`Int` key each make the claim
+  `invalid` with the reason — never `holds`. **What it proves:** in
+  the modeled arrangement, each permitted key selects exactly one
+  registration of the group. **What it does not:** a different
+  arrangement (a replacement, a restart or a runtime birth changes the
+  live registrations — preserving uniqueness across them needs a
+  stronger invariant over live registrations and incarnations);
+  exactly-once *processing* (that needs request identity, retry,
+  persistence and acknowledgement semantics); that a publisher
+  produces only permitted keys (an out-of-interval key is outside the
+  claim; the topic's `on_unmatched` policy governs it); or delivery of
+  a cell the queue sheds or a binding drops (loss policy is a separate
+  claim family).
 - **`during P`** on `forbid` — restricts sources to the named
   phase of each source locus (`during birth` is the quiet-boot
   claim), evaluated against the model's **phase relation** (#392):

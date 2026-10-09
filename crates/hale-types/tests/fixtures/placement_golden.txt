@@ -4628,6 +4628,12 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 
+== crates/hale-types/tests/claim_route_coverage.rs#ab15e6a4
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.e	Even	main	default
+row	App@literal1.r	Rest	main	default
+
 == crates/hale-types/tests/claims.rs#afe54d07
 root	App	the entry
 row	App@literal1	App	main	default

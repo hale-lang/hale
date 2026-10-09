@@ -89,7 +89,8 @@ claims_block      = "claims" , "{" , { claim_entry } , "}" ;
 claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
                   | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
-                  | require_form | cover_form | count_form ;
+                  | require_form | cover_form | route_form
+                  | count_form ;
 
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,
                     claim_set , ")" ,
@@ -121,6 +122,11 @@ cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
                     "(" , "some" , IDENTIFIER , ")" ;
 
+route_form        = "cover" , "keys" , "(" , "topic" , topic_ref ,
+                    [ "in" , key_bound , "..=" , key_bound ] , ")" ,
+                    ":" , "delivered_to" , "(" , "exactly_one" ,
+                    IDENTIFIER , ")" ;
+key_bound         = [ "-" ] , INT_LIT ;
 count_form        = "count" , ( "publishers" | "subscribers" ) ,
                     "(" , "topic" , topic_ref , ")" ,
                     ( "==" | "<=" | ">=" ) , INT_LIT ;
@@ -480,6 +486,114 @@ exact instance counts are a fleet claim
 (`count_publisher_instances` in a fleet plan; see
 [Checking the whole deployment](./services/multi-binary.md#checking-the-whole-deployment)).
 
+## `cover keys` — every key has exactly one recipient
+
+```hale,fragment
+one_worker: cover keys(topic Orders in 0..=3): delivered_to(exactly_one workers);
+whole_type: cover keys(topic Orders): delivered_to(exactly_one workers);
+```
+
+A keyed topic routes each message by one field, and each subscriber
+says which keys it takes: `where key == 3`, `where key == replica`,
+or `where key == _` (the fallback). Nothing in those declarations
+says that *every* key lands somewhere, or that no key lands in two
+places. This claim does: for every permitted key, the registrations of
+the group that receive it number **exactly one**.
+
+```hale,refused
+type Order { shard: Int = 0; qty: Int = 0; }
+topic Orders { payload: Order; subject: "orders"; keyed_by shard; }
+
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Orders as on_order where key == replica; }
+    fn on_order(o: Order) { self.seen = self.seen + o.qty; }
+}
+
+locus Audit {
+    params { n: Int = 0; }
+    bus { subscribe Orders as on_any; }
+    fn on_any(o: Order) { self.n = self.n + 1; }
+}
+
+group workers = { Worker };
+
+main locus App {
+    params { w: Worker = Worker { }; audit: Audit = Audit { }; }
+    placement { w: pinned(cores = 0..4, replicas = 4); }
+    bus { publish Orders; }
+    claims {
+        one_worker: cover keys(topic Orders in 0..=5): delivered_to(exactly_one workers);
+    }
+    run() { Orders <- Order { shard: 1, qty: 2 }; }
+}
+fn main() { App { }; }
+```
+
+Four pinned replicas answer keys 0 through 3; the claim says keys 0
+through 5 are permitted, so two are nobody's:
+
+```text
+claim `one_worker` violated: not every key of `Orders` reaches exactly
+one registration of `workers` — uncovered: no registration of `workers`
+receives keys 4..=5 (the publish is silently swallowed; its recipients
+lie outside the group: `Audit::on_any`)
+```
+
+Change the interval to `0..=3` and the claim holds, **even though
+`Audit` also receives every key**: the claim counts recipients *in the
+named group*, so an audit or metrics subscriber outside `workers`
+cannot break the worker group's uniqueness. Put `Audit` in the group
+and the same claim is violated — `Audit::on_any` and the replica it
+shares each key with are named as the two registrations.
+
+**The permitted keys.** `in LO..=HI` states an inclusive integer
+interval (a leading `-` is allowed: `in -3..=3`; an empty interval is
+a parse error). Without it, the permitted keys are what the topic's
+publish sites can produce: the whole `Int` range for an `Int` key,
+`{false, true}` for `Bool`, every value of the type otherwise. An
+`Int` topic with four replicas and no stated interval is therefore
+violated on `-9223372036854775808..=-1, 4..=9223372036854775807` —
+state the interval you mean, or give the group a `where key == _`
+fallback subscriber on an `on_unmatched: fallback` topic, which
+receives every key nothing else matched and covers the rest.
+
+**What counts as a registration.** One *instance* of a subscribing
+locus. Three arranged replicas of one `subscribe` are three
+registrations; two instances of a locus with `where key == 7` are two
+recipients of key 7, and the overlap names both by instance path.
+Recipients are computed by the same query the `@budget(fanout)` budget
+uses, so the two cannot disagree about who a key reaches.
+
+**Fail-closed cases** (each is `invalid`, never `holds`, and the
+diagnostic says what to resolve):
+
+| condition | shape |
+|---|---|
+| a subscription's filter value is not statically known (`where key == self.id`) on a locus with instances | "the key filter of `X::h` is not statically known … write the filter as a literal or `replica`" |
+| a subscribing locus that can also be born outside the arrangement | "the instance population of `X` is incomplete" |
+| a hole hides subscriptions, instance counts or key filters on the topic | "the subscriber set of `T` is not fully modeled" |
+| the topic is not `keyed_by` | "topic `T` is not keyed" |
+| no publish site and no `in` interval | "no publish site of `T` is known … state them with `in LO..=HI`" |
+| `in` interval on a topic keyed by another type | "states integer keys, but …" |
+| a group with no locus members | "has no locus members" |
+
+An unknown filter on a subscriber *outside* the group still withdraws
+the answer: a fallback hears only what no filter anywhere matched, so
+a filter nobody can evaluate may absorb any key.
+
+**What it proves, and what it does not.** It proves a fact about the
+modeled arrangement: each permitted key selects exactly one
+registration of the group. It does not cover replacement, restart or a
+runtime birth — those change the live registrations, and preserving
+uniqueness across them needs a stronger invariant over live
+registrations and incarnations. It is not exactly-once *processing*,
+which needs request identity, retry, persistence and acknowledgement.
+It does not say a publisher only produces permitted keys: a key
+outside the interval is outside the claim, and the topic's
+`on_unmatched` policy governs it. And a cell a full queue sheds or a
+binding drops is a separate question (loss policy).
+
 ## Library-tier claims
 
 A library seed states its own law in a **top-level** `claims { }`
@@ -609,6 +723,7 @@ The complete catalog, grouped by stage. Parse errors:
 | unknown claim verb | lists the six verbs |
 | `via { }` with no relations / unknown relation | "must name at least one relation" / "the composable relations are `calls` and `bus`" |
 | nested glob in a group member | "the glob is trailing-only" |
+| empty key interval in `cover keys` | "the key interval `3..=0` is empty" |
 | negative bound or count | "expected an integer bound after `<=`" / "expected an integer after the comparison" |
 | empty or duplicate `domain` | "has no members" / "declared more than once" |
 | family over a domain not in this file | "declare `domain X = { … };` above the family" |
@@ -634,6 +749,7 @@ result is `invalid`):
 | `cover` over an alias with no topics | "the coverage domain would be empty" |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
+| `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, unkeyed topic, no permitted keys) | "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
 
 Violations (the claim's result is `violated`):
 
@@ -644,6 +760,7 @@ Violations (the claim's result is `violated`):
 | `bound` | the measured count + representative chain, or the unbounded reason |
 | `require` | the group and the missing declaration |
 | `cover` | every uncovered topic |
+| `cover keys` | every uncovered key or interval, or the registrations that overlap on a key |
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 

@@ -15,6 +15,7 @@ use hale_model::{
     EvidenceRow, EvidenceTable, Provenance, ProvenanceId, VerdictIr,
 };
 
+use crate::key_routing;
 use crate::symbol::Bundle;
 
 /// The EVIDENCE-ENGINE SEMANTICS VERSION (review round 4). The
@@ -152,41 +153,6 @@ pub fn model_fanout<'a>(
     // unbounded.
     let e = &model.entities;
     let r = &model.relations;
-    // Population of one locus decl, and whether it is EXACT.
-    // Scoped: a hole matters when it is anchored to a locus on THIS
-    // closure, never because some unrelated locus is born
-    // dynamically.
-    fn population_of(
-        model: &ApplicationModel,
-        decl: hale_model::LocusDeclId,
-    ) -> Option<u64> {
-        let e = &model.entities;
-        let holed = model.holes.iter().any(|h| {
-            h.hides.intersects(
-                hale_model::RelationSet::OWNS
-                    .union(hale_model::RelationSet::CARDINALITY),
-            ) && matches!(
-                h.at,
-                hale_model::EntityRef::LocusDecl(l) if l == decl
-            )
-        });
-        if holed {
-            return None;
-        }
-        // Round 5: an EXACT zero is an answer. `LocusInstance` rows
-        // are the statically exact population, so a subscriber
-        // locus that is declared and never instantiated receives
-        // nothing — collapsing that to `None` made an unused
-        // declaration turn an exact `@budget(fanout = 0)` into an
-        // unbounded failure. Only a RELEVANT hole means unknown,
-        // and that is the check above.
-        Some(
-            e.locus_instances
-                .iter()
-                .filter(|i| i.decl == decl)
-                .count() as u64,
-        )
-    }
     // Every publish site reachable from a function — its own, plus
     // everything it calls, plus what a stdlib interior publishes on
     // its behalf. A handler's onward amplification is not limited to
@@ -226,7 +192,6 @@ pub fn model_fanout<'a>(
         publish: &hale_model::Publish,
         path: &mut Vec<(u8, u32, u32)>,
     ) -> Option<u64> {
-        use hale_model::keys::{KeyDomain, KeyPredicate, KeyValue};
         let e = &model.entities;
         let r = &model.relations;
         let tag = (0u8, publish.function.0, publish.site);
@@ -290,227 +255,36 @@ pub fn model_fanout<'a>(
             .iter()
             .filter(|sub| crate::model_query::may_deliver(e, publish, sub))
             .collect();
-        // Unkeyed subscriptions receive regardless of the key.
-        let mut unkeyed: Vec<&hale_model::Subscribe> = Vec::new();
-        let mut keyed: Vec<&hale_model::Subscribe> = Vec::new();
-        for sub in &matching {
-            match &sub.key_predicate {
-                KeyPredicate::Any => unkeyed.push(sub),
-                // A filter whose value is unknown may or may not
-                // match — but only if the registration EXISTS.
-                // An unknown expression on a locus with no instance
-                // belongs to a registration that never happens
-                // (round 8).
-                KeyPredicate::Unknown => {
-                    match population_of(model, owner_of(model, sub)?) {
-                        Some(0) => {}
-                        _ => return None,
-                    }
-                }
-                _ => keyed.push(sub),
-            }
-        }
-        // Candidate key values this site can produce. `None` stands
-        // for "some value no filter names", which only a `fallback`
-        // receives.
-        //
-        // Round 8: scenarios come from the ACTIVE routing
-        // partition, not from declarations.
-        //
-        // The specific keys that can actually match are the ones
-        // whose registration EXISTS — a filter on a locus with no
-        // instances routes nothing — and they are a SET: two
-        // declarations naming key 0 cover one value, not two. Two
-        // failures followed from getting this wrong. A type-wide
-        // `Bool` domain always got a synthetic "no filter names
-        // this" scenario even though `false` and `true` exhaust it,
-        // so a `fallback` fired where it never can. And an
-        // `IntRange` counted duplicate declarations as distinct
-        // coverage, concluding a two-value interval was covered by
-        // two same-valued filters and never costing the real
-        // unmatched scenario — a false PASS.
-        //
-        // Round 9: `population_of` has THREE outcomes, and the
-        // first version of this collapsed two of them.
-        // `Some(0)` is "no registration"; `None` is "the population
-        // is not known" — a locus that can also be born outside the
-        // arrangement. Treating `None` like `Some(0)` dropped the
-        // key from the partition entirely, so a `key == 1`
-        // subscriber with one ARRANGED instance plus a
-        // runtime-birth hole produced no candidate at all and
-        // certified fan-out zero over a delivery that definitely
-        // happens. Unresolved knowledge is never absence.
-        let mut active: Vec<KeyValue> = Vec::new();
-        for sub in &keyed {
-            match &sub.key_predicate {
-                KeyPredicate::EqLiteral(v) => {
-                    match population_of(model, owner_of(model, sub)?) {
-                        Some(0) => {}
-                        Some(_) => active.push(v.clone()),
-                        // This subscription may receive, and how
-                        // many cells it has is not knowable.
-                        None => return None,
-                    }
-                }
-                KeyPredicate::EqReplica => {
-                    let owner = owner_of(model, sub)?;
-                    // A concrete-row count is only a LOWER bound
-                    // when the population is incomplete: a
-                    // dynamically born ordinary instance registers
-                    // under effective key 0 and is not listed.
-                    if population_of(model, owner).is_none() {
-                        return None;
-                    }
-                    for i in
-                        e.locus_instances.iter().filter(|i| i.decl == owner)
-                    {
-                        active.push(KeyValue::Int(effective_replica(i)));
-                    }
-                }
-                _ => {}
-            }
-        }
-        active.sort();
-        active.dedup();
-        let mut candidates: Vec<Option<KeyValue>> = Vec::new();
-        if keyed.is_empty() {
-            candidates.push(None);
-        } else {
-            match &publish.key_domain {
-                // The site's own values ARE the scenarios; a value
-                // no filter names simply finds nothing specific and
-                // falls back, which the recipient walk handles.
-                Some(KeyDomain::Exact(vals)) => {
-                    candidates.extend(vals.iter().cloned().map(Some));
-                }
-                Some(KeyDomain::IntRange { min, max }) => {
-                    for v in &active {
-                        if let KeyValue::Int(k) = v {
-                            if k >= min && k <= max {
-                                candidates.push(Some(v.clone()));
-                            }
-                        }
-                    }
-                    // One representative of "inside the interval,
-                    // named by nobody" — only when such a value
-                    // exists.
-                    let span =
-                        max.saturating_sub(*min).saturating_add(1);
-                    let covered = active
-                        .iter()
-                        .filter(|v| match v {
-                            KeyValue::Int(k) => k >= min && k <= max,
-                            _ => false,
-                        })
-                        .count() as i64;
-                    if span > covered {
-                        candidates.push(None);
-                    }
-                }
-                // A FINITE type-wide domain is enumerable, and
-                // enumerating it is what stops an impossible
-                // unmatched scenario.
-                Some(KeyDomain::AnyOfType(t)) if t == "Bool" => {
-                    candidates.push(Some(KeyValue::Bool(false)));
-                    candidates.push(Some(KeyValue::Bool(true)));
-                }
-                // Anything else can produce a value no filter
-                // names, so the unmatched scenario is real.
-                _ => {
-                    candidates.extend(active.iter().cloned().map(Some));
-                    candidates.push(None);
-                }
-            }
-            if candidates.is_empty() {
-                candidates.push(None);
-            }
-        }
+        // WHO receives a key is `key_routing`'s one rule, shared with
+        // the routing-coverage claim; this function only costs what
+        // the recipients cause. Scenarios come from the ACTIVE routing
+        // partition (registrations that exist), never from
+        // declarations, and an answer the model cannot count — an
+        // unknown filter, an incomplete population — is no bound.
+        let routing = key_routing::classify(model, matching).ok()?;
+        let scenarios =
+            key_routing::scenarios(model, &routing, publish.key_domain.as_ref())
+                .ok()?;
         path.push(tag);
         let mut best: u64 = 0;
-        for k in &candidates {
+        for scenario in &scenarios {
+            let key = match scenario {
+                key_routing::Scenario::Key(v) => Some(v),
+                key_routing::Scenario::Unnamed(_) => None,
+            };
             // The recipients of THIS key, as (handler, executions).
-            let mut recipients: Vec<(hale_model::FunctionId, u64)> =
-                Vec::new();
-            for sub in &unkeyed {
-                let n = population_of(model, owner_of(model, sub)?);
-                match n {
-                    // Round 7: an EXACT zero annihilates. A
-                    // declaration with no instance has no runtime
-                    // registration, so its body — however recursive
-                    // or unfollowable — causes nothing and must not
-                    // withdraw the bound.
-                    Some(0) => {}
-                    Some(n) => recipients.push((sub.handler, n)),
-                    None => {
-                        path.pop();
-                        return None;
-                    }
+            let recipients = match key_routing::recipients(model, &routing, key) {
+                Ok(r) => r,
+                Err(_) => {
+                    path.pop();
+                    return None;
                 }
-            }
-            let mut matched_any = false;
-            for sub in &keyed {
-                let n = match (&sub.key_predicate, k) {
-                    (KeyPredicate::EqLiteral(v), Some(kv)) if v == kv => {
-                        match population_of(model, owner_of(model, sub)?) {
-                            Some(n) => n,
-                            None => {
-                                path.pop();
-                                return None;
-                            }
-                        }
-                    }
-                    (KeyPredicate::EqReplica, Some(KeyValue::Int(kv))) => {
-                        let Some(owner) = owner_of(model, sub) else {
-                            path.pop();
-                            return None;
-                        };
-                        // An incomplete population cannot be
-                        // counted from the listed rows.
-                        if population_of(model, owner).is_none() {
-                            path.pop();
-                            return None;
-                        }
-                        // Replica indices are unique within a
-                        // REPLICATED field, so at most one instance
-                        // answers a key there — but an ordinary
-                        // instance registers under the effective
-                        // key 0, and several ordinary instances of
-                        // one declaration all do.
-                        e.locus_instances
-                            .iter()
-                            .filter(|i| i.decl == owner)
-                            .filter(|i| effective_replica(i) == *kv)
-                            .count() as u64
-                    }
-                    // Settled after the others: a fallback receives
-                    // only what nothing else matched.
-                    _ => 0,
-                };
-                if n > 0 {
-                    matched_any = true;
-                    recipients.push((sub.handler, n));
-                }
-            }
-            if !matched_any {
-                for sub in &keyed {
-                    if sub.key_predicate == KeyPredicate::Fallback {
-                        match population_of(model, owner_of(model, sub)?) {
-                            Some(n) if n > 0 => {
-                                recipients.push((sub.handler, n))
-                            }
-                            Some(_) => {}
-                            None => {
-                                path.pop();
-                                return None;
-                            }
-                        }
-                    }
-                }
-            }
+            };
             // Cost this whole scenario: the deliveries themselves,
             // plus what exactly those handler executions cause.
             let mut here: u64 = 0;
-            for (handler, runs) in recipients {
+            for rec in recipients {
+                let (handler, runs) = (rec.sub.handler, rec.runs());
                 if runs == 0 {
                     continue;
                 }
@@ -757,30 +531,6 @@ pub fn model_fanout<'a>(
         }
         let mut seen: Vec<u32> = Vec::new();
         node_cost(model, a, 0, &mut seen, path)
-    }
-
-    /// The replica key an instance REGISTERS under.
-    ///
-    /// The model reserves `Some(i)` for an actual `replicas = K`
-    /// fan-out and leaves an ordinary instance `None`. At runtime
-    /// an ordinary instance still registers under key 0, so a
-    /// `where key == replica` subscription on a non-replicated
-    /// locus receives key-0 messages — and reading only `Some(ix)`
-    /// made that recipient invisible to fan-out (round 7).
-    fn effective_replica(i: &hale_model::LocusInstance) -> i64 {
-        i.replica.unwrap_or(0) as i64
-    }
-
-    fn owner_of(
-        model: &ApplicationModel,
-        sub: &hale_model::Subscribe,
-    ) -> Option<hale_model::LocusDeclId> {
-        model
-            .relations
-            .member_of
-            .iter()
-            .find(|m| m.function == sub.handler)
-            .map(|m| m.locus)
     }
 
     move |key: &crate::alloc_summary::FnKey,

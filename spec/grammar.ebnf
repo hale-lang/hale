@@ -416,7 +416,7 @@ claims_block      = "claims" , "{" , { claim_entry } , "}" ;
 claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
                   | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
-                  | require_form | cover_form | count_form ;
+                  | require_form | cover_form | route_form | count_form ;
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,
                     claim_set , ")" ,
                     { via_clause | during_clause | avoiding_clause } ;
@@ -456,6 +456,11 @@ require_attributed = "require" , "attributed" ,
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
                     "(" , "some" , IDENTIFIER , ")" ;
+route_form        = "cover" , "keys" , "(" , "topic" , topic_ref ,
+                    [ "in" , key_bound , "..=" , key_bound ] , ")" ,
+                    ":" , "delivered_to" , "(" , "exactly_one" ,
+                    IDENTIFIER , ")" ;
+key_bound         = [ "-" ] , INT_LIT ;
 count_form        = "count" , ( "publishers" | "subscribers" ) ,
                     "(" , "topic" , topic_ref , ")" ,
                     ( "==" | "<=" | ">=" ) , INT_LIT ;

@@ -212,6 +212,7 @@ impl Shift for ClaimForm {
             ClaimForm::RequireSealed { group } => sh!(d; group),
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
+            ClaimForm::RouteCoverage { topic, range, group } => sh!(d; topic, range, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),
         }
     }

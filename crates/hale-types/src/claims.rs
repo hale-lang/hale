@@ -679,6 +679,7 @@ pub(crate) fn enumerate_clauses<'a>(
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
+                | ClaimForm::RouteCoverage { group, .. }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
                 ClaimForm::Count { topic, .. } => {
                     topic.segments.first().map(|s| &s.name)
@@ -789,6 +790,15 @@ fn render_form(f: &ClaimForm) -> String {
         ClaimForm::Cover { alias, group } => format!(
             "cover topic in seed({}): subscribed_by(some {})",
             alias.name, group.name
+        ),
+        ClaimForm::RouteCoverage {
+            topic,
+            range,
+            group,
+        } => hale_model::claim_form::route_coverage(
+            &topic.display(),
+            *range,
+            &group.name,
         ),
         ClaimForm::Count {
             publishers,

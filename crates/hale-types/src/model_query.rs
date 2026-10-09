@@ -64,16 +64,23 @@ pub fn may_deliver(
     publish: &hale_model::Publish,
     sub: &hale_model::Subscribe,
 ) -> bool {
-    let addressed = sub.subject == publish.subject || {
-        let pat = e.subjects[sub.subject.index()].pattern.as_str();
-        let wire = e.subjects[publish.subject.index()].pattern.as_str();
-        pat.contains("**") && crate::wildcard_match(pat, wire)
-    };
-    if !addressed {
+    may_deliver_keys(e, publish.subject, &publish.key_domain, sub)
+}
+
+/// [`may_deliver`] for a caller that holds a wire subject and a key
+/// domain rather than a publish row — the routing-coverage claim
+/// asks about a topic's permitted keys, not about one send.
+pub fn may_deliver_keys(
+    e: &Entities,
+    subject: SubjectId,
+    key_domain: &Option<hale_model::keys::KeyDomain>,
+    sub: &hale_model::Subscribe,
+) -> bool {
+    if !subscription_covers(e, sub, subject) {
         return false;
     }
     use hale_model::keys::{KeyDomain, KeyPredicate, KeyValue};
-    match (&publish.key_domain, &sub.key_predicate) {
+    match (key_domain, &sub.key_predicate) {
         (Some(KeyDomain::Exact(vals)), KeyPredicate::EqLiteral(k)) => {
             vals.contains(k)
         }

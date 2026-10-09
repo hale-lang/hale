@@ -188,6 +188,11 @@ pub enum Law {
         seed: Ref,
         group: Ref,
     },
+    RouteCoverage {
+        topic: Ref,
+        range: Option<(i64, i64)>,
+        group: Ref,
+    },
     Count {
         publishers: bool,
         topic: Ref,
@@ -1802,6 +1807,7 @@ pub fn has_unresolved(law: &Law) -> bool {
         Law::RequireSealed { group } => r(group),
         Law::RequireAttributed { class } => c(class),
         Law::Cover { seed, group } => r(seed) || r(group),
+        Law::RouteCoverage { topic, group, .. } => r(topic) || r(group),
         Law::Count { topic, .. } => r(topic),
         Law::EffectForbid { at, classes }
         | Law::EffectOnly { at, classes }
@@ -2024,6 +2030,33 @@ pub fn decode_law(
                 group: cx.group(&law["group"], "group")?,
             })
         }
+        Some("route_coverage") => {
+            only_keys(
+                law,
+                "route_coverage",
+                &["kind", "topic", "group"],
+                &["range"],
+            )?;
+            let range = match law.get("range") {
+                None => None,
+                Some(v) => {
+                    let pair = v.as_array().filter(|a| a.len() == 2);
+                    match pair.map(|a| (a[0].as_i64(), a[1].as_i64())) {
+                        Some((Some(lo), Some(hi))) => Some((lo, hi)),
+                        _ => {
+                            return Err(
+                                "range is not [lo, hi] integers".into()
+                            )
+                        }
+                    }
+                }
+            };
+            Ok(Law::RouteCoverage {
+                topic: cx.topic(&law["topic"], "topic")?,
+                range,
+                group: cx.group(&law["group"], "group")?,
+            })
+        }
         Some("count") => {
             only_keys(
                 law,
@@ -2223,6 +2256,7 @@ pub fn family_of(law: &Law) -> JudgmentFamily {
         | Law::RequireSealed { .. }
         | Law::RequireAttributed { .. }
         | Law::Cover { .. }
+        | Law::RouteCoverage { .. }
         | Law::Count { .. } => JudgmentFamily::Endpoint,
         Law::Bound { .. } => JudgmentFamily::Bound,
         Law::EffectForbid { .. }
@@ -2285,6 +2319,11 @@ pub fn render_claims_form(law: &Law) -> Option<String> {
         Law::Cover { seed, group } => {
             form::cover(&seed.display, &group.display)
         }
+        Law::RouteCoverage {
+            topic,
+            range,
+            group,
+        } => form::route_coverage(&topic.display, *range, &group.display),
         Law::Count {
             publishers,
             topic,

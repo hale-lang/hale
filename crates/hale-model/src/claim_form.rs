@@ -93,6 +93,22 @@ pub fn cover(seed: &str, group: &str) -> String {
     format!("cover topic in seed({}): subscribed_by(some {})", seed, group)
 }
 
+/// `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G)`.
+pub fn route_coverage(
+    topic: &str,
+    range: Option<(i64, i64)>,
+    group: &str,
+) -> String {
+    let keys = match range {
+        Some((lo, hi)) => format!(" in {}..={}", lo, hi),
+        None => String::new(),
+    };
+    format!(
+        "cover keys(topic {}{}): delivered_to(exactly_one {})",
+        topic, keys, group
+    )
+}
+
 /// `count publishers(topic T) <cmp> N` / `count subscribers(…)`.
 pub fn count(publishers: bool, topic: &str, cmp: CountCmpIr, n: u64) -> String {
     format!(

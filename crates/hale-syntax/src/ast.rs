@@ -597,6 +597,17 @@ pub enum ClaimForm {
     /// has a subscriber in G. A seed with no topics is a vacuity
     /// error.
     Cover { alias: Ident, group: Ident },
+    /// `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G);`
+    /// — routing coverage and exclusivity: for every permitted key of
+    /// the keyed topic, exactly one registration of group G receives
+    /// it. `range` states the permitted integer interval (inclusive);
+    /// without it the permitted keys are what the topic's publish
+    /// sites can produce.
+    RouteCoverage {
+        topic: TopicRef,
+        range: Option<(i64, i64)>,
+        group: Ident,
+    },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.
