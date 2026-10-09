@@ -4025,7 +4025,8 @@ build.
 | `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
 | `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
 | `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
-| `HALE_API_TOKEN` | none | The bearer `hale describe`, `call`, `watch`, `admin` and `mcp --app` present to an HTTP or hub exposure when `--token` is not given; empty is unset. | no bearer |
+| `HALE_API_TOKEN` | none | The bearer `hale watch`, `admin` and `mcp --app` present to an HTTP or hub exposure when `--token` is not given; empty is unset. | no bearer |
+| `HALE_API_BEARER` | none | The bearer `hale api describe` and `hale api call` (and their short forms `hale describe`, `hale call`) present to an HTTP exposure when `--bearer` is not given; over a socket the caller is the peer's kernel credentials and the variable is ignored. |
 | `HALE_BIN` | none | The `hale` binary a child process runs as its toolchain: `hale dna` sets it, to the binary it is running as, for the hosts and fixtures it starts. | the running binary |
 | `HALE_IMPORT_DEBUG` (*set*) | none | Trace import resolution on stderr, per call. | off |
 | `HALE_MCP_ROOT` | none | `hale mcp`: every path a tool call names must resolve under this directory. | unset: no restriction |

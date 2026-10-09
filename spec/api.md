@@ -1846,36 +1846,41 @@ program's are pinned beside the R0 documents
 
 `hale describe`, `hale call`, `hale watch`, `hale admin` and `hale mcp
 --app` are clients of a served exposure, and read only its description
-(R4 C; `crates/hale-cli/src/api_client.rs`, `mcp.rs`). None knows a
-member's or a stream's name in advance. An **endpoint** is a Unix socket
-path (or `unix:PATH`), `http://host:port` (an `http::Rpc` listener, the
-caller named by `--token T` or `HALE_API_TOKEN` as the bearer), `ws://host:port`
-(a hub's listener) or, for `hale mcp --app` only, `mcp://host:port`; a
-TLS scheme is refused, saying so, and so is `grpc://`: a `grpc::Rpc`
-listener is described by `hale check --api` and called by any gRPC client
-(§ gRPC; Open points).
+(`crates/hale-cli/src/api_drive.rs` for the first two, `api_client.rs`
+for `watch` and `admin`, `mcp.rs`). None knows a member's or a stream's
+name in advance. `hale describe` and `hale call` are the short forms of
+`hale api describe` and `hale api call` (§ Driving a served program): an
+**endpoint** is `unix:PATH` (a bare path stands for it) or
+`http://host:port` (an `http::Rpc` listener, the caller named by
+`--bearer T` or `HALE_API_BEARER`); `grpc://`, `mcp://`, `ws://` and a
+TLS scheme are refused naming the two forms. `hale watch` and `hale
+admin` keep their own endpoint forms below (`ws://host:port` for a hub's
+listener; `--token T` or `HALE_API_TOKEN` for the bearer) until they
+join the api verbs. A `grpc::Rpc` listener is described by `hale check
+--api` and called by any gRPC client (§ gRPC; Open points).
 
-- **`hale describe ENDPOINT`** prints the exposure's description for the
-  caller the endpoint names, the bytes it served (`{"describe": true}`
-  over the socket, `GET /.description` over HTTP and a hub's listener),
-  never re-serialized. `hale describe FILE.hl` is `hale check --api`: the
-  inventory, or with `--exposure NAME --caller P [--holds R,…]` one
-  exposure, or with `--surface NAME --openapi | --json-schema | --mcp` one
-  surface's projection, all from the rows and without running the
-  program. The projections are the compiler's alone; an endpoint does
-  not print them.
-- **`hale call ENDPOINT MEMBER [JSON]`** reads the description, refuses a
-  member the caller may not call (the description does not list it) with
-  the members it does list, and calls it naming the **digest** it read in
-  the transport's own place (`digest` in the line, `Hale-Surface-Digest`
-  over HTTP): a program that changed under the client refuses with
-  `digest_mismatch` and the served digest, instead of running a
-  different contract. The response is printed on stdout; a handler error
-  or a refusal on stderr with its kind and reason (a role's refusal names
-  what the row `requires`) and exit 1. `--receipt` prints the answer as
-  the exposure wrote it (the reply line over a socket, `{"status",
-  "body"}` over HTTP). Over a hub's `ws://` listener a call is the `call`
-  frame of § Rpcs on a hub.
+- **`hale describe ENDPOINT`** is `hale api describe ENDPOINT`: the
+  exposure's description for the caller the endpoint names, with
+  `--json` the bytes it served (`{"describe": true}` over the socket,
+  `GET /.description` over HTTP), never re-serialized, else the readable
+  rendering; exit 0, 2 when the exposure refuses, 4 when the endpoint
+  does not answer, 5 usage. The compiler's projections of a surface (the
+  inventory, one exposure per caller, OpenAPI, JSON Schema, MCP,
+  `.proto`) are `hale check --api` and `hale api export`, from the rows
+  and without running the program; an endpoint does not print them.
+- **`hale call ENDPOINT MEMBER [JSON | --field VALUE …]`** is `hale api
+  call`: a bare JSON payload stands for `--json`. The description is read
+  first, and the call names the **digest** it read in the transport's own
+  place (`digest` in the line, `Hale-Surface-Digest` over HTTP), so a
+  program that changed under the client refuses with `digest_mismatch`
+  and the served digest instead of running a different contract. A
+  result's value is printed on stdout and exits 0; a handler error exits
+  1; a refusal 2, its kind and reason on stderr (a role's refusal names
+  what the row `requires`); a server error 3; a transport failure 4;
+  usage 5. `--raw` prints the outcome as the exposure wrote it (the reply
+  line over a socket, the body over HTTP). A hub's `ws://` listener is
+  not a call endpoint: its `call` frame is § Rpcs on a hub, driven by the
+  generated clients.
 - **`hale watch WS-ENDPOINT TOPIC`** reads the hub's description, refuses a
   topic the caller may not subscribe to (it is not listed), subscribes
   and prints each frame as one JSON line (`subscribed`, then `event`s
