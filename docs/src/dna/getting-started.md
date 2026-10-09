@@ -54,6 +54,7 @@ seated  the head's socket knows uid 1000 as … (dna.unix.member); the record de
 seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)
 seeded  design (8 practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)
 seeded  operating (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `operating`)
+seeded  using (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `using`)
 edited  …/demo/.gitignore (/dna/nats.secrets.conf, /dna/postgres.secrets)
 memory  the compose database's superuser password in the vault; dna/postgres.secrets written from it (mode 600, untracked)
 nerves  every role's password drawn into the vault; dna/nats.secrets.conf written (mode 600, untracked)
@@ -259,7 +260,7 @@ journal:    38 event(s), chain verified at 9ddd807957fc
 expression: attached Demo (shape ddd87794e8adeed5) · current shape not cut · build not built
 intents:    0 offered, 0 refused
 tasks:      none
-reviews:    16 pending of 16
+reviews:    23 pending of 23
   k:05cecb18af4e [pending] needs board — ratify the design practice `design/software-delivery`: For an appendage or a product: process boundaries first (what runs, fail…
   …
 mutations:  0 (none applies before a human's verdict on the exact candidate)
@@ -294,7 +295,7 @@ those words. `hale dna review` lists every pending Review, grouped:
 
 ```text
 $ hale dna review
-16 pending review(s) of 16
+23 pending review(s) of 23
   purpose — the declared purpose, the Board's to ratify first:
       k:d2564afcfe0d — ratify the declared purpose?
       decide one with `hale dna review <id> …`, or all pending with `hale dna review purpose approve|reject`
@@ -303,6 +304,9 @@ $ hale dna review
       …
   operating — 7 seeded practice(s), each its own Review:
       k:33be310ddba8 — ratify the operating practice `operating/one-store-per-step`: a workflow step writes to exactly one store, by that store's one writer,…
+      …
+  using — 7 seeded practice(s), each its own Review:
+      k:8c1f6a4e2d70 — ratify the using practice `using/propose-review-ratify`: nothing is in force until the Board says so. A change to the organi…
       …
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
@@ -319,14 +323,15 @@ the record; a verdict from the terminal carries the Board's authority.
 Without an organism running here, and no remote to reach one through,
 the verdict is refused and nothing is written.
 
-The other fifteen are the toolchain's practices: `design`, how an
-organization like this one is shaped, and `operating`, how the
-organism runs. Each is its own Review. Read them, then decide them one
+The other twenty-two are the toolchain's practices: `design`, how an
+organization like this one is shaped, `operating`, how the organism
+runs, and `using`, how to work with it. Each is its own Review. Read them, then decide them one
 by one, or a family at once:
 
 ```sh
 hale dna review design approve --as alice
 hale dna review operating approve --as alice
+hale dna review using approve --as alice
 ```
 
 Nothing the toolchain proposes is in force until you ratify it. Every

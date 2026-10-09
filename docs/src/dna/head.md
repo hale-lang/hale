@@ -192,7 +192,7 @@ hale dna review <id> --iris      # a change's semantic diff in iris's review vie
 ```
 
 The list groups the toolchain's seeded proposals under their headings
-(`purpose`, `design`, `operating`, and a repository's `holes`,
+(`purpose`, `design`, `operating`, `using`, the library's families and a repository's `holes`,
 `practices` and `holds`). A proposal renders as its question and what
 it needs:
 

@@ -410,16 +410,37 @@ change to the organization), when memory is there to ask.
 `init` writes the two nodes everything hangs from, `language:hale` and
 `system:dna`, and for an attached application the node
 `application:<name>` with a `written_in` edge to the language. It also
-proposes the smallest library, one chapter of the book bound to each: the
-API chapter to `language:hale` and the shaping chapter to `system:dna`,
-as the family `library`, one Review per idea. Nothing arrives in a Work's
-brief until the Board decides them:
+proposes the toolchain's library: the book per chapter and the spec per
+section, one idea each, generated from the tree when the toolchain is
+built (a new chapter joins the library by existing). The language's
+chapters and sections are bound to `language:hale`; the DNA chapters
+(`docs/src/dna`, `docs/src/parts`, `spec/dna.md`, `spec/model.md`) to
+`system:dna`. The Board does not review hundreds of ideas one by one: the
+library is two **families**, `library/language@<version>` and
+`library/design@<version>`, and each is one Review whose body names the
+ideas it ratifies. Approving a family ratifies every idea in it and binds
+each to its node; rejecting it refuses them all. Nothing arrives in a
+Work's brief until the Board decides:
 
 ```sh
-hale dna review                      # the library family is listed beside design and operating
-hale dna review library approve      # ratify both, and so bind both
+hale dna review                      # two library families, listed beside the practices
+hale dna review library approve      # ratify both families, and so bind every idea
+hale dna review <family id>          # the ideas a family ratifies, by name
 hale dna init --no-library           # a record with none of it (also `new --no-library`)
 ```
+
+What a brief pulls from the library is what is bound to the node it is
+about, ranked, within the package's budget: a Work on the language reads
+the few chapters and sections of `language:hale` that matter to its ask,
+not the whole book, and a change to the organization reads the ones bound
+to `system:dna`. An idea bound to everyone would crowd out what the work
+needs, which is why a chapter is bound to the node it is about and not to
+`org`.
+
+When the toolchain moves, `hale dna upgrade` proposes the new version's
+library as new families. Each idea names the digest it replaces, and
+approving the family retires the old ones: until then an application keeps
+the bindings of the version it was seeded at.
 
 An idea whose target is a node the record has no node for is refused,
 naming it.

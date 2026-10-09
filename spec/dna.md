@@ -3914,7 +3914,8 @@ The live half is memory's, projected from the record by the spine
   `organization` — ranked by the Review's question and bounded by the
   package's budget; without memory (`HALE_DNA_MEMORY_DSN_HEAD`) it says
   the knowledge was not read, and a subject with no node prints nothing.
-- **The nodes knowledge is about, and the library (seed/pull).** `init`
+- **The nodes knowledge is about, and the library (seed/pull,
+  seed/library).** `init`
   writes `graph.node` rows for `language:hale` (kind `language`, text
   `Hale <toolchain version>…`) and `system:dna` (kind `system`) and, for
   an attached application, `application:<account name>` (kind
@@ -3923,22 +3924,71 @@ The live half is memory's, projected from the record by the spine
   edge from it to the language
   (`written_in:application:<name>|language:hale`); a repository with
   no application gets the two nodes and no edge. Beside them it proposes
-  the toolchain's library, `LIBRARY` in `crates/hale-cli/src/dna.rs`
-  (path, target node, family, text embedded with `include_str!`): the
-  API chapter (`docs/src/services/api.md`, `library/api`, bound to
-  `language:hale`) and the shaping chapter (`docs/src/dna/shaping.md`,
-  `library/shaping`, bound to `system:dna`) — each a
-  `knowledge.proposed` row of kind `idea`, provenance `toolchain`, whose
-  receipt carries the chapter's text, its `target` and the toolchain
-  version, and **one Review per idea** like the design's (grouped
-  `library`; `hale dna review library approve|reject` decides each
-  pending one in turn). The proposal's `target` is the binding: ratifying
+  the toolchain's **library**: the book per chapter and the spec per
+  section, one idea each. `crates/hale-cli/build.rs` generates the table
+  (`LIBRARY`) from the tree at build time — no hand list, so a new
+  chapter joins the library by existing: every `docs/src/**/*.md` is an
+  idea named `library/<path without docs/src and .md>`, titled by the
+  chapter's first heading, and every `## ` section of `spec/*.md` is an
+  idea named `library/spec/<file>#<slug>`, titled by the section's
+  heading, its text running to the next `## `. An idea is bound to
+  `language:hale`, except the DNA chapters (`docs/src/dna/**`,
+  `docs/src/parts/**`, `spec/dna.md`, `spec/model.md`), which are bound
+  to `system:dna`. Each is a `knowledge.proposed` row of kind `idea`,
+  provenance `toolchain`, whose receipt carries the text, the `title`,
+  the `target`, the toolchain version and the text's digest
+  (`content_digest`). The proposal's `target` is the binding: ratifying
   it binds the idea there, so a library idea has no separate
   `knowledge.binding.proposed` row (a binding request needs a ratified
-  subject). `init --no-library` (and `new --no-library`) seeds none of
-  the nodes, the edge or the ideas; `upgrade` does not touch the
-  library. `language`, `system` and `application` are node kinds and
-  `written_in(application, language)` an edge kind (**The repository's graph**).
+  subject).
+- **A family is ratified by one Review (seed/library).** The Board does
+  not review hundreds of ideas one by one. The library is proposed as
+  two **families**, one per node — `library/language@<version>` and
+  `library/design@<version>` — and each family is one
+  `review.requested` (group `library`, kind `family`) whose subject is
+  the family's own document, a receipt of kind `family` naming the ideas
+  it ratifies, `<name> <digest>` a line, in the order they were
+  proposed (the Review's body carries the same list and a `count`).
+  `hale dna review` lists a family as one entry; `hale dna review <id>`
+  renders the ideas it ratifies; `hale dna review library approve|reject`
+  decides each pending family in turn, and its verdict is the verdict of
+  every idea it names. Approving writes, for each idea, the rows it
+  would have had of its own — `knowledge.ratified` (kind, target and
+  class, `supersedes` when the idea replaces one, the retirement of what
+  it replaces) — and then the family's own row,
+  `library.family.ratified <family digest>`; rejecting writes
+  `knowledge.declined` for each and `library.family.declined`. The
+  family's own row is what its `practice-ratify` execution waits for
+  (its `hat` step is done once memory's projection holds the last idea,
+  ratified); the per-idea rows are the shape the lanes already project,
+  unchanged. Practices (`design`, `operating`, `using`) keep one Review
+  per practice, and the record stays append-only.
+- **Upgrade is supersession (seed/library).** `upgrade` proposes the
+  library of the new toolchain version, for a record that has one, as
+  new families (`library/<node>@<new version>`) whose ideas each name the
+  active digest under their name in `supersedes`; approving the family
+  ratifies the new ideas and retires the old, by the existing
+  supersession rows. Until the Board approves it, nothing is retired: an
+  application pinned to the old toolchain keeps the bindings of the
+  version it was seeded at. A family whose earlier version still awaits
+  the Board waits (`upgrade` says so), and a family already proposed at
+  this version proposes nothing. A record seeded with `--no-library`
+  gets no library from an upgrade. `HALE_DNA_LIBRARY_VERSION` and
+  `HALE_DNA_LIBRARY_SUFFIX` (fixtures only) name another version and
+  append to every text: how a test makes a later toolchain out of the one
+  binary it has. `init --no-library` (and `new --no-library`) seeds none of
+  the nodes, the edge or the ideas (the practices stay). `language`,
+  `system` and `application` are node kinds and
+  `written_in(application, language)` an edge kind (**The repository's
+  graph**).
+- **The using practices (seed/library).** A third seeded family,
+  `using/<slug>`, beside `design` and `operating`: how a person or an
+  agent works with the organism — `propose-review-ratify`,
+  `change-classes`, `ask-the-leader`, `cut-structure`,
+  `read-the-record`, `evidence-first`, `bind-knowledge`. One Review
+  each, grouped `using`, seeded, decided and superseded exactly as the
+  other two (`hale dna review using approve|reject`), and kept by
+  `--no-library`: they are practices, not the library.
 - **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
@@ -5021,6 +5071,8 @@ otherwise.
 | `HALE_DNA_RESTART_FOR=<mutation>` | unset | Set by the host when it restarts an expression on a Mutation's request; the expression journals `expression.restarted` for it (GH #529 D6). |
 | `HALE_DNA_EXPRESSION=<name>` | unset | The expression that was restarted; set with `HALE_DNA_RESTART_FOR`. |
 | `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
+| `HALE_DNA_LIBRARY_VERSION=<version>` | the toolchain's | The version the library is proposed under (`library/<node>@<version>`, and on each idea): a fixture's way to make a later toolchain out of the one binary it has, so `upgrade`'s supersession is exercised against real record history. |
+| `HALE_DNA_LIBRARY_SUFFIX=<text>` | unset | Appended to every library idea's text, so a later version's ideas differ from the earlier's (fixtures only). |
 | `HALE_DNA_INSTANCE=<id>` | unset | Set by a node on each instance it starts: which instance of its shape the process is. |
 | `HALE_DNA_BODY=<mark>` | unset | The body's mark: the host puts it in the environment of the processes it starts as a body (`body_mark`: holder, lease token, pid), and the body fence finds them by it. |
 | `HALE_DNA_SCAN_NEEDLE=<mark>` | unset | Set by the body fence's scan on a probe process: the mark it looks for in every other process's environment (`ps -E`) to find the body's processes. |
