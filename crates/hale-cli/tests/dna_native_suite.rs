@@ -912,6 +912,7 @@ fn dna_fixture_set_is_complete() {
             "dogfood_voice_test.hl",
             "edge_projection_test.hl",
             "edge_unlink_test.hl",
+            "editing_seed_test.hl",
             "editing_test.hl",
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
