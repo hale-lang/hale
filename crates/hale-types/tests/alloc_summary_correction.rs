@@ -336,7 +336,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/api",
-        3089,
+        3111,
         &[
             "__lib_dna__core___hat__effect_class_ok",
             "__lib_dna__core___hat__hat_effects_of",
@@ -527,7 +527,20 @@ fn verdict_changes() {
             "__lib_dna__operations___definitions__NoWorkflowCatalog::supported",
             "__lib_dna__operations___definitions__ProjectWorkflowCatalog::snapshot",
             "__lib_dna__operations___definitions__ProjectWorkflowCatalog::supported",
+            "__lib_dna__organization_source___organization_dependencies__OrganizationInspection::archive_ok",
+            "__lib_dna__organization_source___organization_dependencies__OrganizationInspection::input_error",
+            "__lib_dna__organization_source___organization_dependencies__OrganizationInspection::source_ok",
+            "__lib_dna__organization_source___organization_dependencies__OrganizationInspection::tree",
             "__lib_dna__organization_source___organization_source__OrganizationSource::declared",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::draft",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::head",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::inspect",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::inspect_version",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::local_vendor",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::read",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::remove_scratch",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::scratch",
+            "__lib_dna__organization_source___organization_source__OrganizationSource::unchanged",
             "__lib_dna__ui___main__CodeExchange::id_token",
             "__lib_dna__ui___main__CodeExchange::ready",
             "__lib_dna__ui___main__CodeExchange::vault_of",
@@ -547,7 +560,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 8),
-            ("once-per-invocation -> per-iteration-reclaim", 144),
+            ("once-per-invocation -> per-iteration-reclaim", 177),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
@@ -560,7 +573,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/host",
-        3421,
+        3428,
         &[
             "__lib_dna__core___decision__decision_line",
             "__lib_dna__core___handoff__classes_allow",
@@ -568,6 +581,7 @@ fn verdict_changes() {
             "__lib_dna__core___hat__effect_class_ok",
             "__lib_dna__core___hat__hat_effects_of",
             "__lib_dna__core___memory_ledger__row_json",
+            "__lib_dna__core___models__model_key_slot",
             "__lib_dna__core___nerves__env_or_empty",
             "__lib_dna__core___nerves__nerves_app_name",
             "__lib_dna__core___nerves__nerves_durable_of",
@@ -602,11 +616,15 @@ fn verdict_changes() {
             "__lib_dna__core___workspace__wait_secs",
             "__lib_dna__core__pond__realtime__nats___types__nats_ack",
             "__lib_dna__core___record__MemRecord::signer",
+            "__lib_dna__operations___governance_policy__FixedAuthority::authorize",
+            "__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority::authorize",
+            "__lib_dna__operations___organization_policy__FixedOrganizationAuthority::authorize",
+            "__lib_dna__operations___task_policy__FixedTaskAuthority::authorize",
         ],
         &[
-            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 5),
-            ("once-per-invocation -> per-iteration-reclaim", 8),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 220),
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
+            ("once-per-invocation -> per-iteration-reclaim", 22),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 219),
         ],
         &[
             "__lib_dna__core___decision__decision_line StringConcat @922766..922873 InvokedUnboundedly",
