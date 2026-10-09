@@ -195,8 +195,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        455,
-        462,
+        458,
+        465,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -299,8 +299,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        456,
-        473,
+        462,
+        480,
         "
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}
@@ -324,6 +324,7 @@ fn operations() {
         hat_json  does={alloc}
         hat_position_of  does={alloc}
         hold_person  does={alloc}
+        hole_role_position  does={alloc}
         ingest_ext  does={alloc}
         ",
     );

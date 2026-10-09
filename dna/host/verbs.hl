@@ -381,7 +381,8 @@ fn review_list(p: Projection) -> Answer {
     // GH #596 C, #994: the toolchain's seeded families, one Review per
     // practice (a Review pins one digest and settles with one outcome),
     // each listed under its own heading so the Board can read it as a set
-    out = out + seeded_listing(p, ids, "purpose") + seeded_listing(p, ids, "design") + seeded_listing(p, ids, "operating") + seeded_listing(p, ids, "using") + seeded_listing(p, ids, "library") + seeded_listing(p, ids, "holes") + seeded_listing(p, ids, "practices") + seeded_listing(p, ids, "holds");
+    let ordered = p.review_ids_in_order();
+    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds");
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
 }
 

@@ -996,6 +996,7 @@ fn dna_fixture_set_is_complete() {
             "schedule_test.hl",
             "senses_reflex_test.hl",
             "status_chain_race_test.hl",
+            "structure_test.hl",
             "supersession_test.hl",
             "support_test.hl",
             "sync_head_read_test.hl",

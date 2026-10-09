@@ -52,7 +52,7 @@ edited  …/demo/hale.toml ([claims] no_base, [environments.local], [environment
 seeded  refs/dna/journal (8 event(s): application.attached, structure.observed, responsibility.proposed, the purpose proposed)
 seated  the head's socket knows uid 1000 as … (dna.unix.member); the record declares dna.trust = local, where they hold every position
 seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)
-seeded  design (8 practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)
+seeded  design (11 practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)
 seeded  operating (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `operating`)
 seeded  using (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `using`)
 edited  …/demo/.gitignore (/dna/nats.secrets.conf, /dna/postgres.secrets)
@@ -95,7 +95,16 @@ application is not modified …)`), adds the two environments to your
 `hale.toml` (or writes one), and ends by running `hale fmt` over
 `dna/` and your application's seed. On a directory with no application
 at its root, `init` seeds the record with the repository's graph
-instead.
+instead, and proposes the holes that graph implies: the positions, and
+with each position its **mandate**, a text bound to the position that
+says what it decides, what it may not, what it cites, how it writes and
+what it escalates. `hale dna review holes approve` ratifies a position
+and then its mandate. A position also carries its standard equipment:
+if `spec/<Stem>.description.json` (what `hale api describe` writes) names
+the roles the contract's members require, they are the equipment of the
+part that serves it (`reviewer` on its reviewer, every other role on its
+dev), and `hale dna fill` prints them. The roles inform what a holder is
+fitted with; they never create a position or grant authority.
 
 ## What it wrote
 
@@ -260,7 +269,7 @@ journal:    38 event(s), chain verified at 9ddd807957fc
 expression: attached Demo (shape ddd87794e8adeed5) · current shape not cut · build not built
 intents:    0 offered, 0 refused
 tasks:      none
-reviews:    23 pending of 23
+reviews:    26 pending of 26
   k:05cecb18af4e [pending] needs board — ratify the design practice `design/software-delivery`: For an appendage or a product: process boundaries first (what runs, fail…
   …
 mutations:  0 (none applies before a human's verdict on the exact candidate)
@@ -295,11 +304,11 @@ those words. `hale dna review` lists every pending Review, grouped:
 
 ```text
 $ hale dna review
-23 pending review(s) of 23
+26 pending review(s) of 26
   purpose — the declared purpose, the Board's to ratify first:
       k:d2564afcfe0d — ratify the declared purpose?
       decide one with `hale dna review <id> …`, or all pending with `hale dna review purpose approve|reject`
-  design — 8 seeded practice(s), each its own Review:
+  design — 11 seeded practice(s), each its own Review:
       k:05cecb18af4e — ratify the design practice `design/software-delivery`: For an appendage or a product: process boundaries first (what runs, fail…
       …
   operating — 7 seeded practice(s), each its own Review:

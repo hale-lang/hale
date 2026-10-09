@@ -19,8 +19,34 @@ import "../operations" as ops;
 // The answer when there is nothing to read: the query's empty shape.
 fn show_empty(what: String) -> String { return if what == "org" { "[]" } else { "{\"processes\": [], \"meets\": [], \"runs\": []}" }; }
 
-fn show_answer(what: String, json: Bool, data: String, rows: Int, projected: Int, valid: Bool) -> Answer {
-    if !json { return answer(if what == "org" { ops::show_org(data) } else { ops::show_processes(data) }); }
+// The positions whose mandate the record proposes and the Board has not
+// decided, `\n`-wrapped: a proposal of kind `mandate` is pending until a
+// ratification, a refusal or a retirement names its digest.
+@unbounded
+fn mandates_pending(record: dna::GitJournal) -> String {
+    let mut asked = ""; // `<digest>\t<target>` per proposal
+    let mut decided = "\n";
+    let mut i = 0;
+    while i < record.revision() {
+        let e = record.read(i);
+        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "mandate" { asked = asked + e.entity + "\t" + std::json::find_string_field(e.body, "target") + "\n"; }
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" || e.kind == "knowledge.retired" { decided = decided + e.entity + "\n"; }
+        i = i + 1;
+    }
+    let mut out = "\n";
+    let mut rest = asked;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if !std::str::contains(decided, "\n" + line[0..tab] + "\n") { out = out + line[(tab + 1)..len(line)] + "\n"; }
+    }
+    return out;
+}
+
+fn show_answer(what: String, json: Bool, data: String, rows: Int, projected: Int, valid: Bool, pending: String) -> Answer {
+    if !json { return answer(if what == "org" { ops::show_org(data, pending) } else { ops::show_processes(data) }); }
     return answer("{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows) + ", \"projected_rows\": " + to_string(projected) + ", \"stamp_valid\": " + (if valid { "true" } else { "false" }) + ", \"graph\": " + data + "}\n");
 }
 
@@ -31,7 +57,7 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
     // a record with no rows has no graph, and no memory scoped to it yet
     if rows == 0 {
         eprintln("hale dna show: the record has no rows: `hale dna init` seeds it, and `hale dna sync` fetches one another clone holds");
-        return show_answer(what, json, show_empty(what), 0, 0, true);
+        return show_answer(what, json, show_empty(what), 0, 0, true, "\n");
     }
     let env = dna::HEAD_DSN_ENV;
     if !dna::dsn_set(env) {
@@ -52,7 +78,7 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
     } else if basis.watermark > rows {
         eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " rows, more than this clone's record holds (", to_string(rows), "); this clone is behind its remote: `hale dna sync`");
     }
-    return show_answer(what, json, data, rows, if basis.ok { basis.watermark } else { 0 }, basis.ok);
+    return show_answer(what, json, data, rows, if basis.ok { basis.watermark } else { 0 }, basis.ok, mandates_pending(record));
 }
 
 // ---- hale dna route [--json] (<path>… | --diff <range>) (GH #1087) ----------

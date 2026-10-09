@@ -31,16 +31,16 @@ fn toolchain() -> String {
 
 // GRAPH.md at a32b295f, "The two perspectives, as queries".
 const ORG: String = "purpose
-  board
-  postgres    dev, reviewer(store.md)
-  api         dev, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md)
-  brain       dev, reviewer(internal.yaml, store.md)
-  node        dev, reviewer(node.yaml, openapi.yaml, protocol.yaml)
-  compose     operator
-  validate    dev
-  ui          dev, reviewer(openapi.yaml)
-  personal    operator
-  scaled-out  operator
+  board {mandate: pending}
+  postgres    dev {mandate: pending}, reviewer(store.md) {mandate: pending}
+  api         dev {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: pending}
+  brain       dev {mandate: pending}, reviewer(internal.yaml, store.md) {mandate: pending}
+  node        dev {mandate: pending}, reviewer(node.yaml, openapi.yaml, protocol.yaml) {mandate: pending}
+  compose     operator {mandate: pending}
+  validate    dev {mandate: pending}
+  ui          dev {mandate: pending}, reviewer(openapi.yaml) {mandate: pending}
+  personal    operator {mandate: pending}
+  scaled-out  operator {mandate: pending}
 ";
 
 const PROCESSES: String = "callers, ui, node  --HTTP: openapi.yaml-->  api
@@ -204,8 +204,8 @@ locus App {
         self.append(j, "graph.node", "position:lone", ops::graph_node_body("position", "lone", "", ""));
         self.project(owner, identity);
         let held = self.show("org");
-        std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada]\n  postgres    dev, reviewer(store.md)\n"), "the board, held by ada: " + held.stdout);
-        std::test::assert(std::str::contains(held.stdout, "\n  (unplaced)  lone\n"), "a position under no node: " + held.stdout);
+        std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada] {mandate: pending}\n  postgres    dev {mandate: pending}, reviewer(store.md) {mandate: pending}\n"), "the board, held by ada: " + held.stdout);
+        std::test::assert(std::str::contains(held.stdout, "\n  (unplaced)  lone {mandate: none}\n"), "a position under no node: " + held.stdout);
 
         // ---- a retired node leaves the rendering
         self.append(j, "graph.retired", "process:node", "{}");
