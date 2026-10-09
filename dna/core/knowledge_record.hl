@@ -29,7 +29,7 @@ locus KnowledgeRecord {
             let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "lateral: `" + i.author + "` may not bind knowledge to `" + target + "` (siblings do not privately coordinate)");
             return "";
         }
-        if !target_known(self.journal, target) {
+        if !target_known(self.journal, self.receipts, target) {
             let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "unknown node: the record holds no graph.node row for `" + target + "`");
             return "";
         }
@@ -238,7 +238,7 @@ locus KnowledgeRecord {
             let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "lateral knowledge binding is not permitted"));
             return false;
         }
-        if !target_known(self.journal, r.target) {
+        if !target_known(self.journal, self.receipts, r.target) {
             let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "unknown node: the record holds no graph.node row for `" + r.target + "`"));
             return false;
         }
@@ -269,7 +269,7 @@ locus KnowledgeRecord {
         let codec = KnowledgeBindingCodec { };
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
         let lateral = classify_binding(r.author, r.target) == "lateral";
-        let unknown = !lateral && !target_known(self.journal, r.target);
+        let unknown = !lateral && !target_known(self.journal, self.receipts, r.target);
         if wrong_digest || lateral || unknown {
             let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r,
                 if wrong_digest { "candidate_mismatch" } else if unknown { "unknown_node" } else { "lateral_binding" },

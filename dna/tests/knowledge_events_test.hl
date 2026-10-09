@@ -127,6 +127,26 @@ main locus App {
         let d5 = self.again.propose_knowledge(dna::Idea { id: "p5", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
         std::test::assert(len(d5) > 0, "the node stated, the proposal stands");
         std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"class\": \"goal\"") && std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"target\": \"language:hale\""), self.last(self.again.journal, "knowledge.proposed").body);
+
+        // 8. the graph the record states includes a ratified hole's nodes: a
+        //    hole creating position:api/dev takes a binding, as the projection
+        //    sees it; a retired node refuses, a stated one still accepts
+        let hole = "{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.node\", \"entity\": \"position:api/dev\", \"body\": \"{\\\"kind\\\": \\\"position\\\", \\\"name\\\": \\\"api/dev\\\"}\"}]}";
+        let raw = self.again.verification.receipts.store(hole);
+        let d6 = self.again.propose_knowledge(dna::Idea { id: "p6", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        std::test::assert_eq_str(d6, "", "the hole is not ratified yet: refused");
+        let ratified_hole = self.again.journal.append(self.again.journal.revision(), "knowledge.ratified", "sha256:" + raw, "{\"class\": \"goal\"}");
+        std::test::assert(ratified_hole.ok, "the hole is ratified");
+        let d7 = self.again.propose_knowledge(dna::Idea { id: "p7", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        std::test::assert(len(d7) > 0, "a position a ratified hole created takes a binding");
+        let gone = self.again.journal.append(self.again.journal.revision(), "graph.retired", "language:hale", "{}");
+        std::test::assert(gone.ok, "the record retires the stated node");
+        let d8 = self.again.propose_knowledge(dna::Idea { id: "p8", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        std::test::assert_eq_str(d8, "", "a retired node refuses");
+        let gone_hole = self.again.journal.append(self.again.journal.revision(), "graph.retired", "position:api/dev", "{}");
+        std::test::assert(gone_hole.ok, "and a hole's node can be retired");
+        let d9 = self.again.propose_knowledge(dna::Idea { id: "p9", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        std::test::assert_eq_str(d9, "", "retired, the hole's node refuses too");
         dna::scratch_done(repo);
     }
 }
