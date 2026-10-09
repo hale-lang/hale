@@ -1,0 +1,97 @@
+#hale-habitat-wireframe {
+  --graph-focus: light-dark(#176b85, #7bcce3);
+  --graph-edge: light-dark(#889ca8, #60717c);
+  --graph-proposal: light-dark(#8a6635, #d8b779);
+}
+#hale-habitat-wireframe .habitat-part-content { margin-top: 20px; }
+#hale-habitat-wireframe .graph-workbench { min-width: 0; container-type: inline-size; }
+#hale-habitat-wireframe .graph-context { display:flex; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; color:var(--habitat-muted); font-size:12px; margin-bottom:18px; }
+#hale-habitat-wireframe .graph-context > span:first-child { color:var(--habitat-text); }
+#hale-habitat-wireframe .graph-context [aria-hidden] { padding:0 9px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px 16px; }
+#hale-habitat-wireframe .graph-perspectives, #hale-habitat-wireframe .graph-presentation { display:flex; gap:3px; flex-wrap:wrap; }
+#hale-habitat-wireframe .graph-toolbar button { font:inherit; font-size:12px; padding:8px 11px; color:var(--habitat-muted); border:0; border-radius:5px; background:transparent; }
+#hale-habitat-wireframe .graph-toolbar button[aria-pressed="true"] { color:var(--habitat-text); background:var(--habitat-hover); }
+#hale-habitat-wireframe .graph-presentation { padding-left:12px; border-left:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .graph-question { margin:14px 0 20px; color:var(--habitat-muted); font-size:13px; }
+#hale-habitat-wireframe .graph-filters { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 16px; }
+#hale-habitat-wireframe .graph-filter-field { display:flex; flex-direction:column; gap:5px; font-size:11px; color:var(--habitat-muted); flex:1 1 130px; min-width:0; }
+#hale-habitat-wireframe .graph-filter-field:first-child { flex:2 1 190px; }
+#hale-habitat-wireframe .graph-filter-field input, #hale-habitat-wireframe .graph-filter-field select { font:400 12px/1.4 system-ui,sans-serif; width:100%; min-width:0; border:1px solid var(--habitat-line); border-radius:5px; padding:8px 9px; color:var(--habitat-text); background:var(--habitat-bar); }
+#hale-habitat-wireframe .graph-filter-status { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--habitat-muted); margin:0 0 14px; }
+#hale-habitat-wireframe .graph-node[data-context="true"] { border-style:dashed; }
+#hale-habitat-wireframe .graph-no-results { padding:50px 24px; text-align:center; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-no-results h3 { color:var(--habitat-text); }
+#hale-habitat-wireframe .graph-focus-trail { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:14px; font-size:12px; }
+#hale-habitat-wireframe .graph-stage { border:1px solid var(--habitat-line); border-radius:8px; min-width:0; overflow:hidden; background:var(--habitat-bg); }
+#hale-habitat-wireframe .graph-scope-label { padding:12px 16px; display:flex; gap:8px 16px; flex-wrap:wrap; justify-content:space-between; font-size:11px; color:var(--habitat-muted); border-bottom:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .graph-scope-name { color:var(--habitat-text); }
+#hale-habitat-wireframe .graph-canvas { position:relative; width:100%; min-height:380px; background-image:radial-gradient(var(--habitat-line) 0.7px, transparent 0.7px); background-size:18px 18px; }
+#hale-habitat-wireframe .graph-paths { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+#hale-habitat-wireframe .graph-path { fill:none; stroke:var(--graph-edge); stroke-width:1.2; }
+#hale-habitat-wireframe .graph-path[data-kind="declared"] { stroke-dasharray:5 4; }
+#hale-habitat-wireframe .graph-path[data-kind="proposed"] { stroke:var(--graph-proposal); stroke-dasharray:2 4; }
+#hale-habitat-wireframe .graph-path[data-selected="true"] { stroke:var(--graph-focus); stroke-width:2; }
+#hale-habitat-wireframe .graph-path[data-muted="true"] { opacity:.4; }
+#hale-habitat-wireframe .graph-lane-label { position:absolute; top:17px; text-align:center; color:var(--habitat-muted); font:400 11px/1.4 system-ui,sans-serif; }
+#hale-habitat-wireframe .graph-lane-rule { position:absolute; top:43px; bottom:20px; border-left:1px solid color-mix(in srgb,var(--habitat-line) 65%,transparent); pointer-events:none; }
+#hale-habitat-wireframe .graph-node { position:absolute; min-height:76px; display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:3px; text-align:left; padding:10px 12px; border:1px solid var(--habitat-line); border-radius:6px; background:var(--habitat-bar); color:var(--habitat-text); font:400 13px/1.3 system-ui,sans-serif; box-shadow:0 3px 9px color-mix(in srgb,var(--habitat-bg) 45%,transparent); }
+#hale-habitat-wireframe .graph-node:hover { border-color:var(--graph-edge); }
+#hale-habitat-wireframe .graph-node[aria-pressed="true"] { border-color:var(--graph-focus); box-shadow:0 0 0 1px var(--graph-focus); }
+#hale-habitat-wireframe .graph-node[data-muted="true"] { opacity:.55; }
+#hale-habitat-wireframe .graph-node-kind { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-node-label { font-weight:500; overflow-wrap:anywhere; }
+#hale-habitat-wireframe .graph-node-state { font-size:11px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-node-state[data-tone="warn"] { color:var(--habitat-warn); }
+#hale-habitat-wireframe .graph-node-state[data-tone="good"] { color:var(--habitat-good); }
+#hale-habitat-wireframe .graph-edge-label { position:absolute; transform:translate(-50%,-50%); max-width:140px; padding:3px 5px; border:0; border-radius:3px; font:400 11px/1.25 system-ui,sans-serif; color:var(--habitat-muted); background:var(--habitat-bg); text-align:center; }
+#hale-habitat-wireframe .graph-region { position:absolute; border:1px solid var(--habitat-line); border-radius:10px; background:color-mix(in srgb,var(--habitat-bar) 48%,transparent); pointer-events:none; }
+#hale-habitat-wireframe .graph-region-label { position:absolute; top:-10px; left:10px; padding:2px 5px; background:var(--habitat-bg); font-size:11px; color:var(--habitat-muted); max-width:calc(100% - 20px); }
+#hale-habitat-wireframe .graph-edge-label:hover, #hale-habitat-wireframe .graph-edge-label[aria-pressed="true"] { color:var(--graph-focus); background:var(--habitat-hover); }
+#hale-habitat-wireframe .graph-edge-label[data-kind="proposed"] { color:var(--graph-proposal); }
+#hale-habitat-wireframe .graph-legend { padding:12px 15px; display:flex; gap:9px 14px; flex-wrap:wrap; align-items:center; border-top:1px solid var(--habitat-line); font-size:11px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-legend > span { display:flex; gap:6px; align-items:center; }
+#hale-habitat-wireframe .graph-key { display:inline-block; width:18px; border-top:1px solid var(--graph-edge); }
+#hale-habitat-wireframe .graph-key.declared { border-top-style:dashed; }
+#hale-habitat-wireframe .graph-key.proposed { border-top:2px dotted var(--graph-proposal); }
+#hale-habitat-wireframe .graph-select-hint { margin-left:auto; }
+#hale-habitat-wireframe .graph-inspection { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:28px; padding:24px 0; min-height:170px; }
+#hale-habitat-wireframe .graph-inspection h2 { font:500 18px/1.35 system-ui,sans-serif; margin:6px 0 8px; letter-spacing:-.3px; overflow-wrap:anywhere; }
+#hale-habitat-wireframe .graph-inspection p { margin:8px 0 14px; color:var(--habitat-muted); font-size:13px; }
+#hale-habitat-wireframe .graph-inspection .ui-kv { margin:18px 0; font-size:12px; grid-template-columns:minmax(70px,.7fr) minmax(0,1.8fr); }
+#hale-habitat-wireframe .graph-identity { font-size:11px; color:var(--habitat-muted); overflow-wrap:anywhere; font-family:ui-monospace,monospace; }
+#hale-habitat-wireframe .graph-kind-label { font-size:11px; color:var(--habitat-muted); text-transform:uppercase; letter-spacing:.8px; }
+#hale-habitat-wireframe .graph-relations { display:grid; gap:0; }
+#hale-habitat-wireframe .graph-relation-row { display:flex; gap:8px; justify-content:space-between; text-align:left; padding:10px 0; background:none; color:var(--habitat-text); border:0; border-bottom:1px solid var(--habitat-line); font:400 12px/1.45 system-ui,sans-serif; }
+#hale-habitat-wireframe .graph-relation-row span:first-child { color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-relation-row:hover { color:var(--graph-focus); }
+#hale-habitat-wireframe .graph-linked-parts { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+#hale-habitat-wireframe .graph-linked-parts button { display:flex; gap:5px; align-items:center; }
+#hale-habitat-wireframe .graph-linked-parts .habitat-glyph { width:14px; height:14px; }
+#hale-habitat-wireframe .graph-outside { color:var(--habitat-warn); padding:0 0 10px; font-size:12px; }
+#hale-habitat-wireframe .graph-empty-selection { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; }
+#hale-habitat-wireframe .graph-empty-selection h2 { font-size:16px; }
+#hale-habitat-wireframe .graph-empty-selection p { max-width:440px; }
+#hale-habitat-wireframe .graph-evidence-strip { display:flex; gap:8px 18px; flex-wrap:wrap; justify-content:space-between; border-top:1px solid var(--habitat-line); padding:13px 0; color:var(--habitat-muted); font-size:11px; }
+#hale-habitat-wireframe .graph-records { margin-top:10px; border-top:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .graph-records > summary { font-size:13px; padding:16px 0; color:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-record-content { padding-top:14px; }
+#hale-habitat-wireframe .graph-outline { padding:0 16px; }
+#hale-habitat-wireframe .graph-outline-entry { padding:16px 0; border-bottom:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .graph-outline-entry:last-child { border:0; }
+#hale-habitat-wireframe .graph-outline-node { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; color:var(--habitat-text); border:0; background:transparent; padding:4px 0; text-align:left; font:500 13px/1.4 system-ui,sans-serif; }
+#hale-habitat-wireframe .graph-outline-node[aria-pressed="true"] { color:var(--graph-focus); }
+#hale-habitat-wireframe .graph-outline-entry .graph-relations { margin:8px 0 0 16px; }
+#hale-habitat-wireframe .graph-outline-entry .graph-relation-row { border:0; padding:5px 0; }
+#hale-habitat-wireframe .graph-compact-notice { display:none; }
+@container (max-width: 600px) {
+  #hale-habitat-wireframe .graph-canvas { display:none; }
+  #hale-habitat-wireframe .graph-outline[hidden] { display:block !important; }
+  #hale-habitat-wireframe .graph-inspection { grid-template-columns:minmax(0,1fr); gap:18px; }
+  #hale-habitat-wireframe .graph-select-hint { margin-left:0; }
+  #hale-habitat-wireframe .graph-compact-notice { display:block; padding:12px 16px; border-bottom:1px solid var(--habitat-line); font-size:12px; color:var(--habitat-muted); }
+  #hale-habitat-wireframe .graph-presentation { display:none; }
+}
+@media (pointer:coarse) {
+  #hale-habitat-wireframe .graph-toolbar button, #hale-habitat-wireframe .graph-edge-label, #hale-habitat-wireframe .graph-relation-row { min-height:44px; }
+}

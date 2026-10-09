@@ -1,0 +1,33 @@
+<template id="graph-workbench-template">
+  <div class="graph-workbench">
+    <div class="graph-context"><span>Atlas <span aria-hidden="true">/</span> <span class="graph-context-part"></span></span><span class="graph-capture">Sample snapshot · 09:42</span></div>
+    <div class="graph-toolbar">
+      <div class="graph-perspectives" role="group" aria-label="Perspective"></div>
+      <div class="graph-presentation" role="group" aria-label="Presentation"><button type="button" data-graph-mode="graph">Spatial map</button><button type="button" data-graph-mode="outline">Outline</button></div>
+    </div>
+    <p class="graph-question"></p>
+    <div class="graph-filters" aria-label="Graph filters"></div>
+    <div class="graph-filter-status" aria-live="polite" hidden></div>
+    <div class="graph-focus-trail" hidden><span class="graph-focus-label"></span><button type="button" class="ui-button" data-graph-reset>Whole perspective</button></div>
+    <div class="graph-stage">
+      <div class="graph-compact-notice">Compact outline · the same entities and relationships</div>
+      <div class="graph-scope-label"><span class="graph-scope-name">Atlas · bounded perspective</span><span class="graph-count"></span></div>
+      <div class="spatial-toolbar"><button type="button" class="ui-button spatial-unfold cursor-interaction" data-spatial-unfold>Unfold into 3D</button><button type="button" class="ui-button cursor-interaction" data-spatial-context aria-pressed="false">Connected context</button><div class="spatial-camera"><button type="button" class="ui-button cursor-interaction" data-spatial-zoom="out" aria-label="Zoom out">−</button><span class="spatial-zoom-value">100%</span><button type="button" class="ui-button cursor-interaction" data-spatial-zoom="in" aria-label="Zoom in">+</button><button type="button" class="ui-button cursor-interaction" data-spatial-reset>Reset view</button></div></div>
+      <div class="spatial-dimensions" role="group" aria-label="Relationship dimensions"></div>
+      <section class="activity-panel" aria-label="Simulated activity">
+        <div class="activity-toolbar"><span class="activity-mode"><i aria-hidden="true"></i>Simulated activity</span><span class="activity-play-state">Ready</span><div class="activity-controls"><button type="button" class="ui-button cursor-interaction" data-activity-play>Play sample</button><button type="button" class="ui-button cursor-interaction" data-activity-next>Next event</button><button type="button" class="ui-button cursor-interaction" data-activity-reset>Reset</button></div></div>
+        <div class="activity-current" aria-live="polite"><span class="activity-current-label">Starting this perspective’s sample…</span><span class="activity-current-meta"></span><button type="button" class="activity-inspect cursor-interaction" data-activity-inspect hidden>Inspect event →</button></div>
+        <div class="activity-hidden-targets" hidden><span></span><button type="button" class="activity-inspect cursor-interaction" data-activity-reveal>Reveal event</button></div>
+        <details class="activity-timeline"><summary>Event sequence <span class="activity-sequence-count"></span></summary><div class="activity-event-list"></div></details>
+      </section>
+      <div class="graph-canvas" aria-label="Entities and typed relationships"></div>
+      <div class="spatial-guidance"><span class="spatial-gesture-hint">Drag to pan · Ctrl+scroll to zoom</span><span class="spatial-layer-hint">Color follows the relationship dimension</span><div class="spatial-orbit-buttons" hidden><button type="button" class="ui-button cursor-interaction" data-spatial-orbit="left" aria-label="Orbit left">↶</button><button type="button" class="ui-button cursor-interaction" data-spatial-orbit="right" aria-label="Orbit right">↷</button></div></div>
+      <div class="graph-outline" hidden></div>
+      <div class="graph-legend"><span><i class="graph-key observed"></i>Observed</span><span><i class="graph-key declared"></i>Declared</span><span><i class="graph-key proposed"></i>Proposed</span><span class="graph-select-hint">Select an entity or relationship</span></div>
+    </div>
+    <section class="activity-log" aria-label="Activity log"><div class="activity-log-heading"><h2>Activity log</h2><span class="activity-log-summary">Sample replay</span><button type="button" class="activity-inspect cursor-interaction" data-activity-clear-log>Clear log</button></div><div class="activity-log-feed" role="log" aria-label="Page events" aria-live="polite" aria-relevant="additions"></div><button type="button" class="activity-inspect cursor-interaction" data-activity-log-more hidden>Show earlier events</button></section>
+    <section class="graph-inspection" aria-label="Selection inspector" aria-live="polite"></section>
+    <div class="graph-evidence-strip"><span class="graph-coverage"></span><span>Fixture · no live connection</span></div>
+    <details class="graph-records"><summary>Supporting records &amp; controls</summary><div class="graph-record-content"></div></details>
+  </div>
+</template>

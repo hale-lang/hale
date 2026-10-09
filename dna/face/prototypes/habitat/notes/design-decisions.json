@@ -1,0 +1,37 @@
+{
+  "status": "Interactive wireframe with authored fixtures; no backend connected",
+  "sources": [
+    "https://github.com/hale-lang/hale/blob/main/AGENTS.md",
+    "https://github.com/hale-lang/hale/blob/main/dna/face/DESIGN.md",
+    "https://github.com/hale-lang/hale/blob/main/dna/face/CONTRACT.md",
+    "https://github.com/hale-lang/hale/blob/main/iris/DESIGN.md",
+    "https://github.com/hale-lang/hale/blob/main/spec/api.md"
+  ],
+  "universal_contract": {
+    "identity": "Entities and relationships have persistent, organism-scoped identity independent of view coordinates.",
+    "perspective": "Each body-part page selects a dimension of the model; its two perspectives expose different typed relationships.",
+    "structure": "Containment, placement, responsibility, authority and causal evidence remain distinct. Pure data does not imply a runtime lifecycle.",
+    "horizon": "Every perspective and focused neighborhood names its scope and reports the visible subset. The graph does not assert completeness beyond that scope.",
+    "selection": "Entity and relationship selection persist across perspectives, with explicit outside-view and filtered-out states.",
+    "representation": "Graph and outline read the same entities and edges. Layout changes have no domain effects.",
+    "evidence": "Observed, declared and proposed links have separate visual treatments; selecting a relation exposes its verb and supporting source.",
+    "filtering": "Text/state filters apply throughout. Memory adds entity-kind and relationship-basis filters; Senses adds source and relationship-basis filters. Matching nodes keep immediate neighbors for context and report match/context counts. Empty results do not clear the selection.",
+    "spatial_projection": "2D uses a topology-derived radial transit map. Unfolding into 3D separates relationship paths into depth layers, with exactly one junction per entity. Geometry is stable under selection and filtering; camera movement changes no domain state.",
+    "relationship_dimensions": "Structure, authority, work, signals and evidence have persistent route colors. Observed/declared/proposed remains an independent line-pattern encoding. Depth is a presentation dimension, not physical placement, authority rank or numeric distance.",
+    "bounded_expansion": "Connected context adds documented one-hop neighbors to the page perspective, capped at 28 entities, and reports omitted neighbors. It creates no synthetic domain relationships.",
+    "activity": "All 16 parts and 32 perspectives have finite sample event scenarios that start automatically on entry. Entity and relationship selections replay matching events; filters debounce and restart from visible targets. Pause, reset, stepping and log inspection hold the current page until explicit playback or navigation. Camera movement and state echoes do not restart scenarios. Every authored event edge supports a visible traveling trace with a trailing glow. Hollow diamonds identify event/read relationship traces; solid packets exclusively identify observed message traffic. Trace direction follows the authored edge, not an inferred transport route, execution, or new causality. The two node-only events keep entity emphasis. Reduced-motion preferences suppress travel. Scenarios never mutate the captured graph or send operations.",
+    "activity_log": "A timestamped per-page activity feed records the same emitted samples. Selecting an entry restores its perspective and highlights the same event without duplicating it. State retains 32 entries overall and displays up to eight per part; log time is local preview arrival time, not a backend timestamp."
+  },
+  "implementation_handoff": [
+    "Replace fixtures with authorized projections using Hale-generated @rpc clients; the old Face CONTRACT REST paths are not the target integration contract.",
+    "Use source-provided stable entity and relation IDs, exact parent/ownership rows, and predicates. The prototype derives some relation IDs only for local state.",
+    "The UI must not turn proximity, temporal adjacency, or a transport acknowledgement into authority, causality, or completion.",
+    "Production filtering, bounded expansion, search and pagination require provider support and declared coverage. Client filtering is not an authorization boundary.",
+    "Selection can survive a lens change only while its data remains authorized. Clear data that is no longer readable after auth changes or a failed authorization read.",
+    "History must use actual source snapshots and watermarks; this prototype has a fixed sample capture, not time travel or a live subscription.",
+    "Face evolution remains application-owned and emergent; RPC schemas do not supply complete layout or interaction semantics.",
+    "Existing supporting records and command previews remain under each graph for later detailed interaction design.",
+    "The five route families are authored presentation metadata for this wireframe. Bind them to typed relation predicates in the authorized generated @rpc projection; do not infer authority or evidence from geometry. Canonical ownership must come from the source, not the layout spanning tree.",
+    "The activity envelope is a frontend presentation model, not a claimed generated RPC event schema. Each fixture names its primary source. projection.refreshed explicitly denotes a derived read; many pages require authorized projection diffing after coarse Head changed notices. Replace the sample producer with a source-validated adapter and snapshot/watermark resynchronization; never convert delivery observation into work settlement."
+  ]
+}

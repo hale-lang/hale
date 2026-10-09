@@ -1,0 +1,55 @@
+#hale-habitat-wireframe {
+  --route-structure: light-dark(#286eaf,#78adf3);
+  --route-authority: light-dark(#8054b4,#ba99f3);
+  --route-work: light-dark(#177c67,#69d6b3);
+  --route-signal: light-dark(#a06914,#e7b764);
+  --route-evidence: light-dark(#b44d7b,#e68fb7);
+}
+#hale-habitat-wireframe .spatial-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:13px 15px 5px; }
+#hale-habitat-wireframe .spatial-unfold { background:var(--habitat-hover); color:var(--graph-focus); }
+#hale-habitat-wireframe [data-spatial-context][aria-pressed="true"] { background:var(--habitat-hover); }
+#hale-habitat-wireframe .spatial-camera { margin-left:auto; display:flex; gap:5px; align-items:center; }
+#hale-habitat-wireframe .spatial-camera .ui-button { padding:5px 9px; }
+#hale-habitat-wireframe .spatial-zoom-value { font:400 11px/1.4 ui-monospace,monospace; min-width:39px; text-align:center; color:var(--habitat-muted); }
+#hale-habitat-wireframe .spatial-dimensions { display:flex; flex-wrap:wrap; gap:5px 14px; padding:8px 16px 12px; }
+#hale-habitat-wireframe .spatial-dimensions button { display:flex; align-items:center; gap:7px; border:0; padding:4px 0; background:none; color:var(--habitat-text); font:400 11px/1.4 system-ui,sans-serif; }
+#hale-habitat-wireframe .spatial-dimensions button[aria-pressed="false"] { color:var(--habitat-muted); }
+#hale-habitat-wireframe .spatial-dimensions button[aria-pressed="false"] .spatial-route-key { opacity:.3; }
+#hale-habitat-wireframe .spatial-route-key { width:22px; height:2px; background:var(--route); display:block; position:relative; }
+#hale-habitat-wireframe .spatial-route-key::after { content:''; position:absolute; top:-2px; left:8px; width:6px; height:6px; border:1px solid var(--route); background:var(--habitat-bg); border-radius:50%; }
+#hale-habitat-wireframe .graph-canvas { min-height:490px; background-image:radial-gradient(color-mix(in srgb,var(--habitat-line) 70%,transparent) .7px,transparent .7px); background-size:30px 30px; cursor:grab; touch-action:none; overflow:hidden; }
+#hale-habitat-wireframe .graph-canvas.is-dragging { cursor:grabbing; }
+#hale-habitat-wireframe .spatial-svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+#hale-habitat-wireframe .spatial-ring { fill:none; stroke:var(--habitat-line); stroke-width:.65; opacity:.55; }
+#hale-habitat-wireframe .spatial-edge { fill:none; stroke:var(--route); stroke-width:1.55; opacity:.8; stroke-linecap:round; stroke-linejoin:round; }
+#hale-habitat-wireframe .spatial-edge[data-kind="declared"] { stroke-dasharray:6 3; }
+#hale-habitat-wireframe .spatial-edge[data-kind="proposed"] { stroke-dasharray:2 4; }
+#hale-habitat-wireframe .spatial-edge[data-muted="true"] { opacity:.17; }
+#hale-habitat-wireframe .spatial-edge[data-selected="true"] { stroke-width:2.8; opacity:1; }
+#hale-habitat-wireframe .spatial-edge-glow { fill:none; stroke:var(--route); stroke-width:8; opacity:.06; pointer-events:none; }
+#hale-habitat-wireframe .spatial-edge-hit { fill:none; stroke:transparent; stroke-width:15; pointer-events:stroke; }
+#hale-habitat-wireframe .spatial-direction { fill:none; stroke:var(--route); stroke-width:1.1; pointer-events:none; }
+#hale-habitat-wireframe .graph-canvas .graph-node { position:absolute; display:block; width:32px; height:32px; min-height:0; padding:0; border:0; background:transparent; box-shadow:none; border-radius:50%; overflow:visible; }
+#hale-habitat-wireframe .graph-canvas .graph-node[aria-pressed="true"] { border:0; box-shadow:none; }
+#hale-habitat-wireframe .graph-canvas .graph-node[data-muted="true"] { opacity:.4; }
+#hale-habitat-wireframe .spatial-station-mark { position:absolute; left:0; top:0; width:32px; height:32px; overflow:visible; }
+#hale-habitat-wireframe .spatial-station-core { fill:var(--habitat-bar); stroke:var(--habitat-text); stroke-width:1.1; }
+#hale-habitat-wireframe .spatial-selection-ring { fill:none; stroke:var(--graph-focus); stroke-width:1.3; }
+#hale-habitat-wireframe .spatial-label { position:absolute; display:block; text-align:center; width:max-content; max-width:132px; color:var(--habitat-text); background:color-mix(in srgb,var(--habitat-bg) 88%,transparent); border-radius:3px; padding:2px 5px; font:400 12px/1.3 system-ui,sans-serif; transform:translate(-50%,-50%); pointer-events:none; overflow-wrap:anywhere; }
+#hale-habitat-wireframe .spatial-label.is-hidden { display:none; }
+#hale-habitat-wireframe .graph-node:hover .spatial-label.is-hidden, #hale-habitat-wireframe .graph-node:focus-visible .spatial-label.is-hidden { display:block; z-index:20; }
+#hale-habitat-wireframe .graph-canvas .graph-node[aria-pressed="true"] .spatial-label { font-weight:500; color:var(--graph-focus); }
+#hale-habitat-wireframe .spatial-label-kind { display:block; margin-top:2px; color:var(--habitat-muted); font:400 11px/1.35 ui-monospace,monospace; }
+#hale-habitat-wireframe .graph-canvas .graph-edge-label { z-index:30; background:var(--habitat-bar); border:1px solid var(--habitat-line); border-radius:4px; padding:5px 8px; color:var(--habitat-text); max-width:190px; font-size:12px; }
+#hale-habitat-wireframe .spatial-guidance { padding:10px 16px; font-size:11px; color:var(--habitat-muted); display:flex; gap:8px 16px; justify-content:space-between; align-items:center; flex-wrap:wrap; }
+#hale-habitat-wireframe .spatial-orbit-buttons { display:flex; gap:5px; }
+#hale-habitat-wireframe .spatial-guidance .ui-button { padding:4px 9px; }
+#hale-habitat-wireframe .spatial-depth-label { font:400 11px/1.4 ui-monospace,monospace; fill:var(--habitat-muted); }
+#hale-habitat-wireframe .graph-workbench[data-presentation="outline"] .spatial-toolbar,
+#hale-habitat-wireframe .graph-workbench[data-presentation="outline"] .spatial-guidance { display:none; }
+@container (max-width:600px) {
+  #hale-habitat-wireframe .spatial-toolbar, #hale-habitat-wireframe .spatial-guidance { display:none; }
+}
+@media (pointer:coarse) {
+  #hale-habitat-wireframe .spatial-dimensions button, #hale-habitat-wireframe .spatial-toolbar button { min-height:44px; }
+}

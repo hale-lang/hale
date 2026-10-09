@@ -1,0 +1,3123 @@
+{
+  "heart": {
+    "views": [
+      {
+        "id": "boundary",
+        "label": "Application boundary",
+        "summary": "Follow declared application interfaces, private state, and the observations that cross into the organism.",
+        "columns": [
+          "Interfaces",
+          "Application",
+          "Organization"
+        ],
+        "nodes": [
+          {
+            "id": "atlas-api",
+            "label": "Application API",
+            "kind": "API surface",
+            "state": "Declared",
+            "note": "The application exposes its own declared API. Its concrete generated contract is not populated in this sketch.",
+            "facts": [
+              [
+                "Access",
+                "Application authority"
+              ],
+              [
+                "Contract",
+                "To be inspected"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-boundary",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "atlas-application",
+            "label": "Atlas delivery",
+            "kind": "Application",
+            "state": "Attached",
+            "note": "Traceable deliveries with safe retries. The application owns its data and secrets.",
+            "facts": [
+              [
+                "Seed",
+                "apps/atlas"
+              ],
+              [
+                "Attachment",
+                "atlas"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-boundary",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "atlas-store",
+            "label": "Application store",
+            "kind": "Store",
+            "state": "Private",
+            "note": "Application state is distinct from DNA memory and the organization record.",
+            "facts": [
+              [
+                "Owner",
+                "Atlas application"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-boundary",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "atlas-broker-account",
+            "label": "app-atlas",
+            "kind": "Credential identity",
+            "state": "Publish only",
+            "note": "Its broker identity may publish only within its own application subjects.",
+            "facts": [
+              [
+                "Scope",
+                "<org>.app.atlas.>"
+              ]
+            ],
+            "part": "skin",
+            "detail": "heart-boundary",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "topic-atlas",
+            "label": "Atlas event subjects",
+            "kind": "Topic family",
+            "state": "Declared",
+            "note": "Typed application events leave through scoped subjects; this is not a browser broker connection.",
+            "facts": [
+              [
+                "Subjects",
+                "<org>.app.atlas.>"
+              ]
+            ],
+            "part": "nerves",
+            "detail": "heart-boundary",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "heart",
+            "label": "Heart",
+            "kind": "Runtime part",
+            "state": "Declared",
+            "note": "The heart durable lands application events in the organization record.",
+            "facts": [],
+            "part": "heart",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "state": "Retained",
+            "note": "The current expression, retained after m16 completed observation.",
+            "facts": [
+              [
+                "Mutation",
+                "m16"
+              ],
+              [
+                "Change",
+                "Clarify delivery failure messages"
+              ]
+            ],
+            "part": "genome",
+            "detail": "record-applied",
+            "col": 1,
+            "row": 0
+          }
+        ],
+        "edges": [
+          {
+            "from": "atlas-api",
+            "to": "atlas-application",
+            "label": "exposes",
+            "kind": "declared",
+            "note": "Calls enter through the application's declared API.",
+            "evidence": "heart.md · application boundary"
+          },
+          {
+            "from": "atlas-application",
+            "to": "atlas-store",
+            "label": "owns",
+            "kind": "declared",
+            "note": "The application owns its own store, separate from DNA memory.",
+            "evidence": "heart.md · attached application"
+          },
+          {
+            "from": "atlas-broker-account",
+            "to": "atlas-application",
+            "label": "identifies",
+            "kind": "declared",
+            "note": "This credential identifies the publisher; it grants no DNA subscriptions.",
+            "evidence": "heart.md · publish-only application account"
+          },
+          {
+            "from": "atlas-application",
+            "to": "topic-atlas",
+            "label": "publishes",
+            "kind": "declared",
+            "note": "Only the application's scoped event subjects are allowed.",
+            "evidence": "heart.md · application subjects"
+          },
+          {
+            "from": "topic-atlas",
+            "to": "heart",
+            "label": "delivers to",
+            "kind": "declared",
+            "note": "The heart durable lands events before acknowledgement or action.",
+            "evidence": "nerves.md · heart durable"
+          },
+          {
+            "from": "revision-current",
+            "to": "atlas-application",
+            "label": "is expressed by",
+            "kind": "observed",
+            "note": "m16 was retained after every touched instance and its observation window succeeded.",
+            "evidence": "Sample receipt · mutation.retained · m16"
+          }
+        ],
+        "regions": [
+          {
+            "label": "Application-owned state",
+            "nodeIds": [
+              "atlas-application",
+              "atlas-store"
+            ],
+            "kind": "boundary"
+          },
+          {
+            "label": "Organization ingestion",
+            "nodeIds": [
+              "topic-atlas",
+              "heart"
+            ],
+            "kind": "boundary"
+          }
+        ]
+      },
+      {
+        "id": "expression",
+        "label": "Expression evidence",
+        "summary": "Read the reviewed revision, deployment request, instance reports, and retention as separate evidence.",
+        "columns": [
+          "Reviewed source",
+          "Delivery",
+          "Observation"
+        ],
+        "nodes": [
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "state": "Retained",
+            "note": "The current expression, retained after m16 completed observation.",
+            "facts": [
+              [
+                "Mutation",
+                "m16"
+              ],
+              [
+                "Change",
+                "Clarify delivery failure messages"
+              ]
+            ],
+            "part": "genome",
+            "detail": "record-applied",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "deploy-m16",
+            "label": "Deploy m16",
+            "kind": "Deployment request",
+            "state": "Recorded",
+            "note": "The requested revision is a48bc20; the request is not evidence that any process is running.",
+            "facts": [
+              [
+                "Fleet",
+                "production"
+              ],
+              [
+                "Targets",
+                "api-0 · api-1 · worker-0"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-deploy",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "api-0",
+            "label": "api-0",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-1. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-1"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-instance",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "api-1",
+            "label": "api-1",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-2. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-2"
+              ]
+            ],
+            "part": "body",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "worker-0",
+            "label": "worker-0",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-1. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-1"
+              ]
+            ],
+            "part": "body",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "observation-m16",
+            "label": "15-second observation",
+            "kind": "Observation",
+            "state": "Healthy",
+            "note": "All three instances expressed the requested revision throughout the observation window.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Mutation",
+                "m16"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-expression",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "retention-m16",
+            "label": "Retain m16",
+            "kind": "Outcome",
+            "state": "Recorded",
+            "note": "The reviewed candidate was kept; m17 remains a separate pending candidate.",
+            "facts": [
+              [
+                "Receipt",
+                "mutation.retained"
+              ]
+            ],
+            "part": "record",
+            "detail": "record-applied",
+            "col": 0,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "revision-current",
+            "to": "deploy-m16",
+            "label": "is requested by",
+            "kind": "observed",
+            "note": "The deployment targets the exact reviewed candidate.",
+            "evidence": "Sample receipt · fleet.deploy · m16"
+          },
+          {
+            "from": "deploy-m16",
+            "to": "api-0",
+            "label": "is answered by",
+            "kind": "observed",
+            "note": "api-0 reported the requested revision independently.",
+            "evidence": "Sample receipt · instance.up #250"
+          },
+          {
+            "from": "deploy-m16",
+            "to": "api-1",
+            "label": "is answered by",
+            "kind": "observed",
+            "note": "api-1 reported the requested revision independently.",
+            "evidence": "Sample receipt · instance.up · api-1"
+          },
+          {
+            "from": "deploy-m16",
+            "to": "worker-0",
+            "label": "is answered by",
+            "kind": "observed",
+            "note": "worker-0 reported the requested revision independently.",
+            "evidence": "Sample receipt · instance.up · worker-0"
+          },
+          {
+            "from": "worker-0",
+            "to": "observation-m16",
+            "label": "is included in",
+            "kind": "observed",
+            "note": "The observation includes all touched instances, including this worker.",
+            "evidence": "Sample receipt · expression.observed · m16"
+          },
+          {
+            "from": "observation-m16",
+            "to": "retention-m16",
+            "label": "supports",
+            "kind": "observed",
+            "note": "Healthy observation supports retention; approval and running state remain distinct.",
+            "evidence": "Sample receipt · mutation.retained · m16"
+          }
+        ]
+      }
+    ]
+  },
+  "body": {
+    "views": [
+      {
+        "id": "placement",
+        "label": "Placement",
+        "summary": "Inspect which host holds the organization and where application instances report running.",
+        "columns": [
+          "Hosts",
+          "Runtime",
+          "Expression"
+        ],
+        "nodes": [
+          {
+            "id": "control-1",
+            "label": "control-1",
+            "kind": "Host",
+            "state": "Lease holder",
+            "note": "This host runs the record's organization under one renewing body lease.",
+            "facts": [
+              [
+                "Holder",
+                "operator@control-1:atlas"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-lease",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "edge-1",
+            "label": "edge-1",
+            "kind": "Host",
+            "state": "Reporting",
+            "note": "Fleet host for api-0 and worker-0.",
+            "facts": [
+              [
+                "Latest pulse",
+                "09:42:18"
+              ]
+            ],
+            "part": "body",
+            "detail": "senses-node",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "edge-2",
+            "label": "edge-2",
+            "kind": "Host",
+            "state": "Reporting",
+            "note": "Fleet host for api-1.",
+            "facts": [
+              [
+                "Latest pulse",
+                "09:42:17"
+              ]
+            ],
+            "part": "body",
+            "col": 0,
+            "row": 3
+          },
+          {
+            "id": "body",
+            "label": "Atlas body",
+            "kind": "Runtime part",
+            "state": "Leased",
+            "note": "The current body stops if it loses the record lease.",
+            "facts": [
+              [
+                "Tick",
+                "09:42:18"
+              ],
+              [
+                "Expires",
+                "09:42:48"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-lease",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "api-0",
+            "label": "api-0",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-1. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-1"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-instance",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "worker-0",
+            "label": "worker-0",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-1. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-1"
+              ]
+            ],
+            "part": "body",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "api-1",
+            "label": "api-1",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Latest receipt reports a48bc20 on edge-2. A request alone does not establish this state.",
+            "facts": [
+              [
+                "Revision",
+                "a48bc20"
+              ],
+              [
+                "Host",
+                "edge-2"
+              ]
+            ],
+            "part": "body",
+            "col": 1,
+            "row": 3
+          },
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "state": "Retained",
+            "note": "The current expression, retained after m16 completed observation.",
+            "facts": [
+              [
+                "Mutation",
+                "m16"
+              ],
+              [
+                "Change",
+                "Clarify delivery failure messages"
+              ]
+            ],
+            "part": "genome",
+            "detail": "record-applied",
+            "col": 2,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "control-1",
+            "to": "body",
+            "label": "holds lease for",
+            "kind": "observed",
+            "note": "This is the current body holder, not application placement.",
+            "evidence": "Sample receipt · body lease · tick 09:42:18"
+          },
+          {
+            "from": "edge-1",
+            "to": "api-0",
+            "label": "reports running",
+            "kind": "observed",
+            "note": "The latest per-instance report names the host and revision.",
+            "evidence": "Sample receipt · instance.up #250"
+          },
+          {
+            "from": "edge-1",
+            "to": "worker-0",
+            "label": "reports running",
+            "kind": "observed",
+            "note": "One host runs two distinct instances.",
+            "evidence": "Sample receipt · instance.up · worker-0"
+          },
+          {
+            "from": "edge-2",
+            "to": "api-1",
+            "label": "reports running",
+            "kind": "observed",
+            "note": "api-1 runs on edge-2, separate from the other instances.",
+            "evidence": "Sample receipt · instance.up · api-1"
+          },
+          {
+            "from": "api-0",
+            "to": "revision-current",
+            "label": "expresses",
+            "kind": "observed",
+            "note": "Instance evidence identifies the running revision.",
+            "evidence": "Sample receipt · instance.up #250"
+          },
+          {
+            "from": "worker-0",
+            "to": "revision-current",
+            "label": "expresses",
+            "kind": "observed",
+            "note": "Worker instance evidence identifies the running revision.",
+            "evidence": "Sample receipt · instance.up · worker-0"
+          },
+          {
+            "from": "api-1",
+            "to": "revision-current",
+            "label": "expresses",
+            "kind": "observed",
+            "note": "API instance evidence identifies the running revision.",
+            "evidence": "Sample receipt · instance.up · api-1"
+          }
+        ],
+        "regions": [
+          {
+            "label": "Organization placed on control-1",
+            "nodeIds": [
+              "control-1",
+              "body"
+            ],
+            "kind": "placement"
+          },
+          {
+            "label": "Instances placed on edge-1",
+            "nodeIds": [
+              "edge-1",
+              "api-0",
+              "worker-0"
+            ],
+            "kind": "placement"
+          },
+          {
+            "label": "Instance placed on edge-2",
+            "nodeIds": [
+              "edge-2",
+              "api-1"
+            ],
+            "kind": "placement"
+          }
+        ]
+      },
+      {
+        "id": "rollback",
+        "label": "Rollback history",
+        "summary": "Inspect yesterday's m14 failure and return to base. This is historical evidence, not the current a48bc20 placement.",
+        "columns": [
+          "Candidate",
+          "Observation",
+          "Recovery"
+        ],
+        "nodes": [
+          {
+            "id": "candidate-m14",
+            "label": "70dc42a · m14",
+            "kind": "Revision",
+            "state": "Historical",
+            "note": "Yesterday's reviewed candidate was not retained.",
+            "facts": [
+              [
+                "Mutation",
+                "m14"
+              ]
+            ],
+            "part": "genome",
+            "detail": "body-rollback",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "deploy-m14",
+            "label": "Deploy m14",
+            "kind": "Deployment request",
+            "state": "Recorded",
+            "note": "The request targeted the same three production instances.",
+            "facts": [
+              [
+                "Targets",
+                "api-0 · api-1 · worker-0"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-rollback",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "crash-m14",
+            "label": "api-1 exited",
+            "kind": "Observation",
+            "state": "Recorded",
+            "note": "api-1 exited on edge-2 during m14's observation window.",
+            "facts": [
+              [
+                "Receipt",
+                "expression.crashed"
+              ]
+            ],
+            "part": "senses",
+            "detail": "body-rollback",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "rollback-m14",
+            "label": "Return to base",
+            "kind": "Outcome",
+            "state": "Recorded",
+            "note": "The failed observation returned the genome to m14's base.",
+            "facts": [
+              [
+                "Receipt",
+                "mutation.rolled_back"
+              ]
+            ],
+            "part": "record",
+            "detail": "body-rollback",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "revision-m14-base",
+            "label": "4a18bf2",
+            "kind": "Revision",
+            "state": "Historical base",
+            "note": "This was the base for m14, not the current revision.",
+            "facts": [
+              [
+                "Scope",
+                "m14 rollback"
+              ]
+            ],
+            "part": "genome",
+            "detail": "body-rollback",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "deploy-m14-base",
+            "label": "Deploy base",
+            "kind": "Deployment request",
+            "state": "Recorded",
+            "note": "A new deploy requested the base on the same affected instances.",
+            "facts": [
+              [
+                "Revision",
+                "4a18bf2"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-rollback",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "receipt-m14-base",
+            "label": "3 instance reports",
+            "kind": "Receipt set",
+            "state": "Answered",
+            "note": "All three instances subsequently reported the base revision.",
+            "facts": [
+              [
+                "Receipt kind",
+                "instance.up"
+              ],
+              [
+                "Revision",
+                "4a18bf2"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-rollback",
+            "col": 2,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "candidate-m14",
+            "to": "deploy-m14",
+            "label": "is requested by",
+            "kind": "observed",
+            "note": "The request names the exact m14 candidate.",
+            "evidence": "Sample receipt · fleet.deploy · m14"
+          },
+          {
+            "from": "deploy-m14",
+            "to": "crash-m14",
+            "label": "is followed by",
+            "kind": "observed",
+            "note": "The failure occurred inside the observation window.",
+            "evidence": "Sample receipt · expression.crashed · api-1"
+          },
+          {
+            "from": "crash-m14",
+            "to": "rollback-m14",
+            "label": "causes",
+            "kind": "observed",
+            "note": "A failed observation triggers the expression rollback path.",
+            "evidence": "Sample receipt · mutation.rolled_back · m14"
+          },
+          {
+            "from": "rollback-m14",
+            "to": "revision-m14-base",
+            "label": "restores",
+            "kind": "observed",
+            "note": "The genome returned to the recorded base.",
+            "evidence": "Sample receipt · mutation.rolled_back · m14"
+          },
+          {
+            "from": "revision-m14-base",
+            "to": "deploy-m14-base",
+            "label": "is requested by",
+            "kind": "observed",
+            "note": "Rollback requires its own fleet request.",
+            "evidence": "Sample receipt · fleet.deploy · m14 base"
+          },
+          {
+            "from": "deploy-m14-base",
+            "to": "receipt-m14-base",
+            "label": "is answered by",
+            "kind": "observed",
+            "note": "Only the per-instance reports establish that the base is running.",
+            "evidence": "Sample receipt · instance.up · m14 base"
+          }
+        ]
+      }
+    ]
+  },
+  "nerves": {
+    "views": [
+      {
+        "id": "routes",
+        "label": "Signal routes",
+        "summary": "Follow organization facts and application observations through distinct scoped routes.",
+        "columns": [
+          "Publishers",
+          "Scoped subjects",
+          "Readers"
+        ],
+        "nodes": [
+          {
+            "id": "record",
+            "label": "Record",
+            "kind": "Durable log",
+            "state": "Authoritative",
+            "note": "Recorded asks are relayed until an answering row lands.",
+            "facts": [
+              [
+                "Delivery",
+                "At least once"
+              ],
+              [
+                "Request identity",
+                "Stable"
+              ]
+            ],
+            "part": "record",
+            "detail": "nerves-pending",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "topic-dna",
+            "label": "DNA facts",
+            "kind": "Topic family",
+            "state": "Declared",
+            "note": "Organization-scoped facts and requests.",
+            "facts": [
+              [
+                "Subjects",
+                "<org>.dna.>"
+              ],
+              [
+                "Retention",
+                "7 days"
+              ]
+            ],
+            "part": "nerves",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "spine",
+            "label": "Spine",
+            "kind": "Runtime part",
+            "state": "Declared",
+            "note": "The spine durable consumes organization facts.",
+            "facts": [],
+            "part": "spine",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "atlas-application",
+            "label": "Atlas delivery",
+            "kind": "Application",
+            "state": "Attached",
+            "note": "The application publishes only to its own subjects.",
+            "facts": [
+              [
+                "Scope",
+                "<org>.app.atlas.>"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-boundary",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "topic-atlas",
+            "label": "Atlas events",
+            "kind": "Topic family",
+            "state": "Declared",
+            "note": "Application events can arrive more than once; entity identity deduplicates them.",
+            "facts": [
+              [
+                "Subjects",
+                "<org>.app.atlas.>"
+              ]
+            ],
+            "part": "nerves",
+            "detail": "heart-reading",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "heart",
+            "label": "Heart",
+            "kind": "Runtime part",
+            "state": "Declared",
+            "note": "The heart durable records application events before acknowledging.",
+            "facts": [],
+            "part": "heart",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "head",
+            "label": "Head",
+            "kind": "Runtime part",
+            "state": "Authenticated",
+            "note": "The head notifies Faces when a row has landed.",
+            "facts": [
+              [
+                "Notification",
+                "head.row.landed"
+              ]
+            ],
+            "part": "head",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "face",
+            "label": "Face",
+            "kind": "Interface",
+            "state": "Refresh on evidence",
+            "note": "A row notification asks the Face to reread its authorized projections.",
+            "facts": [
+              [
+                "Read scope",
+                "Caller-authorized"
+              ]
+            ],
+            "part": "face",
+            "col": 1,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "record",
+            "to": "topic-dna",
+            "label": "relays asks to",
+            "kind": "declared",
+            "note": "Unanswered requests remain eligible for relay every 30 seconds.",
+            "evidence": "nerves.md · relay"
+          },
+          {
+            "from": "topic-dna",
+            "to": "spine",
+            "label": "delivers facts to",
+            "kind": "declared",
+            "note": "The durable spine reader deduplicates by request/entity identity.",
+            "evidence": "nerves.md · spine durable"
+          },
+          {
+            "from": "atlas-application",
+            "to": "topic-atlas",
+            "label": "publishes",
+            "kind": "declared",
+            "note": "Application broker credentials cannot publish organization facts.",
+            "evidence": "heart.md · application boundary"
+          },
+          {
+            "from": "topic-atlas",
+            "to": "heart",
+            "label": "delivers events to",
+            "kind": "declared",
+            "note": "The heart lands the reading before ACK or permanent refusal.",
+            "evidence": "nerves.md · heart durable"
+          },
+          {
+            "from": "head",
+            "to": "face",
+            "label": "notifies to reread",
+            "kind": "declared",
+            "note": "A row-landed notification is not itself a full state update.",
+            "evidence": "nerves.md · head.row.landed"
+          }
+        ],
+        "regions": [
+          {
+            "label": "Organization-scoped broker routes",
+            "nodeIds": [
+              "topic-dna",
+              "topic-atlas"
+            ],
+            "kind": "boundary"
+          }
+        ]
+      },
+      {
+        "id": "request",
+        "label": "Request and answer",
+        "summary": "A transport acknowledgement closes a delivery step; only the answering record row closes the request.",
+        "columns": [
+          "Record",
+          "Transport",
+          "Organization"
+        ],
+        "nodes": [
+          {
+            "id": "pressure-018",
+            "label": "Delivery capacity",
+            "kind": "Request",
+            "state": "Awaiting answer",
+            "note": "The third request from this source is pending. Only answered raises count.",
+            "facts": [
+              [
+                "Request",
+                "pressure-018"
+              ],
+              [
+                "Record row",
+                "pressure.requested #282"
+              ]
+            ],
+            "part": "senses",
+            "detail": "nerves-pending",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "publish-pressure-018",
+            "label": "Publish pressure-018",
+            "kind": "Delivery attempt",
+            "state": "Published",
+            "note": "A relay publishes the stable request identity.",
+            "facts": [
+              [
+                "Subject",
+                "dna.pressure.raised"
+              ]
+            ],
+            "part": "nerves",
+            "detail": "nerves-pending",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "ack-pressure-018",
+            "label": "Stream acknowledgement",
+            "kind": "Transport receipt",
+            "state": "Acknowledged",
+            "note": "This confirms transport delivery only; the organization has not answered.",
+            "facts": [
+              [
+                "Does not establish",
+                "Admitted pressure"
+              ]
+            ],
+            "part": "nerves",
+            "detail": "nerves-pending",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "spine",
+            "label": "Spine",
+            "kind": "Runtime part",
+            "state": "Awaits processing",
+            "note": "The durable reader is the route into organization processing.",
+            "facts": [
+              [
+                "Reader",
+                "spine durable"
+              ]
+            ],
+            "part": "spine",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "answer-pressure-018",
+            "label": "Answer not yet present",
+            "kind": "Expected receipt",
+            "state": "Pending",
+            "note": "The record awaits raised or refused naming pressure-018. No answer is fabricated.",
+            "facts": [
+              [
+                "Expected kinds",
+                "pressure.raised · pressure.refused"
+              ]
+            ],
+            "part": "record",
+            "detail": "nerves-pending",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "relay-pressure-018",
+            "label": "Relay after 30 s",
+            "kind": "Relay policy",
+            "state": "Declared",
+            "note": "Until an answer lands, the owner relays the same request identity.",
+            "facts": [
+              [
+                "Deduplication",
+                "pressure-018"
+              ]
+            ],
+            "part": "nerves",
+            "detail": "nerves-pending",
+            "col": 0,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "pressure-018",
+            "to": "publish-pressure-018",
+            "label": "is relayed as",
+            "kind": "observed",
+            "note": "The durable request precedes transport publication.",
+            "evidence": "Sample receipt · pressure.requested #282"
+          },
+          {
+            "from": "publish-pressure-018",
+            "to": "ack-pressure-018",
+            "label": "has transport receipt",
+            "kind": "proposed",
+            "note": "The sample publish-ACK stage needs transport observability beyond durable record rows.",
+            "evidence": "Proposed read projection · generated binding unverified"
+          },
+          {
+            "from": "publish-pressure-018",
+            "to": "spine",
+            "label": "is delivered to",
+            "kind": "declared",
+            "note": "The consumer receives at least once; duplicates do not create new requests.",
+            "evidence": "nerves.md · spine durable"
+          },
+          {
+            "from": "spine",
+            "to": "answer-pressure-018",
+            "label": "must record answer",
+            "kind": "declared",
+            "note": "Processing must write an answering row; this sample answer is still absent.",
+            "evidence": "nerves.md · request/answer closure"
+          },
+          {
+            "from": "answer-pressure-018",
+            "to": "relay-pressure-018",
+            "label": "is checked before",
+            "kind": "declared",
+            "note": "Only an answer stops relay; an ACK cannot satisfy this check.",
+            "evidence": "nerves.md · unanswered request relay"
+          },
+          {
+            "from": "relay-pressure-018",
+            "to": "pressure-018",
+            "label": "reuses identity of",
+            "kind": "declared",
+            "note": "Relay neither creates a fresh request nor increments pressure counts.",
+            "evidence": "nerves.md · idempotent request identity"
+          }
+        ]
+      }
+    ]
+  },
+  "spine": {
+    "views": [
+      {
+        "id": "execution",
+        "label": "Execution path",
+        "summary": "Follow one admitted definition into its current leased attempt and the separate outcome and settlement it still needs.",
+        "columns": [
+          "Definition and ask",
+          "Execution",
+          "Work"
+        ],
+        "nodes": [
+          {
+            "id": "definition-ask-judge-1",
+            "label": "ask-judge @1",
+            "kind": "Workflow definition",
+            "state": "Bound",
+            "note": "The complete definition is bound by revision before admission.",
+            "facts": [
+              [
+                "Write store",
+                "record"
+              ],
+              [
+                "Leaf",
+                "judgment"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-execution",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "task-t142",
+            "label": "Assess storage migration",
+            "kind": "Work",
+            "state": "In progress",
+            "note": "Assess compatibility with existing readers; this is independent of the pending delivery retry candidate m17.",
+            "facts": [
+              [
+                "Task",
+                "t142"
+              ],
+              [
+                "Definition",
+                "ask-judge @1"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-execution",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "execution-t142",
+            "label": "t142 / wf1",
+            "kind": "Execution",
+            "state": "Running",
+            "note": "A durable execution retains its identity across restarts.",
+            "facts": [
+              [
+                "Current step",
+                "0"
+              ],
+              [
+                "Definition",
+                "ask-judge @1"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-execution",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "work-t142-a",
+            "label": "Judgment work",
+            "kind": "Work",
+            "state": "Registered",
+            "note": "All registered members must settle before this step completes.",
+            "facts": [
+              [
+                "Identity",
+                "t142/wf1/s0/a"
+              ],
+              [
+                "Write store",
+                "record"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-execution",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "attempt-a0",
+            "label": "Attempt a0",
+            "kind": "Attempt",
+            "state": "Claimed",
+            "note": "The current effect-free attempt has no recorded outcome yet.",
+            "facts": [
+              [
+                "Identity",
+                "t142/wf1/s0/a/a0"
+              ],
+              [
+                "Lease token",
+                "8"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-current",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "outcome-t142",
+            "label": "Outcome pending",
+            "kind": "Expected receipt",
+            "state": "Pending",
+            "note": "A performer submits evidence and a result; there is no outcome yet.",
+            "facts": [
+              [
+                "Expected transition",
+                "attempt.outcome"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-outcome",
+            "col": 2,
+            "row": 3
+          },
+          {
+            "id": "settlement-t142",
+            "label": "Settlement pending",
+            "kind": "Expected receipt",
+            "state": "Pending",
+            "note": "The owner settles separately after submission; an ACK is not settlement.",
+            "facts": [
+              [
+                "Expected transition",
+                "work.settled"
+              ]
+            ],
+            "part": "record",
+            "detail": "spine-execution",
+            "col": 1,
+            "row": 3
+          }
+        ],
+        "edges": [
+          {
+            "from": "definition-ask-judge-1",
+            "to": "execution-t142",
+            "label": "defines",
+            "kind": "declared",
+            "note": "Admission checks the full bound definition before execution starts.",
+            "evidence": "spine.md · definition binding"
+          },
+          {
+            "from": "task-t142",
+            "to": "execution-t142",
+            "label": "starts",
+            "kind": "observed",
+            "note": "The sample task's admitted ask created this execution.",
+            "evidence": "Sample receipt · t142 · admitted ask"
+          },
+          {
+            "from": "execution-t142",
+            "to": "work-t142-a",
+            "label": "registers",
+            "kind": "observed",
+            "note": "Step 0 registered one judgment leaf.",
+            "evidence": "Sample receipt · t142/wf1 · step 0"
+          },
+          {
+            "from": "work-t142-a",
+            "to": "attempt-a0",
+            "label": "has attempt",
+            "kind": "observed",
+            "note": "The attempt identity belongs to this Work.",
+            "evidence": "Sample receipt · t142/wf1/s0/a/a0 · claim"
+          },
+          {
+            "from": "attempt-a0",
+            "to": "outcome-t142",
+            "label": "must submit",
+            "kind": "declared",
+            "note": "The leased performer supplies the result and supporting evidence.",
+            "evidence": "legs.md · submit"
+          },
+          {
+            "from": "outcome-t142",
+            "to": "settlement-t142",
+            "label": "awaits",
+            "kind": "declared",
+            "note": "Submission and owner settlement are separate transitions.",
+            "evidence": "spine.md · settle"
+          }
+        ]
+      },
+      {
+        "id": "dependencies",
+        "label": "Dependencies and cadence",
+        "summary": "Inspect a bound two-step definition and its schedule without implying that a paused occurrence is running.",
+        "columns": [
+          "Schedule",
+          "Definition",
+          "Steps"
+        ],
+        "nodes": [
+          {
+            "id": "schedule-month-close",
+            "label": "Month close",
+            "kind": "Schedule",
+            "state": "Paused",
+            "note": "A paused schedule creates neither occurrences nor misses.",
+            "facts": [
+              [
+                "Cadence",
+                "02:00 UTC · day 1 monthly"
+              ],
+              [
+                "Convener",
+                "position:operations"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-schedule",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "definition-close-month-1",
+            "label": "close-month @1",
+            "kind": "Workflow definition",
+            "state": "Declared",
+            "note": "Every step names exactly one write-store; the entire definition is checked at admission.",
+            "facts": [
+              [
+                "Input",
+                "period"
+              ],
+              [
+                "While open",
+                "Skip new occurrences"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-catalog",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "step-reconcile",
+            "label": "Reconcile",
+            "kind": "Step",
+            "state": "Declared",
+            "note": "Analysis leaf; all members settle before the next step activates.",
+            "facts": [
+              [
+                "Write store",
+                "record"
+              ],
+              [
+                "Attempt limit",
+                "2"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-catalog",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "step-post",
+            "label": "Post journal entries",
+            "kind": "Step",
+            "state": "Declared",
+            "note": "Human work becomes a case for the named person.",
+            "facts": [
+              [
+                "Write store",
+                "record"
+              ],
+              [
+                "Attempt limit",
+                "1"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-catalog",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "person-operations",
+            "label": "Operations holder",
+            "kind": "Position",
+            "state": "Required",
+            "note": "The plan names who receives the human case. This is not a model fallback masquerading as completion.",
+            "facts": [
+              [
+                "Position",
+                "position:operations"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-human",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "schedule-skip",
+            "label": "Skip while open",
+            "kind": "Occurrence policy",
+            "state": "Declared",
+            "note": "New occurrences do not overlap an open execution; missed occurrences never silently catch up.",
+            "facts": [
+              [
+                "Catch up",
+                "No"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-schedule",
+            "col": 0,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "schedule-month-close",
+            "to": "definition-close-month-1",
+            "label": "names",
+            "kind": "declared",
+            "note": "The schedule binds cadence, definition, convener and inputs.",
+            "evidence": "schedules.md · declaration"
+          },
+          {
+            "from": "definition-close-month-1",
+            "to": "step-reconcile",
+            "label": "starts with",
+            "kind": "declared",
+            "note": "Reconciliation is step 0.",
+            "evidence": "spine.md · close-month example"
+          },
+          {
+            "from": "step-reconcile",
+            "to": "step-post",
+            "label": "must settle before",
+            "kind": "declared",
+            "note": "A failed final attempt fails the step; later steps do not activate.",
+            "evidence": "spine.md · step barrier"
+          },
+          {
+            "from": "step-post",
+            "to": "person-operations",
+            "label": "hands case to",
+            "kind": "declared",
+            "note": "The human leaf waits for the designated person's outcome and evidence.",
+            "evidence": "spine.md · human leaves"
+          },
+          {
+            "from": "schedule-month-close",
+            "to": "schedule-skip",
+            "label": "uses",
+            "kind": "declared",
+            "note": "Paused and skipped occurrences are distinct schedule states.",
+            "evidence": "schedules.md · occurrence policy"
+          }
+        ]
+      }
+    ]
+  },
+  "legs": {
+    "views": [
+      {
+        "id": "claim",
+        "label": "Claim and context",
+        "summary": "One person, one worker holder, one leased attempt. Context and allowance follow that claim.",
+        "columns": [
+          "Identity",
+          "Lease",
+          "Work context"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "state": "Signed in",
+            "note": "Riley holds the position used for this sample claim.",
+            "facts": [
+              [
+                "Authority",
+                "position:agent"
+              ]
+            ],
+            "part": "head",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "worker-agent1",
+            "label": "agent · slot 1",
+            "kind": "Worker",
+            "state": "Holding lease",
+            "note": "Riley is the person mapped to this active worker holder.",
+            "facts": [
+              [
+                "Holder",
+                "position:agent#1"
+              ],
+              [
+                "Claimed by",
+                "Riley"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-current",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "attempt-a0",
+            "label": "Attempt a0",
+            "kind": "Attempt",
+            "state": "Claimed",
+            "note": "The current effect-free attempt has no recorded outcome yet.",
+            "facts": [
+              [
+                "Identity",
+                "t142/wf1/s0/a/a0"
+              ],
+              [
+                "Lease token",
+                "8"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-current",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "task-t142",
+            "label": "Assess storage migration",
+            "kind": "Work",
+            "state": "In progress",
+            "note": "Assess compatibility with existing readers; this is independent of the pending delivery retry candidate m17.",
+            "facts": [
+              [
+                "Task",
+                "t142"
+              ],
+              [
+                "Definition",
+                "ask-judge @1"
+              ]
+            ],
+            "part": "spine",
+            "detail": "spine-execution",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "hat",
+            "label": "Hat for t142",
+            "kind": "Context snapshot",
+            "state": "Lease scoped",
+            "note": "Only the active claiming person can read this Work's structured context.",
+            "facts": [
+              [
+                "Digest",
+                "h:8ac21f"
+              ],
+              [
+                "Record head",
+                "r:42b"
+              ]
+            ],
+            "part": "hat",
+            "detail": "hat-access",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "allowance-t142",
+            "label": "$0.50 allowance",
+            "kind": "Budget allowance",
+            "state": "Admitted",
+            "note": "The per-attempt model allowance is not a funds reservation.",
+            "facts": [
+              [
+                "Ceiling",
+                "$0.50"
+              ],
+              [
+                "Reservation",
+                "No"
+              ]
+            ],
+            "part": "voice",
+            "detail": "voice-budget",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "outcome-t142",
+            "label": "Outcome pending",
+            "kind": "Expected receipt",
+            "state": "Pending",
+            "note": "The holder must supply a result, evidence and the context identity.",
+            "facts": [
+              [
+                "Then",
+                "Owner settlement"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-outcome",
+            "col": 1,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "worker-agent1",
+            "label": "claims through",
+            "kind": "observed",
+            "note": "The sample OIDC person is mapped to this worker holder.",
+            "evidence": "Sample receipt · t142 · claim by Riley"
+          },
+          {
+            "from": "worker-agent1",
+            "to": "attempt-a0",
+            "label": "holds lease for",
+            "kind": "observed",
+            "note": "Renewal, submission and release require this holder and token.",
+            "evidence": "Sample receipt · attempt a0 · lease token 8"
+          },
+          {
+            "from": "task-t142",
+            "to": "attempt-a0",
+            "label": "is worked by",
+            "kind": "observed",
+            "note": "The leased attempt belongs to the task's execution.",
+            "evidence": "Sample receipt · t142/wf1/s0/a/a0"
+          },
+          {
+            "from": "attempt-a0",
+            "to": "hat",
+            "label": "authorizes reading",
+            "kind": "declared",
+            "note": "General account or admin access does not substitute for an active claim.",
+            "evidence": "legs.md · the hat"
+          },
+          {
+            "from": "attempt-a0",
+            "to": "allowance-t142",
+            "label": "has allowance",
+            "kind": "observed",
+            "note": "The allowance is bounded by Work ceiling and remaining model window.",
+            "evidence": "Sample receipt · t142 · allowance $0.50"
+          },
+          {
+            "from": "attempt-a0",
+            "to": "outcome-t142",
+            "label": "awaits submission",
+            "kind": "declared",
+            "note": "The current claimed state cannot be inferred to have completed.",
+            "evidence": "legs.md · submit"
+          },
+          {
+            "from": "outcome-t142",
+            "to": "hat",
+            "label": "identifies",
+            "kind": "declared",
+            "note": "The returned outcome records the hat and rendering digests.",
+            "evidence": "legs.md · hat identity"
+          }
+        ]
+      },
+      {
+        "id": "uncertainty",
+        "label": "Uncertain effects",
+        "summary": "Trace the stopped slot without treating a scratch commit as a settled result or retrying an unresolved effect.",
+        "columns": [
+          "Attempt",
+          "Evidence",
+          "Resolution"
+        ],
+        "nodes": [
+          {
+            "id": "attempt-t139-a0",
+            "label": "Patch attempt a0",
+            "kind": "Attempt",
+            "state": "Unresolved",
+            "note": "The performer lost its lease after invoking tools; its effect may already exist.",
+            "facts": [
+              [
+                "Task",
+                "t139"
+              ],
+              [
+                "Effect class",
+                "uncertain"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-unresolved",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "worker-agent2",
+            "label": "agent · slot 2",
+            "kind": "Worker",
+            "state": "Stopped",
+            "note": "This worker slot stops while the prior external effect remains unresolved.",
+            "facts": [
+              [
+                "Holder",
+                "position:agent#2"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-unresolved",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "patch-c17b8e2",
+            "label": "c17b8e2",
+            "kind": "Commit receipt",
+            "state": "Present",
+            "note": "A scratch commit is evidence of an effect, not evidence of a settled outcome.",
+            "facts": [
+              [
+                "Files changed",
+                "3"
+              ],
+              [
+                "Workspace",
+                "Scratch clone"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "outcome-t139",
+            "label": "No settled outcome",
+            "kind": "Missing receipt",
+            "state": "Unresolved",
+            "note": "The record has no settled outcome for this attempt.",
+            "facts": [
+              [
+                "Cannot infer",
+                "Completed or safe to retry"
+              ]
+            ],
+            "part": "record",
+            "detail": "legs-unresolved",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "human-resolution-t139",
+            "label": "Human resolution",
+            "kind": "Decision",
+            "state": "Required",
+            "note": "A person reads the available history and records ok or failed with evidence.",
+            "facts": [
+              [
+                "Choices",
+                "ok · failed"
+              ],
+              [
+                "Automatic retry",
+                "Blocked"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-unresolved",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "resolution-receipt-t139",
+            "label": "Resolution receipt",
+            "kind": "Expected receipt",
+            "state": "Pending",
+            "note": "A decision must record what is known; no outcome is supplied in this fixture.",
+            "facts": [
+              [
+                "Evidence",
+                "Required"
+              ]
+            ],
+            "part": "record",
+            "detail": "legs-unresolved",
+            "col": 2,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "attempt-t139-a0",
+            "to": "patch-c17b8e2",
+            "label": "left evidence",
+            "kind": "observed",
+            "note": "The scratch commit survived the lease loss.",
+            "evidence": "Sample receipt · t139 · commit:c17b8e2"
+          },
+          {
+            "from": "attempt-t139-a0",
+            "to": "worker-agent2",
+            "label": "stopped",
+            "kind": "observed",
+            "note": "The holder ceased work when the effect became unresolved.",
+            "evidence": "Sample receipt · t139 · unresolved effect"
+          },
+          {
+            "from": "patch-c17b8e2",
+            "to": "outcome-t139",
+            "label": "is checked against",
+            "kind": "proposed",
+            "note": "A receipt/outcome join must show the absence of settlement without guessing that no effect occurred.",
+            "evidence": "Proposed read projection · generated binding unverified"
+          },
+          {
+            "from": "outcome-t139",
+            "to": "human-resolution-t139",
+            "label": "requires",
+            "kind": "declared",
+            "note": "Uncertain effects are resolved by a person rather than automatically retried.",
+            "evidence": "legs.md · uncertain performer"
+          },
+          {
+            "from": "human-resolution-t139",
+            "to": "resolution-receipt-t139",
+            "label": "must record",
+            "kind": "declared",
+            "note": "The resolution is durable and evidence-grounded.",
+            "evidence": "legs.md · resolve"
+          }
+        ]
+      }
+    ]
+  },
+  "hands": {
+    "views": [
+      {
+        "id": "capabilities",
+        "label": "Bounded capabilities",
+        "summary": "Tools belong to a Work's authority. Scratch editing and verification do not grant merge, deployment, or heart control.",
+        "columns": [
+          "Work",
+          "Granted interfaces",
+          "Boundary"
+        ],
+        "nodes": [
+          {
+            "id": "work-t139-a",
+            "label": "Prepare migration patch",
+            "kind": "Work",
+            "state": "Unresolved attempt",
+            "note": "This sample patch Work permits bounded tools, while its current attempt awaits effect resolution.",
+            "facts": [
+              [
+                "Task",
+                "t139"
+              ],
+              [
+                "Output",
+                "Patch"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "hand-git",
+            "label": "Git",
+            "kind": "Tool interface",
+            "state": "Declared",
+            "note": "Patch, commit and read commit patches inside a Work-specific scratch clone. Invocation still requires an active authorized attempt.",
+            "facts": [
+              [
+                "Environment",
+                "Scratch clone"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "hand-toolchain",
+            "label": "Toolchain",
+            "kind": "Tool interface",
+            "state": "Declared",
+            "note": "Check, test and format-check within the Work's permitted environment. Invocation still requires an active authorized attempt.",
+            "facts": [
+              [
+                "Checks",
+                "hale check · hale test · hale fmt --check"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "hand-forge",
+            "label": "Forge",
+            "kind": "Tool interface",
+            "state": "Declared",
+            "note": "Open Review and read verdicts. The leg never merges. Invocation still requires an active authorized attempt.",
+            "facts": [
+              [
+                "Merge",
+                "Not granted"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "scratch-t139",
+            "label": "Scratch clone",
+            "kind": "Workspace",
+            "state": "Isolated",
+            "note": "A Work-specific checkout; the primary genome checkout remains with its owner.",
+            "facts": [
+              [
+                "Result",
+                "commit:c17b8e2"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "review-boundary",
+            "label": "Review boundary",
+            "kind": "Authority boundary",
+            "state": "Required",
+            "note": "The appropriate reviewer decides; the performer cannot decide its own Review.",
+            "facts": [
+              [
+                "Self-review",
+                "Not allowed"
+              ]
+            ],
+            "part": "genome",
+            "detail": "genome-review",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "hand-deploy",
+            "label": "Deploy / Heart",
+            "kind": "Tool interface",
+            "state": "Refused",
+            "note": "NoDeploy and NoHeart are unavailable to the leg in the documented baseline.",
+            "facts": [
+              [
+                "Authority",
+                "Not granted"
+              ]
+            ],
+            "part": "hands",
+            "col": 0,
+            "row": 3
+          }
+        ],
+        "edges": [
+          {
+            "from": "work-t139-a",
+            "to": "hand-git",
+            "label": "grants within scope",
+            "kind": "declared",
+            "note": "Tool availability is Work-specific, not a global editable permission.",
+            "evidence": "legs.md · hands"
+          },
+          {
+            "from": "work-t139-a",
+            "to": "hand-toolchain",
+            "label": "grants within scope",
+            "kind": "declared",
+            "note": "Verification is bounded to the Work's allowed environment.",
+            "evidence": "legs.md · hands"
+          },
+          {
+            "from": "work-t139-a",
+            "to": "hand-forge",
+            "label": "grants within scope",
+            "kind": "declared",
+            "note": "Review operations remain distinct from a merge.",
+            "evidence": "legs.md · hands"
+          },
+          {
+            "from": "hand-git",
+            "to": "scratch-t139",
+            "label": "writes",
+            "kind": "declared",
+            "note": "Git writes stay in the scratch clone.",
+            "evidence": "legs.md · git hand"
+          },
+          {
+            "from": "hand-forge",
+            "to": "review-boundary",
+            "label": "submits to",
+            "kind": "declared",
+            "note": "Review authority remains outside the performing leg.",
+            "evidence": "legs.md · forge hand"
+          },
+          {
+            "from": "work-t139-a",
+            "to": "hand-deploy",
+            "label": "does not grant",
+            "kind": "declared",
+            "note": "No deployment or heart mutation is inferred from patch authority.",
+            "evidence": "legs.md · NoDeploy / NoHeart"
+          }
+        ],
+        "regions": [
+          {
+            "label": "Scratch write boundary",
+            "nodeIds": [
+              "hand-git",
+              "scratch-t139"
+            ],
+            "kind": "boundary"
+          },
+          {
+            "label": "Review authority remains separate",
+            "nodeIds": [
+              "hand-forge",
+              "review-boundary"
+            ],
+            "kind": "boundary"
+          }
+        ]
+      },
+      {
+        "id": "patch",
+        "label": "Patch provenance",
+        "summary": "Keep the existing patch receipt distinct from the owner-side verification and Review that still require a settled submission.",
+        "columns": [
+          "Performer",
+          "Owner path",
+          "Review"
+        ],
+        "nodes": [
+          {
+            "id": "attempt-t139-a0",
+            "label": "Patch attempt a0",
+            "kind": "Attempt",
+            "state": "Unresolved",
+            "note": "No settled outcome has been established for this attempt.",
+            "facts": [
+              [
+                "Task",
+                "t139"
+              ]
+            ],
+            "part": "legs",
+            "detail": "legs-unresolved",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "patch-c17b8e2",
+            "label": "c17b8e2",
+            "kind": "Commit receipt",
+            "state": "Present",
+            "note": "The retained scratch commit changes three files.",
+            "facts": [
+              [
+                "Result",
+                "commit:c17b8e2"
+              ],
+              [
+                "Files",
+                "3"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "patch-receipt-t139",
+            "label": "Patch receipt",
+            "kind": "Evidence",
+            "state": "Present",
+            "note": "The commit and patch receipt travel with the eventual outcome.",
+            "facts": [
+              [
+                "Class",
+                "internal"
+              ],
+              [
+                "Output contract",
+                "Patch"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "owner-apply-t139",
+            "label": "Owner application",
+            "kind": "Expected step",
+            "state": "Pending",
+            "note": "After a valid submission, the owner applies the patch at the genome head.",
+            "facts": [
+              [
+                "Current gate",
+                "Unresolved attempt"
+              ]
+            ],
+            "part": "genome",
+            "detail": "hands-patch",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "verification-t139",
+            "label": "Owner verification",
+            "kind": "Expected evidence",
+            "state": "Pending",
+            "note": "The owner checks the resulting candidate; tool inventory is not a pass receipt.",
+            "facts": [
+              [
+                "Checks",
+                "check · test · format"
+              ]
+            ],
+            "part": "hands",
+            "detail": "hands-patch",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "review-t139",
+            "label": "Patch Review",
+            "kind": "Expected decision",
+            "state": "Not opened",
+            "note": "This is not candidate m17. The patch's owner path remains pending.",
+            "facts": [
+              [
+                "Author",
+                "Performing leg"
+              ],
+              [
+                "Verdict",
+                "Required"
+              ]
+            ],
+            "part": "genome",
+            "detail": "hands-patch",
+            "col": 2,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "attempt-t139-a0",
+            "to": "patch-c17b8e2",
+            "label": "produced",
+            "kind": "observed",
+            "note": "The external effect exists even though the outcome is unresolved.",
+            "evidence": "Sample receipt · t139 · scratch commit"
+          },
+          {
+            "from": "patch-c17b8e2",
+            "to": "patch-receipt-t139",
+            "label": "is accompanied by",
+            "kind": "observed",
+            "note": "The receipt records the patch alongside its result reference.",
+            "evidence": "Sample receipt · t139 · patch receipt"
+          },
+          {
+            "from": "patch-c17b8e2",
+            "to": "owner-apply-t139",
+            "label": "would be applied by",
+            "kind": "declared",
+            "note": "This declared next step is gated by valid outcome and resolution.",
+            "evidence": "legs.md · Patch Work"
+          },
+          {
+            "from": "owner-apply-t139",
+            "to": "verification-t139",
+            "label": "must precede",
+            "kind": "declared",
+            "note": "The owner verifies the applied candidate at the genome head.",
+            "evidence": "legs.md · owner verification"
+          },
+          {
+            "from": "verification-t139",
+            "to": "review-t139",
+            "label": "must support",
+            "kind": "declared",
+            "note": "A candidate enters Review with evidence; the leg cannot merge it.",
+            "evidence": "legs.md · owner Review"
+          }
+        ]
+      }
+    ]
+  },
+  "senses": {
+    "views": [
+      {
+        "id": "observations",
+        "label": "Observation sources",
+        "summary": "Separate source readings, stored samples, and durable receipts. Missing readings do not establish that a part is down.",
+        "columns": [
+          "Sources",
+          "Readings",
+          "Durable evidence"
+        ],
+        "nodes": [
+          {
+            "id": "edge-1",
+            "label": "edge-1",
+            "kind": "Host",
+            "state": "Reporting",
+            "note": "The node exposes part/instance readings from the private services tier.",
+            "facts": [
+              [
+                "Last pulse",
+                "09:42:18"
+              ]
+            ],
+            "part": "body",
+            "detail": "senses-node",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "reading-api0",
+            "label": "api-0 up = 1",
+            "kind": "Telemetry reading",
+            "state": "Observed",
+            "note": "Latest node reading reports api-0 up since 09:39:00.",
+            "facts": [
+              [
+                "Series",
+                "dna_instance_up"
+              ],
+              [
+                "Timestamp",
+                "09:42:18"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-node",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "telemetry-store",
+            "label": "Telemetry store",
+            "kind": "Store",
+            "state": "Private",
+            "note": "Prometheus retains one week; its failure does not stop the organism.",
+            "facts": [
+              [
+                "Retention",
+                "7 days"
+              ],
+              [
+                "Browser access",
+                "Through authorized projection"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-node",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "spine",
+            "label": "Spine",
+            "kind": "Runtime part",
+            "state": "Pulse present",
+            "note": "Part telemetry can report pulse and model calls; durable work evidence stays in the record.",
+            "facts": [
+              [
+                "Pulse",
+                "09:42:18"
+              ]
+            ],
+            "part": "spine",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "api-0",
+            "label": "api-0",
+            "kind": "Instance",
+            "state": "Up",
+            "note": "Durable instance evidence and telemetry are different sources concerning the same instance.",
+            "facts": [
+              [
+                "Host",
+                "edge-1"
+              ],
+              [
+                "Revision",
+                "a48bc20"
+              ]
+            ],
+            "part": "body",
+            "detail": "body-instance",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "reading-delivery-1802",
+            "label": "Delivery d-1802",
+            "kind": "Reading",
+            "state": "Recorded",
+            "note": "An application observation retained without an automatic organizational action.",
+            "facts": [
+              [
+                "Entity",
+                "atlas/delivery.completed/d-1802"
+              ],
+              [
+                "Row",
+                "reading.recorded #281"
+              ],
+              [
+                "Elapsed",
+                "184 ms"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-reading",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "atlas-application",
+            "label": "Atlas delivery",
+            "kind": "Application",
+            "state": "Attached",
+            "note": "The application emits events that the heart records as readings.",
+            "facts": [
+              [
+                "Seed",
+                "apps/atlas"
+              ]
+            ],
+            "part": "heart",
+            "detail": "heart-boundary",
+            "col": 1,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "edge-1",
+            "to": "reading-api0",
+            "label": "reports",
+            "kind": "observed",
+            "note": "The value describes the reported instance state at this timestamp.",
+            "evidence": "Sample receipt · telemetry · 09:42:18"
+          },
+          {
+            "from": "reading-api0",
+            "to": "telemetry-store",
+            "label": "is sampled into",
+            "kind": "observed",
+            "note": "A reading is a sample, not an application or workflow verdict.",
+            "evidence": "Sample receipt · telemetry sample · api-0"
+          },
+          {
+            "from": "spine",
+            "to": "telemetry-store",
+            "label": "reports pulse to",
+            "kind": "declared",
+            "note": "An unavailable metrics port can leave a running part unread.",
+            "evidence": "senses.md · reporting failures"
+          },
+          {
+            "from": "reading-api0",
+            "to": "api-0",
+            "label": "describes",
+            "kind": "proposed",
+            "note": "An authorized projection joins private readings to the instance identity without inventing per-task metric labels.",
+            "evidence": "Proposed read projection · generated binding unverified"
+          },
+          {
+            "from": "atlas-application",
+            "to": "reading-delivery-1802",
+            "label": "emitted source for",
+            "kind": "observed",
+            "note": "The heart recorded the delivery event before any possible action.",
+            "evidence": "Sample receipt · reading.recorded #281"
+          }
+        ],
+        "regions": [
+          {
+            "label": "Private telemetry tier",
+            "nodeIds": [
+              "reading-api0",
+              "telemetry-store"
+            ],
+            "kind": "boundary"
+          }
+        ]
+      },
+      {
+        "id": "escalation",
+        "label": "Signals into change",
+        "summary": "Two answered raises and one pending request remain distinct. Repeated concerns route to a parent before any reviewed change.",
+        "columns": [
+          "Source",
+          "Requests and answers",
+          "Organization"
+        ],
+        "nodes": [
+          {
+            "id": "locus-delivery",
+            "label": "atlas/delivery",
+            "kind": "Organizational locus",
+            "state": "Declared",
+            "note": "Capacity pressure is attributed to this source; it is not inferred automatically from telemetry.",
+            "facts": [
+              [
+                "Answered raises",
+                "2"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-pressure",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "pressure-018",
+            "label": "Delivery capacity",
+            "kind": "Request",
+            "state": "Awaiting answer",
+            "note": "The third request from this source is pending. Only answered raises count.",
+            "facts": [
+              [
+                "Request",
+                "pressure-018"
+              ],
+              [
+                "Record row",
+                "pressure.requested #282"
+              ]
+            ],
+            "part": "senses",
+            "detail": "nerves-pending",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "pressure-threshold",
+            "label": "Third answered raise",
+            "kind": "Rule condition",
+            "state": "Not yet met",
+            "note": "The pending third request does not count until the organization answers it.",
+            "facts": [
+              [
+                "Current count",
+                "2 answered"
+              ],
+              [
+                "Pending",
+                "1 request"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-pressure",
+            "col": 2,
+            "row": 0
+          },
+          {
+            "id": "locus-dispatcher",
+            "label": "delivery/dispatcher",
+            "kind": "Organizational locus",
+            "state": "Concern source",
+            "note": "Delivery acknowledgements are falling behind.",
+            "facts": [
+              [
+                "Parent",
+                "atlas/delivery"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-concern",
+            "col": 0,
+            "row": 2
+          },
+          {
+            "id": "concern-c0017",
+            "label": "Concern c-0017",
+            "kind": "Reading and request",
+            "state": "Recorded",
+            "note": "The application reading led to a concern request; repeated delivery does not increase the count.",
+            "facts": [
+              [
+                "Severity",
+                "2"
+              ],
+              [
+                "Occurrences",
+                "2"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-concern",
+            "col": 1,
+            "row": 2
+          },
+          {
+            "id": "concern-parent-delivery",
+            "label": "Parent concern",
+            "kind": "Concern",
+            "state": "Raised",
+            "note": "The concern-escalate workflow routes the source to atlas/delivery.",
+            "facts": [
+              [
+                "Parent",
+                "atlas/delivery"
+              ],
+              [
+                "Knowledge threshold",
+                "3 occurrences"
+              ]
+            ],
+            "part": "senses",
+            "detail": "senses-concern",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "proposal-capacity",
+            "label": "Appendage proposal",
+            "kind": "Expected proposal",
+            "state": "Conditional",
+            "note": "A threshold can propose a change; the Board still decides any candidate.",
+            "facts": [
+              [
+                "Automatic deployment",
+                "No"
+              ]
+            ],
+            "part": "genome",
+            "detail": "senses-pressure",
+            "col": 2,
+            "row": 1
+          }
+        ],
+        "edges": [
+          {
+            "from": "locus-delivery",
+            "to": "pressure-018",
+            "label": "raised request",
+            "kind": "observed",
+            "note": "The source explicitly requests capacity.",
+            "evidence": "Sample receipt · pressure.requested #282"
+          },
+          {
+            "from": "pressure-018",
+            "to": "pressure-threshold",
+            "label": "counts after answer",
+            "kind": "declared",
+            "note": "Only answered raises contribute to the threshold.",
+            "evidence": "senses.md · pressure"
+          },
+          {
+            "from": "pressure-threshold",
+            "to": "proposal-capacity",
+            "label": "can propose",
+            "kind": "declared",
+            "note": "This sample does not claim that a pending request has triggered a proposal.",
+            "evidence": "senses.md · appendage proposal"
+          },
+          {
+            "from": "locus-dispatcher",
+            "to": "concern-c0017",
+            "label": "emitted",
+            "kind": "observed",
+            "note": "The concern carries an application source and stable event identity.",
+            "evidence": "Sample receipt · atlas/concern.raised/c-0017"
+          },
+          {
+            "from": "concern-c0017",
+            "to": "concern-parent-delivery",
+            "label": "was routed to",
+            "kind": "observed",
+            "note": "The answered concern names the parent locus.",
+            "evidence": "Sample receipt · concern.raised · c-0017"
+          },
+          {
+            "from": "locus-dispatcher",
+            "to": "locus-delivery",
+            "label": "has parent",
+            "kind": "declared",
+            "note": "Concern routing follows the declared organizational path.",
+            "evidence": "senses.md · concern parent"
+          }
+        ]
+      }
+    ]
+  },
+  "reflexes": {
+    "views": [
+      {
+        "id": "rule",
+        "label": "Bounded recovery",
+        "summary": "One built-in rule can request one instance restart. An unread instance is not the same as a reported-down instance.",
+        "columns": [
+          "Readings",
+          "Rule",
+          "Action boundary"
+        ],
+        "nodes": [
+          {
+            "id": "telemetry-store",
+            "label": "Telemetry store",
+            "kind": "Store",
+            "state": "Private",
+            "note": "The rule needs available readings; no store means nothing to fire on.",
+            "facts": [
+              [
+                "Series",
+                "dna_instance_up"
+              ]
+            ],
+            "part": "senses",
+            "detail": "reflex-rule",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "rule-instance-down",
+            "label": "instance.down",
+            "kind": "Reflex rule",
+            "state": "Built in",
+            "note": "Checks every five seconds and fires once per outage identity.",
+            "facts": [
+              [
+                "Condition",
+                "dna_instance_up = 0"
+              ],
+              [
+                "Deduplication",
+                "node · instance · down-since"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-rule",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "outage-api0-0931",
+            "label": "api-0 outage · 09:31",
+            "kind": "Outage",
+            "state": "Historical",
+            "note": "A reported outage for api-0 on edge-1, not its present Up state.",
+            "facts": [
+              [
+                "Node",
+                "edge-1"
+              ],
+              [
+                "Instance",
+                "api-0"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "firing-api0-0931",
+            "label": "reflex.fired",
+            "kind": "Event",
+            "state": "Recorded",
+            "note": "Names the target outage and requests bounded restart.",
+            "facts": [
+              [
+                "Target",
+                "api-0 on edge-1"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "reflex-reading-0931",
+            "label": "Recorded firing",
+            "kind": "Reading",
+            "state": "Landed",
+            "note": "The heart lands the firing as reading.recorded before the node acts.",
+            "facts": [
+              [
+                "Entity",
+                "reflexes/reflex.fired/<outage-id>"
+              ]
+            ],
+            "part": "heart",
+            "detail": "reflex-trace",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "edge-1",
+            "label": "edge-1",
+            "kind": "Host",
+            "state": "Target node",
+            "note": "The named node acts only on the named instance at the latest deployment revision.",
+            "facts": [
+              [
+                "Allowed action",
+                "Restart api-0"
+              ]
+            ],
+            "part": "body",
+            "detail": "reflex-rule",
+            "col": 2,
+            "row": 2
+          },
+          {
+            "id": "reflex-action-0931",
+            "label": "Restarted api-0",
+            "kind": "Action receipt",
+            "state": "Recorded",
+            "note": "The node separately records restarted, already up, or the reason it could not act.",
+            "facts": [
+              [
+                "Receipt",
+                "reflex.acted"
+              ],
+              [
+                "Outcome",
+                "restarted"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 1,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "telemetry-store",
+            "to": "rule-instance-down",
+            "label": "supplies readings to",
+            "kind": "declared",
+            "note": "The rule does not infer down from a missing/unread metric.",
+            "evidence": "senses.md · instance.down"
+          },
+          {
+            "from": "outage-api0-0931",
+            "to": "firing-api0-0931",
+            "label": "triggered",
+            "kind": "observed",
+            "note": "This outage generated one firing, despite possible duplicate deliveries.",
+            "evidence": "Sample receipt · reflex.fired · 09:31"
+          },
+          {
+            "from": "rule-instance-down",
+            "to": "firing-api0-0931",
+            "label": "permits once per outage",
+            "kind": "declared",
+            "note": "The key includes node, instance and down-since time.",
+            "evidence": "senses.md · reflex deduplication"
+          },
+          {
+            "from": "firing-api0-0931",
+            "to": "reflex-reading-0931",
+            "label": "was landed as",
+            "kind": "observed",
+            "note": "The durable reading precedes action.",
+            "evidence": "Sample receipt · reading.recorded · reflex firing"
+          },
+          {
+            "from": "reflex-reading-0931",
+            "to": "edge-1",
+            "label": "requested restart from",
+            "kind": "observed",
+            "note": "The request targets only this node and instance.",
+            "evidence": "Sample receipt · reading.recorded · target edge-1/api-0"
+          },
+          {
+            "from": "edge-1",
+            "to": "reflex-action-0931",
+            "label": "reported action",
+            "kind": "observed",
+            "note": "The receipt is separate from the original firing.",
+            "evidence": "Sample receipt · reflex.acted · restarted"
+          }
+        ]
+      },
+      {
+        "id": "pattern",
+        "label": "Recovery pattern",
+        "summary": "Two firings within ten minutes produced a concern. This is escalation evidence, not an automatic rollback or custom rule editor.",
+        "columns": [
+          "Outages",
+          "Responses",
+          "Escalation"
+        ],
+        "nodes": [
+          {
+            "id": "outage-api0-0925",
+            "label": "api-0 · 09:25",
+            "kind": "Outage",
+            "state": "Historical",
+            "note": "First recorded outage in the ten-minute window.",
+            "facts": [
+              [
+                "Time",
+                "09:25:12"
+              ],
+              [
+                "Node",
+                "edge-1"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 0,
+            "row": 0
+          },
+          {
+            "id": "outage-api0-0931",
+            "label": "api-0 · 09:31",
+            "kind": "Outage",
+            "state": "Historical",
+            "note": "Second distinct outage within the window.",
+            "facts": [
+              [
+                "Time",
+                "09:31:00"
+              ],
+              [
+                "Node",
+                "edge-1"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 0,
+            "row": 1
+          },
+          {
+            "id": "firing-api0-0925",
+            "label": "First firing",
+            "kind": "Event",
+            "state": "Recorded",
+            "note": "First firing in the ten-minute window; the separate action receipt reports restarted.",
+            "facts": [
+              [
+                "Firing",
+                "reflex.fired · 09:25"
+              ],
+              [
+                "Action outcome",
+                "restarted"
+              ]
+            ],
+            "part": "reflexes",
+            "col": 1,
+            "row": 0
+          },
+          {
+            "id": "firing-api0-0931",
+            "label": "Second firing",
+            "kind": "Event",
+            "state": "Recorded",
+            "note": "The second distinct firing within ten minutes warrants concern even though its restart succeeded.",
+            "facts": [
+              [
+                "Firing",
+                "reflex.fired · 09:31"
+              ],
+              [
+                "Action outcome",
+                "restarted"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-trace",
+            "col": 1,
+            "row": 1
+          },
+          {
+            "id": "concern-reflex-api0",
+            "label": "Repeated outage",
+            "kind": "Concern request",
+            "state": "Recorded",
+            "note": "One concern for this target within the ten-minute window.",
+            "facts": [
+              [
+                "Source",
+                "reflexes/api-0"
+              ],
+              [
+                "Parent",
+                "reflexes"
+              ]
+            ],
+            "part": "senses",
+            "detail": "reflex-trace",
+            "col": 2,
+            "row": 1
+          },
+          {
+            "id": "reflexes",
+            "label": "Reflexes",
+            "kind": "Runtime part",
+            "state": "Concern parent",
+            "note": "The parent receives the concern for organizational consideration.",
+            "facts": [
+              [
+                "Automatic rollback",
+                "Not a reflex action"
+              ]
+            ],
+            "part": "reflexes",
+            "detail": "reflex-rule",
+            "col": 2,
+            "row": 2
+          }
+        ],
+        "edges": [
+          {
+            "from": "outage-api0-0925",
+            "to": "firing-api0-0925",
+            "label": "triggered",
+            "kind": "observed",
+            "note": "The first outage generated one firing under its stable outage identity.",
+            "evidence": "Sample receipt · reflex.fired · 09:25"
+          },
+          {
+            "from": "outage-api0-0931",
+            "to": "firing-api0-0931",
+            "label": "triggered",
+            "kind": "observed",
+            "note": "The later outage has its own identity and firing; it is not duplicate delivery.",
+            "evidence": "Sample receipt · reflex.fired · 09:31"
+          },
+          {
+            "from": "firing-api0-0925",
+            "to": "concern-reflex-api0",
+            "label": "is prior evidence for",
+            "kind": "observed",
+            "note": "This earlier firing makes the next one a repeat within the ten-minute window.",
+            "evidence": "Sample receipt · reflex.fired · 09:25"
+          },
+          {
+            "from": "firing-api0-0931",
+            "to": "concern-reflex-api0",
+            "label": "triggered",
+            "kind": "observed",
+            "note": "The second firing causes one concern for this target in the window, even if its restart succeeds.",
+            "evidence": "Sample receipt · concern.requested · reflexes/api-0"
+          },
+          {
+            "from": "concern-reflex-api0",
+            "to": "reflexes",
+            "label": "routes to",
+            "kind": "declared",
+            "note": "The concern is attributed to its parent path; it does not add a new restart rule.",
+            "evidence": "senses.md · reflex concern"
+          }
+        ]
+      }
+    ]
+  }
+}
