@@ -111,8 +111,10 @@ locus HatReader {
             history: self.history_json(work_id), head: self.j.head()
         };
         let ready = self.knowledge.ready();
-        let pkg = if ready { self.knowledge.package_for(dna::hat_knowledge_target(h.target), h.objective) } else { dna::ContextPackage { } };
-        let sealed = dna::hat_sealed(dna::hat_with_package(h, pkg, ready));
+        let mut worn = h;
+        worn.targets = dna::hat_knowledge_targets(self.j, h.target, dna::hat_organization_change(self.j, h.task_id), position);
+        let pkg = if ready { self.knowledge.package_for(worn.targets, h.objective) } else { dna::ContextPackage { } };
+        let sealed = dna::hat_sealed(dna::hat_with_package(worn, pkg, ready));
         if ready && self.knowledge.keep_hat(sealed.digest, sealed.head, sealed.watermark, dna::hat_body(sealed)) { self.kept = self.kept + 1; }
         return sealed;
     }

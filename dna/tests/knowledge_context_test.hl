@@ -40,8 +40,11 @@ const IDEA_TEXT: String = "keep every comment on the pings a full sentence";
 // Ideas bound to graph nodes (seed/pull): one to the language, one to a
 // node whose id merely begins with the language's.
 const LANG: String = "sha256:lang1";
-const LANG_TEXT: String = "a locus owns its state and its children";
+const LANG_TEXT: String = "an api surface is a table of rpc rows: each names a handler and the roles a caller must hold";
 const LANGX: String = "sha256:langx1";
+// and one to the design the organism is an instance of
+const SHAPE: String = "sha256:shape1";
+const SHAPE_TEXT: String = "the genome is what the organism is made of; shape it by proposals the Board governs";
 
 main locus App {
     params {
@@ -164,6 +167,30 @@ main locus App {
         std::test::assert_eq_str(wide.package_for("language:hal", "").included, "", "and a prefix of a node id is nothing");
         std::test::assert_eq_str(store.ranked_ids("org/app/main language:hale", 8, ""), store.context_ids("org/app/main language:hale", 8), "the set through the store: ranked with no query is ratification order");
 
+        // ---- the hat's target set (seed/pull): the Work's path, the codebase's
+        //      languages (the attached application's written_in edges), system:dna
+        //      for an organization change, the performer's position
+        std::test::assert(store.upsert(dna::Idea { id: SHAPE, kind: "idea", text: SHAPE_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about the design");
+        std::test::assert(store.bind(dna::KnowledgeBinding { idea: SHAPE, target: "system:dna", author: "org", class: dna::classify_binding("org", "system:dna") }), "bound to the system node");
+        let hale_app = dna::MemJournal { };
+        let x1 = hale_app.append(0, "application.attached", ".", "{\"name\": \"app\"}");
+        let x2 = hale_app.append(1, "graph.edge", "written_in:application:app|language:hale", "{\"kind\": \"written_in\"}");
+        let bare_app = dna::MemJournal { };
+        let y1 = bare_app.append(0, "application.attached", ".", "{\"name\": \"app\"}");
+        let work_set = dna::hat_knowledge_targets(hale_app, "org/app", false, "position:agent");
+        std::test::assert_eq_str(work_set, "org/app language:hale position:agent", "a Work on the application: its path, its language, the performer's position");
+        let org_set = dna::hat_knowledge_targets(hale_app, "org", true, "position:agent");
+        std::test::assert_eq_str(org_set, "org system:dna position:agent", "an organization change: the design, and not the application's language");
+        let bare_set = dna::hat_knowledge_targets(bare_app, "org/app", false, "position:agent");
+        std::test::assert_eq_str(bare_set, "org/app position:agent", "an application with no written_in edge: no language");
+        std::test::assert_eq_str(dna::hat_knowledge_targets(hale_app, "main.hl", false, "position:editor"), "org language:hale position:editor", "a target that is no path is the organization's own");
+        let api_work = wide.package_for(work_set, "serve the rpc rows of an api surface to callers by role");
+        std::test::assert(std::str::contains(api_work.included, LANG) && !std::str::contains(api_work.included, SHAPE), "a Work about the api surface has the api idea and not the design's: " + api_work.included + " " + api_work.error);
+        let org_work = wide.package_for(org_set, "shape the genome by a proposal to the Board");
+        std::test::assert(std::str::contains(org_work.included, SHAPE) && !std::str::contains(org_work.included, LANG), "an organization change has the design's idea and not the api's: " + org_work.included + " " + org_work.error);
+        let bare_work = wide.package_for(bare_set, "serve the rpc rows of an api surface to callers by role");
+        std::test::assert(!std::str::contains(bare_work.included, LANG) && !std::str::contains(bare_work.included, SHAPE), "no written_in edge, no organization change: neither: " + bare_work.included);
+
         // ---- the organization, reading memory
         self.dna = dna::Dna {
             journal: dna::GitJournal { repo: repo },
@@ -184,18 +211,22 @@ main locus App {
             board: dna::Board { who: "board" },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } }
         };
-        let app_package = dna::digest_of("org/app:" + IDEA);
+        // the owner asks for the hat's target set (seed/pull): the application's
+        // path, then the editor's position (this record attaches no application
+        // and states no language edge, and the class is `docs`)
+        let app_targets = "org/app position:editor";
+        let app_package = dna::digest_of(app_targets + ":" + IDEA);
         let org_package = dna::digest_of("org:" + DESIGN);
         let out = self.dna.mutate("t1", "docs", "document the pings", "main.hl", 1);
         std::test::assert(std::str::contains(out, ": review"), "the mutation reaches its Review: " + out);
         self.await_rows("knowledge.consulted", 1);
         // the owner consulted memory, and the record says what it got
         let consulted = self.last("knowledge.consulted", "m1");
-        std::test::assert(std::str::contains(consulted, "\"target\": \"org/app\"") && std::str::contains(consulted, "\"digest\": \"" + app_package + "\"") && std::str::contains(consulted, "\"included_n\": 1") && std::str::contains(consulted, "\"revision\": 7"), "consulted: " + consulted);
+        std::test::assert(std::str::contains(consulted, "\"target\": \"" + app_targets + "\"") && std::str::contains(consulted, "\"digest\": \"" + app_package + "\"") && std::str::contains(consulted, "\"included_n\": 1") && std::str::contains(consulted, "\"revision\": 7"), "consulted: " + consulted);
         // the ask stays the ask (GH #946 hardening): the practice reaches the
         // editor as its brief, under the objective in what a model is shown…
         std::test::assert_eq_str(self.dna.editor.last.rationale, "document the pings", "the objective the editor got is the ask itself");
-        std::test::assert(std::str::contains(self.dna.editor.practices, "PRACTICES (ratified knowledge for org/app, package " + app_package + ")") && std::str::contains(self.dna.editor.practices, IDEA_TEXT), "the brief the editor got: " + self.dna.editor.practices);
+        std::test::assert(std::str::contains(self.dna.editor.practices, "PRACTICES (ratified knowledge for " + app_targets + ", package " + app_package + ")") && std::str::contains(self.dna.editor.practices, IDEA_TEXT), "the brief the editor got: " + self.dna.editor.practices);
         std::test::assert(std::str::starts_with(self.dna.editor.with_practices("document the pings"), "document the pings\n\nPRACTICES"), "the objective first, the brief under it");
         // …and the attempt carries the hat by its digest, which memory keeps
         let hat_digest = std::json::find_string_field(consulted, "hat");

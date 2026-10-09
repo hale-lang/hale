@@ -614,6 +614,15 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     let (ok, list) = hale(&["dna", "review"], &app);
     assert!(ok && family_ids(&list, "library").len() == 2 && list.contains("library — 2 library idea(s)") && list.contains("hale dna review library approve|reject"), "{list}");
 
+    // a Review of a node's idea renders the reviewer's brief for that node:
+    // read from memory, so without it the line says it was not read
+    let api_review = rows.iter().find(|r| r.0 == "review.requested" && r.2.contains("library/api")).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let (ok, view) = hale(&["dna", "review", &api_review], &app);
+    assert!(ok && view.contains("knowledge for language:hale: not read (no memory:"), "{view}");
+    let design_review = rows.iter().find(|r| r.0 == "review.requested" && r.2.contains("design/principles")).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let (ok, view) = hale(&["dna", "review", &design_review], &app);
+    assert!(ok && !view.contains("knowledge for"), "a practice bound to a path has no node to read for: {view}");
+
     // --no-library: none of it, and the output says so
     let (ok, out) = hale(&["dna", "new", "bare", "--no-library"], &d);
     assert!(ok && out.contains("skipped library") && !out.contains("seeded  library"), "{out}");
@@ -662,6 +671,19 @@ fn approving_the_library_ratifies_and_binds_both_ideas() {
     assert_eq!(package_for(&app, "org language:hale-x").0, Vec::<String>::new(), "language:hale-x is not language:hale");
     let both = package_for(&app, "org/app/main language:hale system:dna").0;
     assert!(both.len() == 2 && both.contains(&api) && both.contains(&shaping), "a set of targets is one package: {both:?}");
+    // the reviewer's brief for a Review of a node's idea names the ideas
+    // already ratified for the node
+    let api_review = journal(&app).iter().find(|r| r.0 == "review.requested" && r.2.contains(api.as_str())).map(|r| r.1.strip_prefix("review:").unwrap().to_string()).unwrap();
+    let head = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
+    let mut host = start_org(&app);
+    let mut brief = String::new();
+    trace::wait_until("the reviewer's brief names the ratified idea", Duration::from_secs(120), Duration::from_millis(250), || {
+        let (ok, out) = hale_env(&["dna", "review", &api_review], &app, &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())]);
+        brief = out;
+        ok && brief.contains("- library/api")
+    });
+    finish(&app, &mut host, "the record", |_| true);
+    assert!(brief.contains("knowledge for language:hale (1 idea(s), package "), "{brief}");
     unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

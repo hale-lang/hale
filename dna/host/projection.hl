@@ -46,6 +46,7 @@ type ReviewRow {
     diff_text: String = "";
     diff_json: String = "";
     author: String = "";
+    target: String = ""; // a knowledge Review's target: a locus path or a graph node id
 }
 
 type MutationRow {
@@ -245,7 +246,8 @@ locus Projection {
             magnitude_raw: r.magnitude_raw,
             diff_text: r.diff_text,
             diff_json: r.diff_json,
-            author: r.author
+            author: r.author,
+            target: r.target
         };
     }
     @unbounded

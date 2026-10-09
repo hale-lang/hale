@@ -490,6 +490,40 @@ fn signers_shown(signers: String) -> String {
     return out;
 }
 
+// The targets a reviewer's brief reads knowledge for (seed/pull): the node
+// the subject is bound to when it is one (`language:hale`, `system:dna`),
+// and `system:dna` for a change to the organization's own seed. "" when the
+// subject has neither.
+fn review_targets(r: ReviewRow) -> String {
+    let mut out = if dna::is_node_target(r.target) { r.target } else { "" };
+    if r.is_mutation && r.change_class == "organization" && !std::str::contains(" " + out + " ", " system:dna ") { out = out + (if len(out) > 0 { " " } else { "" }) + "system:dna"; }
+    return out;
+}
+
+// What the reviewer's brief adds to a decision: the ideas the organization
+// ratified for the subject's targets, ranked by the question and bounded by
+// the package's budget, under one heading with their names. Nothing is
+// written when the subject has no targets; without memory (the head's DSN)
+// it says so in a line, never an error.
+@unbounded
+fn review_knowledge(root: String, r: ReviewRow) -> String {
+    let targets = review_targets(r);
+    if len(targets) == 0 { return ""; }
+    let k = dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV, budget: 8 };
+    if !k.ready() { return "  knowledge for " + targets + ": not read (no memory: " + dna::HEAD_DSN_ENV + " is not set)\n"; }
+    let pkg = k.package_for(targets, r.question);
+    if len(pkg.error) > 0 { return "  knowledge for " + targets + ": not read (" + pkg.error + ")\n"; }
+    if pkg.included_n == 0 { return "  knowledge for " + targets + ": none ratified\n"; }
+    let mut out = "  knowledge for " + targets + " (" + to_string(pkg.included_n) + " idea(s), package " + short(pkg.digest) + "):\n";
+    let mut it = std::json::array_first(pkg.practices);
+    while !it.done {
+        let name = std::json::find_string_field(it.element, "name");
+        out = out + "    - " + (if len(name) > 0 { name } else { short(std::json::find_string_field(it.element, "id")) }) + "\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
 @unbounded
 fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let r = p.review_of(id);
@@ -515,6 +549,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 { out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n"; }
     if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
     if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
+    out = out + review_knowledge(p.root, r);
     if !r.is_mutation {
         return answer(out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>]\n");
     }
