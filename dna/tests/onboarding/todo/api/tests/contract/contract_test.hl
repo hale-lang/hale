@@ -33,6 +33,12 @@ fn main() {
     let typed = hale("api\nclient\n--surface\nTodo\n--lang\nts\n--check\n" + client + "\n" + api);
     std::test::assert_eq_int(typed.code, 0, "the TypeScript client is current: " + typed.stdout + typed.stderr);
 
+    // the page a reader starts from names the digest the bundle carries
+    let stamp = std::io::fs::read_file(spec + "/DIGEST") or "";
+    let digest = std::str::trim(stamp[0..24]);
+    std::test::assert(std::str::starts_with(digest, "fnv1a64:"), "DIGEST starts with the surface digest: " + digest);
+    std::test::assert(std::str::contains(std::io::fs::read_file(spec + "/todo.md") or "", digest), "spec/todo.md names the digest " + digest);
+
     // the checks bite: a bundle that is not this surface's is refused
     let wrong = hale("api\nexport\n--surface\nTodo\n--check\n" + api + "\n" + api);
     std::test::assert_eq_int(wrong.code, 1, "a directory that is not the bundle is a drift");
