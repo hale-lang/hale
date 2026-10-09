@@ -9129,6 +9129,16 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/editing_seed_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	App@literal1.app_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.broken_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.repo_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	dynamic	sites in tests #6429d5ee
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/editing_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -9138,11 +9148,7 @@ shared	App@literal1.breaker	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.multi	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.retrier	__lib_dna__core___editing__SourceEditor #e71a3722
--- dynamic	sites in tests
-dynamic	__lib_dna__core___editing__SourceEditor	on main
-dynamic	__lib_dna__core___editing__WorktreeTools	on main
-dynamic	__lib_dna__core___models__FakeModel	on main
-dynamic	__lib_dna__core___models__ModelRouter	on main
+shared	dynamic	sites in tests #6429d5ee
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/effect_outcomes_test.hl
@@ -15853,6 +15859,12 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
+
+== shared sites in tests #6429d5ee
+dynamic	__lib_dna__core___editing__SourceEditor	on main
+dynamic	__lib_dna__core___editing__WorktreeTools	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
 
 == shared sites in tests #aaf83225
 dynamic	__lib_dna__core___assembly__Dna	on main

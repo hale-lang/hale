@@ -1,0 +1,64 @@
+// dna/tests/editing_seed_test.hl — the editor checks the seed that holds the
+// files it edited. A repository's root holds no `.hl` (its code sits under a
+// seed with its own `hale.toml`), so `hale check <root>` found nothing to
+// check and every try of a correct edit failed. An application's own root is
+// the seed, as before.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+main locus App {
+    params {
+        repo_editor: dna::SourceEditor = dna::SourceEditor { };
+        broken_editor: dna::SourceEditor = dna::SourceEditor { };
+        app_editor: dna::SourceEditor = dna::SourceEditor { };
+    }
+    run() {
+        // ---- a repository: the root holds no .hl, `app/` is the seed -----
+        let root = dna::scratch_root("edit-seed");
+        std::io::fs::mkdir(root + "/app") or discard;
+        std::io::fs::write_file(root + "/app/hale.toml", "[deps]\n") or discard;
+        std::io::fs::write_file(root + "/app/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
+        self.repo_editor = dna::SourceEditor { name: "editor", models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "fn main() {\n    println(\"v2\");\n}\n" }, deep: dna::FakeModel { name: "deep", answer: "startup_prints +" } }, tools: dna::WorktreeTools { root: root, hale_bin: toolchain() } };
+        let r = self.repo_editor.perform(dna::WorkRequest {
+            work_id: "w1", task_id: "t1", objective: "print v2", target: "app/main.hl", data_class: "internal"
+        });
+        std::test::assert_eq_str(r.disposition, "done", "the edit checks in app/ on the first try: " + r.narrative);
+        std::test::assert(std::str::contains(r.evidence, "fmt=0 check=0 tries=1"), "first try: " + r.evidence);
+        std::test::assert(std::str::contains(std::io::fs::read_file(root + "/app/main.hl") or "", "v2"), "the worktree holds the edit");
+
+        // a broken edit: the diagnostics are the seed's, naming main.hl
+        self.broken_editor = dna::SourceEditor { name: "editor", models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "fn main() { let x: Int = \"no\"; }\n" }, deep: dna::FakeModel { name: "deep", answer: "startup_prints +" } }, tools: dna::WorktreeTools { root: root, hale_bin: toolchain() } };
+        let b = self.broken_editor.perform(dna::WorkRequest {
+            work_id: "w2", task_id: "t1", objective: "break it", target: "app/main.hl", data_class: "internal"
+        });
+        std::test::assert_eq_str(b.disposition, "failed", "a broken edit fails: " + b.narrative);
+        std::test::assert(std::str::contains(b.narrative, "main.hl"), "the diagnostics name main.hl: " + b.narrative);
+        std::test::assert(!std::str::contains(b.narrative, "app/main.hl"), "relative to the seed, not app/main.hl: " + b.narrative);
+        std::test::assert(!std::str::contains(b.narrative, root), "and not the worktree path: " + b.narrative);
+        std::test::assert(!std::str::contains(b.narrative, "no .hl files"), "the root was not the checked directory: " + b.narrative);
+
+        // ---- the seeds of edited files ------------------------------------
+        std::io::fs::mkdir(root + "/other") or discard;
+        std::io::fs::mkdir(root + "/app/sub") or discard;
+        std::test::assert_eq_str(dna::seeds_of_files(root, "app/main.hl app/sub/x.hl other/y.hl app/main.hl", " "), "app\nother\n", "nearest hale.toml, else own directory, each once");
+        let app = dna::scratch_root("edit-seed-app");
+        std::io::fs::write_file(app + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
+        std::test::assert_eq_str(dna::seeds_of_files(app, "main.hl", " "), ".\n", "an application's root is its seed");
+
+        // ---- an application-rooted worktree behaves as before --------------
+        self.app_editor = dna::SourceEditor { name: "editor", models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "fn main() {\n    println(\"v2\");\n}\n" }, deep: dna::FakeModel { name: "deep", answer: "startup_prints +" } }, tools: dna::WorktreeTools { root: app, hale_bin: toolchain() } };
+        let a = self.app_editor.perform(dna::WorkRequest {
+            work_id: "w3", task_id: "t1", objective: "print v2", target: "main.hl", data_class: "internal"
+        });
+        std::test::assert_eq_str(a.disposition, "done", "the application's edit checks at its root: " + a.narrative);
+        std::test::assert(std::str::contains(a.evidence, "fmt=0 check=0 tries=1"), "first try: " + a.evidence);
+        dna::scratch_done(root);
+        dna::scratch_done(app);
+    }
+}
+fn main() { App { }; }

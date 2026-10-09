@@ -3422,7 +3422,8 @@ answered; `hale dna pressure raise <source> <what>` appends one
 listed file the objective names, else the quick tier's plan from the
 listing, one file per line; only a listed file is ever a target —
 edits each (one model call per file, the request naming the file as
-`target`), formats and checks the seed, and, when the check fails,
+`target`), formats and checks the seed that holds the edited files, and,
+when the check fails,
 tries again with the diagnostics in the prompt, up to `max_tries`
 in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
 every try's model calls are evidence in the record. The result names
@@ -3436,6 +3437,18 @@ reaches the seeds under it (`api/todo.hl`). When no file is found the
 Mutation fails naming the cause, not the grant alone: the grant lists
 no `.hl` file (no model is asked), the model could not be asked, or the
 model named a file the listing does not hold (`SourceEditor.located_why`).
+
+**Which seed is checked.** A root that is itself a seed (it holds a
+`hale.toml` or a `.hl` file: an application's organization) is checked
+and formatted whole. Otherwise (a repository, whose code sits under its
+seeds) each edited file's seed is its nearest ancestor directory under
+the root that holds a `hale.toml`, else the file's own directory; each
+seed is formatted and checked once, in order of the first file edited in
+it, the first failure's diagnostics (named from the seed, not the
+worktree) feed the retry. The candidate's verification follows the same
+rule: when the Mutation's seed is the repository's root (`.`) and the
+root is not a seed, `fmt --check`, `check`, `verify`, `test` and the base
+topology run in the seed of the first file the candidate changed.
 
 ## Models
 
