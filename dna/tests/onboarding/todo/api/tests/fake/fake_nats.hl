@@ -47,7 +47,7 @@ locus Mailbox {
 locus Sense {
     params { nerves: nerves::Nerves = nerves::Nerves { }; }
     bus { subscribe todo::TodoOverdue as on_overdue; }
-    fn on_overdue(t: todo::Todo) { self.nerves.overdue(t.id, t.title, t.due); }
+    fn on_overdue(t: todo::TodoItem) { self.nerves.overdue(t.id, t.title, t.due); }
 }
 
 fn free_port(start: Int) -> Int {

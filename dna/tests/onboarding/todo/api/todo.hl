@@ -6,26 +6,26 @@ role editor includes reader;
 
 /// What a caller sees of an item. `due` is ISO-8601 UTC, empty for none:
 /// a `Time` has no JSON form, so the wire carries its text.
-type Todo { id: Int; title: String; done: Bool; due: String; overdue: Bool; }
+type TodoItem { id: Int; title: String; done: Bool; due: String; overdue: Bool; }
 
 type AddTodo { title: String; due: String = ""; }
 /// Which item: `todo`, not `id`, because `hale api call` takes `--id` for itself.
 type TodoRef { todo: Int; }
 type ListQuery { open_only: Bool = false; }
 type Nothing { }
-/// The items as a JSON array of `Todo` objects in `json`: the codec carries
+/// The items as a JSON array of `TodoItem` objects in `json`: the codec carries
 /// no list, so the array travels as text, and `count` says how long it is.
 type TodoList { count: Int; json: String; }
 type TodoError { code: String; reason: String; }
 
 /// What happened to an item: `added`, `completed` or `removed`. The stream
 /// every browser observes.
-type Change { what: String; item: Todo; }
+type Change { what: String; item: TodoItem; }
 
 topic TodoChanged { payload: Change; subject: "todo.changed"; }
 
 /// An item became overdue. The list says it once; the nerves carry it out.
-topic TodoOverdue { payload: Todo; subject: "todo.overdue"; }
+topic TodoOverdue { payload: TodoItem; subject: "todo.overdue"; }
 
 api Todo {
     rpc Todos::add requires: [editor];
@@ -41,12 +41,12 @@ fn jq(s: String) -> String {
 }
 
 /// `t` as a JSON object.
-fn todo_json(t: Todo) -> String {
+fn todo_json(t: TodoItem) -> String {
     return "{\"id\":" + to_string(t.id) + ",\"title\":" + jq(t.title) + ",\"done\":" + (if t.done { "true" } else { "false" })
         + ",\"due\":" + jq(t.due) + ",\"overdue\":" + (if t.overdue { "true" } else { "false" }) + "}";
 }
 
-fn add_to(list: TodoList, t: Todo) -> TodoList {
+fn add_to(list: TodoList, t: TodoItem) -> TodoList {
     return TodoList { count: list.count + 1, json: list.json + (if list.count > 0 { "," } else { "" }) + todo_json(t) };
 }
 
@@ -76,7 +76,7 @@ locus Todos {
         }
     }
 
-    fn add(a: AddTodo) -> Todo fallible(TodoError) {
+    fn add(a: AddTodo) -> TodoItem fallible(TodoError) {
         if len(a.title) == 0 { fail TodoError { code: "empty_title", reason: "a todo needs a title" }; }
         let mut item = Item { id: self.next, title: a.title };
         if len(a.due) > 0 {
@@ -93,7 +93,7 @@ locus Todos {
         return seen;
     }
 
-    fn complete(r: TodoRef) -> Todo fallible(TodoError) {
+    fn complete(r: TodoRef) -> TodoItem fallible(TodoError) {
         let pos = self.find(r.todo);
         if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
         let mut item = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
@@ -104,7 +104,7 @@ locus Todos {
         return seen;
     }
 
-    fn remove(r: TodoRef) -> Todo fallible(TodoError) {
+    fn remove(r: TodoRef) -> TodoItem fallible(TodoError) {
         let pos = self.find(r.todo);
         if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
         let gone = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
@@ -169,8 +169,8 @@ locus Todos {
         return -1;
     }
 
-    fn view(item: Item) -> Todo {
-        return Todo {
+    fn view(item: Item) -> TodoItem {
+        return TodoItem {
             id: item.id,
             title: item.title,
             done: item.done,

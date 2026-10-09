@@ -1,0 +1,95 @@
+{
+  "x-hale-surface": "Todo",
+  "x-hale-digest": "fnv1a64:67bff1470a7912dc",
+  "tools": [
+    {
+      "name": "Todos__add",
+      "description": "rpc Todos::add of Todo: returns TodoItem; its failure is the handler error TodoError. Requires editor under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "due": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "x-hale-requires": [
+        "editor"
+      ]
+    },
+    {
+      "name": "Todos__complete",
+      "description": "rpc Todos::complete of Todo: returns TodoItem; its failure is the handler error TodoError. Requires editor under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "todo": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "todo"
+        ]
+      },
+      "x-hale-requires": [
+        "editor"
+      ]
+    },
+    {
+      "name": "Todos__list",
+      "description": "rpc Todos::list of Todo: returns TodoList. Requires reader under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "open_only": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "reader"
+      ]
+    },
+    {
+      "name": "Todos__overdue",
+      "description": "rpc Todos::overdue of Todo: returns TodoList. Requires reader under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "x-hale-requires": [
+        "reader"
+      ]
+    },
+    {
+      "name": "Todos__remove",
+      "description": "rpc Todos::remove of Todo: returns TodoItem; its failure is the handler error TodoError. Requires editor under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "todo": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "todo"
+        ]
+      },
+      "x-hale-requires": [
+        "editor"
+      ]
+    }
+  ],
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

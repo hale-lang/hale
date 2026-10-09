@@ -1,0 +1,321 @@
+{
+  "inventory": 1,
+  "app": "App",
+  "surfaces": [
+    {
+      "name": "Todo",
+      "digest": "fnv1a64:67bff1470a7912dc",
+      "members": [
+        {
+          "name": "Todos::add",
+          "request": {
+            "$ref": "#/schemas/AddTodo"
+          },
+          "response": {
+            "$ref": "#/schemas/TodoItem"
+          },
+          "error": {
+            "$ref": "#/schemas/TodoError"
+          },
+          "requires": [
+            "editor"
+          ]
+        },
+        {
+          "name": "Todos::complete",
+          "request": {
+            "$ref": "#/schemas/TodoRef"
+          },
+          "response": {
+            "$ref": "#/schemas/TodoItem"
+          },
+          "error": {
+            "$ref": "#/schemas/TodoError"
+          },
+          "requires": [
+            "editor"
+          ]
+        },
+        {
+          "name": "Todos::list",
+          "request": {
+            "$ref": "#/schemas/ListQuery"
+          },
+          "response": {
+            "$ref": "#/schemas/TodoList"
+          },
+          "error": null,
+          "requires": [
+            "reader"
+          ]
+        },
+        {
+          "name": "Todos::overdue",
+          "request": {
+            "$ref": "#/schemas/Nothing"
+          },
+          "response": {
+            "$ref": "#/schemas/TodoList"
+          },
+          "error": null,
+          "requires": [
+            "reader"
+          ]
+        },
+        {
+          "name": "Todos::remove",
+          "request": {
+            "$ref": "#/schemas/TodoRef"
+          },
+          "response": {
+            "$ref": "#/schemas/TodoItem"
+          },
+          "error": {
+            "$ref": "#/schemas/TodoError"
+          },
+          "requires": [
+            "editor"
+          ]
+        }
+      ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposure": "Todo@fnv1a64:67bff1470a7912dc/agent",
+      "name": "agent",
+      "surface": "Todo",
+      "digest": "fnv1a64:67bff1470a7912dc",
+      "listener": {
+        "transport": "mcp",
+        "address": ""
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.tokens",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.roles",
+        "type": "Grants"
+      },
+      "receivers": [
+        {
+          "type": "Todos",
+          "instance": "self.list",
+          "binding": "explicit",
+          "pool": "work"
+        }
+      ]
+    },
+    {
+      "exposure": "Todo@fnv1a64:67bff1470a7912dc/feed",
+      "name": "feed",
+      "surface": "Todo",
+      "digest": "fnv1a64:67bff1470a7912dc",
+      "listener": {
+        "transport": "",
+        "address": ""
+      },
+      "codec": "json",
+      "principals": {
+        "source": "none"
+      },
+      "roles": {
+        "source": "none"
+      },
+      "receivers": [
+        {
+          "type": "Todos",
+          "instance": "self.list",
+          "binding": "explicit",
+          "pool": "work"
+        }
+      ]
+    },
+    {
+      "exposure": "Todo@fnv1a64:67bff1470a7912dc/web",
+      "name": "web",
+      "surface": "Todo",
+      "digest": "fnv1a64:67bff1470a7912dc",
+      "listener": {
+        "transport": "http",
+        "address": ""
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.tokens",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.roles",
+        "type": "Grants"
+      },
+      "receivers": [
+        {
+          "type": "Todos",
+          "instance": "self.list",
+          "binding": "explicit",
+          "pool": "work"
+        }
+      ]
+    }
+  ],
+  "hubs": [
+    {
+      "exposure": "hub@fnv1a64:1768fa8b8fd4c428/stream",
+      "name": "stream",
+      "digest": "fnv1a64:1768fa8b8fd4c428",
+      "instance": "self.hub",
+      "listener": {
+        "transport": "ws",
+        "address": ""
+      },
+      "codec": "json",
+      "principals": {
+        "source": "self.tokens",
+        "type": "Tokens"
+      },
+      "roles": {
+        "source": "self.roles",
+        "type": "Grants"
+      },
+      "streams": [
+        {
+          "topic": "TodoChanged",
+          "subject": "todo.changed",
+          "direction": "out",
+          "payload": {
+            "$ref": "#/schemas/Change"
+          },
+          "codec": "json",
+          "bound": 64,
+          "on_full": "drop_old",
+          "loss": "at most once per admitted subscriber, in publish order; drop_old sheds the oldest undelivered frame, and seq counts every event offered to the subscription, so a gap in seq is the frames shed; a subscription invalidated by expiry or revocation loses what it had buffered",
+          "replay": false,
+          "requires": [
+            "reader"
+          ]
+        }
+      ]
+    }
+  ],
+  "schemas": {
+    "AddTodo": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "due": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "Change": {
+      "type": "object",
+      "properties": {
+        "what": {
+          "type": "string"
+        },
+        "item": {
+          "$ref": "#/schemas/TodoItem"
+        }
+      },
+      "required": [
+        "what",
+        "item"
+      ]
+    },
+    "ListQuery": {
+      "type": "object",
+      "properties": {
+        "open_only": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "Nothing": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "TodoError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "reason"
+      ]
+    },
+    "TodoItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "due": {
+          "type": "string"
+        },
+        "overdue": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "done",
+        "due",
+        "overdue"
+      ]
+    },
+    "TodoList": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "json": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "json"
+      ]
+    },
+    "TodoRef": {
+      "type": "object",
+      "properties": {
+        "todo": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo"
+      ]
+    }
+  },
+  "notes": {
+    "inventory": "every exposure with its listener, its sources and its receivers: a deployment inventory, never an authorization statement for any caller",
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

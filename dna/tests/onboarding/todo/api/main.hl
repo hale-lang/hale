@@ -17,7 +17,7 @@
 locus Sense {
     params { nerves: Nerves = Nerves { }; }
     bus { subscribe TodoOverdue as on_overdue; }
-    fn on_overdue(t: Todo) { self.nerves.overdue(t.id, t.title, t.due); }
+    fn on_overdue(t: TodoItem) { self.nerves.overdue(t.id, t.title, t.due); }
 }
 
 main locus App {
@@ -40,8 +40,12 @@ main locus App {
     run() {
         let web = api::serve(Todo, http::Rpc { bind: self.host + ":" + to_string(self.port), codec: json, principals: self.tokens, roles: self.roles }, as: "web", receivers: { Todos: self.list }, bound: 64, on_full: refuse);
         let agent = api::serve(Todo, mcp::Rpc { bind: self.host + ":" + to_string(self.mcp_port), principals: self.tokens, roles: self.roles }, as: "agent", receivers: { Todos: self.list }, bound: 64, on_full: refuse);
+        // the hub answers calls too: a browser page on another origin cannot
+        // fetch the api (no CORS), but a WebSocket crosses origins
+        let feed = api::serve(Todo, self.hub, as: "feed", receivers: { Todos: self.list }, bound: 64, on_full: refuse);
         println("todo: api on http://", self.host, ":", self.port, ", mcp on ", self.mcp_port, ", stream on ", self.stream_bind);
         while !self.draining { std::time::sleep(100ms); }
+        feed.stop();
         web.stop();
         agent.stop();
         self.hub.stop();
