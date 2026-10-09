@@ -126,7 +126,9 @@ The stream sheds the oldest event when a slow page lets its queue fill
 (`bound: 64, on_full: drop_old`), and each event carries a `seq`. The page
 keeps the last one it applied; when the next is not that plus one
 (`needs_resync` in [`ui/seq.js`](./ui/seq.js)) it reads the list again before
-applying more, and says so in its status line. The rule is a pure function
+applying more, and says so in its status line. A gap seen while a list is
+still loading is kept (`on_event`, `load_done`): the list may have been read
+before the shed events, so it is read once more after the replay. The rule is a pure function
 with a test, `node --test ui/seq.test.mjs` (node's built-in runner, no
 dependency), which the `ui` service runs before it serves the page. No test
 drives a browser: the page's use of the function is checked by reading it.

@@ -31,7 +31,7 @@
 // is the page's URL: ?token=t-bo (&hub=ws://host:port when the hub is not
 // on this host's port 8081).
 import { subscribeTodoChanged } from "./client/todo.js";
-import { needs_resync } from "./seq.js";
+import { on_event, load_done } from "./seq.js";
 
 const params = new URLSearchParams(location.search);
 const token = params.get("token") ?? "";
@@ -85,23 +85,27 @@ function fetchList() {
 
 // Load the list and make it the page's state, then apply the changes that
 // arrived while it was on its way. `note` says why, when it was a catch-up.
-let loading = false;
+// `st` is seq.js's state: the seq of the event before, whether a list is on
+// its way, and whether a gap was seen while it was (the list may have been
+// read before the events that were shed, so it is read once more).
+let st = { last: null, loading: false, gap_seen: false };
 const early = []; // changes that arrive while the list is on its way
 function load(note) {
-  loading = true;
+  st = { ...st, loading: true };
   fetchList().then((all) => {
     items.clear();
     for (const it of all) items.set(it.id, it);
-    loading = false;
     for (const c of early.splice(0)) apply(c);
+    const done = load_done(st);
+    st = done.state;
     render(-1);
-    if (note) status.textContent = "live · " + hub + " · " + note;
-  }, (e) => { loading = false; status.textContent = String(e); });
+    if (done.relist) load("caught up after missed events");
+    else if (note) status.textContent = "live · " + hub + " · " + note;
+  }, (e) => { st = { ...st, loading: false, gap_seen: false }; status.textContent = String(e); });
 }
 
 async function run() {
   const sub = subscribeTodoChanged({ endpoint: hub, bearer: token });
-  let last = null; // the seq of the event before
   for await (const ev of sub) {
     if (ev.kind === "subscribed") {
       status.textContent = "live · " + hub;
@@ -109,11 +113,13 @@ async function run() {
     } else if (ev.kind === "event") {
       // events were shed (the hub drops the oldest of a full queue): what the
       // page holds may be wrong, so read the list again before applying more
-      const gap = needs_resync(last, ev.seq);
-      last = ev.seq;
-      if (loading) early.push(ev.payload);
-      else if (gap) { early.push(ev.payload); load("caught up after missed events"); }
-      else apply(ev.payload);
+      const r = on_event(st, ev.seq);
+      st = r.state;
+      if (r.act === "apply") apply(ev.payload);
+      else {
+        early.push(ev.payload);
+        if (r.act === "relist") load("caught up after missed events");
+      }
     } else {
       status.textContent = ev.kind === "refusal" ? "refused: " + ev.refusal.reason : "the stream ended (" + ev.kind + ")";
     }
