@@ -78,6 +78,49 @@ Each equipped responsibility declares:
 
 A request that crosses scopes follows a declared contract. Sales cannot declare delivery accepted, and assigning a proposal to yourself does not create authority to change it.
 
+## The shapes change
+
+A growing business does not keep the structure it started with. A sub-organization is the first to need marketing email, so it builds a gateway as part of its own software. Later another part of the company needs the same capability, and the gateway should become something both depend on, with its own interface and its own governance. Every boundary in the habitat must therefore be movable, by a named operation that is reviewed like any other change.
+
+The substrate already has the general mutations: a node or an edge added or retired, knowledge bound or unbound, a holder requested, a code change. What the user and the organization's own agents need is a vocabulary on top of them, where each name says what it means for the work and compiles to those mutations. Three rules apply to every operation:
+- **One operation is one Review.** The Board decides "extract the mail gateway", not the dozen rows that carry it out; the rows are the receipt.
+- **Each operation has a change class**, and the class decides who ratifies it, as the law's change classes do today.
+- **Each operation checks its own invariants before it is proposed**, and a refusal names what failed.
+
+The operations are layered. Each layer names a change by its own boundary and is complete without the layer above it, and an upper layer's operations are compositions of the lower layer's plus that layer's own bookkeeping.
+
+**The Hale program: where code runs.**
+- **Serve.** A locus subtree goes behind a transport (unix, HTTP, the nerves), with its surface as the contract. The callers' code does not change; only their bindings do.
+- **Unserve.** A served subtree goes back in-process, and its callers are rebound to direct calls.
+- **Place.** A locus moves to another pool or another program inside the same organism, and its behaviour stays the same.
+
+**The organism: what one record owns.**
+- **Open a position.** A new responsibility appears under a part, with its mandate and equipment.
+- **Fill, vacate.** A person or an organization takes a position, or leaves it.
+- **Merge positions.** Two responsibilities become one; holds and bound knowledge carry over.
+- **Split a position.** One responsibility becomes two, and its mandate and bindings are divided between them.
+- **Assign.** A position writes or reviews a part or a contract.
+- **Adopt a pack.** A family of knowledge, practices, mandates or workflows comes into force, ratified as one unit.
+- **Retire a pack.** That family leaves, and what it superseded is restored.
+- **Expose.** An internal capability gets a named contract.
+- **Depend.** A part relies on a contract, whether this organism serves it or something outside does.
+- **Externalize.** A part leaves the organism. The organism depends on its contract and no longer owns its code, positions or knowledge.
+- **Internalize.** A contract the organism depended on becomes a part it owns, with the code, positions and knowledge to back it.
+
+**The habitat: several records.**
+- **Graft.** A sapling, a prebuilt business unit published as a template, becomes a child organism under a ceiling its parent grants and a Board its parent seats.
+- **Extract.** A part of one organism becomes its own organism. The source externalizes it, the new organism is born from the copied subgraph with provenance, and the source depends on its contract.
+- **Absorb.** A child organism folds back into its parent. The parent internalizes the contract, and the child retires.
+- **Re-parent.** An organism moves under a different parent. Its ceiling is re-granted and its Board re-seated.
+
+**Promoting a capability moves along two axes, one step at a time.** Where it runs is the process boundary, and serve and place move it: a heart can become two programs that the same organism still owns and governs. Who owns it is the organism boundary, and externalize moves it, usually only when someone else needs the capability or it should be governed apart. The check that only the surface and its topics cross the cut belongs to the first step, because it is a property of the code, and the compiler can make it; a cut that is not clean is refused with its crossings named.
+
+**Externalize needs no habitat.** To the organism, an externalized capability is a contract it consumes and does not own. Whoever serves it, a sibling organism, a third-party provider or another team's service, is not in its record, so a plain organism can use the operation, and replacing the provider later is an ordinary contract change ([Providers are replaceable](#providers-are-replaceable)).
+
+**Extract is a composition, seen whole only from the habitat.** The source's record shows "externalized; now depends on this contract". The new organism's record begins with "born from the source at this head". Rows are copied with their provenance, never moved, so each history stays where it happened. Absorb is the same composition in reverse.
+
+**Packs and saplings are the two sizes of what can be installed.** A pack is rows inside one organism: knowledge, practices, mandates, workflow definitions. A sapling is a whole organism: its program, its starting record, its charter and its law. A pack is adopted by a family Review; a sapling is grafted. An upgrade of either arrives as its next version, proposed against what the host has ratified since, so local amendments are kept and each conflict is a Review of its own.
+
 ## Money from the first receipt
 
 Finance is a responsibility from the start, even when its performer is a person and it only captures.
@@ -104,5 +147,8 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | roles per client on each backend | memory's roles, one broker account per role and per attached application, and vault slots: [The skin](./dna/skin.md) |
 | money reserved against grants | spend reserved, settled and compensated under a grant's windows: [The spine](./dna/spine.md) |
 | `runs_under`, policies rendered as projections, per-attachment credentials | **not built**: reserved as a relation for the compiler's registry (GH #1212) |
+| serving a surface over a transport, and placing a locus | `api::serve` over unix and HTTP, `hale api describe` and `call`: [API](./services/api.md); pools and programs: [Concurrency & placement](./services/concurrency.md) |
+| filling a position | `hale dna fill`, ratified by the Board: [Reference](./dna/reference.md) |
+| the other operations on a changing structure: vacate, merge, split, packs, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built** |
 | standard equipment | **not built** |
 | finance capture and books | **not built** |
