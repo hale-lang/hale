@@ -260,7 +260,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "designed"], &d);
+    let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
     assert!(ok, "{out}");
     assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
