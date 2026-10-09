@@ -10049,9 +10049,9 @@ row	SenseDesk@literal1	SenseDesk	main	default
 row	SenseDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:SenseDesk@literal1.broker	entry	off owner
 row	SenseDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
 row	SenseDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
-dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.broker	in tests/fake
-dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/sense
-dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.sense	in the seed
+dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.sense	in tests/onboarding/todo/api
+dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.broker	in tests/onboarding/todo/api/tests/fake
+dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/onboarding/todo/api/tests/sense
 shared	SenseDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/todo/api/tests/silent/silent_test.hl
@@ -10063,9 +10063,9 @@ row	SilentDesk@literal1	SilentDesk	main	default
 row	SilentDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:SilentDesk@literal1.broker	entry	off owner
 row	SilentDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
 row	SilentDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
-dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.broker	in tests/fake
-dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/silent
-dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in the seed
+dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in tests/onboarding/todo/api
+dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.broker	in tests/onboarding/todo/api/tests/fake
+dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/onboarding/todo/api/tests/silent
 shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/voice/api/tests/endpoints_test.hl
