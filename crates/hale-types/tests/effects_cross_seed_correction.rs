@@ -190,13 +190,13 @@ fn api() {
     );
 }
 
-/// host: 90 of 453 rows.
+/// host: 92 of 455 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        453,
-        460,
+        455,
+        462,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
