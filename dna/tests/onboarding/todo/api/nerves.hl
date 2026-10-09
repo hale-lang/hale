@@ -19,7 +19,7 @@ fn quoted(s: String) -> String {
 
 /// The application the account `user` belongs to: the name after `app-`,
 /// `todo` when the account does not say. The subject and the concern's
-/// source both carry it.
+/// source (`<name>/overdue`, the heart's path syntax) both carry it.
 fn app_name(user: String) -> String {
     return if std::str::starts_with(user, "app-") && len(user) > 4 { user[4..len(user)] } else { "todo" };
 }
@@ -46,7 +46,7 @@ locus Nerves {
     fn overdue(id: Int, title: String, due: String) {
         if !self.attached() { return; }
         let body = "{\"id\":" + quoted("overdue-" + to_string(id))
-            + ",\"source\":" + quoted("app:" + app_name(self.user))
+            + ",\"source\":" + quoted(app_name(self.user) + "/overdue")
             + ",\"what\":" + quoted("todo " + to_string(id) + " \"" + title + "\" is overdue (due " + due + ")")
             + ",\"severity\":1"
             + ",\"event\":\"todo.overdue\""

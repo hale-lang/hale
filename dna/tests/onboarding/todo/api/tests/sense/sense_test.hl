@@ -10,6 +10,43 @@ import "../../nerves" as nerves;
 import "../fake" as fake;
 import "../../../../../../core" as dna;
 
+/// The `source` field of the message `heard`.
+fn source_of(heard: String) -> String {
+    let key = "\"source\":\"";
+    let mut i = 0;
+    while i + len(key) <= len(heard) && heard[i..(i + len(key))] != key { i = i + 1; }
+    if i + len(key) > len(heard) { return ""; }
+    let start = i + len(key);
+    let mut j = start;
+    while j < len(heard) && heard[j..(j + 1)] != "\"" { j = j + 1; }
+    return heard[start..j];
+}
+
+// A copy of the rule the heart applies to a concern's source,
+// dna/host/pulse.hl::concern_source (this repository cannot import the
+// host): `/`-separated tokens of letters, digits, `-`, `_` and `.`, one of
+// them the application's name; "" when it is refused.
+fn concern_source(source: String, app: String) -> String {
+    if len(source) == 0 || len(source) > 128 { return ""; }
+    let mut named = false;
+    let mut seg = "";
+    let mut i = 0;
+    while i <= len(source) {
+        let c = if i < len(source) { source[i..(i + 1)] } else { "/" };
+        if c == "/" {
+            if len(seg) == 0 { return ""; }
+            if seg == app { named = true; }
+            seg = "";
+        } else {
+            let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+            if !ok { return ""; }
+            seg = seg + c;
+        }
+        i = i + 1;
+    }
+    return if named { source } else { "" };
+}
+
 main locus SenseDesk {
     params {
         port: Int = dna::free_port(3);
@@ -56,7 +93,11 @@ main locus SenseDesk {
         std::test::assert(std::str::contains(heard, "\"user\":\"app-todo\""), "as the application's account: " + heard);
         std::test::assert(std::str::contains(heard, "\"pass\":\"hunter2\""), "with the vault's password: " + heard);
         std::test::assert(std::str::contains(heard, "\"id\":\"overdue-1\""), "naming the item: " + heard);
-        std::test::assert(std::str::contains(heard, "\"source\":\"app:todo\""), "from the attached application: " + heard);
+        std::test::assert(std::str::contains(heard, "\"source\":\"todo/overdue\""), "from the attached application: " + heard);
+        let source = source_of(heard);
+        std::test::assert_eq_str(source, "todo/overdue", "the recorded source");
+        std::test::assert_eq_str(concern_source(source, "todo"), source, "the heart admits it");
+        std::test::assert_eq_str(concern_source("app:todo", "todo"), "", "and refuses the colon spelling");
         // the name follows the account the organism attached the application under
         std::test::assert_eq_str(nerves::app_name("app-mytodo"), "mytodo", "a clone's own name");
         std::test::assert_eq_str(nerves::app_name("app-my-todo"), "my-todo", "a dashed name");
