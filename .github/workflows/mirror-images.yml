@@ -1,0 +1,39 @@
+# Mirror the container images CI starts to the repository's own package
+# registry, so CI never pulls anonymously from Docker Hub (its pull rate
+# limit is shared by every GitHub-hosted runner's address and failed whole
+# runs). tests.yml pulls these as ghcr.io/hale-lang/ci-<name>:<tag>.
+# Refreshed weekly; run by hand after changing an image or its tag.
+name: mirror-images
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  push:
+    branches: [main, ci/ghcr-mirror]
+    paths: [.github/workflows/mirror-images.yml]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Copy each image, every architecture
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          copy() {
+            for attempt in 1 2 3 4 5; do
+              if skopeo copy --all --retry-times 3 --dest-creds "$ACTOR:$TOKEN" "docker://docker.io/$1" "docker://ghcr.io/hale-lang/$2"; then return 0; fi
+              echo "copy of $1 failed (attempt $attempt); waiting" >&2; sleep $((attempt * 60))
+            done
+            return 1
+          }
+          copy pgvector/pgvector:pg16 ci-pgvector:pg16
+          copy library/nats:2 ci-nats:2
+          copy prom/prometheus:v3.5.0 ci-prometheus:v3.5.0
