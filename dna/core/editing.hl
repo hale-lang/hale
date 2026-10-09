@@ -37,7 +37,17 @@ locus WorktreeTools {
         if len(rel) == 0 { return false; }
         if rel[0..1] == "/" { return false; }
         if std::str::contains(rel, "..") { return false; }
-        return true;
+        return self.no_escape(rel, "access");
+    }
+    // The spelling is not the place: a directory in the worktree may be a
+    // link out of it. Each existing segment of `rel` that is a link must
+    // resolve (`pwd -P`) to a directory under the root's own real path; a
+    // link to a file never does. The `list` mode, the listing's, refuses
+    // every link: it never descends one. The stdlib cannot tell a link from
+    // a directory (`list_dir_count` follows it), so this asks `sh`.
+    fn no_escape(rel: String, mode: String) -> Bool {
+        let r = run_tool("sh\n-c\nset -f; rr=$(cd \"$1\" && pwd -P) || exit 2; cur=$1; IFS=/; for s in $2; do cur=$cur/$s; if [ -L \"$cur\" ]; then [ \"$3\" = list ] && exit 1; t=$(cd \"$cur\" 2>/dev/null && pwd -P) || exit 1; case \"$t\" in \"$rr\"|\"$rr\"/*) ;; *) exit 1;; esac; fi; done; exit 0\nsh\n" + self.root + "\n" + rel + "\n" + mode);
+        return r.code == 0;
     }
     // Each call is one Attempt's: bounded by the attempt cap of the
     // Work that owns the editor, not by anything the grant can see.
@@ -240,8 +250,8 @@ locus SourceEditor {
             let name = std::io::fs::list_dir_at(dir, i) or "";
             let path = if len(rel) == 0 { name } else { rel + "/" + name };
             if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" {
-                out = out + path + "\n";
-            } else if depth < 4 && len(name) > 0 && name[0..1] != "." && name != "dna" && name != "vendor" && name != "node_modules" && name != "target" && (std::io::fs::list_dir_count(self.tools.root + "/" + path) or 0) > 0 {
+                if self.tools.no_escape(path, "access") { out = out + path + "\n"; }
+            } else if depth < 4 && len(name) > 0 && name[0..1] != "." && name != "dna" && name != "vendor" && name != "node_modules" && name != "target" && (std::io::fs::list_dir_count(self.tools.root + "/" + path) or 0) > 0 && self.tools.no_escape(path, "list") {
                 out = out + self.files_under(path, depth + 1);
             }
             i = i + 1;

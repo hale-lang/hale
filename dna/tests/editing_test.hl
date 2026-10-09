@@ -229,6 +229,30 @@ main locus App {
         std::test::assert(std::str::contains(dup.located_why, "ambiguous"), "naming why: " + dup.located_why);
         std::test::assert_eq_str(dup.plan("c4", "change a/todo.hl and todo.hl"), "a/todo.hl", "the plan keeps the exact path and drops the ambiguous name");
         dna::scratch_done(root6);
+        // the listing stays inside the grant: a directory that links out of the
+        // worktree is not descended, and its files can be neither read nor edited
+        let outside = dna::scratch_root("edit-outside");
+        std::io::fs::write_file(outside + "/private.hl", "fn private() { }\n") or discard;
+        let root7 = dna::scratch_root("edit-link");
+        std::io::fs::mkdir(root7 + "/real") or discard;
+        std::io::fs::write_file(root7 + "/real/x.hl", "fn x() { }\n") or discard;
+        let ln = dna::run_tool("ln\n-s\n" + outside + "\n" + root7 + "/linked");
+        std::test::assert(ln.code == 0, "the link is made: " + ln.stderr);
+        let lk = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "linked/private.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root7, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(lk.files(), "real/x.hl\n", "a real nested directory lists, a linked one lists nothing: " + lk.files());
+        std::test::assert_eq_str(lk.locate("d1", "add a rpc"), "", "and the model naming a path through the link has no target");
+        std::test::assert_eq_str(lk.tools.read("linked/private.hl"), "", "a read through the link is refused");
+        std::test::assert(lk.tools.refused == 1 && std::str::contains(lk.tools.last_refusal, "outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
+        std::test::assert(!lk.tools.edit("linked/private.hl", "fn pwned() { }\n"), "an edit through the link is refused");
+        std::test::assert(lk.tools.refused == 2 && std::str::contains(lk.tools.last_refusal, "edit outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
+        std::test::assert_eq_str(std::io::fs::read_file(outside + "/private.hl") or "", "fn private() { }\n", "the file outside is untouched");
+        std::test::assert_eq_str(lk.tools.read("real/x.hl"), "fn x() { }\n", "a real file is still read");
+        dna::scratch_done(root7);
+        dna::scratch_done(outside);
         let root5 = dna::scratch_root("edit-empty");
         let empty = dna::SourceEditor {
             name: "editor",
