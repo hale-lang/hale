@@ -69,6 +69,9 @@ crates/hale-types/tests/claim_lowering.rs#0	spendcap	bound money <= 2 on paths f
 crates/hale-types/tests/claim_lowering.rs#0	tagged	require attributed(all syscall)	Violated	None
 crates/hale-types/tests/claim_lowering.rs#0	vault	require sealed(all gates)	Violated	None
 crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) == 0	Violated	Some("Core")
+crates/hale-types/tests/claim_no_silent_loss.rs#2	loss	require no_silent_loss(topic Payments)	Holds	None
+crates/hale-types/tests/claim_no_silent_loss.rs#3	loss	require no_silent_loss(topic Payments)	Violated	None
+crates/hale-types/tests/claim_no_silent_loss.rs#4	loss	require no_silent_loss(all quiet)	Invalid	None
 crates/hale-types/tests/claims.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None

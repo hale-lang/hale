@@ -107,6 +107,10 @@ Claim [792..798] claim `tagged` violated: a fn performs `syscall` with no declar
 Claim [104..109] claim `quiet` violated: counted 1 subscriber(s) (`Worker`) of `Evt`, claim requires == 0
 --- crates/hale-types/tests/claim_lowering.rs#2 ---
 Claim [37..44] unknown constitution `Missing` — nothing declares it
+--- crates/hale-types/tests/claim_no_silent_loss.rs#3 ---
+Claim [345..349] claim `loss` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `id` is `on_unmatched: swallow`
+--- crates/hale-types/tests/claim_no_silent_loss.rs#4 ---
+Claim [233..237] claim `loss`: the routes of `quiet` names no route — no member publishes or subscribes anything, so `require no_silent_loss` would quantify over an empty set and hold while checking nothing. Name a topic, or a group whose members use the bus.
 --- crates/hale-types/tests/claims.rs#1 ---
 Claim [330..333] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `B::work`
 Claim [159..173] claim `iso`: the boundary into `b_side` is crossed by this call

@@ -508,6 +508,16 @@ pub fn lower_claims_over(
                     group: group_ref(recs, &group.name, group.span),
                 }
             }
+            ClaimForm::RequireNoSilentLossTopic { topic } => {
+                ClaimIr::RequireNoSilentLossTopic {
+                    topic: topic_ref(recs, topic),
+                }
+            }
+            ClaimForm::RequireNoSilentLossGroup { group } => {
+                ClaimIr::RequireNoSilentLossGroup {
+                    group: group_ref(recs, &group.name, group.span),
+                }
+            }
             ClaimForm::RequireAttributed { class_name } => {
                 ClaimIr::RequireAttributed {
                     class: class_ref_named(

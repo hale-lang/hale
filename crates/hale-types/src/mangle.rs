@@ -1145,6 +1145,7 @@ fn rewrite_claim_topic_refs(
                 }
             }
             ClaimForm::Require { topic, .. }
+            | ClaimForm::RequireNoSilentLossTopic { topic }
             | ClaimForm::Count { topic, .. } => {
                 rewrite(topic);
             }
@@ -1152,6 +1153,7 @@ fn rewrite_claim_topic_refs(
             | ClaimForm::Bound { .. }
             | ClaimForm::RequireSealed { .. }
             | ClaimForm::RequireAttributed { .. }
+            | ClaimForm::RequireNoSilentLossGroup { .. }
             | ClaimForm::Cover { .. } => {}
         }
     }
@@ -1719,8 +1721,18 @@ impl<'a> Mangler<'a> {
                         }
                     }
                     ClaimForm::RequireSealed { group }
+                    | ClaimForm::RequireNoSilentLossGroup { group }
                     | ClaimForm::Cover { group, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);
+                    }
+                    ClaimForm::RequireNoSilentLossTopic { topic } => {
+                        if topic.segments.len() == 1 {
+                            self.rewrite_ident(
+                                &mut topic.segments[0].name,
+                            );
+                        } else {
+                            self.rewrite_alias_head(&mut topic.segments);
+                        }
                     }
                     // Names an effect CLASS, not a group or topic;
                     // nothing to rewrite.

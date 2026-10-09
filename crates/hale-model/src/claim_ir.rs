@@ -356,6 +356,12 @@ pub enum ClaimIr {
     },
     /// `require sealed(all G)` (GH #436).
     RequireSealed { group: GroupRef },
+    /// `require no_silent_loss(topic T)` — no boundary on the route
+    /// is configured to discard silently.
+    RequireNoSilentLossTopic { topic: TopicIrRef },
+    /// `require no_silent_loss(all G)` — the same over every route a
+    /// member of G publishes or subscribes.
+    RequireNoSilentLossGroup { group: GroupRef },
     /// `require attributed(all <class>)` (GH #436).
     RequireAttributed { class: EffectClassRef },
     /// `cover topic in seed(a): subscribed_by(some G)`.
@@ -1002,6 +1008,16 @@ impl ClaimRow {
                 "{{\"kind\": \"require_sealed\", \"group\": {}}}",
                 gref(group)
             ),
+            ClaimIr::RequireNoSilentLossTopic { topic } => format!(
+                "{{\"kind\": \"require_no_silent_loss_topic\", \
+                 \"topic\": {}}}",
+                tref(topic)
+            ),
+            ClaimIr::RequireNoSilentLossGroup { group } => format!(
+                "{{\"kind\": \"require_no_silent_loss_group\", \
+                 \"group\": {}}}",
+                gref(group)
+            ),
             ClaimIr::RequireAttributed { class } => format!(
                 "{{\"kind\": \"require_attributed\", \
                  \"class\": {}}}",
@@ -1195,6 +1211,8 @@ impl ClaimRow {
             ClaimIr::RequireEndpoint { .. }
             | ClaimIr::RequireSealed { .. }
             | ClaimIr::RequireAttributed { .. }
+            | ClaimIr::RequireNoSilentLossTopic { .. }
+            | ClaimIr::RequireNoSilentLossGroup { .. }
             | ClaimIr::Cover { .. }
             | ClaimIr::Count { .. } => JudgmentFamily::Endpoint,
             ClaimIr::Bound { .. } => JudgmentFamily::Bound,
@@ -1235,6 +1253,12 @@ impl ClaimRow {
             }
             ClaimIr::RequireAttributed { class } => {
                 form::require_attributed(&class.name)
+            }
+            ClaimIr::RequireNoSilentLossTopic { topic } => {
+                form::require_no_silent_loss_topic(&topic.name.display)
+            }
+            ClaimIr::RequireNoSilentLossGroup { group } => {
+                form::require_no_silent_loss_group(&group.name.display)
             }
             ClaimIr::ForbidReaches {
                 src,
@@ -1757,6 +1781,12 @@ impl ClaimIrTable {
                     topic_ok(topic)?;
                 }
                 ClaimIr::RequireSealed { group } => group_ok(group)?,
+                ClaimIr::RequireNoSilentLossTopic { topic } => {
+                    topic_ok(topic)?
+                }
+                ClaimIr::RequireNoSilentLossGroup { group } => {
+                    group_ok(group)?
+                }
                 ClaimIr::RequireAttributed { class } => {
                     class_ok(class)?
                 }

@@ -211,6 +211,8 @@ impl Shift for ClaimForm {
             ClaimForm::Require { publishers, group, topic } => sh!(d; publishers, group, topic),
             ClaimForm::RequireSealed { group } => sh!(d; group),
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
+            ClaimForm::RequireNoSilentLossTopic { topic } => sh!(d; topic),
+            ClaimForm::RequireNoSilentLossGroup { group } => sh!(d; group),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),
         }

@@ -2101,6 +2101,42 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireAttributed { class_name });
         }
+        // `require no_silent_loss(topic T);` / `(all G);` — the route
+        // loss policy. One predicate, two scopes: a single named
+        // route, or every route a group's members publish or
+        // subscribe.
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "no_silent_loss")
+        {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let q = self.peek_token().clone();
+            match &q.kind {
+                TokenKind::Ident(s) if s == "all" => {
+                    self.bump();
+                    let group = self.expect_ident("group name")?;
+                    self.expect(TokenKind::RParen, ")")?;
+                    return Ok(ClaimForm::RequireNoSilentLossGroup { group });
+                }
+                TokenKind::Ident(s) if s == "topic" => {
+                    self.bump();
+                    let topic = self.parse_topic_ref()?;
+                    self.expect(TokenKind::RParen, ")")?;
+                    return Ok(ClaimForm::RequireNoSilentLossTopic { topic });
+                }
+                other => {
+                    return Err(Diag::parse(
+                        q.span,
+                        format!(
+                            "expected `topic T` or `all G` in \
+                             `require no_silent_loss(…)` — one named \
+                             route, or every route a group's members \
+                             publish or subscribe. Got {:?}",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
         let publishers = match &pred_tok.kind {
             TokenKind::Ident(s) if s == "subscribes" => false,
             TokenKind::Ident(s) if s == "publishes" => true,
@@ -2109,7 +2145,7 @@ impl Parser {
                     pred_tok.span,
                     format!(
                         "expected `subscribes`, `publishes`, \
-                         `sealed`, or `attributed` after `require`, \
+                         `sealed`, `attributed`, or `no_silent_loss` after `require`, \
                          got {:?}",
                         other
                     ),

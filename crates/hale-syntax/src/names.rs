@@ -243,6 +243,8 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
         }
         ClaimForm::RequireSealed { group } => name(group, f),
         ClaimForm::RequireAttributed { class_name } => name(class_name, f),
+        ClaimForm::RequireNoSilentLossTopic { topic } => topic_ref(topic, f),
+        ClaimForm::RequireNoSilentLossGroup { group } => name(group, f),
         ClaimForm::Cover { alias, group } => {
             name(alias, f);
             name(group, f);

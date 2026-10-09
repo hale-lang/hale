@@ -108,7 +108,7 @@ bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 
 require_form      = require_endpoint | require_sealed
-                  | require_attributed ;
+                  | require_attributed | require_no_silent_loss ;
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
                     topic_ref , ")" ;
@@ -116,6 +116,10 @@ require_sealed    = "require" , "sealed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
 require_attributed = "require" , "attributed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+require_no_silent_loss
+                  = "require" , "no_silent_loss" , "(" ,
+                    ( ( "topic" , topic_ref ) | ( "all" , IDENTIFIER ) ) ,
+                    ")" ;
 
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
@@ -452,6 +456,126 @@ violation names the group and the topic. The topic reference must
 resolve to a declared topic (qualified refs canonicalize at the
 mangle stage; unknown names error with a did-you-mean).
 
+## `require no_silent_loss` — no configured silent discard
+
+```hale,fragment
+payments_arrive: require no_silent_loss(topic Payments);
+money_is_safe:   require no_silent_loss(all money);
+```
+
+A **route** is a wire subject: a topic's, or the subject a literal
+endpoint names. `topic T` claims one route; `all G` claims every
+route a member of `G` publishes or subscribes — through its sends,
+its declared `publish` ends and its subscription handlers (a group
+that touches no route is an error, not a vacuous truth). The claim
+is that **no boundary on the route is configured to discard
+silently**. It reads the settings the model records, at every
+boundary on the route, whoever owns it — a subscriber outside the
+group still sits on the route:
+
+| boundary | setting read | silent when |
+|---|---|---|
+| unmatched key | the topic's `on_unmatched:` | `swallow` (the default for a keyed topic) |
+| subscriber queue | the subscription's `bounded(N, …)` | `drop_old` or `drop_new` |
+| send | the send's `or` clause | `or discard` |
+| binding | the transport's loss behavior | `drop` |
+
+`on_unmatched: fail` and `fallback` are not silent: the first makes
+the send fallible, the second delivers the unmatched message to the
+`where key == _` subscriber. A **refusal the caller can see is not a
+silent discard** — `or raise`, `or wait`, or a plain send on a topic
+that can refuse nothing. A violation lists *every* silent setting,
+naming the boundary and what it is set to.
+
+What the claim does **not** prove, and says so rather than holding:
+
+- A send that routes its refusal into a **custom handler**
+  (`or println("…")`, `or fail …` on an `on_unmatched: fail` topic)
+  is reported `uncertified`, naming the send. The model records that
+  a handler exists, not what it does with the refusal, and the mere
+  presence of a handler proves little.
+- A `connect` binding drops the publishes of a window in which its
+  link is lost, and whether that is handled is supervision policy
+  (`on_failure` on the main locus). The route is `uncertified`
+  unless every send on it is `or wait`. A `listen` binding fails the
+  binding instead, and holds.
+- A hole that hides the route's subscribers, publishers or delivery
+  (an adapter transport, an unanalyzed publisher) leaves the route
+  `uncertified`.
+
+A silent setting always beats an unproven one: a route that is
+configured to discard is `violated` however many handlers it also
+has.
+
+This is a **configuration** claim. It says no modeled boundary is
+*set* to lose; it does not account for an accepted message through
+to its processing, and it promises nothing across a process
+failure or from a dependency that is down — those need durability
+and acknowledgement semantics the model does not have.
+
+Here is a route that fails the claim, then the same route configured
+so it holds:
+
+```hale,refused
+type Payment { account: Int = 0; cents: Int = 0; }
+
+topic Payments {
+    payload: Payment;
+    subject: "payments";
+    keyed_by account;
+}
+
+locus Ledger {
+    params { booked: Int = 0; }
+    bus { subscribe Payments as on_payment bounded(64, drop_old) where key == 1; }
+    fn on_payment(p: Payment) { self.booked = self.booked + p.cents; }
+}
+
+locus Gateway {
+    bus { publish Payments; }
+    fn pay(account: Int, cents: Int) {
+        Payments <- Payment { account: account, cents: cents };
+    }
+}
+
+group money = { Ledger, Gateway };
+
+main locus App {
+    params { ledger: Ledger = Ledger { }; gate: Gateway = Gateway { }; }
+    claims {
+        payments_arrive: require no_silent_loss(topic Payments);
+        money_is_safe:   require no_silent_loss(all money);
+    }
+    run() { self.gate.pay(1, 500); }
+}
+fn main() { App { }; }
+```
+
+```text
+claim `payments_arrive` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `account` is `on_unmatched: swallow`; subscriber `Ledger::on_payment` on `Payments` is `bounded(64), on_full: drop_old`
+claim `money_is_safe` violated: a route of `money` is configured to discard silently — topic `Payments` keyed by `account` is `on_unmatched: swallow`; subscriber `Ledger::on_payment` on `Payments` is `bounded(64), on_full: drop_old`
+```
+
+The repair is in the configuration, not the claim. An unmatched
+payment now fails the send, the sender raises it, and the ledger's
+queue is unbounded:
+
+```hale,fragment
+topic Payments {
+    payload: Payment;
+    subject: "payments";
+    keyed_by account;
+    on_unmatched: fail;
+}
+// Ledger:  subscribe Payments as on_payment where key == 1;
+// Gateway: Payments <- Payment { account: account, cents: cents } or raise;
+```
+
+Replace `or raise` with `or println("dropped")` and both claims turn
+`uncertified` — "the send in `Gateway::pay` on `Payments` routes its
+refusal into a custom handler" — until the handler is replaced by
+something the claim can read.
+
 ## `cover` — bounded universals
 
 ```hale,fragment
@@ -632,6 +756,7 @@ result is `invalid`):
 | built-in class in `bound` | points at the `@budget` spellings |
 | unknown topic in a grant / `require` / `count` | + did-you-mean over declared topics |
 | `cover` over an alias with no topics | "the coverage domain would be empty" |
+| `no_silent_loss(all G)` over a group that publishes and subscribes nothing | "names no route" — it would hold while checking nothing |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
 
@@ -644,6 +769,7 @@ Violations (the claim's result is `violated`):
 | `bound` | the measured count + representative chain, or the unbounded reason |
 | `require` | the group and the missing declaration |
 | `cover` | every uncovered topic |
+| `no_silent_loss` | every silent setting: the boundary (topic, subscriber, send, binding) and what it is set to |
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 

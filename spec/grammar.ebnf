@@ -431,7 +431,7 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 require_form      = require_endpoint | require_sealed
-                  | require_attributed ;
+                  | require_attributed | require_no_silent_loss ;
 
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
@@ -453,6 +453,13 @@ require_sealed    = "require" , "sealed" ,
    See `spec/verification.md`. *)
 require_attributed = "require" , "attributed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+(* GH #1327 section 2: no boundary on a named route is CONFIGURED to
+   discard silently. `topic T` names one route; `all G` quantifies over
+   every route a member of G publishes or subscribes. *)
+require_no_silent_loss
+                  = "require" , "no_silent_loss" , "(" ,
+                    ( ( "topic" , topic_ref ) | ( "all" , IDENTIFIER ) ) ,
+                    ")" ;
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
                     "(" , "some" , IDENTIFIER , ")" ;

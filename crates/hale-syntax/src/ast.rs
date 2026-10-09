@@ -597,6 +597,15 @@ pub enum ClaimForm {
     /// has a subscriber in G. A seed with no topics is a vacuity
     /// error.
     Cover { alias: Ident, group: Ident },
+    /// `require no_silent_loss(topic T);` — no boundary on the route
+    /// `T` is configured to discard silently: no `on_unmatched:
+    /// swallow`, no shedding subscriber queue, no `or discard` send,
+    /// no lossy binding. A refusal the sender observes is not a
+    /// silent discard; a custom refusal handler is unproven.
+    RequireNoSilentLossTopic { topic: TopicRef },
+    /// `require no_silent_loss(all G);` — the same policy over every
+    /// route a member of G publishes or subscribes.
+    RequireNoSilentLossGroup { group: Ident },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.
