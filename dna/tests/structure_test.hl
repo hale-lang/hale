@@ -201,6 +201,22 @@ locus App {
         }
         return "";
     }
+    // The chart once no mandate is pending or missing and the api's two
+    // positions show theirs ratified with their roles: the settled state
+    // the assertions below read, polled as a whole rather than by one line.
+    fn show_org_settled(head: String, tries: Int) -> String {
+        let mut n = 0;
+        while n < tries {
+            let out = self.show_org(head, 1, "{mandate: ratified");
+            if len(out) > 0 && !std::str::contains(out, "{mandate: pending") && !std::str::contains(out, "{mandate: none")
+                && std::str::contains(out, "dev {mandate: ratified; roles: editor}") && std::str::contains(out, "reviewer(todo.md) {mandate: ratified; roles: reviewer}") {
+                    return out;
+                }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return self.show_org(head, 1, "");
+    }
     // `hale dna <args>` in the project; once memory is migrated, as the
     // head, which is where an adopted ledger's body lease is read
     fn dna(args: String) -> dna::RunResult {
@@ -291,14 +307,17 @@ locus App {
         std::test::assert_eq_int(holes.code, 0, "the Board ratifies the holes: " + holes.stdout + holes.stderr);
         let design = self.dna("review\ndesign\napprove\n--as\nada\n--authority\nboard\n--no-wait");
         std::test::assert_eq_int(design.code, 0, "and the design, which holds the editor's mandate: " + design.stdout + design.stderr);
-        // wait for the last position's mandate: the ui reviewer's lands after the
-        // api's, so waiting on the api reviewer read a pending ui mandate
-        let after = self.show_org(head, 480, "reviewer(todo.md) {mandate: ratified}");
+        // the approvals ran with --no-wait: read the chart only once every
+        // hole's mandate is ratified, whichever position's lands last
+        let after = self.show_org_settled(head, 480);
         std::test::assert(std::str::contains(after, "dev {mandate: ratified; roles: editor}") && std::str::contains(after, "reviewer(todo.md) {mandate: ratified; roles: reviewer}") && !std::str::contains(after, "{mandate: pending"), "every mandate ratified with its position: " + after);
 
         // ---- each mandate is a ratified idea bound to its position
         std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/dev"), 1, "api/dev's mandate is bound to its node");
         std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/reviewer"), 1, "and api/reviewer's");
+        // the design was approved with --no-wait too: the editor's mandate binds when its ratification lands
+        let mut waited = 0;
+        while waited < 240 && self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:editor") < 1 { std::time::sleep(500ms); waited = waited + 1; }
         std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:editor"), 1, "the editor's, a design mandate, is bound to position:editor");
 
         // ---- the hat of an `edit` Work on the part carries the editor's mandate
