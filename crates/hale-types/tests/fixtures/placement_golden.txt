@@ -9135,6 +9135,7 @@ row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
 shared	App@literal1.app_editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.broken_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.init_editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.repo_editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	dynamic	sites in tests #6429d5ee
 shared	dynamic	sites in the stdlib #c3a51769
