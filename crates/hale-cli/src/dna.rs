@@ -3202,6 +3202,16 @@ fn library_family(target: &str) -> &'static str {
     if target == "system:dna" { "design" } else { "language" }
 }
 
+/// Chapters the book moved: `(name now, name an earlier toolchain proposed it
+/// under)`. An upgrade supersedes the active idea under the earlier name when
+/// the new name has none, so a record seeded before the move is not left with
+/// both.
+const LIBRARY_EARLIER: &[(&str, &str)] = &[("library/services/api", "library/api"), ("library/dna/shaping", "library/shaping")];
+
+fn library_earlier(name: &str) -> &'static str {
+    LIBRARY_EARLIER.iter().find(|(now, _)| *now == name).map(|(_, e)| *e).unwrap_or("")
+}
+
 /// The library as `library-seed` takes it: one JSON object per line, grouped
 /// by family. `HALE_DNA_LIBRARY_SUFFIX` appends to every text, for fixtures
 /// only (a later toolchain whose text changed).
@@ -3214,7 +3224,10 @@ fn library_ideas() -> String {
                 continue;
             }
             let body = format!("{body}{suffix}");
-            text.push_str(&serde_json::json!({"name": name, "title": title, "text": body, "target": target, "family": family, "digest": digest}).to_string());
+            // fixtures only: the library as the toolchain that named its
+            // moved chapters by their earlier names proposed it
+            let (name, earlier) = if std::env::var("HALE_DNA_LIBRARY_EARLIER_NAMES").is_ok_and(|v| !v.is_empty()) && !library_earlier(name).is_empty() { (library_earlier(name), "") } else { (*name, library_earlier(name)) };
+            text.push_str(&serde_json::json!({"name": name, "title": title, "text": body, "target": target, "family": family, "digest": digest, "earlier": earlier}).to_string());
             text.push('\n');
         }
     }

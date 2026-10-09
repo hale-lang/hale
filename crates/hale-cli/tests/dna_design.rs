@@ -920,3 +920,66 @@ fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approv
     unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// seed/library — a chapter the book moved (`library/api` is now
+/// `library/services/api`, `library/shaping` is `library/dna/shaping`) is
+/// upgraded as a supersession of the idea the record holds under its earlier
+/// name, so the record is not left with both: the upgrade counts them as
+/// superseding, and approving retires the earlier digests. (A record seeded
+/// under the earlier names is made with `HALE_DNA_LIBRARY_EARLIER_NAMES`.)
+#[test]
+fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
+    let _t = trace::test("dna_design::library_earlier_names");
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
+    let d = std::env::temp_dir().join(format!("hale_dna_libearlier_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let earlier = [("HALE_DNA_LIBRARY_VERSION", "1.0.0-a"), ("HALE_DNA_LIBRARY_EARLIER_NAMES", "1")];
+    let (ok, out) = hale_env(&["dna", "new", "mv"], &d, &earlier);
+    assert!(ok && out.contains("seeded  library ("), "{out}");
+    let app: PathBuf = d.join("mv");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    let idea_digest = |rows: &Rows, ver: &str, name: &str| -> String {
+        library_families(rows)
+            .iter()
+            .filter(|(_, q)| q["name"].as_str().unwrap().ends_with(ver))
+            .flat_map(|(_, q)| q["ideas"].as_str().unwrap().lines().map(String::from).collect::<Vec<_>>())
+            .find_map(|l| l.split_once(' ').filter(|(n, _)| *n == name).map(|(_, d)| d.to_string()))
+            .unwrap_or_default()
+    };
+    let rows = journal(&app);
+    let moved = [("library/api", "library/services/api"), ("library/shaping", "library/dna/shaping")];
+    let old: Vec<String> = moved.iter().map(|(e, _)| idea_digest(&rows, "@1.0.0-a", e)).collect();
+    assert!(old.iter().all(|d| !d.is_empty()) && moved.iter().all(|(_, n)| idea_digest(&rows, "@1.0.0-a", n).is_empty()), "seeded under the earlier names: {old:?}");
+
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host, "the earlier-named library ratified", |rows| old.iter().all(|d| has_row(rows, "knowledge.ratified", d)));
+
+    // the current toolchain's names: the two chapters supersede what the record holds
+    let (ok, up) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-b")]);
+    assert!(ok, "{up}");
+    let rows = journal(&app);
+    for ((_, now), prior) in moved.iter().zip(&old) {
+        let nd = idea_digest(&rows, "@1.0.0-b", now);
+        assert!(!nd.is_empty(), "{now} is proposed");
+        assert_eq!(supersedes_of(&app, &nd), *prior, "{now}: it names the digest held under the earlier name");
+    }
+    assert_eq!(count_of(&rows, "knowledge.retired"), 0, "nothing retired before the Board decides");
+
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host, "the moved chapters ratified and their earlier digests retired", |rows| old.iter().all(|d| has_row(rows, "knowledge.retired", d)));
+    unmigrate(&app, &owner);
+    let _ = std::fs::remove_dir_all(&d);
+}
