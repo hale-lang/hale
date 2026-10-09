@@ -68,7 +68,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orggrow"], &d);
+    let (ok, out) = hale(&["dna", "new", "orggrow", "--no-library"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orggrow");
     // scripted models: the editor answers with a prepared org main; the Leader abstains

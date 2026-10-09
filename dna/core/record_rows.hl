@@ -17,6 +17,61 @@ fn row_exists(j: Journal, kind: String, entity: String) -> Bool {
     return false;
 }
 
+// The graph the record states, as the projection builds it (memory_tail's
+// `apply_row`): the live `graph.node` and `graph.edge` rows, and the graph
+// rows of every ratified proposal's receipt (a ratified hole), each taken
+// out by a later `graph.retired`. Newline-delimited ids, led and ended by a
+// newline, so `record_graph_has` is one `contains`.
+type RecordGraph {
+    nodes: String = "\n";
+    edges: String = "\n";
+}
+
+fn record_graph_put(g: RecordGraph, kind: String, id: String) -> RecordGraph {
+    let mut out = g;
+    if kind == "graph.node" && !std::str::contains(out.nodes, "\n" + id + "\n") { out.nodes = out.nodes + id + "\n"; }
+    if kind == "graph.edge" && !std::str::contains(out.edges, "\n" + id + "\n") { out.edges = out.edges + id + "\n"; }
+    return out;
+}
+
+@unbounded
+fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
+    let mut g = RecordGraph { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "graph.node" || e.kind == "graph.edge" { g = record_graph_put(g, e.kind, e.entity); }
+        if e.kind == "graph.retired" {
+            g.nodes = std::str::replace(g.nodes, "\n" + e.entity + "\n", "\n");
+            g.edges = std::str::replace(g.edges, "\n" + e.entity + "\n", "\n");
+        }
+        if e.kind == "knowledge.ratified" {
+            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            let doc = receipts.read(raw);
+            if len(doc) > 0 && native_json_string(doc, "kind") == "graph" {
+                let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+                while !it.done {
+                    g = record_graph_put(g, std::json::find_string_field(it.element, "kind"), std::json::find_string_field(it.element, "entity"));
+                    it = std::json::array_next(it);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return g;
+}
+
+fn record_graph_has(ids: String, id: String) -> Bool { return std::str::contains(ids, "\n" + id + "\n"); }
+
+// Whether the record can resolve a binding target: a locus path always,
+// a node id (`language:hale`) when the graph the record states holds it
+// (`record_graph`: a `graph.node` row or a ratified hole's, no retirement
+// since).
+fn target_known(j: Journal, receipts: Receipts, target: String) -> Bool {
+    if !is_node_target(target) { return true; }
+    return record_graph_has(record_graph(j, receipts).nodes, target);
+}
+
 // The first `kind` row for `entity`; an empty Event when there is none.
 @unbounded
 fn first_row(j: Journal, kind: String, entity: String) -> Event {

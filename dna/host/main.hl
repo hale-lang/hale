@@ -255,6 +255,9 @@ fn main() {
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);
+    } else if verb == "library-seed" {
+        // `hale dna init`: the toolchain's library, each idea bound to its node, as proposals
+        ans = library_seed_verb(root, word(a, 0), toolchain, memory);
     } else if verb == "body" {
         // GH #617: the body lease from the CLI; the body on a server
         let sub = word(a, 0);

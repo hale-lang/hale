@@ -25,7 +25,7 @@ fn the_record_is_a_branch_every_clone_can_fetch() {
     let d = std::env::temp_dir().join(format!("hale_dna_record_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrec"], &d);
+    let (ok, out) = hale(&["dna", "new", "orgrec", "--no-library"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrec");
     // `new` made a repository; the record is on its ref, not in a file

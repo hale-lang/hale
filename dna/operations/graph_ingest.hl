@@ -1056,8 +1056,8 @@ locus GraphIngest {
         if len(self.error) > 0 { return IngestAnswer { error: self.error }; }
         let mut counts = "";
         let mut i = 0;
-        while len(dna::nth_word(GRAPH_ROW_NODE_KINDS, i)) > 0 {
-            let k = dna::nth_word(GRAPH_ROW_NODE_KINDS, i);
+        while len(dna::nth_word(GRAPH_INGEST_NODE_KINDS, i)) > 0 {
+            let k = dna::nth_word(GRAPH_INGEST_NODE_KINDS, i);
             counts = counts + (if len(counts) > 0 { ", " } else { "" }) + to_string(self.count(k)) + " " + k;
             i = i + 1;
         }

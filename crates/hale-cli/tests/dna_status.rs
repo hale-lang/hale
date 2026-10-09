@@ -25,7 +25,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgstat"], &d);
+    let (ok, out) = hale(&["dna", "new", "orgstat", "--no-library"], &d);
     assert!(ok, "{out}");
     // GH #946: the record is seated at birth — its maker's uid mapped to
     // them in the local config, so the head's socket knows the peer

@@ -35,7 +35,7 @@ type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
 
 type KnowledgeBinding {
     idea: String = "";
-    target: String = ""; // locus path the idea is bound to
+    target: String = ""; // a locus path, or a graph node id (`language:hale`), the idea is bound to
     author: String = ""; // who bound it
     class: String = ""; // derived: "goal" | "concern" | "initiative"
 }
@@ -60,8 +60,15 @@ fn is_ancestor(a: String, b: String) -> Bool {
     return len(b) > len(a) && std::str::starts_with(b, a + "/");
 }
 
+// A binding target holding `:` is a graph node id (`language:hale`,
+// `system:dna`, `position:leader`), not a locus path.
+fn is_node_target(target: String) -> Bool { return std::str::contains(target, ":"); }
+
 fn classify_binding(author: String, target: String) -> String {
     if author == target { return "initiative"; }
+    // knowledge about a node flows down to whatever the node describes:
+    // authored above it, never beside it
+    if is_node_target(target) && !is_node_target(author) { return "goal"; }
     if is_ancestor(author, target) { return "goal"; }
     if is_ancestor(target, author) { return "concern"; }
     return "lateral"; // siblings do not privately coordinate (H9)

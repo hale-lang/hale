@@ -81,7 +81,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrev"], &d);
+    let (ok, out) = hale(&["dna", "new", "orgrev", "--no-library"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrev");
     git(&["init", "-q", "-b", "main"], &app);
