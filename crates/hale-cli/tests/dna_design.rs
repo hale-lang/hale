@@ -262,7 +262,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
     assert!(ok, "{out}");
-    assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
+    assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed") && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
     assert!(app.join("dna/org/charter.hl").is_file(), "the charter is written beside the purpose");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -279,7 +279,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(list.contains("operating — 7 seeded practice(s), each its own Review"), "{list}");
     assert_eq!(family_ids(&list, "operating").len(), 7, "{list}");
     let rows = journal(&app);
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 16, "sixteen proposals: the purpose (GH #995), eight design, seven operating");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 23, "twenty-three proposals: the purpose (GH #995), eight design, seven operating, seven using");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 0, "nothing ratified by the toolchain");
     let digest_of = |id: &str| -> String {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))
@@ -667,7 +667,7 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 0, "no node, no edge");
     assert!(library_proposals(&bare).is_empty(), "no library idea");
     assert!(library_families(&bare).is_empty(), "no library Review");
-    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 8 + 7, "the purpose and the fifteen practices, as before");
+    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 8 + 7 + 7, "the purpose and the twenty-two practices (the using family is a practice family, not the library)");
     let (_, list) = hale(&["dna", "review"], &d.join("bare"));
     assert!(!list.contains("library —"), "{list}");
     let _ = std::fs::remove_dir_all(&d);
@@ -777,6 +777,146 @@ fn rejecting_the_library_declines_every_idea() {
     let rows = journal(&app);
     assert!(rows.iter().all(|r| r.0 != "knowledge.ratified" || !proposed.iter().any(|(d, _)| *d == r.1)), "none ratified");
     assert_eq!(count_of(&rows, "library.family.ratified"), 0);
+    unmigrate(&app, &owner);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// seed/library — the `using` practices are a third seeded family: seven,
+/// one Review each, listed under their own heading, decided in turn like the
+/// design and the operating practices; `--no-library` leaves them in (they
+/// are practices, not the library).
+#[test]
+fn the_using_practices_are_seeded_listed_and_decided_like_the_design() {
+    let _t = trace::test("dna_design::using");
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
+    let d = std::env::temp_dir().join(format!("hale_dna_using_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    // --no-library keeps the family
+    let (ok, bare) = hale(&["dna", "new", "bare", "--no-library"], &d);
+    assert!(ok && bare.contains("seeded  using (7 practice(s) proposed") && bare.contains("skipped library"), "{bare}");
+    let (_, list) = hale(&["dna", "review"], &d.join("bare"));
+    assert!(family_ids(&list, "using").len() == 7 && family_ids(&list, "library").is_empty(), "{list}");
+
+    let (ok, out) = hale(&["dna", "new", "used"], &d);
+    assert!(ok && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
+    let app: PathBuf = d.join("used");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    let (ok, list) = hale(&["dna", "review"], &app);
+    assert!(ok && family_ids(&list, "using").len() == 7 && list.contains("using — 7 seeded practice(s)") && list.contains("hale dna review using approve|reject"), "seven using Reviews, under their own heading:\n{list}");
+    let names = ["propose-review-ratify", "change-classes", "ask-the-leader", "cut-structure", "read-the-record", "evidence-first", "bind-knowledge"];
+    let rows = journal(&app);
+    let review_of = |name: &str| -> String {
+        rows.iter()
+            .filter(|r| r.0 == "review.requested" && serde_json::from_str::<serde_json::Value>(&r.2).map(|b| b["name"] == name).unwrap_or(false))
+            .map(|r| r.1.strip_prefix("review:").unwrap().to_string())
+            .last()
+            .unwrap_or_else(|| panic!("no Review of {name}"))
+    };
+    for n in names {
+        let id = review_of(&format!("using/{n}"));
+        let q: serde_json::Value = rows.iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str(&r.2).unwrap()).unwrap();
+        assert!(q["group"] == "using" && q["target"] == "org" && q["kind"] == "practice" && q["required_authority"] == "board", "{q}");
+        let doc = receipt(&app, q["knowledge_digest"].as_str().unwrap());
+        assert!(doc["provenance"] == "design" && doc["text"].as_str().unwrap().len() > 100, "{doc}");
+    }
+
+    // the Board takes one and declines the rest
+    let read = review_of("using/read-the-record");
+    let digest = journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{read}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap();
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", &read, "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, rest) = hale(&["dna", "review", "using", "reject", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: reject by riley").count() == 6, "the six still pending, each its own verdict:\n{rest}");
+    finish(&app, &mut host, "one using practice ratified and six declined", |rows| has_row(rows, "knowledge.ratified", &digest) && count_of(rows, "knowledge.declined") >= 6);
+    let (included, ctx) = package(&app);
+    assert_eq!(included, vec![digest], "the ratified using practice is the package, the rest being undecided or declined: {ctx}");
+    unmigrate(&app, &owner);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// seed/library — an upgrade proposes the new toolchain version's library as
+/// new family Reviews, each idea superseding the active digest under its
+/// name once the Board approves; until then an application keeps the
+/// bindings of the version it was seeded at. A family whose earlier version
+/// still awaits the Board waits. (`HALE_DNA_LIBRARY_VERSION` and
+/// `HALE_DNA_LIBRARY_SUFFIX` make "a later toolchain" out of the one
+/// binary the test has.)
+#[test]
+fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approval() {
+    let _t = trace::test("dna_design::library_upgrade");
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
+    let d = std::env::temp_dir().join(format!("hale_dna_libupgrade_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let (ok, out) = hale_env(&["dna", "new", "upg"], &d, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-a")]);
+    assert!(ok && out.contains("seeded  library ("), "{out}");
+    let app: PathBuf = d.join("upg");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    let rows = journal(&app);
+    let a_design = library_families(&rows).into_iter().find(|(_, q)| q["name"] == "library/design@1.0.0-a").expect("the design family at version a");
+    let a_ideas: Vec<(String, String)> = a_design.1["ideas"].as_str().unwrap().lines().map(|l| l.split_once(' ').map(|(n, d)| (n.to_string(), d.to_string())).unwrap()).collect();
+    assert!(a_ideas.len() > 20, "{}", a_ideas.len());
+    assert!(library_families(&rows).iter().all(|(_, q)| q["name"].as_str().unwrap().ends_with("@1.0.0-a")), "seeded at the version it names");
+
+    // the Board takes version a of the design
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", &a_design.0, "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host, "version a of the design family ratified", |rows| {
+        count_of(rows, "library.family.ratified") == 1 && a_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.ratified", d))
+    });
+
+    // a later toolchain: the design family is proposed anew, each idea
+    // superseding the active one under its name; the language family's
+    // version a still awaits the Board, so it waits
+    let later = [("HALE_DNA_LIBRARY_VERSION", "1.0.0-b"), ("HALE_DNA_LIBRARY_SUFFIX", "\n\n(a later toolchain)")];
+    let (ok, up) = hale_env(&["dna", "upgrade"], &app, &later);
+    assert!(ok, "{up}");
+    assert!(up.contains(&format!("library  1 famil(ies) proposed at 1.0.0-b ({} idea(s), {} superseding an earlier version)", a_ideas.len(), a_ideas.len())), "{up}");
+    assert!(up.contains("library  1 famil(ies) changed but wait: an earlier version is still before the Board"), "{up}");
+    let rows = journal(&app);
+    let b_design = library_families(&rows).into_iter().find(|(_, q)| q["name"] == "library/design@1.0.0-b").expect("the design family at version b");
+    assert!(!library_families(&rows).iter().any(|(_, q)| q["name"] == "library/language@1.0.0-b"), "the waiting family is not proposed");
+    let b_ideas: Vec<(String, String)> = b_design.1["ideas"].as_str().unwrap().lines().map(|l| l.split_once(' ').map(|(n, d)| (n.to_string(), d.to_string())).unwrap()).collect();
+    assert_eq!(b_ideas.len(), a_ideas.len());
+    for ((bn, bd), (an, ad)) in b_ideas.iter().zip(&a_ideas) {
+        assert_eq!(bn, an, "the same names");
+        assert_ne!(bd, ad, "a new text, a new digest");
+        assert_eq!(supersedes_of(&app, bd), *ad, "{bn}: it names the active version it replaces");
+    }
+    // until the Board approves, the old version is the application's
+    assert_eq!(count_of(&rows, "knowledge.retired"), 0, "nothing retired yet: the application keeps its bindings");
+    // and upgrading again proposes nothing more
+    let (ok, again) = hale_env(&["dna", "upgrade"], &app, &later);
+    assert!(ok && !again.contains("famil(ies) proposed"), "{again}");
+
+    // the Board takes version b: every old idea is retired, every new one served
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", &b_design.0, "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host, "version b ratified and version a retired", |rows| {
+        count_of(rows, "library.family.ratified") == 2 && b_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.ratified", d)) && a_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.retired", d))
+    });
+    let (sys, ctx) = package_for(&app, "system:dna");
+    assert!(!sys.is_empty() && sys.iter().all(|d| b_ideas.iter().any(|(_, bd)| bd == d)), "the package is version b's, none of version a's: {ctx}");
     unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

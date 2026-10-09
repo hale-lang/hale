@@ -808,10 +808,11 @@ fn print_embedded_provenance(dir: &Path) {
 fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir] [--no-library]");
     eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
-    eprintln!("                                    nodes and the toolchain's library proposed as the `library` family (--no-library leaves them out)");
+    eprintln!("                                    nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the library, not the practices)");
     eprintln!("       hale dna new <name> [--no-library]");
     eprintln!("                                    a greenfield application with its DNA");
-    eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library");
+    eprintln!("                                    (each changed practice, and the library as new families, supersede the active one once the Board approves)");
     eprintln!("       hale dna memory migrate [dir]");
     eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
     eprintln!("                                    and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)");
@@ -921,7 +922,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
     eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
     eprintln!("       hale dna review <family> approve|reject");
-    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, library");
+    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, using, library (a library family is one Review for all its ideas)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -3121,7 +3122,7 @@ fn charter() -> String {{
     )
 }
 
-/// One seeded practice (a `design/*` or `operating/*` family): a stable
+/// One seeded practice (a `design/*`, `operating/*` or `using/*` family): a stable
 /// name across versions of the toolchain, and the text the Board
 /// ratifies or declines.
 struct SeededPractice {
@@ -3160,6 +3161,22 @@ const OPERATING: &[SeededPractice] = &[
     SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record.", schedule: "" },
     SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "" },
     SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
+];
+
+/// The using practices: how a person or an agent works with the organism,
+/// which is what a brief tells whoever is about to act in it — the design
+/// says how an organization is shaped, the operating practices how the
+/// organism runs. Seeded beside them, one Board Review each, superseded on
+/// `upgrade` the same way, and kept by `--no-library` (they are practices,
+/// not the library); never ratified by the toolchain.
+const USING: &[SeededPractice] = &[
+    SeededPractice { name: "using/propose-review-ratify", text: "nothing is in force until the Board says so. A change to the organization is a proposal, then a Review, then a ratification, in that order: a proposal states what changes and why, and names who decides; one that states only what changes cannot be judged. An unratified proposal binds nobody, and a decision is a row in the record, never a conversation.", schedule: "" },
+    SeededPractice { name: "using/change-classes", text: "name the class and the magnitude of a change before the work starts. The class decides who signs: an organization, constitutional, process-policy or topology change is the Board's; a change that touches law, widens effects or crosses ownership is the Board's whatever its class; the rest, inside the grant, is the Leader's. Work begun without a class is classified afterwards by the reviewer, and may be sent back whole.", schedule: "" },
+    SeededPractice { name: "using/ask-the-leader", text: "the Leader plans the work and you carry it out: ask it what it plans for you before you start, and take its plan as the frame. What lies inside your grant and your position's identity you decide alone and record; what changes the plan, the grant or another position's work is the Leader's to decide, and you ask it again, with the row that shows why.", schedule: "" },
+    SeededPractice { name: "using/cut-structure", text: "a position or a part goes when the record says it is not carrying its weight: no work over a window, or concerns pooling at a child that it cannot solve alone. Propose the cut with the rows that show it, and say what takes over its responsibilities; a part is not removed on a feeling, and it is not kept out of habit.", schedule: "" },
+    SeededPractice { name: "using/read-the-record", text: "the record is the organization's memory; a brief is only a view of it. Before acting on what you were told, read the rows it rests on, and when you report, cite rows, not recollection. A statement that no row supports is an opinion, and the organism acts on rows.", schedule: "" },
+    SeededPractice { name: "using/evidence-first", text: "a candidate's evidence is what a reviewer reads, so it comes before the claim. Say what was run, against what, and what it printed; a check that was not run is named as not run, never described as passing. Evidence a reviewer cannot reproduce is a request to be trusted, and the Board does not ratify on trust.", schedule: "" },
+    SeededPractice { name: "using/bind-knowledge", text: "knowledge applies where it is bound. Bind a chapter or a practice to the node it is about (the language, the system, a part of the organization), not to everyone: a package for a target carries the ideas bound to it and no others, and an idea bound too widely crowds out what the work needs.", schedule: "" },
 ];
 
 // The toolchain's library: the book per chapter and the spec per section,
@@ -3278,7 +3295,7 @@ fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
 }
 
 /// Every seeded family, by the name the Board lists it under.
-const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING)];
+const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING), ("using", USING)];
 
 /// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`
 /// appends to every practice of every family, for fixtures only: it is how a test makes
