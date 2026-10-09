@@ -197,7 +197,7 @@ locus App {
     // The hat a leg reads at the head, over the journal the facts live in.
     fn hat_of(attempt: String) -> dna::Hat {
         let head_journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV } };
-        let reader = ops::HatReader { j: head_journal, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: self.with_memory };
+        let reader = ops::HatReader { j: head_journal, receipts: dna::GitReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: self.with_memory };
         let hat = reader.read(ops::usage_work_of(attempt));
         std::test::assert(hat.ok, "the hat reads: " + hat.code + " " + hat.why);
         std::test::assert_eq_str(hat.attempt_id, attempt, "for the attempt admitted last");

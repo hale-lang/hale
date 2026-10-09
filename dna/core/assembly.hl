@@ -3330,7 +3330,7 @@ locus Dna {
         // seed/pull: the target set, not the path alone — the codebase's
         // languages, `system:dna` when the class is the organization's, and
         // the editor's position
-        let targets = hat_knowledge_targets(self.journal, knowledge_target(change_class, self.boundary.child, seed), change_class == "organization", hat_position_of("edit"));
+        let targets = hat_knowledge_targets(self.journal, self.verification.receipts, knowledge_target(change_class, self.boundary.child, seed), change_class == "organization", hat_position_of("edit"));
         let pkg = self.knowledge_client.package_for(targets, objective);
         // GH #946 hardening: the ask stays the ask. The practices reach the
         // editor as its brief, and the attempt carries the hat — the

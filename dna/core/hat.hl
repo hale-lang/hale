@@ -125,12 +125,15 @@ fn hat_organization_change(j: Journal, task_id: String) -> Bool {
 }
 
 // The language nodes of the codebase the attached application is written
-// in, space-separated: every `written_in` edge of the application's node.
-// The record names the application by `application.attached` (its account
-// name) and, from `init`, by the node `application:<name>`; an edge retired
-// since is gone. "" when the record attaches none or states no edge.
+// in, space-separated: every `written_in` edge of the application's node
+// whose application node and language node are both live in the graph the
+// record states (`record_graph`) -- a retired node takes its edges out of
+// the perspective, whatever edge rows remain. The record names the
+// application by `application.attached` (its account name) and, from
+// `init`, by the node `application:<name>`; an edge retired since is gone.
+// "" when the record attaches none or states no edge.
 @unbounded
-fn hat_languages(j: Journal) -> String {
+fn hat_languages(j: Journal, receipts: Receipts) -> String {
     let mut name = "";
     let mut i = 0;
     while i < j.revision() && len(name) == 0 {
@@ -139,17 +142,20 @@ fn hat_languages(j: Journal) -> String {
         i = i + 1;
     }
     if len(name) == 0 { return ""; }
+    let g = record_graph(j, receipts);
+    if !record_graph_has(g.nodes, "application:" + name) { return ""; }
     let prefix = "written_in:application:" + name + "|";
     let mut out = " ";
-    i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        if std::str::starts_with(e.entity, prefix) {
-            let language = e.entity[len(prefix)..len(e.entity)];
-            if e.kind == "graph.edge" && !std::str::contains(out, " " + language + " ") { out = out + language + " "; }
-            if e.kind == "graph.retired" { out = std::str::replace(out, " " + language + " ", " "); }
+    let mut rest = g.edges;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let id = body[0..nl];
+        rest = body[nl..len(body)];
+        if std::str::starts_with(id, prefix) {
+            let language = id[len(prefix)..len(id)];
+            if record_graph_has(g.nodes, language) && !std::str::contains(out, " " + language + " ") { out = out + language + " "; }
         }
-        i = i + 1;
     }
     return std::str::trim(out);
 }
@@ -161,12 +167,12 @@ fn hat_languages(j: Journal) -> String {
 // performer's position node, so a mandate bound to the position arrives
 // with the Work. Space-separated; a path matches by prefix and a node id
 // exactly (memory's `BOUND_BY_TARGETS`).
-fn hat_knowledge_targets(j: Journal, target: String, organization: Bool, position: String) -> String {
+fn hat_knowledge_targets(j: Journal, receipts: Receipts, target: String, organization: Bool, position: String) -> String {
     let mut out = hat_knowledge_target(target);
     if organization {
         out = out + " system:dna";
     } else {
-        let languages = hat_languages(j);
+        let languages = hat_languages(j, receipts);
         if len(languages) > 0 { out = out + " " + languages; }
     }
     return out + " " + position;

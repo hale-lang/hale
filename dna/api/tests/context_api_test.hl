@@ -115,6 +115,21 @@ locus HatCases {
         self.seed_organization_change();
         let org = self.get(service, "/dna/context?id=" + dna::url_encode(ORG_WORK), 200, "ContextResponse");
         self.json.eq(self.json.data(org), "targets", "org system:dna position:agent");
+        // an edge contributes its language only while both its nodes are live:
+        // retiring the language node, or the application node, takes it out
+        // though the edge row stays; stating the node again brings it back
+        self.f.append("graph.retired", "language:hale", "{}");
+        let no_language = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(no_language), "targets", "org position:agent");
+        self.f.append("graph.node", "language:hale", "{\"kind\": \"language\", \"name\": \"hale\"}");
+        let language_back = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(language_back), "targets", "org language:hale position:agent");
+        self.f.append("graph.retired", "application:hatapp", "{}");
+        let no_application = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(no_application), "targets", "org position:agent");
+        self.f.append("graph.node", "application:hatapp", "{\"kind\": \"application\", \"name\": \"hatapp\"}");
+        let application_back = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        self.json.eq(self.json.data(application_back), "targets", "org language:hale position:agent");
         // a retired edge leaves the set, and the digest with it
         self.f.append("graph.retired", "written_in:application:hatapp|language:hale", "{}");
         let unwritten = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");

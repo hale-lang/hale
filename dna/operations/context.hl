@@ -28,6 +28,7 @@ interface KnowledgeSource {
 locus HatReader {
     params {
         j: dna::Journal;
+        receipts: dna::Receipts = dna::FileReceipts { };
         knowledge: KnowledgeSource = dna::MemoryKnowledge { };
         ledger_ready: Bool = false;
         p: dna::WorkflowProjection = dna::WorkflowProjection { };
@@ -112,7 +113,7 @@ locus HatReader {
         };
         let ready = self.knowledge.ready();
         let mut worn = h;
-        worn.targets = dna::hat_knowledge_targets(self.j, h.target, dna::hat_organization_change(self.j, h.task_id), position);
+        worn.targets = dna::hat_knowledge_targets(self.j, self.receipts, h.target, dna::hat_organization_change(self.j, h.task_id), position);
         let pkg = if ready { self.knowledge.package_for(worn.targets, h.objective) } else { dna::ContextPackage { } };
         let sealed = dna::hat_sealed(dna::hat_with_package(worn, pkg, ready));
         if ready && self.knowledge.keep_hat(sealed.digest, sealed.head, sealed.watermark, dna::hat_body(sealed)) { self.kept = self.kept + 1; }
