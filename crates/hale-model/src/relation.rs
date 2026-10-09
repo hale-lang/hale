@@ -228,6 +228,10 @@ pub enum SelectorForm {
     /// authored (`lib::*`) — a zero-member glob is still a
     /// selector row even though it contributes no members.
     SeedGlob { seed: SeedId, display: String },
+    /// `role R`, kept as authored: the handlers a holder of the role may
+    /// call, resolved into `GroupMember` rows as method-grained
+    /// `Function` members (`role reader`).
+    Role { role: String, display: String },
 }
 
 /// `group_selector(group, ordinal)` — the authored selector list.

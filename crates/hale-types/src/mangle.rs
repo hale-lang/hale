@@ -947,7 +947,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // written and expand in the law judgment via
                 // the bundle's rename table.
                 for m in &mut g.members {
-                    if m.glob || m.segments.len() < 2 {
+                    if m.glob || m.role || m.segments.len() < 2 {
                         continue;
                     }
                     let segs: Vec<String> = m
@@ -1574,6 +1574,10 @@ impl<'a> Mangler<'a> {
                 // the path-rename table (QualifiedRenameApplier).
                 self.rewrite_ident(&mut g.name.name);
                 for m in &mut g.members {
+                    // A role is seed-global, never mangled.
+                    if m.role {
+                        continue;
+                    }
                     if m.segments.len() == 1 && !m.glob {
                         self.rewrite_ident(&mut m.segments[0].name);
                     } else {

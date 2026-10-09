@@ -810,12 +810,48 @@ fn render_form(f: &ClaimForm) -> String {
 /// selection decides which laws exist over which entities.
 fn resolve_member(
     m: &GroupMember,
+    programs: &[&Program],
+    may_be_empty: bool,
     locus_names: &BTreeSet<String>,
     free_fn_names: &BTreeSet<String>,
     import_renames: &[(Vec<String>, String)],
     rg: &mut ResolvedGroup,
     diags: &mut Vec<Diag>,
 ) {
+    if m.role {
+        // `role R`: the handlers a holder of R may call, one decl each.
+        let role = &m.segments[0].name;
+        let sel = crate::surfaces::role_handlers(programs, import_renames, role);
+        if !sel.is_declared {
+            let near = sel.declared.iter().find(|n| close(n, role));
+            let hint = match near {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}` names no declared role. Unknown \
+                     names are errors, never empty sets.{}",
+                    m.display(),
+                    hint
+                ),
+            ));
+        } else if !sel.required && !may_be_empty {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}`: no surface row requires role \
+                     `{role}`, so it names no handler. If that is \
+                     intended, say `may_be_empty`",
+                    m.display()
+                ),
+            ));
+        } else {
+            rg.decl_count += sel.handlers.len();
+        }
+        return;
+    }
     if m.glob {
         // `alias::*` — enumeration over the imported seed's declared
         // decls, via the same rename table codegen resolves
@@ -1039,6 +1075,8 @@ fn claims_report_inner(
             let before = diags.len();
             resolve_member(
                 m,
+                programs,
+                g.may_be_empty,
                 &locus_names,
                 &free_fn_names,
                 import_renames,

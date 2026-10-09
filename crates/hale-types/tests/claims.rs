@@ -444,3 +444,134 @@ fn an_indirect_call_on_the_path_fails_closed() {
         ds
     );
 }
+
+// ===================== role groups: `group g = { role R }` =======
+
+/// Two surfaces over one handler locus. `reader` and `editor includes
+/// reader`; `add` publishes `Changed`, which `Sink` takes.
+const ROLE_PROGRAM: &str = r#"
+    role reader;
+    role editor includes reader;
+
+    type Change { what: String; }
+    type Query { n: Int; }
+    topic Changed { payload: Change; }
+
+    locus Todos {
+        bus { publish Changed; }
+        params { n: Int = 0; }
+        fn add(q: Query) -> Int {
+            self.n = self.n + q.n;
+            Changed <- Change { what: "added" };
+            return self.n;
+        }
+        fn list(q: Query) -> Int { return self.n; }
+        fn count(q: Query) -> Int { return self.n + q.n; }
+        fn stats(q: Query) -> Int { STATS return self.n; }
+    }
+
+    locus Sink {
+        bus { subscribe Changed as on_change; }
+        params { seen: Int = 0; }
+        fn on_change(c: Change) { self.seen = self.seen + 1; }
+    }
+
+    api Todo {
+        rpc Todos::add requires: [editor];
+        rpc Todos::list requires: [reader];
+        STATS_ROW
+    }
+    api Admin { rpc Todos::count requires: [reader]; }
+
+    GROUPS
+    group writes = { Sink };
+
+    main locus App {
+        params { t: Todos = Todos { }; s: Sink = Sink { }; }
+        claims { CLAIMS }
+    }
+    fn main() { App { }; }
+"#;
+
+fn role_program(stats: &str, stats_row: &str, groups: &str, claims: &str) -> String {
+    ROLE_PROGRAM
+        .replace("STATS_ROW", stats_row)
+        .replace("STATS", stats)
+        .replace("GROUPS", groups)
+        .replace("CLAIMS", claims)
+}
+
+/// A reader reaches no write: the group is `Todos::list` and
+/// `Todos::count` (the method grain, not the locus, whose `add`
+/// publishes), so the claim holds.
+#[test]
+fn a_role_group_names_the_methods_a_holder_may_call() {
+    let ds = diags(&role_program(
+        "",
+        "",
+        "group read_side = { role reader };",
+        "reader_writes_nothing: forbid reaches(read_side, writes);",
+    ));
+    assert!(ds.iter().all(|m| !m.contains("reader_writes_nothing")), "{ds:?}");
+}
+
+/// A reader-callable member that reaches the write violates the claim,
+/// and the witness is the minimal path from that member.
+#[test]
+fn a_reader_callable_publish_violates_with_the_minimal_path() {
+    let ds = diags(&role_program(
+        "Changed <- Change { what: \"peeked\" };",
+        "rpc Todos::stats requires: [reader];",
+        "group read_side = { role reader };",
+        "reader_writes_nothing: forbid reaches(read_side, writes);",
+    ));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `reader_writes_nothing` violated"))
+        .unwrap_or_else(|| panic!("the reader's publish must violate: {ds:?}"));
+    assert!(
+        hit.contains("Todos::stats") && hit.contains("Changed") && hit.contains("Sink::on_change"),
+        "the witness names the path: {hit}"
+    );
+    assert!(!hit.contains("Todos::add"), "the editor's publish is not the reader's: {hit}");
+}
+
+/// `includes` closes: an `editor` holds the reader's members too, so
+/// its group reaches the write through `add`, while `reader` does not.
+#[test]
+fn an_editor_group_includes_the_readers_members() {
+    let ds = diags(&role_program(
+        "",
+        "",
+        "group read_side = { role reader };\n group edit_side = { role editor };",
+        "reader_clean: forbid reaches(read_side, writes);\n editor_writes: forbid reaches(edit_side, writes);",
+    ));
+    assert!(ds.iter().all(|m| !m.contains("reader_clean")), "{ds:?}");
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `editor_writes` violated"))
+        .unwrap_or_else(|| panic!("the editor's add must violate: {ds:?}"));
+    assert!(hit.contains("Todos::add"), "{hit}");
+}
+
+#[test]
+fn an_undeclared_role_is_refused_with_a_did_you_mean() {
+    let ds = diags(&role_program("", "", "group read_side = { role readr };", ""));
+    assert!(
+        ds.iter().any(|m| m.contains("group member `role readr` names no declared role")
+            && m.contains("Did you mean `reader`?")),
+        "{ds:?}"
+    );
+}
+
+#[test]
+fn a_role_no_row_requires_is_refused_unless_may_be_empty() {
+    let src = role_program("", "", "role spare;\n group spare_side = { role spare };", "");
+    let ds = diags(&src);
+    assert!(
+        ds.iter().any(|m| m.contains("no surface row requires role `spare`")),
+        "{ds:?}"
+    );
+    let ok = diags(&src.replace("{ role spare };", "{ role spare } may_be_empty;"));
+    assert!(ok.iter().all(|m| !m.contains("spare")), "{ok:?}");
+}
