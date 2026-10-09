@@ -76,7 +76,9 @@ fn hole_row(kind: String, entity: String, body: String) -> String {
 // retired; every holds edge the same way, `<position>\t<holder>` per line;
 // the persons it knows — who wrote a row in their own name, and the owners
 // map's members — and those it retired.
-type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String = "\n"; retired: String = "\n"; }
+// `equipment` is `<position>\t<role>, <role>` per position the record or a
+// proposal states with API roles (the standard equipment of its node).
+type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String = "\n"; retired: String = "\n"; equipment: String = ""; }
 
 // A name the organism writes as, never a person.
 fn held_machine(who: String) -> Bool { return len(who) == 0 || dna::word_in(who, "dna host spine org ledger board hale") || std::str::starts_with(who, "hale dna"); }
@@ -117,7 +119,11 @@ fn held_state(root: String) -> HeldState {
             let row = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let entity = std::json::find_string_field(row, "entity");
-            if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") { out.positions = out.positions + entity + "\n"; }
+            if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") {
+                out.positions = out.positions + entity + "\n";
+                let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(std::json::find_field_raw(std::json::find_string_field(row, "body"), "equipment"), "roles")), false);
+                if len(fitted) > 0 { out.equipment = out.equipment + entity + "\t" + fitted + "\n"; }
+            }
             if std::str::starts_with(entity, "holds:") {
                 let bar = std::str::index_of(entity, "|");
                 let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
@@ -182,6 +188,18 @@ fn fill_check(root: String, position: String, holder: String) -> FillCheck {
     return FillCheck { };
 }
 
+// What a holder of `position` is fitted with, as a sentence ("" when the
+// position's node names no API roles): the roles its surface's `requires`
+// named when the record was read. Granting them (a token that carries them)
+// is not done here.
+fn fill_equipment(root: String, position: String) -> String {
+    let st = held_state(root);
+    let at = std::str::index_of(st.equipment, position + "\t");
+    if at < 0 || (at > 0 && st.equipment[(at - 1)..at] != "\n") { return ""; }
+    let line = st.equipment[(at + len(position) + 1)..len(st.equipment)];
+    return "equipment: " + line[0..std::str::index_of(line, "\n")] + " (API roles the holder is fitted with; a token carrying them is not granted by `fill`)\n";
+}
+
 // `hale dna fill <position> <holder>`: a holder proposed, through the
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the
@@ -215,7 +233,7 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
             let r = find_after(watched, before, " hold.proposed hold.refused ", request_id);
             if r.seq >= 0 {
                 if r.kind == "hold.refused" { return fail("fill: refused: " + std::json::find_string_field(r.body, "why")); }
-                return answer("proposed " + holder + " to hold " + position + ": the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `holds`)\n");
+                return answer("proposed " + holder + " to hold " + position + ": the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `holds`)\n" + fill_equipment(root, position));
             }
             std::time::sleep(150ms);
         }
@@ -225,5 +243,5 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
     if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
-    return answer("the hold of " + position + " by " + holder + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
+    return answer("the hold of " + position + " by " + holder + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n" + fill_equipment(root, position));
 }

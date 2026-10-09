@@ -1976,6 +1976,7 @@ impl ApplicationModel {
                 SelectorForm::SeedGlob { seed, .. } => {
                     seed.index() < seeds
                 }
+                SelectorForm::Role { .. } => true,
             };
             if x.group.index() >= groups_len || !sel_ok {
                 return Err(ModelError::DanglingId {

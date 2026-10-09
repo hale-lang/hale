@@ -1882,7 +1882,37 @@ pub fn derive_application_model_over(
         let gid = group_id[gname];
         for (ordinal, m) in g.members.iter().enumerate() {
             let pid = intern_span(&mut records, m.span);
-            if m.glob {
+            if m.role {
+                // `role R`: each handler a holder of R may call, at the
+                // method grain (`Locus::method`, or the free fn).
+                let role = m.segments[0].name.clone();
+                group_selectors.push(GroupSelector {
+                    group: gid,
+                    ordinal: ordinal as u32,
+                    selector: SelectorForm::Role {
+                        role: role.clone(),
+                        display: m.display(),
+                    },
+                    provenance: pid,
+                });
+                let sel = crate::surfaces::role_handlers(
+                    &programs,
+                    &bundle.import_renames,
+                    &role,
+                );
+                for (locus, method) in &sel.handlers {
+                    let key = if locus.is_empty() {
+                        method.clone()
+                    } else {
+                        format!("{locus}::{method}")
+                    };
+                    if let Some(id) = fn_id.get(&key) {
+                        let r = EntityRef::Function(*id);
+                        group_members.insert((gid, r));
+                        gm_prov.entry((gid, r)).or_insert(pid);
+                    }
+                }
+            } else if m.glob {
                 let alias = m
                     .segments
                     .first()
@@ -3736,6 +3766,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 SelectorForm::Named { display, .. } => display.clone(),
                 SelectorForm::SeedGlob { display, .. } =>
                     format!("{} (glob)", display),
+                SelectorForm::Role { display, .. } => display.clone(),
             }
         ));
     }

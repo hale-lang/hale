@@ -306,11 +306,15 @@ jobs:
       # can prune a loose object while the clone is still copying it
       # ("failed to copy file to ... objects/..: No such file or
       # directory", a flake on #671). No test repo needs gc.
-      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_COUNT: "3"
       GIT_CONFIG_KEY_0: gc.auto
       GIT_CONFIG_VALUE_0: "0"
       GIT_CONFIG_KEY_1: receive.autogc
       GIT_CONFIG_VALUE_1: "false"
+      # git also runs `maintenance --auto` after commits and fetches: its
+      # maintenance.lock in a test repository has failed a clone copying it
+      GIT_CONFIG_KEY_2: maintenance.auto
+      GIT_CONFIG_VALUE_2: "false"
     steps:
       - uses: actions/checkout@v4
 
@@ -642,11 +646,15 @@ jobs:
     env:
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
       HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
-      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_COUNT: "3"
       GIT_CONFIG_KEY_0: gc.auto
       GIT_CONFIG_VALUE_0: "0"
       GIT_CONFIG_KEY_1: receive.autogc
       GIT_CONFIG_VALUE_1: "false"
+      # git also runs `maintenance --auto` after commits and fetches: its
+      # maintenance.lock in a test repository has failed a clone copying it
+      GIT_CONFIG_KEY_2: maintenance.auto
+      GIT_CONFIG_VALUE_2: "false"
     steps:
       - uses: actions/checkout@v4
 

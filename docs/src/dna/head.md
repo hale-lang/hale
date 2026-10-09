@@ -203,7 +203,11 @@ hale dna review <id> --iris      # a change's semantic diff in iris's review vie
 
 The list groups the toolchain's seeded proposals under their headings
 (`purpose`, `design`, `operating`, `using`, the library's families and a repository's `holes`,
-`practices` and `holds`). A proposal renders as its question and what
+`practices` and `holds`), in the order they were proposed: under `holes`,
+each position is followed by its mandate (`ratify the mandate of
+<position>: …`), so `hale dna review holes approve` ratifies the
+position and then its mandate, and the mandate is bound to the position
+once ratified. A proposal renders as its question and what
 it needs:
 
 ```text

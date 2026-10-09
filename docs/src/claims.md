@@ -75,7 +75,8 @@ The complete surface, as it appears in
 group_decl        = "group" , IDENTIFIER , "=" , "{" ,
                     [ group_member , { "," , group_member } , [ "," ] ] ,
                     "}" , [ "may_be_empty" ] , ";" ;
-group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
+group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ]
+                  | "role" , IDENTIFIER ;
 
 domain_decl       = "domain" , IDENTIFIER , "=" , "{" ,
                     IDENTIFIER , { "," , IDENTIFIER } , [ "," ] ,
@@ -158,6 +159,7 @@ pattern-matched.
 | `Name` | a locus or free fn declared in the bundle. If both a locus and a fn share the name, both join. |
 | `alias::Name` | an imported declaration. Canonicalized to the merged declaration at the mangle stage — the same path qualified topic references take — never by name-suffix matching. |
 | `alias::*` | every locus and free fn the seed imported as `alias` declares, enumerated through the same rename table `alias::Name` resolves through. Trailing-only, single level: `a::*::b` and `a::b::*` (nested) are rejected. |
+| `role R` | the handler of every surface row a caller holding `R` may call — see [Role groups](#role-groups). |
 
 Types, topics, and constants matched by a glob are silently skipped
 — they are not path vertices, so they contribute nothing a
@@ -173,6 +175,10 @@ degradation:
 - a glob over an alias this bundle never imports;
 - a nested glob (parse error: the glob is trailing-only, like `**`
   in bus subjects);
+- a `role` member naming a role nothing declares — with a did-you-mean
+  over the declared roles;
+- a `role` member whose role no surface row requires, unless the group
+  says `may_be_empty`;
 - a group declared twice;
 - a group that resolves to **zero declarations**, unless it says
   `may_be_empty` — a claim quantifying over an empty group holds
@@ -188,6 +194,72 @@ group projects to **all** of its methods, lifecycle hooks
 (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`), and
 modes. Projection only ever *adds* sources and sinks — the
 conservative direction. A free fn projects to itself.
+
+### Role groups
+
+`requires` on a surface row is a check at the serve site; it says
+nothing about what the handler reaches. A `role` member makes the
+claim you actually mean statable: which code can a caller with this
+role set in motion?
+
+```hale
+role reader;
+role editor includes reader;
+
+type Change { what: String; }
+type Query { n: Int; }
+topic TodoChanged { payload: Change; }
+
+locus Todos {
+    params { n: Int = 0; }
+    bus { publish TodoChanged; }
+    fn add(q: Query) -> Int {
+        self.n = self.n + q.n;
+        TodoChanged <- Change { what: "added" };
+        return self.n;
+    }
+    fn list(q: Query) -> Int { return self.n; }
+}
+
+locus Feed {
+    params { seen: Int = 0; }
+    bus { subscribe TodoChanged as on_change; }
+    fn on_change(c: Change) { self.seen = self.seen + 1; }
+}
+
+api Todo {
+    rpc Todos::add requires: [editor];
+    rpc Todos::list requires: [reader];
+}
+
+group read_side = { role reader };
+group changes   = { Feed };
+
+main locus App {
+    params { todos: Todos = Todos { }; feed: Feed = Feed { }; }
+    claims {
+        a_reader_publishes_nothing: forbid reaches(read_side, changes);
+    }
+}
+fn main() { App { }; }
+```
+
+`role reader` resolves, through the same selection the surfaces use
+(`surfaces::select_members`, over every surface of the program), to
+the handler of every member a caller holding `reader` may call. A
+caller holds the role and every role it `includes`, so `role editor`
+names `Todos::add` **and** `Todos::list`, while `role reader` names
+`Todos::list` alone. A member that requires nothing is callable by
+anyone, so it is in every role's group. A handler that is a locus
+method resolves to that one method — not the whole locus, whose other
+methods other roles reach — and a handler shared by two surfaces is
+in a group once. Every verb then works over it unchanged. Make
+`list` publish `TodoChanged` and the claim above is `violated`, the
+witness naming `Todos::list → TodoChanged → Feed::on_change`.
+
+This is a proof over the program, about the roles the program states:
+who actually holds `reader` is still the role source's business at
+the serve site.
 
 ## `domain` and effect families — the data-plane vocabulary
 
@@ -641,6 +713,8 @@ result is `invalid`):
 | condition | shape |
 |---|---|
 | unknown group member | "names no declared locus or fn" + did-you-mean |
+| `role R` naming an undeclared role | "names no declared role" + did-you-mean over declared roles |
+| `role R` no surface row requires, without `may_be_empty` | "no surface row requires role `R`" |
 | unresolved qualified member / topic ref | "does not resolve — no imported declaration matches" |
 | glob over an unknown alias | "names no import alias" |
 | duplicate group / duplicate claim name | "declared more than once" |
@@ -680,18 +754,18 @@ A **constitution** is a named claimset declared once, outside any
 main, and adopted by each entrypoint:
 
 ```hale
-type Settle { n: Int; }
-topic Settled { payload: Settle; }
+type Settlement { n: Int; }
+topic Settled { payload: Settlement; }
 
 locus Billing {
     bus { publish Settled; }
-    fn settle(n: Int) { Settled <- Settle { n: n }; }
+    fn settle(n: Int) { Settled <- Settlement { n: n }; }
 }
 
 locus Ledger {
     params { total: Int = 0; }
     bus { subscribe Settled as on_settled; }
-    fn on_settled(s: Settle) { self.total = self.total + s.n; }
+    fn on_settled(s: Settlement) { self.total = self.total + s.n; }
 }
 
 locus Research {

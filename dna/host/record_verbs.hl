@@ -306,9 +306,9 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
 // once ratified (GH #1143) — a change to either is a new revision.
 fn design_terms(text: String, schedule: String) -> String { return if len(schedule) > 0 { text + "\n\nschedule: " + schedule } else { text }; }
 
-fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
+fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"kind\":\"" + (if len(target) > 0 { "mandate" } else { "practice" }) + "\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":" + q.quote(if len(target) > 0 { target } else { "org" }) + ",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
 // A seeded practice's family: the part of its name before the slash
@@ -321,17 +321,19 @@ fn seeded_family(name: String) -> String {
 // Propose one practice: its receipt (queued in `keeps`), a
 // `knowledge.proposed` row and a Review of its own, grouped by its family
 // for the listing: the two seed rows.
-fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
-    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule));
+fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
+    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule, target));
+    let kind = if len(target) > 0 { "mandate" } else { "practice" };
+    let bound = if len(target) > 0 { target } else { "org" };
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("digest", digest);
     b.string_field("review_id", review_id);
-    b.string_field("kind", "practice");
+    b.string_field("kind", kind);
     b.string_field("author", "org");
-    b.string_field("target", "org");
+    b.string_field("target", bound);
     b.string_field("class", "initiative");
     b.string_field("provenance", "design");
     b.string_field("name", name);
@@ -339,7 +341,7 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
     b.end_object();
     let proposed = hole_row("knowledge.proposed", digest, b.result());
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
-    let question = "ratify the " + seeded_family(name) + " practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
+    let question = (if len(target) > 0 { "ratify the mandate of `" + target + "` (`" + name + "`)" } else { "ratify the " + seeded_family(name) + " practice `" + name + "`" }) + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
     q.begin_object();
     q.string_field("question", question);
@@ -347,8 +349,8 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
     q.string_field("required_authority", "board");
     q.string_field("author", "org");
     q.string_field("knowledge_digest", digest);
-    q.string_field("kind", "practice");
-    q.string_field("target", "org");
+    q.string_field("kind", kind);
+    q.string_field("target", bound);
     q.string_field("class", "initiative");
     q.string_field("group", seeded_family(name));
     q.string_field("name", name);
@@ -617,11 +619,12 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         let name = std::json::find_string_field(line, "name");
         let text = std::json::find_string_field(line, "text");
         let schedule = std::json::find_string_field(line, "schedule");
+        let target = std::json::find_string_field(line, "target");
         let st = states.get(name) or DesignState { };
         if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused { continue; }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
-        rows = rows + design_rows(keeps, name, text, toolchain, old, schedule);
+        rows = rows + design_rows(keeps, name, text, toolchain, old, schedule, target);
         proposed = proposed + 1;
         if len(old) > 0 { superseding = superseding + 1; }
     }

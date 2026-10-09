@@ -391,7 +391,7 @@ row	App@literal1.listener	Listener	main	default
 dynamic	Counter	on main
 dynamic	Sensor	on main
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#30cdf2cf
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#d75133c9
 root	App	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -9129,6 +9129,17 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/editing_seed_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	App@literal1.app_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.broken_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.init_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	App@literal1.repo_editor	__lib_dna__core___editing__SourceEditor #e71a3722
+shared	dynamic	sites in tests #6429d5ee
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/editing_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -9138,11 +9149,7 @@ shared	App@literal1.breaker	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.multi	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.retrier	__lib_dna__core___editing__SourceEditor #e71a3722
--- dynamic	sites in tests
-dynamic	__lib_dna__core___editing__SourceEditor	on main
-dynamic	__lib_dna__core___editing__WorktreeTools	on main
-dynamic	__lib_dna__core___models__FakeModel	on main
-dynamic	__lib_dna__core___models__ModelRouter	on main
+shared	dynamic	sites in tests #6429d5ee
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/effect_outcomes_test.hl
@@ -9256,10 +9263,7 @@ dynamic	__StdIterLines	on unknown (`graph` passed as a value)
 == dna/tests/graph_holes_test.hl
 row	App@main1	App	main	default
 shared	dynamic	sites in core #b2c4d9f5
--- dynamic	sites in operations
-dynamic	__StdIterLines	on main
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___graph__GraphEdge	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in operations #f6dd8606
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -10837,6 +10841,31 @@ dynamic	__lib_dna__core___record__GitRecord	on main	in tests
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #733000a1
 shared	dynamic	sites in core #8d8c3bcd
 shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/structure_test.hl
+row	App@main1	App	main	default
+-- dynamic	sites in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
+dynamic	__lib_dna__core___memory_embed__Words	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in operations #f6dd8606
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___memory_store__Pq	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/supersession_test.hl
@@ -15794,6 +15823,11 @@ dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 
+== shared sites in operations #f6dd8606
+dynamic	__StdIterLines	on main
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___graph__GraphEdge	on main|unknown (no caller)|unknown (no instance)
+
 == shared sites in organization_source #5ef637a9
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdProcessChild	on main
@@ -15853,6 +15887,12 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
+
+== shared sites in tests #6429d5ee
+dynamic	__lib_dna__core___editing__SourceEditor	on main
+dynamic	__lib_dna__core___editing__WorktreeTools	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
 
 == shared sites in tests #aaf83225
 dynamic	__lib_dna__core___assembly__Dna	on main

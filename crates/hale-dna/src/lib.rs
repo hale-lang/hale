@@ -174,6 +174,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/graph.hl",
     "dna/operations/graph_holes.hl",
     "dna/operations/graph_ingest.hl",
+    "dna/operations/graph_mandates.hl",
     "dna/operations/graph_show.hl",
     "dna/operations/knowledge_admission.hl",
     "dna/operations/knowledge_binding_admission.hl",

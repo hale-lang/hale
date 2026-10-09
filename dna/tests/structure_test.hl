@@ -1,0 +1,346 @@
+// dna/tests/structure_test.hl — the structure family on the holes the record
+// already proposes (seed/structure): each proposed position carries a
+// mandate, and a position's node carries its standard equipment.
+//
+// `hale dna init` on a repository (the todo fixture, vendored under
+// dna/tests/onboarding/todo, with the description its toolchain exports
+// rewritten to name an `editor` member and a `reviewer` member) proposes the
+// holes, each position followed by its mandate; the API roles the contract's
+// description names become the equipment of the positions of the part that
+// serves it — `reviewer` on `api/reviewer`, every other role (`editor`) on
+// `api/dev` — and nothing else: a surface's `requires` informs equipment
+// and the reviewer's contract relationship, never the organization and
+// never authority. A repository with no description proposes the same holes
+// with empty equipment. The Board then ratifies the holes and the design
+// through the real review path; a mandate is a ratified idea bound to its
+// position (memory's bindings table), the hat of an `edit` Work on the part
+// carries the editor's mandate and not the reviewer's, `hale dna show org`
+// prints the mandate and the roles, and `hale dna fill` prints the roles.
+// The organism half needs memory (HALE_DNA_MEMORY_DSN_OWNER) and the
+// nerves (HALE_DNA_NATS_URL_OWNER).
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The value of `NAME=value` on its own line of `text`.
+@unbounded
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The record as the organization writes it: its execution rows are the
+// ledger's once the ledger is adopted (GH #1150), read here through the
+// owner's DSN, scoped to this record.
+fn journal_of(repo: String) -> dna::RoutedJournal {
+    return dna::RoutedJournal { record: dna::GitJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// What `spec/Todo.description.json` says after the fixture rewrites it: one
+// surface whose members require `editor` and `reviewer`.
+const DESCRIPTION: String = "{\"inventory\": 1, \"app\": \"App\", \"surfaces\": [{\"name\": \"Todo\", \"digest\": \"fnv1a64:0\", \"members\": [{\"name\": \"Todos::add\", \"requires\": [\"editor\"]}, {\"name\": \"Todos::approve\", \"requires\": [\"reviewer\"]}, {\"name\": \"Todos::list\", \"requires\": [\"editor\"]}]}]}\n";
+
+// The roles a proposal's position node names, space-separated: the node row
+// of the proposal named `name` (the position's own), its `equipment.roles`.
+@unbounded
+fn equipment_of(proposals: String, name: String) -> String {
+    let mut rest = proposals;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::json::find_string_field(line, "name") != name || std::json::find_string_field(line, "kind") != "graph" { continue; }
+        let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_string_field(line, "doc"), "rows"));
+        while !it.done {
+            let body = std::json::find_string_field(it.element, "body");
+            if std::json::find_string_field(it.element, "kind") == "graph.node" && std::json::find_string_field(body, "kind") == "position" {
+                return std::str::replace(dna::show_list(dna::show_strings(std::json::find_field_raw(std::json::find_field_raw(body, "equipment"), "roles")), false), ", ", " ");
+            }
+            it = std::json::array_next(it);
+        }
+    }
+    return "missing";
+}
+
+// How many proposals of `kind` the holes hold.
+@unbounded
+fn kind_count(proposals: String, kind: String) -> Int {
+    let mut n = 0;
+    let mut rest = proposals;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if std::json::find_string_field(rest[0..nl], "kind") == kind { n = n + 1; }
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return n;
+}
+
+// The catalog the organism runs on: every backend a `dna::FakeModel`, so
+// it boots with no API key (the Board's Reviews need no model).
+const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the holes fixture).\n"
+    + "import \"vendor/dna\" as dna;\n"
+    + "\n"
+    + "fn frontier() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"deep\", model: \"deep-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn fast() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"quick\", model: \"quick-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn desk() -> dna::LocalFakeModel {\n"
+    + "    return dna::LocalFakeModel { };\n"
+    + "}\n"
+    + "\n"
+    + "fn leader_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn editor_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn agent_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn org_budget() -> dna::BudgetPolicy {\n"
+    + "    return dna::BudgetPolicy { window: \"none\", allowance_micros: 5000000 };\n"
+    + "}\n"
+    + "\n"
+    + "fn probe_catalog() -> String {\n"
+    + "    return dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk());\n"
+    + "}\n";
+
+locus App {
+    params { repo: String = ""; head: String = ""; }
+    // The organization runs: its pid file is written and the process is alive.
+    fn organization_up(tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            let pid = dna::trim_nl(std::io::fs::read_file(self.repo + "/.hale/dna/org.pid") or "");
+            if len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0 { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    fn gone(pid: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if dna::run_tool("kill\n-0\n" + pid).code != 0 {
+                let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + self.repo);
+                return true;
+            }
+            std::time::sleep(200ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    // Whether the body's log says `needle`, within `tries` half-seconds.
+    @unbounded
+    fn logged(needle: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if std::str::contains(std::io::fs::read_file(self.repo + "/.hale/body.log") or "", needle) { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    @unbounded
+    fn count_rows(kind: String) -> Int {
+        let j = journal_of(self.repo);
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
+        return n;
+    }
+    // How many practice-ratify executions the record admitted (`admitted`),
+    // or settled done (`settled`).
+    @unbounded
+    fn ratification_rows(what: String) -> Int {
+        let j = journal_of(self.repo);
+        let mut tasks = "\n";
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" {
+                tasks = tasks + e.entity + "\n";
+                if what == "admitted" { n = n + 1; }
+            }
+            if what == "settled" && e.kind == "workflow.settled" && std::str::contains(tasks, "\n" + e.entity + "\n") && std::json::find_string_field(e.body, "disposition") == "done" { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // `hale dna show org` as the head, once memory has projected the whole
+    // record (bounded).
+    @unbounded
+    fn show_org(head: String, tries: Int, needle: String) -> String {
+        let mut n = 0;
+        while n < tries {
+            let r = dna::run_tool("sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && exec \"$3\" dna show org\nsh\n" + self.repo + "\n" + head + "\n" + toolchain());
+            if r.code == 0 && !std::str::contains(r.stderr, "memory has projected") && std::str::contains(r.stdout, needle) { return r.stdout; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return "";
+    }
+    // The chart once no mandate is pending or missing and the api's two
+    // positions show theirs ratified with their roles: the settled state
+    // the assertions below read, polled as a whole rather than by one line.
+    fn show_org_settled(head: String, tries: Int) -> String {
+        let mut n = 0;
+        while n < tries {
+            let out = self.show_org(head, 1, "{mandate: ratified");
+            if len(out) > 0 && !std::str::contains(out, "{mandate: pending") && !std::str::contains(out, "{mandate: none")
+                && std::str::contains(out, "dev {mandate: ratified; roles: editor}") && std::str::contains(out, "reviewer(todo.md) {mandate: ratified; roles: reviewer}") {
+                    return out;
+                }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return self.show_org(head, 1, "");
+    }
+    // `hale dna <args>` in the project; once memory is migrated, as the
+    // head, which is where an adopted ledger's body lease is read
+    fn dna(args: String) -> dna::RunResult {
+        if len(self.head) > 0 {
+            return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+        }
+        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
+    }
+    // The bindings of ratified mandates to `position`, in memory.
+    fn bound_mandates(owner_env: String, position: String) -> Int {
+        let store = dna::Pq { dsn_env: owner_env };
+        store.scope(dna::record_scope(self.repo));
+        if !store.reopen() { return -1; }
+        let r = store.conn.query_one("SELECT count(*) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'mandate' AND i.accepted AND b.target = '" + position + "'");
+        return if r.ok { std::str::parse_int(dna::trim_nl(r.data)) or - 1 } else { -2 };
+    }
+    // A repository made from the todo fixture; `described` writes the
+    // description the toolchain exports (names editor and reviewer roles),
+    // else the description is taken out.
+    fn make(name: String, scratch: String, described: Bool) -> String {
+        let repo = scratch + "/" + name;
+        let write = if described { "printf '%s' \"$3\" > spec/Todo.description.json" } else { "rm -f spec/Todo.description.json" };
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && " + write + " && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + repo + "\n" + source() + "\n" + DESCRIPTION);
+        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+        return repo;
+    }
+    run() {
+        let scratch = dna::scratch_root("structure");
+
+        // ---- the derivation, on the ingest alone: equipment and mandates
+        let described = self.make("described", scratch, true);
+        let g = ops::GraphIngest { root: described };
+        std::test::assert_eq_str(g.ingest().error, "", "the repository reads");
+        std::test::assert(std::str::contains(g.roles, "contract:spec/todo.md\teditor\n") && std::str::contains(g.roles, "contract:spec/todo.md\treviewer\n"), "the description's roles, kept on the ingest for the contract whose stem matches (todo.md, Todo.description.json): " + g.roles);
+        let h = ops::graph_holes(g, "");
+        std::test::assert_eq_str(h.error, "", "the holes derive");
+        std::test::assert_eq_str(equipment_of(h.proposals, "api/reviewer"), "reviewer", "the reviewer is fitted with the role named like it");
+        std::test::assert_eq_str(equipment_of(h.proposals, "api/dev"), "editor", "and every other role is the dev's");
+        std::test::assert_eq_str(equipment_of(h.proposals, "ui/reviewer"), "", "a consumer serves nothing, so is fitted with nothing");
+        std::test::assert_eq_str(equipment_of(h.proposals, "board"), "", "the board is fitted with nothing");
+        let positions = kind_count(h.proposals, "graph") - kind_count(h.proposals, "graph") + kind_count(h.proposals, "mandate");
+        std::test::assert(positions > 0, "mandates are proposed");
+        std::test::assert(std::str::contains(h.proposals, "ratify the mandate of `api/reviewer`: what it decides, what it may not, what it cites, how it writes, what it escalates"), "the mandate's question: " + h.proposals);
+        // the surface's `requires` informs the reviewer's contract relationship and no other position
+        std::test::assert(std::str::contains(h.proposals, "ratify the position `api/reviewer` under process api, signing its code and todo.md"), "the reviews edge over the contract stays what it was: " + h.proposals);
+
+        // a repository with no description: the same holes, empty equipment
+        let bare = self.make("bare", scratch, false);
+        let gb = ops::GraphIngest { root: bare };
+        std::test::assert_eq_str(gb.ingest().error, "", "the bare repository reads");
+        let hb = ops::graph_holes(gb, "");
+        std::test::assert_eq_int(hb.count, h.count, "the same number of proposals without a description");
+        std::test::assert_eq_int(kind_count(hb.proposals, "mandate"), kind_count(h.proposals, "mandate"), "and the same number of mandates");
+        std::test::assert_eq_str(equipment_of(hb.proposals, "api/reviewer"), "", "with empty equipment on the reviewer");
+        std::test::assert_eq_str(equipment_of(hb.proposals, "api/dev"), "", "and on the dev");
+        std::test::assert_eq_str(g.roles + "", g.roles, "roles read once");
+
+        // ---- init proposes them
+        self.repo = described;
+        let init = self.dna("init\n.");
+        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+        std::test::assert(std::str::contains(init.stdout, "; " + to_string(h.count) + " proposal(s)"), "and proposes its holes and their mandates: " + init.stdout);
+
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(owner) == 0 || len(nats) == 0 { eprintln("structure_test: the organism half not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); dna::scratch_done(scratch); return; }
+
+        // ---- the organism, on the repository record
+        std::io::fs::write_file(self.repo + "/dna/org/models.hl", CATALOG) or discard;
+        let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo);
+        std::test::assert_eq_int(committed.code, 0, "the scripted catalog committed: " + committed.stderr);
+        let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
+        let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
+        std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
+        self.head = head;
+        let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
+        let started = dna::run_tool(start);
+        let body = dna::trim_nl(started.stdout);
+        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+
+        // ---- the Board decides, in the listing's order: a position, then its mandate
+        let listed = self.dna("review");
+        std::test::assert(std::str::contains(listed.stdout, "hole(s) the repository leaves"), "the holes are listed: " + listed.stdout);
+        let first = std::str::index_of(listed.stdout, "ratify the position `api/dev`");
+        let second = std::str::index_of(listed.stdout, "ratify the mandate of `api/dev`");
+        std::test::assert(first >= 0 && second > first && std::str::index_of(listed.stdout, "ratify the position `api/reviewer`") > second, "a mandate is listed directly after its position: " + listed.stdout);
+        let holes = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard\n--no-wait");
+        std::test::assert_eq_int(holes.code, 0, "the Board ratifies the holes: " + holes.stdout + holes.stderr);
+        let design = self.dna("review\ndesign\napprove\n--as\nada\n--authority\nboard\n--no-wait");
+        std::test::assert_eq_int(design.code, 0, "and the design, which holds the editor's mandate: " + design.stdout + design.stderr);
+        // the approvals ran with --no-wait: read the chart only once every
+        // hole's mandate is ratified, whichever position's lands last
+        let after = self.show_org_settled(head, 480);
+        std::test::assert(std::str::contains(after, "dev {mandate: ratified; roles: editor}") && std::str::contains(after, "reviewer(todo.md) {mandate: ratified; roles: reviewer}") && !std::str::contains(after, "{mandate: pending"), "every mandate ratified with its position: " + after);
+
+        // ---- each mandate is a ratified idea bound to its position
+        std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/dev"), 1, "api/dev's mandate is bound to its node");
+        std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/reviewer"), 1, "and api/reviewer's");
+        // the design was approved with --no-wait too: the editor's mandate binds when its ratification lands
+        let mut waited = 0;
+        while waited < 240 && self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:editor") < 1 { std::time::sleep(500ms); waited = waited + 1; }
+        std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:editor"), 1, "the editor's, a design mandate, is bound to position:editor");
+
+        // ---- the hat of an `edit` Work on the part carries the editor's mandate
+        let j = journal_of(self.repo);
+        let targets = dna::hat_knowledge_targets(j, dna::GitReceipts { repo: self.repo }, "org/api", false, dna::hat_position_of("edit"));
+        std::test::assert_eq_str(targets, "org/api position:editor", "the hat's targets for an edit Work on api");
+        let k = dna::MemoryKnowledge { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER", budget: 64 };
+        let pkg = k.package_for(targets, "");
+        std::test::assert_eq_str(pkg.error, "", "the package is drawn");
+        std::test::assert(std::str::contains(pkg.text, "The editor: the performer of an `edit` Work"), "the editor's mandate is in the package: " + pkg.text);
+        std::test::assert(!std::str::contains(pkg.text, "The reviewer of api") && !std::str::contains(pkg.text, "The maintainer of api"), "and no other position's: " + pkg.text);
+
+        // ---- fill prints the equipment
+        let filled = self.dna("fill\napi/dev\nada");
+        std::test::assert(filled.code == 0 && std::str::contains(filled.stdout, "equipment: editor"), "fill prints the roles the holder is fitted with: " + filled.stdout + filled.stderr);
+        let filled2 = self.dna("fill\napi/reviewer\nada");
+        std::test::assert(std::str::contains(filled2.stdout, "equipment: reviewer"), "and the reviewer's: " + filled2.stdout + filled2.stderr);
+
+        let killed = dna::run_tool("kill\n" + body);
+        std::test::assert(self.gone(body, 600), "the organism stops");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }
