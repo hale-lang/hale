@@ -92,6 +92,10 @@ struct Witness {
 
 impl Witness {
     fn start() -> Witness {
+        Witness::start_as(&format!("uid:{}", uid()))
+    }
+    /// The witness with `operator` the Unix peer `admin_roles` grants `operator`.
+    fn start_as(operator: &str) -> Witness {
         let bin = built().clone();
         let dir = unique_dir("run");
         let sock = dir.join("a.sock");
@@ -102,7 +106,7 @@ impl Witness {
             .env("BIND2", format!("127.0.0.1:{p2}"))
             .env("HUB", format!("127.0.0.1:{}", free_port()))
             .env("SOCK", &sock)
-            .env("OPERATOR", format!("uid:{}", uid()))
+            .env("OPERATOR", operator)
             .env("TRIGGER", dir.join("stop"))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -259,4 +263,332 @@ fn describe_of_an_endpoint_that_does_not_answer_exits_four_and_says_which() {
     assert_eq!(other.code, 4, "{}", other.stderr);
     assert!(other.stderr.contains("not a Hale exposure"), "{}", other.stderr);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- hale api call ---------------------------------------------------------------
+
+/// `run` with `input` on the verb's stdin.
+fn run_stdin(args: &[&str], input: &str) -> Out {
+    let mut child = hale().args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("run hale");
+    child.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("write stdin");
+    let o = child.wait_with_output().expect("wait");
+    Out { code: o.status.code().expect("exited"), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
+}
+
+/// What the stand-in answers a call with.
+#[derive(Clone, Copy)]
+enum Answer {
+    Result,
+    /// a reply whose `id` is not the request's
+    OtherId,
+    /// the connection ends with no reply
+    Hangup,
+}
+
+/// A unix::Rpc stand-in: it answers `{"describe": true}` with a description and
+/// records every call line it is sent, so a test sees the wire line a verb wrote.
+struct Fake {
+    dir: PathBuf,
+    sock: String,
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Fake {
+    fn start(doc: &Value, answer: Answer) -> Fake {
+        use std::io::BufRead;
+        let dir = unique_dir("fake");
+        let path = dir.join("f.sock");
+        let l = std::os::unix::net::UnixListener::bind(&path).expect("bind the stand-in");
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (doc, seen) = (doc.to_string(), calls.clone());
+        std::thread::spawn(move || {
+            for conn in l.incoming() {
+                let Ok(mut c) = conn else { return };
+                let mut line = String::new();
+                if std::io::BufReader::new(c.try_clone().expect("clone")).read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let req: Value = serde_json::from_str(line.trim()).expect("a request line");
+                if req.get("describe").is_some() {
+                    let _ = writeln!(c, "{}", serde_json::json!({"ok": true, "value": serde_json::from_str::<Value>(&doc).unwrap()}));
+                    continue;
+                }
+                seen.lock().unwrap().push(line.trim().to_string());
+                let id = match answer {
+                    Answer::Hangup => continue,
+                    Answer::OtherId => serde_json::json!("not-yours"),
+                    Answer::Result => req["id"].clone(),
+                };
+                let reply = serde_json::json!({"request_id": 1, "id": id, "ok": true, "value": {"fine": true}, "caller": {"mode": "unix", "name": "uid:1"}});
+                let _ = writeln!(c, "{reply}");
+            }
+        });
+        Fake { sock: format!("unix:{}", path.display()), dir, calls }
+    }
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A description with one member that takes every kind of field.
+fn shop_doc() -> Value {
+    serde_json::json!({
+        "description": 1, "exposure": "Shop@fnv1a64:0000000000000001/shop", "name": "shop", "surface": "Shop", "digest": "fnv1a64:0000000000000001",
+        "listener": {"transport": "unix", "address": "/x"}, "caller": {"principal": {"mode": "unix", "name": "uid:1"}, "roles": []},
+        "members": [{"name": "Shop::order", "request": {"$ref": "#/schemas/Order"}, "response": {"$ref": "#/schemas/Order"}, "error": "ClosureViolation", "requires": []}],
+        "schemas": {
+            "Order": {"type": "object",
+                "properties": {
+                    "name": {"type": "string"}, "qty": {"type": "integer"}, "price": {"type": "number"}, "rush": {"type": "boolean"},
+                    "limit": {"type": "integer", "x-hale-type": "Money", "x-hale-unit": "q(cent)"},
+                    "items": {"type": "array", "items": {"type": "integer"}}, "ship": {"$ref": "#/schemas/Address"}, "note": {"type": "string"}},
+                "required": ["name", "qty", "price", "rush", "limit", "items", "ship"]},
+            "Address": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}
+    })
+}
+
+/// A call line with the verb's own request id made `#`.
+fn mask_id(line: &str) -> String {
+    let v: Value = serde_json::from_str(line).expect("a request line");
+    let id = v["id"].as_str().expect("the verb's id");
+    assert!(id.starts_with("hale-"), "{id}");
+    line.replace(&format!("\"id\":\"{id}\""), "\"id\":#")
+}
+
+#[test]
+fn typed_flags_and_json_write_the_same_wire_line() {
+    let fake = Fake::start(&shop_doc(), Answer::Result);
+    let flags = run(&[
+        "api", "call", &fake.sock, "Shop::order", "--name", "alice", "--qty", "3", "--price", "2.5", "--rush", "--limit", "125", "--items", "[1,2,3]", "--ship",
+        "{\"city\":\"Oslo\"}",
+    ]);
+    assert_eq!(flags.code, 0, "{}", flags.stderr);
+    assert_eq!(json_of(&flags.stdout), serde_json::json!({"fine": true}));
+    let json = run(&[
+        "api", "call", &fake.sock, "Shop::order", "--json",
+        "{\"name\":\"alice\",\"qty\":3,\"price\":2.5,\"rush\":true,\"limit\":125,\"items\":[1,2,3],\"ship\":{\"city\":\"Oslo\"}}",
+    ]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let stdin = run_stdin(
+        &["api", "call", &fake.sock, "Shop::order", "--json", "-"],
+        "{ \"name\": \"alice\", \"qty\": 3, \"price\": 2.5, \"rush\": true, \"limit\": 125, \"items\": [1, 2, 3], \"ship\": {\"city\": \"Oslo\"} }\n",
+    );
+    assert_eq!(stdin.code, 0, "{}", stdin.stderr);
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(mask_id(&calls[0]), mask_id(&calls[1]));
+    assert_eq!(mask_id(&calls[0]), mask_id(&calls[2]));
+    let v: Value = serde_json::from_str(&calls[0]).unwrap();
+    assert_eq!(v["call"], "Shop::order");
+    assert_eq!(v["digest"], "fnv1a64:0000000000000001", "the call names the digest of the description it read");
+    assert_eq!(v["payload"]["limit"], 125);
+    assert_eq!(v["payload"]["price"], 2.5);
+    assert_eq!(v["payload"]["rush"], true);
+    assert!(v["payload"].get("note").is_none(), "an optional field not given is not sent");
+
+    // --id and --digest are the caller's
+    let own = run(&["api", "call", &fake.sock, "Shop::order", "--json", "{}", "--id", "c-9", "--digest", "fnv1a64:feed"]);
+    assert_eq!(own.code, 0, "{}", own.stderr);
+    let v: Value = serde_json::from_str(fake.calls().last().unwrap()).unwrap();
+    assert_eq!((v["id"].as_str(), v["digest"].as_str()), (Some("c-9"), Some("fnv1a64:feed")));
+}
+
+#[test]
+fn a_flag_that_does_not_fit_its_field_is_refused_before_anything_is_sent() {
+    let fake = Fake::start(&shop_doc(), Answer::Result);
+    let base: [(&str, &str); 7] = [
+        ("--name", "a"),
+        ("--qty", "3"),
+        ("--price", "2.5"),
+        ("--rush", "true"),
+        ("--limit", "125"),
+        ("--items", "[1]"),
+        ("--ship", "{\"city\":\"o\"}"),
+    ];
+    // the flags of a good call with `flag` given `bad` instead
+    let with = |flag: &str, bad: &str| -> Out {
+        let mut a = vec!["api", "call", fake.sock.as_str(), "Shop::order"];
+        for (k, v) in &base {
+            a.push(k);
+            a.push(if *k == flag { bad } else { v });
+        }
+        run(&a)
+    };
+    assert_eq!(with("--qty", "3").code, 0, "the good call is good");
+    let sent = fake.calls().len();
+    // wrong-typed: names the field and its type
+    let o = with("--qty", "three");
+    assert_eq!(o.code, 5, "{}", o.stderr);
+    assert!(o.stderr.contains("--qty") && o.stderr.contains("Int") && o.stderr.contains("\"type\":\"integer\""), "{}", o.stderr);
+    for (flag, bad, ty) in [("--price", "x", "Float"), ("--rush", "maybe", "Bool"), ("--limit", "1.5", "Money"), ("--items", "{}", "[Int]"), ("--ship", "[1]", "Address"), ("--items", "[1", "[Int]")] {
+        let o = with(flag, bad);
+        assert_eq!(o.code, 5, "{flag} {bad}: {}", o.stderr);
+        assert!(o.stderr.contains(flag) && o.stderr.contains(ty), "{flag} {bad}: {}", o.stderr);
+    }
+    // an unknown flag lists the fields; a missing required field names itself and its schema
+    let o = run(&["api", "call", &fake.sock, "Shop::order", "--nope", "1"]);
+    assert_eq!(o.code, 5);
+    assert!(o.stderr.contains("--nope") && o.stderr.contains("--name <String>"), "{}", o.stderr);
+    let o = run(&["api", "call", &fake.sock, "Shop::order", "--name", "a"]);
+    assert_eq!(o.code, 5);
+    assert!(o.stderr.contains("needs `--qty`") && o.stderr.contains("\"type\":\"integer\""), "{}", o.stderr);
+    // flags and --json together; a member the caller does not see, with flags; the rest of usage
+    assert_eq!(run(&["api", "call", &fake.sock, "Shop::order", "--json", "{}", "--qty", "1"]).code, 5);
+    let o = run(&["api", "call", &fake.sock, "Shop::gone", "--qty", "1"]);
+    assert_eq!(o.code, 5);
+    assert!(o.stderr.contains("Shop::order"), "{}", o.stderr);
+    assert_eq!(run(&["api", "call", &fake.sock, "Shop::order", "--json", "{nope"]).code, 5);
+    assert_eq!(run(&["api", "call", "grpc://127.0.0.1:1", "Shop::order", "--json", "{}"]).code, 5);
+    assert_eq!(run(&["api", "call", &fake.sock]).code, 5);
+    assert_eq!(fake.calls().len(), sent, "nothing more was sent: {:?}", fake.calls());
+}
+
+#[test]
+fn a_reply_that_is_not_the_requests_or_never_comes_is_a_transport_failure() {
+    let other = Fake::start(&shop_doc(), Answer::OtherId);
+    let o = run(&["api", "call", &other.sock, "Shop::order", "--json", "{}"]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    assert!(o.stderr.contains("another request"), "{}", o.stderr);
+    let gone = Fake::start(&shop_doc(), Answer::Hangup);
+    let o = run(&["api", "call", &gone.sock, "Shop::order", "--json", "{}"]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    // a dead endpoint
+    let dir = unique_dir("dead");
+    let o = run(&["api", "call", &format!("unix:{}", dir.join("none.sock").display()), "A::b", "--json", "{}"]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn call_over_unix_prints_each_outcome_with_its_exit_code() {
+    let w = Witness::start();
+    let u = w.unix();
+
+    // result: the value on stdout, exit 0
+    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", "desk"]);
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"moved": 1500})), "{}", o.stderr);
+    assert!(o.stderr.is_empty(), "{}", o.stderr);
+    // the payload on stdin
+    let o = run_stdin(&["api", "call", &u, "Ledger::rebalance", "--json", "-"], "{\"book\": \"desk\"}");
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"moved": 1500})), "{}", o.stderr);
+
+    // handler error: the wire outcome on stderr, exit 1
+    let o = run(&["api", "call", &u, "Orders::cancel", "--order", "999"]);
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert!(o.stdout.is_empty());
+    let wire = json_of(&o.stderr);
+    assert_eq!((wire["ok"].as_bool(), wire["error"]["code"].as_str()), (Some(false), Some("unknown_order")));
+    // --raw: the whole outcome line on stdout whatever the kind, the exit code unchanged
+    let o = run(&["api", "call", &u, "Orders::cancel", "--order", "999", "--raw"]);
+    assert_eq!(o.code, 1);
+    assert_eq!(json_of(&o.stdout)["error"]["code"], "unknown_order");
+    assert!(o.stderr.is_empty(), "{}", o.stderr);
+    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", "desk", "--raw"]);
+    assert_eq!(o.code, 0);
+    let line = json_of(&o.stdout);
+    assert_eq!((line["ok"].as_bool(), line["value"]["moved"].as_i64()), (Some(true), Some(1500)));
+    assert!(line["id"].as_str().unwrap().starts_with("hale-") && line["caller"]["mode"] == "unix");
+    // --id is echoed
+    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", "desk", "--raw", "--id", "c-7"]);
+    assert_eq!(json_of(&o.stdout)["id"], "c-7");
+
+    // refusals: the kind and reason as the wire says them, exit 2
+    let refusal = |args: &[&str]| -> Value {
+        let mut a = vec!["api", "call", u.as_str()];
+        a.extend_from_slice(args);
+        let o = run(&a);
+        assert_eq!(o.code, 2, "{}", o.stderr);
+        json_of(&o.stderr)["refusal"].clone()
+    };
+    let malformed = |r: &Value, why: &str| r["kind"] == "malformed" && r["reason"].as_str().unwrap().contains(why);
+    let r = refusal(&["Nope::nothing", "--json", "{}"]);
+    assert!(malformed(&r, "unknown_member"), "{r}");
+    let r = refusal(&["Orders::cancel", "--json", "{\"order\":\"x\"}"]);
+    assert!(malformed(&r, "wrong_type"), "{r}");
+    let r = refusal(&["Orders::cancel", "--json", "{}"]);
+    assert!(malformed(&r, "missing_field"), "{r}");
+    let r = refusal(&["Orders::cancel", "--order", "41", "--digest", "fnv1a64:0000000000000000"]);
+    assert_eq!((r["kind"].as_str(), r["served"].as_str()), (Some("digest_mismatch"), Some(ADMIN_DIGEST)), "{r}");
+
+    // server error: the handler violated a closure, exit 3, and the wire says nothing more
+    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", ""]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert_eq!(json_of(&o.stderr)["refusal"], serde_json::json!({"kind": "server"}));
+}
+
+#[test]
+fn call_over_unix_by_a_caller_the_roles_do_not_admit_is_unauthorized() {
+    let w = Witness::start_as("uid:4242424");
+    // the description shows this caller nothing, and says so
+    let d = run(&["api", "describe", &w.unix(), "--json"]);
+    assert!(members_of(&json_of(&d.stdout)).is_empty());
+    let o = run(&["api", "call", &w.unix(), "Orders::cancel", "--json", "{\"order\":41}"]);
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    let r = json_of(&o.stderr);
+    assert_eq!((r["refusal"]["kind"].as_str(), r["refusal"]["requires"].clone()), (Some("unauthorized"), serde_json::json!(["operator"])));
+    // typed flags need the member in the description
+    assert_eq!(run(&["api", "call", &w.unix(), "Orders::cancel", "--order", "41"]).code, 5);
+}
+
+#[test]
+fn call_over_http_prints_each_outcome_with_its_exit_code() {
+    let w = Witness::start();
+    let h = w.http();
+    let call = |args: &[&str], token: Option<&str>| -> Out {
+        let mut a = vec!["api", "call", h.as_str()];
+        a.extend_from_slice(args);
+        if let Some(t) = token {
+            a.extend_from_slice(&["--bearer", t]);
+        }
+        run(&a)
+    };
+    // result: place, then cancel what was placed
+    let o = call(&["Orders::place", "--symbol", "ACME", "--qty", "3", "--limit", "125"], Some("t-alice"));
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"order": 41, "notional": 375})), "{}", o.stderr);
+    let o = call(&["Orders::cancel", "--order", "41"], Some("t-alice"));
+    assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"order": 41, "was_open": true})), "{}", o.stderr);
+    // handler error: 422, the error on stderr
+    let o = call(&["Orders::cancel", "--order", "999"], Some("t-alice"));
+    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert_eq!(json_of(&o.stderr)["code"], "unknown_order");
+    let o = call(&["Orders::cancel", "--order", "999", "--raw"], Some("t-alice"));
+    assert_eq!((o.code, json_of(&o.stdout)["code"].as_str(), o.stderr.is_empty()), (1, Some("unknown_order"), true));
+    // refusals
+    let refusal = |args: &[&str], token: Option<&str>| -> Value {
+        let o = call(args, token);
+        assert_eq!(o.code, 2, "{}", o.stderr);
+        json_of(&o.stderr)["refusal"].clone()
+    };
+    let malformed = |r: &Value, why: &str| r["kind"] == "malformed" && r["reason"].as_str().unwrap().contains(why);
+    let r = refusal(&["Nope::nothing", "--json", "{}"], Some("t-alice"));
+    assert!(malformed(&r, "unknown_member"), "{r}");
+    let r = refusal(&["Orders::cancel", "--json", "{\"order\":\"x\"}"], Some("t-alice"));
+    assert!(malformed(&r, "wrong_type"), "{r}");
+    let r = refusal(&["Orders::cancel", "--json", "{}"], Some("t-alice"));
+    assert!(malformed(&r, "missing_field"), "{r}");
+    // bob holds no role: cancel is not in his description, and the server refuses it all the same
+    let r = refusal(&["Orders::cancel", "--json", "{\"order\":41}"], Some("t-bob"));
+    assert_eq!((r["kind"].as_str(), r["requires"].clone()), (Some("unauthorized"), serde_json::json!(["trader"])));
+    // no bearer, and a token the source names nobody for
+    assert_eq!(refusal(&["Orders::cancel", "--json", "{\"order\":41}"], None)["kind"], "unauthenticated");
+    assert_eq!(refusal(&["Orders::cancel", "--json", "{\"order\":41}"], Some("t-nobody"))["kind"], "unauthenticated");
+    // typed flags with no bearer: the description is refused, which is the outcome
+    let o = call(&["Orders::cancel", "--order", "41"], None);
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    // a stale digest
+    let r = refusal(&["Orders::cancel", "--order", "41", "--digest", "fnv1a64:0000000000000000"], Some("t-alice"));
+    assert_eq!((r["kind"].as_str(), r["served"].as_str()), (Some("digest_mismatch"), Some(PUBLIC_DIGEST)));
+    // the bearer from the environment
+    let o = run_env(&["api", "call", &h, "Orders::place", "--symbol", "ACME", "--qty", "1", "--limit", "5"], &[("HALE_API_BEARER", "t-bob")]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    // server error: the position limit
+    let o = call(&["Orders::place", "--symbol", "ACME", "--qty", "20000", "--limit", "1"], Some("t-alice"));
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert_eq!(json_of(&o.stderr)["refusal"], serde_json::json!({"kind": "server"}));
 }

@@ -19,14 +19,17 @@
 //! 2 refusal                            5 usage
 //! ```
 
+use std::io::Read;
 use std::process::ExitCode;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-use crate::api_client::{bearer, http_request, raw_field, unix_exchange};
+use crate::api_client::{bearer, http_request, outcome_of_http, outcome_of_line, percent_encode, raw_field, unix_exchange, Kind};
 
 const EXIT_OK: u8 = 0;
+const EXIT_HANDLER: u8 = 1;
 const EXIT_REFUSED: u8 = 2;
+const EXIT_SERVER: u8 = 3;
 const EXIT_TRANSPORT: u8 = 4;
 const EXIT_USAGE: u8 = 5;
 
@@ -303,6 +306,253 @@ pub(crate) fn run_describe(rest: &[String]) -> ExitCode {
                 }
             }
             ExitCode::from(EXIT_OK)
+        }
+    }
+}
+
+// ---- call -------------------------------------------------------------------------
+
+/// The flags the verb owns; a payload field of the same name is given with `--json`.
+const OWN_FLAGS: [&str; 5] = ["json", "bearer", "id", "digest", "raw"];
+
+const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port";
+
+/// A schema in full, compact, for a message that names a field.
+fn schema_text(schema: &Value) -> String {
+    schema.to_string()
+}
+
+/// `text` as the value of a field with `schema`: Int, Float, Bool and String by
+/// their text, a quantity by its count, anything else (a record, a list) as
+/// JSON of the right shape.
+fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> Result<Value, String> {
+    let resolved = resolve(doc, schema);
+    let kind = resolved.get("type").and_then(Value::as_str).unwrap_or("");
+    let refuse = |why: &str| format!("`--{field}`: {why}; the field is {} {}", type_label(doc, schema), schema_text(resolved));
+    match (kind, text) {
+        ("boolean", None) => Ok(json!(true)),
+        (_, None) => Err(refuse("needs a value")),
+        ("integer", Some(t)) => t.trim().parse::<i64>().map(|n| json!(n)).map_err(|_| refuse(&format!("`{t}` is not an integer"))),
+        ("number", Some(t)) => match t.trim().parse::<f64>() {
+            Ok(f) if f.is_finite() => Ok(json!(f)),
+            _ => Err(refuse(&format!("`{t}` is not a number"))),
+        },
+        ("boolean", Some(t)) => match t.trim() {
+            "true" => Ok(json!(true)),
+            "false" => Ok(json!(false)),
+            _ => Err(refuse(&format!("`{t}` is not true or false"))),
+        },
+        ("string", Some(t)) => Ok(json!(t)),
+        (k, Some(t)) => {
+            let v: Value = serde_json::from_str(t).map_err(|e| refuse(&format!("`{t}` is not JSON ({e})")))?;
+            let shape_ok = match k {
+                "array" => v.is_array(),
+                "object" => v.is_object(),
+                _ => true,
+            };
+            if shape_ok {
+                Ok(v)
+            } else {
+                Err(refuse(&format!("`{t}` is not a JSON {k}")))
+            }
+        }
+    }
+}
+
+/// The payload a member's typed flags build, in the schema's field order; or
+/// why not, before anything is sent.
+fn build_payload(doc: &Value, member: &Value, flags: &[(String, Option<String>)]) -> Result<Value, String> {
+    let fields = payload_fields(doc, member);
+    let name = member.get("name").and_then(Value::as_str).unwrap_or("?");
+    let listed = || fields.iter().map(|(n, s, r)| format!("--{n} <{}>{}", type_label(doc, s), if *r { "" } else { " (optional)" })).collect::<Vec<_>>().join(" ");
+    let mut given: Vec<(&str, Option<&str>)> = Vec::new();
+    for (flag, text) in flags {
+        let key = flag.replace('-', "_");
+        let Some((n, _, _)) = fields.iter().find(|(n, _, _)| *n == key) else {
+            return Err(format!("`--{flag}` is no field of {name}'s payload; its fields: {}", if fields.is_empty() { "none".to_string() } else { listed() }));
+        };
+        if given.iter().any(|(g, _)| g == n) {
+            return Err(format!("`--{flag}` is given twice"));
+        }
+        given.push((n, text.as_deref()));
+    }
+    let mut out = Map::new();
+    for (n, schema, required) in &fields {
+        match given.iter().find(|(g, _)| g == n) {
+            Some((_, text)) => {
+                out.insert((*n).to_string(), typed_value(doc, n, schema, *text)?);
+            }
+            None if *required => {
+                return Err(format!(
+                    "the payload of {name} needs `--{n}`: {} {}; its fields: {}",
+                    type_label(doc, schema),
+                    schema_text(resolve(doc, schema)),
+                    listed()
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn is_object_schema(doc: &Value, member: &Value) -> bool {
+    member.get("request").map_or(false, |r| resolve(doc, r).get("type").and_then(Value::as_str) == Some("object"))
+}
+
+/// The wire request and its answer, as an outcome of § Outcomes or a transport failure.
+fn send(ep: &Endpoint, token: Option<&str>, member: &str, payload: &Value, id: &str, digest: Option<&str>) -> Result<crate::api_client::Reply, String> {
+    match ep {
+        Endpoint::Unix(path) => {
+            let mut req = Map::new();
+            req.insert("call".into(), json!(member));
+            req.insert("payload".into(), payload.clone());
+            req.insert("id".into(), json!(id));
+            if let Some(d) = digest {
+                req.insert("digest".into(), json!(d));
+            }
+            let line = unix_exchange(path, &Value::Object(req))?;
+            let v: Value = serde_json::from_str(&line).map_err(|_| format!("the reply is not JSON: {line}"))?;
+            if v.get("id") != Some(&json!(id)) {
+                return Err(format!("the reply answers another request (id {}, sent {id:?}): {line}", v.get("id").map_or("none".to_string(), Value::to_string)));
+            }
+            outcome_of_line(&line)
+        }
+        Endpoint::Http(hp) => {
+            let mut headers = bearer(token);
+            if let Some(d) = digest {
+                headers.push(("Hale-Surface-Digest", d.to_string()));
+            }
+            let path = format!("/call/{}", percent_encode(member));
+            outcome_of_http(http_request(hp, "POST", &path, &headers, Some(&payload.to_string()))?)
+        }
+    }
+}
+
+fn members_listed(doc: &Value) -> String {
+    let names: Vec<&str> = doc.get("members").and_then(Value::as_array).map(|a| a.iter().filter_map(|m| m.get("name").and_then(Value::as_str)).collect()).unwrap_or_default();
+    if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// `hale api call <endpoint> <member> [payload] [--bearer T] [--id ID] [--digest D] [--raw]`.
+pub(crate) fn run_call(rest: &[String]) -> ExitCode {
+    let mut json_arg: Option<String> = None;
+    let (mut token, mut id, mut digest) = (None, None, None);
+    let mut raw = false;
+    let mut pos = Vec::new();
+    let mut flags: Vec<(String, Option<String>)> = Vec::new();
+    for a in split_args(rest, &["raw"]) {
+        match a {
+            Arg::Pos(p) => pos.push(p),
+            Arg::Flag(k, v) if OWN_FLAGS.contains(&k.as_str()) => match (k.as_str(), v) {
+                ("raw", None) => raw = true,
+                ("json", Some(v)) => json_arg = Some(v),
+                ("bearer", Some(v)) => token = Some(v),
+                ("id", Some(v)) => id = Some(v),
+                ("digest", Some(v)) => digest = Some(v),
+                (k, _) => return usage_error("call", &format!("`--{k}` is incomplete\n{CALL_USAGE}")),
+            },
+            Arg::Flag(k, v) => flags.push((k, v)),
+        }
+    }
+    let [target, member] = pos.as_slice() else {
+        return usage_error("call", CALL_USAGE);
+    };
+    let ep = match Endpoint::parse(target) {
+        Ok(e) => e,
+        Err(e) => return usage_error("call", &e),
+    };
+    if json_arg.is_some() && !flags.is_empty() {
+        return usage_error("call", "give the payload as --json or as typed flags, not both");
+    }
+    let given_payload = match json_arg.as_deref() {
+        None => None,
+        Some(text) => {
+            let mut buf = String::new();
+            let text = if text == "-" {
+                if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                    return usage_error("call", &format!("could not read the payload from stdin: {e}"));
+                }
+                buf.as_str()
+            } else {
+                text
+            };
+            match serde_json::from_str::<Value>(text) {
+                Ok(v) => Some(v),
+                Err(e) => return usage_error("call", &format!("the --json payload is not JSON: {e}")),
+            }
+        }
+    };
+    let token = bearer_of(token);
+
+    // The description is read once, before the payload is built: it types the
+    // flags and names the digest the call is held to.
+    let doc = match fetch(&ep, token.as_deref()) {
+        Err(e) => {
+            eprintln!("hale api call: {e}");
+            return ExitCode::from(EXIT_TRANSPORT);
+        }
+        Ok(Fetch::Refused(wire)) if given_payload.is_none() => return refused("call", &wire),
+        // a payload given as JSON is sent as it is: the server decides, and says why
+        Ok(Fetch::Refused(_)) => None,
+        Ok(Fetch::Doc(raw)) => match serde_json::from_str::<Value>(&raw) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("hale api call: the description is not JSON: {e}");
+                return ExitCode::from(EXIT_TRANSPORT);
+            }
+        },
+    };
+    let entry = doc.as_ref().and_then(|d| d.get("members").and_then(Value::as_array).and_then(|a| a.iter().find(|m| m.get("name").and_then(Value::as_str) == Some(member.as_str()))));
+    let payload = match (given_payload, doc.as_ref(), entry) {
+        (Some(p), _, _) => p,
+        (None, Some(d), Some(m)) => {
+            if flags.is_empty() && !is_object_schema(d, m) {
+                return usage_error("call", &format!("the payload of {member} is not a record: give it with --json"));
+            }
+            match build_payload(d, m, &flags) {
+                Ok(p) => p,
+                Err(e) => return usage_error("call", &e),
+            }
+        }
+        (None, Some(d), None) => {
+            let listed = members_listed(d);
+            return usage_error("call", &format!("{member} is not a member this caller sees (members: {listed}); --json sends a payload as given, and the server decides"));
+        }
+        (None, None, _) => unreachable!("a refused description with no --json returned above"),
+    };
+    let digest = digest.or_else(|| doc.as_ref().and_then(|d| d.get("digest").and_then(Value::as_str).map(str::to_string)));
+    let id = id.unwrap_or_else(|| format!("hale-{}", std::process::id()));
+    let reply = match send(&ep, token.as_deref(), member, &payload, &id, digest.as_deref()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hale api call: transport failure: {e}");
+            return ExitCode::from(EXIT_TRANSPORT);
+        }
+    };
+    if raw {
+        println!("{}", reply.raw.trim());
+    }
+    match reply.kind {
+        Kind::Result => {
+            if !raw {
+                println!("{}", reply.body.trim());
+            }
+            ExitCode::from(EXIT_OK)
+        }
+        k => {
+            if !raw {
+                eprintln!("{}", reply.raw.trim());
+            }
+            ExitCode::from(match k {
+                Kind::HandlerError => EXIT_HANDLER,
+                Kind::Refusal => EXIT_REFUSED,
+                _ => EXIT_SERVER,
+            })
         }
     }
 }

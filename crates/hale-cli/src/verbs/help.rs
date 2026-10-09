@@ -60,6 +60,8 @@ pub(crate) fn usage() {
     eprintln!("        [--out <dir> | --check <dir>] [file | dir]");
     eprintln!("    hale api describe <endpoint>  a running program's description for the caller: unix:<path> or http://host:port");
     eprintln!("        [--json] [--bearer <t>]");
+    eprintln!("    hale api call <endpoint> <member> drive one member of a running program: --json <payload> or --<field> <value>");
+    eprintln!("        [--bearer <t>] [--id <id>] [--digest <d>] [--raw]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
