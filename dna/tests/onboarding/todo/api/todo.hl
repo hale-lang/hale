@@ -35,9 +35,9 @@ api Todo {
     rpc Todos::overdue requires: [reader];
 }
 
-/// A JSON string literal.
+/// A JSON string literal: every control character, `"` and `\` escaped.
 fn jq(s: String) -> String {
-    return "\"" + std::str::replace(std::str::replace(std::str::replace(s, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n") + "\"";
+    return "\"" + std::json::escape_string(s) + "\"";
 }
 
 /// `t` as a JSON object.

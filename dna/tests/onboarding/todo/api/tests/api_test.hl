@@ -107,9 +107,21 @@ main locus RpcDesk {
         d.call(22, "Todos::archive", "{}", "t-ada");
         std::test::assert_eq_str(d.await_outcome(22, 2000), "refusal:malformed", "a member the surface does not have");
 
+        // a title of awkward characters (quote, backslash, newline, tab, carriage return)
+        // goes in as it came and out as it went, and the list stays one valid JSON array
+        d.call(23, "Todos::add", "{\"title\":\"a \\\"q\\\" b\\\\c\\nd\\te\\rf\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(23, 2000), "result", "a title of control characters is added");
+        // on the wire the title is one escaped string
+        std::test::assert(std::str::contains(d.line(23), "\"title\":\"a \\\"q\\\" b\\\\c\\nd\\te\\rf\""), "the answer's title is escaped: " + d.line(23));
+        d.call(24, "Todos::list", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(24, 2000), "result", "the list holds it");
+        // the list's json is text inside the reply, so its escapes are escaped again; no control byte survives either way
+        std::test::assert(!std::str::contains(d.line(24), "\t") && !std::str::contains(d.line(24), "\r") && !std::str::contains(d.line(24), "\n"), "no raw control character in the list: " + d.line(24));
+        std::test::assert(std::str::contains(d.line(24), "\\\"title\\\":\\\"a \\\\\\\"q\\\\\\\" b\\\\\\\\c\\\\nd\\\\te\\\\rf\\\""), "escaped as JSON requires, twice over: " + d.line(24));
+
         // the stream: what happened, in the order it happened, and nothing for a refusal or an error
         std::time::sleep(50ms);
-        std::test::assert_eq_str(self.watcher.seen, "added:1 added:2 added:3 completed:2 removed:1 ", "TodoChanged, in order");
+        std::test::assert_eq_str(self.watcher.seen, "added:1 added:2 added:3 completed:2 removed:1 added:4 ", "TodoChanged, in order");
         ex.stop();
     }
 }
