@@ -306,6 +306,7 @@ locus SourceEditor {
     // segment it is. Two such entries make it ambiguous: "" with
     // `located_why` naming both. A name no entry answers is "" with
     // `located_why` left as it was. Never a suffix of a longer path.
+    @unbounded
     fn match_entry(listing: String, name: String) -> String {
         let mut first = "";
         let mut second = "";
