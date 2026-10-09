@@ -605,7 +605,7 @@ with `g: Gate`), a default that is not a literal, any assignment
 `place.dep = g` — keeps every conformer: the set is closed only when
 every write is seen, and a write that is not seen puts the whole
 conformer set back. An assignment's receiver is not typed, so it is
-read as a write to the `dep` of every locus that has one. Slots of standard-library loci are never narrowed. A
+read as a write to the `dep` of every locus that has one. A literal of an imported seed's locus (`lib::Holder { dep: lib::Real { } }`) counts like any other. A seed with no `main locus` closes no world, so none of its slots narrow: its loci are built by whoever imports it. Slots of standard-library loci are never narrowed. A
 parameter, a local or a function result of interface type is not a
 field and always fans to every conformer.
 

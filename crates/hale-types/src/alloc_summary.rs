@@ -1898,6 +1898,14 @@ pub fn summarize_identified(
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
+    // GH #540: a slot's stores are only all seen when the bundle closes
+    // a world. A library's loci are built by the importer, whose
+    // literals this walk never reads, so its slots keep every conformer.
+    let closed_world = {
+        let own: Vec<&Program> =
+            identified.iter().filter(|(_, ids)| !is_stdlib_copy(ids)).map(|(p, _)| *p).collect();
+        crate::entry::entry_row_in(&own).closes_a_world()
+    };
     // What the checked programs declare. A program that is stdlib source
     // itself (`hale check` over a stdlib file) declares what the analysis
     // copy beside it declares; the program's declaration is the row, and
@@ -1992,6 +2000,11 @@ pub fn summarize_identified(
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
     let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // `alias::name` -> mangled symbol, for cross-seed call resolution.
+    let rename_map: BTreeMap<String, String> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
+        .collect();
     // GH #540: what the program stores into each interface-typed slot.
     let mut slot_stores = SlotStores::default();
     let walked_stores = std::cell::RefCell::new(SlotStores::default());
@@ -2236,7 +2249,7 @@ pub fn summarize_identified(
                     // GH #540: a stdlib locus is built by code the
                     // summary may not hold, so its slots keep every
                     // conformer.
-                    let narrow = (!is_stdlib_copy(ids) && !in_runtime(&l.name))
+                    let narrow = (closed_world && !is_stdlib_copy(ids) && !in_runtime(&l.name))
                         .then_some(&mut slot_stores);
                     locus_field_types.insert(
                         locus.clone(),
@@ -2244,6 +2257,7 @@ pub fn summarize_identified(
                             l,
                             &locus_type_names,
                             &interface_names,
+                            &rename_map,
                             narrow,
                         ),
                     );
@@ -2375,11 +2389,6 @@ pub fn summarize_identified(
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
     let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
-    // `alias::name` -> mangled symbol, for cross-seed call resolution.
-    let rename_map: BTreeMap<String, String> = import_renames
-        .iter()
-        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
-        .collect();
     let no_renames: BTreeMap<String, String> = BTreeMap::new();
 
     // #382 receiver-typing: struct TYPE field -> type-name map (a
@@ -3283,9 +3292,9 @@ struct SlotSet {
 }
 
 impl SlotSet {
-    fn store(&mut self, value: &Expr, locus_types: &BTreeSet<String>) {
+    fn store(&mut self, value: &Expr, locus_types: &BTreeSet<String>, renames: &BTreeMap<String, String>) {
         match value {
-            Expr::Struct { path, .. } => match struct_locus(path, locus_types) {
+            Expr::Struct { path, .. } => match slot_locus(path, locus_types, renames) {
                 Some(l) => {
                     self.impls.insert(l);
                 }
@@ -3350,6 +3359,7 @@ fn locus_param_field_types(
     l: &LocusDecl,
     locus_types: &BTreeSet<String>,
     interface_types: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
     mut narrow: Option<&mut SlotStores>,
 ) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
@@ -3400,7 +3410,7 @@ fn locus_param_field_types(
                                 let key = (l.name.name.clone(), pd.name.name.clone());
                                 let set = stores.defaults.entry(key).or_default();
                                 match &pd.init {
-                                    ParamInit::Value(e) => set.store(e, locus_types),
+                                    ParamInit::Value(e) => set.store(e, locus_types, renames),
                                     ParamInit::Inferred => set.opaque = true,
                                 }
                                 Some(slot_type(d, &l.name.name, &pd.name.name))
@@ -3681,6 +3691,27 @@ fn struct_locus(path: &hale_syntax::ast::QualifiedName,locus_types: &BTreeSet<St
         _ => crate::stdlib_bodies::mangled_locus_name(&segs)?.to_string(),
     };
     locus_types.contains(&name).then_some(name)
+}
+
+/// GH #540: the locus a struct literal's path names, as the slot tables
+/// key it: a bare name, an imported seed's `alias::Name` through the
+/// bundle's import renames to the mangled name it is merged under, or a
+/// stdlib path. Anything else names no locus the pre-pass can read.
+fn slot_locus(
+    path: &hale_syntax::ast::QualifiedName,
+    locus_types: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> Option<String> {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    if let [one] = segs.as_slice() {
+        return locus_types.contains(*one).then(|| one.to_string());
+    }
+    match renames.get(&segs.join("::")) {
+        Some(mangled) => locus_types.contains(mangled).then(|| mangled.clone()),
+        // A module-nested locus is declared and looked up by its bare name.
+        None => struct_locus(path, locus_types)
+            .or_else(|| segs.last().filter(|n| locus_types.contains(**n)).map(|n| n.to_string())),
+    }
 }
 
 /// The loci a struct-literal expression instantiates, nested literals
@@ -4896,21 +4927,25 @@ impl<'a> Walker<'a> {
                 // the site — that's the TP-3 anchor-clone class.
                 let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
                     && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
-                if let Some(l) = struct_locus(path, self.locus_types) {
+                // GH #540: an imported seed's locus is written
+                // `alias::Name`; the slot tables key it by the mangled
+                // name it is merged under.
+                if let Some(l) = slot_locus(path, self.locus_types, self.rename_map) {
                     let mut stores = self.stores.borrow_mut();
                     for si in inits {
                         stores
                             .literals
                             .entry((l.clone(), si.name.name.clone()))
                             .or_default()
-                            .store(&si.value, self.locus_types);
+                            .store(&si.value, self.locus_types, self.rename_map);
                     }
                     stores
                         .given
                         .entry(l.clone())
                         .or_default()
                         .push(inits.iter().map(|si| si.name.name.clone()).collect());
-                    drop(stores);
+                }
+                if let Some(l) = struct_locus(path, self.locus_types) {
                     self.starts.insert(l);
                 }
                 if self.locus_types.contains(&name) {

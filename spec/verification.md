@@ -255,7 +255,12 @@ main locus Org {
   parameter, a call result, a local or a conditional, a default
   that is not a literal, or any assignment to a field of that name
   (the receiver is untyped, so it counts for every locus with such
-  a field) — keeps every conformer. Slots of standard-library loci, and interface-typed
+  a field) — keeps every conformer. A literal of an imported seed's
+  locus (`alias::Name { }`) is read through the bundle's import
+  renames, and a bundle that closes no world (it declares no `main
+  locus`) narrows nothing: a library's loci are built by whoever
+  imports it, in literals the library's own check never reads.
+  Slots of standard-library loci, and interface-typed
   parameters, locals and results, are never narrowed.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
