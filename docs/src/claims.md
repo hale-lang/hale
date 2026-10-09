@@ -660,18 +660,18 @@ A **constitution** is a named claimset declared once, outside any
 main, and adopted by each entrypoint:
 
 ```hale
-type Settle { n: Int; }
-topic Settled { payload: Settle; }
+type Settlement { n: Int; }
+topic Settled { payload: Settlement; }
 
 locus Billing {
     bus { publish Settled; }
-    fn settle(n: Int) { Settled <- Settle { n: n }; }
+    fn settle(n: Int) { Settled <- Settlement { n: n }; }
 }
 
 locus Ledger {
     params { total: Int = 0; }
     bus { subscribe Settled as on_settled; }
-    fn on_settled(s: Settle) { self.total = self.total + s.n; }
+    fn on_settled(s: Settlement) { self.total = self.total + s.n; }
 }
 
 locus Research {

@@ -391,7 +391,7 @@ row	App@literal1.listener	Listener	main	default
 dynamic	Counter	on main
 dynamic	Sensor	on main
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#30cdf2cf
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#d75133c9
 root	App	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io

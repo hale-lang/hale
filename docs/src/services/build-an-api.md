@@ -22,8 +22,8 @@ Start with the shop itself: a payload type for each message, a topic for
 what it publishes, and a locus with the one handler that takes an order.
 
 ```hale
-type Order { item: String; qty: Int; }
-type Placed { order_id: Int; on_hand: Int; }
+type OrderRequest { item: String; qty: Int; }
+type OrderResponse { order_id: Int; on_hand: Int; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
 
@@ -33,15 +33,15 @@ locus Shop {
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
     bus { publish Shipments; }
 
-    fn on_order(o: Order) -> Placed {
-        if o.qty <= 0 || o.qty > self.stock.on_hand {
-            return Placed { order_id: 0, on_hand: self.stock.on_hand };
+    fn on_order(req: OrderRequest) -> OrderResponse {
+        if req.qty <= 0 || req.qty > self.stock.on_hand {
+            return OrderResponse { order_id: 0, on_hand: self.stock.on_hand };
         }
-        self.stock.on_hand = self.stock.on_hand - o.qty;
+        self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(o.qty) + " " + o.item);
-        Shipments <- Shipment { order_id: self.stock.orders, item: o.item, qty: o.qty };
-        return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand };
+        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item);
+        Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
+        return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand };
     }
 }
 
@@ -60,8 +60,8 @@ fn main() {
 
 Two shapes here become the API later:
 
-- `on_order` **returns** a `Placed`. Once the handler is a row of a
-  surface, a caller sending an `Order` gets that value back as the
+- `on_order` **returns** an `OrderResponse`. Once the handler is a row of a
+  surface, a caller sending an `OrderRequest` gets that value back as the
   response. An order the shop cannot fill still gets an answer,
   `order_id: 0`. A refusal that belongs to your domain is a value you
   return (or an error type you declare: [the chapter](./api.md#surfaces)).
@@ -164,7 +164,7 @@ hale describe /tmp/shop.sock
 ```text
 Counter@fnv1a64:3c6a301bd526600d/counter  [unix /tmp/shop.sock]
 caller: unix uid:1000; roles: none
-  Shop::on_order(item: String, qty: Int) -> Placed  requires: -
+  Shop::on_order(item: String, qty: Int) -> OrderResponse  requires: -
 ```
 
 That is the description for the caller the socket established (the
@@ -211,11 +211,11 @@ A read is an operation whose handler returns the value. There is no
 second kind of row: add a handler and a row.
 
 ```hale,fragment
-type StockQuery { item: String = ""; }
+type StockRequest { item: String = ""; }
 
 locus Shop {
     // …
-    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+    fn stock_now(req: StockRequest) -> Stock { return self.stock; }
 }
 
 api Counter {
@@ -232,7 +232,7 @@ hale call /tmp/shop.sock Shop::stock_now
 {"on_hand":8,"orders":1}
 ```
 
-(A call with no payload sends `{}`, which `StockQuery` accepts because
+(A call with no payload sends `{}`, which `StockRequest` accepts because
 its one field has a default.) The answer is a copy taken on the shop's
 own pool, so it is the state at that instant, and a later write does not
 touch it. A live view is what a stream is for (step 7).
@@ -244,12 +244,12 @@ second parameter, `ctx: std::api::Context`; it is not part of the
 request:
 
 ```hale,fragment
-type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
+type OrderResponse { order_id: Int; on_hand: Int; by: String; via: String; }
 
-fn on_order(o: Order, ctx: std::api::Context) -> Placed {
+fn on_order(req: OrderRequest, ctx: std::api::Context) -> OrderResponse {
     // ctx.caller.name is who; ctx.via is the door it came through
     …
-    return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+    return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
 }
 ```
 
@@ -424,7 +424,7 @@ hale call http://127.0.0.1:8794 Shop::on_order --item lamp --qty 1 --bearer t-no
 ```text
 Counter@fnv1a64:01c0c908d101b3bf/web  [http 127.0.0.1:8794]
 caller: bearer front-desk; roles: clerk
-  Shop::on_order(item: String, qty: Int) -> Placed  requires: -
+  Shop::on_order(item: String, qty: Int) -> OrderResponse  requires: -
   Shop::stock_now(item?: String) -> Stock  requires: clerk
 {"on_hand":10,"orders":0}
 {"order_id":1,"on_hand":9,"by":"front-desk","via":"http"}
@@ -537,13 +537,13 @@ hale admin: http://127.0.0.1:7474/?token=03ea1263780059750082ce32e8900ab1  (over
 // gates what only staff may do, and answers over HTTP as well as on its
 // socket.
 
-type Order { item: String; qty: Int; }
-type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
+type OrderRequest { item: String; qty: Int; }
+type OrderResponse { order_id: Int; on_hand: Int; by: String; via: String; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
-type StockQuery { item: String = ""; }
-type Restock { qty: Int; }
-type Restocked { on_hand: Int; by: String; role: String; }
+type StockRequest { item: String = ""; }
+type RestockRequest { qty: Int; }
+type RestockResponse { on_hand: Int; by: String; role: String; }
 
 topic Shipments { payload: Shipment; subject: "shop.shipment"; }
 
@@ -554,23 +554,23 @@ locus Shop {
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
     bus { publish Shipments; }
 
-    fn on_order(o: Order, ctx: std::api::Context) -> Placed {
-        if o.qty <= 0 || o.qty > self.stock.on_hand {
-            return Placed { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+    fn on_order(req: OrderRequest, ctx: std::api::Context) -> OrderResponse {
+        if req.qty <= 0 || req.qty > self.stock.on_hand {
+            return OrderResponse { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
         }
-        self.stock.on_hand = self.stock.on_hand - o.qty;
+        self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(o.qty) + " " + o.item + " for " + ctx.caller.name + " via " + ctx.via);
-        Shipments <- Shipment { order_id: self.stock.orders, item: o.item, qty: o.qty };
-        return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item + " for " + ctx.caller.name + " via " + ctx.via);
+        Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
+        return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
     }
 
-    fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
-        self.stock.on_hand = self.stock.on_hand + r.qty;
-        return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
+    fn on_restock(req: RestockRequest, ctx: std::api::Context) -> RestockResponse {
+        self.stock.on_hand = self.stock.on_hand + req.qty;
+        return RestockResponse { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
     }
 
-    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+    fn stock_now(req: StockRequest) -> Stock { return self.stock; }
 }
 
 // The shop's operations: who may call each is the row's `requires`.
