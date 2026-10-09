@@ -575,3 +575,70 @@ fn a_role_no_row_requires_is_refused_unless_may_be_empty() {
     let ok = diags(&src.replace("{ role spare };", "{ role spare } may_be_empty;"));
     assert!(ok.iter().all(|m| !m.contains("spare")), "{ok:?}");
 }
+
+// ============ `avoiding` overlap is judged at the function grain =====
+
+/// `A::go` (reader) calls `B::work`; `A::other` (admin) is another
+/// method of the same locus.
+fn overlap_program(src: &str, dst: &str, gate: &str) -> String {
+    r#"
+    role reader;
+    role admin;
+    locus B { fn work(n: Int) -> Int { return n; } }
+    locus A {
+        params { b: B = B {}; }
+        fn go(n: Int) -> Int { return self.b.work(n); }
+        fn other(n: Int) -> Int { return n; }
+    }
+    api S {
+        rpc A::go requires: [reader];
+        rpc A::other requires: [admin];
+        rpc B::work requires: [reader];
+    }
+    group src = SRC;
+    group dst = DST;
+    group gate = GATE;
+    main locus App {
+        params { a: A = A {}; }
+        claims { law: forbid reaches(src, dst) avoiding gate; }
+    }
+    fn main() { App {}; }
+    "#
+    .replace("SRC", src)
+    .replace("DST", dst)
+    .replace("GATE", gate)
+}
+
+fn overlap_refused(ds: &[String]) -> bool {
+    ds.iter().any(|m| m.contains("`avoiding gate` overlaps"))
+}
+
+/// A role source and a locus gate share `A::go`: refused before the
+/// walk, naming the shared function.
+#[test]
+fn a_gate_over_a_role_source_s_locus_is_refused() {
+    let ds = diags(&overlap_program("{ role reader }", "{ B }", "{ A }"));
+    assert!(overlap_refused(&ds), "{ds:?}");
+    let hit = ds.iter().find(|m| m.contains("overlaps")).unwrap();
+    assert!(hit.contains("A::go"), "names the shared function: {hit}");
+}
+
+/// The destination side: a locus source, a role destination, a locus
+/// gate sharing `B::work`.
+#[test]
+fn a_gate_over_a_role_destination_s_locus_is_refused() {
+    let ds = diags(&overlap_program("{ A }", "{ role reader }", "{ B }"));
+    assert!(overlap_refused(&ds), "{ds:?}");
+}
+
+/// A gate that shares only the locus, not a function, with a role
+/// endpoint is disjoint at the function grain: not refused.
+#[test]
+fn a_gate_on_another_method_of_the_endpoint_s_locus_is_not_refused() {
+    let ds = diags(&overlap_program(
+        "{ role reader }",
+        "{ B }",
+        "{ role admin }",
+    ));
+    assert!(!overlap_refused(&ds), "{ds:?}");
+}
