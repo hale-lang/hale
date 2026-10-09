@@ -98,8 +98,9 @@ fn record_seed_verb(root: String, path: String, purpose_path: String, memory: dn
     // record never exists without it
     let purpose = if len(purpose_path) > 0 { std::io::fs::read_file(purpose_path) or "" } else { "" };
     if len(purpose_path) > 0 && len(purpose) == 0 { return fail("record-seed: no purpose at " + purpose_path); }
-    let proposed = if len(purpose) > 0 { purpose_rows(root, purpose) } else { "" };
-    if len(purpose) > 0 && len(proposed) == 0 { return fail("record-seed: the purpose's receipt could not be kept; nothing was seeded"); }
+    let keeps = dna::Texts { };
+    let proposed = if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" };
+    if !keeps_flush(root, keeps) { return fail("record-seed: the purpose's receipt could not be kept; nothing was seeded"); }
     return seed_rows(root, rows + (if len(rows) > 0 && !std::str::ends_with(rows, "\n") { "\n" } else { "" }) + proposed, "record-seed", memory);
 }
 
@@ -124,18 +125,11 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
         let g = if kind == "graph.node" { ops::graph_node_row(entity, body) } else if kind == "graph.edge" { ops::graph_edge_row(entity, body) } else if kind == "graph.retired" { ops::graph_retired_row(entity) } else { ops::GraphRow { ok: true } };
         if !g.ok { return fail(who + ": row " + to_string(n) + " (" + kind + " " + entity + "): " + g.why); }
     }
-    n = 0;
-    rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if len(dna::trim_nl(line)) == 0 { continue; }
-        let kind = std::json::find_string_field(line, "kind");
-        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "", memory) { return fail(who + ": the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
-        n = n + 1;
-    }
-    return answer(to_string(n) + "\n");
+    // the rows land in their order; those of the record go down together,
+    // one commit each, through the record's batch
+    let landed = append_lines(root, text, memory);
+    if landed < 0 { return fail(who + ": the record refused the rows"); }
+    return answer(to_string(landed) + "\n");
 }
 
 // ---- hale dna init on a repository (GH #1090) ----------------------------
@@ -172,20 +166,19 @@ fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer
     // operational roles the project's structure policy opts into
     let holes = ops::graph_holes(g, structure_roles(root));
     if len(holes.error) > 0 { return fail("graph-ingest: " + holes.error); }
+    let keeps = dna::Texts { };
     let mut proposals = "";
     let mut rest = holes.proposals;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
-        let rows = hole_rows(root, rest[0..nl], "hale dna init");
+        proposals = proposals + hole_rows(keeps, rest[0..nl], "hale dna init");
         rest = rest[(nl + 1)..len(rest)];
-        if len(rows) == 0 { return fail("graph-ingest: a hole's receipt could not be kept; nothing was seeded"); }
-        proposals = proposals + rows;
     }
     // GH #995: the declared purpose, proposed in the same checked seed, so
     // a repository with nothing to ingest still has its record
     let purpose = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
-    let before = if len(purpose) > 0 { purpose_rows(root, purpose) } else { "" };
-    if len(purpose) > 0 && len(before) == 0 { return fail("graph-ingest: the purpose's receipt could not be kept; nothing was seeded"); }
+    let before = if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" };
+    if !keeps_flush(root, keeps) { return fail("graph-ingest: the receipts could not be kept; nothing was seeded"); }
     let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
     return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
@@ -325,12 +318,11 @@ fn seeded_family(name: String) -> String {
     return if slash > 0 { name[0..slash] } else { "design" };
 }
 
-// Propose one practice: its receipt, a `knowledge.proposed` row and a
-// Review of its own, grouped by its family for the listing. The review
-// id, "" when the record refused.
-fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String, schedule: String, memory: dna::Memory) -> String {
-    let raw = rec(root).keep(design_document(name, text, toolchain, supersedes, schedule));
-    if len(raw) == 0 { return ""; }
+// Propose one practice: its receipt (queued in `keeps`), a
+// `knowledge.proposed` row and a Review of its own, grouped by its family
+// for the listing: the two seed rows.
+fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
+    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule));
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let b = std::json::Builder { };
@@ -345,7 +337,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     b.string_field("name", name);
     b.string_field("supersedes", supersedes);
     b.end_object();
-    if !append_as(root, "knowledge.proposed", digest, b.result(), "", memory) { return ""; }
+    let proposed = hole_row("knowledge.proposed", digest, b.result());
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
     let question = "ratify the " + seeded_family(name) + " practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
@@ -361,81 +353,204 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     q.string_field("group", seeded_family(name));
     q.string_field("name", name);
     q.end_object();
-    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "", memory) { return ""; }
-    return review_id;
+    return proposed + hole_row("review.requested", "review:" + review_id, q.result());
 }
+
+// ---- the toolchain's library, as proposals --------------------------------
+//
+// The library is the book per chapter and the spec per section: one idea
+// each, a `knowledge.proposed` row and its receipt, bound to its node by its
+// own `target`. The Board does not review hundreds of ideas one by one: a
+// FAMILY of them is one Review (`library/language@<version>`,
+// `library/design@<version>`) whose body names the ideas it ratifies, their
+// ids and digests, and whose verdict ratifies, or declines, every one of
+// them (dna/core/knowledge_record.hl).
 
 // A library idea's document: the toolchain's text about a node of the
 // graph (`language:hale`, `system:dna`), authored above it, bound to it by
-// its own `target`. Its digest is the Review's name.
-fn library_document(name: String, text: String, target: String, toolchain: String) -> String {
+// its own `target`, with the chapter's title and the digest of its text.
+fn library_document(name: String, title: String, text: String, target: String, toolchain: String, content: String, supersedes: String) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"kind\":\"idea\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\",\"target\":" + q.quote(target) + ",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"content_digest\":" + q.quote(content) + ",\"kind\":\"idea\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + "\"target\":" + q.quote(target) + ",\"text\":" + q.quote(text) + ",\"title\":" + q.quote(title) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
-// Propose one library idea: its receipt, a `knowledge.proposed` row bound
-// to its node, and a Review of its own under the group `library` (the part
-// of its name before the slash). The review id, "" when the record refused.
-fn propose_library(root: String, name: String, text: String, target: String, toolchain: String, memory: dna::Memory) -> String {
-    let raw = rec(root).keep(library_document(name, text, target, toolchain));
-    if len(raw) == 0 { return ""; }
+type LibraryRow {
+    digest: String = "";
+    row: String = "";
+}
+
+// One library idea's receipt and its `knowledge.proposed` row, as a seed
+// row; the digest is "" when the receipt could not be kept.
+fn library_idea_row(keeps: dna::Texts, name: String, title: String, text: String, target: String, toolchain: String, content: String, supersedes: String) -> LibraryRow {
+    let raw = keep_later(keeps, library_document(name, title, text, target, toolchain, content, supersedes));
     let digest = "sha256:" + raw;
-    let review_id = "k:" + raw[0..12];
-    let class = dna::classify_binding("org", target);
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("digest", digest);
-    b.string_field("review_id", review_id);
     b.string_field("kind", "idea");
     b.string_field("author", "org");
     b.string_field("target", target);
-    b.string_field("class", class);
+    b.string_field("class", dna::classify_binding("org", target));
     b.string_field("provenance", "toolchain");
     b.string_field("name", name);
-    b.string_field("supersedes", "");
+    b.string_field("supersedes", supersedes);
     b.end_object();
-    if !append_as(root, "knowledge.proposed", digest, b.result(), "", memory) { return ""; }
+    return LibraryRow { digest: digest, row: hole_row("knowledge.proposed", digest, b.result()) };
+}
+
+// A family's document: the ideas it ratifies, `<name> <digest>` a line.
+fn library_family_document(name: String, version: String, count: Int, ideas: String) -> String {
     let q = std::json::Builder { };
-    // the chapter's own first words, on one line
-    let flat = std::str::replace(std::str::replace(text, "\n", " "), "#", "");
+    return "{\"author\":\"org\",\"count\":" + to_string(count) + ",\"ideas\":" + q.quote(ideas) + ",\"kind\":\"family\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\",\"toolchain\":" + q.quote(version) + "}";
+}
+
+// A family's Review: its receipt kept and its `review.requested` row, as a
+// seed row, under the group `library`. "" when the receipt could not be kept.
+fn library_family_row(keeps: dna::Texts, family: String, version: String, target: String, count: Int, ideas: String) -> String {
+    let name = "library/" + family + "@" + version;
+    let raw = keep_later(keeps, library_family_document(name, version, count, ideas));
+    let digest = "sha256:" + raw;
+    let q = std::json::Builder { };
     q.begin_object();
-    q.string_field("question", "ratify the " + seeded_family(name) + " idea `" + name + "` for `" + target + "`:" + (if len(flat) > 72 { flat[0..72] + "…" } else { flat }));
+    q.string_field("question", "ratify the library family `" + name + "`: " + to_string(count) + " idea(s) bound to `" + target + "`");
     q.string_field("subject_digest", digest);
     q.string_field("required_authority", "board");
     q.string_field("author", "org");
     q.string_field("knowledge_digest", digest);
-    q.string_field("kind", "idea");
+    q.string_field("kind", "family");
     q.string_field("target", target);
-    q.string_field("class", class);
-    q.string_field("group", seeded_family(name));
+    q.string_field("group", "library");
     q.string_field("name", name);
+    q.int_field("count", count);
+    q.string_field("ideas", ideas);
     q.end_object();
-    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "", memory) { return ""; }
-    return review_id;
+    return hole_row("review.requested", "review:k:" + raw[0..12], q.result());
 }
 
-// `library-seed <ideas>`: the toolchain's library as proposals, one JSON
-// object per line (`name`, `text`, `target`), each bound to its node and
-// asked of the Board in its own Review. Prints `proposed=<n>`.
+// The record's library families: `<name> <pending|decided>` a line.
 @unbounded
-fn library_seed_verb(root: String, path: String, toolchain: String, memory: dna::Memory) -> Answer {
+fn library_families_in_record(root: String) -> String {
+    let r = rec(root);
+    let h = r.head(JOURNAL);
+    if !h.ok { return ""; }
+    let mut text = r.text_at(h.id);
+    let mut asked = "";
+    let mut settled = "\n";
+    while len(text) > 0 {
+        let nl = std::str::index_of(text, "\n");
+        let line = if nl < 0 { text } else { text[0..nl] };
+        text = if nl < 0 { "" } else { text[(nl + 1)..len(text)] };
+        let kind = std::json::find_string_field(line, "kind");
+        let e = std::json::find_string_field(line, "entity");
+        let id = if std::str::starts_with(e, "review:") { e[7..len(e)] } else { e };
+        if kind == "review.settled" {
+            settled = settled + id + "\n";
+        } else if kind == "review.requested" {
+            let body = std::json::find_string_field(line, "body");
+            if std::json::find_string_field(body, "group") == "library" { asked = asked + std::json::find_string_field(body, "name") + " " + id + "\n"; }
+        }
+    }
+    let mut out = "";
+    let mut rest = asked;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let sp = std::str::index_of(line, " ");
+        out = out + line[0..sp] + " " + (if in_list(settled, line[(sp + 1)..len(line)]) { "decided" } else { "pending" }) + "\n";
+    }
+    return out;
+}
+
+// Whether a family (`language`, `design`) has a Review, of some version,
+// still before the Board.
+fn family_pending(known: String, family: String) -> Bool {
+    let mut rest = known;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::starts_with(line, "library/" + family + "@") && std::str::ends_with(line, " pending") { return true; }
+    }
+    return false;
+}
+
+// `library-seed <ideas> [<version>]`: the toolchain's library as proposals,
+// one JSON object per line (`name`, `title`, `text`, `target`, `family`,
+// `digest` — the text's), grouped by family. At `init` the record holds
+// none and every idea is proposed plainly. At `upgrade` a family already
+// proposed at this version proposes nothing, a family whose earlier version
+// still awaits the Board waits, and any other is proposed afresh, each idea
+// superseding the ACTIVE digest under its name. Prints
+// `proposed=<n> families=<f> superseding=<m> waiting=<w>`.
+@unbounded
+fn library_seed_verb(root: String, path: String, version_arg: String, upgrading: Bool, toolchain: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let ideas = std::io::fs::read_file(path) or "";
     if len(ideas) == 0 { return fail("library-seed: no ideas at " + path); }
+    let version = if len(version_arg) > 0 { version_arg } else { toolchain };
+    let known = library_families_in_record(root);
+    // a record seeded without the library (`--no-library`) is not given one
+    // by an upgrade
+    if upgrading && len(known) == 0 { return answer("proposed=0 families=0 superseding=0 waiting=0\n"); }
+    let states = DesignStates { };
+    if len(known) > 0 && !design_in_record(root, states) { return fail("library-seed: the record's head could not be read; nothing was proposed"); }
+    let keeps = dna::Texts { };
+    let mut rows = "";
     let mut proposed = 0;
-    let mut rest = ideas;
+    let mut families = 0;
+    let mut superseding = 0;
+    let mut waiting = 0;
+    // the family being gathered: what to do with it (0 propose, 1 already
+    // proposed at this version, 2 waits), its node, ideas and rows
+    let mut cur = "";
+    let mut mode = 0;
+    let mut cur_target = "";
+    let mut cur_ideas = "";
+    let mut cur_rows = "";
+    let mut cur_count = 0;
+    let mut cur_super = 0;
+    let mut rest = ideas + "\n{\"family\":\"\"}\n";
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(dna::trim_nl(line)) == 0 { continue; }
+        let family = std::json::find_string_field(line, "family");
+        if family != cur {
+            if cur_count > 0 {
+                let fam = library_family_row(keeps, cur, version, cur_target, cur_count, cur_ideas);
+                rows = rows + cur_rows + fam;
+                proposed = proposed + cur_count;
+                families = families + 1;
+                superseding = superseding + cur_super;
+            }
+            if mode == 2 { waiting = waiting + 1; }
+            cur = family; cur_ideas = ""; cur_rows = ""; cur_count = 0; cur_super = 0; mode = 0;
+            if std::str::contains("\n" + known, "\nlibrary/" + family + "@" + version + " ") { mode = 1; }
+            else if family_pending(known, family) { mode = 2; }
+        }
+        if len(family) == 0 || mode != 0 { continue; }
+        cur_target = std::json::find_string_field(line, "target");
         let name = std::json::find_string_field(line, "name");
-        let target = std::json::find_string_field(line, "target");
-        if len(propose_library(root, name, std::json::find_string_field(line, "text"), target, toolchain, memory)) == 0 { return fail("library-seed: the record refused the proposal of " + name + " for " + target); }
-        proposed = proposed + 1;
+        let mut st = states.get(name) or DesignState { };
+        // a chapter the book moved is proposed under its new name over what
+        // the record holds under the earlier one
+        let earlier = std::json::find_string_field(line, "earlier");
+        if len(st.active) == 0 && len(earlier) > 0 { st = states.get(earlier) or DesignState { }; }
+        let one = library_idea_row(keeps, name, std::json::find_string_field(line, "title"), std::json::find_string_field(line, "text"), cur_target, version, std::json::find_string_field(line, "digest"), st.active);
+        cur_rows = cur_rows + one.row;
+        cur_ideas = cur_ideas + name + " " + one.digest + "\n";
+        cur_count = cur_count + 1;
+        if len(st.active) > 0 { cur_super = cur_super + 1; }
     }
-    return answer("proposed=" + to_string(proposed) + "\n");
+    if proposed > 0 {
+        if !keeps_flush(root, keeps) { return fail("library-seed: the receipts could not be kept; nothing was seeded"); }
+        let seeded = seed_rows(root, rows, "library-seed", memory);
+        if !seeded.ok { return seeded; }
+    }
+    return answer("proposed=" + to_string(proposed) + " families=" + to_string(families) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
 }
 
 // The rows that propose the declared purpose (GH #995), one JSON object
@@ -445,9 +560,8 @@ fn library_seed_verb(root: String, path: String, toolchain: String, memory: dna:
 // practice is. The Board ratifies it through practice-ratify like any
 // proposal, and `hale dna review purpose approve` decides it by its
 // group. "" when the receipt could not be kept.
-fn purpose_rows(root: String, text: String) -> String {
-    let raw = rec(root).keep(dna::knowledge_document(dna::Idea { kind: "purpose", text: text, author: "org", name: "purpose", provenance: "declared" }, "org"));
-    if len(raw) == 0 { return ""; }
+fn purpose_rows(keeps: dna::Texts, text: String) -> String {
+    let raw = keep_later(keeps, dna::knowledge_document(dna::Idea { kind: "purpose", text: text, author: "org", name: "purpose", provenance: "declared" }, "org"));
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let b = std::json::Builder { };
@@ -489,6 +603,8 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
     if len(practices) == 0 { return fail("design-upgrade: no practices at " + path); }
     let states = DesignStates { };
     if !design_in_record(root, states) { return fail("design-upgrade: the record's head could not be read; nothing was proposed"); }
+    let keeps = dna::Texts { };
+    let mut rows = "";
     let mut proposed = 0;
     let mut superseding = 0;
     let mut waiting = 0;
@@ -505,9 +621,14 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused { continue; }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
-        if len(propose_design(root, name, text, toolchain, old, schedule, memory)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
+        rows = rows + design_rows(keeps, name, text, toolchain, old, schedule);
         proposed = proposed + 1;
         if len(old) > 0 { superseding = superseding + 1; }
+    }
+    if proposed > 0 {
+        if !keeps_flush(root, keeps) { return fail("design-upgrade: the receipts could not be kept; nothing was proposed"); }
+        let seeded = seed_rows(root, rows, "design-upgrade", memory);
+        if !seeded.ok { return fail("design-upgrade: the record refused the proposals"); }
     }
     return answer("proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
 }

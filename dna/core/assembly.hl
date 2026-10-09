@@ -2670,7 +2670,9 @@ locus Dna {
             // AND the retirement of what it supersedes; a write the record
             // refused leaves the step waiting, to be written again
             let r = self.knowledge_record.resume_result(review_id, outcome, by);
-            if outcome == "approve" && r && self.knowledge_record.ratified(digest) {
+            // a family's own row (the library): its ideas were written first
+            let family = self.knowledge_record.family_row(digest);
+            if outcome == "approve" && r && (self.knowledge_record.ratified(digest) || family == "library.family.ratified") {
                 // GH #1143: a practice that carries a schedule declares it once
                 // ratified — the cadence is the practice's, amended by the
                 // next. The ratification stands either way: a refused
@@ -2680,12 +2682,16 @@ locus Dna {
                 if len(why) > 0 { return step_done(digest, "ratified by " + by + "; its schedule was refused (" + why + ")"); }
                 return step_done(digest, "ratified by " + by);
             }
-            if outcome != "approve" && len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
+            if outcome != "approve" && (len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 || family == "library.family.declined") { return step_failed("declined: " + settled.body); }
             let refused = first_row(self.journal, "knowledge.refused", digest);
             if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
+            if family == "library.family.refused" { return step_failed("not ratified: " + native_json_string(first_row(self.journal, "library.family.refused", digest).body, "why") + "; propose the family again against the active version"); }
             return step_waits();
         }
-        if key == "hat" { return self.practices.hat(task, digest, self.knowledge_client, self.memory_ready); }
+        if key == "hat" {
+            if self.knowledge_record.is_family(digest) { return self.practices.family_hat(task, digest, self.knowledge_record.last_member(digest), self.knowledge_client, self.memory_ready); }
+            return self.practices.hat(task, digest, self.knowledge_client, self.memory_ready);
+        }
         return step_failed("practice-ratify has no step `" + key + "`");
     }
 

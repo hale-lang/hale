@@ -63,6 +63,7 @@ locus Refusing {
         if kind == self.refuse_kind { self.refusals = self.refusals + 1; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if kind == self.refuse_kind { self.refusals = self.refusals + 1; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
         return self.inner.append_exact(expected, kind, entity, body);
@@ -119,6 +120,7 @@ locus Shared {
         if std::str::starts_with(kind, "elsewhere:") { return self.elsewhere.append(self.elsewhere.revision(), kind[10..len(kind)], entity, body); }
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if kind == "effect.requested" && self.armed && !self.landed && entity == "attempt:" + self.land_outcome_for {
             self.land();

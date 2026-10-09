@@ -299,6 +299,68 @@ fn record_append(repo: String, kind: String, entity: String, body: String, autho
     return "";
 }
 
+// A receipt queued for `keeps_flush`: its digest, now.
+fn keep_later(keeps: dna::Texts, text: String) -> String {
+    keeps.push(text);
+    return dna::hex_digest(text);
+}
+
+// The queued receipts kept, in one pass.
+fn keeps_flush(repo: String, keeps: dna::Texts) -> Bool { return rec(repo).keep_batch(keeps); }
+
+// Rows written together, one commit each, at the tail however often the
+// chain moves under them: the id of the last, "" when they could not be
+// written (and then none was).
+@unbounded
+fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
+    let r = rec(repo);
+    let sign = signing(repo);
+    let mut tries = 0;
+    while tries < 200 {
+        tries = tries + 1;
+        let head = r.head(JOURNAL);
+        if !head.ok { return ""; }
+        let a = r.append_batch(JOURNAL, head.id, rows, sign, "");
+        if a.ok { return a.id; }
+        if a.error != "stale" { return ""; }
+    }
+    return "";
+}
+
+// The rows of a text, one JSON object per line (`kind`, `entity`, `body`),
+// appended in order in the identity of whoever runs this: a run of rows of
+// the record is one batch, a row of the ledger goes to it where it falls.
+// The count appended, -1 when the record refused (the runs before it
+// stay: each run is its own write).
+@unbounded
+fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
+    let routing = routing_here(repo);
+    let pending = dna::RowBatch { };
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let kind = std::json::find_string_field(line, "kind");
+        let entity = std::json::find_string_field(line, "entity");
+        let body = std::json::find_string_field(line, "body");
+        if dna::route(routing, kind) == "ledger" {
+            if pending.len() > 0 {
+                if len(record_append_batch(repo, pending)) == 0 { return -1; }
+                while pending.len() > 0 { let gone = pending.pop() or dna::Row { }; }
+            }
+            if !ledger_submit(repo, kind, entity, body, "", memory) { return -1; }
+        } else {
+            pending.push(dna::Row { kind: kind, entity: entity, body: body });
+        }
+        n = n + 1;
+    }
+    if pending.len() > 0 && len(record_append_batch(repo, pending)) == 0 { return -1; }
+    return n;
+}
+
 // Append one event only if the memory it belongs to is still where a
 // decision was read: at `expected` (the record head) for a row of the
 // record, at `ledger_expected` (the ledger's revision) for a row of the

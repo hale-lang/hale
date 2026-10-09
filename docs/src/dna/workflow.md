@@ -361,7 +361,7 @@ $ hale dna report
 report r39 filed: since #0: proposed 0 · reviewed 16 · applied 0 · retained 0 · rolled back 0 · rejected 0 · escalated 16 · pressure 0 · proposals 0 · model calls 0 (0 µ$) · settled: none
 ```
 
-That is a new organism's first report: sixteen Reviews asked of the
+That is a new organism's first report: twenty-three Reviews asked of the
 Board, nothing proposed yet.
 
 ## After a restart

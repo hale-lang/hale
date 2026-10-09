@@ -63,6 +63,7 @@ locus ReviewJournal {
     fn read(i: Int) -> Event { return self.inner.read(i); }
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.inner.append_batch(expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
 }
 

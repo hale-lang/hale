@@ -65,6 +65,7 @@ locus Refusing {
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if dna::set_has(self.refuse_once, kind + ":" + entity) && !dna::set_has(self.refused_yet, kind + ":" + entity) {
             self.refused_yet = dna::set_add(self.refused_yet, kind + ":" + entity);

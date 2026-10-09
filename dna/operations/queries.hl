@@ -15,7 +15,7 @@ type ReviewRow {
     has_reasoned: Bool = false;
     mutation_id: String = "";
     is_mutation: Bool = false;
-    group: String = ""; // "design" or "operating" for the toolchain's seeded practices (GH #596 C, #994): listed together by family, decided one by one
+    group: String = ""; // "design", "operating" or "using" for the toolchain's seeded practices (GH #596 C, #994): listed together by family, decided one by one
     change_class: String = "";
     seed: String = "";
     disposition: String = "";
@@ -495,6 +495,13 @@ locus Queries {
         }
         let digest = if len(r.knowledge_digest) > 0 { r.knowledge_digest } else { r.subject_digest };
         let status = self.receipt_status(digest);
+        // a library family's Review: its document names the ideas, and is no
+        // practice
+        if r.group == "library" && len(r.knowledge_digest) > 0 && r.knowledge_digest == r.subject_digest {
+            r.text_status = status; r.text_available = status == "available";
+            if !r.text_available { r.question = ""; r.settled = ""; r.reasoned = ""; r.has_reasoned = false; r.refusals = ""; }
+            return r;
+        }
         let knowledge = len(r.knowledge_digest) > 0 || self.has("knowledge.proposed", digest);
         let inconsistent = len(r.knowledge_digest) > 0 && len(r.subject_digest) > 0 && r.knowledge_digest != r.subject_digest;
         // Non-knowledge question text is declared directly in the Review row;

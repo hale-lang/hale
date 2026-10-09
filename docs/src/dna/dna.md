@@ -293,8 +293,8 @@ run with `--no-library` (`new` takes the flag too):
 |---|---|
 | `graph.node language:hale`, `graph.node system:dna` | the nodes knowledge is about: the language this toolchain compiles, and the design the organism is an instance of |
 | `graph.node application:<name>`, `graph.edge written_in:application:<name>\|language:hale` | for an attached application: its node, and the edge that says it is written in Hale (a repository with no application gets the two nodes alone) |
-| two `knowledge.proposed` rows, `library/api` and `library/shaping` | the API chapter bound to `language:hale`, the shaping chapter bound to `system:dna`, with the toolchain's version |
-| two `review.requested` rows, group `library` | one Board Review per idea: `hale dna review library approve` ratifies and binds both ([What a Work is told](./memory.md#what-a-work-is-told-and-by-which-node)) |
+| a `knowledge.proposed` row per chapter of the book and per section of the spec, named `library/<path>` | the library: each idea bound to `language:hale`, or to `system:dna` for the DNA chapters, with the toolchain's version |
+| two `review.requested` rows, group `library` | one Board Review per family, `library/language@<version>` and `library/design@<version>`: `hale dna review library approve` ratifies and binds every idea a family names ([What a Work is told](./memory.md#what-a-work-is-told-and-by-which-node)) |
 
 Outside the files, `init` also:
 
@@ -373,10 +373,10 @@ anything runs:
 | `responsibility.proposed` | one per locus, not ratified |
 | `knowledge.proposed`, `review.requested` | the declared purpose, then each seeded practice, each with its own Board Review |
 
-For `refproj` that is 38 rows: one attachment, three observations
-(`Echo`, `Refproj`, `Pings`), two responsibilities, and sixteen
-proposals with their Reviews — the purpose, eight design practices and
-seven operating practices. [Shaping and governing it](./shaping.md#practices)
+For `refproj` that is 52 rows: one attachment, three observations
+(`Echo`, `Refproj`, `Pings`), two responsibilities, and twenty-three
+proposals with their Reviews — the purpose, eight design practices,
+seven operating practices and seven using practices. [Shaping and governing it](./shaping.md#practices)
 has the practices.
 
 ## A repository instead of one application

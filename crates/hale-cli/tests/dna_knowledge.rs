@@ -161,20 +161,20 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     };
     // the declared purpose (GH #995), the eight seeded design practices
     // and the seven operating ones (the optimize cadence among them, GH
-    // #1143) are ideas too (GH #596 C, #994), plus
-    // this proposal; wait for the
-    // nerves as well
+    // #1143) and the seven using ones are ideas too (GH #596 C, #994),
+    // plus this proposal and the toolchain's library (one idea per
+    // chapter or spec section, 405 of them); wait for the nerves as well
     let nerves_up = || std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let tailed = trace::wait_until("dna dev: the spine projected the record and the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(500), || {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "19" && nerves_up()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "429" && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
         stop(&mut host);
-        panic!("the spine did not project the proposal:\n{log}");
+        panic!("the spine did not project the proposal:\n{log}\nlast read: {}", read_memory(&app, &head, "org", "8", "", ""));
     }
     // proposed, not ratified: no package yet
     let pkg = field(&read_memory(&app, &head, "org/knowing/mailer", "8", "", ""), "pkg");

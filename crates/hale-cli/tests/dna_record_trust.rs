@@ -83,6 +83,12 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
         git(&["config", "dna.trust", "signed"], &c);
         git(&["config", "gpg.format", "ssh"], &c);
         git(&["config", "user.signingkey", &key.to_string_lossy()], &c);
+        // a writer reads its own signature back the way any row is
+        // verified, so it needs the allowed signers too: without them it
+        // signs rows it cannot recognize as its own, and a sync that finds
+        // the remote moved meanwhile (the host writes rows of its own)
+        // refuses to rebuild them instead of fast-forwarding
+        git(&["config", "gpg.ssh.allowedSignersFile", &allowed.to_string_lossy()], &c);
         let (ok, out) = hale_in(&["dna", "sync"], &c);
         assert!(ok, "{out}");
         c

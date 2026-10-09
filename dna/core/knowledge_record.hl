@@ -91,8 +91,12 @@ locus KnowledgeRecord {
         while i < self.journal.revision() {
             let e = self.journal.read(i);
             if e.kind == "knowledge.ratified" {
-                let proposal = first_row(self.journal, "knowledge.proposed", e.entity);
-                if native_json_string(proposal.body, "supersedes") == digest { return e.entity; }
+                // a ratification this code wrote carries what it supersedes
+                // itself (it names its `kind`); an older one is read from its
+                // proposal
+                let carried = std::str::contains(e.body, "\"kind\"");
+                let said = if carried { native_json_string(e.body, "supersedes") } else { native_json_string(first_row(self.journal, "knowledge.proposed", e.entity).body, "supersedes") };
+                if said == digest { return e.entity; }
             }
             i = i + 1;
         }
@@ -104,6 +108,194 @@ locus KnowledgeRecord {
         let digest = native_json_string(req, "knowledge_digest");
         if len(digest) == 0 || digest != native_json_string(req, "subject_digest") { return false; }
         if outcome != "approve" && outcome != "reject" && outcome != "revise" { return false; }
+        if native_json_string(req, "kind") == "family" { return self.resume_family(review_id, digest, outcome, reviewer); }
+        return self.resume_one(review_id, digest, native_json_string(req, "kind"), native_json_string(req, "target"), native_json_string(req, "class"), outcome, reviewer);
+    }
+    // A family's verdict (the toolchain's library): the one Review's outcome
+    // is every idea it names, each ratified or declined by the rows it would
+    // have had of its own (the same rows, the Review being the family's),
+    // then the family's own row, which is what its execution waits for:
+    // `library.family.ratified` only when every member was ratified,
+    // `library.family.refused` (naming the refused members) when an approval
+    // left any refused, `library.family.declined` for a rejection. The rows
+    // land as ONE batch: the journal is read once, every member's outcome is
+    // decided in memory (a member's ratification is what the next member's
+    // supersession reads), and `append_batch` writes them at the revision
+    // they were decided at. A batch that lost the race to another writer is
+    // decided again against what landed, so a row that is already there is
+    // not written twice.
+    @unbounded
+    fn resume_family(review_id: String, digest: String, outcome: String, reviewer: String) -> Bool {
+        let doc = self.receipts.read(if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest });
+        if len(doc) == 0 || digest_of(doc) != digest { return false; }
+        let ideas = native_json_string(doc, "ideas");
+        let mut members = "\n";
+        let mut listed = ideas;
+        while len(listed) > 0 {
+            let nl = std::str::index_of(listed, "\n");
+            let line = if nl < 0 { listed } else { listed[0..nl] };
+            listed = if nl < 0 { "" } else { listed[(nl + 1)..len(listed)] };
+            let sp = std::str::index_of(line, " ");
+            if sp >= 0 { members = members + line[(sp + 1)..len(line)] + "\n"; }
+        }
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let revision = self.journal.revision();
+            // the one scan: what the record already holds of the family
+            let mut settled = "";
+            let mut proposals = "\n";
+            let mut ratified = "\n";
+            let mut refused = "\n";
+            let mut declined = "\n";
+            let mut retired = "\n";
+            let mut successors = "\n";
+            let mut fam_ratified = "";
+            let mut fam_refused = "";
+            let mut fam_declined = "";
+            let mut i = 0;
+            while i < revision {
+                let e = self.journal.read(i);
+                i = i + 1;
+                if e.kind == "review.settled" {
+                    if e.entity == review_id && len(settled) == 0 { settled = e.body; }
+                } else if e.kind == "knowledge.proposed" {
+                    if rec_has(members, e.entity) && !rec_has_key(proposals, e.entity) { proposals = proposals + e.entity + " " + e.body + "\n"; }
+                } else if e.kind == "knowledge.ratified" {
+                    ratified = ratified + e.entity + "\n";
+                    // a ratification this code wrote carries what it supersedes
+                    // itself (it names its `kind`); an older one is read from its
+                    // proposal
+                    let said = if std::str::contains(e.body, "\"kind\"") { native_json_string(e.body, "supersedes") } else { native_json_string(first_row(self.journal, "knowledge.proposed", e.entity).body, "supersedes") };
+                    if len(said) > 0 { successors = successors + said + " " + e.entity + "\n"; }
+                } else if e.kind == "knowledge.refused" {
+                    refused = refused + e.entity + " " + native_json_string(e.body, "why") + "\n";
+                } else if e.kind == "knowledge.declined" {
+                    declined = declined + e.entity + "\n";
+                } else if e.kind == "knowledge.retired" {
+                    retired = retired + e.entity + " " + e.body + "\n";
+                } else if e.entity == digest {
+                    if e.kind == "library.family.ratified" && len(fam_ratified) == 0 { fam_ratified = e.body; }
+                    if e.kind == "library.family.refused" && len(fam_refused) == 0 { fam_refused = e.body; }
+                    if e.kind == "library.family.declined" && len(fam_declined) == 0 { fam_declined = e.body; }
+                }
+            }
+            if settled != outcome + " by " + reviewer { return false; }
+            // every member's rows, in the family's order
+            let batch = RowBatch { };
+            let mut all = true;
+            let mut refused_list = "";
+            let mut why = "";
+            let mut rest = ideas;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                let sp = std::str::index_of(line, " ");
+                if sp < 0 { all = false; continue; }
+                let member = line[(sp + 1)..len(line)];
+                if !rec_has_key(proposals, member) { all = false; continue; }
+                let proposal = rec_get(proposals, member);
+                let mdoc = self.receipts.read(if std::str::starts_with(member, "sha256:") { member[7..len(member)] } else { member });
+                if len(mdoc) == 0 || digest_of(mdoc) != member { all = false; continue; }
+                let old = native_json_string(mdoc, "supersedes");
+                if rec_has(ratified, member) {
+                    if outcome != "approve" { all = false; continue; }
+                } else if rec_has_key(refused, member) {
+                    // settled already, not ratified
+                } else if rec_has(declined, member) {
+                    if outcome == "approve" { all = false; continue; }
+                } else {
+                    let gone = if len(old) > 0 { rec_replacing(retired, successors, old) } else { "" };
+                    let refuses = outcome == "approve" && len(old) > 0 && (len(gone) > 0 || !rec_has(ratified, old));
+                    let b = std::json::Builder { };
+                    b.begin_object();
+                    b.string_field("digest", member);
+                    b.string_field("review_id", review_id);
+                    b.string_field("decided_by", reviewer);
+                    if refuses {
+                        b.string_field("supersedes", old);
+                        b.string_field("retired_by", gone);
+                        b.string_field("why", if len(gone) > 0 { "supersedes a version already retired by " + gone + "; not ratified — propose again against the active version" } else { "supersedes a version that is not ratified; not ratified — propose again against the active version" });
+                    } else {
+                        b.string_field("outcome", outcome);
+                        b.string_field("kind", native_json_string(proposal, "kind"));
+                        b.string_field("target", native_json_string(proposal, "target"));
+                        b.string_field("class", native_json_string(proposal, "class"));
+                        if len(old) > 0 { b.string_field("supersedes", old); }
+                        b.int_field("at", std::time::now());
+                    }
+                    b.end_object();
+                    let kind = if refuses { "knowledge.refused" } else if outcome == "approve" { "knowledge.ratified" } else { "knowledge.declined" };
+                    let body = b.result();
+                    batch.push(Row { kind: kind, entity: member, body: body });
+                    if refuses {
+                        refused = refused + member + " " + native_json_string(body, "why") + "\n";
+                    } else if outcome == "approve" {
+                        ratified = ratified + member + "\n";
+                        if len(old) > 0 { successors = successors + old + " " + member + "\n"; }
+                    } else {
+                        declined = declined + member + "\n";
+                    }
+                }
+                if rec_has(ratified, member) && len(old) > 0 {
+                    let rb = std::json::Builder { };
+                    rb.begin_object();
+                    rb.string_field("digest", old);
+                    rb.string_field("by", member);
+                    rb.string_field("review_id", review_id);
+                    rb.string_field("decided_by", reviewer);
+                    rb.end_object();
+                    let rbody = rb.result();
+                    if rec_has_key(retired, old) {
+                        if !rows_agree("knowledge.retired", rec_get(retired, old), rbody) { all = false; continue; }
+                    } else {
+                        batch.push(Row { kind: "knowledge.retired", entity: old, body: rbody });
+                        retired = retired + old + " " + rbody + "\n";
+                    }
+                }
+                // a member the record refused (its predecessor already replaced)
+                // is settled, but it is not ratified
+                if outcome == "approve" && !rec_has(ratified, member) {
+                    refused_list = refused_list + line[0..sp] + " " + member + "\n";
+                    if len(why) == 0 { why = rec_get(refused, member); }
+                }
+            }
+            // then the family's own row
+            let mut agrees = all;
+            if all {
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("digest", digest);
+                b.string_field("review_id", review_id);
+                b.string_field("name", native_json_string(doc, "name"));
+                b.string_field("outcome", outcome);
+                b.string_field("decided_by", reviewer);
+                b.int_field("count", std::json::find_int_field(doc, "count"));
+                let mut kind = if outcome == "approve" { "library.family.ratified" } else { "library.family.declined" };
+                let mut held = if outcome == "approve" { fam_ratified } else { fam_declined };
+                if len(refused_list) > 0 {
+                    b.string_field("refused", refused_list);
+                    b.string_field("why", "member(s) refused: " + why);
+                    kind = "library.family.refused";
+                    held = fam_refused;
+                }
+                b.end_object();
+                let body = b.result();
+                if len(held) > 0 { agrees = rows_agree(kind, held, body); } else { batch.push(Row { kind: kind, entity: digest, body: body }); }
+            }
+            if batch.len() == 0 { return agrees; }
+            let a = self.journal.append_batch(revision, batch);
+            if a.ok { return agrees; }
+            if a.error != "stale_revision" { return false; }
+            tries = tries + 1;
+        }
+        return false;
+    }
+    // One idea's rows from a Review's outcome: ratified (and what it
+    // supersedes retired), declined, or refused.
+    @unbounded
+    fn resume_one(review_id: String, digest: String, kind_of: String, target_of: String, class_of: String, outcome: String, reviewer: String) -> Bool {
         let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let doc = self.receipts.read(raw);
         if len(doc) == 0 || digest_of(doc) != digest { return false; }
@@ -141,9 +333,9 @@ locus KnowledgeRecord {
                 b.string_field("why", if len(gone) > 0 { "supersedes a version already retired by " + gone + "; not ratified — propose again against the active version" } else { "supersedes a version that is not ratified; not ratified — propose again against the active version" });
             } else {
                 b.string_field("outcome", outcome);
-                b.string_field("kind", native_json_string(req, "kind"));
-                b.string_field("target", native_json_string(req, "target"));
-                b.string_field("class", native_json_string(req, "class"));
+                b.string_field("kind", kind_of);
+                b.string_field("target", target_of);
+                b.string_field("class", class_of);
                 if len(old) > 0 { b.string_field("supersedes", old); }
                 b.int_field("at", std::time::now());
             }
@@ -157,6 +349,37 @@ locus KnowledgeRecord {
             tries = tries + 1;
         }
         return false;
+    }
+    // The row that settled a family's Review (`library.family.ratified`,
+    // `.refused` or `.declined`), "" while none has.
+    @unbounded
+    fn family_row(digest: String) -> String {
+        let ratified = first_row(self.journal, "library.family.ratified", digest);
+        if len(ratified.kind) > 0 { return ratified.kind; }
+        let refused = first_row(self.journal, "library.family.refused", digest);
+        if len(refused.kind) > 0 { return refused.kind; }
+        return first_row(self.journal, "library.family.declined", digest).kind;
+    }
+    // Whether the Review of `digest` is a family's (the toolchain's library).
+    @unbounded
+    fn is_family(digest: String) -> Bool {
+        return native_json_string(self.request_of(knowledge_review_id(digest)), "kind") == "family";
+    }
+    // The digest of the last idea a family names ("" when it names none):
+    // the one memory's projection reaches last.
+    @unbounded
+    fn last_member(digest: String) -> String {
+        let ideas = native_json_string(self.request_of(knowledge_review_id(digest)), "ideas");
+        let mut out = "";
+        let mut rest = ideas;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let sp = std::str::index_of(line, " ");
+            if sp >= 0 { out = line[(sp + 1)..len(line)]; }
+        }
+        return out;
     }
     // GH #604: whether the Board ratified the knowledge at `digest`.
     @unbounded
@@ -418,4 +641,32 @@ locus KnowledgeRecord {
 // The question a knowledge proposal's Review asks the Board.
 fn knowledge_question(i: Idea, target: String) -> String {
     return "ratify " + i.kind + " `" + i.text + "` as a " + classify_binding(i.author, target) + " for " + target + "?";
+}
+
+// The sets a family's ratification reads its journal into: lines under a
+// leading newline (`\n<key>\n`, or `\n<key> <value>\n` for a map), held
+// in memory so a member is looked up without another scan of the record.
+fn rec_has(set: String, key: String) -> Bool {
+    return std::str::contains(set, "\n" + key + "\n");
+}
+
+fn rec_has_key(map: String, key: String) -> Bool {
+    return std::str::contains(map, "\n" + key + " ");
+}
+
+// The value of the first line keyed `key`, "" when none is.
+fn rec_get(map: String, key: String) -> String {
+    let at = std::str::index_of(map, "\n" + key + " ");
+    if at < 0 { return ""; }
+    let tail = map[(at + len(key) + 2)..len(map)];
+    let nl = std::str::index_of(tail, "\n");
+    return if nl < 0 { tail } else { tail[0..nl] };
+}
+
+// The digest that replaced `old`: the one that retired it, else the
+// ratified one that names it (`KnowledgeRecord.replacing_digest`, over the
+// sets instead of the journal).
+fn rec_replacing(retired: String, successors: String, old: String) -> String {
+    if rec_has_key(retired, old) { return native_json_string(rec_get(retired, old), "by"); }
+    return rec_get(successors, old);
 }

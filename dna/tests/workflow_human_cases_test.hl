@@ -59,6 +59,7 @@ locus Retiring {
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if kind == "case.admitted" && !self.landed {
             self.landed = true;
@@ -84,6 +85,7 @@ locus Refusing {
         }
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if !self.refused && kind == self.refuse_kind {
             self.refused = true;

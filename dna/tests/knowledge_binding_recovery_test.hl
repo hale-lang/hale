@@ -20,6 +20,7 @@ locus BindingStageJournal {
         if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
         return self.inner.append(expected, kind, entity, body);
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
         let result = self.inner.append_exact(expected, kind, entity, body);

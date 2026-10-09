@@ -19,12 +19,12 @@ import "../core" as dna;
 import "../operations" as ops;
 
 // The rows that propose one hole, one JSON object per line as `seed_rows`
-// takes them; the receipt is kept first. "" when it could not be kept.
+// takes them; the receipt is queued in `keeps`, for the caller to keep
+// before the rows land (`keeps_flush`).
 @unbounded
-fn hole_rows(root: String, line: String, author: String) -> String {
+fn hole_rows(keeps: dna::Texts, line: String, author: String) -> String {
     let doc = std::json::find_string_field(line, "doc");
-    let raw = rec(root).keep(doc);
-    if len(raw) == 0 { return ""; }
+    let raw = keep_later(keeps, doc);
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let kind = std::json::find_string_field(line, "kind");

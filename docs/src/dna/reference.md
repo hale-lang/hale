@@ -19,12 +19,14 @@ directory as an optional argument and default to the current one.
 ```text
 hale dna init [app-dir] [--no-library]
                              attach the DNA to an existing application; the record starts with the language and system
-                             nodes and the toolchain's library proposed (--no-library leaves them out)
+                             nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the
+                             library, not the practices)
 hale dna new <name> [--no-library]
                              a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
                              the profile sets the pieces (a remote, a body host); the combination is always detected
-hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain
+hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library
+                             (each changed practice, and the library as new families, supersede the active one once the Board approves)
 hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust
 hale dna --embedded-digest [--from-tree <dir>]
                              the digest of the DNA source this binary embeds (nothing else on stdout);
@@ -434,7 +436,7 @@ kind it does not know keeps walking.
 
 The projection `status` prints, as one JSON document on one line;
 `hale dna ui` serves the same at `/api/status`. Here it is for a fresh project with nothing
-running, indented, with fifteen of its sixteen pending Reviews cut:
+running, indented, with twenty-two of its twenty-three pending Reviews cut:
 
 ```text
 $ hale dna status --json

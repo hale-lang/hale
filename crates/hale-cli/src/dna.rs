@@ -808,10 +808,11 @@ fn print_embedded_provenance(dir: &Path) {
 fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir] [--no-library]");
     eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
-    eprintln!("                                    nodes and the toolchain's library proposed as the `library` family (--no-library leaves them out)");
+    eprintln!("                                    nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the library, not the practices)");
     eprintln!("       hale dna new <name> [--no-library]");
     eprintln!("                                    a greenfield application with its DNA");
-    eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library");
+    eprintln!("                                    (each changed practice, and the library as new families, supersede the active one once the Board approves)");
     eprintln!("       hale dna memory migrate [dir]");
     eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
     eprintln!("                                    and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)");
@@ -921,7 +922,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
     eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
     eprintln!("       hale dna review <family> approve|reject");
-    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, library");
+    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, using, library (a library family is one Review for all its ideas)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -1634,6 +1635,17 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             if waiting > 0 {
                 out.push(format!("{family}  {waiting} practice(s) changed but wait: an earlier replacement is still before the Board (decide it, then `upgrade` again)"));
             }
+        }
+        // the library of this toolchain's version, for a record that has one:
+        // a new family per node, each idea superseding the one it replaces
+        // once the Board approves; an application pinned to the old toolchain
+        // keeps its bindings until then
+        let (proposed, families, superseding, waiting) = library_propose(&root, true)?;
+        if families > 0 {
+            out.push(format!("library  {families} famil(ies) proposed at {} ({proposed} idea(s), {superseding} superseding an earlier version); the Board decides each: `hale dna review library approve`", library_version()));
+        }
+        if waiting > 0 {
+            out.push(format!("library  {waiting} famil(ies) changed but wait: an earlier version is still before the Board (decide it, then `upgrade` again)"));
         }
     }
     // GH #985: with the owner's DSN given, memory's schema moves to this
@@ -3110,7 +3122,7 @@ fn charter() -> String {{
     )
 }
 
-/// One seeded practice (a `design/*` or `operating/*` family): a stable
+/// One seeded practice (a `design/*`, `operating/*` or `using/*` family): a stable
 /// name across versions of the toolchain, and the text the Board
 /// ratifies or declines.
 struct SeededPractice {
@@ -3151,28 +3163,107 @@ const OPERATING: &[SeededPractice] = &[
     SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
 ];
 
-/// The toolchain's library: ideas the record is seeded with, each its text
-/// as the toolchain ships it, bound to the graph node it is about and
-/// proposed under a family (the Board's `hale dna review <family> approve`).
-/// `(path in the repository, target node, family, text)`; seed/library
-/// fills the table out.
-const LIBRARY: &[(&str, &str, &str, &str)] = &[
-    ("docs/src/services/api.md", "language:hale", "library", include_str!("../../../docs/src/services/api.md")),
-    ("docs/src/dna/shaping.md", "system:dna", "library", include_str!("../../../docs/src/dna/shaping.md")),
+/// The using practices: how a person or an agent works with the organism,
+/// which is what a brief tells whoever is about to act in it — the design
+/// says how an organization is shaped, the operating practices how the
+/// organism runs. Seeded beside them, one Board Review each, superseded on
+/// `upgrade` the same way, and kept by `--no-library` (they are practices,
+/// not the library); never ratified by the toolchain.
+const USING: &[SeededPractice] = &[
+    SeededPractice { name: "using/propose-review-ratify", text: "nothing is in force until the Board says so. A change to the organization is a proposal, then a Review, then a ratification, in that order: a proposal states what changes and why, and names who decides; one that states only what changes cannot be judged. An unratified proposal binds nobody, and a decision is a row in the record, never a conversation.", schedule: "" },
+    SeededPractice { name: "using/change-classes", text: "name the class and the magnitude of a change before the work starts. The class decides who signs: an organization, constitutional, process-policy or topology change is the Board's; a change that touches law, widens effects or crosses ownership is the Board's whatever its class; the rest, inside the grant, is the Leader's. Work begun without a class is classified afterwards by the reviewer, and may be sent back whole.", schedule: "" },
+    SeededPractice { name: "using/ask-the-leader", text: "the Leader plans the work and you carry it out: ask it what it plans for you before you start, and take its plan as the frame. What lies inside your grant and your position's identity you decide alone and record; what changes the plan, the grant or another position's work is the Leader's to decide, and you ask it again, with the row that shows why.", schedule: "" },
+    SeededPractice { name: "using/cut-structure", text: "a position or a part goes when the record says it is not carrying its weight: no work over a window, or concerns pooling at a child that it cannot solve alone. Propose the cut with the rows that show it, and say what takes over its responsibilities; a part is not removed on a feeling, and it is not kept out of habit.", schedule: "" },
+    SeededPractice { name: "using/read-the-record", text: "the record is the organization's memory; a brief is only a view of it. Before acting on what you were told, read the rows it rests on, and when you report, cite rows, not recollection. A statement that no row supports is an opinion, and the organism acts on rows.", schedule: "" },
+    SeededPractice { name: "using/evidence-first", text: "a candidate's evidence is what a reviewer reads, so it comes before the claim. Say what was run, against what, and what it printed; a check that was not run is named as not run, never described as passing. Evidence a reviewer cannot reproduce is a request to be trusted, and the Board does not ratify on trust.", schedule: "" },
+    SeededPractice { name: "using/bind-knowledge", text: "knowledge applies where it is bound. Bind a chapter or a practice to the node it is about (the language, the system, a part of the organization), not to everyone: a package for a target carries the ideas bound to it and no others, and an idea bound too widely crowds out what the work needs.", schedule: "" },
 ];
 
-/// The idea's stable name: the family, then the chapter's file stem
-/// (`library/api`), which is what the family's Review is listed under.
-fn library_name(path: &str, family: &str) -> String {
-    let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    format!("{family}/{stem}")
+// The toolchain's library: the book per chapter and the spec per section,
+// each its text as the toolchain ships it, one idea apiece, generated from
+// the tree by build.rs (`(name, title, target node, text, text digest)`; a
+// new chapter joins by existing).
+include!(concat!(env!("OUT_DIR"), "/library_embed.rs"));
+
+/// The library's version: the toolchain's. `HALE_DNA_LIBRARY_VERSION`
+/// names another, for fixtures only: it is how a test makes "a later
+/// toolchain" out of the one binary it has, so that `upgrade`'s supersession
+/// is exercised against real record history.
+fn library_version() -> String {
+    match std::env::var("HALE_DNA_LIBRARY_VERSION") {
+        Ok(v) if !v.is_empty() => v,
+        _ => TOOLCHAIN.to_string(),
+    }
+}
+
+/// The family an idea is proposed under, from the node it is bound to: the
+/// language's ideas are `language`, the system's `design`.
+fn library_family(target: &str) -> &'static str {
+    if target == "system:dna" { "design" } else { "language" }
+}
+
+/// Chapters the book moved: `(name now, name an earlier toolchain proposed it
+/// under)`. An upgrade supersedes the active idea under the earlier name when
+/// the new name has none, so a record seeded before the move is not left with
+/// both.
+const LIBRARY_EARLIER: &[(&str, &str)] = &[("library/services/api", "library/api"), ("library/dna/shaping", "library/shaping")];
+
+fn library_earlier(name: &str) -> &'static str {
+    LIBRARY_EARLIER.iter().find(|(now, _)| *now == name).map(|(_, e)| *e).unwrap_or("")
+}
+
+/// The library as `library-seed` takes it: one JSON object per line, grouped
+/// by family. `HALE_DNA_LIBRARY_SUFFIX` appends to every text, for fixtures
+/// only (a later toolchain whose text changed).
+fn library_ideas() -> String {
+    let suffix = std::env::var("HALE_DNA_LIBRARY_SUFFIX").unwrap_or_default();
+    let mut text = String::new();
+    for family in ["language", "design"] {
+        for (name, title, target, body, digest) in LIBRARY {
+            if library_family(target) != family {
+                continue;
+            }
+            let body = format!("{body}{suffix}");
+            // fixtures only: the library as the toolchain that named its
+            // moved chapters by their earlier names proposed it
+            let (name, earlier) = if std::env::var("HALE_DNA_LIBRARY_EARLIER_NAMES").is_ok_and(|v| !v.is_empty()) && !library_earlier(name).is_empty() { (library_earlier(name), "") } else { (*name, library_earlier(name)) };
+            text.push_str(&serde_json::json!({"name": name, "title": title, "text": body, "target": target, "family": family, "digest": digest, "earlier": earlier}).to_string());
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// Hand the library to the host: proposals under their families, and with
+/// `upgrading` only for a record that has the library, as the new version's.
+/// `(ideas proposed, families, ideas superseding, families waiting)`.
+fn library_propose(root: &Path, upgrading: bool) -> Result<(usize, usize, usize, usize), String> {
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let ideas = dna_dir.join(format!("library.{}.jsonl", std::process::id()));
+    fs::write(&ideas, library_ideas()).map_err(|e| e.to_string())?;
+    let mut args = vec![ideas.to_string_lossy().to_string(), library_version()];
+    if upgrading {
+        args.push("--upgrade".to_string());
+    }
+    let out = host_run("library-seed", root, &args);
+    let _ = fs::remove_file(&ideas);
+    let out = out?;
+    let field = |key: &str| -> Result<usize, String> {
+        out.split_whitespace()
+            .find_map(|w| w.strip_prefix(key))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| format!("library-seed answered oddly: {out}"))
+    };
+    Ok((field("proposed=")?, field("families=")?, field("superseding=")?, field("waiting=")?))
 }
 
 /// seed/pull: the nodes `language:hale` and `system:dna` (and, for an
 /// attached application, `application:<account name>` — the record names
 /// the application by `application.attached`, never by a graph node, so the
 /// node is added here — with a `written_in` edge to the language), then the
-/// library as proposals, one Review per idea under the family `library`.
+/// library as proposals, one Review per family (`library/language@<version>`,
+/// `library/design@<version>`).
 fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
@@ -3205,29 +3296,19 @@ fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
     if n != lines.len() {
         return Err(format!("record-seed appended {n} of {} library rows", lines.len()));
     }
-    let ideas = dna_dir.join(format!("library.{}.jsonl", std::process::id()));
-    let mut text = String::new();
-    for (path, target, family, body) in LIBRARY {
-        text.push_str(&serde_json::json!({"name": library_name(path, family), "text": body, "target": target}).to_string());
-        text.push('\n');
-    }
-    fs::write(&ideas, text).map_err(|e| e.to_string())?;
-    let out = host_run("library-seed", root, &[ideas.to_string_lossy().to_string()]);
-    let _ = fs::remove_file(&ideas);
-    let out = out?;
-    let proposed: usize = out.split_whitespace().find_map(|w| w.strip_prefix("proposed=")).and_then(|v| v.parse().ok()).ok_or_else(|| format!("library-seed answered oddly: {out}"))?;
+    let (proposed, families, _, _) = library_propose(root, false)?;
     if proposed != LIBRARY.len() {
         return Err(format!("library-seed proposed {proposed} of {} ideas", LIBRARY.len()));
     }
     Ok(vec![
         format!("seeded  graph ({}; the nodes knowledge is about)", nodes.join(", ")),
         if app.is_some() { "seeded  edge (written_in: the application is written in language:hale)".to_string() } else { "skipped edge (no attached application)".to_string() },
-        format!("seeded  library ({proposed} idea(s) proposed, one Board Review each, bound to their nodes: `hale dna review` lists them under `library`)"),
+        format!("seeded  library ({proposed} idea(s) bound to their nodes, proposed as {families} famil(ies), one Board Review each: `hale dna review` lists them under `library`)"),
     ])
 }
 
 /// Every seeded family, by the name the Board lists it under.
-const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING)];
+const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING), ("using", USING)];
 
 /// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`
 /// appends to every practice of every family, for fixtures only: it is how a test makes

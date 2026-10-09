@@ -94,19 +94,20 @@ A practice is a named paragraph the Board ratifies: how work is done
 here. The Leader reads the ratified ones in its brief, a reviewer cites
 them, and nothing is in force until the Board says so.
 
-`init` seeds two families as proposals, one Board Review each:
+`init` seeds three families as proposals, one Board Review each:
 
 | family | practices | what it says |
 |---|---|---|
 | `design` (8) | `principles`, `evolution`, `structure-follows-intent`, `standard-equipment`, `signals`, `signaling`, `optimize`, `software-delivery` | how an organization is shaped: minimal structure, clean cuts, growth by proposal |
 | `operating` (7) | `one-store-per-step`, `row-first`, `readings-never-act`, `legs-hold-nothing`, `deploy-settles-on-pulse`, `the-forge-decides`, `optimize-cadence` | how the organism runs: what the Leader plans within and a reviewer cites |
+| `using` (7) | `propose-review-ratify`, `change-classes`, `ask-the-leader`, `cut-structure`, `read-the-record`, `evidence-first`, `bind-knowledge` | how to work with the organism: what a proposal states, who a class signs for, what the record is for, where knowledge is bound |
 
 The first two operating practices are the two rules of
 [the organism](./index.md). `hale dna review` groups them:
 
 ```text
 $ hale dna review
-16 pending review(s) of 16
+23 pending review(s) of 23
   purpose — the declared purpose, the Board's to ratify first:
       k:3870910f5de4 — ratify the declared purpose?
       decide one with `hale dna review <id> …`, or all pending with `hale dna review purpose approve|reject`
@@ -118,6 +119,10 @@ $ hale dna review
       k:33be310ddba8 — ratify the operating practice `operating/one-store-per-step`: a workflow step writes to exactly one store, by that store's one writer,…
       …
       decide one with `hale dna review <id> …`, or all pending with `hale dna review operating approve|reject`
+  using — 7 seeded practice(s), each its own Review:
+      k:8c1f6a4e2d70 — ratify the using practice `using/propose-review-ratify`: nothing is in force until the Board says so. A change to the organi…
+      …
+      decide one with `hale dna review <id> …`, or all pending with `hale dna review using approve|reject`
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
@@ -127,6 +132,13 @@ does more than advise: `operating/optimize-cadence`, once ratified,
 declares the schedule of the optimize pass, once a day, convened by
 the Leader ([Schedules](./schedules.md)). A different cadence is an
 amendment to that practice.
+
+The `using` family is kept when `init` is run with `--no-library`: the
+library is the book and the spec, which the Board ratifies a family at a
+time ([What a Work is told](./memory.md#what-a-work-is-told-and-by-which-node)),
+and these are practices, one Review each. `hale dna upgrade` proposes
+each practice of the three families whose text changed, as it does the
+design, and the new toolchain's library as new families.
 
 ### Proposing one
 
