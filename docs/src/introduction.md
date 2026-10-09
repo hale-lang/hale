@@ -1,67 +1,80 @@
 # Introduction
 
-**A general-purpose language with a GC-free native runtime — typed
-message-bus concurrency, data-race-free by design.**
+Hale is a compiled, general-purpose language. Every piece of state has one
+owner, and the parts of a program talk only over declared, typed message
+channels. That shape lets the compiler check a program's architecture the
+way it checks its types. It runs natively with no garbage collector and no
+borrow checker, and its concurrency has no locks and no data races.
 
-*Write the system, not the lore.*
+A complete Hale program can be three lines: a `fn main()` that reads an
+argument and prints. You can write useful Hale, such as CLI tools, file and
+JSON work, and HTTP clients and servers, without declaring a lifecycle, a
+topic, a placement or a claim. Those arrive when the program's growth earns
+them, and nothing you wrote earlier changes when they do.
 
-A complete Hale program can be three lines — a `fn main()` that
-reads an argument and prints. You can write useful Hale — CLI
-tools, file and JSON work, HTTP clients and servers — without
-declaring a lifecycle, a topic, a placement, or a claim. Those
-constructs arrive when the program's growth earns them, and
-nothing you wrote earlier changes when they do.
+Most languages pick a level and live there. Python and JavaScript sit high:
+fast to write, far from the metal. Go sits in the middle, with concurrency
+in the language and a runtime underneath. Rust and C++ sit low: you own
+memory and layout, and you pay attention to both.
 
-Most languages pick a level and live there. Python and
-JavaScript sit high — fast to write, far from the metal. Go
-sits in the middle — concurrency in the language, a runtime
-underneath. Rust and C++ sit low — you own memory and layout,
-and you pay attention to both.
+Hale is one language you can write at any of those levels, moving between
+them without switching tools. The same file can read like a script at the
+top and like a systems program at the bottom. There is one construct, the
+**locus**, and the only thing that changes as you go deeper is how much of
+it you choose to see.
 
-Hale is a single language you can write at any of those levels,
-and move between them without switching tools. The same file
-can read like a script at the top and like a systems program at
-the bottom. There is one primitive — the **locus** — and the
-only thing that changes as you descend is how much of it you
-choose to see.
-
-> **Try it now:** the [playground](https://play.hale-lang.org/) compiles
-> and runs your Hale right in the browser — no install, same compiler
-> you'd install locally. For a guided start, the
-> [example gallery](https://hale-lang.org/play/) walks curated programs
+> **Try it now:** the [playground](https://play.hale-lang.org/) compiles and
+> runs your Hale in the browser, with the same compiler you would install.
+> The [example gallery](https://hale-lang.org/play/) walks curated programs
 > chapter by chapter.
 
-This guide is built around that idea. It comes in six parts,
-each one opening with a page that says what the layer is and
-what the next one adds:
+## Hale's words, in familiar terms
 
-- **The language** — values, math, functions, control flow,
-  failure as a value, and everyday files, JSON, HTTP and tests.
-  Hale at the altitude you'd reach for Python or Node.
-- **The locus model** — loci that run over time: a lifecycle, a
-  typed message bus, placement, supervision, programs split
-  across binaries. Hale where you'd reach for Go.
-- **Saying what must hold** — effect contracts, claims over the
-  whole program graph, and constitutions: promises the build
-  checks before anything runs.
-- **Systems control** — memory, layout, lifetime, zero-copy I/O,
-  C, WebAssembly, and watching a program run. Hale where you'd
-  reach for Rust or C++.
-- **The organism** — an application that is governed: it
-  proposes its own changes, proves them, asks the people with
-  authority, and applies exactly what they approve.
-- **The habitat** — the design for what several organisms and
-  their people share.
+Hale uses a small vocabulary of its own. Each word names something you
+already know, with one difference worth knowing:
 
-Each part expands on the one before it without contradicting
-it. The function you wrote in *the language* still works in
-*systems control* — you've just learned to see more of what was
-always there.
+| Hale says | You may know it as | The difference |
+| --- | --- | --- |
+| **locus** | an actor, a small service, an object nobody else can reach into | it is the only kind of component, so the compiler sees who owns what and who talks to whom |
+| **topic** | a pub/sub topic, as in Kafka or NATS | it is declared in source with its payload type, so the compiler knows every sender and receiver |
+| **main locus** | `main()` plus a deployment manifest | where each part runs and how each channel travels is one block in `main` |
+| **claim** | an architecture test | a sentence about the whole program, checked over every path and compiled to no code |
+| **witness** | a counterexample | the concrete path that breaks a rule, in your own names |
+| **organism** | an application with its own pipeline, operations and audit log | all of it is one Hale program next to your code, and it changes only under review |
+
+The [glossary](https://hale-lang.org/glossary) has every term.
+
+## How this guide is laid out
+
+The guide comes in six parts. Each opens with a page that says what the
+layer is and what the next one adds:
+
+- **The language:** values, math, functions, control flow, failure as a
+  value, and everyday files, JSON, HTTP and tests. Hale at the level you
+  would use Python or Node for.
+- **The locus model:** loci that run over time, with a lifecycle, a typed
+  message bus, placement, supervision, and programs split across binaries.
+  Hale where you would use Go.
+- **Saying what must hold:** effect contracts, claims over the whole
+  program graph, and constitutions, which are promises the build checks
+  before anything runs.
+- **Systems control:** memory, layout, lifetime, zero-copy I/O, C,
+  WebAssembly, and watching a program run. Hale where you would use Rust or
+  C++.
+- **The organism:** an application that is governed. It proposes its own
+  changes, proves them, asks the people with authority, and applies
+  exactly what they approve.
+- **The habitat:** the design for what several organisms and their people
+  share.
+
+Each part expands on the one before it and contradicts none of it. The
+function you wrote in *the language* still works in *systems control*; you
+have only learned to see more of what was always there.
 
 ## A taste
 
-Here's a small service. Don't worry about every keyword yet;
-notice that each phrase you'd say out loud has a place to live.
+Here is a small service. Each phrase you would say out loud has a place to
+live, so the keywords can wait.
 
 ```hale
 type Player    { id: String; name: String; }
@@ -90,30 +103,28 @@ locus Matchmaker {
 }
 ```
 
-*"A matchmaker"* → `locus Matchmaker`. *"That receives players"*
-→ `subscribe JoinQueue`. *"And announces matches"* → `publish
-MatchReady`. *"When enough are queued"* → the `if`. The code
-keeps the shape of the sentence.
+*"A matchmaker"* is `locus Matchmaker`. *"That receives players"* is
+`subscribe JoinQueue`. *"And announces matches"* is `publish
+MatchReady`. *"When enough are queued"* is the `if`. The code keeps the
+shape of the sentence.
 
-That's the bet behind Hale: the gap between *how you describe a
-system* and *what you type* doesn't have to be there. The
-[design](./the-design.md) chapter explains why one shape works
-across the whole range — and across human, LLM, and machine.
+The gap between how you describe a system and what you type does not have
+to be there; Hale is built on that bet. The [design](./the-design.md)
+chapter explains why one shape works across the whole range, and across
+people, language models and the machine.
 
 ## How to read this
 
-If you're new to programming or to systems languages, start at
-**The language** and go in order. If you already program, skim
-it for the parts that differ from what you know (the failure
-model and the money/time types are worth a look), then jump to
-the part that matches the program you want to write. Many
-chapters open with a short *"Coming from X?"* box to orient
-you.
+Readers new to programming, or to systems languages, can start at **The
+language** and go in order. Readers who already program can skim it for
+the parts that differ from what they know (the failure model and the money,
+time and unit types are worth a look), then jump to the part that matches
+the program they want to write. Many chapters open with a short *"Coming
+from X?"* box to orient you.
 
-When you want the exact rules rather than the tour, the
-[reference](./reference.md) points into `spec/` — the canonical
-contract the compiler enforces.
+The [reference](./reference.md) points into `spec/`, the canonical
+contract the compiler enforces, for the exact rules behind the tour.
 
-Head to [Install](./getting-started/install.md) to set up the
-toolchain, then [Your first run](./getting-started/first-run.md)
-to put a program on screen.
+Head to [Install](./getting-started/install.md) to set up the toolchain,
+then [Your first run](./getting-started/first-run.md) to put a program on
+screen.
