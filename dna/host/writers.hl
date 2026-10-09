@@ -947,7 +947,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     // an execution the organization runs, and one verdict waiting on the
     // ones before it would wait on their executions too.
     if seeded_group(id) {
-        let ids = p.review_ids();
+        let ids = p.review_ids_in_order();
         let n = list_len(ids);
         let before = p.rows();
         let mut out = "";

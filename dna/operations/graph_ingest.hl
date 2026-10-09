@@ -291,6 +291,12 @@ locus GraphIngest {
         consumed: String = "";
         guards: String = "";
         unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
+        // the API roles a contract's surface requires (`<contract>\t<role>`
+        // per line, once each), read from the description the toolchain
+        // exports beside it (`spec/<Stem>.description.json`): the equipment
+        // a position is fitted with, never what grants it authority
+        roles: String = "";
+        runs: String = ""; // `<deployment>\t<process>` per process a deployment runs
         deployments: String = "";
         practices: String = "";
         nodes: Int = 0;
@@ -438,7 +444,21 @@ locus GraphIngest {
             self.add(runs, "process", "process:" + rest[0..nl]);
             rest = rest[(nl + 1)..len(rest)];
         }
+        self.note_runs(runs);
         self.edge(runs);
+    }
+    // Which deployment runs which process, for the equipment of an operator.
+    @unbounded
+    fn note_runs(e: GraphEdge) {
+        let mut deployment = "";
+        let mut ms = e.members;
+        while len(ms) > 0 {
+            let nl = std::str::index_of(ms, "\n");
+            let m = ms[0..nl];
+            ms = ms[(nl + 1)..len(ms)];
+            if std::str::starts_with(m, "deployment\t") { deployment = m[11..len(m)]; }
+            if std::str::starts_with(m, "process\t") && len(deployment) > 0 { self.runs = self.runs + deployment + "\t" + m[8..len(m)] + "\n"; }
+        }
     }
     // The seeds: a directory with a manifest, the outermost one; a process
     // unfolds into the seed of its name.
@@ -512,10 +532,58 @@ locus GraphIngest {
             if ingest_ext(f, "md") { self.tables_of(c, self.read(f)); } else { self.schemas_of(c, self.read(f)); }
         }
     }
-    // A YAML contract's `components.schemas`: each a noun; then each local
-    // `$ref` from one schema to another that the contract names, a refers.
+    // The roles each contract's surface requires. `spec/<Stem>.description.json`
+    // is what `hale api describe` writes for a surface: the contract's own
+    // roles, not a contract of its own (no node), read for the `.md` or
+    // `.yaml` contract whose stem matches it case-insensitively. Each
+    // member's `requires` names roles; a role is kept once per contract.
+    @unbounded
+    fn descriptions_step() {
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if !std::str::starts_with(f, "spec/") || !std::str::ends_with(f, ".description.json") { continue; }
+            let stem = std::str::lower(f[5..(len(f) - 17)]);
+            if len(stem) == 0 || std::str::contains(stem, "/") { continue; }
+            let mut matched = "";
+            let mut cs = self.contracts;
+            while len(cs) > 1 {
+                cs = cs[1..len(cs)];
+                let n2 = std::str::index_of(cs, "\n");
+                let c = cs[0..n2];
+                cs = cs[n2..len(cs)];
+                if !ingest_ext(c, "md yaml yml") { continue; }
+                let name = std::str::lower(c);
+                if name == "spec/" + stem + ".md" || name == "spec/" + stem + ".yaml" || name == "spec/" + stem + ".yml" { matched = "contract:" + c; cs = ""; }
+            }
+            if len(matched) == 0 { continue; }
+            let mut surfaces = std::json::array_first(std::json::find_field_raw(self.read(f), "surfaces"));
+            while !surfaces.done {
+                let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
+                while !members.done {
+                    let mut required = std::json::array_first(std::json::find_field_raw(members.element, "requires"));
+                    while !required.done {
+                        let e = std::str::trim(required.element);
+                        if len(e) >= 3 && std::str::starts_with(e, "\"") {
+                            let role = std::json::unescape_string(e[1..(len(e) - 1)]);
+                            let line = matched + "\t" + role + "\n";
+                            if graph_text_ok(role) && !std::str::contains("\n" + self.roles, "\n" + line) { self.roles = self.roles + line; }
+                        }
+                        required = std::json::array_next(required);
+                    }
+                    members = std::json::array_next(members);
+                }
+                surfaces = std::json::array_next(surfaces);
+            }
+        }
+    }
+    // A YAML matched's `components.schemas`: each a noun; then each local
+    // `$ref` from one schema to another that the matched names, a refers.
     // Every noun is written before any edge names it; a `$ref` that leaves
-    // the contract, or names a schema it does not hold, is no edge.
+    // the matched, or names a schema it does not hold, is no edge.
     @unbounded
     fn schemas_of(spec: String, text: String) {
         let names = GraphEdge { kind: "names" };
@@ -863,6 +931,7 @@ locus GraphIngest {
             if !std::str::contains(self.processes, "\n" + name + "\n") { self.refuse(path + ": `" + name + "` in a `Deployment | Runs` row is no process of this repository"); return; }
             self.add(e, "process", "process:" + name);
         }
+        self.note_runs(e);
         self.edge(e);
     }
 
@@ -1049,6 +1118,7 @@ locus GraphIngest {
         self.compose_step();
         self.seeds_step();
         self.contracts_step();
+        self.descriptions_step();
         self.documents_step();
         self.markdown_step();
         self.gates_step();
