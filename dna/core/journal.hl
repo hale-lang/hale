@@ -91,6 +91,19 @@ locus MemJournal {
         self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: event_digest(prev, kind, entity, body) });
         return AppendResult { ok: true, revision: rev + 1 };
     }
+    // Many rows at once: a loop of `append`s.
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        let mut at = expected;
+        let mut i = 0;
+        while i < rows.len() {
+            let r = rows.get(i) or Row { };
+            let a = self.append(at, r.kind, r.entity, r.body);
+            if !a.ok { return a; }
+            at = a.revision;
+            i = i + 1;
+        }
+        return AppendResult { ok: true, revision: at };
+    }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
 }

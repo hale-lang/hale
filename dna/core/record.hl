@@ -78,6 +78,13 @@ type Signer {
     key: String = ""; // the verified key, "" when unverified
 }
 
+// Rows and receipt texts offered to the record together.
+@form(vec)
+locus RowBatch { capacity { heap rows of Row; } }
+
+@form(vec)
+locus Texts { capacity { heap rows of String; } }
+
 interface Record {
     fn kind() -> String;
     // ---- the record itself
@@ -102,6 +109,12 @@ interface Record {
     // `stale` when the chain is no longer at `at` ("" = empty). `sign`
     // signs the row as this record's writer; `note` is kept with it.
     fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended;
+    // Many rows, one commit each, on top of `at`: the same rows, chain and
+    // commits as that many `append`s, written together (the git record
+    // streams them to one `git fast-import`). The chain moves once, at
+    // the end, under compare-and-swap: a batch that fails leaves it where
+    // it was. `id` is the last row's.
+    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended;
     // The same row built beside every chain and moving none: a reconcile
     // builds a whole chain and swaps once (GH #603). The id, "" on failure.
     fn build(at: String, row: Row, sign: Bool, note: String) -> String;
@@ -111,6 +124,8 @@ interface Record {
     fn drop_chain(chain: String) -> Bool;
     // ---- bodies
     fn keep(text: String) -> String;
+    // Every text kept as `keep` keeps it, in one pass.
+    fn keep_batch(texts: Texts) -> Bool;
     fn body(digest: String) -> Kept;
     fn forget(digest: String) -> Bool;
     // ---- cells
@@ -427,6 +442,25 @@ locus MemRecord {
         self.rows.push(MemRow { chain: chain, parent: at, row: Row { seq: self.count(chain), kind: row.kind, entity: row.entity, body: row.body, author: author, id: id } });
         return Appended { ok: true, id: id };
     }
+    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
+        let mut cur = at;
+        let mut i = 0;
+        while i < rows.len() {
+            let a = self.append(chain, cur, rows.get(i) or Row { }, sign, note);
+            if !a.ok { return a; }
+            cur = a.id;
+            i = i + 1;
+        }
+        return Appended { ok: true, id: cur };
+    }
+    fn keep_batch(texts: Texts) -> Bool {
+        let mut i = 0;
+        while i < texts.len() {
+            let d = self.keep(texts.get(i) or "");
+            i = i + 1;
+        }
+        return true;
+    }
     // The number of rows from the first up to and including `id` on its
     // chain, following parents: the seq a built row gets.
     @unbounded
@@ -713,6 +747,101 @@ locus GitRecord {
         if self.move_chain(chain, id, at) { return Appended { ok: true, id: id }; }
         return Appended { error: "stale" };
     }
+    // Many rows, one commit each, written as one `git fast-import` stream:
+    // each commit's tree carries the journal as it stands after that row,
+    // exactly as `build` writes it. The stream lands on a ref of its own,
+    // which fast-import writes only at the end of a stream it accepted;
+    // the chain then moves once, under compare-and-swap, so a batch that
+    // fails anywhere leaves the chain and its file as they were. A
+    // signing writer signs each commit, which a stream cannot: it appends
+    // one by one.
+    @unbounded
+    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
+        let n = rows.len();
+        if n == 0 { return Appended { ok: true, id: at }; }
+        let h = self.head(chain);
+        if !h.ok { return Appended { error: "io: " + h.why }; }
+        if h.id != at { return Appended { error: "stale" }; }
+        if sign {
+            let mut cur = at;
+            let mut j = 0;
+            while j < n {
+                let a = self.append(chain, cur, rows.get(j) or Row { }, true, note);
+                if !a.ok { return a; }
+                cur = a.id;
+                j = j + 1;
+            }
+            return Appended { ok: true, id: cur };
+        }
+        let mut k = 0;
+        while k < n {
+            let r = rows.get(k) or Row { };
+            if std::str::contains(r.kind, "\n") || std::str::contains(r.kind, "\r") || std::str::contains(r.entity, "\n") || std::str::contains(r.entity, "\r") {
+                return Appended { error: "io: a row's kind and entity are one line each" };
+            }
+            if std::str::contains(r.author, "\n") || std::str::contains(r.author, "\t") { return Appended { error: "io: a row's author is one line" }; }
+            k = k + 1;
+        }
+        self.make_scratch();
+        let stream = self.tmp("batch");
+        let tip = self.ref_of("batch." + to_string(std::process::pid()));
+        let user = self.git_out("config\nuser.name");
+        let mut text = self.text_at(at);
+        let mut seq = count_lines(text);
+        let b = std::bytes::BytesBuilder { };
+        // `key<TAB>author<TAB>committer` a line: the identities git stamps
+        let mut idents = "";
+        let mut nonce = "";
+        if len(at) == 0 {
+            nonce = hex(std::os::getrandom(16) or b"");
+            if len(nonce) < 32 { return Appended { error: "io: no randomness for the record's first commit" }; }
+        }
+        let mut i = 0;
+        while i < n {
+            let row = rows.get(i) or Row { };
+            let who = if len(row.author) > 0 { row.author } else { if len(user) > 0 { user } else { "host" } };
+            let key = if len(user) > 0 { "" } else { who };
+            let mut found = "";
+            let mut rest = idents;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                if std::str::starts_with(line, key + "\t") { found = line; }
+            }
+            if len(found) == 0 {
+                let identity = if len(user) == 0 { "-c\nuser.name=" + who + "\n-c\nuser.email=" + who + "@dna\n" } else { "" };
+                let a = self.git(identity + "var\nGIT_AUTHOR_IDENT");
+                let c = self.git(identity + "var\nGIT_COMMITTER_IDENT");
+                if a.code != 0 || c.code != 0 { return Appended { error: "io: var: " + trim_nl(a.stderr) + trim_nl(c.stderr) }; }
+                found = key + "\t" + trim_nl(a.stdout) + "\t" + trim_nl(c.stdout);
+                idents = idents + found + "\n";
+            }
+            let t1 = std::str::index_of(found, "\t");
+            let t2 = std::str::index_of(found[(t1 + 1)..len(found)], "\t") + t1 + 1;
+            let msg = row.kind + " " + row.entity + "\n" + (if len(note) > 0 { "\n" + note + "\n" } else { "" }) + (if i == 0 && len(nonce) > 0 { "\n" + RECORD_NONCE + ": " + nonce + "\n" } else { "" });
+            text = text + row_line(seq, row, who);
+            seq = seq + 1;
+            b.append_str("commit " + tip + "\nauthor " + found[(t1 + 1)..t2] + "\ncommitter " + found[(t2 + 1)..len(found)] + "\ndata " + to_string(len(msg)) + "\n" + msg + "\n");
+            if i == 0 && len(at) > 0 { b.append_str("from " + at + "\n"); }
+            b.append_str("M 100644 inline journal.jsonl\ndata " + to_string(len(text)) + "\n");
+            b.append_str(text);
+            b.append_str("\n\n");
+            i = i + 1;
+        }
+        std::io::fs::write_file(stream, std::str::from_bytes(b.snapshot() or raise)) or self.io_failed(err);
+        let fi = run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + self.repo + "\n" + stream);
+        std::io::fs::unlink(stream) or discard;
+        if fi.code != 0 {
+            let dropped = self.git_ok("update-ref\n-d\n" + tip);
+            return Appended { error: "io: fast-import: " + trim_nl(fi.stderr) };
+        }
+        let id = self.git_out("rev-parse\n-q\n--verify\n" + tip);
+        let dropped = self.git_ok("update-ref\n-d\n" + tip);
+        if len(id) == 0 { return Appended { error: "io: the batch could not be read back" }; }
+        if !self.move_chain(chain, id, at) { return Appended { error: "stale" }; }
+        return Appended { ok: true, id: id };
+    }
     // One commit for `journal.jsonl` + the row's line on top of `at`.
     // Touches no ref. Under a signing writer the commit is signed (GH #604
     // rule 6); `note` becomes the message's body.
@@ -789,6 +918,72 @@ locus GitRecord {
         if len(blob) == 0 { return ""; }
         if !self.git_ok("update-ref\n" + ref + "\n" + blob) { return ""; }
         return digest;
+    }
+    // `keep` for many texts: the refs held are listed once, the missing
+    // blobs written by one `hash-object --stdin-paths`, their refs made by
+    // one `update-ref --stdin`.
+    @unbounded
+    fn keep_batch(texts: Texts) -> Bool {
+        let n = texts.len();
+        if n == 0 { return true; }
+        self.make_scratch();
+        let listing = self.git("for-each-ref\n--format=%(refname)\nrefs/dna/receipts/");
+        if listing.code != 0 { self.last_error = "for-each-ref: " + trim_nl(listing.stderr); return false; }
+        let mut held = "\n" + listing.stdout;
+        let base = self.tmp("receipts");
+        let mut paths = "";
+        let mut digests = "";
+        let mut files = 0;
+        let mut i = 0;
+        while i < n {
+            let text = texts.get(i) or "";
+            let digest = hex_digest(text);
+            let ref = self.ref_of("receipts/" + digest);
+            if !std::str::contains(held, "\n" + ref + "\n") {
+                held = held + ref + "\n";
+                let path = base + "." + to_string(files);
+                std::io::fs::write_file(path, text) or self.io_failed(err);
+                paths = paths + path + "\n";
+                digests = digests + ref + "\n";
+                files = files + 1;
+            }
+            i = i + 1;
+        }
+        if files == 0 { return true; }
+        let list = base + ".list";
+        let refs = base + ".refs";
+        std::io::fs::write_file(list, paths) or self.io_failed(err);
+        let ho = run_tool("sh\n-c\nexec git -C \"$1\" hash-object -w --stdin-paths < \"$2\"\nsh\n" + self.repo + "\n" + list);
+        let mut ok = ho.code == 0;
+        if ok {
+            let mut updates = "";
+            let mut shas = ho.stdout;
+            let mut rs = digests;
+            while len(shas) > 0 && len(rs) > 0 {
+                let a = std::str::index_of(shas, "\n");
+                let b = std::str::index_of(rs, "\n");
+                updates = updates + "update " + rs[0..b] + " " + shas[0..a] + "\n";
+                shas = shas[(a + 1)..len(shas)];
+                rs = rs[(b + 1)..len(rs)];
+            }
+            if len(shas) > 0 || len(rs) > 0 { ok = false; }
+            if ok {
+                std::io::fs::write_file(refs, updates) or self.io_failed(err);
+                let ur = run_tool("sh\n-c\nexec git -C \"$1\" update-ref --stdin < \"$2\"\nsh\n" + self.repo + "\n" + refs);
+                ok = ur.code == 0;
+                if !ok { self.last_error = "update-ref: " + trim_nl(ur.stderr); }
+            }
+        } else {
+            self.last_error = "hash-object: " + trim_nl(ho.stderr);
+        }
+        let mut gone = 0;
+        while gone < files {
+            std::io::fs::unlink(base + "." + to_string(gone)) or discard;
+            gone = gone + 1;
+        }
+        std::io::fs::unlink(list) or discard;
+        std::io::fs::unlink(refs) or discard;
+        return ok;
     }
     fn body(digest: String) -> Kept {
         let r = self.git("cat-file\n-p\n" + self.ref_of("receipts/" + digest));
@@ -1154,6 +1349,36 @@ locus GitJournal {
         self.io_errors = self.io_errors + 1;
         self.last_error = "append lost the ref race two hundred times";
         return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    // Many rows at the tail in one write (`Record.append_batch`): each
+    // row its own commit, the chain moved once. A swap lost to another
+    // process reloads and reports the revision stale, for the caller to
+    // decide again; a batch that fails leaves the rows as they were.
+    @effects(is: { journal_io })
+    @unbounded
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut batch = RowBatch { };
+        let mut i = 0;
+        while i < rows.len() {
+            let r = rows.get(i) or Row { };
+            batch.push(Row { kind: r.kind, entity: r.entity, body: r.body, author: self.author });
+            i = i + 1;
+        }
+        let a = self.record.append_batch(self.chain(), self.head_sha, batch, false, "");
+        if a.ok {
+            let loaded = self.load();
+            return AppendResult { ok: true, revision: self.rows.len() };
+        }
+        if std::str::starts_with(a.error, "io") {
+            self.io_errors = self.io_errors + 1;
+            self.last_error = a.error;
+            return AppendResult { error: "io", expected: expected, actual: rev };
+        }
+        self.retries = self.retries + 1;
+        let loaded = self.load();
+        return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
     }
     // One compare-and-swap at `expected`: the chain read now, the row
     // built on it, the swap refused if another writer moved the chain in

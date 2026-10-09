@@ -1,0 +1,174 @@
+// dna/tests/record_batch_test.hl — a batch of rows is the same record as
+// the same rows appended one by one.
+//
+// `Record.append_batch` writes many rows, one commit each, through one
+// `git fast-import`; `keep_batch` writes many receipts through one
+// `hash-object --stdin-paths` and one `update-ref --stdin`. What the
+// record holds does not change: the journal file at every commit, the
+// commits' authors and messages, the receipts' refs and blobs, the
+// chain's verification. A batch that fails leaves the chain where it was.
+
+import "../core" as dna;
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn fresh(name: String) -> String {
+    let dir = dna::scratch_root(name);
+    let mk = dna::run_tool("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + dir);
+    std::test::assert(mk.code == 0, name + ": a repository");
+    return dir;
+}
+
+fn row(k: Int) -> dna::Row {
+    return dna::Row { kind: "idea.proposed", entity: "e" + to_string(k), body: "{\"n\":" + to_string(k) + ",\"text\":\"é \\\"quoted\\\" ü\"}", author: if k % 2 == 0 { "riley" } else { "" } };
+}
+
+fn text_of(k: Int) -> String { return "receipt number " + to_string(k) + " é"; }
+
+// The messages and authors, less the hashes (which carry the dates).
+fn shape(dir: String, first: String) -> String {
+    return in_dir(dir, "git\nlog\n--reverse\n--format=%an|%ae|%s|%b\n" + first + "..refs/dna/journal").stdout;
+}
+
+fn journals(dir: String) -> String {
+    let ids = in_dir(dir, "git\nrev-list\n--reverse\nrefs/dna/journal");
+    let mut out = "";
+    let mut rest = ids.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        out = out + in_dir(dir, "git\nshow\n" + rest[0..nl] + ":journal.jsonl").stdout + "--\n";
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return out;
+}
+
+fn receipts(dir: String) -> String {
+    return in_dir(dir, "git\nfor-each-ref\n--format=%(refname) %(objectname)\nrefs/dna/receipts").stdout;
+}
+
+fn trees(dir: String) -> String {
+    return in_dir(dir, "git\nlog\n--reverse\n--format=%T\nrefs/dna/journal").stdout;
+}
+
+main locus App {
+    run() {
+        let single = fresh("batch-single");
+        let batch = fresh("batch-batch");
+        let a = dna::GitRecord { repo: single };
+        let b = dna::GitRecord { repo: batch };
+        // the first row alone, in both (a record's first commit carries a nonce)
+        let a0 = a.append("journal", "", row(0), false, "");
+        let b0 = b.append("journal", "", row(0), false, "");
+        std::test::assert(a0.ok && b0.ok, "the first rows land");
+
+        // the same six rows, one by one and as one batch
+        let mut cur = a0.id;
+        let mut k = 1;
+        while k <= 6 {
+            let r = a.append("journal", cur, row(k), false, "a note");
+            std::test::assert(r.ok, "single append " + to_string(k));
+            cur = r.id;
+            k = k + 1;
+        }
+        let rows = dna::RowBatch { };
+        k = 1;
+        while k <= 6 { rows.push(row(k)); k = k + 1; }
+        let stale = b.append_batch("journal", "0000000000000000000000000000000000000001", rows, false, "a note");
+        std::test::assert(!stale.ok && stale.error == "stale", "a batch at a head the chain is not at is stale: " + stale.error);
+        std::test::assert_eq_str(b.head("journal").id, b0.id, "and moved nothing");
+        let landed = b.append_batch("journal", b0.id, rows, false, "a note");
+        std::test::assert(landed.ok, "the batch lands: " + landed.error);
+        std::test::assert_eq_str(b.head("journal").id, landed.id, "the chain is at the batch's last row");
+        std::test::assert_eq_int(b.count("journal"), 7, "seven rows");
+        std::test::assert_eq_str(journals(batch), journals(single), "the journal file at every commit is the one a single append writes");
+        std::test::assert_eq_str(trees(batch), trees(single), "so is every commit's tree");
+        std::test::assert_eq_str(shape(batch, b0.id), shape(single, a0.id), "authors, subjects and notes are the same");
+        std::test::assert_eq_str(b.text_at(landed.id), a.text_at(cur), "and the text at the head");
+        // the identity of a batch's rows read back through the journal locus
+        let jb = dna::GitJournal { repo: batch };
+        let ja = dna::GitJournal { repo: single };
+        std::test::assert(jb.verify_chain() && ja.verify_chain(), "both chains verify");
+        std::test::assert_eq_int(jb.revision(), 7, "the journal loads seven rows");
+        std::test::assert_eq_str(jb.read(5).entity, ja.read(5).entity, "row by row");
+        std::test::assert_eq_str(jb.author_of(2), ja.author_of(2), "with their authors");
+
+        // a refused batch (a row that is not one line) lands nothing
+        let bad = dna::RowBatch { };
+        bad.push(row(7));
+        bad.push(dna::Row { kind: "idea.proposed", entity: "two\nlines" });
+        let before = b.head("journal").id;
+        let refused = b.append_batch("journal", before, bad, false, "");
+        std::test::assert(!refused.ok && std::str::starts_with(refused.error, "io"), "a row of two lines refuses the batch: " + refused.error);
+        std::test::assert_eq_str(b.head("journal").id, before, "the chain is where it was");
+        std::test::assert_eq_str(b.text_at(before), b.text_at(landed.id), "and so is its file");
+        let leftover = in_dir(batch, "git\nfor-each-ref\nrefs/dna/batch*");
+        std::test::assert_eq_str(leftover.stdout, "", "the stream's own ref is gone");
+
+        // what that rests on: fast-import writes a ref only at the end of a
+        // stream it accepted, so a stream cut off midway leaves none
+        let cut = batch + "/.hale/cut.stream";
+        std::io::fs::write_file(cut, "commit refs/dna/batch.cut\ncommitter t <t@x> 1700000000 +0000\ndata 3\nm1\nM 100644 inline journal.jsonl\ndata 2\na\n\ncommit refs/dna/batch.cut\ncommitter t <t@x> 1700000000 +0000\ndata 3\nm2\nM 100644 inline journal.jsonl\ndata 99\nshort") or discard;
+        let fi = dna::run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + batch + "\n" + cut);
+        std::test::assert(fi.code != 0, "a stream cut off midway is refused");
+        std::test::assert_eq_str(in_dir(batch, "git\nfor-each-ref\nrefs/dna/batch.cut").stdout, "", "and wrote no ref, not even for the commit before the cut");
+
+        // a batch from nothing: a first commit with its nonce, then the chain
+        let fromempty = fresh("batch-empty");
+        let c = dna::GitRecord { repo: fromempty };
+        let first = dna::RowBatch { };
+        k = 0;
+        while k < 4 { first.push(row(k)); k = k + 1; }
+        let c1 = c.append_batch("journal", "", first, false, "");
+        std::test::assert(c1.ok, "a batch onto an empty chain lands: " + c1.error);
+        std::test::assert_eq_int(c.count("journal"), 4, "four commits");
+        std::test::assert_eq_str(c.identity(), c.ids("journal")[0..40], "the first is the record's identity");
+        let nonce = in_dir(fromempty, "git\nlog\n--reverse\n--format=%b%x00\nrefs/dna/journal").stdout;
+        std::test::assert(std::str::contains(nonce, "Record-Nonce: "), "the first commit carries the nonce");
+        std::test::assert_eq_int(dna::count_lines(c.text_at(c1.id)), 4, "the file holds four rows");
+        std::test::assert(dna::GitJournal { repo: fromempty }.verify_chain(), "and verifies");
+
+        // receipts: the same refs and blobs as one-by-one keeps
+        let ra = fresh("batch-keeps-single");
+        let rb = fresh("batch-keeps-batch");
+        let ka = dna::GitRecord { repo: ra };
+        let kb = dna::GitRecord { repo: rb };
+        let texts = dna::Texts { };
+        k = 0;
+        while k < 9 { texts.push(text_of(k)); k = k + 1; }
+        texts.push(text_of(3)); // a duplicate within the batch
+        let early = kb.keep(text_of(5)); // and one the record holds already
+        k = 0;
+        while k < 9 { let d = ka.keep(text_of(k)); k = k + 1; }
+        std::test::assert(kb.keep_batch(texts), "the receipts are kept");
+        std::test::assert_eq_str(receipts(rb), receipts(ra), "the same refs, the same blobs");
+        std::test::assert(kb.body(early).present && kb.body(dna::hex_digest(text_of(8))).text == text_of(8), "and read back");
+        std::test::assert(kb.keep_batch(texts), "kept again");
+        std::test::assert_eq_str(receipts(rb), receipts(ra), "nothing changed");
+        std::test::assert(kb.keep_batch(dna::Texts { }), "an empty batch");
+
+        // in memory a batch is a loop
+        let m = dna::MemRecord { };
+        let mr = m.append_batch("journal", "", first, false, "");
+        std::test::assert(mr.ok && m.count("journal") == 4, "memory: four rows");
+        let mj = dna::MemJournal { };
+        let mja = mj.append_batch(0, first);
+        std::test::assert(mja.ok && mja.revision == 4 && mj.verify_chain(), "the memory journal: a loop, and its chain verifies");
+
+        // the git journal's batch
+        let gj = dna::GitJournal { repo: fromempty };
+        let gb = gj.append_batch(4, first);
+        std::test::assert(gb.ok && gb.revision == 8 && gj.verify_chain(), "the git journal: eight rows after the second batch");
+        let late = gj.append_batch(4, first);
+        std::test::assert(!late.ok && late.error == "stale_revision", "a batch at a revision the journal left is stale");
+
+        dna::scratch_done(single);
+        dna::scratch_done(batch);
+        dna::scratch_done(fromempty);
+        dna::scratch_done(ra);
+        dna::scratch_done(rb);
+    }
+}
+
+fn main() { App { }; }
