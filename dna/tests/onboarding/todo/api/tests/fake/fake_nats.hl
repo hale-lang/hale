@@ -49,14 +49,3 @@ locus Sense {
     bus { subscribe todo::TodoOverdue as on_overdue; }
     fn on_overdue(t: todo::TodoItem) { self.nerves.overdue(t.id, t.title, t.due); }
 }
-
-fn free_port(start: Int) -> Int {
-    let mut port = 30000 + (std::process::pid() * 11 + start) % 17000;
-    let mut probe = std::io::tcp::__listen_socket("127.0.0.1", port);
-    while probe < 0 {
-        port = port + 1;
-        probe = std::io::tcp::__listen_socket("127.0.0.1", port);
-    }
-    std::io::tcp::__close_fd(probe);
-    return port;
-}
