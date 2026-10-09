@@ -10030,6 +10030,44 @@ shared	dynamic	sites in the stdlib #2712e8e5
 
 == dna/tests/oidc_verify_test.hl
 
+== dna/tests/onboarding/todo/api/tests/api_test.hl
+root	RpcDesk	the entry
+domain	pool:work	async_io
+row	RpcDesk@literal1	RpcDesk	main	default
+row	RpcDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
+row	RpcDesk@literal1.roles	__lib_auth_auth_Grants	main	default
+row	RpcDesk@literal1.tokens	__lib_auth_auth_Tokens	main	default
+row	RpcDesk@literal1.watcher	Watcher	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests
+
+== dna/tests/onboarding/todo/api/tests/sense/sense_test.hl
+root	SenseDesk	the entry
+domain	pinned:SenseDesk@literal1.broker
+domain	pool:work	async_io
+domain	pinned:SenseDesk@literal1.sense
+row	SenseDesk@literal1	SenseDesk	main	default
+row	SenseDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:SenseDesk@literal1.broker	entry	off owner
+row	SenseDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
+row	SenseDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
+dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.broker	in tests/fake
+dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/sense
+dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.sense	in the seed
+shared	SenseDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
+
+== dna/tests/onboarding/todo/api/tests/silent/silent_test.hl
+root	SilentDesk	the entry
+domain	pinned:SilentDesk@literal1.broker
+domain	pool:work	async_io
+domain	pinned:SilentDesk@literal1.sense
+row	SilentDesk@literal1	SilentDesk	main	default
+row	SilentDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:SilentDesk@literal1.broker	entry	off owner
+row	SilentDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
+row	SilentDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
+dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.broker	in tests/fake
+dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/silent
+dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in the seed
+shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
+
 == dna/tests/onboarding/voice/api/tests/endpoints_test.hl
 row	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints	main	default
 
@@ -13186,6 +13224,32 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.c	__lib_dna__core___models__CredentialSource	main	default
 
+== dna/tests/onboarding/todo/api
+root	App	the entry
+domain	pool:work	async_io
+domain	pinned:App@literal1.sense
+domain	pool:__api_ws	async_io
+domain	pool:__api_http	async_io
+domain	pinned:__StdApiHubStream@binding1
+row	App@literal1	App	main	default
+row	App@literal1.__rpc_h_1	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	App@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	App@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
+row	App@literal1.list	Todos	pool:work	entry	off owner
+row	App@literal1.roles	Grants	main	default
+row	App@literal1.tokens	Tokens	main	default
+row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+-- App@literal1.sense	Sense
+row	~	Sense	pinned:~	entry	off owner
+row	~.nerves	Nerves	pinned:~	inherited
+row	~.nerves.credential	__StdSecretCredential	pinned:~	inherited
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no instance)
+
 == dna/tests/onboarding/voice/node
 root	Node	the entry
 domain	pinned:Node@literal1.admin
@@ -14695,6 +14759,11 @@ row	~	__lib_dna__ui___main__Ui	main	default
 row	~.exchange	__lib_dna__ui___main__CodeExchange	main	inherited
 row	~.pending	__lib_dna__ui___main__PendingSignIns	main	inherited
 row	~.sessions	__lib_dna__ui___main__Sessions	main	inherited
+
+== shared __lib_tests__fake___fake_nats__Sense #206ba75b
+row	~	__lib_tests__fake___fake_nats__Sense	pinned:~	entry	off owner
+row	~.nerves	__lib_nerves_nerves_Nerves	pinned:~	inherited
+row	~.nerves.credential	__StdSecretCredential	pinned:~	inherited
 
 == shared __lib_tests__hale__api__client__public___client__FillsSubscription #08af3f10
 row	~	__lib_tests__hale__api__client__public___client__FillsSubscription	main	default

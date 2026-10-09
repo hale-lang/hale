@@ -1,0 +1,719 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Todo surface",
+    "version": "fnv1a64:67bff1470a7912dc",
+    "description": "The surface Todo over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by the JSON codec. requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths; a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back.",
+    "x-hale-surface": "Todo",
+    "x-hale-digest": "fnv1a64:67bff1470a7912dc"
+  },
+  "paths": {
+    "/call/Todos::add": {
+      "post": {
+        "operationId": "Todos::add",
+        "summary": "rpc Todos::add",
+        "description": "Requires editor under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:67bff1470a7912dc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTodo"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "handler error: TodoError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "editor"
+        ]
+      }
+    },
+    "/call/Todos::complete": {
+      "post": {
+        "operationId": "Todos::complete",
+        "summary": "rpc Todos::complete",
+        "description": "Requires editor under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:67bff1470a7912dc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TodoRef"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "handler error: TodoError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "editor"
+        ]
+      }
+    },
+    "/call/Todos::list": {
+      "post": {
+        "operationId": "Todos::list",
+        "summary": "rpc Todos::list",
+        "description": "Requires reader under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:67bff1470a7912dc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "reader"
+        ]
+      }
+    },
+    "/call/Todos::overdue": {
+      "post": {
+        "operationId": "Todos::overdue",
+        "summary": "rpc Todos::overdue",
+        "description": "Requires reader under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:67bff1470a7912dc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Nothing"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "reader"
+        ]
+      }
+    },
+    "/call/Todos::remove": {
+      "post": {
+        "operationId": "Todos::remove",
+        "summary": "rpc Todos::remove",
+        "description": "Requires editor under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:67bff1470a7912dc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TodoRef"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "handler error: TodoError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "editor"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddTodo": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "due": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "ListQuery": {
+        "type": "object",
+        "properties": {
+          "open_only": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "Nothing": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "TodoError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "reason"
+        ]
+      },
+      "TodoItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "due": {
+            "type": "string"
+          },
+          "overdue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "done",
+          "due",
+          "overdue"
+        ]
+      },
+      "TodoList": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "json": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "json"
+        ]
+      },
+      "TodoRef": {
+        "type": "object",
+        "properties": {
+          "todo": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "todo"
+        ]
+      },
+      "hale.Refusal": {
+        "type": "object",
+        "properties": {
+          "refusal": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "served": {
+                "type": "string"
+              },
+              "requires": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "refusal"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

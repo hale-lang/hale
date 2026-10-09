@@ -1,0 +1,129 @@
+// The api, end to end in process: every rpc, every refusal and the
+// stream's events in order. The sense has its own programs, sense/ and
+// silent/ (a directory is one seed, so one program each).
+//
+// ada is an editor, bo only a reader.
+//
+// The list is driven through `std::api::test::Rpc`, which hands requests
+// in and reads the answers through the admission every transport uses.
+// main.hl holds the hub and so cannot be imported: the tests import the
+// files that carry the behaviour (todo.hl, auth.hl, nerves.hl).
+import "../todo" as todo;
+import "../auth" as auth;
+
+/// Records each TodoChanged as `what:id`, in the order it arrived.
+locus Watcher {
+    params { seen: String = ""; }
+    bus { subscribe todo::TodoChanged as on_change; }
+    // @unbounded: a test's handful of events
+    @unbounded
+    fn on_change(c: todo::Change) {
+        self.seen = self.seen + c.what + ":" + to_string(c.item.id) + " ";
+    }
+}
+
+main locus RpcDesk {
+    params {
+        tokens: auth::Tokens = auth::Tokens { table: "ada=t-ada,bo:reader=t-bo" };
+        roles: auth::Grants = auth::Grants { table: "ada=t-ada,bo:reader=t-bo" };
+        list: todo::Todos = todo::Todos { };
+        watcher: Watcher = Watcher { };
+        door: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.roles };
+    }
+
+    placement { list: cooperative(pool = work) where async_io; }
+
+    run() {
+        let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
+        let d = self.door;
+
+        // add: an editor adds; the answer is the item
+        d.call(1, "Todos::add", "{\"title\":\"milk\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(1, 2000), "result", "an editor adds");
+        std::test::assert(std::str::contains(d.line(1), "\"id\":1,\"title\":\"milk\",\"done\":false,\"due\":\"\",\"overdue\":false"), "the item: " + d.line(1));
+        d.call(2, "Todos::add", "{\"title\":\"eggs\",\"due\":\"2020-01-01T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(2, 2000), "result", "an item with a due");
+        std::test::assert(std::str::contains(d.line(2), "\"due\":\"2020-01-01T00:00:00Z\",\"overdue\":true"), "a due in the past is overdue: " + d.line(2));
+        d.call(3, "Todos::add", "{\"title\":\"later\",\"due\":\"2200-01-01T00:00:00Z\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(3, 2000), "result", "an item due far ahead");
+        std::test::assert(std::str::contains(d.line(3), "\"overdue\":false"), "is not overdue");
+
+        // list and overdue: a reader reads
+        d.call(4, "Todos::list", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(4, 2000), "result", "a reader lists");
+        std::test::assert(std::str::contains(d.line(4), "\"count\":3"), "three items: " + d.line(4));
+        d.call(5, "Todos::overdue", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(5, 2000), "result", "a reader asks what is overdue");
+        std::test::assert(std::str::contains(d.line(5), "\"count\":1") && std::str::contains(d.line(5), "eggs"), "only eggs: " + d.line(5));
+
+        // complete: the item is done, and no longer overdue
+        d.call(6, "Todos::complete", "{\"todo\":2}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(6, 2000), "result", "an editor completes");
+        std::test::assert(std::str::contains(d.line(6), "\"done\":true,\"due\":\"2020-01-01T00:00:00Z\",\"overdue\":false"), "done and not overdue: " + d.line(6));
+        d.call(7, "Todos::overdue", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(7, 2000), "result", "overdue again");
+        std::test::assert(std::str::contains(d.line(7), "\"count\":0"), "nothing is: " + d.line(7));
+        d.call(8, "Todos::list", "{\"open_only\":true}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(8, 2000), "result", "open items");
+        std::test::assert(std::str::contains(d.line(8), "\"count\":2") && !std::str::contains(d.line(8), "eggs"), "without the done one: " + d.line(8));
+
+        // remove
+        d.call(9, "Todos::remove", "{\"todo\":1}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(9, 2000), "result", "an editor removes");
+        d.call(10, "Todos::list", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(10, 2000), "result", "list after remove");
+        std::test::assert(std::str::contains(d.line(10), "\"count\":2") && !std::str::contains(d.line(10), "milk"), "milk is gone: " + d.line(10));
+
+        // the handler's own errors
+        d.call(11, "Todos::complete", "{\"todo\":99}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(11, 2000), "handler_error", "completing what is not there");
+        std::test::assert(std::str::contains(d.line(11), "unknown_item"), "is unknown_item: " + d.line(11));
+        d.call(12, "Todos::remove", "{\"todo\":1}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(12, 2000), "handler_error", "removing it twice");
+        d.call(13, "Todos::add", "{\"title\":\"\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(13, 2000), "handler_error", "an empty title");
+        std::test::assert(std::str::contains(d.line(13), "empty_title"), "is empty_title: " + d.line(13));
+        d.call(14, "Todos::add", "{\"title\":\"x\",\"due\":\"tomorrow\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(14, 2000), "handler_error", "a due that is not a time");
+        std::test::assert(std::str::contains(d.line(14), "bad_due"), "is bad_due: " + d.line(14));
+
+        // refusals: the role, the caller, the shape
+        d.call(15, "Todos::add", "{\"title\":\"nope\"}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(15, 2000), "refusal:unauthorized", "a reader cannot add");
+        d.call(16, "Todos::complete", "{\"todo\":3}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(16, 2000), "refusal:unauthorized", "a reader cannot complete");
+        d.call(17, "Todos::remove", "{\"todo\":3}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(17, 2000), "refusal:unauthorized", "a reader cannot remove");
+        d.call(18, "Todos::list", "{}", "t-nobody");
+        std::test::assert_eq_str(d.await_outcome(18, 2000), "refusal:unauthenticated", "a token nobody holds reads nothing");
+        d.call(19, "Todos::add", "{\"title\":7}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(19, 2000), "refusal:malformed", "a title that is not a string");
+        std::test::assert(std::str::contains(d.line(19), "wrong_type"), "is wrong_type: " + d.line(19));
+        d.call(20, "Todos::add", "{}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(20, 2000), "refusal:malformed", "no title at all");
+        std::test::assert(std::str::contains(d.line(20), "missing_field"), "is missing_field: " + d.line(20));
+        d.call(21, "Todos::complete", "{\"todo\":\"1\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(21, 2000), "refusal:malformed", "an id that is a string");
+        d.call(22, "Todos::archive", "{}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(22, 2000), "refusal:malformed", "a member the surface does not have");
+
+        // a title of awkward characters (quote, backslash, newline, tab, carriage return)
+        // goes in as it came and out as it went, and the list stays one valid JSON array
+        d.call(23, "Todos::add", "{\"title\":\"a \\\"q\\\" b\\\\c\\nd\\te\\rf\"}", "t-ada");
+        std::test::assert_eq_str(d.await_outcome(23, 2000), "result", "a title of control characters is added");
+        // on the wire the title is one escaped string
+        std::test::assert(std::str::contains(d.line(23), "\"title\":\"a \\\"q\\\" b\\\\c\\nd\\te\\rf\""), "the answer's title is escaped: " + d.line(23));
+        d.call(24, "Todos::list", "{}", "t-bo");
+        std::test::assert_eq_str(d.await_outcome(24, 2000), "result", "the list holds it");
+        // the list's json is text inside the reply, so its escapes are escaped again; no control byte survives either way
+        std::test::assert(!std::str::contains(d.line(24), "\t") && !std::str::contains(d.line(24), "\r") && !std::str::contains(d.line(24), "\n"), "no raw control character in the list: " + d.line(24));
+        std::test::assert(std::str::contains(d.line(24), "\\\"title\\\":\\\"a \\\\\\\"q\\\\\\\" b\\\\\\\\c\\\\nd\\\\te\\\\rf\\\""), "escaped as JSON requires, twice over: " + d.line(24));
+
+        // the stream: what happened, in the order it happened, and nothing for a refusal or an error
+        std::time::sleep(50ms);
+        std::test::assert_eq_str(self.watcher.seen, "added:1 added:2 added:3 completed:2 removed:1 added:4 ", "TodoChanged, in order");
+        ex.stop();
+    }
+}
+
+fn main() { RpcDesk { }; }
