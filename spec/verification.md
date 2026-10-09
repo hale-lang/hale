@@ -243,7 +243,18 @@ main locus Org {
   are dead: they contribute nothing to any judgment, and the
   artifact records each (`uninhabited_interface_call:<iface>.<callee>`)
   inside the hashed model half so a conformer appearing later
-  changes `shape_hash`.
+  changes `shape_hash`. A call through a *field* of interface
+  type narrows the fan-out to the impls the program stores into
+  that field (GH #540): every `Locus { field: Impl { } }` literal at
+  any instantiation site, and the default literal when some literal
+  of the locus omits the field (or none is seen), intersected with
+  the conformers. Only a struct literal of a locus narrows. A write
+  the pre-pass cannot name — a literal field value that is a
+  parameter, a call result, a local or a conditional, a default
+  that is not a literal, or any assignment to a field of that name
+  (the receiver is untyped, so it counts for every locus with such
+  a field) — keeps every conformer. Slots of standard-library loci, and interface-typed
+  parameters, locals and results, are never narrowed.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
   bundle-wide claims cannot be evaluated anywhere earlier, and
@@ -649,7 +660,7 @@ fingerprint covers `{issues, rows}`) and in the document verdict
 entry like any diagnostic, and the duplicate-name case is
 recomputed from the rows themselves — no claim error disappears
 between checking and artifact projection. The evidence engine's
-`ANALYSIS_SEMANTICS_VERSION` is 7. It moves whenever the
+`ANALYSIS_SEMANTICS_VERSION` is 8. It moves whenever the
 producer's RESULTS move, because `validate` compares digests and
 never the implementation: v3 was round 8's synthetic
 implicit-phase certificates and report-less subjects judging
@@ -660,7 +671,10 @@ resolve, an unknown subscriber population stopped reading as an
 absent one); v7 is GH #533, where a call through an interface-typed
 field stopped resolving against the field's default literal and
 fans to every conformer, so a constructor override can no longer
-hide a carrier. Evidence produced under an earlier version cannot
+hide a carrier; v8 is GH #540, where that fan-out narrows to the impls the
+program stores into the slot (see *Interface dispatch fans out* in
+the claims chapter) and stays at every conformer when a write is
+one the pre-pass cannot name. Evidence produced under an earlier version cannot
 share an `inputs_digest` with this one. Both digests are RECOMPUTED at
 admission: `law_digest` is the canonical-JSON fingerprint over
 the law rows (serde-canonical rendering, fnv1a64 — a row edit

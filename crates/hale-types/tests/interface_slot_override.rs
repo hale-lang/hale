@@ -49,19 +49,93 @@ fn override_with_the_carrier_is_refused() {
     );
 }
 
-/// Default the carrier, override harmless: the conservative answer is
-/// STILL a refusal — every conformer is a possible callee of the slot
-/// and the engine never claims absence it cannot prove. What changes
-/// is that the verdict no longer depends on which literal happens to
-/// be the default.
+/// Default the carrier, override harmless, and the only site
+/// overrides: GH #540 narrows the slot to what the program stores
+/// into it. The default literal is never evaluated, so the carrier
+/// is not stored and the claim holds — whichever literal happens to
+/// be the default no longer decides the verdict.
 #[test]
-fn default_carrier_with_harmless_override_is_still_refused_conservatively() {
+fn default_carrier_with_harmless_override_holds_when_no_site_stores_it() {
     let ds = diags(&program("Real", "Noop"));
     assert!(
-        ds.iter().any(|m| m.contains("claim `gated` violated")),
-        "conformer fan-out keeps the carrier reachable: {:?}",
+        !violated(&ds),
+        "the carrier is only the default and every site overrides it: {:?}",
         ds
     );
+}
+
+/// The default is used when a literal omits the field, so it is one
+/// of the slot's stores then.
+#[test]
+fn default_carrier_used_by_an_omitting_site_is_reached() {
+    let extra = "fn mk() -> Holder { return Holder { }; }";
+    let ds = diags(&slot_program(" = Real { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "{:?}", ds);
+}
+
+fn slot_program(default_impl: &str, stores: &str, extra: &str) -> String {
+    format!(
+        r#"
+effect apply_it;
+interface Gate {{ fn apply(x: String) -> Bool; }}
+locus Real {{ @effects(is: {{ apply_it }}) fn apply(x: String) -> Bool {{ return true; }} }}
+locus Noop {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Other {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Holder {{ params {{ dep: Gate{default_impl}; }} }}
+group organism = {{ App }};
+main locus App {{
+    params {{ h: Holder = {stores}; }}
+    claims {{ gated: forbid reaches(organism, effects(apply_it)); }}
+    run() {{ let ok = self.h.dep.apply("x"); }}
+}}
+{extra}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn violated(ds: &[String]) -> bool {
+    ds.iter().any(|m| m.contains("claim `gated` violated"))
+}
+
+/// The carrier conforms but is never stored: the claim holds.
+#[test]
+fn unstored_carrier_does_not_reach_through_the_slot() {
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", ""));
+    assert!(!violated(&ds), "Real is never stored into the slot: {:?}", ds);
+}
+
+/// Two sites store different impls: both are callees.
+#[test]
+fn two_sites_keep_both_impls() {
+    let extra = "fn mk() -> Holder { return Holder { dep: Real { } }; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "the second site stores the carrier: {:?}", ds);
+}
+
+/// A literal whose value is an interface-typed parameter is a write
+/// the pre-pass cannot name: the slot keeps every conformer.
+#[test]
+fn slot_written_from_a_parameter_keeps_every_conformer() {
+    let extra = "fn mk(g: Gate) -> Holder { return Holder { dep: g }; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "an unseen write puts every conformer back: {:?}", ds);
+}
+
+/// An assignment of a value the pre-pass cannot name does the same,
+/// whatever the receiver.
+#[test]
+fn slot_assigned_an_opaque_value_keeps_every_conformer() {
+    let extra = "fn swap(h: Holder, g: Gate) { h.dep = g; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "{:?}", ds);
+}
+
+/// A slot with no default narrows to its literals.
+#[test]
+fn slot_without_default_narrows_to_its_literals() {
+    let ds = diags(&slot_program("", "Holder { dep: Other { } }", ""));
+    assert!(!violated(&ds), "{:?}", ds);
 }
 
 /// With no carrier conforming to the interface at all, the claim holds.

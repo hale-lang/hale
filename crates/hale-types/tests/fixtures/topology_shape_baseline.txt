@@ -1051,7 +1051,7 @@ crates/hale-codegen/tests/os_getrandom.rs#3 06171a026a661ad4
 crates/hale-codegen/tests/os_getrandom.rs#4 8b96bb75fff4a698
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 f33c497096dc5dbf
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 3b0e8370f1acd561
-crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 a02b92823a26a9c5
+crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 f0a73ace090ff7b7
 crates/hale-codegen/tests/owner_table.rs#0 81b94f991b7122d7
 crates/hale-codegen/tests/owner_table.rs#1 508fa61c52bf1edf
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
@@ -1435,7 +1435,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
 crates/hale-stdlib/hl/api.hl e416474db56b5494
-crates/hale-stdlib/hl/api_rpc.hl 48f87b1aadb3c3d2
+crates/hale-stdlib/hl/api_rpc.hl 137ecd1aef5f970a
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
@@ -1676,7 +1676,7 @@ crates/hale-types/tests/interface_dispatch.rs#2 a0304268ee0b9373
 crates/hale-types/tests/interface_dispatch.rs#3 3e8236394613d0b0
 crates/hale-types/tests/interface_dispatch.rs#5 28000b6d0e512b10
 crates/hale-types/tests/interface_dispatch.rs#6 6d6f6da0dc6377b2
-crates/hale-types/tests/interface_slot_override.rs#1 c180c95dda5b3cc4
+crates/hale-types/tests/interface_slot_override.rs#2 c180c95dda5b3cc4
 crates/hale-types/tests/intra_locus_pool_safety.rs#1 136877c05cbac3b6
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
@@ -1747,7 +1747,7 @@ crates/hale-types/tests/model_fanout.rs#1 48fefaa10bc3abfc
 crates/hale-types/tests/model_fanout.rs#12 04bdd600e87989c8
 crates/hale-types/tests/model_fanout.rs#13 b0592a5db3cfd991
 crates/hale-types/tests/model_fanout.rs#14 788a618eef9f9674
-crates/hale-types/tests/model_fanout.rs#16 018bd040806fc592
+crates/hale-types/tests/model_fanout.rs#16 dc74483f127a0386
 crates/hale-types/tests/model_fanout.rs#17 929aa0de861fc434
 crates/hale-types/tests/model_fanout.rs#18 a863be2764a92b8e
 crates/hale-types/tests/model_fanout.rs#19 ed98275c99171609
