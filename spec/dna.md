@@ -4395,9 +4395,67 @@ The live half is memory's, projected from the record by the spine
   package. Ratifying them fills the org chart. `hale dna review` lists the
   groups `holes`, `practices` and `holds` together, as it does `design`
   and `operating`, and `hale dna review <group> approve|reject` decides
-  each pending one in turn.
+  each pending one in turn. A seeded group is listed, and decided by its
+  name, in the order the record requested its Reviews (a position, then
+  its mandate), never by digest.
+  **Mandates (seed/structure).** Each position `init` proposes carries a
+  **mandate**, proposed in the same seed right after its hole: a
+  knowledge idea of kind `mandate` (family `mandate`, `author: hale dna
+  init`, name `mandate/<position name>`, `target` the position's node id,
+  `position:<name>`), whose text states what the position decides, what it
+  may not, what it cites, how it writes and what it escalates. `review`
+  lists it under `holes` directly after its position (question: `ratify
+  the mandate of <p>: what it decides, what it may not, what it cites, how
+  it writes, what it escalates`), so `hale dna review holes approve`
+  ratifies the position and then its mandate; the ordinary ratification
+  binds the idea to the position's node (a mandate is not a `graph`
+  document, so it is bound, unlike a hole). A mandate ratified before its
+  position lands is a binding whose node does not exist yet: nothing
+  refuses it, and the hat finds it once the position does
+  (`hat_knowledge_targets` names the performer's `position:<name>`, so a
+  mandate bound to it arrives in the hat's package and brief). The texts
+  are the toolchain's (`dna/operations/graph_mandates.hl`), one per
+  position kind the proposer knows (`board`; a part's `dev` and
+  `reviewer`; a deployment's `operator`; each operational role), the
+  part's or deployment's name substituted. **The authority defaults are
+  text in the mandate**: which change classes and magnitudes the position
+  may ratify alone, which need a second signer, which are the Board's, in
+  the law's names (`OrgPolicy`: the classes `organization`,
+  `constitutional`, `process-policy` and `topology`, and any change that
+  touches law, widens effects or crosses ownership, are the Board's; the
+  rest, inside the grant, the Leader's), cited and not re-implemented; the
+  charter refines them. The organism's own positions the hat already names
+  (`position:leader`, `position:editor`, `position:agent`) get theirs at
+  `init` and `upgrade` under `design` beside the design practices
+  (`design/mandate-<name>`, a seeded practice with a `target`, proposed as
+  a `mandate` bound to it and superseded on `upgrade` the same way).
+  **Standard equipment.** A proposed position's node body carries
+  `equipment`, a JSON object with `roles` (the API roles the position is
+  fitted with on fill) and nothing else for now. It is derived from the
+  graph the ingest read and the toolchain's own export: for a contract
+  whose stem matches a `spec/<Stem>.description.json` (what `hale api
+  describe` / `hale check --api` writes) case-insensitively, the ingest
+  keeps the `requires` roles of its members (`GraphIngest.roles`,
+  `<contract>\t<role>` lines; the description is the contract's roles, not
+  a node of its own). A role named like a position's last segment
+  (`reviewer`, `dev`, `operator`, an operational role) is that position's
+  equipment for the part that serves the contract (for `operator` and the
+  operational roles, the deployment that runs the part); every other role
+  (`editor`, `reader`, …) is the equipment of the part's `dev`. A
+  repository with no description proposes the same holes with empty
+  equipment. **The ruling that governs this: an API surface's `requires`
+  informs contract relationships and equipment; it never determines the
+  organization and never grants authority.** The `reviews` edge over the
+  surface's contract is what it was; no position exists because a role
+  does. The seeded practice `design/standard-equipment` states the list:
+  API roles now; the broker account and the vault names when an
+  application attaches in repository mode.
   **`hale dna fill <position>|organization:<name>
-  <holder>|organization:<name> [project] [--as <who>]`** asks the
+  <holder>|organization:<name> [project] [--as <who>]`**, once it has
+  proposed the hold, prints `equipment: <roles>` when the position's node
+  names API roles (read from the node the record states or proposes);
+  granting them, a token that carries those roles, is deferred, and `fill`
+  grants nothing. It asks the
   running organization for a holder — a person's seat, a firm owning a
   position (`fill org/collections organization:north`) or a person's
   membership of a firm (`fill organization:north bob`), each a `holds`
@@ -4495,7 +4553,13 @@ The live half is memory's, projected from the record by the spine
   widest, then its positions' roles. A role is the position's name less
   its node's (`api/reviewer` under `api` is `reviewer`), followed by
   `(<the contracts and documents it reviews>)` and, when it has holders, `[<holders>]`; a
-  position under no node is under `(unplaced)`, after the rest. **The
+  position under no node is under `(unplaced)`, after the rest. Each
+  role ends with `{mandate: ratified|pending|none[; roles: <API roles>]}`:
+  `ratified` when a ratified idea of kind `mandate` is bound to the
+  position's node (memory), `pending` when one is proposed and undecided
+  (read from the record), `none` otherwise; `roles` are the node's
+  `equipment.roles`, when it has any. `--json` carries each position's
+  `roles` and `mandate` (`ratified`, or empty) beside its holders. **The
   process model** is a line per `meets` — its outside parties and
   consumers, the arrow `--<via>: <contract>-->`, its servers or
   `(nobody here)`, and `(carried by <carriers>)` after — then one
