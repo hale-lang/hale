@@ -297,8 +297,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        460,
-        478,
+        466,
+        484,
         "
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}

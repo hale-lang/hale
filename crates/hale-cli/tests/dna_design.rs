@@ -279,7 +279,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(list.contains("operating — 7 seeded practice(s), each its own Review"), "{list}");
     assert_eq!(family_ids(&list, "operating").len(), 7, "{list}");
     let rows = journal(&app);
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 26, "twenty-six proposals: the purpose (GH #995), eleven design (eight practices, three mandates), seven operating, seven using");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 32, "thirty-two proposals: the purpose (GH #995), eleven design (eight practices, three mandates), seven operating, seven using, and the application's holes (its board, dev and reviewer, each with a mandate)");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 0, "nothing ratified by the toolchain");
     let digest_of = |id: &str| -> String {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))
@@ -594,7 +594,7 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     let edge = body("graph.edge", "written_in:application:libbed|language:hale");
     assert_eq!(edge["members"][0]["node"], "application:libbed");
     assert_eq!(edge["members"][1]["node"], "language:hale");
-    assert_eq!(count_of(&rows, "graph.node"), 3, "the two nodes and the application");
+    assert_eq!(count_of(&rows, "graph.node"), 5, "the two nodes and the application, and the application's purpose and seed");
     assert_eq!(count_of(&rows, "graph.edge"), 1);
 
     // every chapter and every spec section is an idea, each bound to its node
@@ -664,10 +664,10 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     let (ok, out) = hale(&["dna", "new", "bare", "--no-library"], &d);
     assert!(ok && out.contains("skipped library") && !out.contains("seeded  library"), "{out}");
     let bare = journal(&d.join("bare"));
-    assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 0, "no node, no edge");
+    assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 2, "no library node, no edge: only the application's own purpose and seed");
     assert!(library_proposals(&bare).is_empty(), "no library idea");
     assert!(library_families(&bare).is_empty(), "no library Review");
-    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 11 + 7 + 7, "the purpose and the twenty-five practices and mandates (the using family is a practice family, not the library)");
+    assert_eq!(count_of(&bare, "knowledge.proposed"), 1 + 11 + 7 + 7 + 6, "the purpose, the twenty-five practices and mandates (the using family is a practice family, not the library) and the six proposals of the application's holes");
     let (_, list) = hale(&["dna", "review"], &d.join("bare"));
     assert!(!list.contains("library —"), "{list}");
     let _ = std::fs::remove_dir_all(&d);
