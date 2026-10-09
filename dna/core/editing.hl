@@ -344,7 +344,7 @@ locus SourceEditor {
             }
             if len(tok) > 3 {
                 let hit = self.match_entry(listing, tok);
-                if len(hit) > 0 && !std::str::contains(named, hit + " ") { named = named + hit + " "; }
+                if len(hit) > 0 && !std::str::contains(" " + named, " " + hit + " ") { named = named + hit + " "; }
             }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
@@ -362,7 +362,7 @@ locus SourceEditor {
             let nl = std::str::index_of(lines, "\n");
             let name = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
             let hit = if len(name) > 0 { self.match_entry(listing, name) } else { "" };
-            if len(hit) > 0 && !std::str::contains(out, hit + " ") { out = out + hit + " "; }
+            if len(hit) > 0 && !std::str::contains(" " + out, " " + hit + " ") { out = out + hit + " "; }
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
         }
         return trim_nl(out);

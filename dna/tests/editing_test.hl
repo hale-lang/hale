@@ -229,6 +229,22 @@ main locus App {
         std::test::assert(std::str::contains(dup.located_why, "ambiguous"), "naming why: " + dup.located_why);
         std::test::assert_eq_str(dup.plan("c4", "change a/todo.hl and todo.hl"), "a/todo.hl", "the plan keeps the exact path and drops the ambiguous name");
         dna::scratch_done(root6);
+        // a plan keeps every complete entry it names: a root file and a nested
+        // file of the same basename are two targets, in the order named, and
+        // one is never dropped for being a suffix of the other
+        let root8 = dna::scratch_root("edit-both");
+        std::io::fs::mkdir(root8 + "/api") or discard;
+        std::io::fs::write_file(root8 + "/todo.hl", "fn root() { }\n") or discard;
+        std::io::fs::write_file(root8 + "/api/todo.hl", "fn nested() { }\n") or discard;
+        let both = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl\ntodo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root8, hale_bin: toolchain() }
+        };
+        std::test::assert_eq_str(both.plan("d1", "change api/todo.hl and todo.hl"), "api/todo.hl todo.hl", "the nested path first keeps the root file");
+        std::test::assert_eq_str(both.plan("d2", "change todo.hl and api/todo.hl"), "todo.hl api/todo.hl", "and the root file first keeps the nested one");
+        std::test::assert_eq_str(both.plan("d3", "add a rpc to both"), "api/todo.hl todo.hl", "a model plan naming both keeps both");
+        dna::scratch_done(root8);
         // the listing stays inside the grant: a directory that links out of the
         // worktree is not descended, and its files can be neither read nor edited
         let outside = dna::scratch_root("edit-outside");
