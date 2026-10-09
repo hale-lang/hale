@@ -3985,7 +3985,15 @@ The live half is memory's, projected from the record by the spine
   refused any — a member whose predecessor another approved revision
   replaced — so the family is never reported ratified while incomplete;
   rejecting writes `knowledge.declined` for each and
-  `library.family.declined`. The
+  `library.family.declined`. A family's rows land as one batch: the
+  journal is read once, every member's outcome is decided against that
+  read (a member's ratification is what a later member's supersession
+  sees), and the rows — the members' in the family's order, each
+  retirement after the ratification it follows, then the family's own
+  row — are written by one `append_batch` at the revision they were
+  decided at. A batch that finds the record moved is decided again
+  against what landed, and a row already there is not written twice;
+  a practice ratified alone is still its own one-row write. The
   family's own row is what its `practice-ratify` execution waits for
   (its `hat` step is done once memory's projection holds the last idea,
   ratified); the per-idea rows are the shape the lanes already project,

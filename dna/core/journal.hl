@@ -40,8 +40,28 @@ interface Journal {
     // that read something at a revision — a window's remainder (GH
     // #605) — must not land after another writer that changed it.
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
+    // Many rows at the tail in one write, landing in order at `expected`
+    // or not at all as stale (a loop of `append`s in a memory journal; one
+    // `Record.append_batch` in the git one).
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult;
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
+}
+
+// A batch as a loop of the journal's own `append`s: what a journal that
+// has no cheaper write does for `append_batch`.
+@unbounded
+fn append_rows(j: Journal, expected: Int, rows: RowBatch) -> AppendResult {
+    let mut at = expected;
+    let mut i = 0;
+    while i < rows.len() {
+        let r = rows.get(i) or Row { };
+        let a = j.append(at, r.kind, r.entity, r.body);
+        if !a.ok { return a; }
+        at = a.revision;
+        i = i + 1;
+    }
+    return AppendResult { ok: true, revision: at };
 }
 
 fn hex(b: Bytes) -> String {
@@ -91,19 +111,7 @@ locus MemJournal {
         self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: event_digest(prev, kind, entity, body) });
         return AppendResult { ok: true, revision: rev + 1 };
     }
-    // Many rows at once: a loop of `append`s.
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
-        let mut at = expected;
-        let mut i = 0;
-        while i < rows.len() {
-            let r = rows.get(i) or Row { };
-            let a = self.append(at, r.kind, r.entity, r.body);
-            if !a.ok { return a; }
-            at = a.revision;
-            i = i + 1;
-        }
-        return AppendResult { ok: true, revision: at };
-    }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
 }

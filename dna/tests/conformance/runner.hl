@@ -40,6 +40,7 @@ locus Dying {
         if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
         return r;
     }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         let r = self.inner.append_exact(expected, kind, entity, body);
         if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
