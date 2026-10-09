@@ -108,7 +108,7 @@ locus Wire {
         b.bool_field("knowledge", knowledge);
         b.bool_field("workflows", mode == "local");
         b.bool_field("tasks", mode == "local");
-        b.bool_field("context", mode == "local");
+        b.bool_field("context", true);
         if people { b.bool_field("people", mode == "local"); }
         b.end_object();
         b.begin_object_field("api");
@@ -310,7 +310,7 @@ locus Api {
             if !std::str::starts_with(path, knowledge_prefix) { return http.error(404, "not_found", "no such read endpoint", false); }
             return self.knowledge_read(source, actor, path[len(knowledge_prefix)..len(path)], raw_query);
         }
-        if path == prefix + "/dna/context" { let hat = ContextWire { }; return hat.read(self.root, self.mode, source, query); }
+        if path == prefix + "/dna/context" { let hat = ContextWire { }; return hat.read(self.root, self.mode, actor, source, query); }
         if path == prefix + "/dna/workflows" { let work = WorkflowWire { }; return work.read(self.root, self.mode, source, query); }
         if path == prefix + "/dna/tasks" { let tasks = TaskWire { }; return tasks.read(command_context, query); }
         if path == prefix + "/dna/people" { let people = PersonWire { }; return people.read(command_context, query, self.people); }

@@ -104,6 +104,12 @@ loopback is anyone's who can bind its port, so the record pins its key
   commands: a command is a person's, and a service holds no position.
   A subject is a person or a service, never both.
 
+What a person's token reads is the record's to say. The hat of a Work
+(`…/dna/context`, what `hale dna work brief` prints) is read by the person
+who holds that Work's attempt lease and by no one else: the member map
+names the person, and the claim row names who holds the lease
+([Legs, hands and voice](./legs.md)).
+
 **Local mode is OIDC too.** `dna/face/start.sh` starts the stub
 provider on the loopback and signs you in through it as the subject
 `local-sub`, mapped to `$USER`; it configures a project it attaches for

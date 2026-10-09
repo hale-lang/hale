@@ -1984,7 +1984,10 @@ memory is named to it.
   identity — the graph's `position:<name>` id, from the performer kind
   the attempt admitted last names, or the kind the request selects
   before one is — and its charter (the record's `graph.node` text for
-  that id, `""` until the graph names it); the practices ratified for
+  that id, `""` until the graph names it); read under OIDC, it is the
+  lease holder's — the person the record maps the bearer to, whose
+  `attempt.claimed` row is the Work's current, unexpired, unreleased
+  lease; any other caller is refused `403 lease_required`; the practices ratified for
   the Work's target, from memory under the reader's role, resolved to
   text with their ids; the knowledge bindings; the tool grant; the
   output contract; the data class; the Work's history as facts; the

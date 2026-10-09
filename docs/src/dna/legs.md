@@ -207,6 +207,13 @@ cost ceiling, tool grant and knowledge bindings; the Work's history;
 and the record head and memory watermark it was read at, with its
 digest.
 
+On a head that serves OIDC the hat is the lease holder's: the person your
+token maps to, who claimed the attempt and still holds the lease, reads it
+exactly as on a local head. Anyone else, and you before `next` claims, is
+refused `lease_required`, naming the Work. The claim row is the record's own
+answer to who may see this Work's hat; nothing outside the record has to
+vouch for it.
+
 The hat reads no clock, no environment value and no random id, so read
 twice at one head it is one digest. Rendering is the leg's: `text` for
 a person, `prompt` for a model, `agent` for the prompt with the hands
