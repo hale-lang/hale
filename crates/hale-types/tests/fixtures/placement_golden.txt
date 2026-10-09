@@ -9455,6 +9455,7 @@ dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___editing__SourceEditor	on main
 dynamic	__lib_dna__core___editing__WorktreeTools	on main
+dynamic	__lib_dna__core___journal__FileReceipts	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
