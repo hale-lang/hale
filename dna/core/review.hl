@@ -224,6 +224,30 @@ locus Review {
             if e.kind == "review.settled" && e.entity == self.review_id { return false; }
             i = i + 1;
         }
+        // the admitted verdicts weighed in record order by the live rule
+        // first: a reject or a revise settles there, as it would have had the
+        // Review been open when it arrived (one opened after its verdicts,
+        // an ingest's), unless an approval before it would already have
+        // settled it
+        let mut so_far = "";
+        let mut authority_so_far = false;
+        i = 0;
+        while i < self.verdicts.len() {
+            let v = self.verdicts.get(i) or Verdict { };
+            i = i + 1;
+            if v.verdict == "reject" || v.verdict == "revise" {
+                self.evidenced = self.observed_gates();
+                self.settled = true;
+                self.outcome = v.verdict;
+                self.decided_by = v.reviewer;
+                self.comment = v.comment;
+                return true;
+            }
+            if v.verdict != "approve" { continue; }
+            so_far = words_add(so_far, signer_positions(self.signers, v.reviewer));
+            if self.fallback && authority_satisfies(v.authority, self.required_authority) { authority_so_far = true; }
+            if words_within(approver_owners(self.signers), so_far) && words_within(self.gates, self.observed_gates()) && (!self.fallback || authority_so_far) { break; }
+        }
         i = 0;
         while i < self.verdicts.len() {
             let v = self.verdicts.get(i) or Verdict { };

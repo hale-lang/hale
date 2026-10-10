@@ -136,6 +136,14 @@ main locus App {
         std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}").ok, "grace's verdict row");
         std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}").ok, "hopper's verdict row");
         std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"mallory\", \"authority\": \"board\", \"comment\": \"\"}").ok, "mallory's verdict row");
+        // a Review opened after its verdicts arrived (an ingest's, opened when
+        // the organization hears the request) weighs them in record order: a
+        // reject before the approvals settles it rejected, as it would have live
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"reject\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"not this\"}").ok, "grace rejects first");
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}").ok, "then approves");
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}").ok, "and hopper approves");
+        let late = review(self.rj, "m9r", "");
+        std::test::assert(late.recheck() && late.settled && late.outcome == "reject" && late.decided_by == "grace", "the first decisive verdict decides: " + late.outcome + " by " + late.decided_by);
         let rebuilt = review(self.rj, "m9g", "gate:ci/api");
         std::test::assert_eq_str(rebuilt.signed, "position:api/reviewer position:node/reviewer", "rebuilt, it holds both approvals, and not mallory's");
         self.opened("m9g");
