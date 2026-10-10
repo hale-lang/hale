@@ -371,8 +371,19 @@ locus App {
 
         // ---- a position opened at run time: its node and its mandate, one
         // Review the Board decides once (`hale dna position open`)
-        let opened = self.open_position("web/dev\n--mandate\nDecides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.\n--as\ngrace", 900);
+        let opened = self.open_position("web/dev\n--mandate\nDecides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.\n--under\nboard\n--as\ngrace", 900);
         std::test::assert(std::str::starts_with(opened.answer, "proposed: "), "grace proposes opening web/dev: " + opened.answer + opened.stderr);
+        let asked = dna::GitJournal { repo: self.repo };
+        let mut under = "";
+        let mut k = 0;
+        while k < asked.revision() {
+            let e = asked.read(k);
+            if e.kind == "position.requested" && dna::native_json_string(e.body, "position") == "position:web/dev" { under = dna::native_json_string(e.body, "under"); }
+            k = k + 1;
+        }
+        std::test::assert_eq_str(under, "position:board", "a bare `--under` is the node the graph states");
+        let nowhere = self.open_position("web/qa\n--mandate\nDecides: what ships.\n--under\nnowhere\n--as\ngrace", 900);
+        std::test::assert(std::str::contains(nowhere.answer + nowhere.stderr, "names no node the graph states"), "a part the graph does not state is refused: " + nowhere.answer + nowhere.stderr);
         let listed_positions = self.dna("review");
         std::test::assert(std::str::contains(listed_positions.stdout, "positions — 1 position(s) to open, each with its mandate"), "listed under positions: " + listed_positions.stdout);
         let opening = self.decide(self.review_of("ratify opening the position `web/dev`, with its mandate, as grace proposes"), "approve\n--as\nada", 900);
