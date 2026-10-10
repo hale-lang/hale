@@ -444,11 +444,12 @@ fn tab_field(line: String, n: Int) -> String {
 @unbounded
 fn ids_of(csv: String) -> String {
     let mut out = "";
-    let mut rest = csv;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    let v = std::str::bytes_view(csv);
+    let mut at = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        let line = std::str::slice(v, at, end);
+        at = end + 1;
         let id = tab_field(line, 0);
         if len(id) > 0 { out = out + id + " "; }
     }
