@@ -1903,7 +1903,10 @@ locus Dna {
     }
     // A graph proposal the host filed (`hale dna ingest`): its Review routed
     // and opened here, once; a Review the record does not hold yet is
-    // answered on redelivery.
+    // answered on redelivery. A verdict may already be in the record (a
+    // person decides as soon as the verb returns, and the host relays a
+    // verdict once): the Review restores it at birth and, told its route,
+    // weighs it and settles.
     fn on_graph_requested(r: GraphReviewRequest) {
         let moved = self.journal.refresh();
         if len(first_row(self.journal, "graph.proposed", r.request_id).kind) > 0 { return; }
@@ -1914,6 +1917,7 @@ locus Dna {
         b.string_field("by", r.by);
         b.end_object();
         if !append_once(self.journal, "graph.proposed", r.request_id, b.result()) { return; }
+        self.tell_routes(r.review_id + "\n");
         self.board.notify("ingest", r.by + " filed the repository's graph again: the Board's to ratify as " + r.review_id);
     }
     // A generic knowledge command carries the exact native document it means
