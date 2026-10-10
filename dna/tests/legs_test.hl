@@ -340,7 +340,7 @@ locus App {
         let hat_digest = std::json::find_string_field(hat, "digest");
         let rendered = self.work("brief\n--attempt\n" + a1 + "\n--render\ntext");
         std::test::assert_eq_str(std::json::find_string_field(rendered, "hat_digest"), hat_digest, l + "the render records the hat's digest");
-        std::test::assert_eq_str(std::json::find_string_field(rendered, "renderer"), "legs-render/1", l + "and the renderer's version");
+        std::test::assert_eq_str(std::json::find_string_field(rendered, "renderer"), "legs-render/2", l + "and the renderer's version");
         let prompt_digest = std::json::find_string_field(rendered, "prompt_digest");
         let watermark = std::json::find_string_field(rendered, "hat_watermark");
         std::test::assert(std::str::starts_with(prompt_digest, "sha256:"), l + "and the digest of what it rendered");
@@ -370,7 +370,7 @@ locus App {
         let settled = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token + "\n--wait\n5");
         std::test::assert(self.state_of(settled) == "settled" && std::json::find_string_field(self.attempt_of(settled), "disposition") == "done", l + "settle reads the settlement: " + settled);
         let outcome = self.row_body("attempt.outcome", a1);
-        std::test::assert(std::json::find_string_field(outcome, "hat_digest") == hat_digest && std::json::find_string_field(outcome, "prompt_digest") == prompt_digest && std::json::find_string_field(outcome, "renderer") == "legs-render/1", l + "the outcome records the hat, the prompt and the renderer: " + outcome);
+        std::test::assert(std::json::find_string_field(outcome, "hat_digest") == hat_digest && std::json::find_string_field(outcome, "prompt_digest") == prompt_digest && std::json::find_string_field(outcome, "renderer") == "legs-render/2", l + "the outcome records the hat, the prompt and the renderer: " + outcome);
         std::test::assert_eq_str(to_string(std::json::find_int_field(outcome, "hat_watermark")), watermark, l + "and the watermark the brief reported");
         // release: the lease given back, the attempt claimed anew under a new token
         let a2 = self.ask();

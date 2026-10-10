@@ -1992,8 +1992,15 @@ memory is named to it.
   ratified for the Work's targets (`targets`: its path, its codebase's
   languages, `system:dna` for an organization change, the position —
   **The hat's target set**), from memory under the reader's role, resolved to
-  text with their ids; the knowledge bindings; the tool grant; the
-  output contract; the data class; the Work's history as facts; the
+  text with their ids; the knowledge bindings; the output contract and
+  the **hands** it gives (`dna/core/contracts.hl`): the tools a performer
+  may use, each `{name, description, input_schema, effect, role, family}`
+  from the toolchain's built-ins (`dna/core/tools.hl`), the tool grant
+  (their names) and the `validators` among them, which the harness runs
+  before handing the outcome back (a `Patch` gives `read edit check test
+  fmt patch`, validated by `check test fmt`; an `Assessment` the
+  read-only `record_status record_history org_chart`; a contract not yet
+  described, none); the data class; the Work's history as facts; the
   record head and memory's projection watermark it was rendered at
   (`-1` without memory, and `practices_status` says so); and the
   digest, sha256 over the canonical body with the digest itself left
@@ -2005,7 +2012,8 @@ memory is named to it.
   and the renderer's version is evidence of its own. The practices are
   structure — `{id, name, text, kind, author}` from one snapshot of
   memory, the watermark read in the same transaction as the ranked
-  bound — never rendered lines split again; and every hat built, by the
+  bound — never rendered lines split again; and every hat is composed by
+  one function (`hat_compose`), whether built by the
   owner for an edit it asks (the attempt carries the hat's digest as its
   `context_digest`; the practices reach the editor as its brief, the
   ask stays the ask) or by a head for a leg, is kept in memory by its
@@ -2154,7 +2162,7 @@ memory is named to it.
   and the flag), `brief` the hat read — or rendered
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,
   the digest of what was rendered and the renderer's version
-  (`legs-render/1`) — `renew` is `dna.attempt.renew` (the lease
+  (`legs-render/2`) — `renew` is `dna.attempt.renew` (the lease
   extended, the token kept: another `attempt.claimed` row),
   `allowance` is `dna.attempt.allowance` read back until the spine
   answers it (`--wait`, 60 s: what an external harness asks before its

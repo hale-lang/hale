@@ -1,0 +1,29 @@
+// dna/core/contracts.hl — what a Work's output contract promises.
+//
+// A Work names the kind of outcome it owes (`output_contract`). The
+// contract says what that outcome is, the hands a performer gets for it,
+// and the validators that judge it: the harness runs them before the
+// outcome is handed back, and the owner runs the same ones when it is, so
+// a performer learns early what the owner would refuse and only the
+// owner's verdict counts. A contract the toolchain does not describe yet
+// carries no hands and no validators; its outcome is judged as before.
+
+type OutputContract {
+    name: String = "";
+    shape: String = ""; // what the outcome is, in a sentence
+    hands: String = ""; // the tools a performer gets, space-separated (dna/core/tools.hl)
+    validators: String = ""; // the tools that judge the outcome, space-separated; each is also a hand
+}
+
+// The contracts described here; the others are named but not yet described.
+const DESCRIBED_CONTRACTS: String = "Patch Assessment";
+
+fn output_contract(name: String) -> OutputContract {
+    if name == "Patch" {
+        return OutputContract { name: name, shape: "a commit on the Work's base in a scratch worktree, handed back as `result_ref: commit:<sha>` with the commit's patch as a receipt", hands: "read edit check test fmt patch", validators: "check test fmt" };
+    }
+    if name == "Assessment" {
+        return OutputContract { name: name, shape: "a verdict and its reasons, naming by id the practices it rests on", hands: "record_status record_history org_chart", validators: "" };
+    }
+    return OutputContract { name: name };
+}

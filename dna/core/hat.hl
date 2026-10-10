@@ -14,9 +14,13 @@
 // which. What is forbidden is unrecorded variation: nothing here reads a
 // clock, an environment value or a random id. The body is kept in
 // memory by its digest (`keep_hat`, insert if absent), so replay renders
-// from the recorded hat, never the live graph. The owner builds one for
-// the edits it asks of its editor (the assembly); a head builds one for
-// the leg that asks (`HatReader`, dna/operations/context.hl).
+// from the recorded hat, never the live graph. One composer builds every
+// hat (`hat_compose`): the owner's, for the edits it asks of its editor
+// (the assembly), and a head's, for the leg or person that asks
+// (`HatReader`, dna/operations/context.hl). With the hat come the hands:
+// the tools the Work's output contract gives a performer
+// (dna/core/contracts.hl, dna/core/tools.hl), and which of them validate
+// the outcome.
 
 type Hat {
     ok: Bool = false;
@@ -40,7 +44,9 @@ type Hat {
     requires: String = "";
     effects: String = ""; // the effect classes the Work admits of its performer, space-separated (`hat_effects_of`)
     cost_ceiling: Int = 0;
-    tool_grant: String = "";
+    tool_grant: String = ""; // the hands' names, space-separated
+    hands: String = "[]"; // the tools a performer gets, a JSON array of specs (`tools_json`)
+    validators: String = ""; // the hands that judge the outcome, space-separated
     knowledge_bindings: String = "";
     practices: String = "[]"; // a JSON array of {id, name, text, kind, author}
     practices_n: Int = 0;
@@ -89,12 +95,6 @@ fn hat_kind_of(requires: String) -> String {
 // a position is keyed (the hat, usage): `position:editor`.
 fn hat_position_of(kind: String) -> String {
     return "position:" + (if kind == "edit" { "editor" } else if len(kind) == 0 { "agent" } else { kind });
-}
-
-// The tools a position may use on the Work: the editor's hands on an
-// edit; nothing else is granted until #987 hands the rest over.
-fn hat_tool_grant(kind: String) -> String {
-    return if kind == "edit" { "read edit fmt check" } else { "" };
 }
 
 // The locus path knowledge is drawn for: the Work's target when it is
@@ -200,6 +200,45 @@ fn hat_node_text(j: Journal, id: String) -> String {
     return out;
 }
 
+// What a hat is composed from: the Work as its owner, or the head that
+// reads it, knows it, and the targets its knowledge was drawn for.
+type HatInputs {
+    work_id: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    attempt_id: String = "";
+    performer_kind: String = "";
+    objective: String = "";
+    target: String = "";
+    targets: String = "";
+    output_contract: String = "";
+    data_class: String = "internal";
+    requires: String = "";
+    cost_ceiling: Int = 0;
+    knowledge_bindings: String = "";
+    history: String = "[]";
+    head: String = "";
+}
+
+// The hat for a Work, composed, digested: the position the performer kind
+// names and its charter, the effect classes the requirement admits, the
+// hands and validators the output contract gives, and the practices of
+// the package memory answered. Every hat is built here, so the owner's
+// editor and a head's leg wear one shape.
+fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Hat {
+    let position = hat_position_of(w.performer_kind);
+    let owed = output_contract(w.output_contract);
+    let h = Hat {
+        ok: true, work_id: w.work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: w.performer_kind,
+        position_id: position, charter: hat_node_text(j, position),
+        objective: w.objective, target: w.target, targets: w.targets, output_contract: w.output_contract, data_class: w.data_class, requires: w.requires,
+        effects: hat_effects_of(w.requires), cost_ceiling: w.cost_ceiling,
+        tool_grant: owed.hands, hands: tools_json(owed.hands), validators: owed.validators,
+        knowledge_bindings: w.knowledge_bindings, history: w.history, head: w.head
+    };
+    return hat_sealed(hat_with_package(h, pkg, ready));
+}
+
 // The practices of a hat from the package memory answered: the
 // structure the package carries, and how it was read.
 fn hat_with_package(h: Hat, pkg: ContextPackage, ready: Bool) -> Hat {
@@ -236,6 +275,8 @@ fn hat_body(h: Hat) -> String {
     b.string_field("effects", h.effects);
     b.string_field("cost_ceiling", to_string(h.cost_ceiling));
     b.string_field("tool_grant", h.tool_grant);
+    b.field("hands", h.hands);
+    b.string_field("validators", h.validators);
     b.string_field("knowledge_bindings", h.knowledge_bindings);
     b.field("practices", h.practices);
     b.string_field("practices_status", h.practices_status);
