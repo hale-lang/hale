@@ -8859,6 +8859,7 @@ shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
+dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___memory_spine__LedgerAdoption	on main
 dynamic	__lib_dna__core___memory_spine__Memory	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main

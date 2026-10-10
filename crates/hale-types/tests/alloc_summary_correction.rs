@@ -565,9 +565,9 @@ fn verdict_changes() {
         &[
             "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1803021..1803100 InvokedUnboundedly",
             "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1803733..1803801 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @2641968..2642071 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::discovered StringConcat @2637269..2637344 InvokedUnboundedly",
-            "__lib_dna__ui___main__Ui::token_subject StringConcat @2639602..2639661 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::begin_sign_in CollectionInsert(\"vec\") @2642793..2642896 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::discovered StringConcat @2638094..2638169 InvokedUnboundedly",
+            "__lib_dna__ui___main__Ui::token_subject StringConcat @2640427..2640486 InvokedUnboundedly",
         ],
     );
     pinned(
@@ -662,15 +662,15 @@ fn verdict_changes() {
             "__lib_dna__core__pond__pq___pq__PgConn::query_one StructLit(\"db::Row\") @2281321..2281435 InvokedUnboundedly",
             "__lib_dna__core__pond__pq___pq__PgConn::query_one StructLit(\"db::Row\") @2281488..2281612 InvokedUnboundedly",
             "__lib_dna__core__pond__pq___pq__PgConn::query_one StructLit(\"db::Row\") @2281803..2281836 InvokedUnboundedly",
-            "__lib_dna__core__pond__realtime__nats___client__NatsClient::fail_with StructLit(\"__lib_dna__core__pond__realtime__nats___types__NatsError\") @3122811..3122851 InvokedUnboundedly",
-            "__lib_dna__core__pond__realtime__nats___jetstream__js_error_of StringConcat @3140559..3140645 InvokedUnboundedly",
-            "__lib_dna__operations___graph__graph_node_id StringConcat @2574306..2574323 InvokedUnboundedly",
-            "__lib_dna__operations___graph__graph_node_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2581726..2581779 InvokedUnboundedly",
-            "__lib_dna__operations___graph__graph_refused StructLit(\"__lib_dna__operations___graph__GraphRow\") @2580851..2580872 InvokedUnboundedly",
-            "__lib_dna__operations___graph__graph_retired_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2588246..2588291 InvokedUnboundedly",
-            "__lib_dna__operations___graph__graph_retired_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2588866..2588911 InvokedUnboundedly",
-            "__lib_dna__operations___graph_holes__hole_line StringConcat @2595974..2595991 InvokedUnboundedly",
-            "__lib_dna__operations___usage__usage_counts_text StringConcat @3016483..3016607 InvokedUnboundedly",
+            "__lib_dna__core__pond__realtime__nats___client__NatsClient::fail_with StructLit(\"__lib_dna__core__pond__realtime__nats___types__NatsError\") @3123636..3123676 InvokedUnboundedly",
+            "__lib_dna__core__pond__realtime__nats___jetstream__js_error_of StringConcat @3141384..3141470 InvokedUnboundedly",
+            "__lib_dna__operations___graph__graph_node_id StringConcat @2575131..2575148 InvokedUnboundedly",
+            "__lib_dna__operations___graph__graph_node_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2582551..2582604 InvokedUnboundedly",
+            "__lib_dna__operations___graph__graph_refused StructLit(\"__lib_dna__operations___graph__GraphRow\") @2581676..2581697 InvokedUnboundedly",
+            "__lib_dna__operations___graph__graph_retired_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2589071..2589116 InvokedUnboundedly",
+            "__lib_dna__operations___graph__graph_retired_row StructLit(\"__lib_dna__operations___graph__GraphRow\") @2589691..2589736 InvokedUnboundedly",
+            "__lib_dna__operations___graph_holes__hole_line StringConcat @2596799..2596816 InvokedUnboundedly",
+            "__lib_dna__operations___usage__usage_counts_text StringConcat @3017308..3017432 InvokedUnboundedly",
         ],
     );
     pinned(
