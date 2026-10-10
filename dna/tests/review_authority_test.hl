@@ -18,6 +18,14 @@ main locus App {
             required_authority: "maintainer",
             author: "architect"
         };
+        // a Review requiring the Board: a hold its asker proposed
+        board_review: dna::Review = dna::Review {
+            review_id: "r2",
+            question: "ratify riley holding the position `board`, as riley proposes?",
+            subject_digest: "sha256:hold-riley-board",
+            required_authority: "board",
+            author: "riley"
+        };
         boundary: dna::AutonomyBoundary = dna::AutonomyBoundary {
             child: "Support",
             grant: dna::Grant { child: "Support", classes: "refactor docs", max_magnitude: 12, review: "post" }
@@ -68,6 +76,14 @@ main locus App {
         std::test::assert_eq_str(self.review.outcome, "approve", "outcome recorded");
         std::test::assert_eq_str(self.review.decided_by, "riley", "reviewer recorded");
         std::test::assert_eq_int(self.review.verdict_count(), 2, "abstain + approve kept in lineage");
+        // 6. The Board is the exception to independence: a Review requiring
+        //    the Board's authority admits its asker's verdict (governance,
+        //    not self-review), where the maintainer's Review above did not.
+        let own = self.board_review.consider(dna::Verdict {
+            review_id: "r2", subject_digest: "sha256:hold-riley-board",
+            verdict: "approve", reviewer: "riley", authority: "board"
+        });
+        std::test::assert(own && self.board_review.settled && self.board_review.decided_by == "riley", "the Board ratifies what it asked for: " + self.board_review.last_refusal);
 
         // ---- Disposition is a vector policy -------------------------
         // The disposition is the library's own enum, matched here on the

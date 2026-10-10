@@ -333,7 +333,7 @@ type HoldRequest {
     request_id: String = "";
     position: String = ""; // `position:<name>`
     holder: String = "";
-    by: String = ""; // who proposes it: the review's author, who may not ratify it
+    by: String = ""; // who proposes it: the review's author (who may ratify it as the Board)
 }
 topic HoldRequested { payload: HoldRequest; subject: "dna.hold.requested"; }
 
@@ -346,7 +346,7 @@ type PositionOpenRequest {
     text: String = ""; // what the position is, in a sentence (the node's text)
     mandate: String = ""; // what it decides, may not do, cites and escalates
     under: String = ""; // the part it unfolds from (`seed:<name>`, a position), "" = none yet
-    by: String = ""; // who proposes it: the Review's author, who may not ratify it
+    by: String = ""; // who proposes it: the Review's author (who may ratify it as the Board)
 }
 topic PositionOpenRequested { payload: PositionOpenRequest; subject: "dna.position.requested"; }
 

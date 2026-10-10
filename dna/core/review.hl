@@ -384,7 +384,12 @@ locus Review {
         if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
         let why = self.standing_refusal(v);
         if len(why) > 0 { return why; }
-        if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
+        // the Board is the exception: a Review that requires the Board's
+        // authority (a fill, an opening, a graph proposal) is governance,
+        // not self-review, so whoever holds the Board may ratify what they
+        // asked for (a solo organization seats itself); every other Review,
+        // a mutation's above all, refuses its author
+        if v.reviewer == self.author && self.required_authority != "board" { return "reviewer " + v.reviewer + " authored the candidate"; }
         return "";
     }
     // Whether the reviewer stands to decide it. With no signers, the

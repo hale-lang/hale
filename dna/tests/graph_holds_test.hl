@@ -347,8 +347,10 @@ locus App {
         let listed_holds = self.dna("review");
         std::test::assert(std::str::contains(listed_holds.stdout, "holds — 3 proposed holder(s)"), "the holds, listed together: " + listed_holds.stdout);
         let self_review = self.review_of("ada holding the position `board`, as ada proposes");
-        let refused = self.decide(self_review, "approve\n--as\nada\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(refused, "refused: ") && std::str::contains(refused, "reviewer ada authored the candidate"), "the proposer may not ratify it: " + refused);
+        // the Board is the exception to independence: the asker may decide
+        // a Board Review of her own (here she withdraws it, so nobody is seated)
+        let declined = self.decide(self_review, "reject\n--as\nada\n--authority\nboard", 900);
+        std::test::assert(std::str::starts_with(declined, "settled: reject"), "the proposer may decide her own Board proposal: " + declined);
         let approve_dev = self.decide(self.review_of("ada holding the position `api/dev`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 900);
         std::test::assert(std::str::starts_with(approve_dev, "settled: approve"), "grace's proposal ratified: " + approve_dev);
         let approve_rev = self.decide(self.review_of("ada holding the position `api/reviewer`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 900);
