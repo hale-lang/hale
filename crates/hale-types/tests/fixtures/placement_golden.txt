@@ -10742,6 +10742,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/review_authority_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
+shared	App@literal1.board_change	__lib_dna__core___review__Review #94d06a02
 shared	App@literal1.board_review	__lib_dna__core___review__Review #94d06a02
 shared	App@literal1.boundary	__lib_dna__core___review__AutonomyBoundary #69613b5b
 shared	App@literal1.review	__lib_dna__core___review__Review #94d06a02

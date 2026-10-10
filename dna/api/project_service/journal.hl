@@ -386,13 +386,18 @@ locus HeadJournal {
     // `state` stays "" while it runs.
     fn run_end(r: Receipt, now: Int) -> RunEnd {
         let dir = self.run_dir(r.command_id);
-        let tail = log_tail(dir + "/run.log");
+        // `.exit` before the log: the exit is written once the run has
+        // ended, so a log read after it holds all the run said. Read the
+        // other way round, a run ending between the two reads settled as
+        // succeeded with the log as it stood before its last lines.
         let mut exit_text = dna::trim_nl(std::io::fs::read_file(dir + "/run.exit") or "");
+        let mut tail = log_tail(dir + "/run.log");
         let recorded_pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(dir + "/run.pid") or "")) or - 1;
         let p = Proc { pid: if r.pid > 0 { r.pid } else { recorded_pid }, dir: dir, name: "run" };
         if len(exit_text) == 0 && !alive(p) {
             // it may have ended between the two reads
             exit_text = dna::trim_nl(std::io::fs::read_file(dir + "/run.exit") or "");
+            tail = log_tail(dir + "/run.log");
             if len(exit_text) == 0 {
                 return RunEnd { state: "outcome_unknown", code: -1, reason_code: "exit_unrecorded", reason: "the run ended without recording an exit" + (if len(tail) > 0 { "\n" + tail } else { "" }), log_tail: tail };
             }

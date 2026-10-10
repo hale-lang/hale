@@ -1679,6 +1679,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ORG_SEED
         ));
     }
+    if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::PositionOpenRequested") {
+        out.push(format!(
+            "note    {}/main.hl binds no `dna::PositionOpenRequested`: a position opened at run time (`hale dna position open`) is asked of the organization over the nerves; unbound, the request is never answered. Add `dna::PositionOpenRequested: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkSubmit") {
         out.push(format!(
             "note    {}/main.hl binds no `dna::WorkSubmit` (GH #946): a leg's outcome, handed back at the head, arrives over the nerves. Add `dna::WorkSubmit: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
