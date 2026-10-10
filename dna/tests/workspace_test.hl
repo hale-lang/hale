@@ -54,12 +54,17 @@ main locus App {
         std::test::assert(again.ok && again.replayed, "a retried open replays the recorded path");
 
         // ---- edit, commit a candidate ------------------------------------
+        // the worktree holds the repository's vendor/ copy, which this
+        // genome's .gitignore does not name: it stays out of the candidate
+        std::io::fs::mkdir(opened.value + "/vendor") or discard;
+        std::io::fs::write_file(opened.value + "/vendor/lib.hl", "fn vendored() -> Int { return 1; }\n") or discard;
         std::io::fs::write_file(opened.value + "/main.hl", "fn main() { println(\"v2\"); }\n") or discard;
         let cand = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 13);
         std::test::assert(cand.ok && len(cand.value) == 40, "candidate committed: " + cand.refused);
         std::test::assert(cand.value != base, "a new commit");
         let d = git.diff(opened.value, base, cand.value);
         std::test::assert(std::str::contains(d, "+fn main() { println(\"v2\"); }"), "the diff is the edit: " + d);
+        std::test::assert(!std::str::contains(d, "vendor/"), "vendor/ is never part of a candidate: " + d);
         std::test::assert(!git.contains(repo, cand.value), "not applied yet");
         let cand2 = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 14);
         std::test::assert(cand2.ok && cand2.replayed && cand2.value == cand.value, "a retried commit replays the same sha");

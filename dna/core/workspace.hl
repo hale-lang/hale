@@ -533,10 +533,15 @@ locus LocalGit {
         if r.code != 0 { self.last_error = trim_nl(r.stderr); return ""; }
         return trim_nl(r.stdout);
     }
-    // Stage everything in `path` and commit it; the candidate's sha, or "".
+    // Stage everything in `path` but `vendor/` and commit it; the
+    // candidate's sha, or "". `vendor/` is the toolchain's copy that
+    // `IsolatedWorktrees.open` puts in every worktree: a genome whose
+    // committed `.gitignore` does not name it (`hale dna init`'s edit left
+    // uncommitted) would otherwise carry the whole vendored tree in every
+    // candidate.
     @effects(is: { repo_write })
     fn commit_all(path: String, message: String) -> String {
-        let a = run_tool("git\n-C\n" + path + "\nadd\n-A");
+        let a = run_tool("git\n-C\n" + path + "\nadd\n-A\n--\n.\n:(exclude)vendor/");
         if a.code != 0 { self.last_error = trim_nl(a.stderr); return ""; }
         let c = run_tool("git\n-C\n" + path + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n" + message + "\n--author\n" + self.author);
         if c.code != 0 { self.last_error = trim_nl(c.stderr); return ""; }
