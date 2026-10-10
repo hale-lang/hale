@@ -6,7 +6,7 @@ This note is the design that closes it, and the order it lands in. A thin **skel
 
 ## The harness: hat and hands
 
-A Work is one step of a process, and a code change is one kind of output among several: the tree already has `Patch`, `Assessment`, `Applied`, `Evidence`, `Report`, `MonthlyReport`, `reconciliation` and `approval`. The organism's harness is therefore a **process harness**, not a coding one. For one Work it is two things.
+A Work is one step of a process, and a code change is one kind of output among several. The baseline's definitions owe two today, `Patch` and `Assessment`; `output_contract` is otherwise a free string, which test fixtures fill with names such as `Report` or `approval` that nothing describes. The organism's harness is therefore a **process harness**, not a coding one, and an output contract becomes something declared (`dna/core/contracts.hl`), not a string a definition makes up. For one Work it is two things.
 
 - **The hat** is the assembled context: the position's mandate and charter, the practices and knowledge drawn for the Work, the objective, the history, the output contract and how it is judged (its gates, the position that reviews it, its change class), the workspace for a Work that changes files (the repository, the base, what the grant may touch), and the model chosen for it with the rule that chose it. It stays structure, sealed by its digest, as today.
 - **The hands** are the toolset composed for that Work: the tools to act with, and the validators of its output contract, run before the outcome is submitted. A validator in the harness is pre-flight. The owner runs the same validators on submit, and only the owner's verdict counts: the store is the gate.
