@@ -9992,7 +9992,14 @@ row	App@literal1	App	main	default
 == dna/tests/model_map_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)	in tests
+dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)	in core/legs
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core___models__FakeModel	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core___models__ModelRouter	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`check` passed as a value)
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/mutation_review_test.hl
 root	App	the entry
