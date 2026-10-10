@@ -62,7 +62,7 @@ Each name is one of these (`<identity>` is the record's, `<org>` its
 | `oidc-client-<client>` (`dna-local` when `dna.oidc.client` is unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client |
 | `forge-token` | slot | the forge's token |
-| `model-<NAME>`, per credential `dna/org/models.hl` names | slot | a model's key |
+| `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key |
 
 **Drawn** means the organism owns the value: `hale dna init` and `hale
 dna upgrade` draw it from urandom (32 hex characters) into the vault
@@ -74,7 +74,8 @@ tracks the file or would. `dna/nats.conf` is tracked and holds no
 password; it includes the secrets file.
 
 **A slot** is an empty entry a person fills. There are three kinds:
-the forge's token, each model key the catalog names, and the head's
+the forge's token, each model key the catalog or the legs'
+`work.hl` names, and the head's
 client secret when the issuer is not on this machine.
 
 Per-member secrets are provisioned at that member's admission and are
@@ -100,7 +101,9 @@ hale dna secret rotate <NAME> [--body <user@host>]
 ```
 
 `<NAME>` is `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential
-`dna/org/models.hl` names (`HostedCredential { key: "…" }`); any other
+`dna/org/models.hl` or `dna/org/work.hl` names (`HostedCredential {
+key: "…" }`; `hale dna secrets` lists a `work.hl` key as the legs'
+model key); any other
 name is refused, with the list. The value comes from stdin, one line,
 never from the command line: `NAME=value` as an argument is refused,
 because it would sit in every shell history and process list.

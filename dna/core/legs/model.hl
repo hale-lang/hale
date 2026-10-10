@@ -82,8 +82,6 @@ fn rate_limited(refused: String) -> Bool {
     return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
 }
 
-// The role a request carries, by the work kind: what the selection
-// policy weighs.
 // What a call is attributed by at the gateway: the attempt, the position and
 // the holder. Attribution only; the gateway decides nothing by it.
 fn call_metadata(brief: Brief) -> String {
@@ -190,6 +188,8 @@ fn first_line(text: String) -> String {
     return if len(line) > 0 { line } else { "the change" };
 }
 
+// The role a request carries, by the work kind: what the selection
+// policy weighs.
 fn role_of(performer_kind: String) -> String {
     if performer_kind == "edit" { return "edit"; }
     if performer_kind == "service" { return "classify"; }

@@ -814,11 +814,6 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
 
 // ---- models (GH #583 M1) --------------------------------------------
 //
-// `hale dna models`: the catalog (dna/org/models.hl) built beside a
-// one-line main into the project's scratch and run from the root, so
-// its `probe_catalog()` sees the same environment the organization
-// would. The organization itself is not started and the nerves are not
-// touched.
 // The model mapping's two tables, as rows in the record, each in the name
 // of whoever sets it (dna/core/model_map.hl): `models rule <selector>
 // <size> [--permit <sizes>]` says which size a kind of work needs (a
@@ -880,6 +875,11 @@ fn model_map_verb(root: String, sub: String, key: String, value: String, permit:
     return answer("model rules (the organism's: which size a kind of work needs)\n" + (if len(rules) > 0 { rules } else { "  none: every Work is `standard`\n" }) + "model categories (the habitat's: which model fills each)\n" + (if len(categories) > 0 { categories } else { "  none: `hale dna models category <mode>.<size> <model>` names one\n" }));
 }
 
+// `hale dna models`: the catalog (dna/org/models.hl) built beside a
+// one-line main into the project's scratch and run from the root, so
+// its `probe_catalog()` sees the same environment the organization
+// would. The organization itself is not started and the nerves are not
+// touched.
 fn models_verb(root: String, hale: String) -> Answer {
     let src = root + "/dna/org/models.hl";
     let catalog = std::io::fs::read_file(src) or "";

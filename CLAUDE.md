@@ -138,6 +138,19 @@ file; add `HALE_TEST_KEEP_VAULT=1` to keep that too.
 HALE_DNA_KEEP_SCRATCH=1 HALE_TEST_KEEP_VAULT=1 hale test dna/tests/<name>_test.hl
 ```
 
+The process harness's acceptance is a from-scratch cycle on canned
+models (`scripts/dna-cycle/`): an organization opened around the todo
+repository, a position opened and filled, one ask delivered by the
+editor, one by a leg's tool loop through a canned OpenAI-compatible
+gateway, one by a scripted person session over `hale mcp`, an
+Assessment, a re-ingest, and a teardown that leaves nothing. It needs
+docker compose, systemd --user and python3 with `yaml`, spends nothing,
+and takes about eleven minutes a cycle:
+
+```sh
+cargo build --release && scripts/dna-cycle/cycles.sh 3
+```
+
 The repo also tests the language *in* the language:
 
 ```sh

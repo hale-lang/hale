@@ -1214,12 +1214,17 @@ repository:
 - **Bindings where the publishes are.** The host binds every DNA fact
   topic it publishes (`IntentOffered`, `ReviewVerdict`,
   `ExpressionObserved`, `PressureRaised`, `ConcernRaised`,
-  `PracticeRequested`, `KnowledgeNodeRequested`,
-  `KnowledgeBindingRequested`, `KnowledgeEdgeRequested`) to
+  `PracticeRequested`, `HoldRequested`, `PositionOpenRequested`,
+  `GraphReviewRequested`, `ScheduleRequested`, `KnowledgeNodeRequested`,
+  `KnowledgeBindingRequested`, `KnowledgeEdgeRequested`, `WorkSubmit`,
+  `WorkAllowanceAsk`, `RowLanded`) to
   `nats::NatsAdapter`, and owns the connection, a `nats::NatsConn`
   placed `pinned`; its relay is a `NodeRelay` child whose publishes go
-  out through those bindings. The generated organization binds the same
-  topics and reads them through its own pinned connection. The payload
+  out through those bindings. The generated organization reads them
+  through its own pinned connection: a message that arrives is handed
+  to every topic of its subject the organization subscribes, whatever
+  its `bindings` list (which `init` writes for most of them, for its
+  own publishes). The payload
   is the bus's own encoding: both ends are Hale programs declaring the
   same topic, and nothing converts it. A one-shot verb instantiates no
   `main locus`, so it binds nothing and connects to nothing.
@@ -1438,11 +1443,11 @@ record's.
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
-| `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as a position request is |
+| `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as `GraphReviewRequested` (`dna.graph.requested`) |
 | `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
-| `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`) |
+| `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`), relayed as `PositionOpenRequested` (`dna.position.requested`) |
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
@@ -1662,7 +1667,7 @@ bound at admission — and a new Task binds the newest (`latest`).
 | `optimize-walk` | `walk` (record) |
 | `secret-rotate` | `rotate` (vault) · `recorded` (record) |
 | `body-provision` | `provision` · `start` (host) · `lease` (memory) · `observed` (record) |
-| `ask-edit`, `ask-person` | the ask's one leaf: an edit prepared for review, or a person's job (record) |
+| `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | the ask's one leaf: an edit prepared for review, a person's job, a judgment handed back as an `Assessment`, or a change made by the position it is routed to (record) |
 
 Every step writes a fact of its own. What #995 listed as steps that write
 none is folded into the step whose fact it serves: practice-ratify's
@@ -1780,8 +1785,11 @@ proposes nothing. The host files the proposal and its Review, and a
 `graph.requested` row, relayed like any request, has the running
 organization route and open that Review (`graph.proposed`), so the
 Board's verdict settles it there; an organization started later finds
-it in the record. An attached application's own re-ingest is not built
-yet.
+it in the record. The proposal's author is `hale
+dna ingest`, and a verdict the record holds before the organization
+opens the Review is weighed when it opens, in record order: the first
+decisive verdict decides, as it would have live. An attached
+application's own re-ingest is not built yet.
 
 `hale dna definitions [project] [--json]` lists the catalog
 `dna/org/workflows.hl` returns, built beside a one-line main as the model
@@ -2018,7 +2026,8 @@ memory is named to it.
   is one Work's context as structure, never a prompt: the position's
   identity — the graph's `position:<name>` id, from the performer kind
   the attempt admitted last names, or the kind the request selects
-  before one is — and its charter (the record's `graph.node` text for
+  before one is, or, for a Work whose requirement names
+  `position:<name>` (`ask-position`), that position — and its charter (the record's `graph.node` text for
   that id, `""` until the graph names it); read under OIDC, it is the
   lease holder's — the person the record maps the bearer to, whose
   `attempt.claimed` row is the Work's current, unexpired, unreleased
@@ -2035,10 +2044,18 @@ memory is named to it.
   fmt patch`, validated by `check test fmt`; an `Assessment` the
   read-only `record_status record_history org_chart`; a contract not yet
   described, none); the **model** the mapping resolves for the Work
-  (`dna/core/model_map.hl`: the mode its hands make, the size of its
+  (`dna/core/model_map.hl`: the mode its hands make (`think`
+  with no hands, `tools` with hands and no workspace hand, `do` with a
+  workspace hand: an `Assessment` is a `tools` Work; a `tools` or `do`
+  category is filled only by a model that returns tool calls), the size of its
   most specific `model.rule`, a task's override only inside the permitted
   sizes, the model the `model.category` row names, the rule that decided
-  it, or why no model fills the category); the data class; the Work's history as facts; the
+  it, or why no model fills the category); the data class; the history of
+  the execution the Work belongs to, as facts (the head replays only
+  that execution's facts, its root task's id and every id under it,
+  child tasks included, and refuses `context_read_limit` past 512
+  facts, 256 bound nodes, 512 KiB of bodies or a 64 KiB body; the
+  record's length is no bound); the
   record head and memory's projection watermark it was rendered at
   (`-1` without memory, and `practices_status` says so); and the
   digest, sha256 over the canonical body with the digest itself left
@@ -2231,7 +2248,8 @@ memory is named to it.
   `dna.attempt.claim` for a position (`--as position:<name>`, the
   graph's id, never a free string; a claim matches attempts by performer
   kind, `--kind`, and a position the graph states that names no kind of
-  its own claims as an `agent`; a refusal names the kinds outstanding
+  its own claims as an `agent` and also takes the Works routed to it,
+  `ask-position`; a refusal names the kinds outstanding
   and the flag), `brief` the hat read — or rendered
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,
   the digest of what was rendered and the renderer's version
@@ -2242,15 +2260,17 @@ memory is named to it.
   first model call), `submit`
   is `dna.attempt.outcome`, `settle` that command read back, `release`
   is `dna.attempt.release` (`attempt.released`; the attempt is another
-  leg's to claim), and `friction` is `dna.friction.file`
-  (`friction.filed`, a fact nobody admits). Each prints one JSON
+  leg's to claim), `friction` is `dna.friction.file`
+  (`friction.filed`, a fact nobody admits), and `hand` runs one of the
+  hat's hands on this machine (**A person's session**, above). Each prints one JSON
   object and holds nothing afterwards; `submit` and `release` are
   keyed on the lease, so run twice they are one act; `next` mints a
   fresh id per call (a claim by its holder renews); `renew` is counted
   by the caller. A leg's identity is a position the record knows —
-  `position:<name>` from the graph (a `graph.node` row, or a hole
-  `hale dna init` proposed whose own rows state that position, once the
-  Board ratified it) or the organization's own, `/` allowed in the name
+  `position:<name>` from the graph (a `graph.node` row, or a position a ratified graph proposal
+  states: a hole `hale dna init` proposed, a position `hale dna position
+  open` opened; read through the record the command is admitted over,
+  and ended by a reviewed retirement in a later ratified proposal) or the organization's own, `/` allowed in the name
   as the graph spells a process's positions (`position:api/dev`), with
   `#<n>` for one worker of several — never free text, at the head as
   at the verb. While an outcome under a lease awaits the owner the
@@ -2333,7 +2353,7 @@ memory is named to it.
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
-  `hale_dna_work`. The commands go over the head's api socket (GH
+  `hale_dna_work`, and a Work's hands as `hale_dna_hand`. The commands go over the head's api socket (GH
   #1104 piece 5): each verb a `call` on a member of the head's surface —
   `Commands::claim`, `Commands::renew`, `Commands::outcome`,
   `Commands::release_attempt`, `Commands::file_friction`, requiring
@@ -3154,7 +3174,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   requires (<positions>)`) — or, **where the route left a path to the
   fallback, from one claiming the Review's own required authority**; a
   verdict counts toward every requirement it meets. The author is still
-  refused; one rejection or revision from a required position settles
+  refused, except on a governance Review (a practice, a hold, an
+  opening, a graph proposal) requiring the Board, which admits its
+  author's verdict; a mutation's Review refuses its author whatever
+  authority it requires; one rejection or revision from a required position settles
   it; **approval settles only once every required position has
   approved** — one holder of two positions signs for both — the
   required authority where the route left it a path,
@@ -3446,8 +3469,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   refused), never the record — and fills that name's slot of the vault
   (**The organism's secrets**; mode 600, the newest value) on the body
   over ssh's stdin, or on this machine. A name is a slot the organism
-  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential the
-  catalog names — and any other is refused. No process's environment
+  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential
+  `dna/org/models.hl` or `dna/org/work.hl` names (`HostedCredential
+  { key }`; the body's own credential check reads `models.hl` alone, so
+  a legs key never stands in for the organization's) — and any other is refused. No process's environment
   carries the value: the part that sends it reads it from the vault.
   `secret rotate <NAME>` is the same for a name already set. The record
   gets `secret.rotated <NAME> {where, by}` and nothing else. At start
@@ -3578,7 +3603,17 @@ The organization's models are a catalog in source (GH #583 M1):
   anthropic-messages`), `LocalModel` (the OpenAI shape to this
   machine; no credential, no `external_model`, any data class),
   `FakeModel` (scripted: `answer`, `answer_file`, `answers_dir`,
-  `answer_role`; `fail_after` refuses after that many calls). A hosted
+  `answer_role`; `fail_after` refuses after that many calls;
+  `turns_dir` answers a request that offers tools from
+  `<dir>/<turn>.json`, a tool loop's scripted turns). A request names
+  the model its mapping resolved (`ModelRequest.model`, else the
+  backend's own), evidenced as `requested_model`; it carries `metadata`
+  (the attempt, the position and the holder: attribution only), which
+  `OpenAiChat` sends only with `send_metadata: true`, and an
+  `idempotency_key`, sent as `Idempotency-Key` (a model leg's is
+  `<attempt>:call:<turn>`). A model leg declines a Work whose mapping
+  named a model and refused it (a `tools` or `do` Work on a model that
+  returns no tool calls) before it asks for spend or calls anything. A hosted
   adapter's `complete` carries `external_model`; its credential is a
   sealed `HostedCredential` that names its key (`key`, whose vault slot
   is `model-<key>`; GH #989, the vault is the one source a model key
@@ -3648,10 +3683,14 @@ The organization's models are a catalog in source (GH #583 M1):
   backend (`dir_env` / `mode_env` name environment variables it reads
   into `dir` / `mode` at birth, so a catalog function computes no
   string: dna/FRICTION.md F.17). The key is `sha256` over the fields that identify a
-  request — role, the inner's name and model, the prompt and context
+  request — role, the inner's name, the model the request asks for (the one
+  its mapping resolved, else the inner's), the prompt and context
   digests, the data class, the grant normalized (`… @grant`: its path
   is where it ran, not what it was) and, for a backend that works in
-  place, a digest of the workspace's starting tree. An identical
+  place, a digest of the workspace's starting tree; a tool loop's
+  request adds digests of its tools and its turns so far, and its entry
+  keeps the tool calls the model asked for, so a replay follows the same
+  turns. An identical
   request made again in one run — a retried Work planned a second time —
   is keyed by its occurrence as well (`occurrence=n` for the n-th; the
   first keeps the plain key), so a recording that got two answers
@@ -3776,6 +3815,18 @@ The organization's models are a catalog in source (GH #583 M1):
   carries the same sums as `usage` on every execution, each of its
   attempts and every administered Task. The editor's locate and plan
   calls carry the Work's attempt id (the tape key excludes it).
+- **`hale dna models rule <selector> <size> [--permit <sizes>]`**
+  appends `model.rule <selector>` in the setter's name (`--as`): a
+  selector is `default`, `position:<name>`, `contract:<Name>` or
+  `task:<id>`, a size `quick`, `standard` or `deep`, and `--permit`
+  the sizes a more specific selector may move it to. **`models category
+  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]`**
+  appends `model.category` (prices in micro-dollars per 1k tokens); a
+  `tools` or `do` category without `--tools` is refused. **`models
+  map`** lists the latest row per selector and per category. `hale dna
+  task create --size <size>` appends `model.rule task:<intent id>`, an
+  override that holds only inside the sizes the rule beneath it
+  permits.
 - **`hale dna models`** builds the catalog beside a one-line main in
   `.hale/dna/probe`, runs its `probe_catalog()` from the project root
   with the organization's environment, and prints one line per
@@ -4179,7 +4230,9 @@ The live half is memory's, projected from the record by the spine
   (`position position:<name>`). Such a Work is an agent's, the legs'; a
   claim takes it only when its lease's position is that one: a position
   the graph states, taken as an agent's, claims with `position` and its
-  own id among its capabilities, which no other claimant has. Its hat is
+  own id among its capabilities, which no other claimant has: the head
+  first drops any `position` or `position:<name>` word the claimant
+  supplied, and grants them from the verified seat alone. Its hat is
   the routed position's (charter, mandate, model rule), and its outcome
   is a leg's Patch, applied, verified and reviewed as any. Class `organization`
   for a child that is not the organism is a contradiction and is
@@ -4550,11 +4603,25 @@ The live half is memory's, projected from the record by the spine
   whatever order the Board ratifies them in; the proposal stays in memory
   as the idea it was, bound to nothing, so it never enters a context
   package. Ratifying them fills the org chart. `hale dna review` lists the
-  groups `holes`, `practices` and `holds` together, as it does `design`
+  groups `holes`, `practices`, `holds`, `positions` and `ingest`
+  together, as it does `design`
   and `operating`, and `hale dna review <group> approve|reject` decides
   each pending one in turn. A seeded group is listed, and decided by its
   name, in the order the record requested its Reviews (a position, then
   its mandate), never by digest.
+  **Opening a position at run time (`hale dna position open <name>
+  --mandate "<text>" [--text <what it is>] [--under <part>] [--as
+  <who>]`).** The CLI refuses a position the record already states or
+  proposes, resolves a bare `--under` to the seed, work part, position
+  or process the graph states by that name, and appends
+  `position.requested` in the asker's name, relayed as
+  `PositionOpenRequested` until it is answered. The organization refuses
+  a name with a space or `|`, no mandate, no author, a name the graph
+  states, or an `under` the graph does not state (`position.refused`);
+  otherwise it proposes the position's node (the body `init` writes for
+  a hole, and an `unfold` edge from the part with `--under`) and its
+  mandate as two members of one family Review in the group `positions`
+  (`position.proposed`), which ratifying ratifies both.
   **Mandates (seed/structure).** Each position `init` proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
   knowledge idea of kind `mandate` (family `mandate`, `author: hale dna
@@ -4868,7 +4935,7 @@ secret, by its vault name, and never creates one.
 | `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
 | `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
-| `model-<NAME>`, per credential the catalog names | slot | a model's key (**Models**) |
+| `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key (**Models**); `hale dna secrets` lists a `work.hl` key as the legs' model key |
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
