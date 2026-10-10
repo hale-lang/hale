@@ -151,6 +151,7 @@ fn model_task_request(j: Journal, task_id: String) -> String {
 fn model_choice_json(c: ModelChoice) -> String {
     let b = std::json::Builder { };
     b.begin_object();
+    b.bool_field("ok", c.ok);
     b.string_field("mode", c.mode);
     b.string_field("size", c.size);
     b.string_field("category", c.category);

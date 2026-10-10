@@ -119,11 +119,14 @@ locus RecordedModel {
     }
     fn capacity_bytes() -> Int { return self.inner.capacity_bytes(); }
     fn works_in_place() -> Bool { return self.inner.works_in_place(); }
+    // The model a request asks for: the one its mapping resolved, else the
+    // inner backend's own; two requests for different models are two calls.
+    fn asked_model(req: ModelRequest) -> String { return if len(req.model) > 0 { req.model } else { self.inner.model_name() }; }
     // The request's identity, one field per line, in key order.
     fn fields(req: ModelRequest) -> String {
         return "role=" + req.role
             + "\nbackend=" + self.inner.identity()
-            + "\nmodel=" + self.inner.model_name()
+            + "\nmodel=" + self.asked_model(req)
             + "\nprompt_digest=" + (if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) })
             + "\ncontext_digest=" + digest_of(req.context)
             + "\ndata_class=" + req.data_class
@@ -229,7 +232,7 @@ locus RecordedModel {
     // The request as a TapeEntry (its identity; no answer yet).
     fn identity_of(req: ModelRequest, key: String) -> TapeEntry {
         return TapeEntry {
-            key: key, role: req.role, backend: self.inner.identity(), model: self.inner.model_name(),
+            key: key, role: req.role, backend: self.inner.identity(), model: self.asked_model(req),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context), data_class: req.data_class,
             grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace)
@@ -298,7 +301,7 @@ locus RecordedModel {
         let e = self.read_entry(key);
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: "recorded", backend: self.inner.identity(),
-            endpoint: "tape://" + self.name, requested_model: self.inner.model_name(),
+            endpoint: "tape://" + self.name, requested_model: self.asked_model(req),
             params: "tape=" + key[0..12] + " mode=replay",
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
