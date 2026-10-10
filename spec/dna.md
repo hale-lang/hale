@@ -4128,7 +4128,18 @@ The live half is memory's, projected from the record by the spine
   admitted under `ask-judge` — one leaf requiring judgment under the
   `Assessment` contract, which capability-first routing hands to an
   agent on the first attempt (the legs' relay: a leg claims it through
-  `hale dna work`) and to a person on the second. Class `organization`
+  `hale dna work`) and to a person on the second. A change routed to a
+  position (`hale dna task create --to position:<name>`; the intent row
+  carries `position`, and `to` stays the ask's owner, the organization)
+  is the asker's word too: no plan is asked, and it is admitted under
+  `ask-position` — one leaf requiring `position` under the `Patch`
+  contract, the routed position bound into its requirement at admission
+  (`position position:<name>`). Such a Work is an agent's, the legs'; a
+  claim takes it only when its lease's position is that one: a position
+  the graph states, taken as an agent's, claims with `position` and its
+  own id among its capabilities, which no other claimant has. Its hat is
+  the routed position's (charter, mandate, model rule), and its outcome
+  is a leg's Patch, applied, verified and reviewed as any. Class `organization`
   for a child that is not the organism is a contradiction and is
   refused before anything is admitted (`intent.refused`). The execution is
   asked of the engine with the performer kind of every leaf of the

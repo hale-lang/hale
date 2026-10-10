@@ -97,9 +97,11 @@ which `new` and `init` write for whoever runs them.
 
 A claim matches attempts by performer kind, and `--kind` names it. The
 kinds the organization hands to legs are `agent`, `software` and the
-like; a position the graph states (`position:api/dev`, held or not)
-names no kind of its own yet, so with no `--kind` it claims what an
-`agent` does. When nothing matches, the refusal names the kinds that
+like; a position the graph states (`position:api/dev`) works as an
+`agent`, and also takes the Works routed to it: a change asked with
+`hale dna task create --to position:api/dev` is one `Patch` Work that
+only that position's holder can claim, briefed in that position's hat,
+and performed by the tool loop below. When nothing matches, the refusal names the kinds that
 are outstanding for a leg and the flag that claims one.
 
 Exit codes: **0** the head admitted it, or the read answered; **1** a

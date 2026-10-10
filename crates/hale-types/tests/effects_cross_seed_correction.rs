@@ -299,9 +299,10 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        468,
-        486,
+        469,
+        488,
         "
+        AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}
         DefinitionDrafts::recapture  does={syscall,block,env,alloc}

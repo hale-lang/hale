@@ -695,20 +695,26 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     // GH #664: a body here admits the intent only for a position its owner
     // holds; for another owner's the intent goes into the record, where
     // their controller relays it
-    let ours = admits_here(root, to);
+    // `--to position:<name>`: the change is routed to that position, a leg
+    // holding it makes it (`ask-position`); the organization owns the ask
+    let routed = if std::str::starts_with(to, "position:") { to } else { "" };
+    let owner = if len(routed) > 0 { "" } else { to };
+    if len(routed) > 0 && judgment { return fail("task create: --judgment asks for an assessment; --to position:<name> routes a change"); }
+    let ours = admits_here(root, owner);
     let local = ours && organism_here(root, memory);
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("outcome", outcome);
     b.string_field("from", who);
-    b.string_field("to", to);
+    b.string_field("to", owner);
+    if len(routed) > 0 { b.string_field("position", routed); }
     // GH #946: an assessment, not a change — admitted as a judgment a leg performs
     if judgment { b.string_field("kind", "judgment"); }
     b.end_object();
     // `--no-wait`: the one notice, on either path, once the row is in the record
     // where the ask's row lands: the record, or the ledger once it is adopted
     let place = if dna::route(routing_here(root), "intent.requested") == "ledger" { "the ledger" } else { "the record" };
-    let requested = "intent " + intent_id + " requested in " + place + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
+    let requested = "intent " + intent_id + " requested in " + place + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, owner) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
         // GH #682, #986: the row is the fact; the host beside the organism,
         // in this clone, relays it onto the nerves on its next tick, and the
@@ -721,7 +727,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
-        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
+        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, owner) + "; their controller reads the record at its remote, and this clone has none" }); }
         if len(size) > 0 && !append_as(root, "model.rule", "task:" + intent_id, "{\"size\": " + quote(size) + ", \"by\": " + quote(who) + "}", if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the size was not written (the reason is above)"); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         let s = sync_record(root, memory);

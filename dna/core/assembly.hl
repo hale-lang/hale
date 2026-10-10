@@ -1725,7 +1725,7 @@ locus Dna {
         // Intent through the Board asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind });
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind, position: o.position });
     }
     // An uncertain exact append may have landed. Only its exact slot and
     // bytes establish that outcome; absence never becomes success.
@@ -2346,6 +2346,9 @@ locus Dna {
         // an ask for a judgment is the asker's word: no plan is asked, the
         // assessment is admitted as one judgment leaf, a leg's to perform
         if i.kind == "judgment" { return self.admit_ask(i, Plan { kind: "judgment", change_class: "application" }, false); }
+        // a change routed to a position is the asker's word too: no plan
+        // is asked, one Work is admitted for a leg holding that position
+        if len(i.position) > 0 { return self.admit_ask(i, Plan { kind: "position", change_class: "application" }, false); }
         if self.planned {
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
@@ -2388,7 +2391,8 @@ locus Dna {
         b.begin_object();
         b.string_field("objective", i.outcome);
         b.string_field("from", i.from);
-        b.string_field("kind", if i.kind == "judgment" { "judgment" } else if planned { p.kind } else { "app" });
+        b.string_field("kind", if i.kind == "judgment" { "judgment" } else if len(i.position) > 0 { "position" } else if planned { p.kind } else { "app" });
+        if len(i.position) > 0 { b.string_field("position", i.position); }
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
@@ -2399,7 +2403,7 @@ locus Dna {
         b.bool_field("planned", planned);
         b.bool_field("parsed", planned && p.parsed);
         b.end_object();
-        let definition = if i.kind == "judgment" { "ask-judge" } else if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
+        let definition = if i.kind == "judgment" { "ask-judge" } else if len(i.position) > 0 { "ask-position" } else if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
         return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: self.catalog.latest(definition), inputs: b.result(), from: i.from, to: i.to });
     }
     // The authored-definition API (card 18): a workflow the application
@@ -2437,7 +2441,10 @@ locus Dna {
             let n = self.catalog.bound.get(i) or BoundNode { };
             if n.kind == "work" {
                 let req = bound_request(n, self.task_of_bound(n), n.parent);
-                let kind = if std::str::contains(n.requires, "organism") { "organism" }
+                // a Work routed to a position is a leg's, as an agent's: the
+                // position's own word decides before any substring of it can
+                let kind = if word_in("position", n.requires) { "agent" }
+                else if std::str::contains(n.requires, "organism") { "organism" }
                 else if std::str::contains(n.requires, "edit") { "edit" }
                 else if std::str::contains(n.requires, "human") || std::str::contains(n.requires, "person") { "human" }
                 else { self.work.selection.select(req, 0, "") };
@@ -2811,6 +2818,9 @@ locus Dna {
             // ask's, from the inputs, before the recipe is bound
             let objective = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "objective") } else { "" };
             if len(objective) > 0 { self.catalog.bind_objective(objective); }
+            // a change routed to a position: that position joins its Work's requirement
+            let routed = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "position") } else { "" };
+            if len(routed) > 0 { self.catalog.bind_position(routed); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
                 inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id, convener: a.convener,

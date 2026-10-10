@@ -78,10 +78,24 @@ fn hat_effects_of(requires: String) -> String {
     return EFFECT_CLASSES;
 }
 
+// The position a Work is routed to: the `position:<name>` word of its
+// requirement ("" when it names none; `ask-position` binds one).
+fn position_in(requires: String) -> String {
+    let mut rest = requires + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = rest[0..sp];
+        if std::str::starts_with(w, "position:") && len(w) > 9 { return w; }
+        rest = rest[(sp + 1)..len(rest)];
+    }
+    return "";
+}
+
 // The kind a Work's request selects before an attempt is admitted, as the
-// engine selects it (`kinds_of`, capability-first): a person's, an edit,
-// else by what it requires.
+// engine selects it (`kinds_of`, capability-first): a position's (a leg's,
+// as an agent's), a person's, an edit, else by what it requires.
 fn hat_kind_of(requires: String) -> String {
+    if word_in("position", requires) { return "agent"; }
     if std::str::contains(requires, "edit") { return "edit"; }
     if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }
     if std::str::contains(requires, "judgment") { return "agent"; }
@@ -228,7 +242,10 @@ type HatInputs {
 // (dna/core/model_map.hl). Every hat is built here, so the owner's editor
 // and a head's leg wear one shape.
 fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Hat {
-    let position = hat_position_of(w.performer_kind);
+    // a Work routed to a position wears that position's hat: its charter,
+    // its mandate, its model rule
+    let routed = position_in(w.requires);
+    let position = if len(routed) > 0 { routed } else { hat_position_of(w.performer_kind) };
     let owed = output_contract(w.output_contract);
     let hands = tools_json(owed.hands);
     let h = Hat {
