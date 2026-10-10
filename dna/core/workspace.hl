@@ -598,12 +598,13 @@ locus LocalGit {
     // `untracked_inputs` for the seeds the candidate builds. A repository
     // organism's seed is its root, which holds no `.hl` of its own
     // (`hale inputs` finds nothing there): its build inputs are those of
-    // the seeds that hold the files the candidate changes (`api/`).
+    // the seeds that hold the files the candidate changes (`api/`), a
+    // rename as both its names, so the seed a file leaves is read too. A
+    // directory holding no `.hl` (`docs/`) builds nothing and is no seed.
     @unbounded
     fn candidate_inputs(seed: String, worktree: String) -> String {
         if seed != "." || root_is_seed(worktree) { return self.untracked_inputs(seed, worktree); }
-        let base = self.head(self.repo);
-        let changed = run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n" + base + "\nHEAD");
+        let changed = changed_paths(worktree, self.head(self.repo), "HEAD");
         if changed.code != 0 { return "!! the candidate's changed files cannot be listed: " + trim_nl(changed.stderr) + "\n"; }
         let mut out = "";
         let mut rest = seeds_of_files(worktree, trim_nl(changed.stdout), "\n");
@@ -611,7 +612,7 @@ locus LocalGit {
             let nl = std::str::index_of(rest, "\n");
             let s = if nl < 0 { rest } else { rest[0..nl] };
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-            if len(s) > 0 && s != "." { out = out + self.untracked_inputs(s, worktree); }
+            if len(s) > 0 && s != "." && holds_source(worktree + "/" + s) { out = out + self.untracked_inputs(s, worktree); }
         }
         return out;
     }

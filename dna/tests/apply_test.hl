@@ -321,6 +321,7 @@ main locus App {
         std::io::fs::write_file(repo2 + "/hale.toml", "[deps]\n") or discard;
         std::io::fs::write_file(repo2 + "/app/main.hl", "import \"../lib\" as lib;\nfn main() { println(lib::one()); }\n") or discard;
         std::io::fs::write_file(repo2 + "/lib/one.hl", "fn one() -> Int { return 1; }\n") or discard;
+        std::io::fs::write_file(repo2 + "/app/util.hl", "fn util() -> Int { return 2; }\n") or discard;
         std::io::fs::write_file(repo2 + "/.gitignore", "/.hale/\n/app/app\n/app/ignored.hl\n") or discard;
         let i2 = sh("git\n-C\n" + repo2 + "\ninit\n-q\n-b\nmain");
         let a2 = sh("git\n-C\n" + repo2 + "\nadd\n-A");
@@ -376,6 +377,22 @@ main locus App {
         let d10r = self.probe.dirty_for(".", wt2);
         std::test::assert(std::str::contains(d10r, "?? lib/helper.hl"), "and names their untracked inputs: " + d10r);
         std::io::fs::unlink(repo2 + "/lib/helper.hl") or discard;
+        // a rename reads the seed the file leaves as well as the one it
+        // reaches; documentation beside it is no seed and refuses nothing
+        // (a candidate of the move alone, from the base)
+        let wb = sh("git\n-C\n" + wt2 + "\nreset\n-q\n--hard\n" + self.probe.head(repo2));
+        std::test::assert_eq_int(wb.code, 0, "the worktree back at the base: " + wb.stderr);
+        let mv = sh("git\n-C\n" + wt2 + "\nmv\napp/util.hl\nlib/util.hl");
+        std::io::fs::mkdir(wt2 + "/docs") or discard;
+        std::io::fs::write_file(wt2 + "/docs/README.md", "the app and its library\n") or discard;
+        let wma = sh("git\n-C\n" + wt2 + "\nadd\n-A");
+        let wmc = sh("git\n-C\n" + wt2 + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nthe util moves to the library, with a note");
+        std::test::assert_eq_int(wmc.code, 0, "the move committed: " + wmc.stderr);
+        std::test::assert_eq_str(self.probe.dirty_for(".", wt2), "", "a move with documentation is clean");
+        std::io::fs::write_file(repo2 + "/app/stray.hl", "fn oops( {\n") or discard;
+        let d10m = self.probe.dirty_for(".", wt2);
+        std::test::assert(std::str::contains(d10m, "?? app/stray.hl"), "the seed a file leaves is read: " + d10m);
+        std::io::fs::unlink(repo2 + "/app/stray.hl") or discard;
         let wr = sh("git\n-C\n" + repo2 + "\nworktree\nremove\n--force\n" + wt2);
         std::test::assert_eq_int(wr.code, 0, "the worktree removed: " + wr.stderr);
         // an inspection that fails authorises nothing (finding 4)
