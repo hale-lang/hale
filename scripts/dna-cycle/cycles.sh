@@ -30,10 +30,14 @@ for i in $(seq 1 "$N"); do
         done
     ) & WD=$!
     t0=$(date +%s)
-    timeout 1800 bash "$HERE/up.sh" > "$CYCLE_DIR/cycle-$i-up.out" 2>&1
-    timeout 3000 bash "$HERE/walk.sh" > "$CYCLE_DIR/cycle-$i-walk.out" 2>&1
+    # each phase must run to its end: its exit status and its last line are both checked, so a phase that
+    # timed out or stopped between a step and its check never counts a cycle green
+    timeout 1800 bash "$HERE/up.sh" > "$CYCLE_DIR/cycle-$i-up.out" 2>&1; up_rc=$?
+    if [ "$up_rc" = 3 ]; then echo "- cycle $i: not run, the cycle's ports are in use: $(tail -n +2 "$CYCLE_DIR/cycle-$i-up.out" | tr '\n' ';')" >> "$out"; kill "$WD" 2>/dev/null; break; fi
+    walk_rc=0
+    if grep -q '^UP DONE' "$CYCLE_DIR/cycle-$i-up.out"; then timeout 3000 bash "$HERE/walk.sh" > "$CYCLE_DIR/cycle-$i-walk.out" 2>&1; walk_rc=$?; fi
     t1=$(date +%s)
-    bash "$HERE/down.sh" > "$CYCLE_DIR/cycle-$i-down.out" 2>&1
+    bash "$HERE/down.sh" > "$CYCLE_DIR/cycle-$i-down.out" 2>&1; down_rc=$?
     kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null
     RUN=$(current_run)
     up_pass=$(grep -c '^- PASS' "$RUN/report.md"); up_fail=$(grep -c '^- FAIL' "$RUN/report.md")
@@ -42,7 +46,15 @@ for i in $(seq 1 "$N"); do
     printf -- '- cycle %s: up+down %s pass %s fail, walk %s pass %s fail, %ss up+walk, peak %s MB (%s), watchdog %s; %s\n' \
         "$i" "$up_pass" "$up_fail" "$w_pass" "$w_fail" "$((t1 - t0))" "$(cut -d' ' -f1 "$peak")" "$(cut -d' ' -f2 "$peak")" \
         "$( [ -f "$CYCLE_DIR/cycle-$i.watchdog" ] && echo FIRED || echo no)" "$RUN" >> "$out"
-    if [ "$up_fail" = 0 ] && [ "$w_fail" = 0 ]; then green=$((green + 1)); else grep -h '^- FAIL' "$RUN/report.md" "$RUN/walk.md" 2>/dev/null | cut -c1-300 >> "$out"; fi
+    up_done=$(grep -c '^UP DONE' "$CYCLE_DIR/cycle-$i-up.out"); walk_done=$(grep -c '^WALK DONE' "$CYCLE_DIR/cycle-$i-walk.out" 2>/dev/null); down_done=$(grep -c '^DOWN DONE' "$CYCLE_DIR/cycle-$i-down.out")
+    torn=$(grep -c '^- PASS teardown leaves nothing' "$RUN/report.md")
+    fired=$([ -f "$CYCLE_DIR/cycle-$i.watchdog" ] && echo 1 || echo 0)
+    if [ "$up_fail" = 0 ] && [ "$w_fail" = 0 ] && [ "$up_rc" = 0 ] && [ "$walk_rc" = 0 ] && [ "$down_rc" = 0 ] && [ "${up_done:-0}" = 1 ] && [ "${walk_done:-0}" = 1 ] && [ "${down_done:-0}" = 1 ] && [ "${torn:-0}" = 1 ] && [ "$fired" = 0 ]; then
+        green=$((green + 1))
+    else
+        echo "  not green: exits up=$up_rc walk=$walk_rc down=$down_rc; ran to its end up=${up_done:-0} walk=${walk_done:-0} down=${down_done:-0}; teardown clean=${torn:-0}; watchdog=$fired" >> "$out"
+        grep -h '^- FAIL' "$RUN/report.md" "$RUN/walk.md" 2>/dev/null | cut -c1-300 >> "$out"
+    fi
 done
 echo "- $green of $N green" >> "$out"
 tail -n $((N * 4 + 2)) "$out"

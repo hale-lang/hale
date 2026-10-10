@@ -10,11 +10,18 @@
 # taped), replay (answers from the tape, no tokens), live. The legs always ask the canned gateway.
 set -u
 source "$(dirname "$0")/lib.sh"
+# before anything is written: a refusal leaves $CYCLE_DIR/current naming the run that holds the ports,
+# for down.sh to stop
+taken=$(ports_taken)
+if [ -n "$taken" ]; then
+    echo "dna-cycle: the cycle's ports are in use; stop what holds them (scripts/dna-cycle/down.sh stops a run of its own):" >&2
+    echo "$taken" >&2
+    exit 3
+fi
 MODELS=${MODELS:-canned}; TAPE_DIR=$CYCLE_DIR/tape; mkdir -p "$TAPE_DIR"
 N=$(date +%s); RUN=$CYCLE_DIR/run-$N; mkdir -p "$RUN"; R=$RUN/report.md; LOG=$RUN/cycle.log; echo "$RUN" > "$CYCLE_DIR/current"
 export XDG_STATE_HOME=$RUN/state XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
 units_env=(--setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=HALE_BIN="$HALE_BIN" --setenv=HALE_SKIP_STALE_CHECK=1 --setenv=HALE_DNA_DISCOVER=off --setenv=GIT_CONFIG_NOSYSTEM=1 --setenv=XDG_STATE_HOME="$XDG_STATE_HOME")
-free_ports; sleep 1
 echo "# dna cycle UP $N (hale $(hale --version 2>/dev/null | head -1), $(git -C "$HW" rev-parse --short HEAD))" > "$R"
 
 step "copy the repository" bash -c "cp -r '$HW/dna/tests/onboarding/todo' '$RUN/todo' && cd '$RUN/todo' && git init -q -b main && git config user.name riley && git config user.email riley@dna.cycle && git add -A && git commit -q -m 'todo: the repository' && rm -rf bin"
