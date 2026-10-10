@@ -1,0 +1,960 @@
+{
+  "heart": {
+    "events": [
+      {
+        "id": "heart-boundary-1",
+        "view": "boundary",
+        "kind": "BUS_PUBLISH",
+        "label": "Application event published",
+        "detail": "Simulated runtime observation on the declared application route. Publication does not establish that Heart recorded the reading or completed any action.",
+        "source": "runtime",
+        "effect": "flow",
+        "entityIds": [
+          "atlas-application",
+          "topic-atlas"
+        ],
+        "edgeIds": [
+          "atlas-application::publishes::topic-atlas"
+        ],
+        "at": 0,
+        "sourceRef": "iris/INSPECTOR.md"
+      },
+      {
+        "id": "heart-boundary-2",
+        "view": "boundary",
+        "kind": "BUS_DELIVER",
+        "label": "Application event reaches Heart",
+        "detail": "Simulated delivery observation identifies the receiving locus. Delivery remains separate from durable landing and acknowledgement.",
+        "source": "runtime",
+        "effect": "flow",
+        "entityIds": [
+          "topic-atlas",
+          "heart"
+        ],
+        "edgeIds": [
+          "topic-atlas::delivers to::heart"
+        ],
+        "at": 3,
+        "sourceRef": "iris/INSPECTOR.md"
+      },
+      {
+        "id": "heart-boundary-3",
+        "view": "boundary",
+        "kind": "reading.recorded",
+        "label": "Heart lands the application reading",
+        "detail": "The sample reading is durably recorded before acknowledgement or action. It grants no application access to DNA fact subjects.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "heart",
+          "topic-atlas"
+        ],
+        "edgeIds": [],
+        "at": 6,
+        "sourceRef": "dna/host/pulse.hl"
+      },
+      {
+        "id": "heart-expression-4",
+        "view": "expression",
+        "kind": "instance.up",
+        "label": "All touched instances report their revision",
+        "detail": "Replay of the per-instance reports for retained m16, including worker-0. Each report names the exact running revision; one report cannot establish fleet success.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "deploy-m16",
+          "api-0",
+          "api-1",
+          "worker-0"
+        ],
+        "edgeIds": [
+          "deploy-m16::is answered by::api-0",
+          "deploy-m16::is answered by::api-1",
+          "deploy-m16::is answered by::worker-0"
+        ],
+        "at": 9,
+        "sourceRef": "dna/host/node.hl"
+      },
+      {
+        "id": "heart-expression-5",
+        "view": "expression",
+        "kind": "expression.observed",
+        "label": "The m16 observation window was healthy",
+        "detail": "The retained m16 history includes a healthy observation over every touched instance. This observation is distinct from approval and deployment admission.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "worker-0",
+          "observation-m16"
+        ],
+        "edgeIds": [
+          "worker-0::is included in::observation-m16"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/assembly.hl"
+      },
+      {
+        "id": "heart-expression-6",
+        "view": "expression",
+        "kind": "mutation.retained",
+        "label": "Healthy evidence supported retaining m16",
+        "detail": "Replay of the retention evidence for current revision a48bc20. This does not approve or apply the separate pending m17 candidate.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "observation-m16",
+          "retention-m16"
+        ],
+        "edgeIds": [
+          "observation-m16::supports::retention-m16"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/assembly.hl"
+      }
+    ]
+  },
+  "spine": {
+    "events": [
+      {
+        "id": "spine-execution-1",
+        "view": "execution",
+        "kind": "workflow.admitted",
+        "label": "The task was admitted against ask-judge @1",
+        "detail": "Replay of the durable admission joining this task to the bound workflow definition. Admission starts the execution path; it does not establish settlement.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "definition-ask-judge-1",
+          "execution-t142",
+          "task-t142"
+        ],
+        "edgeIds": [
+          "definition-ask-judge-1::defines::execution-t142",
+          "task-t142::starts::execution-t142"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/workflow_events.hl"
+      },
+      {
+        "id": "spine-execution-2",
+        "view": "execution",
+        "kind": "attempt.admitted",
+        "label": "Judgment work gained attempt a0",
+        "detail": "The sample admitted attempt belongs to this Work leaf and execution. Outcome submission and owner settlement remain pending in the displayed snapshot.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "execution-t142",
+          "work-t142-a",
+          "attempt-a0"
+        ],
+        "edgeIds": [
+          "execution-t142::registers::work-t142-a",
+          "work-t142-a::has attempt::attempt-a0"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/workflow_projection.hl"
+      },
+      {
+        "id": "spine-execution-3",
+        "view": "execution",
+        "kind": "projection.refreshed",
+        "label": "Outcome and settlement remain pending",
+        "detail": "Derived read of the current workflow projection, not a new backend event. No completion pulse crosses the pending outcome or settlement.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "attempt-a0",
+          "outcome-t142",
+          "settlement-t142"
+        ],
+        "edgeIds": [
+          "attempt-a0::must submit::outcome-t142",
+          "outcome-t142::awaits::settlement-t142"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/workflow_projection.hl"
+      },
+      {
+        "id": "spine-dependencies-4",
+        "view": "dependencies",
+        "kind": "projection.refreshed",
+        "label": "The schedule binds close-month @1",
+        "detail": "Derived read of schedule and workflow metadata. Cadence selects a bound definition and does not bypass its step dependencies.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "schedule-month-close",
+          "definition-close-month-1",
+          "step-reconcile"
+        ],
+        "edgeIds": [
+          "schedule-month-close::names::definition-close-month-1",
+          "definition-close-month-1::starts with::step-reconcile"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/scheduler.hl"
+      },
+      {
+        "id": "spine-dependencies-5",
+        "view": "dependencies",
+        "kind": "projection.refreshed",
+        "label": "Post waits for reconciliation settlement",
+        "detail": "Derived read of the declared dependency. A failed final attempt fails the step; this replay does not activate or complete the later human leaf.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "step-reconcile",
+          "step-post",
+          "person-operations"
+        ],
+        "edgeIds": [
+          "step-reconcile::must settle before::step-post",
+          "step-post::hands case to::person-operations"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/workflow_projection.hl"
+      },
+      {
+        "id": "spine-dependencies-6",
+        "view": "dependencies",
+        "kind": "schedule.skipped",
+        "label": "An overlapping schedule occurrence was skipped",
+        "detail": "Sample replay of the skip-while-open schedule policy. A skipped occurrence is distinct from a paused schedule or a settled workflow.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "schedule-month-close",
+          "schedule-skip"
+        ],
+        "edgeIds": [
+          "schedule-month-close::uses::schedule-skip"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/scheduler.hl"
+      }
+    ]
+  },
+  "nerves": {
+    "events": [
+      {
+        "id": "nerves-routes-1",
+        "view": "routes",
+        "kind": "BUS_PUBLISH",
+        "label": "The application publishes on its own subject",
+        "detail": "Simulated runtime observation on the application route. The application credential cannot publish organization facts.",
+        "source": "runtime",
+        "effect": "flow",
+        "entityIds": [
+          "atlas-application",
+          "topic-atlas"
+        ],
+        "edgeIds": [
+          "atlas-application::publishes::topic-atlas"
+        ],
+        "at": 0,
+        "sourceRef": "iris/INSPECTOR.md"
+      },
+      {
+        "id": "nerves-routes-2",
+        "view": "routes",
+        "kind": "BUS_DELIVER",
+        "label": "Heart receives the application event",
+        "detail": "Simulated delivery observation on the declared route. Receipt of a message is separate from recording its payload or executing a response.",
+        "source": "runtime",
+        "effect": "flow",
+        "entityIds": [
+          "topic-atlas",
+          "heart"
+        ],
+        "edgeIds": [
+          "topic-atlas::delivers events to::heart"
+        ],
+        "at": 3,
+        "sourceRef": "iris/INSPECTOR.md"
+      },
+      {
+        "id": "nerves-routes-3",
+        "view": "routes",
+        "kind": "changed",
+        "label": "Head asks Face to reread",
+        "detail": "The existing SSE changed notification names what moved, not graph state. Face must reread its authorized API projection before updating durable facts.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "head",
+          "face"
+        ],
+        "edgeIds": [
+          "head::notifies to reread::face"
+        ],
+        "at": 6,
+        "sourceRef": "dna/api/project_service/push.hl"
+      },
+      {
+        "id": "nerves-request-4",
+        "view": "request",
+        "kind": "projection.refreshed",
+        "label": "The durable request still has no answer",
+        "detail": "Derived read of pressure-018 and its answer join. A transport acknowledgement does not satisfy the answering-row requirement.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "spine",
+          "answer-pressure-018",
+          "relay-pressure-018"
+        ],
+        "edgeIds": [
+          "spine::must record answer::answer-pressure-018",
+          "answer-pressure-018::is checked before::relay-pressure-018"
+        ],
+        "at": 9,
+        "sourceRef": "dna/host/host.hl"
+      },
+      {
+        "id": "nerves-request-5",
+        "view": "request",
+        "kind": "BUS_DELIVER",
+        "label": "The request is delivered to Spine",
+        "detail": "Simulated delivery observation for the existing request identity. At-least-once delivery may repeat without creating a new request or establishing completion.",
+        "source": "runtime",
+        "effect": "flow",
+        "entityIds": [
+          "publish-pressure-018",
+          "spine"
+        ],
+        "edgeIds": [
+          "publish-pressure-018::is delivered to::spine"
+        ],
+        "at": 12,
+        "sourceRef": "iris/INSPECTOR.md"
+      },
+      {
+        "id": "nerves-request-6",
+        "view": "request",
+        "kind": "projection.refreshed",
+        "label": "Relay remains eligible under the same identity",
+        "detail": "Derived read of the unanswered request and 30-second relay rule. This does not count a fresh pressure raise or manufacture an answering row.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "answer-pressure-018",
+          "relay-pressure-018",
+          "pressure-018"
+        ],
+        "edgeIds": [
+          "answer-pressure-018::is checked before::relay-pressure-018",
+          "relay-pressure-018::reuses identity of::pressure-018"
+        ],
+        "at": 15,
+        "sourceRef": "dna/host/host.hl"
+      }
+    ]
+  },
+  "body": {
+    "events": [
+      {
+        "id": "body-placement-1",
+        "view": "placement",
+        "kind": "instance.up",
+        "label": "edge-1 reports api-0 at a48bc20",
+        "detail": "Replay of the per-instance report joining api-0 to its host and revision. The Body lease identifies its holder separately from application placement.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "edge-1",
+          "api-0",
+          "revision-current"
+        ],
+        "edgeIds": [
+          "edge-1::reports running::api-0",
+          "api-0::expresses::revision-current"
+        ],
+        "at": 0,
+        "sourceRef": "dna/host/node.hl"
+      },
+      {
+        "id": "body-placement-2",
+        "view": "placement",
+        "kind": "instance.up",
+        "label": "edge-1 also reports worker-0",
+        "detail": "Replay of a distinct worker instance report. Sharing a host does not merge the two instance identities.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "edge-1",
+          "worker-0",
+          "revision-current"
+        ],
+        "edgeIds": [
+          "edge-1::reports running::worker-0",
+          "worker-0::expresses::revision-current"
+        ],
+        "at": 3,
+        "sourceRef": "dna/host/node.hl"
+      },
+      {
+        "id": "body-placement-3",
+        "view": "placement",
+        "kind": "instance.up",
+        "label": "edge-2 reports api-1 at a48bc20",
+        "detail": "Replay of the second host report and its revision evidence. The graph retains one junction for the revision shared by these instances.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "edge-2",
+          "api-1",
+          "revision-current"
+        ],
+        "edgeIds": [
+          "edge-2::reports running::api-1",
+          "api-1::expresses::revision-current"
+        ],
+        "at": 6,
+        "sourceRef": "dna/host/node.hl"
+      },
+      {
+        "id": "body-rollback-4",
+        "view": "rollback",
+        "kind": "instance.exited",
+        "label": "Historical m14: api-1 exited",
+        "detail": "Historical replay of the crash inside m14’s observation window. It describes m14, not the current retained m16 deployment.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "deploy-m14",
+          "crash-m14",
+          "rollback-m14"
+        ],
+        "edgeIds": [
+          "deploy-m14::is followed by::crash-m14",
+          "crash-m14::causes::rollback-m14"
+        ],
+        "at": 9,
+        "sourceRef": "dna/host/node.hl"
+      },
+      {
+        "id": "body-rollback-5",
+        "view": "rollback",
+        "kind": "mutation.rolled_back",
+        "label": "Historical m14: restore its recorded base",
+        "detail": "The recorded rollback names base revision 4a18bf2. Restoring the genome still requires its own fleet deployment and instance evidence.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "rollback-m14",
+          "revision-m14-base",
+          "deploy-m14-base"
+        ],
+        "edgeIds": [
+          "rollback-m14::restores::revision-m14-base",
+          "revision-m14-base::is requested by::deploy-m14-base"
+        ],
+        "at": 12,
+        "sourceRef": "dna/host/host.hl"
+      },
+      {
+        "id": "body-rollback-6",
+        "view": "rollback",
+        "kind": "projection.refreshed",
+        "label": "Historical base deployment has three reports",
+        "detail": "Derived read of the three per-instance reports answering the historical base deployment. This does not change the current revision a48bc20.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "deploy-m14-base",
+          "receipt-m14-base"
+        ],
+        "edgeIds": [
+          "deploy-m14-base::is answered by::receipt-m14-base"
+        ],
+        "at": 15,
+        "sourceRef": "dna/host/host.hl"
+      }
+    ]
+  },
+  "legs": {
+    "events": [
+      {
+        "id": "legs-claim-1",
+        "view": "claim",
+        "kind": "attempt.claimed",
+        "label": "agent · slot 1 holds the attempt lease",
+        "detail": "Replay of the claim naming the holder, lease token and validity. A claim authorizes bounded work but does not establish an outcome.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "riley",
+          "worker-agent1",
+          "attempt-a0"
+        ],
+        "edgeIds": [
+          "riley::claims through::worker-agent1",
+          "worker-agent1::holds lease for::attempt-a0"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/workflow_execution.hl"
+      },
+      {
+        "id": "legs-claim-2",
+        "view": "claim",
+        "kind": "attempt.allowance_granted",
+        "label": "The attempt receives its $0.50 allowance",
+        "detail": "Replay of the allowance bounded by Work and the remaining model window. Granting allowance is not evidence of spend or completion.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "attempt-a0",
+          "allowance-t142"
+        ],
+        "edgeIds": [
+          "attempt-a0::has allowance::allowance-t142"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/spending.hl"
+      },
+      {
+        "id": "legs-claim-3",
+        "view": "claim",
+        "kind": "projection.refreshed",
+        "label": "The active lease gates the Hat read",
+        "detail": "Derived read of claim-gated context access; general account access is insufficient. The displayed outcome remains pending.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "task-t142",
+          "attempt-a0",
+          "hat"
+        ],
+        "edgeIds": [
+          "task-t142::is worked by::attempt-a0",
+          "attempt-a0::authorizes reading::hat"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/hat.hl"
+      },
+      {
+        "id": "legs-uncertainty-4",
+        "view": "uncertainty",
+        "kind": "attempt.unresolved",
+        "label": "The patch attempt has an uncertain effect",
+        "detail": "The sample attempt stopped after its effect became unresolved. Its surviving scratch commit means that absence of settlement cannot be treated as absence of effect.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "attempt-t139-a0",
+          "patch-c17b8e2",
+          "worker-agent2"
+        ],
+        "edgeIds": [
+          "attempt-t139-a0::left evidence::patch-c17b8e2",
+          "attempt-t139-a0::stopped::worker-agent2"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/routing.hl"
+      },
+      {
+        "id": "legs-uncertainty-5",
+        "view": "uncertainty",
+        "kind": "projection.refreshed",
+        "label": "The patch lacks a settled outcome",
+        "detail": "Derived read of patch evidence joined to the outcome record. This marks the uncertainty without automatically retrying the external effect.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "patch-c17b8e2",
+          "outcome-t139"
+        ],
+        "edgeIds": [
+          "patch-c17b8e2::is checked against::outcome-t139"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/workflow_execution.hl"
+      },
+      {
+        "id": "legs-uncertainty-6",
+        "view": "uncertainty",
+        "kind": "projection.refreshed",
+        "label": "Human resolution is still required",
+        "detail": "Derived read of the pending resolution boundary. No resolution receipt is fabricated and the replay does not settle the attempt.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "outcome-t139",
+          "human-resolution-t139",
+          "resolution-receipt-t139"
+        ],
+        "edgeIds": [
+          "outcome-t139::requires::human-resolution-t139",
+          "human-resolution-t139::must record::resolution-receipt-t139"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/workflow_execution.hl"
+      }
+    ]
+  },
+  "hands": {
+    "events": [
+      {
+        "id": "hands-capabilities-1",
+        "view": "capabilities",
+        "kind": "projection.refreshed",
+        "label": "Work-scoped Git and Toolchain are available",
+        "detail": "Derived read of the current Work’s bounded capabilities. These grants are not global editable account permissions.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "work-t139-a",
+          "hand-git",
+          "hand-toolchain"
+        ],
+        "edgeIds": [
+          "work-t139-a::grants within scope::hand-git",
+          "work-t139-a::grants within scope::hand-toolchain"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/legs/hands.hl"
+      },
+      {
+        "id": "hands-capabilities-2",
+        "view": "capabilities",
+        "kind": "projection.refreshed",
+        "label": "Scratch changes stop at the review boundary",
+        "detail": "Derived read of Git and Forge authority. The performing leg can prepare changes and submit review evidence; merge authority remains elsewhere.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "hand-git",
+          "scratch-t139",
+          "hand-forge",
+          "review-boundary"
+        ],
+        "edgeIds": [
+          "hand-git::writes::scratch-t139",
+          "hand-forge::submits to::review-boundary"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/legs/hands.hl"
+      },
+      {
+        "id": "hands-capabilities-3",
+        "view": "capabilities",
+        "kind": "projection.refreshed",
+        "label": "Patch authority grants no deployment capability",
+        "detail": "Derived read of the absent deployment grant. The replay highlights the boundary without invoking a tool or changing Heart.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "work-t139-a",
+          "hand-deploy"
+        ],
+        "edgeIds": [
+          "work-t139-a::does not grant::hand-deploy"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/legs/hands.hl"
+      },
+      {
+        "id": "hands-patch-4",
+        "view": "patch",
+        "kind": "projection.refreshed",
+        "label": "The scratch patch survives the unresolved attempt",
+        "detail": "Derived read of patch c17b8e2 and its producing attempt. The external effect is evidence, not proof of a settled outcome.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "attempt-t139-a0",
+          "patch-c17b8e2"
+        ],
+        "edgeIds": [
+          "attempt-t139-a0::produced::patch-c17b8e2"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/legs/hands.hl"
+      },
+      {
+        "id": "hands-patch-5",
+        "view": "patch",
+        "kind": "projection.refreshed",
+        "label": "The patch receipt preserves its result reference",
+        "detail": "Derived read joining the patch receipt to the exact scratch commit. It does not imply owner application or successful verification.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "patch-c17b8e2",
+          "patch-receipt-t139"
+        ],
+        "edgeIds": [
+          "patch-c17b8e2::is accompanied by::patch-receipt-t139"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/legs/hands.hl"
+      },
+      {
+        "id": "hands-patch-6",
+        "view": "patch",
+        "kind": "projection.refreshed",
+        "label": "Owner application and review remain gated",
+        "detail": "Derived read of the declared continuation after valid resolution and outcome. The replay leaves owner application, verification and review unperformed.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "patch-c17b8e2",
+          "owner-apply-t139",
+          "verification-t139",
+          "review-t139"
+        ],
+        "edgeIds": [
+          "patch-c17b8e2::would be applied by::owner-apply-t139",
+          "owner-apply-t139::must precede::verification-t139",
+          "verification-t139::must support::review-t139"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/workflow_execution.hl"
+      }
+    ]
+  },
+  "senses": {
+    "events": [
+      {
+        "id": "senses-observations-1",
+        "view": "observations",
+        "kind": "projection.refreshed",
+        "label": "api-0’s up sample is refreshed",
+        "detail": "Derived telemetry read of the timestamped instance sample. It describes this reading, not workflow success or a permanent health verdict.",
+        "source": "telemetry",
+        "effect": "state",
+        "entityIds": [
+          "edge-1",
+          "reading-api0",
+          "telemetry-store",
+          "api-0"
+        ],
+        "edgeIds": [
+          "edge-1::reports::reading-api0",
+          "reading-api0::is sampled into::telemetry-store",
+          "reading-api0::describes::api-0"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/senses.hl"
+      },
+      {
+        "id": "senses-observations-2",
+        "view": "observations",
+        "kind": "projection.refreshed",
+        "label": "Spine’s pulse is sampled",
+        "detail": "Derived telemetry read from the bounded part-level metrics. An unavailable scrape endpoint may leave a running part unread; missing data is not a down event.",
+        "source": "telemetry",
+        "effect": "change",
+        "entityIds": [
+          "spine",
+          "telemetry-store"
+        ],
+        "edgeIds": [
+          "spine::reports pulse to::telemetry-store"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/senses.hl"
+      },
+      {
+        "id": "senses-observations-3",
+        "view": "observations",
+        "kind": "reading.recorded",
+        "label": "Delivery d-1802 is recorded",
+        "detail": "Sample durable reading from the application source, landed before possible action. Recording a delivery reading is not a workflow settlement.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "atlas-application",
+          "reading-delivery-1802"
+        ],
+        "edgeIds": [
+          "atlas-application::emitted source for::reading-delivery-1802"
+        ],
+        "at": 6,
+        "sourceRef": "dna/host/pulse.hl"
+      },
+      {
+        "id": "senses-escalation-4",
+        "view": "escalation",
+        "kind": "pressure.requested",
+        "label": "Delivery requests capacity",
+        "detail": "Sample replay of the durable pressure request under its stable identity. The displayed request has not yet been answered.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "locus-delivery",
+          "pressure-018"
+        ],
+        "edgeIds": [
+          "locus-delivery::raised request::pressure-018"
+        ],
+        "at": 9,
+        "sourceRef": "dna/host/host.hl"
+      },
+      {
+        "id": "senses-escalation-5",
+        "view": "escalation",
+        "kind": "concern.raised",
+        "label": "Dispatcher’s concern names its parent route",
+        "detail": "Replay of the answered concern attributed to delivery/dispatcher and its parent locus. Routing follows the declared organizational path.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "locus-dispatcher",
+          "concern-c0017",
+          "concern-parent-delivery",
+          "locus-delivery"
+        ],
+        "edgeIds": [
+          "locus-dispatcher::emitted::concern-c0017",
+          "concern-c0017::was routed to::concern-parent-delivery",
+          "locus-dispatcher::has parent::locus-delivery"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/concerns.hl"
+      },
+      {
+        "id": "senses-escalation-6",
+        "view": "escalation",
+        "kind": "projection.refreshed",
+        "label": "The third-answer threshold is not yet satisfied",
+        "detail": "Derived read of answered raises and the proposed capacity path. This pending request does not count as an answer or create an appendage proposal.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "pressure-018",
+          "pressure-threshold",
+          "proposal-capacity"
+        ],
+        "edgeIds": [
+          "pressure-018::counts after answer::pressure-threshold",
+          "pressure-threshold::can propose::proposal-capacity"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/assembly.hl"
+      }
+    ]
+  },
+  "reflexes": {
+    "events": [
+      {
+        "id": "reflexes-rule-1",
+        "view": "rule",
+        "kind": "reflex.fired",
+        "label": "instance.down fires once for the 09:31 outage",
+        "detail": "Replay of the firing identified by node, instance and down-since time. Duplicate delivery does not create another firing for this outage.",
+        "source": "runtime",
+        "effect": "change",
+        "entityIds": [
+          "outage-api0-0931",
+          "firing-api0-0931",
+          "rule-instance-down"
+        ],
+        "edgeIds": [
+          "outage-api0-0931::triggered::firing-api0-0931",
+          "rule-instance-down::permits once per outage::firing-api0-0931"
+        ],
+        "at": 0,
+        "sourceRef": "dna/reflexes/main.hl"
+      },
+      {
+        "id": "reflexes-rule-2",
+        "view": "rule",
+        "kind": "reading.recorded",
+        "label": "Heart records the firing before restart",
+        "detail": "The reflex firing is durably landed as a reading before the targeted restart request. No missing or unread metric is inferred to be a down signal.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "firing-api0-0931",
+          "reflex-reading-0931",
+          "edge-1"
+        ],
+        "edgeIds": [
+          "firing-api0-0931::was landed as::reflex-reading-0931",
+          "reflex-reading-0931::requested restart from::edge-1"
+        ],
+        "at": 3,
+        "sourceRef": "dna/host/reflex.hl"
+      },
+      {
+        "id": "reflexes-rule-3",
+        "view": "rule",
+        "kind": "reflex.acted",
+        "label": "edge-1 reports the targeted restart",
+        "detail": "Replay of the action receipt for this node and instance. The receipt is separate from the firing, and does not establish ongoing health.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "edge-1",
+          "reflex-action-0931"
+        ],
+        "edgeIds": [
+          "edge-1::reported action::reflex-action-0931"
+        ],
+        "at": 6,
+        "sourceRef": "dna/host/reflex.hl"
+      },
+      {
+        "id": "reflexes-pattern-4",
+        "view": "pattern",
+        "kind": "reflex.fired",
+        "label": "The 09:25 outage has its own firing",
+        "detail": "Historical replay of the first outage identity. One firing belongs to this outage even if its publication was delivered repeatedly.",
+        "source": "runtime",
+        "effect": "change",
+        "entityIds": [
+          "outage-api0-0925",
+          "firing-api0-0925"
+        ],
+        "edgeIds": [
+          "outage-api0-0925::triggered::firing-api0-0925"
+        ],
+        "at": 9,
+        "sourceRef": "dna/reflexes/main.hl"
+      },
+      {
+        "id": "reflexes-pattern-5",
+        "view": "pattern",
+        "kind": "reflex.fired",
+        "label": "The 09:31 outage is a distinct firing",
+        "detail": "Replay of the later outage, not a duplicate of 09:25. The two firing identities provide evidence for the repeat window.",
+        "source": "runtime",
+        "effect": "change",
+        "entityIds": [
+          "outage-api0-0931",
+          "firing-api0-0931",
+          "firing-api0-0925",
+          "concern-reflex-api0"
+        ],
+        "edgeIds": [
+          "outage-api0-0931::triggered::firing-api0-0931",
+          "firing-api0-0925::is prior evidence for::concern-reflex-api0"
+        ],
+        "at": 12,
+        "sourceRef": "dna/reflexes/main.hl"
+      },
+      {
+        "id": "reflexes-pattern-6",
+        "view": "pattern",
+        "kind": "concern.requested",
+        "label": "Repeated outage requests a concern",
+        "detail": "The repeated firing requests one concern for this target within the window, even if the restart succeeds. It does not add a new recovery rule.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "firing-api0-0931",
+          "concern-reflex-api0",
+          "reflexes"
+        ],
+        "edgeIds": [
+          "firing-api0-0931::triggered::concern-reflex-api0",
+          "concern-reflex-api0::routes to::reflexes"
+        ],
+        "at": 15,
+        "sourceRef": "dna/host/reflex.hl"
+      }
+    ]
+  }
+}

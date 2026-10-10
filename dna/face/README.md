@@ -12,6 +12,11 @@ build step, runtime package dependencies, database connection or domain engine.
 The [design direction](DESIGN.md) describes the intended spatial instrument
 and its visual acceptance requirements.
 
+The [Habitat design prototype](prototypes/habitat/README.md) explores organism
+body-part pages, a shared 2D/3D graph and simulated activity. It is a standalone
+design seed with authored fixtures; integration with generated `@rpc` surfaces
+remains future work.
+
 ## Run locally
 
 From this checkout, start the face against an existing DNA project with one command:

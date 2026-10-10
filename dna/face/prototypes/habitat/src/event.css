@@ -1,0 +1,72 @@
+#hale-habitat-wireframe .activity-panel { border-top:1px solid var(--habitat-line); border-bottom:1px solid var(--habitat-line); padding:11px 15px; background:var(--habitat-bar); }
+#hale-habitat-wireframe .activity-toolbar { display:flex; gap:8px 12px; align-items:center; flex-wrap:wrap; }
+#hale-habitat-wireframe .activity-mode { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--habitat-text); }
+#hale-habitat-wireframe .activity-mode i { display:block; width:6px; height:6px; border:1px solid var(--habitat-muted); border-radius:50%; }
+#hale-habitat-wireframe .activity-panel[data-playing="true"] .activity-mode i { background:var(--graph-focus); border-color:var(--graph-focus); }
+#hale-habitat-wireframe .activity-play-state { font:400 11px/1.4 ui-monospace,monospace; color:var(--habitat-muted); }
+#hale-habitat-wireframe .activity-controls { display:flex; gap:5px; margin-left:auto; }
+#hale-habitat-wireframe .activity-controls .ui-button { padding:5px 9px; font-size:11px; }
+#hale-habitat-wireframe .activity-controls [data-activity-play] { color:var(--graph-focus); }
+#hale-habitat-wireframe .activity-controls button:disabled { opacity:.45; cursor:default; }
+#hale-habitat-wireframe .activity-current { margin-top:10px; min-height:20px; display:flex; align-items:baseline; gap:5px 10px; flex-wrap:wrap; font-size:12px; }
+#hale-habitat-wireframe .activity-current-label { color:var(--habitat-text); }
+#hale-habitat-wireframe .activity-current-meta { font:400 11px/1.4 ui-monospace,monospace; color:var(--habitat-muted); overflow-wrap:anywhere; }
+#hale-habitat-wireframe .activity-inspect { border:0; padding:0; background:none; color:var(--graph-focus); font:400 11px/1.5 system-ui,sans-serif; }
+#hale-habitat-wireframe .activity-current .activity-inspect { margin-left:auto; }
+#hale-habitat-wireframe .activity-hidden-targets { display:flex; flex-wrap:wrap; gap:8px; color:var(--habitat-warn); font-size:11px; margin-top:8px; }
+#hale-habitat-wireframe .activity-timeline { margin-top:7px; font-size:11px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .activity-timeline summary { width:fit-content; }
+#hale-habitat-wireframe .activity-event-list { margin-top:8px; display:grid; gap:0; }
+#hale-habitat-wireframe .activity-event { display:grid; grid-template-columns:44px minmax(0,1fr) auto; align-items:baseline; gap:10px; width:100%; border:0; border-top:1px solid var(--habitat-line); padding:9px 0; text-align:left; background:none; color:var(--habitat-text); font:400 12px/1.45 system-ui,sans-serif; }
+#hale-habitat-wireframe .activity-event time { color:var(--habitat-muted); font:400 11px/1.45 ui-monospace,monospace; }
+#hale-habitat-wireframe .activity-event small { font-size:11px; color:var(--habitat-muted); }
+#hale-habitat-wireframe .activity-event[aria-pressed="true"] { color:var(--graph-focus); }
+#hale-habitat-wireframe .activity-event[aria-pressed="true"] time { color:var(--graph-focus); }
+#hale-habitat-wireframe .activity-overlay { pointer-events:none; }
+#hale-habitat-wireframe .activity-route { fill:none; stroke:var(--route); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; opacity:.7; }
+#hale-habitat-wireframe .activity-route[data-kind="declared"] { stroke-dasharray:6 3; }
+#hale-habitat-wireframe .activity-route[data-kind="proposed"] { stroke-dasharray:2 4; }
+#hale-habitat-wireframe .activity-node-ring { fill:none; stroke:var(--graph-focus); stroke-width:1.8; }
+#hale-habitat-wireframe .activity-node-ring[data-effect="attention"] { stroke:var(--habitat-warn); stroke-dasharray:3 3; }
+#hale-habitat-wireframe .activity-travel-glow { fill:none; stroke:var(--route); stroke-width:12; stroke-linecap:round; stroke-linejoin:round; opacity:.18; }
+#hale-habitat-wireframe .activity-travel-tail { fill:none; stroke:var(--route); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; opacity:.95; }
+#hale-habitat-wireframe .activity-travel-tail[data-travel="trace"] { stroke-dasharray:5 3; }
+#hale-habitat-wireframe .activity-pulse-glow { fill:var(--route); opacity:.25; }
+#hale-habitat-wireframe .activity-packet { fill:var(--route); stroke:var(--habitat-text); stroke-width:1.4; }
+#hale-habitat-wireframe .activity-pulse-core { fill:var(--habitat-text); }
+#hale-habitat-wireframe .activity-trace-pulse { fill:var(--habitat-bg); stroke:var(--route); stroke-width:2.6; stroke-linejoin:round; }
+#hale-habitat-wireframe .graph-outline-entry[data-activity="true"] { border-left:2px solid var(--graph-focus); padding-left:10px; }
+#hale-habitat-wireframe .graph-outline-entry[data-activity="attention"] { border-left-color:var(--habitat-warn); }
+#hale-habitat-wireframe .graph-outline-entry[data-activity] .graph-outline-node::after { content:'event'; color:var(--graph-focus); font:400 11px/1.4 ui-monospace,monospace; }
+#hale-habitat-wireframe .activity-event-detail { padding:7px 0; }
+#hale-habitat-wireframe .activity-event-detail h2 { font-size:20px; font-weight:500; margin:12px 0; }
+#hale-habitat-wireframe .activity-event-detail p { color:var(--habitat-muted); font-size:13px; line-height:1.6; }
+#hale-habitat-wireframe .activity-event-detail .activity-kind { font:400 12px/1.5 ui-monospace,monospace; color:var(--graph-focus); overflow-wrap:anywhere; }
+#hale-habitat-wireframe .activity-event-detail .activity-targets { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+#hale-habitat-wireframe .activity-log { margin-top:20px; padding:0 0 14px; border-bottom:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .activity-log-heading { display:flex; align-items:baseline; flex-wrap:wrap; gap:8px 14px; margin-bottom:8px; }
+#hale-habitat-wireframe .activity-log-heading h2 { font:500 14px/1.5 system-ui,sans-serif; margin:0; }
+#hale-habitat-wireframe .activity-log-summary { color:var(--habitat-muted); font-size:11px; }
+#hale-habitat-wireframe [data-activity-clear-log] { margin-left:auto; }
+#hale-habitat-wireframe .activity-log-entry { display:grid; grid-template-columns:66px 7px minmax(0,1fr) auto; align-items:baseline; gap:10px; width:100%; text-align:left; border:0; border-top:1px solid var(--habitat-line); background:none; padding:10px 0; color:var(--habitat-text); font:400 12px/1.4 system-ui,sans-serif; }
+#hale-habitat-wireframe .activity-log-entry time { color:var(--habitat-muted); font:400 11px/1.4 ui-monospace,monospace; }
+#hale-habitat-wireframe .activity-log-mark { display:block; align-self:center; width:5px; height:5px; border-radius:50%; background:var(--graph-focus); }
+#hale-habitat-wireframe .activity-log-entry[data-effect="flow"] .activity-log-mark { background:var(--route-signal); }
+#hale-habitat-wireframe .activity-log-entry[data-effect="attention"] .activity-log-mark { background:var(--habitat-warn); border-radius:0; transform:rotate(45deg); }
+#hale-habitat-wireframe .activity-log-entry small { color:var(--habitat-muted); font:400 11px/1.4 system-ui,sans-serif; }
+#hale-habitat-wireframe .activity-log-entry[aria-pressed="true"] .activity-log-message { color:var(--graph-focus); }
+#hale-habitat-wireframe .activity-log-entry:hover .activity-log-message { text-decoration:underline; text-underline-offset:3px; }
+#hale-habitat-wireframe .activity-log-empty { margin:8px 0 0; color:var(--habitat-muted); font:400 12px/1.5 system-ui,sans-serif; }
+#hale-habitat-wireframe [data-activity-log-more] { margin-top:10px; }
+@container (max-width:600px) {
+  #hale-habitat-wireframe .activity-controls { margin-left:0; flex-wrap:wrap; }
+  #hale-habitat-wireframe .activity-toolbar { gap:8px; }
+  #hale-habitat-wireframe .activity-current .activity-inspect { margin-left:0; }
+  #hale-habitat-wireframe .activity-event { grid-template-columns:38px minmax(0,1fr); gap:6px; }
+  #hale-habitat-wireframe .activity-event small { grid-column:2; }
+  #hale-habitat-wireframe .activity-log-entry { grid-template-columns:60px 5px minmax(0,1fr); gap:7px; }
+  #hale-habitat-wireframe .activity-log-entry small { grid-column:3; }
+}
+@media (pointer:coarse) {
+  #hale-habitat-wireframe .activity-controls button, #hale-habitat-wireframe .activity-inspect, #hale-habitat-wireframe .activity-event, #hale-habitat-wireframe .activity-log-entry { min-height:44px; }
+}

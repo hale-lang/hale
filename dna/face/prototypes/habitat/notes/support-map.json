@@ -1,0 +1,382 @@
+{
+  "scope": "First-pass Habitat organism UI wireframe",
+  "sampleOrganism": "Atlas",
+  "backendConnected": false,
+  "integrationRules": [
+    "Use generated Hale @rpc surfaces and clients; no handwritten REST contract inferred.",
+    "Verify authorized read projections for each screen against the generated surface.",
+    "Treat command receipt, admission, execution and completion as separate states.",
+    "Application owns its emergent Face; schema generation does not determine complete UI semantics."
+  ],
+  "openQuestions": [
+    "User-scoped accessible-organism discovery and habitat administration roles need a verified contract.",
+    "Generated reads for detailed page projections need to be inventoried before backend integration."
+  ],
+  "parts": {
+    "head": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/head.md",
+        "https://github.com/hale-lang/hale/blob/main/spec/api.md"
+      ],
+      "documentedBehavior": [
+        "HeadCommands operations have role gates, session identity, durable request receipts and lookup",
+        "Generated descriptions filter available operations by caller; clients carry contract digests",
+        "A recorded command is not completed work"
+      ],
+      "proposedReadModels": [
+        "Browser-friendly authenticated exposure inventory",
+        "Permission-filtered receipt list joining record commands and later workflow status",
+        "Current session and position summary"
+      ],
+      "unsupportedActions": [
+        "No operation execution from this wireframe",
+        "Do not infer a session directory or global receipt visibility from current session support"
+      ]
+    },
+    "face": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/head.md",
+        "https://github.com/hale-lang/hale/blob/main/spec/api.md"
+      ],
+      "documentedBehavior": [
+        "The browser face is served by its head; session commands are relayed with origin/header checks",
+        "Head events prompt fresh reads",
+        "User requirement: each application owns its emergent Face with default organism views"
+      ],
+      "proposedReadModels": [
+        "Current Face identity, source provenance and served entry",
+        "Application-owned interface discovery or composition metadata remains to be agreed"
+      ],
+      "unsupportedActions": [
+        "No automatic semantic UI/layout generation is implied by RPC schema generation",
+        "No visual Face builder or publish control assumed"
+      ]
+    },
+    "skin": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/skin.md"
+      ],
+      "documentedBehavior": [
+        "Credential inventory exposes presence and purpose, never values",
+        "OIDC identity mapping, per-part service roles and recorded violations",
+        "Secret set/rotate are operator CLI operations; workflow vault-writing is refused"
+      ],
+      "proposedReadModels": [
+        "Generated RPC reads for redacted credential inventory and principal-scoped boundary summaries",
+        "Violations projection from recorded rows"
+      ],
+      "unsupportedActions": [
+        "No secret value reveal or browser secret-entry form",
+        "No attachment credentials or generated backend policies assumed; habitat design marks them unbuilt",
+        "No one-click grant editing"
+      ]
+    },
+    "memory": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/memory.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/shaping.md"
+      ],
+      "documentedBehavior": [
+        "Working memory is Postgres, isolated by record schema and role. Browsers read through the head, never directly.",
+        "The graph projects the record exactly once per row; readers can see its projection position and how far behind it is.",
+        "Ledger adoption moves operational rows to memory; unavailable adopted ledger blocks admission with no fallback to git.",
+        "Knowledge binding uses locus subtree paths or exact graph node identities, and Work reads a deduplicated scoped package.",
+        "Protected receipts stay sealed in memory. Reads require reader-and-purpose disclosure and an audit row before the body is returned; holds prevent redaction."
+      ],
+      "proposedReadModels": [
+        "Memory availability, routing, projection watermark, and observation time summary.",
+        "Knowledge table joined with bindings, family, ratification Review, and supersession.",
+        "Protected receipt metadata with authorized disclosure and hold state.",
+        "Recent operational ledger rows through the generated head surface."
+      ],
+      "unsupportedActions": [
+        "Generated RPC handler coverage for these read models is not established by the prose docs.",
+        "No direct database access, graph editing, arbitrary receipt read, or unaudited protected-body download is offered.",
+        "Receipt actions are metadata inspection only in the wireframe; no disclosure, reading, or redaction is executed."
+      ]
+    },
+    "record": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/memory.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/shaping.md"
+      ],
+      "documentedBehavior": [
+        "Record is an append-only git journal of decisions, changes, Reviews, practices, grants, connections, and people.",
+        "Chain rows retain authorship and are checked against local or signed trust policy.",
+        "Candidate pointers and receipt references travel with record sync.",
+        "A connection is Board-approved, scoped by purpose and evidence classes, and requires an independent verdict. Explicit handoffs carry provenance; receipt bodies and whole journals do not cross connections."
+      ],
+      "proposedReadModels": [
+        "Paged timeline joined with entity labels and relevant evidence.",
+        "Record identity, chain verification, remote synchronization and trust summary.",
+        "Retained candidates with review status and revision links.",
+        "Connections and latest handoff acceptance state."
+      ],
+      "unsupportedActions": [
+        "Generated RPC coverage for unified history, candidate provenance and connection queries remains unverified.",
+        "Timeline names are presentation labels for documented events; fixture row numbers and identifiers are illustrative.",
+        "No rewind, journal edit, candidate deletion, or connection mutation is offered."
+      ]
+    },
+    "genome": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/shaping.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/memory.md"
+      ],
+      "documentedBehavior": [
+        "Genome owns application source, organization source and vendored DNA; it does not hold operational work or secrets.",
+        "Source changes become candidates with source and structural diffs and verification evidence.",
+        "The compiler rejects unchecked or law-breaking candidates before review; grants and impact determine review authority.",
+        "Organization changes and law, effects or ownership hard boundaries require Board review.",
+        "Grants are constructor arguments in source, not runtime settings.",
+        "Vendor DNA is refreshed by the toolchain upgrade path."
+      ],
+      "proposedReadModels": [
+        "Source roots and pinned revision/provenance summary.",
+        "Candidate summary joined to verification receipts, semantic/source differences and required authority.",
+        "Human-readable grant and constitutional-claim summary from checked organization source."
+      ],
+      "unsupportedActions": [
+        "Generated RPC read and command coverage for genome browsing, candidate comparisons and Review decisions remains unverified.",
+        "Candidate diff is a narrative fixture summary; actual structural diff schema is not assumed.",
+        "No inline source editing, runtime grant widening, one-click direct apply or raw vendored-core editing is offered.",
+        "Review requirements explain the documented workflow but do not submit a verdict in this prototype."
+      ]
+    },
+    "spine": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/spine.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/schedules.md"
+      ],
+      "documentedBehavior": [
+        "Ask, claim, settle and read are the spine's operations; asks and refusals are recorded.",
+        "Definitions bind in full by revision before admission. Every step names exactly one write-store. A step completes after all registered members settle.",
+        "Execution, step, work and attempt identities survive restart. Outcomes already recorded do not run again.",
+        "Human leaves become cases on the Board queue. Uncertain prior effects wait for human resolution.",
+        "Schedules name a definition, cadence, convener and inputs. Misses and skips are recorded; missed occurrences do not catch up.",
+        "Schedule pause/resume and declaration requests are documented CLI flows; generated surface exposure has not been verified."
+      ],
+      "proposedReadModels": [
+        "Execution list joined with current step, performer, authority and durable state",
+        "Workflow catalog with admission refusal reasons and input schema",
+        "Schedule listing with occurrence counts and latest execution",
+        "Generated @rpc contract names and authorization for these read models require integration verification."
+      ],
+      "unsupportedActions": [
+        "No root cancellation button: cancellation is an internal engine message with no documented CLI sender.",
+        "No direct workflow deploy, vault rotation, or host provisioning actions: corresponding baseline definitions are currently refused at admission.",
+        "Wireframe opens flow previews only; it does not issue schedule or execution commands."
+      ],
+      "fixtures": "All execution IDs, names, status counts and schedules shown are invented sample data. close-month is adapted from the documentation example."
+    },
+    "legs": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/legs.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/spine.md"
+      ],
+      "documentedBehavior": [
+        "Work verbs claim, brief, renew, allowance, submit, settle and release act under the current position and lease.",
+        "The person must hold the claimed position under OIDC/normal graph authority; local-trust fallback is distinct.",
+        "Submit and release are idempotent under the attempt/token request identity. The owner settles the outcome separately.",
+        "An uncertain performer with unresolved effect is not automatically retried; its worker slot stops and a person resolves ok or failed.",
+        "A worker loop supervises separate holders. Human work or unavailable model capability can hand work to a person."
+      ],
+      "proposedReadModels": [
+        "Attempt list with performer, effect class, lease metadata and settlement state",
+        "Worker loop/slot projection linked to durable attempts",
+        "Human resolution history with evidence",
+        "Generated browser-accessible command bindings and allowed-action projection require verification; documented work transport includes local socket commands."
+      ],
+      "unsupportedActions": [
+        "No automatic retry or resolve button for uncertain external effects.",
+        "No UI operation claiming a position merely because its name exists.",
+        "No loop drain button, since a local CLI marker is not a verified remote browser operation.",
+        "Claim and outcome interactions are previews, not submitted commands."
+      ],
+      "fixtures": "All attempts, worker slots, evidence and outcomes are illustrative."
+    },
+    "hands": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/legs.md#hands"
+      ],
+      "documentedBehavior": [
+        "Hands expose git in a scratch clone, forge Review creation/verdict reads, toolchain checks, and lease/allowance operations.",
+        "A Patch Work returns commit:<sha> and its patch receipt. The owner applies and verifies it and opens Review.",
+        "A leg never merges. Deploy and heart are explicitly refused hands today."
+      ],
+      "proposedReadModels": [
+        "Work-specific tool grant and available interface matrix",
+        "Patch receipt and verification trail linked to a Work",
+        "Generated inspection bindings and authority for receipt visibility require verification."
+      ],
+      "unsupportedActions": [
+        "No deployment, heart control, forge merge or broad credential access.",
+        "No global editable tool grant inferred from the interface inventory."
+      ],
+      "fixtures": "The scratch commit and changed-file count are illustrative."
+    },
+    "hat": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/legs.md#the-hat"
+      ],
+      "documentedBehavior": [
+        "Hat is structured per-Work context including position, charter, ratified practices, objective, target, output, data/effect classes, budget, grant, knowledge, history and snapshot identity.",
+        "On an OIDC head only the person who claimed and still holds the attempt lease may read its hat. Otherwise lease_required is returned.",
+        "Hat identity includes record head, memory watermark and digest. Rendering is performer-local text, prompt or agent; renderer and rendering digests return with the outcome."
+      ],
+      "proposedReadModels": [
+        "Current user's claimed Work context, never an unrestricted organism-wide context browser",
+        "Rendered brief and snapshot identity inspector",
+        "Existing documented /dna/context semantics must be preserved by the eventual generated @rpc binding."
+      ],
+      "unsupportedActions": [
+        "No account/admin bypass to browse hats belonging to other active lease holders.",
+        "No in-place edit of immutable context snapshot or arbitrary prompt injection field.",
+        "No broad environment or credential viewer."
+      ],
+      "fixtures": "The current claim, charter, practice, grant, digests and evidence bindings are sample values. Riley holds position:agent and is the person mapped to the current claim through worker holder position:agent#1."
+    },
+    "voice": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/legs.md#voice-the-model-catalog",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/spine.md#the-budget-the-one-gate",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/shaping.md#grants-above-grants-and-money"
+      ],
+      "documentedBehavior": [
+        "Source-owned leader/editor/agent routers select quick, deep and private backends.",
+        "Hosted model credentials name vault slots; secret bytes are never returned. Missing credential slots refuse before the wire.",
+        "The model-call budget accounts model.called rows. Its per-attempt allowance is min(Work ceiling, remaining window), not a reservation; concurrent attempt allowances can overrun a window. This is distinct from money delegated under an autonomy Grant: shaping.md documents grant.reserved before that money effect, and dna.md describes money reserved and settled against a grant.",
+        "Calls include adapter, backend, model, tokens, cost and time as evidence. Budget exhaustion refuses model-backed work; Board decisions need no model.",
+        "RecordedModel captures answers by complete request identity and harness patches. Keyless replay refuses misses; it does not measure model quality."
+      ],
+      "proposedReadModels": [
+        "Budget and per-position spend projection over model.called",
+        "Redacted model catalog and allowed routing summary",
+        "Call/tape metadata inspector without secret bytes or unrestricted prompt bodies",
+        "Generated API catalog, budget and tape visibility remain to be verified."
+      ],
+      "unsupportedActions": [
+        "No secret/key editing or revealing secret bytes.",
+        "No live model probing button: documented probe spends outside the organism's journal and needs a deliberate future flow.",
+        "No live route editor or replay execution button inferred from source-defined configuration."
+      ],
+      "fixtures": "Budget totals, call counts, route choices, costs and tape entries are invented examples, not runtime telemetry or product pricing."
+    },
+    "heart": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/heart.md"
+      ],
+      "documentedBehavior": [
+        "An attached application has its own data, secrets and API, and a publish-only account on its own application subjects.",
+        "Application events are recorded as reading.recorded before action and acknowledged after landing or permanent refusal; duplicate entities are refused.",
+        "concern.raised events can become concern.requested; generic readings are retained without automatic action.",
+        "Application expression follows an exact reviewed candidate, with deployment/restart receipts, an observation window and retention or rollback.",
+        "application remove records detachment and revokes the application's broker account."
+      ],
+      "proposedReadModels": [
+        "Application summary with purpose, seed, attachment state, API boundary and subject scope.",
+        "Joined expression history from Mutation, Review, fleet, instance and observation rows.",
+        "Recent recorded application readings with payload details.",
+        "Generated @rpc method names, transport mapping, authority and streaming endpoints for these models remain unverified."
+      ],
+      "unsupportedActions": [
+        "A multi-application or foreign-language Heart management UI is not established by the inspected current heart.md.",
+        "Performer HeartHand and DeployHand are NoHeart/NoDeploy; workflows that write the heart are refused at admission.",
+        "No real application mutation, deployment, detachment or network request is implemented by this prototype."
+      ]
+    },
+    "body": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/heart.md"
+      ],
+      "documentedBehavior": [
+        "One body per record, or per owner on shared records, holds a renewing lease; a body that loses it stops.",
+        "body claim --force and body release [--force] record lease operations.",
+        "Body provisioning/start/stop/logs are documented operator CLI operations.",
+        "Fleet nodes report instance.up and instance.exited; deployment requests carry revision, plan, seed, affected instances and reason.",
+        "Reviewed fleet expression waits up to three minutes for every touched instance, then an observation window; failure triggers a rollback deployment of the same affected instances.",
+        "Manual deploy and rollback CLI operations are documented."
+      ],
+      "proposedReadModels": [
+        "Lease snapshot, current holder and latest tick/expiry.",
+        "Fleet instance table joined from plan and latest instance receipt.",
+        "Deployment and rollback traces connecting requests, per-instance receipts and Mutation outcomes.",
+        "Generated @rpc read/action mappings and operator permissions are unverified; preview controls correspond only to documented CLI semantics."
+      ],
+      "unsupportedActions": [
+        "No claim that a deployment request means completion; instance evidence remains separate.",
+        "No generalized capacity/autoscaling, rolling-deploy policy designer or arbitrary host orchestration was inferred.",
+        "Lease release and deploy are local previews only; no action executes."
+      ]
+    },
+    "nerves": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/nerves.md"
+      ],
+      "documentedBehavior": [
+        "NATS JetStream carries signals under organization scopes; one disk stream retains one week.",
+        "The spine durable reads DNA facts; the heart durable lands application events; head.row.landed prompts Face refresh.",
+        "Unanswered request rows relay every 30 seconds; stream acknowledgement does not replace the answering record row.",
+        "Delivery is at least once and consumers deduplicate by request/entity IDs.",
+        "An undeliverable connection records a violation, releases the body lease and exits with restart code 75; the supervisor restarts it."
+      ],
+      "proposedReadModels": [
+        "Subject-route and role visibility.",
+        "Pending asks computed by request IDs and answering kinds.",
+        "Record-grounded delivery failures and request traces.",
+        "Publish-acknowledgement stage in the sample trace may require transport observability beyond durable record rows; generated API support remains unverified."
+      ],
+      "unsupportedActions": [
+        "No direct browser connection to NATS or credentials.",
+        "No manual arbitrary message publication, acknowledge/replay controls or stream deletion in the wireframe.",
+        "No assertion that private broker counters or durable-consumer lag are already exposed through @rpc."
+      ]
+    },
+    "senses": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/senses.md",
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/heart.md"
+      ],
+      "documentedBehavior": [
+        "Prometheus stores one week of part pulse, node instance-up/since and spine model-call readings.",
+        "Readings are signals; a part may run unread if its metrics port cannot bind, and store failure does not stop the organism.",
+        "Pressure and concerns enter as request rows and are relayed until answered.",
+        "Three answered pressure raises at one source propose an appendage; initiative may create an organization Mutation but the Board decides.",
+        "Concerns route a locus path to its parent; three occurrences can propose parent-bound knowledge for Board review."
+      ],
+      "proposedReadModels": [
+        "Telemetry summary per part/node/instance with explicit timestamps.",
+        "Pressure and concern summaries joined to request, answer, proposal and Review rows.",
+        "Authority-aware raise-pressure admission API and concern detail routing remain to be mapped.",
+        "Metrics are on a private services tier; an authorized aggregate @rpc surface for Face consumption is unverified."
+      ],
+      "unsupportedActions": [
+        "No automatic telemetry-to-pressure derivation beyond documented reflex concern behavior.",
+        "No per-task, per-event or per-revision Prometheus series; tasks join spend and receipts through rows.",
+        "Raise-pressure action is a bounded local preview only; no receipt is fabricated."
+      ]
+    },
+    "reflexes": {
+      "sources": [
+        "https://github.com/hale-lang/hale/blob/main/docs/src/dna/senses.md"
+      ],
+      "documentedBehavior": [
+        "Only instance.down is built in, checking dna_instance_up=0 every five seconds by default.",
+        "One firing per outage publishes reflex.fired; the heart lands a reading before the named node acts.",
+        "The node restarts only that instance at the latest deployment revision and writes reflex.acted with restarted, already up or failure reason.",
+        "A second firing for a target within ten minutes becomes a concern once per window; a failed restart also becomes a concern.",
+        "A store failure means no readings to fire on. The current local Face start script starts and stops reflexes."
+      ],
+      "proposedReadModels": [
+        "Read-only rule summary from actual deployed configuration.",
+        "Firing trace joining reading.recorded, reflex.acted and concern.requested.",
+        "Generated @rpc list/detail endpoints, permissions and remote Habitat reflex process management are unverified."
+      ],
+      "unsupportedActions": [
+        "No custom rule creation, threshold editor or arbitrary action declaration exists in the inspected docs.",
+        "No automatic backoff or rollback is attributed to reflexes; observation rollback belongs to expression delivery.",
+        "No enable/disable, retry, force-fire or restart action is exposed by this wireframe."
+      ]
+    }
+  }
+}

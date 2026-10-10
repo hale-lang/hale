@@ -1,0 +1,2129 @@
+{
+  "head": {
+    "views": [
+      {
+        "id": "authority",
+        "label": "Authority",
+        "summary": "Follow a person\u2019s session to the operations exposed for their authority.",
+        "columns": [
+          "Identity",
+          "Boundary",
+          "Capability"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 0,
+            "part": "skin",
+            "note": "Authenticated person in this organism.",
+            "state": "Current",
+            "facts": [
+              [
+                "Identity",
+                "OIDC subject"
+              ],
+              [
+                "Held positions",
+                "Board \u00b7 Reviewer"
+              ]
+            ]
+          },
+          {
+            "id": "session",
+            "label": "Current session",
+            "kind": "Session",
+            "col": 1,
+            "row": 0,
+            "part": "head",
+            "note": "The head establishes the principal for browser commands.",
+            "state": "Current",
+            "facts": [
+              [
+                "Transport",
+                "HTTP"
+              ],
+              [
+                "Principal",
+                "Riley"
+              ]
+            ]
+          },
+          {
+            "id": "board-position",
+            "label": "Board",
+            "kind": "Position",
+            "col": 0,
+            "row": 2,
+            "part": "genome",
+            "note": "A held position supplies organization authority.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "reviewer-role",
+            "label": "Reviewer",
+            "kind": "Boundary role",
+            "col": 1,
+            "row": 2,
+            "part": "head",
+            "note": "An explicit boundary role in this session. Record-level Review authority and separation from the author are checked independently.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "head-api",
+            "label": "HeadCommands",
+            "kind": "API surface",
+            "col": 2,
+            "row": 0,
+            "part": "head",
+            "note": "Caller-filtered generated description.",
+            "state": "Current",
+            "facts": [
+              [
+                "Contract",
+                "fnv1a64:7a9e\u2026c214"
+              ],
+              [
+                "Status",
+                "Fixture description"
+              ]
+            ]
+          },
+          {
+            "id": "verdict-operation",
+            "label": "verdict",
+            "kind": "Operation",
+            "col": 2,
+            "row": 2,
+            "part": "head",
+            "note": "The candidate and reviewer authority are checked before admission.",
+            "state": "Current",
+            "facts": [],
+            "detail": "head-verdict"
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "session",
+            "label": "authenticates",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Head session identity mapping"
+          },
+          {
+            "from": "riley",
+            "to": "board-position",
+            "label": "holds",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Organization positions"
+          },
+          {
+            "from": "session",
+            "to": "head-api",
+            "label": "discovers",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Caller-filtered generated description"
+          },
+          {
+            "from": "riley",
+            "to": "reviewer-role",
+            "label": "has boundary role",
+            "kind": "observed",
+            "note": "The fixture session exposes reviewer separately. Holding Board does not by itself establish this boundary role.",
+            "evidence": "Fixture current session: reviewer role available"
+          },
+          {
+            "from": "reviewer-role",
+            "to": "verdict-operation",
+            "label": "permits boundary entry",
+            "kind": "declared",
+            "note": "",
+            "evidence": "HeadCommands reviewer role gate"
+          },
+          {
+            "from": "head-api",
+            "to": "verdict-operation",
+            "label": "exposes",
+            "kind": "declared",
+            "note": "",
+            "evidence": "HeadCommands declaration"
+          }
+        ]
+      },
+      {
+        "id": "receipts",
+        "label": "Command trace",
+        "summary": "A durable command receipt precedes workflow admission and work.",
+        "columns": [
+          "Caller",
+          "Receipt",
+          "Continuation"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 0,
+            "part": "skin",
+            "note": "Command author.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "request-104",
+            "label": "Create task",
+            "kind": "Command request",
+            "col": 1,
+            "row": 0,
+            "part": "head",
+            "note": "Improve the release checklist.",
+            "state": "Recorded",
+            "facts": [],
+            "detail": "head-receipt"
+          },
+          {
+            "id": "receipt-104",
+            "label": "Request receipt",
+            "kind": "Receipt",
+            "col": 2,
+            "row": 0,
+            "part": "head",
+            "note": "Acknowledges durable recording, not completion.",
+            "state": "Recorded",
+            "facts": [],
+            "detail": "head-lookup"
+          },
+          {
+            "id": "intent-104",
+            "label": "Release checklist",
+            "kind": "Intent",
+            "col": 1,
+            "row": 2,
+            "part": "head",
+            "note": "The requested objective is waiting for admission.",
+            "state": "Waiting",
+            "facts": []
+          },
+          {
+            "id": "spine",
+            "label": "Spine",
+            "kind": "Runtime part",
+            "col": 2,
+            "row": 2,
+            "part": "spine",
+            "note": "Admits and executes work under the organization\u2019s rules.",
+            "state": "Awaiting admission",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "request-104",
+            "label": "requested",
+            "kind": "observed",
+            "note": "",
+            "evidence": "request-104 caller"
+          },
+          {
+            "from": "request-104",
+            "to": "receipt-104",
+            "label": "returned",
+            "kind": "observed",
+            "note": "",
+            "evidence": "request-104 durable receipt"
+          },
+          {
+            "from": "request-104",
+            "to": "intent-104",
+            "label": "recorded intent",
+            "kind": "observed",
+            "note": "",
+            "evidence": "request-104 state: recorded"
+          },
+          {
+            "from": "intent-104",
+            "to": "spine",
+            "label": "awaits admission",
+            "kind": "declared",
+            "note": "No execution or completed task is asserted.",
+            "evidence": "Head command / Spine admission separation"
+          }
+        ]
+      }
+    ]
+  },
+  "face": {
+    "views": [
+      {
+        "id": "connections",
+        "label": "Connections",
+        "summary": "The application owns its interface; the head supplies authorized data and commands.",
+        "columns": [
+          "Person",
+          "Interface",
+          "Services"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 0,
+            "part": "skin",
+            "note": "The current visitor.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "face",
+            "label": "Atlas Face",
+            "kind": "Interface",
+            "col": 1,
+            "row": 0,
+            "part": "face",
+            "note": "An application-owned interface that can evolve.",
+            "state": "Current",
+            "facts": [],
+            "detail": "face-current"
+          },
+          {
+            "id": "head-api",
+            "label": "HeadCommands",
+            "kind": "API surface",
+            "col": 2,
+            "row": 0,
+            "part": "head",
+            "note": "Authorized operations and durable receipts.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "organism-view",
+            "label": "Organism view",
+            "kind": "Perspective",
+            "col": 0,
+            "row": 2,
+            "part": "face",
+            "note": "The default views of an application\u2019s internals.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "application-view",
+            "label": "Delivery workspace",
+            "kind": "Perspective",
+            "col": 1,
+            "row": 2,
+            "part": "face",
+            "note": "An emergent application-specific interface.",
+            "state": "Sketch",
+            "facts": []
+          },
+          {
+            "id": "head-events",
+            "label": "Row landed",
+            "kind": "Notification",
+            "col": 2,
+            "row": 2,
+            "part": "nerves",
+            "note": "A notification prompts a fresh authorized read; it is not a full state update.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "face",
+            "label": "uses",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Face session interaction model"
+          },
+          {
+            "from": "face",
+            "to": "head-api",
+            "label": "calls through",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Generated API client and head session relay"
+          },
+          {
+            "from": "face",
+            "to": "organism-view",
+            "label": "presents",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Application-owned default organism view"
+          },
+          {
+            "from": "face",
+            "to": "application-view",
+            "label": "presents",
+            "kind": "proposed",
+            "note": "Application-specific semantics remain the application\u2019s choice.",
+            "evidence": "Proposed read projection"
+          },
+          {
+            "from": "head-events",
+            "to": "face",
+            "label": "prompts fresh read",
+            "kind": "declared",
+            "note": "",
+            "evidence": "head.row.landed refresh semantics"
+          }
+        ]
+      },
+      {
+        "id": "evolution",
+        "label": "Evolution",
+        "summary": "Application-owned Face source can evolve through review; this future change and served-artifact mapping are illustrative.",
+        "columns": [
+          "Source",
+          "Review",
+          "Expression"
+        ],
+        "nodes": [
+          {
+            "id": "genome",
+            "label": "Genome",
+            "kind": "Source component",
+            "col": 0,
+            "row": 0,
+            "part": "genome",
+            "note": "Application and organization source.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "face-source",
+            "label": "Face source",
+            "kind": "Source artifact",
+            "col": 0,
+            "row": 2,
+            "part": "genome",
+            "note": "Application-owned UI implementation.",
+            "state": "Source-owned",
+            "facts": []
+          },
+          {
+            "id": "face-candidate",
+            "label": "Interface change",
+            "kind": "Candidate",
+            "col": 1,
+            "row": 2,
+            "part": "genome",
+            "note": "A conceptual future interface change.",
+            "state": "Proposed",
+            "facts": []
+          },
+          {
+            "id": "face-review",
+            "label": "Required review",
+            "kind": "Review",
+            "col": 2,
+            "row": 2,
+            "part": "record",
+            "note": "The required authority depends on the change.",
+            "state": "Proposed",
+            "facts": []
+          },
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "col": 1,
+            "row": 0,
+            "part": "genome",
+            "note": "Current Atlas application revision.",
+            "state": "Current",
+            "facts": [
+              [
+                "Change",
+                "Clarify delivery failure messages"
+              ]
+            ]
+          },
+          {
+            "id": "face",
+            "label": "Atlas Face",
+            "kind": "Interface",
+            "col": 2,
+            "row": 0,
+            "part": "face",
+            "note": "The served application interface.",
+            "state": "Current",
+            "facts": [],
+            "detail": "face-current"
+          }
+        ],
+        "edges": [
+          {
+            "from": "genome",
+            "to": "revision-current",
+            "label": "pins",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Current genome revision"
+          },
+          {
+            "from": "genome",
+            "to": "face-source",
+            "label": "owns source",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Application owns its Face"
+          },
+          {
+            "from": "face-source",
+            "to": "face-candidate",
+            "label": "may change",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "Proposed read projection"
+          },
+          {
+            "from": "face-candidate",
+            "to": "face-review",
+            "label": "requires decision",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "Reviewed source change pathway"
+          },
+          {
+            "from": "revision-current",
+            "to": "face",
+            "label": "artifact mapping needed",
+            "kind": "proposed",
+            "note": "The current application revision does not establish the revision of the served Face artifact.",
+            "evidence": "Proposed read projection"
+          }
+        ]
+      }
+    ]
+  },
+  "memory": {
+    "views": [
+      {
+        "id": "scope",
+        "label": "Knowledge scope",
+        "summary": "Knowledge bound to a locus applies to its descendants. Ratification and scope remain inspectable.",
+        "columns": [
+          "Scope",
+          "Knowledge",
+          "Application"
+        ],
+        "nodes": [
+          {
+            "id": "org-root",
+            "label": "org",
+            "kind": "Locus",
+            "col": 0,
+            "row": 0,
+            "part": "genome",
+            "note": "Organization scope.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "org-ingest",
+            "label": "org/ingest",
+            "kind": "Locus",
+            "col": 0,
+            "row": 2,
+            "part": "genome",
+            "note": "Knowledge bound here applies to this path and descendants.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "knowledge-purpose",
+            "label": "Traceable deliveries",
+            "kind": "Knowledge",
+            "col": 1,
+            "row": 0,
+            "part": "memory",
+            "note": "Every accepted delivery has an attributable result.",
+            "state": "In force",
+            "facts": [],
+            "detail": "memory-purpose"
+          },
+          {
+            "id": "knowledge-retry",
+            "label": "Retry safely",
+            "kind": "Knowledge",
+            "col": 1,
+            "row": 2,
+            "part": "memory",
+            "note": "Repeated delivery returns or continues one durable outcome.",
+            "state": "In force",
+            "facts": [],
+            "detail": "memory-retry"
+          },
+          {
+            "id": "org-ingest-retry",
+            "label": "org/ingest/retry",
+            "kind": "Locus",
+            "col": 2,
+            "row": 1,
+            "part": "genome",
+            "note": "Illustrative descendant within the org/ingest subtree.",
+            "state": "Declared",
+            "facts": []
+          },
+          {
+            "id": "review-retry",
+            "label": "Retry ratification",
+            "kind": "Review",
+            "col": 2,
+            "row": 3,
+            "part": "record",
+            "note": "Board ratified the practice at row 278.",
+            "state": "Approved",
+            "facts": [],
+            "detail": "record-ratification"
+          }
+        ],
+        "edges": [
+          {
+            "from": "org-root",
+            "to": "org-ingest",
+            "label": "contains",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Organization locus path"
+          },
+          {
+            "from": "knowledge-purpose",
+            "to": "org-root",
+            "label": "bound to subtree",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Review k:purpose, row 12"
+          },
+          {
+            "from": "knowledge-retry",
+            "to": "org-ingest",
+            "label": "bound to subtree",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Review k:retry, row 278"
+          },
+          {
+            "from": "knowledge-purpose",
+            "to": "org-ingest-retry",
+            "label": "applies to descendant",
+            "kind": "declared",
+            "note": "The declared subtree binding applies here; no claim is made about the current storage-migration Hat.",
+            "evidence": "Knowledge subtree-binding semantics"
+          },
+          {
+            "from": "knowledge-retry",
+            "to": "org-ingest-retry",
+            "label": "applies to descendant",
+            "kind": "declared",
+            "note": "The declared subtree binding applies here; no claim is made about the current storage-migration Hat.",
+            "evidence": "Knowledge subtree-binding semantics"
+          },
+          {
+            "from": "review-retry",
+            "to": "knowledge-retry",
+            "label": "ratified",
+            "kind": "observed",
+            "note": "",
+            "evidence": "knowledge.ratified row 278"
+          }
+        ]
+      },
+      {
+        "id": "evidence",
+        "label": "Protected evidence",
+        "summary": "Disclosure names both reader and purpose; the graph exposes metadata, not protected bodies.",
+        "columns": [
+          "Evidence",
+          "Permission",
+          "Audit"
+        ],
+        "nodes": [
+          {
+            "id": "evidence-delivery",
+            "label": "Delivery trace",
+            "kind": "Protected receipt",
+            "col": 0,
+            "row": 1,
+            "part": "memory",
+            "note": "Customer-class body remains sealed in memory.",
+            "state": "Current",
+            "facts": [
+              [
+                "Digest",
+                "sha256:8c14\u20262ae9"
+              ],
+              [
+                "Class",
+                "Customer"
+              ]
+            ],
+            "detail": "memory-evidence"
+          },
+          {
+            "id": "evidence-hold",
+            "label": "Investigation hold",
+            "kind": "Retention hold",
+            "col": 0,
+            "row": 3,
+            "part": "memory",
+            "note": "Prevents redaction while the investigation remains open.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "delivery-disclosure",
+            "label": "Incident review",
+            "kind": "Disclosure",
+            "col": 1,
+            "row": 1,
+            "part": "memory",
+            "note": "A reader-and-purpose disclosure, not public access.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 2,
+            "row": 0,
+            "part": "skin",
+            "note": "The disclosed reader.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "receipt-read",
+            "label": "Audited read",
+            "kind": "Receipt",
+            "col": 2,
+            "row": 2,
+            "part": "record",
+            "note": "The audit row lands before the body can be returned.",
+            "state": "Current",
+            "facts": [
+              [
+                "Time",
+                "09:39"
+              ],
+              [
+                "Purpose",
+                "Incident review"
+              ]
+            ]
+          },
+          {
+            "id": "memory",
+            "label": "Atlas memory",
+            "kind": "Runtime part",
+            "col": 1,
+            "row": 3,
+            "part": "memory",
+            "note": "Isolated memory for this record; projected through row 284.",
+            "state": "Current",
+            "facts": [
+              [
+                "Access",
+                "Through head"
+              ],
+              [
+                "Freshness",
+                "09:42 fixture"
+              ]
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "evidence-hold",
+            "to": "evidence-delivery",
+            "label": "prevents redaction",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Protected receipt hold metadata"
+          },
+          {
+            "from": "delivery-disclosure",
+            "to": "evidence-delivery",
+            "label": "covers receipt",
+            "kind": "observed",
+            "note": "",
+            "evidence": "receipt.disclosed row 261"
+          },
+          {
+            "from": "delivery-disclosure",
+            "to": "riley",
+            "label": "names reader",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Disclosure reader and purpose"
+          },
+          {
+            "from": "receipt-read",
+            "to": "delivery-disclosure",
+            "label": "records use of",
+            "kind": "observed",
+            "note": "The audit row records the named reader and purpose before the protected body is returned.",
+            "evidence": "receipt.read metadata at 09:39"
+          },
+          {
+            "from": "memory",
+            "to": "evidence-delivery",
+            "label": "seals body",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Protected receipt storage rules"
+          }
+        ]
+      }
+    ]
+  },
+  "record": {
+    "views": [
+      {
+        "id": "provenance",
+        "label": "Decision provenance",
+        "summary": "Trace a candidate to its evidence and required decision without implying approval.",
+        "columns": [
+          "Candidate",
+          "Evidence",
+          "Decision"
+        ],
+        "nodes": [
+          {
+            "id": "candidate-m17",
+            "label": "Retry change \u00b7 m17",
+            "kind": "Candidate",
+            "col": 0,
+            "row": 1,
+            "part": "genome",
+            "note": "Preserve delivery results when retrying.",
+            "state": "Awaiting Board",
+            "facts": [],
+            "detail": "genome-diff"
+          },
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "col": 0,
+            "row": 3,
+            "part": "genome",
+            "note": "The base of the proposed change.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "candidate-checks",
+            "label": "Checks and replay",
+            "kind": "Verification evidence",
+            "col": 1,
+            "row": 0,
+            "part": "genome",
+            "note": "Fixture checks, tests and replay receipts accompany the candidate.",
+            "state": "Passed",
+            "facts": []
+          },
+          {
+            "id": "review-m17",
+            "label": "Review \u00b7 m17",
+            "kind": "Review",
+            "col": 1,
+            "row": 2,
+            "part": "record",
+            "note": "Requested at record row 284; no verdict yet.",
+            "state": "Pending",
+            "facts": [],
+            "detail": "record-review"
+          },
+          {
+            "id": "board-position",
+            "label": "Board",
+            "kind": "Position",
+            "col": 2,
+            "row": 2,
+            "part": "genome",
+            "note": "Required because application changes exceed the Leader\u2019s grant.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "record",
+            "label": "Atlas record",
+            "kind": "Record",
+            "col": 2,
+            "row": 0,
+            "part": "record",
+            "note": "Append-only decision history; current projection through row 284.",
+            "state": "Current",
+            "facts": [],
+            "detail": "record-identity"
+          }
+        ],
+        "edges": [
+          {
+            "from": "candidate-m17",
+            "to": "revision-current",
+            "label": "based on",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "Retained candidate m17 provenance"
+          },
+          {
+            "from": "candidate-m17",
+            "to": "candidate-checks",
+            "label": "supported by",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "mutation.escalated row 283"
+          },
+          {
+            "from": "candidate-m17",
+            "to": "review-m17",
+            "label": "awaits decision",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "Review requested row 284"
+          },
+          {
+            "from": "review-m17",
+            "to": "board-position",
+            "label": "requires authority",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Candidate impact and Leader grant"
+          },
+          {
+            "from": "candidate-checks",
+            "to": "record",
+            "label": "retained with",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Candidate evidence retention"
+          }
+        ]
+      },
+      {
+        "id": "connections",
+        "label": "Record connections",
+        "summary": "Deliberate handoffs cross a scoped connection; whole journals and receipt bodies stay separate.",
+        "columns": [
+          "Atlas",
+          "Boundary",
+          "Relay"
+        ],
+        "nodes": [
+          {
+            "id": "record",
+            "label": "Atlas record",
+            "kind": "Record",
+            "col": 0,
+            "row": 0,
+            "part": "record",
+            "note": "Originating record.",
+            "state": "Current",
+            "facts": [],
+            "detail": "record-identity"
+          },
+          {
+            "id": "handoff-t19",
+            "label": "Reconciliation \u00b7 t19",
+            "kind": "Handoff",
+            "col": 0,
+            "row": 2,
+            "part": "record",
+            "note": "An explicitly handed task with its origin and purpose.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "relay-connection",
+            "label": "Reconciliation link",
+            "kind": "Connection",
+            "col": 1,
+            "row": 0,
+            "part": "record",
+            "note": "Reciprocal Board-approved connection; internal evidence only.",
+            "state": "In force",
+            "facts": [],
+            "detail": "record-connection"
+          },
+          {
+            "id": "handoff-evidence",
+            "label": "Evidence reference",
+            "kind": "Evidence metadata",
+            "col": 1,
+            "row": 2,
+            "part": "memory",
+            "note": "Digest and classification cross; body does not.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "relay-record",
+            "label": "Relay record",
+            "kind": "Record",
+            "col": 2,
+            "row": 0,
+            "part": "record",
+            "note": "Separate record and trust boundary.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "handoff-accepted",
+            "label": "Handoff accepted",
+            "kind": "Receipt",
+            "col": 2,
+            "row": 2,
+            "part": "record",
+            "note": "Relay accepted the task; this does not expose its journal.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "record",
+            "to": "relay-connection",
+            "label": "participates",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Board-approved connection"
+          },
+          {
+            "from": "relay-connection",
+            "to": "relay-record",
+            "label": "connects within scope",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Reciprocal connection established"
+          },
+          {
+            "from": "record",
+            "to": "handoff-t19",
+            "label": "originates",
+            "kind": "observed",
+            "note": "",
+            "evidence": "t19 handoff provenance"
+          },
+          {
+            "from": "handoff-t19",
+            "to": "handoff-evidence",
+            "label": "carries reference",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Explicit handoff evidence rules"
+          },
+          {
+            "from": "handoff-evidence",
+            "to": "handoff-accepted",
+            "label": "included in accepted handoff",
+            "kind": "observed",
+            "note": "",
+            "evidence": "t19 accepted by Relay"
+          },
+          {
+            "from": "relay-record",
+            "to": "handoff-accepted",
+            "label": "records acceptance",
+            "kind": "observed",
+            "note": "",
+            "evidence": "t19 accepted by Relay"
+          }
+        ]
+      }
+    ]
+  },
+  "genome": {
+    "views": [
+      {
+        "id": "structure",
+        "label": "Source structure",
+        "summary": "Application, organization and substrate remain distinct sources of the organism\u2019s behavior.",
+        "columns": [
+          "Roots",
+          "Organization",
+          "Constraints"
+        ],
+        "nodes": [
+          {
+            "id": "genome",
+            "label": "Genome",
+            "kind": "Source component",
+            "col": 0,
+            "row": 1,
+            "part": "genome",
+            "note": "Source roots for the current organism.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "application-source",
+            "label": "Delivery application",
+            "kind": "Source component",
+            "col": 0,
+            "row": 3,
+            "part": "genome",
+            "note": "main.hl and application seed.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "organization-source",
+            "label": "Organization",
+            "kind": "Source component",
+            "col": 1,
+            "row": 0,
+            "part": "genome",
+            "note": "Owned positions, workflows, catalogs and law.",
+            "state": "Current",
+            "facts": [],
+            "detail": "genome-organization"
+          },
+          {
+            "id": "dna-substrate",
+            "label": "DNA substrate",
+            "kind": "Source component",
+            "col": 1,
+            "row": 2,
+            "part": "genome",
+            "note": "Vendored substrate pinned by hale.lock.",
+            "state": "Current",
+            "facts": [],
+            "detail": "genome-substrate"
+          },
+          {
+            "id": "constitution",
+            "label": "Constitution",
+            "kind": "Claims",
+            "col": 2,
+            "row": 0,
+            "part": "genome",
+            "note": "Compiler-checked constitutional boundaries.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "leader-grant",
+            "label": "Leader grant",
+            "kind": "Grant",
+            "col": 2,
+            "row": 2,
+            "part": "genome",
+            "note": "Source-defined docs/refactor grant; magnitude ceiling 4.",
+            "state": "Current",
+            "facts": [
+              [
+                "Review",
+                "Before application"
+              ]
+            ]
+          },
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "col": 2,
+            "row": 3,
+            "part": "genome",
+            "note": "Current source identity.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "genome",
+            "to": "application-source",
+            "label": "owns",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Genome application source root"
+          },
+          {
+            "from": "genome",
+            "to": "organization-source",
+            "label": "owns",
+            "kind": "declared",
+            "note": "",
+            "evidence": "dna/org source root"
+          },
+          {
+            "from": "genome",
+            "to": "dna-substrate",
+            "label": "pins dependency",
+            "kind": "declared",
+            "note": "",
+            "evidence": "vendor/dna and hale.lock"
+          },
+          {
+            "from": "organization-source",
+            "to": "constitution",
+            "label": "declares",
+            "kind": "declared",
+            "note": "",
+            "evidence": "dna/org/law.hl"
+          },
+          {
+            "from": "organization-source",
+            "to": "leader-grant",
+            "label": "constructs",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Organization source constructor grant"
+          },
+          {
+            "from": "dna-substrate",
+            "to": "revision-current",
+            "label": "pinned in revision",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Current genome revision"
+          }
+        ]
+      },
+      {
+        "id": "candidate",
+        "label": "Candidate impact",
+        "summary": "Compare current source with a proposed change and the authority needed to apply it.",
+        "columns": [
+          "Current",
+          "Candidate",
+          "Required evidence"
+        ],
+        "nodes": [
+          {
+            "id": "revision-current",
+            "label": "a48bc20",
+            "kind": "Source revision",
+            "col": 0,
+            "row": 0,
+            "part": "genome",
+            "note": "Current running source; candidate base.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "candidate-m17",
+            "label": "Retry change \u00b7 m17",
+            "kind": "Candidate",
+            "col": 1,
+            "row": 0,
+            "part": "genome",
+            "note": "Candidate revision 7f0c921.",
+            "state": "Proposed",
+            "facts": [],
+            "detail": "genome-diff"
+          },
+          {
+            "id": "delivery-handler",
+            "label": "Delivery handler",
+            "kind": "Source artifact",
+            "col": 0,
+            "row": 2,
+            "part": "genome",
+            "note": "The application handler whose retry behavior changes.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "candidate-handler",
+            "label": "Result-first retry",
+            "kind": "Proposed source change",
+            "col": 1,
+            "row": 2,
+            "part": "genome",
+            "note": "Consult the established outcome before continuing the operation.",
+            "state": "Proposed",
+            "facts": []
+          },
+          {
+            "id": "candidate-checks",
+            "label": "Checks and replay",
+            "kind": "Verification evidence",
+            "col": 2,
+            "row": 0,
+            "part": "genome",
+            "note": "Verification receipts retained with the candidate.",
+            "state": "Passed",
+            "facts": []
+          },
+          {
+            "id": "review-m17",
+            "label": "Review \u00b7 m17",
+            "kind": "Review",
+            "col": 2,
+            "row": 2,
+            "part": "record",
+            "note": "The pinned candidate awaits Board authority.",
+            "state": "Pending",
+            "facts": [],
+            "detail": "genome-review"
+          }
+        ],
+        "edges": [
+          {
+            "from": "revision-current",
+            "to": "candidate-m17",
+            "label": "candidate based on",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "m17 base a48bc20 / candidate 7f0c921"
+          },
+          {
+            "from": "revision-current",
+            "to": "delivery-handler",
+            "label": "contains",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Application source scope"
+          },
+          {
+            "from": "delivery-handler",
+            "to": "candidate-handler",
+            "label": "proposed replacement",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "m17 source and structural diff"
+          },
+          {
+            "from": "candidate-m17",
+            "to": "candidate-handler",
+            "label": "proposes",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "m17 narrative fixture diff"
+          },
+          {
+            "from": "candidate-m17",
+            "to": "candidate-checks",
+            "label": "supported by",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "m17 checks, tests and replay receipts"
+          },
+          {
+            "from": "candidate-handler",
+            "to": "review-m17",
+            "label": "awaits approval",
+            "kind": "proposed",
+            "note": "",
+            "evidence": "Review requested row 284"
+          }
+        ]
+      }
+    ]
+  },
+  "hat": {
+    "views": [
+      {
+        "id": "assembly",
+        "label": "Context assembly",
+        "summary": "Applicable knowledge, authority and objectives are pinned into one reproducible Work snapshot.",
+        "columns": [
+          "Work and authority",
+          "Snapshot",
+          "Knowledge"
+        ],
+        "nodes": [
+          {
+            "id": "work-t142-a",
+            "label": "Migration assessment",
+            "kind": "Work",
+            "col": 0,
+            "row": 0,
+            "part": "spine",
+            "note": "t142/wf1/s0/a \u00b7 Assess whether an additive migration preserves existing readers.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 2,
+            "part": "skin",
+            "note": "Authenticated person holding the active attempt lease through worker position:agent#1.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "hat",
+            "label": "Work context",
+            "kind": "Context snapshot",
+            "col": 1,
+            "row": 1,
+            "part": "hat",
+            "note": "Immutable context for the current Work.",
+            "state": "Current",
+            "facts": [
+              [
+                "Digest",
+                "h:8ac21f"
+              ],
+              [
+                "Record head",
+                "r:42b"
+              ],
+              [
+                "Watermark",
+                "842"
+              ]
+            ],
+            "detail": "hat-render"
+          },
+          {
+            "id": "position-charter",
+            "label": "Agent charter",
+            "kind": "Charter",
+            "col": 2,
+            "row": 0,
+            "part": "genome",
+            "note": "Grounded judgments with explicit uncertainty.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "reader-practice",
+            "label": "Reader window",
+            "kind": "Knowledge",
+            "col": 2,
+            "row": 2,
+            "part": "memory",
+            "note": "Preserve the supported reader window.",
+            "state": "Ratified",
+            "facts": []
+          },
+          {
+            "id": "migration-evidence",
+            "label": "Migration fixture",
+            "kind": "Knowledge",
+            "col": 2,
+            "row": 3,
+            "part": "memory",
+            "note": "Declared evidence binding for this target.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "work-t142-a",
+            "to": "hat",
+            "label": "defines objective",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Structured per-Work Hat"
+          },
+          {
+            "from": "riley",
+            "to": "hat",
+            "label": "may read while leased",
+            "kind": "observed",
+            "note": "The person who claimed and still holds the attempt lease may read its Hat.",
+            "evidence": "Active claim and lease holder"
+          },
+          {
+            "from": "position-charter",
+            "to": "hat",
+            "label": "informs",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Hat charter input"
+          },
+          {
+            "from": "reader-practice",
+            "to": "hat",
+            "label": "applies",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Hat ratified practices input"
+          },
+          {
+            "from": "migration-evidence",
+            "to": "hat",
+            "label": "bound evidence",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Hat knowledge bindings"
+          }
+        ]
+      },
+      {
+        "id": "identity",
+        "label": "Snapshot use",
+        "summary": "The lease holder reads a pinned snapshot; the outcome records its rendering identity.",
+        "columns": [
+          "Claim",
+          "Context",
+          "Rendering"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 0,
+            "part": "skin",
+            "note": "Authenticated holder of this Work\u2019s lease.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "attempt-a0",
+            "label": "Attempt a0",
+            "kind": "Attempt",
+            "col": 0,
+            "row": 2,
+            "part": "legs",
+            "note": "t142/wf1/s0/a/a0",
+            "state": "Claimed",
+            "facts": [],
+            "detail": "legs-current"
+          },
+          {
+            "id": "attempt-lease",
+            "label": "Lease \u00b7 token 8",
+            "kind": "Lease",
+            "col": 1,
+            "row": 0,
+            "part": "legs",
+            "note": "Access exists only while Riley holds the claim.",
+            "state": "Active",
+            "facts": []
+          },
+          {
+            "id": "hat",
+            "label": "Work context",
+            "kind": "Context snapshot",
+            "col": 1,
+            "row": 2,
+            "part": "hat",
+            "note": "Pinned context digest h:8ac21f.",
+            "state": "Current",
+            "facts": [],
+            "detail": "hat-access"
+          },
+          {
+            "id": "hat-renderer",
+            "label": "legs-render/1",
+            "kind": "Renderer",
+            "col": 2,
+            "row": 0,
+            "part": "hat",
+            "note": "Performer-local rendering of structured context.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "rendered-brief",
+            "label": "Work brief",
+            "kind": "Rendered context",
+            "col": 2,
+            "row": 2,
+            "part": "hat",
+            "note": "Text rendering with a separate rendering digest.",
+            "state": "Current",
+            "facts": [],
+            "detail": "hat-render"
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "attempt-lease",
+            "label": "holds",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Current Work claim"
+          },
+          {
+            "from": "riley",
+            "to": "attempt-a0",
+            "label": "claimed",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Attempt claim identity"
+          },
+          {
+            "from": "attempt-lease",
+            "to": "hat",
+            "label": "authorizes read",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Hat lease_required rule"
+          },
+          {
+            "from": "attempt-a0",
+            "to": "hat",
+            "label": "pins snapshot",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Work Hat identity"
+          },
+          {
+            "from": "hat-renderer",
+            "to": "rendered-brief",
+            "label": "renders",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Performer-local Hat rendering"
+          },
+          {
+            "from": "hat",
+            "to": "rendered-brief",
+            "label": "source snapshot",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Hat and rendering digests"
+          }
+        ]
+      }
+    ]
+  },
+  "voice": {
+    "views": [
+      {
+        "id": "routing",
+        "label": "Model routing",
+        "summary": "Source-owned position routers choose capabilities within data, effect and credential boundaries.",
+        "columns": [
+          "Position",
+          "Route",
+          "Backend"
+        ],
+        "nodes": [
+          {
+            "id": "agent-position",
+            "label": "Agent",
+            "kind": "Position",
+            "col": 0,
+            "row": 1,
+            "part": "genome",
+            "note": "The agent\u2019s router is declared in organization source.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "voice",
+            "label": "Model catalog",
+            "kind": "Runtime part",
+            "col": 1,
+            "row": 1,
+            "part": "voice",
+            "note": "Position-aware quick, deep and private routes.",
+            "state": "Current",
+            "facts": [],
+            "detail": "voice-catalog"
+          },
+          {
+            "id": "route-quick",
+            "label": "Quick",
+            "kind": "Model route",
+            "col": 1,
+            "row": 0,
+            "part": "voice",
+            "note": "Bounded analysis under declared effects.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "route-private",
+            "label": "Private",
+            "kind": "Model route",
+            "col": 1,
+            "row": 3,
+            "part": "voice",
+            "note": "Local model route for private context.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "hosted-backend",
+            "label": "Hosted backend",
+            "kind": "Model backend",
+            "col": 2,
+            "row": 0,
+            "part": "voice",
+            "note": "OpenAI-compatible adapter; external_model effect.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "model-slot",
+            "label": "Model credential",
+            "kind": "Credential slot",
+            "col": 2,
+            "row": 2,
+            "part": "skin",
+            "note": "Presence metadata only; no secret bytes.",
+            "state": "Present",
+            "facts": []
+          },
+          {
+            "id": "local-backend",
+            "label": "Local backend",
+            "kind": "Model backend",
+            "col": 2,
+            "row": 3,
+            "part": "voice",
+            "note": "No hosted credential required.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "agent-position",
+            "to": "voice",
+            "label": "selects catalog",
+            "kind": "declared",
+            "note": "",
+            "evidence": "agent_models() organization source"
+          },
+          {
+            "from": "voice",
+            "to": "route-quick",
+            "label": "offers",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Source-owned model routing"
+          },
+          {
+            "from": "voice",
+            "to": "route-private",
+            "label": "offers",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Source-owned model routing"
+          },
+          {
+            "from": "route-quick",
+            "to": "hosted-backend",
+            "label": "routes to",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Fixture model catalog"
+          },
+          {
+            "from": "hosted-backend",
+            "to": "model-slot",
+            "label": "requires slot",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Vault credential-slot requirement"
+          },
+          {
+            "from": "route-private",
+            "to": "local-backend",
+            "label": "routes to",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Fixture model catalog"
+          }
+        ]
+      },
+      {
+        "id": "accounting",
+        "label": "Call evidence",
+        "summary": "Recorded calls account spend; a Work allowance is not a money reservation.",
+        "columns": [
+          "Allowance",
+          "Call",
+          "Evidence"
+        ],
+        "nodes": [
+          {
+            "id": "budget-day",
+            "label": "Daily model budget",
+            "kind": "Budget window",
+            "col": 0,
+            "row": 0,
+            "part": "voice",
+            "note": "Fixture: $8.42 recorded against $25/day.",
+            "state": "Current",
+            "facts": [
+              [
+                "Remaining",
+                "$16.58"
+              ],
+              [
+                "Calls",
+                "41"
+              ]
+            ],
+            "detail": "voice-budget"
+          },
+          {
+            "id": "work-allowance",
+            "label": "Work allowance",
+            "kind": "Allowance",
+            "col": 0,
+            "row": 2,
+            "part": "voice",
+            "note": "Bounded by Work ceiling and remaining model budget; not reserved.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "call-t140",
+            "label": "Model call \u00b7 t140",
+            "kind": "Model call",
+            "col": 1,
+            "row": 1,
+            "part": "voice",
+            "note": "Recorded quick-route analysis for index timings.",
+            "state": "Recorded",
+            "facts": []
+          },
+          {
+            "id": "call-receipt-t140",
+            "label": "model.called",
+            "kind": "Receipt",
+            "col": 2,
+            "row": 0,
+            "part": "record",
+            "note": "Fixture cost $0.04; 4,800 input and 720 output tokens.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "recorded-tape",
+            "label": "Matching replay entry",
+            "kind": "Replay evidence",
+            "col": 2,
+            "row": 2,
+            "part": "voice",
+            "note": "Illustrative matching entry; this view does not assert that the t140 call was captured.",
+            "state": "Not established",
+            "facts": []
+          },
+          {
+            "id": "hosted-backend",
+            "label": "Hosted backend",
+            "kind": "Model backend",
+            "col": 1,
+            "row": 3,
+            "part": "voice",
+            "note": "Adapter, backend and model identity belong in the evidence.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "budget-day",
+            "to": "work-allowance",
+            "label": "bounds",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Model-call allowance admission rule"
+          },
+          {
+            "from": "work-allowance",
+            "to": "call-t140",
+            "label": "limits",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Per-attempt model-call accounting"
+          },
+          {
+            "from": "call-t140",
+            "to": "call-receipt-t140",
+            "label": "records usage",
+            "kind": "observed",
+            "note": "",
+            "evidence": "model.called call evidence"
+          },
+          {
+            "from": "call-receipt-t140",
+            "to": "budget-day",
+            "label": "accounts spend",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Budget projection over model.called"
+          },
+          {
+            "from": "call-t140",
+            "to": "recorded-tape",
+            "label": "could be captured",
+            "kind": "proposed",
+            "note": "RecordedModel can capture complete request identity; an entry for this call has not been established in this fixture.",
+            "evidence": "Proposed read projection"
+          },
+          {
+            "from": "call-t140",
+            "to": "hosted-backend",
+            "label": "uses",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Fixture call backend metadata"
+          }
+        ]
+      }
+    ]
+  },
+  "skin": {
+    "views": [
+      {
+        "id": "authority",
+        "label": "Authority boundaries",
+        "summary": "Identity, held positions and resource-specific checks compose authority.",
+        "columns": [
+          "Identity",
+          "Authority",
+          "Resource"
+        ],
+        "nodes": [
+          {
+            "id": "riley",
+            "label": "Riley",
+            "kind": "Person",
+            "col": 0,
+            "row": 0,
+            "part": "skin",
+            "note": "A verified person, not a service token.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "board-position",
+            "label": "Board",
+            "kind": "Position",
+            "col": 1,
+            "row": 0,
+            "part": "genome",
+            "note": "Organization authority held by the person.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "head-api",
+            "label": "HeadCommands",
+            "kind": "API surface",
+            "col": 2,
+            "row": 0,
+            "part": "head",
+            "note": "Boundary role gates are followed by record checks.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "service-identity",
+            "label": "Service reader",
+            "kind": "Service identity",
+            "col": 0,
+            "row": 2,
+            "part": "skin",
+            "note": "Read-only service access supplies no person command authority.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "head-read-role",
+            "label": "Head memory role",
+            "kind": "Resource role",
+            "col": 1,
+            "row": 2,
+            "part": "skin",
+            "note": "Narrower than the Spine\u2019s memory role.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "memory",
+            "label": "Atlas memory",
+            "kind": "Runtime part",
+            "col": 2,
+            "row": 2,
+            "part": "memory",
+            "note": "Private tables isolated to this record.",
+            "state": "Current",
+            "facts": []
+          }
+        ],
+        "edges": [
+          {
+            "from": "riley",
+            "to": "board-position",
+            "label": "holds",
+            "kind": "observed",
+            "note": "",
+            "evidence": "Organization person-position relation"
+          },
+          {
+            "from": "board-position",
+            "to": "head-api",
+            "label": "supplies owner authority",
+            "kind": "declared",
+            "note": "",
+            "evidence": "HeadCommands owner role mapping"
+          },
+          {
+            "from": "service-identity",
+            "to": "head-read-role",
+            "label": "uses read authority",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Service-token read-only semantics"
+          },
+          {
+            "from": "head-read-role",
+            "to": "memory",
+            "label": "permits scoped reads",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Per-part memory role isolation"
+          }
+        ]
+      },
+      {
+        "id": "compartments",
+        "label": "Credential compartments",
+        "summary": "Each consumer receives only its own slot or account. Presence can be visible; secret values remain sealed.",
+        "columns": [
+          "Consumers",
+          "Sealed slots",
+          "Resources"
+        ],
+        "nodes": [
+          {
+            "id": "spine",
+            "label": "Spine",
+            "kind": "Runtime part",
+            "col": 0,
+            "row": 0,
+            "part": "spine",
+            "note": "Uses its own memory role, separate from Head and Heart.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "spine-memory-slot",
+            "label": "Spine memory slot",
+            "kind": "Credential slot",
+            "col": 1,
+            "row": 0,
+            "part": "skin",
+            "note": "Present in the organism vault.",
+            "state": "Present",
+            "facts": [],
+            "detail": "skin-memory"
+          },
+          {
+            "id": "memory",
+            "label": "Atlas memory",
+            "kind": "Runtime part",
+            "col": 2,
+            "row": 0,
+            "part": "memory",
+            "note": "This record\u2019s tables.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "heart",
+            "label": "Heart",
+            "kind": "Runtime part",
+            "col": 0,
+            "row": 2,
+            "part": "heart",
+            "note": "Application integration has its own publishing account.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "app-broker-slot",
+            "label": "Application account",
+            "kind": "Credential slot",
+            "col": 1,
+            "row": 2,
+            "part": "skin",
+            "note": "Publish-only on Atlas application subjects.",
+            "state": "Present",
+            "facts": [],
+            "detail": "skin-heart"
+          },
+          {
+            "id": "application-subjects",
+            "label": "Atlas subjects",
+            "kind": "Subject scope",
+            "col": 2,
+            "row": 2,
+            "part": "nerves",
+            "note": "<org>.app.atlas.>; no DNA subscriptions.",
+            "state": "Current",
+            "facts": []
+          },
+          {
+            "id": "forge-slot",
+            "label": "Forge token",
+            "kind": "Credential slot",
+            "col": 1,
+            "row": 3,
+            "part": "skin",
+            "note": "Operator-provisioned slot is currently missing.",
+            "state": "Missing",
+            "facts": [],
+            "detail": "skin-forge"
+          }
+        ],
+        "edges": [
+          {
+            "from": "spine",
+            "to": "spine-memory-slot",
+            "label": "uses",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Per-part vault credential assignment"
+          },
+          {
+            "from": "spine-memory-slot",
+            "to": "memory",
+            "label": "grants scoped access",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Spine record memory role"
+          },
+          {
+            "from": "heart",
+            "to": "app-broker-slot",
+            "label": "uses",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Application broker account"
+          },
+          {
+            "from": "app-broker-slot",
+            "to": "application-subjects",
+            "label": "allows publish",
+            "kind": "declared",
+            "note": "",
+            "evidence": "Application subject-scoped publish account"
+          }
+        ]
+      }
+    ]
+  }
+}
