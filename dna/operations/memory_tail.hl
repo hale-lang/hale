@@ -299,7 +299,8 @@ fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAut
         let kind = std::json::find_string_field(it.element, "kind");
         let entity = std::json::find_string_field(it.element, "entity");
         let body = std::json::find_string_field(it.element, "body");
-        let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else { graph_refused("`" + kind + "` is no graph row") };
+        // a reviewed retirement (`hale dna ingest`) takes a node or edge out
+        let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else if kind == "graph.retired" { graph_retired_row(entity) } else { graph_refused("`" + kind + "` is no graph row") };
         if !g.ok { out.error = "invalid " + kind + " in a ratified proposal (row " + to_string(i) + "): " + g.why; return out; }
         if g.kind == "holds" {
             let why = hold_refusal(store, authors, i, entity, trust);
@@ -309,7 +310,7 @@ fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAut
                 continue;
             }
         }
-        let put = if kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, seq, body) } else { store.put_graph_edge(g.id, g.kind, seq, body, g.members) };
+        let put = if kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, seq, body) } else if kind == "graph.edge" { store.put_graph_edge(g.id, g.kind, seq, body, g.members) } else { store.retire_graph(g.id) };
         if !put { out.error = store.last_error(); return out; }
         out.graph = out.graph + 1;
         it = std::json::array_next(it);

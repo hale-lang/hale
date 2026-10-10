@@ -97,6 +97,81 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
 /// Run a host verb to completion and return what it printed; its
 /// complaint when it failed. For the verbs the driver itself needs
 /// (`init` seeding the record, `ui` syncing before it serves).
+/// `hale dna ingest [project] [--at <rev>]`: the repository at a commit
+/// (HEAD by default), checked out beside the record under `.hale/dna/ingest/`
+/// with the repository's own directory name (the ingest names its purpose
+/// after it when the README does not), read by the same ingest `init`
+/// runs, and its difference from the graph the record states proposed to
+/// the Board (`graph-reingest`); the checkout is removed after.
+fn ingest_cmd(rest: &[String]) -> ExitCode {
+    let mut at = "HEAD".to_string();
+    let mut dir = PathBuf::from(".");
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--at" => {
+                let Some(v) = rest.get(i + 1) else {
+                    eprintln!("usage: hale dna ingest [project] [--at <rev>]");
+                    return ExitCode::from(2);
+                };
+                at = v.clone();
+                i += 2;
+            }
+            a if !a.starts_with("--") => {
+                dir = PathBuf::from(a);
+                i += 1;
+            }
+            a => {
+                eprintln!("hale dna ingest: `{a}` is not a flag of ingest (--at)\nusage: hale dna ingest [project] [--at <rev>]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
+    let sha = match git(&["rev-parse", "--verify", &format!("{at}^{{commit}}")]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            eprintln!("hale dna ingest: `{at}` names no commit of {}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = match dir.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hale dna ingest: {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let base = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repository".to_string());
+    let holder = root.join(".hale/dna/ingest").join(&sha);
+    let tree = holder.join(&base);
+    let _ = fs::remove_dir_all(&holder);
+    let _ = git(&["worktree", "prune"]);
+    if let Err(e) = fs::create_dir_all(&holder) {
+        eprintln!("hale dna ingest: {}: {e}", holder.display());
+        return ExitCode::FAILURE;
+    }
+    let added = git(&["worktree", "add", "--quiet", "--detach", &tree.display().to_string(), &sha]);
+    if !matches!(&added, Ok(o) if o.status.success()) {
+        let why = added.map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string()).unwrap_or_else(|e| e.to_string());
+        eprintln!("hale dna ingest: the commit could not be checked out: {why}");
+        return ExitCode::FAILURE;
+    }
+    let answered = host_run("graph-reingest", &root, &[tree.display().to_string(), "--at".to_string(), sha.clone()]);
+    let _ = git(&["worktree", "remove", "--force", &tree.display().to_string()]);
+    let _ = fs::remove_dir_all(&holder);
+    match answered {
+        Ok(out) => {
+            print!("{out}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("hale dna ingest: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     let (mut cmd, _) = host_command(verb, dir)?;
     let out = cmd.args(args).output().map_err(|e| format!("hale dna {verb}: {e}"))?;
@@ -581,6 +656,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
+        // the repository's graph read again at a commit, its difference proposed
+        Some("ingest") => ingest_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
         Some("fill") => {
@@ -850,6 +927,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
+    eprintln!("       hale dna ingest [project] [--at <rev>]");
+    eprintln!("                                    read the repository's graph again at a commit (HEAD); its difference from the record, one Board Review");
     eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");

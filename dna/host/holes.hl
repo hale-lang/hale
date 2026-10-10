@@ -119,6 +119,7 @@ fn held_state(root: String) -> HeldState {
             let row = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let entity = std::json::find_string_field(row, "entity");
+            if std::json::find_string_field(row, "kind") == "graph.retired" { out.positions = std::str::replace(out.positions, "\n" + entity + "\n", "\n"); }
             if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") {
                 out.positions = out.positions + entity + "\n";
                 let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(std::json::find_field_raw(std::json::find_string_field(row, "body"), "equipment"), "roles")), false);

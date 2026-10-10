@@ -232,6 +232,9 @@ hale dna retire <who>        a person retires: the handed Tasks they hold move t
 ```text
 hale dna fill <position> <holder> [project] [--as <who>]
                              ask the organization to propose who holds a position, for the Board
+hale dna ingest [project] [--at <rev>]
+                             read the repository's graph again at a commit (HEAD): what differs from the record, tools
+                             for every served operation included, proposed as one Board Review (`review ingest approve`)
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]

@@ -1,0 +1,134 @@
+// dna/tests/ingest_test.hl — the repository's graph, read again at a commit.
+//
+// `hale dna init` reads the repository once. `hale dna ingest [--at <rev>]`
+// reads it again at a commit, with the same ingest, and files what differs
+// from the graph the record states as ONE reviewed graph proposal (group
+// `ingest`): what is new, what changed, and what is gone as retirements; a
+// `graph.ingested` row names the commit. Each operation of a surface the
+// repository serves is a `tool` node, its effect class `uncertain` until a
+// description says more. The same difference at the same commit is proposed
+// once. The commit is checked out beside the record and removed after.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(repo: String, args: String) -> dna::RunResult { return in_dir(repo, toolchain() + "\ndna\n" + args); }
+
+fn commit(repo: String, what: String) -> String {
+    let c = in_dir(repo, "sh\n-c\ngit add -A && git -c user.name=t -c user.email=t@dna commit -q --allow-empty -m \"$1\" && git rev-parse HEAD\nsh\n" + what);
+    std::test::assert_eq_int(c.code, 0, "committed " + what + ": " + c.stderr);
+    return dna::trim_nl(c.stdout);
+}
+
+// The rows of the record's latest `review.requested` in group `ingest`'s
+// receipt, as the Board would ratify them.
+@unbounded
+fn proposed_rows(repo: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut digest = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.requested" && dna::native_json_string(e.body, "group") == "ingest" { digest = dna::native_json_string(e.body, "knowledge_digest"); }
+        i = i + 1;
+    }
+    if len(digest) == 0 { return ""; }
+    return dna::proposal_rows(dna::GitReceipts { repo: repo }.read(digest[7..len(digest)]));
+}
+
+@unbounded
+fn count_rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && std::str::contains(e.entity + " " + e.body, needle) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn check() {
+    let scratch = dna::scratch_root("ingest");
+    let repo = scratch + "/todo";
+    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + repo + "\n" + source());
+    std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+    let init = dna_cli(repo, "init\n.\n--no-library");
+    std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+    let first = commit(repo, "the organism");
+
+    // 1. the first ingest: the served surface's operations, as tools
+    let one = dna_cli(repo, "ingest");
+    std::test::assert(one.code == 0 && std::str::contains(one.stdout, "ingested " + first[0..12] + ": 5 added, 0 changed, 0 retired"), "the first ingest proposes the surface's five operations: " + one.stdout + one.stderr);
+    let rows = proposed_rows(repo);
+    std::test::assert(std::str::contains(rows, "\"entity\": \"tool:Todos::add\"") && std::str::contains(rows, "\"entity\": \"tool:Todos::overdue\""), "each operation is a tool node: " + rows);
+    std::test::assert(std::str::contains(rows, "\\\"effect\\\": \\\"uncertain\\\"") && std::str::contains(rows, "\\\"contract\\\": \\\"contract:spec/todo.md\\\""), "naming its contract, its effect class uncertain: " + rows);
+    std::test::assert_eq_int(count_rows(repo, "graph.ingested", first), 1, "the commit is named");
+    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"ingest\""), 1, "one Review for the whole difference");
+    std::test::assert(std::str::contains(dna_cli(repo, "review").stdout, "ingest — 1 re-ingest(s) of the repository's graph at a commit"), "listed under ingest");
+    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/ingest/" + first), "the checkout is removed");
+    let again = dna_cli(repo, "ingest");
+    std::test::assert(again.code == 0 && std::str::contains(again.stdout, "already proposed"), "the same difference at the same commit is proposed once: " + again.stdout + again.stderr);
+
+    // 2. a later commit: an operation added, an axiom no longer one
+    let described = std::io::fs::read_file(repo + "/spec/Todo.description.json") or "";
+    let renamed = std::str::replace(described, "\"name\": \"Todos::add\"", "\"name\": \"Todos::rename\", \"requires\": [\"editor\"]}, {\"name\": \"Todos::add\"");
+    std::test::assert(renamed != described, "the description gains an operation");
+    std::io::fs::write_file(repo + "/spec/Todo.description.json", renamed) or discard;
+    let readme = std::io::fs::read_file(repo + "/README.md") or "";
+    let demoted = std::str::replace(readme, "- `axiom` **One api.**", "- **One api.**");
+    std::test::assert(demoted != readme, "and an axiom is demoted to prose");
+    std::io::fs::write_file(repo + "/README.md", demoted) or discard;
+    let second = commit(repo, "a rename, and one axiom fewer");
+    let two = dna_cli(repo, "ingest");
+    std::test::assert(two.code == 0 && std::str::contains(two.stdout, "ingested " + second[0..12] + ": 6 added"), "the later commit's difference: " + two.stdout + two.stderr);
+    std::test::assert(std::str::contains(two.stdout, "retired") && !std::str::contains(two.stdout, " 0 retired"), "with what is gone retired: " + two.stdout);
+    let later = proposed_rows(repo);
+    std::test::assert(std::str::contains(later, "\"entity\": \"tool:Todos::rename\""), "the new operation is proposed: " + later);
+    std::test::assert(std::str::contains(later, "\"kind\": \"graph.retired\", \"entity\": \"axiom:One api\""), "the axiom no longer stated is retired, with its edges: " + later);
+
+    // 3. once the Board ratifies it, the record's graph is the repository's:
+    // the new operation stated, the retired axiom gone, and an ingest at the
+    // same commit finds nothing to review
+    let j = dna::GitJournal { repo: repo };
+    let mut digest = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.requested" && dna::native_json_string(e.body, "group") == "ingest" { digest = dna::native_json_string(e.body, "knowledge_digest"); }
+        i = i + 1;
+    }
+    let ratified = j.append(j.revision(), "knowledge.ratified", digest, "{\"digest\": \"" + digest + "\", \"outcome\": \"approve\", \"kind\": \"graph\", \"decided_by\": \"ada\"}");
+    std::test::assert(ratified.ok, "the Board's ratification, as its row: " + ratified.error);
+    let graph = dna::record_graph(dna::GitJournal { repo: repo }, dna::GitReceipts { repo: repo });
+    std::test::assert(dna::record_graph_has(graph.nodes, "tool:Todos::rename") && dna::record_graph_has(graph.nodes, "tool:Todos::add"), "the operations are stated: " + graph.nodes);
+    std::test::assert(!dna::record_graph_has(graph.nodes, "axiom:One api") && dna::record_graph_has(graph.nodes, "axiom:The browser only reads"), "the retired axiom is gone, the others stay: " + graph.nodes);
+    let bodies = dna::record_graph_bodies(dna::GitJournal { repo: repo }, dna::GitReceipts { repo: repo });
+    std::test::assert(std::str::contains(dna::graph_body_of(bodies, "tool:Todos::add"), "\"requires\": [\"editor\"]"), "a tool's body is one line, its roles as strings: " + dna::graph_body_of(bodies, "tool:Todos::add"));
+    let settled = dna_cli(repo, "ingest");
+    std::test::assert(settled.code == 0 && std::str::contains(settled.stdout, "nothing to review"), "the same commit, read again, is the record's graph: " + settled.stdout + settled.stderr);
+
+    // 4. an older commit, read again: what differs from the graph now
+    let back = dna_cli(repo, "ingest\n--at\n" + first);
+    std::test::assert(back.code == 0 && std::str::contains(back.stdout, "ingested " + first[0..12] + ": 3 added, 0 changed, 1 retired"), "--at reads that commit: its axiom (and two edges) back, the rename it lacks retired: " + back.stdout + back.stderr);
+    let bad = dna_cli(repo, "ingest\n--at\nnot-a-commit");
+    std::test::assert(bad.code != 0 && std::str::contains(bad.stderr, "names no commit"), "a name that is no commit is refused: " + bad.stderr);
+    dna::scratch_done(scratch);
+}
+
+main locus App { run() { check(); } }
+fn main() { App { }; }
