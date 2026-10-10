@@ -103,19 +103,15 @@ locus HatReader {
         let w = self.p.work(work_id);
         let admitted = if len(w.attempt_id) > 0 { dna::recorded_attempt_admission(self.j, w.attempt_id, self.j.revision()) } else { dna::DecodedAttempt { } };
         let kind = if admitted.ok { admitted.value.performer_kind } else { dna::hat_kind_of(node.requires) };
-        let position = dna::hat_position_of(kind);
-        let h = dna::Hat {
-            ok: true, work_id: work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: kind,
-            position_id: position, charter: dna::hat_node_text(self.j, position),
-            objective: node.objective, target: node.target, output_contract: node.output_contract, data_class: node.data_class,
-            requires: node.requires, effects: dna::hat_effects_of(node.requires), cost_ceiling: node.cost_ceiling, tool_grant: dna::hat_tool_grant(kind), knowledge_bindings: node.knowledge_bindings,
-            history: self.history_json(work_id), head: self.j.head()
-        };
+        let targets = dna::hat_knowledge_targets(self.j, self.receipts, node.target, dna::hat_organization_change(self.j, w.task_id), dna::hat_position_of(kind));
         let ready = self.knowledge.ready();
-        let mut worn = h;
-        worn.targets = dna::hat_knowledge_targets(self.j, self.receipts, h.target, dna::hat_organization_change(self.j, h.task_id), position);
-        let pkg = if ready { self.knowledge.package_for(worn.targets, h.objective) } else { dna::ContextPackage { } };
-        let sealed = dna::hat_sealed(dna::hat_with_package(worn, pkg, ready));
+        let pkg = if ready { self.knowledge.package_for(targets, node.objective) } else { dna::ContextPackage { } };
+        let sealed = dna::hat_compose(self.j, dna::HatInputs {
+            work_id: work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: kind,
+            objective: node.objective, target: node.target, targets: targets, output_contract: node.output_contract, data_class: node.data_class,
+            requires: node.requires, cost_ceiling: node.cost_ceiling, knowledge_bindings: node.knowledge_bindings,
+            history: self.history_json(work_id), head: self.j.head()
+        }, pkg, ready);
         if ready && self.knowledge.keep_hat(sealed.digest, sealed.head, sealed.watermark, dna::hat_body(sealed)) { self.kept = self.kept + 1; }
         return sealed;
     }

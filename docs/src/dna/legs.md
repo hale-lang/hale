@@ -223,9 +223,11 @@ prompt. `brief` reads it from the head (`…/dna/context?id=<work>`). It
 carries the position and its charter; the practices ratified for the
 Work's target, with their ids; the objective, target, output contract,
 data class and requirement; the effect classes the Work admits, its
-cost ceiling, tool grant and knowledge bindings; the Work's history;
-and the record head and memory watermark it was read at, with its
-digest.
+cost ceiling and knowledge bindings; its **hands**, the tools the
+output contract gives (each with its description and the schema of its
+arguments), the tool grant that names them, and which of them validate
+the outcome; the Work's history; and the record head and memory
+watermark it was read at, with its digest.
 
 On a head that serves OIDC the hat is the lease holder's: the person your
 token maps to, who claimed the attempt and still holds the lease, reads it
@@ -236,12 +238,25 @@ vouch for it.
 
 The hat reads no clock, no environment value and no random id, so read
 twice at one head it is one digest. Rendering is the leg's: `text` for
-a person, `prompt` for a model, `agent` for the prompt with the hands
-the grant allows. The renderer's version (`legs-render/1`), the hat's
+a person, `prompt` for a model, `agent` for the prompt with each hand
+named and the validators to run before handing the outcome back. The renderer's version (`legs-render/2`), the hat's
 digest and the digest of the rendering go back with the outcome, so a
 replay renders from the recorded hat.
 
 ## Hands
+
+What a Work's hands are is its output contract's to say, and the hat
+carries them (`dna/core/contracts.hl`, `dna/core/tools.hl`):
+
+| contract | hands | validated by |
+| --- | --- | --- |
+| `Patch` | `read`, `edit`, `check`, `test`, `fmt`, `patch` | `check`, `test`, `fmt` |
+| `Assessment` | `record_status`, `record_history`, `org_chart` (read-only) | — |
+| any other | none yet | — |
+
+Every hand runs where the performer is, never in the organism. A
+validator is run before the outcome is handed back, and the owner runs
+the same check again on submit: only the owner's verdict counts.
 
 A performer is handed `legs::Hands`, a set of interfaces:
 

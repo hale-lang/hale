@@ -1,0 +1,75 @@
+// dna/core/tools.hl — the tools the toolchain ships: the registry's
+// built-ins.
+//
+// A tool is what a performer's hands may use on a Work. Its spec has the
+// shape a model's tool definitions and an MCP listing both take (a name, a
+// description, a JSON Schema of the arguments), plus three facts the
+// harness reads: the effect class a call has, whether the tool acts on the
+// Work, validates its outcome, or both, and its family. Every tool here runs
+// where the performer is (a leg's scratch worktree, a person's session),
+// never in the organism; the infrastructure family only reads. A tool a part
+// of the organization serves joins through the graph (`tool:<name>`,
+// reviewed), not this table.
+
+type ToolSpec {
+    name: String = "";
+    description: String = "";
+    input_schema: String = "{}"; // a JSON Schema of the arguments
+    effect: String = ""; // effect_free | idempotent | uncertain (EFFECT_CLASSES)
+    role: String = ""; // act | validate | both
+    family: String = ""; // workspace | infra
+}
+
+// Every built-in, in the order the hands list them.
+const BUILTIN_TOOLS: String = "read edit check test fmt patch record_status record_history org_chart";
+
+const PATH_ARG: String = "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}";
+const NO_ARGS: String = "{\"type\": \"object\", \"properties\": {}}";
+
+// A built-in's spec; an empty spec (no name) for a name the toolchain does
+// not ship.
+fn tool_spec(name: String) -> ToolSpec {
+    if name == "read" { return ToolSpec { name: name, description: "the text of a file in the Work's worktree, by its path from the worktree's root", input_schema: PATH_ARG, effect: "effect_free", role: "act", family: "workspace" }; }
+    if name == "edit" { return ToolSpec { name: name, description: "a file in the Work's worktree written whole, inside the grant", input_schema: "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}}, \"required\": [\"path\", \"text\"]}", effect: "idempotent", role: "act", family: "workspace" }; }
+    if name == "check" { return ToolSpec { name: name, description: "`hale check` over a path of the worktree: the diagnostics, or nothing", input_schema: PATH_ARG, effect: "effect_free", role: "validate", family: "workspace" }; }
+    if name == "test" { return ToolSpec { name: name, description: "`hale test` over a path of the worktree: what passed and what failed", input_schema: PATH_ARG, effect: "effect_free", role: "validate", family: "workspace" }; }
+    if name == "fmt" { return ToolSpec { name: name, description: "`hale fmt --check` over a path of the worktree: the files not formatted", input_schema: PATH_ARG, effect: "effect_free", role: "validate", family: "workspace" }; }
+    if name == "patch" { return ToolSpec { name: name, description: "everything changed in the worktree committed, and the commit's patch: what the outcome hands back", input_schema: "{\"type\": \"object\", \"properties\": {\"message\": {\"type\": \"string\"}}, \"required\": [\"message\"]}", effect: "idempotent", role: "act", family: "workspace" }; }
+    if name == "record_status" { return ToolSpec { name: name, description: "the organism's status, as the record projects it", input_schema: NO_ARGS, effect: "effect_free", role: "act", family: "infra" }; }
+    if name == "record_history" { return ToolSpec { name: name, description: "an entity's history in the record, by its causal links", input_schema: "{\"type\": \"object\", \"properties\": {\"entity\": {\"type\": \"string\"}}, \"required\": [\"entity\"]}", effect: "effect_free", role: "act", family: "infra" }; }
+    if name == "org_chart" { return ToolSpec { name: name, description: "the org chart: every position, its holder and its edges, as the graph states them", input_schema: NO_ARGS, effect: "effect_free", role: "act", family: "infra" }; }
+    return ToolSpec { };
+}
+
+fn tool_json(t: ToolSpec) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", t.name);
+    b.string_field("description", t.description);
+    b.field("input_schema", t.input_schema);
+    b.string_field("effect", t.effect);
+    b.string_field("role", t.role);
+    b.string_field("family", t.family);
+    b.end_object();
+    return b.result();
+}
+
+// The specs of a space-separated list of tool names, as a JSON array in the
+// list's order; a name the toolchain does not ship is left out.
+@unbounded
+fn tools_json(names: String) -> String {
+    let mut out = "[";
+    let mut first = true;
+    let mut rest = std::str::trim(names) + " ";
+    while len(std::str::trim(rest)) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let name = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        let t = tool_spec(name);
+        if len(t.name) > 0 {
+            out = out + (if first { "" } else { ", " }) + tool_json(t);
+            first = false;
+        }
+    }
+    return out + "]";
+}

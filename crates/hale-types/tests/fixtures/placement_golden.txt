@@ -9334,6 +9334,11 @@ shared	App@literal1.j	__lib_dna__core___record__GitJournal #bfd4b798
 shared	App@literal1.k	__lib_dna__core___record__GitJournal #bfd4b798
 shared	dynamic	sites in core #b2c4d9f5
 
+== dna/tests/hands_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)	in tests
+
 == dna/tests/harness_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

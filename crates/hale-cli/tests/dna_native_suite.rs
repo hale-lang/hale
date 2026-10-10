@@ -931,6 +931,7 @@ fn dna_fixture_set_is_complete() {
             "graph_show_test.hl",
             "handed_task_test.hl",
             "handoff_test.hl",
+            "hands_test.hl",
             "harness_test.hl",
             "head_roles_test.hl",
             "head_surface_durable_test.hl",

@@ -7,7 +7,7 @@
 // and the tape hits. Change a word here and change the version with it.
 import ".." as dna;
 
-const RENDERER_VERSION: String = "legs-render/1";
+const RENDERER_VERSION: String = "legs-render/2";
 
 // The modes: `text` reads as a brief for a person, `prompt` is what a
 // model is sent, `agent` is the prompt with the hands the grant allows.
@@ -50,6 +50,7 @@ fn render_text(hat: String) -> String {
     out = out + "requires: " + or_none(std::json::find_string_field(hat, "requires")) + "\n";
     out = out + "cost ceiling: " + std::json::find_string_field(hat, "cost_ceiling") + "\n";
     out = out + "tool grant: " + or_none(std::json::find_string_field(hat, "tool_grant")) + "\n";
+    out = out + "validators: " + or_none(std::json::find_string_field(hat, "validators")) + "\n";
     out = out + "knowledge bindings: " + or_none(std::json::find_string_field(hat, "knowledge_bindings")) + "\n";
     out = out + "practices (" + std::json::find_string_field(hat, "practices_status") + "):\n" + practice_lines(hat, "  - ");
     out = out + "history:\n" + history_lines(hat, "  - ");
@@ -81,10 +82,28 @@ fn render_prompt(hat: String) -> String {
     return out;
 }
 
-// The prompt, with the hands the grant allows named for an agent.
+// The hands of a hat, one line each: the tool's name and what it does,
+// and whether it judges the outcome.
+@unbounded
+fn hand_lines(hat: String, bullet: String) -> String {
+    let validators = std::json::find_string_field(hat, "validators");
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(hat, "hands"));
+    while !it.done {
+        let name = std::json::find_string_field(it.element, "name");
+        out = out + bullet + name + ": " + std::json::find_string_field(it.element, "description") + (if dna::word_in(name, validators) { " (validates the outcome)" } else { "" }) + "\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// The prompt, with the hands the Work's contract gives named for an agent.
 fn render_agent(hat: String) -> String {
-    let grant = std::json::find_string_field(hat, "tool_grant");
-    return render_prompt(hat) + "\nHands you may use: " + (if len(grant) > 0 { grant } else { "none; answer from the brief alone" }) + ".\nEvery command you run and every change you make is evidence on this attempt.\n";
+    let hands = hand_lines(hat, "- ");
+    let validators = std::json::find_string_field(hat, "validators");
+    let mut out = render_prompt(hat) + "\nHands you may use:" + (if len(hands) > 0 { "\n" + hands } else { " none; answer from the brief alone.\n" });
+    if len(validators) > 0 { out = out + "Run " + validators + " before you hand the outcome back: the owner runs them again, and refuses what fails.\n"; }
+    return out + "Every command you run and every change you make is evidence on this attempt.\n";
 }
 
 fn render(hat: String, mode: String) -> String {
