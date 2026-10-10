@@ -376,6 +376,13 @@ locus ModelPerformer {
         self.waited_ms = 0;
         self.retried = 0;
         self.spent_micros = 0;
+        // a model the mapping named and then refused (a `tools` or `do` Work
+        // on a model that returns no tool calls) is never called
+        let choice = std::json::find_field_raw(brief.hat, "model");
+        let named = std::json::find_string_field(choice, "model");
+        if len(named) > 0 && std::str::trim(std::json::find_field_raw(choice, "ok")) == "false" {
+            return Performance { disposition: "declined", narrative: "the model mapping refused `" + named + "` for this Work: " + std::json::find_string_field(choice, "why"), calls: "[]", prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION };
+        }
         // the spine admits the spend before any call is made (GH #1131)
         let gate = hands.lease.allowance(ALLOWANCE_WAIT);
         if !gate.ok { return Performance { disposition: "declined", narrative: "the budget gate admitted no spend for this attempt: " + gate.error, calls: "[]", prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION }; }

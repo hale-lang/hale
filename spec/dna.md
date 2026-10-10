@@ -2037,12 +2037,18 @@ memory is named to it.
   the leg's side, sending each result back as a `tool` message, until a
   reply carries no tool call. A `do` Work works in a scratch clone of
   the leg's repository at `HEAD`; its answer stands once the hat's
-  `validators` pass on every touched directory holding `.hl` source, a
-  refusal being one more turn; a `Patch` is then one commit on the base,
+  `validators` pass on every touched directory holding `.hl` source (a
+  changed file's own directory: a nested seed is its own), a refusal
+  being one more turn; a `Patch` is then one commit on the base,
   handed back as `result_ref: commit:<sha>` with the commit's patch as
   the first receipt. A hand outside the hat's `tool_grant`, or a path
-  outside the worktree or into its `.git`, is refused as the call's
-  answer. Each model call is a `calls` entry (its response digest
+  outside the worktree or into its `.git` (a `..` or `.git` component in
+  any case or spelling, a control character, or a symbolic link anywhere
+  on the way), is refused as the call's answer; a changed file git can
+  only name quoted is refused by `validate` rather than passed unchecked. `record_history` reads the execution its
+  id belongs to (`/dna/workflows?id=<task>`). A `RecordedModel` keys a
+  loop's request on its tools and turns too and keeps the tool calls it
+  returned, so a replay follows the same turns. Each model call is a `calls` entry (its response digest
   covers its tool calls) and each tool call a row of one receipt,
   `{"tool_calls": [{turn, name, arguments_digest, ok, output_digest,
   output_bytes, error}]}`. The loop is bounded by `max_turns` (16) and

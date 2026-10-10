@@ -374,14 +374,18 @@ answers. A `do` Work runs in a scratch clone of the leg's repository at
 its `HEAD` (`ModelPerformer { repo }` names another): `read`, `edit`
 and `patch` work there, and `check`, `test` and `fmt` run the
 toolchain on a path of it. Its answer stands only once the hat's
-validators pass on every touched directory that holds Hale source; a
-refusal goes back to the model as one more turn. A `Patch` is then
+validators pass on every touched directory that holds Hale source (a
+nested seed is its own); a refusal goes back to the model as one more
+turn. A `Patch` is then
 handed back as one commit on the base, its patch first among the
 receipts, which is what the owner applies, verifies again and reviews.
 A `tools` Work's hands are the head's reads (`record_status`,
-`record_history`, `org_chart`), and its answer is text. A hand the hat
-does not give, or a path outside the worktree, is refused and the
-refusal is the call's answer. Every model call is evidence (each turn
+`record_history`, the whole execution an id belongs to, and
+`org_chart`), and its answer is text. A hand the hat does not give, or
+a path outside the worktree, is refused and the refusal is the call's
+answer: `..` or `.git` in any spelling, a control character, or a
+symbolic link anywhere on the way, since a link in a clone may lead
+anywhere. Every model call is evidence (each turn
 its own `Idempotency-Key`, `<attempt>:call:<turn>`), every tool call a
 row of the `tool-calls` receipt (the hand, digests of what it was given
 and what it answered, why it failed), and the loop ends at
@@ -425,8 +429,10 @@ before.
 **The tape.** `dna::RecordedModel { dir, mode, inner }` wraps any
 backend. In `record` mode it forwards to `inner` and writes the answer
 under a key made of the request's identity (role, backend and model,
-prompt and context digests, data class, grant, and for a harness the
-workspace's starting tree), with the patch a harness made beside it.
+prompt and context digests, data class, grant, for a harness the
+workspace's starting tree, and for a tool loop's turn the tools offered
+and the turns so far), with the tool calls the model asked for and the
+patch a harness made beside it, so a taped loop replays turn by turn.
 In `replay` mode it answers from the directory, keyless, and applies
 that patch; a miss is refused, naming the request and, when an entry
 shares its prompt, the fields that differed. `dir_env` and `mode_env`
