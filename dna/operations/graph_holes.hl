@@ -32,6 +32,10 @@
 //   practices  — each item a document marks `derived`, `practice` or `law`,
 //                proposed as advice (graph_ingest.hl builds their receipts).
 //
+// An application's own seed (`GraphIngest.appseed`) is a part like the
+// others and always has its dev and its reviewer, whether or not it serves a
+// contract or a gate names it (a work item still needs a gate).
+//
 // Never the same holder as `dev` for a part's `reviewer`: the positions
 // are proposed empty, and the check is where a holder is proposed
 // (`hale dna fill`, dna/host/holes.hl) and where memory projects it.
@@ -301,6 +305,9 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         parts = parts + "process:" + procs[0..nl] + "\n";
         procs = procs[nl..len(procs)];
     }
+    // an application's own seed is a part like any other, and always has
+    // its dev and its reviewer (a repository's root is no one seed)
+    if len(g.appseed) > 0 && !hole_has_second(g.unfolds, g.appseed) { parts = parts + g.appseed + "\n"; }
     let mut seeds = g.seeds;
     while len(seeds) > 1 {
         seeds = seeds[1..len(seeds)];
@@ -338,7 +345,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             if len(gate) > 0 { deliverable = dna::show_name(s2[0..n2]); }
             s2 = s2[(n2 + 1)..len(s2)];
         }
-        if len(gate) > 0 {
+        let app = len(g.appseed) > 0 && (part == g.appseed || seed == g.appseed);
+        if len(gate) > 0 || app {
             let dev = HoleDoc { name: p + "/dev", target: part, text: "Writes " + p + ", bound by its practices." };
             dev.question = "ratify the position `" + p + "/dev` under " + hole_kind(part) + " " + p + ": it writes " + p;
             dev.unfold(part, dev.position(p + "/dev", dev.text, hole_equipment(g.roles, serves, "dev")));
@@ -346,12 +354,12 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target) + hole_mandate(dev.name, mandate_dev(p));
             out.count = out.count + 2;
             // two parts delivering one contract: one work item, the first's
-            if deliverable == p || !std::str::contains(named, "\n" + deliverable + "\n") {
+            if len(gate) > 0 && (deliverable == p || !std::str::contains(named, "\n" + deliverable + "\n")) {
                 work = work + part + "\t" + deliverable + "\t" + gate + "\n";
                 if deliverable != p { named = named + deliverable + "\n"; }
             }
         }
-        if len(serves) > 0 || len(consumes) > 0 {
+        if len(serves) > 0 || len(consumes) > 0 || app {
             let rev = HoleDoc { name: p + "/reviewer", target: part, text: "Signs changes to " + p + " and to what it serves and consumes; never the same holder as " + p + "/dev." };
             let reviewer = rev.position(p + "/reviewer", rev.text, hole_equipment(g.roles, serves, "reviewer"));
             rev.unfold(part, reviewer);

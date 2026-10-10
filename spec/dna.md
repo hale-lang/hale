@@ -1742,8 +1742,8 @@ group first and then waits for the answers once, bounded by the group's
 size.
 
 **The declared purpose is a proposal like any other.** `hale dna init`
-proposes it in the record's one seed call (host verb `record-seed`, or
-`graph-ingest` for a repository: kind `purpose`, author `org`, for
+proposes it in the record's one seed call (host verb `graph-ingest`, a repository's
+or an application's: kind `purpose`, author `org`, for
 `org`, `provenance: declared`) with the Board's Review under the
 group `purpose`, which `hale dna review` lists first and `hale dna
 review purpose approve` decides; the generated organization holds no
@@ -2950,7 +2950,7 @@ the only file in the core and the host that spells `git` for the
 record; the genome's own git in `workspace.hl`, `verification.hl`,
 `org.hl` and the host's `genome.hl` is the Structure, not the record.
 `MemRecord` is the one for fixtures. `hale dna init` and `upgrade` seed
-the record through the host (`record-seed`, `design-upgrade`): the
+the record through the host (`graph-ingest`, `design-upgrade`): the
 driver keeps no record code of its own.
 
 **A reload never shortens what a reader holds (GH #748).** The chain
@@ -4318,8 +4318,8 @@ The live half is memory's, projected from the record by the spine
   verb `graph-ingest`, then proposes the declared purpose (GH #995)
   (`dna/operations/graph_ingest.hl`). It never derives one perspective
   from the other. A directory holding `.hl` files is a seed: with a main
-  locus it is an application, attached as before with no graph ingest,
-  and without one it is refused as before. Ingest reads the tracked
+  locus it is an application, attached as before and read into the graph
+  too (the next bullet), and without one it is refused as before. Ingest reads the tracked
   files (`git ls-files`, paths as git holds them with `core.quotePath`
   off) and recognizes: the **purpose** — the `README.md`'s title and
   first paragraph, and none without a `README.md`, so an empty tree is
@@ -4378,6 +4378,40 @@ The live half is memory's, projected from the record by the spine
   word its steps say. `init` says what it read:
   `graph   <n> node(s), <m> edge(s): <count> <kind>, …; <p> proposal(s)`.
   A record that exists is not reseeded.
+- **Ingest: `hale dna init` on an application (seed/structure-2).** An
+  application's `init` enriches this one path; there is no second
+  proposer and no starter chart. The artifact's rows are unchanged
+  (`application.attached`, `structure.observed` per locus, topic, binding
+  and effect class, `responsibility.proposed` per locus: facts the Board
+  reads, from which nothing is derived into the graph), and they land in
+  the same `graph-ingest` call as the purpose's proposal and the graph —
+  `graph-ingest --rows <file> --app <name> --description <file>` — so a
+  graph the vocabulary refuses leaves no record. The ingest then runs over
+  the application's workspace root as for a repository (README purpose,
+  compose, `spec/*` contracts and their description roles, documents, CI
+  gates, FRICTION witnesses, marked lists and declaring tables), with two
+  additions the application's own structure gives. The application is the
+  **root seed** (`seed:<name>`, the project directory's name, or the
+  application's directory when it sits below the workspace root, where the
+  manifest walk finds it as before): the root that is never a seed for a
+  repository is one here, a compose process of its name unfolds into it, a
+  CI step naming `.` guards it, and an application with no `README.md`
+  takes the purpose `init` declares (`dna/org/purpose.hl`) as its
+  `purpose` node, so the board has a place. And each API surface it serves
+  is a **contract** the seed `meets` as server: `api:<Surface>`, from the
+  toolchain's own export (`hale check --api`, handed to the host as a
+  file), one node per surface; a stream served over a hub is
+  `stream:<Topic>`. A surface whose lower-cased name is the stem of a
+  `spec/<stem>.md` or `.yaml` contract (the stem rule that reads
+  `spec/<Stem>.description.json`) is that contract's node, not a second
+  one; a contract a declaring table already gives a `meets` keeps the
+  table's row. The `requires` of the surface's members, and of a stream, are
+  the contract's **roles**: the equipment of the positions that serve it
+  (**Standard equipment**, below), never an organization and
+  never authority. `init` says what it read on the same
+  `graph   …` line, and writes `dna/org/structure.hl` as for a
+  repository. A fresh application whose export is empty has two nodes (its
+  `purpose` and its seed) and no edge.
 - **Holes as proposals (GH #1091).** What a repository cannot imply
   and a delivery needs, `init` proposes at record birth, each on its own
   with one Board Review, in the same checked seed as the graph (so a
@@ -4386,17 +4420,19 @@ The live half is memory's, projected from the record by the spine
   *part* is a process, or a seed no process unfolds into (a UI, a
   validator); a cell naming a seed a process unfolds into (a link, a path
   inside it) names that process. `init` proposes: a `board` under the purpose; under each
-  part that serves or consumes a contract (`meets`), a `reviewer` whose
+  part that serves or consumes a contract (`meets`) — and under an
+  application's own seed whether or not it serves one — a `reviewer` whose
   proposal carries a `reviews` edge to the part's seed and to every
   contract it serves or consumes; under each part whose seed a gate
-  guards, or that serves a contract a gate validates (`gates`), a `dev`
-  and a `work` item; a `dev` and a `work` item for each validated
+  guards, or that serves a contract a gate validates (`gates`) — and an
+  application's own seed always — a `dev`, and a `work` item where a gate
+  names it; a `dev` and a `work` item for each validated
   contract no part of the repository serves; under each deployment an
   `operator` with a `reviews` edge to the deployment; and each item a document
   marks `derived`, `practice` or `law`, proposed as advice (a `law`
   item's question asks for law). The one structure policy is the
   project's: **`dna/org/structure.hl`**, which `init` writes for a
-  repository unless one is there already, and whose
+  repository or an application unless one is there already, and whose
   `fn operational_roles() -> String` names, space-separated, the
   operational roles each deployment also gets (`support`, `accounts`,
   `billing`, `on-call`), proposed empty and signing nothing — `""`, none,
@@ -4466,7 +4502,9 @@ The live half is memory's, projected from the record by the spine
   describe` / `hale check --api` writes) case-insensitively, the ingest
   keeps the `requires` roles of its members (`GraphIngest.roles`,
   `<contract>\t<role>` lines; the description is the contract's roles, not
-  a node of its own). A role named like a position's last segment
+  a node of its own; an application's own surfaces and streams are
+  contracts whose roles are read from the same export, § Ingest on an
+  application). A role named like a position's last segment
   (`reviewer`, `dev`, `operator`, an operational role) is that position's
   equipment for the part that serves the contract (for `operator` and the
   operational roles, the deployment that runs the part); every other role

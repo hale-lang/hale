@@ -371,12 +371,15 @@ anything runs:
 | `application.attached` | the main locus, the artifact with its digest and shape hash, the toolchain |
 | `structure.observed` | one per locus and topic the compiler observed |
 | `responsibility.proposed` | one per locus, not ratified |
-| `knowledge.proposed`, `review.requested` | the declared purpose, then each seeded practice, each with its own Board Review |
+| `graph.node`, `graph.edge` | what the application's directory holds, as for a repository below: the application as the root seed, each API surface it serves and each stream over a hub as a contract it meets as server (from `hale check --api`) |
+| `knowledge.proposed`, `review.requested` | the declared purpose, each seeded practice, and the holes the graph implies (the board, the application's `dev` and `reviewer`, each with its mandate), each with its own Board Review |
 
-For `refproj` that is 52 rows: one attachment, three observations
-(`Echo`, `Refproj`, `Pings`), two responsibilities, and twenty-three
-proposals with their Reviews — the purpose, eight design practices,
-seven operating practices and seven using practices. [Shaping and governing it](./shaping.md#practices)
+For `refproj` that is 72 rows: one attachment, three observations
+(`Echo`, `Refproj`, `Pings`), two responsibilities, two graph rows (its
+purpose and its seed; it serves no API surface), and thirty-two
+proposals with their Reviews — the purpose, eleven design (eight
+practices and three mandates), seven operating practices, seven using
+practices, and six for the holes (three positions, three mandates). [Shaping and governing it](./shaping.md#practices)
 has the practices.
 
 ## A repository instead of one application
@@ -399,6 +402,14 @@ differences:
   billing on-call`), `""` by default. `init` reads it once, when it
   seeds the record, and keeps one that is already there, so to opt in
   you write it before `init`.
+
+An application gets this path too. Its `init` reads the same graph from
+its own directory after the rows it observes, with two additions: the
+application is the root seed, and each API surface it serves (or stream
+over a hub) is a contract it meets as server, named from the toolchain's
+own export. A surface that a `spec/<stem>.md` already describes is that
+node, not a second one. The surface's `requires` roles become the
+equipment of the positions, never an organization or an authority.
 
 From that graph `init` proposes the positions a delivery needs, each
 with its own Board Review: a `board`, a `reviewer` for every part that

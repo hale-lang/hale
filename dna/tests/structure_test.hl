@@ -16,7 +16,15 @@
 // position (memory's bindings table), the hat of an `edit` Work on the part
 // carries the editor's mandate and not the reviewer's, `hale dna show org`
 // prints the mandate and the roles, and `hale dna fill` prints the roles.
-// The organism half needs memory (HALE_DNA_MEMORY_DSN_OWNER) and the
+// An application gets the same path (seed/structure-2): `hale dna init` on
+// the fixture's `api/` directory alone (one member rewritten to require
+// `reviewer`, ports of its own) reads its graph with the application as the
+// root seed and each surface and stream it serves, from the toolchain's
+// `hale check --api`, as a contract it meets as server; a surface that a
+// `spec/<stem>.md` already describes is that node. The holes follow with
+// their mandates and equipment (`editor reader` on api/dev, `reviewer` on
+// api/reviewer), the Board ratifies them, and `show org` lists them.
+// The organism halves need memory (HALE_DNA_MEMORY_DSN_OWNER) and the
 // nerves (HALE_DNA_NATS_URL_OWNER).
 
 import "../core" as dna;
@@ -86,6 +94,29 @@ fn kind_count(proposals: String, kind: String) -> Int {
         rest = rest[(nl + 1)..len(rest)];
     }
     return n;
+}
+
+// The names of the rows of `kind` in the record at `repo`, one per line:
+// a graph row's entity, a proposal's name.
+@unbounded
+fn record_names(repo: String, kind: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind { out = out + (if kind == "knowledge.proposed" { std::json::find_string_field(e.body, "name") } else { e.entity }) + "\n"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn listed(lines: String, item: String) -> Bool { return std::str::contains("\n" + lines, "\n" + item + "\n"); }
+
+// The command that starts a project's organization in the background, its
+// log in `.hale/body.log`.
+fn start_of(repo: String, owner: String, nats: String) -> String {
+    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
 }
 
 // The catalog the organism runs on: every backend a `dna::FakeModel`, so
@@ -243,6 +274,27 @@ locus App {
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         return repo;
     }
+    // An application of its own: the todo fixture's `api/` directory alone,
+    // a repository of its own, with one member requiring `reviewer` (the
+    // api's own source says it) and ports of its own (a fixture never takes
+    // 8080).
+    fn make_app(name: String, scratch: String) -> String {
+        let repo = scratch + "/" + name;
+        // copy, then edit in Hale: `sed -i` differs between GNU and BSD sed
+        let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/api/.\" \"$1/\"\nsh\n" + repo + "\n" + source());
+        std::test::assert_eq_int(copied.code, 0, "the api copied: " + copied.stderr);
+        let todo = std::io::fs::read_file(repo + "/todo.hl") or "";
+        let roled = std::str::replace(std::str::replace(todo, "\nrole reader;", "\nrole reader;\nrole reviewer;"), "Todos::overdue requires: [reader]", "Todos::overdue requires: [reviewer]");
+        std::test::assert(roled != todo && std::str::contains(roled, "requires: [reviewer]"), "the api's source says one member requires reviewer");
+        std::io::fs::write_file(repo + "/todo.hl", roled) or discard;
+        let main = std::io::fs::read_file(repo + "/main.hl") or "";
+        let ported = std::str::replace(std::str::replace(std::str::replace(main, "let mut port = 8080;", "let mut port = " + to_string(dna::free_port(0)) + ";"), "let mut mcp = 8090;", "let mut mcp = " + to_string(dna::free_port(1)) + ";"), "let mut stream = 8081;", "let mut stream = " + to_string(dna::free_port(2)) + ";");
+        std::test::assert(ported != main, "and ports of its own");
+        std::io::fs::write_file(repo + "/main.hl", ported) or discard;
+        let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m api\nsh\n" + repo);
+        std::test::assert_eq_int(made.code, 0, "the api, an application of its own: " + made.stderr);
+        return repo;
+    }
     run() {
         let scratch = dna::scratch_root("structure");
 
@@ -280,6 +332,50 @@ locus App {
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
         std::test::assert(std::str::contains(init.stdout, "; " + to_string(h.count) + " proposal(s)"), "and proposes its holes and their mandates: " + init.stdout);
 
+        // ---- an application's init reads its graph too (seed/structure-2)
+        let appdir = self.make_app("api", scratch);
+        self.repo = appdir;
+        let appinit = self.dna("init\n.");
+        std::test::assert_eq_int(appinit.code, 0, "hale dna init on an application: " + appinit.stdout + appinit.stderr);
+        std::test::assert(std::str::contains(appinit.stdout, "graph   4 node(s), 2 edge(s):") && std::str::contains(appinit.stdout, "1 purpose") && std::str::contains(appinit.stdout, "1 seed, 2 contract") && std::str::contains(appinit.stdout, "6 proposal(s)"), "the application's graph and its holes: " + appinit.stdout);
+        std::test::assert(std::str::contains(appinit.stdout, "seeded  using (7 practice(s)") && std::str::contains(appinit.stdout, "seeded  library ("), "with the using practices and the library, as before: " + appinit.stdout);
+        let nodes = record_names(appdir, "graph.node");
+        std::test::assert(listed(nodes, "seed:api") && listed(nodes, "contract:api:Todo") && listed(nodes, "contract:stream:TodoChanged") && listed(nodes, "purpose:api"), "the application seed, its surface and its stream, as nodes: " + nodes);
+        std::test::assert(!std::str::contains(nodes, "locus:") && !std::str::contains(nodes, "topic:"), "and nothing derived from the observed loci: " + nodes);
+        let edges = record_names(appdir, "graph.edge");
+        std::test::assert(listed(edges, "meets:contract:api:Todo") && listed(edges, "meets:contract:stream:TodoChanged"), "the seed meets both as server: " + edges);
+        std::test::assert(std::str::contains(record_names(appdir, "structure.observed"), "locus:") && std::str::contains(record_names(appdir, "responsibility.proposed"), "locus:"), "the loci stay observed facts, with their responsibility proposed");
+        let proposed = record_names(appdir, "knowledge.proposed");
+        std::test::assert(listed(proposed, "board") && listed(proposed, "api/dev") && listed(proposed, "api/reviewer") && listed(proposed, "mandate/api/dev") && listed(proposed, "mandate/api/reviewer") && listed(proposed, "mandate/board"), "the board, the application's dev and reviewer, each with a mandate, as proposals: " + proposed);
+        // the derivation, from the toolchain's own export: the roles each
+        // surface requires are equipment, never an organization
+        let exported = dna::run_tool(toolchain() + "\ncheck\n--api\n" + appdir).stdout;
+        let ga = ops::GraphIngest { root: appdir, app: "api", declared: "api: keep the application correct.", description: exported };
+        std::test::assert_eq_str(ga.ingest().error, "", "the application reads");
+        std::test::assert_eq_int(ga.nodes, 4, "four nodes");
+        std::test::assert_eq_int(ga.edges, 2, "and two edges");
+        let ha = ops::graph_holes(ga, "");
+        std::test::assert_eq_str(ha.error, "", "the application's holes derive");
+        std::test::assert_eq_int(ha.count, 6, "the board, dev and reviewer, each with its mandate");
+        std::test::assert_eq_str(equipment_of(ha.proposals, "api/dev"), "editor reader", "requires: [editor] lands on api/dev, and the readers' role with it");
+        std::test::assert_eq_str(equipment_of(ha.proposals, "api/reviewer"), "reviewer", "requires: [reviewer] lands on api/reviewer");
+        std::test::assert_eq_str(equipment_of(ha.proposals, "board"), "", "the board is fitted with nothing");
+        std::test::assert(std::str::contains(ha.proposals, "ratify the position `api/reviewer` under seed api, signing its code and api:Todo, stream:TodoChanged"), "the reviewer signs the seed and every surface it serves: " + ha.proposals);
+        // a declared api no serve site exposes is no contract the seed serves,
+        // and its roles fit no position: only `exposures` say what is served
+        let unused = std::str::replace(exported, "\"surfaces\": [", "\"surfaces\": [{\"name\": \"Unused\", \"members\": [{\"requires\": [\"auditor\"]}]}, ");
+        std::test::assert(unused != exported, "the export lists its surfaces");
+        let gu = ops::GraphIngest { root: appdir, app: "api", declared: "api: keep the application correct.", description: unused };
+        std::test::assert_eq_str(gu.ingest().error, "", "an application with an unserved api reads");
+        std::test::assert(!std::str::contains(gu.rows, "api:Unused"), "the unserved api is no contract: " + gu.rows);
+        std::test::assert_eq_str(equipment_of(ops::graph_holes(gu, "").proposals, "api/dev"), "editor reader", "and its role fits nobody");
+        // a surface a `spec/<stem>.md` contract already describes is that node
+        let gs = ops::GraphIngest { root: described, app: "todo", declared: "todo: keep the application correct.", description: exported };
+        std::test::assert_eq_str(gs.ingest().error, "", "the repository holding the application reads");
+        std::test::assert(!std::str::contains(gs.rows, "contract:api:Todo") && std::str::contains(gs.rows, "contract:stream:TodoChanged"), "the surface is the contract of its stem, not a second node: " + gs.rows);
+        std::test::assert(std::str::contains(gs.served, "seed:todo\tcontract:spec/todo.md\n"), "which the application's seed serves: " + gs.served);
+        self.repo = described;
+
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
         let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
         if len(owner) == 0 || len(nats) == 0 { eprintln("structure_test: the organism half not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); dna::scratch_done(scratch); return; }
@@ -292,8 +388,7 @@ locus App {
         let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
         self.head = head;
-        let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
-        let started = dna::run_tool(start);
+        let started = dna::run_tool(start_of(self.repo, owner, nats));
         let body = dna::trim_nl(started.stdout);
         std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
 
@@ -338,6 +433,33 @@ locus App {
 
         let killed = dna::run_tool("kill\n" + body);
         std::test::assert(self.gone(body, 600), "the organism stops");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+
+        // ---- the application's holes, ratified: the org chart lists its dev and reviewer with their equipment
+        self.repo = appdir;
+        self.head = "";
+        std::io::fs::write_file(self.repo + "/dna/org/models.hl", CATALOG) or discard;
+        let appcommitted = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo);
+        std::test::assert_eq_int(appcommitted.code, 0, "the scripted catalog committed: " + appcommitted.stderr);
+        let appmigrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
+        let apphead = line_value(appmigrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
+        std::test::assert(appmigrated.code == 0 && std::str::starts_with(apphead, "postgres"), "memory migrated for the application's record: " + appmigrated.stdout + appmigrated.stderr);
+        self.head = apphead;
+        let appstarted = dna::run_tool(start_of(self.repo, owner, nats));
+        let appbody = dna::trim_nl(appstarted.stdout);
+        std::test::assert(self.organization_up(600), "the organization runs on an application's record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        let applisted = self.dna("review");
+        std::test::assert(std::str::contains(applisted.stdout, "ratify the position `api/dev`") && std::str::contains(applisted.stdout, "ratify the mandate of `api/reviewer`"), "the application's holes are listed: " + applisted.stdout);
+        let apph = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard\n--no-wait");
+        std::test::assert_eq_int(apph.code, 0, "the Board ratifies the application's holes: " + apph.stdout + apph.stderr);
+        let appd = self.dna("review\ndesign\napprove\n--as\nada\n--authority\nboard\n--no-wait");
+        std::test::assert_eq_int(appd.code, 0, "and the design: " + appd.stdout + appd.stderr);
+        let appafter = self.show_org(apphead, 480, "reviewer");
+        std::test::assert(std::str::contains(appafter, "dev {mandate: ratified; roles: editor, reader}") && std::str::contains(appafter, "{mandate: ratified; roles: reviewer}") && !std::str::contains(appafter, "{mandate: pending"), "show org lists api/dev with editor and api/reviewer with reviewer: " + appafter);
+        std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/dev"), 1, "the application dev's mandate is bound to its node");
+        std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/reviewer"), 1, "and the reviewer's");
+        let appkilled = dna::run_tool("kill\n" + appbody);
+        std::test::assert(self.gone(appbody, 600), "the organism stops");
         std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }

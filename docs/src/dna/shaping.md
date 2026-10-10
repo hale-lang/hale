@@ -107,7 +107,8 @@ position decides, what it may not, what it cites, how it writes and what
 it escalates, with the authority defaults derived from the law's change
 classes (the charter refines them). The three in `design` are the
 Leader's, the editor's and the agent's; `init` on a repository proposes
-one more with every position it proposes (`mandate/<position>`, listed
+one more with every position it proposes, in a repository or an
+application (`mandate/<position>`, listed
 under `holes` right after its position). Ratified, a mandate is bound to
 the position's node, so whoever holds the position reads it in their
 hat. It is knowledge about a position, not a grant.
@@ -117,7 +118,7 @@ The first two operating practices are the two rules of
 
 ```text
 $ hale dna review
-26 pending review(s) of 26
+32 pending review(s) of 32
   purpose — the declared purpose, the Board's to ratify first:
       k:3870910f5de4 — ratify the declared purpose?
       decide one with `hale dna review <id> …`, or all pending with `hale dna review purpose approve|reject`
@@ -133,6 +134,10 @@ $ hale dna review
       k:8c1f6a4e2d70 — ratify the using practice `using/propose-review-ratify`: nothing is in force until the Board says so. A change to the organi…
       …
       decide one with `hale dna review <id> …`, or all pending with `hale dna review using approve|reject`
+  holes — 6 hole(s) the repository leaves, each its own Review:
+      k:d51a712f169e — ratify the position `board` under the purpose: it ratifies what this organization becomes
+      …
+      decide one with `hale dna review <id> …`, or all pending with `hale dna review holes approve|reject`
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
@@ -425,9 +430,11 @@ people hold — a board, a reviewer of a part, a dev, an operator — are
 nodes of the organism's graph, and who holds each is a `holds` edge,
 proposed and ratified like a practice ([Memory and the
 record](./memory.md) has the graph; `hale dna show org` reads it from
-memory). `init` on a repository proposes the positions its structure
-implies ([DNA, the building block](./dna.md#a-repository-instead-of-one-application));
-an application's record starts with none, so there is nothing to fill:
+memory). `init` proposes the positions its structure implies, for a
+repository ([DNA, the building block](./dna.md#a-repository-instead-of-one-application))
+and for an application alike: the board, the application's `dev` and
+`reviewer`, each as a proposal until the Board ratifies it with
+`hale dna review holes approve`. Before it does, there is nothing to fill:
 
 ```text
 $ hale dna fill board alice
@@ -443,8 +450,10 @@ hale dna fill <position> <holder> [project] [--as <who>]
 
 A position's node can carry **equipment**, the API roles its holder is
 fitted with (`equipment.roles`): `init` derives them from the
-description the toolchain exports for a contract (`spec/<Stem>.description.json`)
-and `fill` prints them (`equipment: editor`), and `hale dna show org` lists them
+description the toolchain exports for a contract (`spec/<Stem>.description.json`,
+or `hale check --api` for the surfaces and streams an application serves;
+`requires: [editor]` lands on `<app>/dev`, `requires: [reviewer]` on
+`<app>/reviewer`) and `fill` prints them (`equipment: editor`), and `hale dna show org` lists them
 with the position's mandate (`{mandate: ratified; roles: editor}`). Granting a
 token that carries them is not done by `fill`.
 

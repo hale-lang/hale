@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -251,7 +251,7 @@ fn main() {
         ans = route_verb(root, a);
     } else if verb == "graph-ingest" {
         // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
-        ans = graph_ingest_verb(root, word(a, 0), memory);
+        ans = graph_ingest_verb(root, word(a, 0), flag(a, "--rows"), flag(a, "--app"), flag(a, "--description"), memory);
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);
