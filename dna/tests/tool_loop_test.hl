@@ -1,0 +1,154 @@
+// dna/tests/tool_loop_test.hl — the harness's loop: a model drives the
+// hands the hat gives, and the leg runs every call.
+//
+// A `Patch` Work's hat gives the workspace hands; a scripted model (one
+// file per turn) reads a file, edits it and answers, the leg running each
+// call in a scratch worktree of the repository. The answer stands once the
+// hat's validators pass on the seed the change touched, and the change goes
+// back as one commit on the base with its patch, which is what the owner
+// applies. A broken edit is refused by the validators and sent back to the
+// model as one more turn. A hand the hat does not give is refused and the
+// refusal goes back as the call's answer. A model that never answers ends
+// the loop at its bound. Every model call is evidence, and every tool call
+// a row of the `tool-calls` receipt.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+fn turn(dir: String, n: Int, body: String) {
+    std::io::fs::write_file(dir + "/" + to_string(n) + ".json", body) or discard;
+}
+
+fn hat_for(owed: String, requires: String, kind: String) -> String {
+    let h = dna::hat_compose(dna::MemJournal { }, dna::HatInputs {
+        work_id: "t1/wf1/s0/w0", task_id: "t1", attempt_id: "t1/wf1/s0/w0/a0", performer_kind: kind,
+        objective: "make the program say two", target: "org/app", output_contract: owed, requires: requires, head: "abc"
+    }, dna::ContextPackage { }, false);
+    return dna::hat_json(h);
+}
+
+fn performer(repo: String, turns: String, max_turns: Int) -> legs::ModelPerformer {
+    return legs::ModelPerformer {
+        router: dna::ModelRouter {
+            quick: dna::FakeModel { name: "quick", turns_dir: turns },
+            deep: dna::FakeModel { name: "deep", turns_dir: turns },
+            private: dna::FakeModel { name: "private", turns_dir: turns }
+        },
+        effect: "idempotent", repo: repo, max_turns: max_turns
+    };
+}
+
+fn brief_of(hat: String) -> legs::Brief {
+    return legs::Brief { work_id: "t1/wf1/s0/w0", attempt_id: "t1/wf1/s0/w0/a0", task_id: "t1", performer_kind: "edit", position: "position:editor", hat: hat, rendered: legs::render(hat, "agent"), holder: "riley" };
+}
+
+fn request_of(b: legs::Brief) -> dna::ModelRequest {
+    return dna::ModelRequest { attempt_id: b.attempt_id, role: "edit", prompt: b.rendered, prompt_digest: legs::prompt_digest(b.rendered), data_class: "internal" };
+}
+
+@unbounded
+fn tool_names(receipts: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(receipts);
+    while !it.done {
+        let body = std::json::find_string_field(it.element, "body");
+        let rows = std::json::find_field_raw(body, "tool_calls");
+        let mut r = std::json::array_first(rows);
+        while !r.done {
+            out = out + std::json::find_string_field(r.element, "name") + (if std::json::find_string_field(r.element, "ok") == "true" { "" } else { "!" }) + " ";
+            r = std::json::array_next(r);
+        }
+        it = std::json::array_next(it);
+    }
+    return std::str::trim(out);
+}
+
+@unbounded
+fn calls_in(calls: String) -> Int {
+    let mut n = 0;
+    let mut it = std::json::array_first(calls);
+    while !it.done {
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return n;
+}
+
+fn check() {
+    let root = dna::scratch_root("toolloop");
+    let repo = root + "/repo";
+    let made = sh("mkdir\n-p\n" + repo + "/app");
+    std::io::fs::write_file(repo + "/app/main.hl", "fn main() {\n    println(\"one\");\n}\n") or discard;
+    let i1 = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+    let i2 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@t\ncommit\n-q\n--allow-empty\n-m\nroot");
+    let i3 = sh("git\n-C\n" + repo + "\nadd\n-A");
+    let i4 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@t\ncommit\n-q\n-m\nthe program");
+    std::test::assert_eq_int(i4.code, 0, "the repository has its program: " + i4.stderr);
+    let patch_hat = hat_for("Patch", "edit", "edit");
+    std::test::assert(std::str::contains(patch_hat, "\"mode\": \"do\""), "a Patch is a `do` Work: " + patch_hat);
+    let hands = legs::Hands { };
+
+    // 1. read, edit, answer: one commit on the base, its patch first
+    let t1 = root + "/turns1";
+    let m1 = sh("mkdir\n-p\n" + t1);
+    turn(t1, 1, "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"app/main.hl\"}}]}");
+    turn(t1, 2, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"app/main.hl\", \"text\": \"fn main() {\\n    println(\\\"two\\\");\\n}\\n\"}}]}");
+    turn(t1, 3, "{\"content\": \"the program says two\"}");
+    let p1 = performer(repo, t1, 8);
+    let b1 = brief_of(patch_hat);
+    let done = p1.perform_loop(b1, hands, request_of(b1), -1, "do");
+    std::test::assert_eq_str(done.disposition, "done", "the loop answers: " + done.narrative);
+    std::test::assert(std::str::starts_with(done.result_ref, "commit:"), "the change is a commit: " + done.result_ref);
+    let sha = done.result_ref[7..len(done.result_ref)];
+    std::test::assert(std::str::contains(done.receipts, "From " + sha + " "), "the first receipt is the commit's patch, as the owner reads it");
+    std::test::assert(std::str::contains(done.receipts, "+    println(\\\"two\\\");"), "the patch carries the edit: " + done.receipts);
+    std::test::assert_eq_str(tool_names(done.receipts), "read edit", "every tool call is a row of the receipt");
+    std::test::assert_eq_int(calls_in(done.calls), 3, "every model call is evidence: " + done.calls);
+    std::test::assert(!std::str::contains(done.calls, "\"response_digest\": \"\""), "a turn that asked for tools is evidence of what it asked: " + done.calls);
+    let untouched = std::io::fs::read_file(repo + "/app/main.hl") or "";
+    std::test::assert(std::str::contains(untouched, "\"one\""), "the leg's own checkout is never touched");
+
+    // 2. a broken edit: the validators refuse it, the model is told, and fixes it
+    let t2 = root + "/turns2";
+    let m2 = sh("mkdir\n-p\n" + t2);
+    turn(t2, 1, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"app/main.hl\", \"text\": \"fn main() {\\n    println(\\\"two\\\")\\n\"}}]}");
+    turn(t2, 2, "{\"content\": \"done\"}");
+    turn(t2, 3, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"app/main.hl\", \"text\": \"fn main() {\\n    println(\\\"two\\\");\\n}\\n\"}}]}");
+    turn(t2, 4, "{\"content\": \"fixed\"}");
+    let p2 = performer(repo, t2, 8);
+    let fixed = p2.perform_loop(b1, hands, request_of(b1), -1, "do");
+    std::test::assert(fixed.disposition == "done" && fixed.result == "fixed", "the answer stands only once the validators pass: " + fixed.narrative);
+    std::test::assert_eq_int(calls_in(fixed.calls), 4, "the refusal cost a turn: " + fixed.calls);
+
+    // 3. a hand the hat does not give is refused, and the model hears why
+    let t3 = root + "/turns3";
+    let m3 = sh("mkdir\n-p\n" + t3);
+    turn(t3, 1, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"app/main.hl\", \"text\": \"x\"}}]}");
+    turn(t3, 2, "{\"content\": \"an assessment\"}");
+    let judged_hat = hat_for("Assessment", "judgment", "agent");
+    std::test::assert(std::str::contains(judged_hat, "\"mode\": \"tools\""), "an Assessment is a `tools` Work");
+    let p3 = performer(repo, t3, 8);
+    let b3 = brief_of(judged_hat);
+    let judged = p3.perform_loop(b3, hands, request_of(b3), -1, "tools");
+    std::test::assert(judged.disposition == "done" && judged.result == "an assessment" && judged.result_ref == "", "a tools Work answers with text: " + judged.narrative);
+    std::test::assert_eq_str(tool_names(judged.receipts), "edit!", "the refused call is evidence too: " + judged.receipts);
+
+    // 4. a model that never answers ends at the bound
+    let t4 = root + "/turns4";
+    let m4 = sh("mkdir\n-p\n" + t4);
+    turn(t4, 1, "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"app/main.hl\"}}]}");
+    turn(t4, 2, "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"app/main.hl\"}}]}");
+    turn(t4, 3, "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"app/main.hl\"}}]}");
+    let p4 = performer(repo, t4, 3);
+    let bounded = p4.perform_loop(b1, hands, request_of(b1), -1, "do");
+    std::test::assert(bounded.disposition == "failed" && std::str::contains(bounded.narrative, "no answer within 3 turns"), "the loop is bounded: " + bounded.narrative);
+
+    // 5. a path outside the worktree is refused
+    std::test::assert(!legs::worktree_path_ok("../escape.hl") && !legs::worktree_path_ok("/etc/passwd") && !legs::worktree_path_ok(".git/config") && legs::worktree_path_ok("app/main.hl"), "a tool touches the worktree alone");
+    hands.git.clean();
+    dna::scratch_done(root);
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

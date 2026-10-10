@@ -10925,6 +10925,24 @@ shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in tests #1b7b00d4
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/tool_loop_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdJsonBuilder	on unknown (`performer` passed as a value)|unknown (no caller)|unknown (no instance)	in core
+-- dynamic	sites in core/legs
+dynamic	__StdJsonBuilder	on unknown (`performer` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core__legs___client__Head	on unknown (`performer` passed as a value)|unknown (no instance)
+dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on unknown (`performer` passed as a value)
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core___models__FakeModel	on unknown (`performer` passed as a value)
+dynamic	__lib_dna__core___models__ModelRouter	on unknown (`performer` passed as a value)
+dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`performer` passed as a value)
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on unknown (`performer` passed as a value)
+dynamic	__StdIterLines	on unknown (`performer` passed as a value)
+
 == dna/tests/two_owners_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

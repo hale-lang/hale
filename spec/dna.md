@@ -2024,6 +2024,25 @@ memory is named to it.
   `context_digest`; the practices reach the editor as its brief, the
   ask stays the ask) or by a head for a leg, is kept in memory by its
   digest (`hats`, insert if absent).
+- **The tool loop** (`dna/core/legs/tool_loop.hl`). A model performer
+  whose hat carries hands and whose `model.mode` is `tools` or `do`
+  offers the hands to the model as tools (`ModelRequest.tools`, the chat
+  API's function shape, with the turns since the prompt in
+  `ModelRequest.messages`) and runs every `tool_calls` entry the reply
+  asks for (`ModelResult.tool_calls`, each `{id, name, arguments}`) on
+  the leg's side, sending each result back as a `tool` message, until a
+  reply carries no tool call. A `do` Work works in a scratch clone of
+  the leg's repository at `HEAD`; its answer stands once the hat's
+  `validators` pass on every touched directory holding `.hl` source, a
+  refusal being one more turn; a `Patch` is then one commit on the base,
+  handed back as `result_ref: commit:<sha>` with the commit's patch as
+  the first receipt. A hand outside the hat's `tool_grant`, or a path
+  outside the worktree or into its `.git`, is refused as the call's
+  answer. Each model call is a `calls` entry (its response digest
+  covers its tool calls) and each tool call a row of one receipt,
+  `{"tool_calls": [{turn, name, arguments_digest, ok, output_digest,
+  output_bytes, error}]}`. The loop is bounded by `max_turns` (16) and
+  the attempt's allowance.
 - **The claim** is taken at the head. The filter names the performer
   kind and identity, the capabilities the leg has, the data classes it
   may see, the owners it works for and a TTL. The identity is a
