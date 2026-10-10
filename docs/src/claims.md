@@ -661,6 +661,26 @@ quantitative dims) take the **max** over one dispatch site's
 alternatives, because an invocation dispatches to exactly one
 target — a sum would count phantom calls no execution performs.
 
+**An interface-typed field narrows to what is stored in it.** A
+call through a *field* of interface type (`self.h.dep.apply(x)`)
+fans out to the loci the program stores into that field, not to
+every conformer: every `Locus { field:
+Impl { } }` literal at any instantiation site (a parameter
+default is one: `fn take(h: Holder = Holder { dep: Real { } })` stores
+`Real` whenever `take()` omits the argument), and the declaration's
+default when some literal of the locus omits the field (or none is
+seen), intersected with the interface's conformers. Only a struct
+literal of a locus narrows. A field the program also writes from somewhere the
+pre-pass cannot name — a literal whose value is a parameter,
+a call result, an `if`/`match` value or a local (`Holder { dep: g }`
+with `g: Gate`), a default that is not a literal, any assignment
+`place.dep = g` — keeps every conformer: the set is closed only when
+every write is seen, and a write that is not seen puts the whole
+conformer set back. An assignment's receiver is not typed, so it is
+read as a write to the `dep` of every locus that has one. A literal of an imported seed's locus (`lib::Holder { dep: lib::Real { } }`) counts like any other. A seed with no `main locus` closes no world, so none of its slots narrow: its loci are built by whoever imports it. Slots of standard-library loci are never narrowed. A
+parameter, a local or a function result of interface type is not a
+field and always fans to every conformer.
+
 An interface *no* locus conforms to is different again: an
 interface value only ever arises by coercing a conforming locus,
 so in a closed world an uninhabited interface has no values and
