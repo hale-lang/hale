@@ -450,16 +450,22 @@ fn magnitude_facets(raw: String) -> String {
     return out;
 }
 
+// Walked by offset into one builder: a Review's source diff can be
+// megabytes, and re-slicing its tail per line (or growing `out` by
+// concatenation) keeps a copy per line, gigabytes for one render.
 fn indent_lines(text: String, prefix: String) -> String {
-    let mut out = "";
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        out = out + prefix + line + "\n";
-        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    let v = std::str::bytes_view(text);
+    let out = std::str::builder_new();
+    let mut at = 0;
+    while at < v.n {
+        let mut end = at;
+        while end < v.n && std::str::byte_at(v, end) != 10 { end = end + 1; }
+        std::str::builder_append(out, prefix);
+        std::str::builder_append(out, std::str::slice(v, at, end));
+        std::str::builder_append(out, "\n");
+        at = end + 1;
     }
-    return out;
+    return std::str::builder_finish(out);
 }
 
 // The latest `review.routed` body of a Review (GH #1089), "" when none:
