@@ -350,6 +350,17 @@ type PositionOpenRequest {
 }
 topic PositionOpenRequested { payload: PositionOpenRequest; subject: "dna.position.requested"; }
 
+// A graph proposal the host filed while the organization runs (`hale dna
+// ingest`): the request row names its Review, which the organization routes
+// and opens as it opens its own, so the Board's verdict has a Review to
+// settle. Answered `graph.proposed` (or `graph.refused`).
+type GraphReviewRequest {
+    request_id: String = "";
+    review_id: String = ""; // the Review the host's `review.requested` row opened
+    by: String = ""; // who filed it
+}
+topic GraphReviewRequested { payload: GraphReviewRequest; subject: "dna.graph.requested"; }
+
 // GH #1143: a schedule asked of the organization (`hale dna schedule
 // declare`): the host relays the request row, and the organization declares
 // it — the definition one the catalog admits, the args what it takes —

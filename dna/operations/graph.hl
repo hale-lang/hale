@@ -22,8 +22,12 @@ import "../core" as dna;
 // `language`, `system` and `application` are what knowledge is about
 // (seed/pull): `language:hale`, `system:dna`, `application:<name>`. `init`
 // seeds them; an ingest of a repository reads none (`GRAPH_INGEST_NODE_KINDS`).
-const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work organization definition language system application";
-const GRAPH_INGEST_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work organization definition";
+// A `tool` is one operation a served surface offers (`tool:<Surface>::<op>`):
+// what a hand calls when a position is equipped with it (dna/core/tools.hl);
+// `hale dna ingest` proposes one per operation of a surface the repository
+// serves, its contract, the roles it requires and its effect class.
+const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work organization definition language system application tool";
+const GRAPH_INGEST_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work organization definition tool";
 const GRAPH_ROW_NODE_KINDS: String = GRAPH_INGEST_NODE_KINDS + " language system application";
 
 // The hyperedge kinds, arity two or more, and the ones a `graph.edge` row

@@ -659,7 +659,7 @@ locus GovernanceCommands {
                     // a position's friction is a fact of the record, filed at its
                     // tail: nobody admits it, and the head the leg read is not a
                     // fence on it (a leg a row behind still files)
-                    if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
+                    if !attempts.known_position(rj, receipts_over(self.record), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
                     // GH #1162: a position's friction is filed by one who holds it
                     let unseated = self.seat_refusal(rj, context.principal_name, command.performer);
                     if len(unseated) > 0 { return self.refusal(s, attempts.refused(context, command, unseated)); }
@@ -685,14 +685,14 @@ locus GovernanceCommands {
                     // not turned away with `stale_subject`; the loser of the race
                     // gets a refusal receipt, and a claim taken in memory that
                     // ends in no row is given back on the way out.
-                    if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
+                    if !attempts.known_position(rj, receipts_over(self.record), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
                     // GH #1162: the lease's position is one the principal's person
                     // holds — by the graph's `holds` edges, or every position under
                     // a record that declares `dna.trust = local`
                     let unseated = self.seat_refusal(rj, context.principal_name, command.performer);
                     if len(unseated) > 0 { return self.refusal(s, attempts.refused(context, command, unseated)); }
                     let mut asked = command;
-                    asked.performer_kind = attempts.claim_kind(rj, self.record.location(), command);
+                    asked.performer_kind = attempts.claim_kind(rj, receipts_over(self.record), command);
                     // the capabilities a leg defaults to are its kind's: a kind taken as an agent's takes the agent's
                     if asked.performer_kind != command.performer_kind && command.capabilities == command.performer_kind { asked.capabilities = "judgment analysis"; }
                     // a position the graph states, taken as an agent's, takes the

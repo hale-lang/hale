@@ -382,7 +382,7 @@ fn review_list(p: Projection) -> Answer {
     // practice (a Review pins one digest and settles with one outcome),
     // each listed under its own heading so the Board can read it as a set
     let ordered = p.review_ids_in_order();
-    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds") + seeded_listing(p, ordered, "positions");
+    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds") + seeded_listing(p, ordered, "positions") + seeded_listing(p, ordered, "ingest");
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
 }
 
@@ -390,7 +390,7 @@ fn review_list(p: Projection) -> Answer {
 // by their name: the declared purpose (GH #995), the toolchain's seeded
 // practices (`design`, `operating`, `using`), the toolchain's library (`library`), and a repository's holes, its marked
 // practices and proposed holders (GH #1091).
-fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds" || group == "positions"; }
+fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds" || group == "positions" || group == "ingest"; }
 
 // The pending Reviews of one seeded family, under its heading ("" when none).
 @unbounded
@@ -408,7 +408,7 @@ fn seeded_listing(p: Projection, ids: String, family: String) -> String {
         i = i + 1;
     }
     if count == 0 { return ""; }
-    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "positions" { " position(s) to open, each with its mandate" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
+    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "positions" { " position(s) to open, each with its mandate" } else if family == "ingest" { " re-ingest(s) of the repository's graph at a commit" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
     return "  " + family + " — " + what + ":\n" + lines
         + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
 }
@@ -1143,7 +1143,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
     if !secret_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not a secret's name (A-Z, 0-9, _)"); }
     // GH #989: a slot the organism requires, and no other name
-    if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl names: " + catalog_credentials(root) + "); `hale dna secrets` lists them"); }
+    if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " " + legs_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl or dna/org/work.hl names: " + std::str::trim(catalog_credentials(root) + " " + legs_credentials(root)) + "); `hale dna secrets` lists them"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
     let p = open_projection(root, ".", "", memory);
@@ -1171,8 +1171,15 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
 
 // The model credentials the catalog names (`HostedCredential { key: "X" }`
 // in dna/org/models.hl), space-separated.
-fn catalog_credentials(root: String) -> String {
-    let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
+fn catalog_credentials(root: String) -> String { return credentials_named(root + "/dna/org/models.hl"); }
+
+// The credentials the legs' own performers present (`dna/org/work.hl`): a
+// leg's model asks with a key of its own, kept in the same vault slots.
+fn legs_credentials(root: String) -> String { return credentials_named(root + "/dna/org/work.hl"); }
+
+// The `HostedCredential` keys a catalog's source names, space-separated, once each.
+fn credentials_named(path: String) -> String {
+    let catalog = std::io::fs::read_file(path) or "";
     let mut out = "";
     let mut rest = catalog;
     while true {

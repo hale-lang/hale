@@ -937,6 +937,7 @@ fn dna_fixture_set_is_complete() {
             "head_surface_durable_test.hl",
             "heart_reading_test.hl",
             "hosted_hat_test.hl",
+            "ingest_test.hl",
             "journal_contention_test.hl",
             "journal_test.hl",
             "knowledge_binding_recovery_test.hl",

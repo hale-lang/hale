@@ -1437,7 +1437,10 @@ record's.
 | `structure.observed` | record | the compiler's model of one of its parts, at `init` |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
-| `graph.retired` | record | the node or edge the entity names leaves the graph |
+| `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
+| `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as a position request is |
+| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
+| `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`) |
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
@@ -1755,6 +1758,30 @@ or an application's: kind `purpose`, author `org`, for
 group `purpose`, which `hale dna review` lists first and `hale dna
 review purpose approve` decides; the generated organization holds no
 Review of its own for it.
+
+**The graph read again (`hale dna ingest [project] [--at <rev>]`).**
+`init` reads the repository once; a later commit is read again with the
+same ingest, the commit (`HEAD` by default) checked out beside the
+record under `.hale/dna/ingest/` with the repository's own directory
+name and removed after. The ingest also states a `tool` node per
+operation of every surface the repository serves (`tool:<Surface>::<op>`:
+its contract, the roles it `requires`, and its effect class, `uncertain`
+while a description says nothing of an operation's effects). What
+differs from the graph the record states (its rows and its ratified
+graph proposals, latest body per id), over the kinds an ingest owns
+(purpose, axiom, process, seed, contract, noun, deployment, gate,
+document, witness, tool; meets, names, refers, constrains, runs, gates,
+witnesses, and an `unfold` between two of them), is filed as ONE graph
+proposal in the group `ingest`: added and changed nodes and edges with
+their bodies, then what is gone as `graph.retired` rows, edges before
+nodes. A `graph.ingested` row names the commit either way; the same
+difference at the same commit is proposed once, and nothing differing
+proposes nothing. The host files the proposal and its Review, and a
+`graph.requested` row, relayed like any request, has the running
+organization route and open that Review (`graph.proposed`), so the
+Board's verdict settles it there; an organization started later finds
+it in the record. An attached application's own re-ingest is not built
+yet.
 
 `hale dna definitions [project] [--json]` lists the catalog
 `dna/org/workflows.hl` returns, built beside a one-line main as the model

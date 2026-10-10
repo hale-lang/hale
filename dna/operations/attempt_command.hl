@@ -314,13 +314,16 @@ locus AttemptCommandCodec {
     // (`position:leader`, `position:editor`, `position:agent`,
     // `position:human`, `position:service`, `position:software`).
     @unbounded
-    fn known_position(j: dna::Journal, location: String, holder: String) -> Bool {
+    fn known_position(j: dna::Journal, receipts: dna::Receipts, holder: String) -> Bool {
         let base = holder_base(holder);
         if base == "position:leader" || base == dna::hat_position_of("edit") || base == dna::hat_position_of("agent") || base == dna::hat_position_of("human") || base == dna::hat_position_of("service") || base == dna::hat_position_of("software") { return true; }
         // a position the graph states (`graph.node`), or one a hole `hale
         // dna init` proposed states in its own rows, once the Board ratified
         // it (never merely a hole of that name: a work hole `api` is no
-        // position); a retirement ends either
+        // position); a retirement ends either, a row or one a ratified
+        // proposal carries (`hale dna ingest`). The proposal's rows are read
+        // through the record the command is admitted over: a head over
+        // memory has no repository to read them from.
         let mut proposed = "\n";
         let mut i = 0;
         let mut known = false;
@@ -328,10 +331,11 @@ locus AttemptCommandCodec {
             let e = j.read(i);
             if e.kind == "graph.node" && e.entity == base { known = true; }
             if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" { proposed = proposed + e.entity + "\n"; }
-            if e.kind == "knowledge.ratified" && std::str::contains(proposed, "\n" + e.entity + "\n") && len(location) > 0 {
+            if e.kind == "knowledge.ratified" && std::str::contains(proposed, "\n" + e.entity + "\n") {
                 let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
-                let rows = dna::proposal_rows(dna::GitRecord { repo: location }.body(raw).text);
+                let rows = dna::proposal_rows(receipts.read(raw));
                 if std::str::contains(rows, "\"kind\": \"graph.node\", \"entity\": " + dna::record_json_quote(base) + ",") { known = true; }
+                if std::str::contains(rows, "\"kind\": \"graph.retired\", \"entity\": " + dna::record_json_quote(base) + ",") { known = false; }
             }
             if e.kind == "graph.retired" && e.entity == base { known = false; }
             i = i + 1;
@@ -466,11 +470,11 @@ locus AttemptCommandCodec {
         if len(base) < 10 || !std::str::starts_with(base, "position:") { return false; }
         return !dna::word_in(base[9..len(base)], "leader editor agent human service software");
     }
-    fn claim_kind(j: dna::Journal, location: String, c: GovernanceCommand) -> String {
+    fn claim_kind(j: dna::Journal, receipts: dna::Receipts, c: GovernanceCommand) -> String {
         let base = holder_base(c.performer);
         if len(base) < 10 || c.performer_kind != base[9..len(base)] || base == "position:leader" { return c.performer_kind; }
         if dna::word_in(c.performer_kind, "edit editor agent human service software") { return c.performer_kind; }
-        return if self.known_position(j, location, c.performer) { "agent" } else { c.performer_kind };
+        return if self.known_position(j, receipts, c.performer) { "agent" } else { c.performer_kind };
     }
     // Whether the record says another leg holds the attempt under a lease
     // that is still live.
