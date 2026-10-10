@@ -419,6 +419,9 @@ locus App {
         std::test::assert(std::str::contains(self.row_body("attempt.admitted", a_routed), "position:api/dev"), "the Work requires the position it is routed to: " + self.row_body("attempt.admitted", a_routed));
         let not_yours = self.work_rc("next\n--as\nposition:agent", 1);
         std::test::assert(self.state_of(not_yours) == "refused" && !std::str::contains(not_yours, a_routed), "a plain agent leg cannot take a Work routed to a position: " + not_yours);
+        // nor by naming the position among its capabilities: those words are the head's to grant
+        let spoofed = self.work_rc("next\n--as\nposition:agent\n--capabilities\nposition position:api/dev", 1);
+        std::test::assert(self.state_of(spoofed) == "refused" && !std::str::contains(spoofed, a_routed), "capabilities naming the position grant nothing: " + spoofed);
         let routed = self.work("next\n--as\nposition:api/dev");
         std::test::assert(self.state_of(routed) == "claimed" && std::json::find_string_field(self.attempt_of(routed), "attempt_id") == a_routed, "the position's holder claims it: " + routed);
         let routed_hat = std::json::find_field_raw(self.work("brief\n--attempt\n" + a_routed), "hat");
