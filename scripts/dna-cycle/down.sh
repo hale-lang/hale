@@ -12,7 +12,7 @@ if [ -d "$RUN/todo" ]; then
     (cd "$RUN/todo" && docker compose down -v >> "$LOG" 2>&1; note "todo compose down rc=$?")
     [ -f "$RUN/todo/dna/compose.yaml" ] && (cd "$RUN/todo" && docker compose -f dna/compose.yaml down -v >> "$LOG" 2>&1; note "dna compose down rc=$?")
 fi
-free_ports; sleep 1
+sleep 1
 containers=0
 if [ -d "$RUN/todo" ]; then
     containers=$(( $(cd "$RUN/todo" && docker compose ps -aq 2>/dev/null | wc -l) + $( [ -f "$RUN/todo/dna/compose.yaml" ] && cd "$RUN/todo" && docker compose -f dna/compose.yaml ps -aq 2>/dev/null | wc -l || echo 0) ))

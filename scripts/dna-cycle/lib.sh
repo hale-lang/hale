@@ -48,8 +48,12 @@ decide() {
     if echo "$out" | grep -q 'settled: approve' && ! echo "$out" | grep -q 'refused'; then check "$label" ok; else check "$label" no "$(echo "$out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; fi
 }
 
-free_ports() {
+# The fixed ports something already listens on, one `<port> <pid> <command>` a line: a cycle
+# never takes a port it does not own, and never stops a process it did not start.
+ports_taken() {
     for port in $PORTS; do
-        for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do kill "$pid" 2>/dev/null; done
+        for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+            echo "$port $pid $(ps -o args= -p "$pid" 2>/dev/null | cut -c1-80)"
+        done
     done
 }
