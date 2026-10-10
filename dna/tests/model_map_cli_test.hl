@@ -4,7 +4,8 @@
 // the caller's name, `models map` lists what the record holds now (the latest
 // row of each), and a malformed selector, size or category is refused before
 // anything is written. A `tools` or `do` category needs a model that returns
-// tool calls, said with `--tools`.
+// tool calls, said with `--tools`. A key the legs' own model presents, named
+// in dna/org/work.hl, is a vault slot like the catalog's.
 
 import "../core" as dna;
 
@@ -64,6 +65,20 @@ main locus App {
         let b5 = models(app, "category\nfly.deep\nx\n--tools");
         std::test::assert(b5.code != 0 && std::str::contains(b5.stdout + b5.stderr, "a category is `<mode>.<size>`"), "an unknown mode is refused: " + b5.stdout + b5.stderr);
         std::test::assert_eq_int(len(journal(app)), before, "a refusal writes nothing");
+
+        // the legs' model asks with a key of its own, named in dna/org/work.hl:
+        // a slot of the organism's, filled from stdin like the catalog's (the
+        // vault is the scratch's own)
+        let work = std::io::fs::read_file(app + "/dna/org/work.hl") or "";
+        let with_dna = if std::str::contains(work, "import \"vendor/dna\" as dna;") { work } else { std::str::replace(work, "import \"vendor/dna/legs\" as legs;", "import \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;") };
+        std::io::fs::write_file(app + "/dna/org/work.hl", with_dna + "\n// the legs' gateway\nfn gateway_key() -> String { let c = dna::HostedCredential { key: \"LEGS_GATEWAY_KEY\" }; return c.key; }\n") or discard;
+        let state = scratch + "/state";
+        let slots = in_dir(app, "env\nXDG_STATE_HOME=" + state + "\n" + toolchain() + "\ndna\nsecrets");
+        std::test::assert(std::str::contains(slots.stdout, "model-LEGS_GATEWAY_KEY") && std::str::contains(slots.stdout, "the legs' model key"), "hale dna secrets lists the legs' key: " + slots.stdout + slots.stderr);
+        let set = in_dir(app, "sh\n-c\necho canned | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set LEGS_GATEWAY_KEY\n" + state + "\n" + toolchain());
+        std::test::assert(set.code == 0, "and secret set fills it: " + set.stdout + set.stderr);
+        let unknown = in_dir(app, "sh\n-c\necho canned | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set NOBODYS_KEY\n" + state + "\n" + toolchain());
+        std::test::assert(unknown.code != 0 && std::str::contains(unknown.stdout + unknown.stderr, "dna/org/work.hl names"), "a name neither catalog uses is refused: " + unknown.stdout + unknown.stderr);
         dna::scratch_done(scratch);
     }
 }
