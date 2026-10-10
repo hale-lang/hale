@@ -9985,6 +9985,15 @@ dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/model_map_cli_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+
+== dna/tests/model_map_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)	in tests
+
 == dna/tests/mutation_review_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -10147,6 +10156,7 @@ row	App@literal1	App	main	default
 row	App@literal1.local	__lib_dna__core___models__LocalModel	main	default
 row	FakeOpenAi@main1	FakeOpenAi	main	default
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #733000a1
+shared	App@literal1.gateway	__lib_dna__core___models__OpenAiChat #47243906
 shared	App@literal1.hosted	__lib_dna__core___models__OpenAiChat #47243906
 shared	App@literal1.keyless	__lib_dna__core___models__OpenAiChat #47243906
 -- App@literal1.srv	__StdHttpServer

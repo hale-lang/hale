@@ -47,6 +47,7 @@ type Hat {
     tool_grant: String = ""; // the hands' names, space-separated
     hands: String = "[]"; // the tools a performer gets, a JSON array of specs (`tools_json`)
     validators: String = ""; // the hands that judge the outcome, space-separated
+    model: String = "{}"; // the model the mapping resolved for the Work, with the rule that chose it (`model_choice_json`)
     knowledge_bindings: String = "";
     practices: String = "[]"; // a JSON array of {id, name, text, kind, author}
     practices_n: Int = 0;
@@ -223,17 +224,20 @@ type HatInputs {
 // The hat for a Work, composed, digested: the position the performer kind
 // names and its charter, the effect classes the requirement admits, the
 // hands and validators the output contract gives, and the practices of
-// the package memory answered. Every hat is built here, so the owner's
-// editor and a head's leg wear one shape.
+// the package memory answered, and the model the mapping resolves for it
+// (dna/core/model_map.hl). Every hat is built here, so the owner's editor
+// and a head's leg wear one shape.
 fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Hat {
     let position = hat_position_of(w.performer_kind);
     let owed = output_contract(w.output_contract);
+    let hands = tools_json(owed.hands);
     let h = Hat {
         ok: true, work_id: w.work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: w.performer_kind,
         position_id: position, charter: hat_node_text(j, position),
         objective: w.objective, target: w.target, targets: w.targets, output_contract: w.output_contract, data_class: w.data_class, requires: w.requires,
         effects: hat_effects_of(w.requires), cost_ceiling: w.cost_ceiling,
-        tool_grant: owed.hands, hands: tools_json(owed.hands), validators: owed.validators,
+        tool_grant: owed.hands, hands: hands, validators: owed.validators,
+        model: model_choice_json(model_resolve(j, position, w.output_contract, w.task_id, hands)),
         knowledge_bindings: w.knowledge_bindings, history: w.history, head: w.head
     };
     return hat_sealed(hat_with_package(h, pkg, ready));
@@ -277,6 +281,7 @@ fn hat_body(h: Hat) -> String {
     b.string_field("tool_grant", h.tool_grant);
     b.field("hands", h.hands);
     b.string_field("validators", h.validators);
+    b.field("model", h.model);
     b.string_field("knowledge_bindings", h.knowledge_bindings);
     b.field("practices", h.practices);
     b.string_field("practices_status", h.practices_status);

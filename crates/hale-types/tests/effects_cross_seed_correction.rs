@@ -195,8 +195,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        457,
-        464,
+        458,
+        465,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}

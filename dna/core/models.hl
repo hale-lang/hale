@@ -26,6 +26,14 @@ type ModelRequest {
     needs_tools: Bool = false;
     assurance: Int = 0; // 0 quick .. 2 independent/deep
     cost_ceiling_micros: Int = 0;
+    // the model the Work's mapping resolved (`model_resolve`): one gateway
+    // serves many, so the request names it; "" = the backend's own
+    model: String = "";
+    // a JSON object of string pairs the call is attributed by (the attempt,
+    // the position, the holder): attribution only, never authority; "" = none
+    metadata: String = "";
+    // sent as `Idempotency-Key`: a retry of one call is the same call; "" = none
+    idempotency_key: String = "";
 }
 
 type ModelResult {
@@ -276,6 +284,13 @@ fn temperature_param(milli: Int) -> String {
 }
 
 fn openai_chat_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
+    return openai_chat_body_with(model, req, temperature_milli, max_tokens, false);
+}
+
+// The chat body, with the request's `metadata` when the endpoint takes it:
+// a gateway stores it untouched; a provider may refuse it unless it stores
+// the call, so a backend says whether to send it (`send_metadata`).
+fn openai_chat_body_with(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int, metadata: Bool) -> String {
     let mut b = "{\"model\": " + jq(model) + ", \"messages\": [";
     if len(req.context) > 0 {
         b = b + "{\"role\": \"system\", \"content\": " + jq(req.context) + "}, ";
@@ -285,6 +300,7 @@ fn openai_chat_body(model: String, req: ModelRequest, temperature_milli: Int, ma
     // parameter outright (GH #566 F7), and the evidence says which it was
     if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
     if max_tokens > 0 { b = b + ", \"max_tokens\": " + to_string(max_tokens); }
+    if metadata && len(req.metadata) > 0 { b = b + ", \"metadata\": " + req.metadata; }
     return b + "}";
 }
 
@@ -396,6 +412,8 @@ locus OpenAiChat {
         // price per 1k tokens, micro-dollars (0.15 / 0.60 per M ≈ gpt-4o-mini)
         input_micros_per_1k: Int = 150;
         output_micros_per_1k: Int = 600;
+        // a gateway (voice) keeps the caller's `metadata`; a provider may refuse it
+        send_metadata: Bool = false;
         calls: Int = 0;
         last: ModelEvidence = ModelEvidence { };
     }
@@ -416,7 +434,7 @@ locus OpenAiChat {
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.endpoint, credential: self.credential.fingerprint(),
-            requested_model: self.model,
+            requested_model: if len(req.model) > 0 { req.model } else { self.model },
             params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
@@ -427,11 +445,12 @@ locus OpenAiChat {
             ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
+            return ModelResult { ok: false, backend: self.name, model: ev.requested_model, refused: ev.refused, made: false };
         }
-        let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
+        let body = openai_chat_body_with(ev.requested_model, req, self.temperature_milli, self.max_tokens, self.send_metadata);
         let t0 = std::time::monotonic();
-        let resp = self.credential.post_json(self.endpoint, body, "") or self.transport_failed(err);
+        let extra = if len(req.idempotency_key) > 0 { "Idempotency-Key: " + req.idempotency_key + "\r\n" } else { "" };
+        let resp = self.credential.post_json(self.endpoint, body, extra) or self.transport_failed(err);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
@@ -444,7 +463,7 @@ locus OpenAiChat {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
+            return ModelResult { ok: false, backend: self.name, model: ev.requested_model, refused: out.refused, made: made_by_status(resp.status) };
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,

@@ -84,6 +84,18 @@ fn rate_limited(refused: String) -> Bool {
 
 // The role a request carries, by the work kind: what the selection
 // policy weighs.
+// What a call is attributed by at the gateway: the attempt, the position and
+// the holder. Attribution only; the gateway decides nothing by it.
+fn call_metadata(brief: Brief) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("attempt", brief.attempt_id);
+    b.string_field("position", brief.position);
+    b.string_field("holder", brief.holder);
+    b.end_object();
+    return b.result();
+}
+
 fn role_of(performer_kind: String) -> String {
     if performer_kind == "edit" { return "edit"; }
     if performer_kind == "service" { return "classify"; }
@@ -163,7 +175,13 @@ locus ModelPerformer {
             knowledge_bindings: std::json::find_string_field(brief.hat, "knowledge_bindings"),
             tool_grant: std::json::find_string_field(brief.hat, "tool_grant"),
             data_class: if len(class) > 0 { class } else { "internal" },
-            cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0
+            cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0,
+            // the model the Work's mapping resolved (the hat's `model`); none
+            // resolved, the catalog's backend chooses as before
+            model: std::json::find_string_field(std::json::find_field_raw(brief.hat, "model"), "model"),
+            metadata: call_metadata(brief),
+            // one call of the attempt: a retry of it is the same call
+            idempotency_key: brief.attempt_id + ":call:1"
         };
         let before = self.priced_out(req, allowance);
         if len(before) > 0 { return Performance { disposition: "declined", narrative: before, calls: "[]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION }; }

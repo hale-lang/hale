@@ -819,6 +819,67 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
 // its `probe_catalog()` sees the same environment the organization
 // would. The organization itself is not started and the nerves are not
 // touched.
+// The model mapping's two tables, as rows in the record, each in the name
+// of whoever sets it (dna/core/model_map.hl): `models rule <selector>
+// <size> [--permit <sizes>]` says which size a kind of work needs (a
+// selector is `default`, `position:<name>`, `contract:<Name>` or
+// `task:<id>`), and `models category <mode>.<size> <model> [--tools]
+// [--price-in <micros>] [--price-out <micros>]` says which model fills a
+// category today (prices per 1k tokens, in micro-dollars). `models map`
+// lists both as the record holds them now.
+fn model_map_verb(root: String, sub: String, key: String, value: String, permit: String, tools: Bool, price_in: String, price_out: String, who_flag: String, memory: dna::Memory) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if sub == "rule" {
+        let known = key == "default" || (std::str::starts_with(key, "position:") && len(key) > 9) || (std::str::starts_with(key, "contract:") && len(key) > 9) || (std::str::starts_with(key, "task:") && len(key) > 5);
+        if !known { return fail("models rule: a selector is `default`, `position:<name>`, `contract:<Name>` or `task:<id>`"); }
+        if !dna::model_size_known(value) { return fail("models rule: a size is one of " + dna::MODEL_SIZES); }
+        let permitted = std::str::trim(permit);
+        if dna::words_in_both(permitted, dna::MODEL_SIZES) != permitted { return fail("models rule: --permit names sizes, one space apart, each one of " + dna::MODEL_SIZES + ": `" + permitted + "`"); }
+        let s0 = sync_record(root, memory);
+        if !append_as(root, "model.rule", key, "{\"size\": " + quote(value) + ", \"permit\": " + quote(std::str::trim(permit)) + ", \"by\": " + quote(who) + "}", who, memory) { return fail("the record refused the append"); }
+        let s1 = sync_record(root, memory);
+        return answer("model.rule " + key + ": " + value + (if len(std::str::trim(permit)) > 0 { " (may move to " + std::str::trim(permit) + ")" } else { "" }) + "\n");
+    }
+    if sub == "category" {
+        let dot = std::str::index_of(key, ".");
+        if dot < 0 || !dna::word_in(key[0..dot], dna::MODEL_MODES) || !dna::model_size_known(key[(dot + 1)..len(key)]) { return fail("models category: a category is `<mode>.<size>`, the mode one of " + dna::MODEL_MODES + " and the size one of " + dna::MODEL_SIZES); }
+        if len(value) == 0 { return fail("models category " + key + ": name the model the gateway serves for it"); }
+        let pin = std::str::parse_int(if len(price_in) > 0 { price_in } else { "0" }) or - 1;
+        let pout = std::str::parse_int(if len(price_out) > 0 { price_out } else { "0" }) or - 1;
+        if pin < 0 || pout < 0 { return fail("models category: --price-in and --price-out are micro-dollars per 1k tokens, whole numbers"); }
+        if dna::word_in(key[0..dot], "tools do") && !tools { return fail("models category " + key + ": a `" + key[0..dot] + "` Work needs a model that returns tool calls; say so with --tools"); }
+        let s0 = sync_record(root, memory);
+        let body = "{\"model\": " + quote(value) + ", \"tool_calls\": " + (if tools { "true" } else { "false" }) + ", \"input_micros_per_1k\": " + to_string(pin) + ", \"output_micros_per_1k\": " + to_string(pout) + ", \"by\": " + quote(who) + "}";
+        if !append_as(root, "model.category", key, body, who, memory) { return fail("the record refused the append"); }
+        let s1 = sync_record(root, memory);
+        return answer("model.category " + key + ": " + value + (if tools { " (tool calls)" } else { "" }) + "\n");
+    }
+    if len(sub) > 0 && sub != "map" { return fail("models: `models map`, `models rule <selector> <size> [--permit <sizes>]`, or `models category <mode>.<size> <model> [--tools] [--price-in <micros>] [--price-out <micros>]`"); }
+    let s = sync_record(root, memory);
+    let p = open_projection(root, ".", "", memory);
+    let mut rules = "";
+    let mut categories = "";
+    let mut seen = "\n";
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        let id = e.kind + " " + e.entity;
+        if (e.kind == "model.rule" || e.kind == "model.category") && !std::str::contains(seen, "\n" + id + "\n") {
+            seen = seen + id + "\n";
+            if e.kind == "model.rule" {
+                let permitted = std::json::find_string_field(e.body, "permit");
+                rules = "  " + e.entity + " -> " + std::json::find_string_field(e.body, "size") + (if len(permitted) > 0 { " (may move to " + permitted + ")" } else { "" }) + "  by " + std::json::find_string_field(e.body, "by") + "\n" + rules;
+            } else {
+                categories = "  " + e.entity + " = " + std::json::find_string_field(e.body, "model") + (if std::str::trim(std::json::find_field_raw(e.body, "tool_calls")) == "true" { " (tool calls)" } else { "" }) + "  by " + std::json::find_string_field(e.body, "by") + "\n" + categories;
+            }
+        }
+        i = i - 1;
+    }
+    return answer("model rules (the organism's: which size a kind of work needs)\n" + (if len(rules) > 0 { rules } else { "  none: every Work is `standard`\n" }) + "model categories (the habitat's: which model fills each)\n" + (if len(categories) > 0 { categories } else { "  none: `hale dna models category <mode>.<size> <model>` names one\n" }));
+}
+
 fn models_verb(root: String, hale: String) -> Answer {
     let src = root + "/dna/org/models.hl";
     let catalog = std::io::fs::read_file(src) or "";
