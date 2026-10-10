@@ -236,7 +236,7 @@ locus Leg {
     }
     fn usage(why: String) -> Int {
         eprintln("hale dna work: ", why);
-        eprintln("usage: hale dna work next|brief|login|renew|allowance|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
+        eprintln("usage: hale dna work next|brief|login|renew|allowance|submit|settle|release|friction|hand|run|loop [--api <origin>] [--as position:<name>] …");
         return 2;
     }
     fn fail(verb: String, error: String) -> Int { println(error_json(verb, error)); return 1; }

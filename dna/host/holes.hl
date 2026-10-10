@@ -227,7 +227,7 @@ fn under_node(root: String, under: String) -> String {
 
 @unbounded
 fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [project] [--as <who>]"); }
+    if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [--as <who>]"); }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };

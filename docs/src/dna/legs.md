@@ -102,7 +102,8 @@ like; a position the graph states (`position:api/dev`) works as an
 `agent`, and also takes the Works routed to it: a change asked with
 `hale dna task create --to position:api/dev` is one `Patch` Work that
 only that position's holder can claim, briefed in that position's hat,
-and performed by the tool loop below. When nothing matches, the refusal names the kinds that
+and performed by the tool loop below. A `position` word in your
+`--capabilities` is dropped: the head grants it from your seat alone. When nothing matches, the refusal names the kinds that
 are outstanding for a leg and the flag that claims one.
 
 Exit codes: **0** the head admitted it, or the read answered; **1** a
@@ -112,7 +113,8 @@ your slice, an unreachable head, or a `run` that ends `unsettled` or
 
 The leg is a program of the project's own, its performers over the
 vendored legs seed, built once under `.hale/dna/legs/<key>`. `hale mcp`
-exposes the verbs as one tool, `hale_dna_work`; over MCP a loop runs
+exposes the verbs as `hale_dna_work`, and a Work's hands as
+`hale_dna_hand`; over MCP a loop runs
 only with `--once` or `--drain`.
 
 ## Performers and their effect classes
@@ -229,7 +231,9 @@ data class and requirement; the effect classes the Work admits, its
 cost ceiling and knowledge bindings; its **hands**, the tools the
 output contract gives (each with its description and the schema of its
 arguments), the tool grant that names them, and which of them validate
-the outcome; the Work's history; and the record head and memory
+the outcome; the model its mapping chose (mode, size, category,
+model and the rule that chose it); the history of the execution the
+Work belongs to; and the record head and memory
 watermark it was read at, with its digest.
 
 On a head that serves OIDC the hat is the lease holder's: the person your
@@ -424,11 +428,16 @@ attempt, position and holder, for attribution only) and an
 `Idempotency-Key`. A backend sends `metadata` only with
 `send_metadata: true`, for a gateway that keeps it; a provider may
 refuse it. With no category filled, the catalog's backend chooses as
-before.
+before. A `tools` or `do` Work whose category names a model that
+returns no tool calls is declined before any spend
+(`the model mapping refused <model> for this Work`): fill the
+category with one that does (`hale dna models category <mode>.<size>
+<model> --tools`).
 
 **The tape.** `dna::RecordedModel { dir, mode, inner }` wraps any
 backend. In `record` mode it forwards to `inner` and writes the answer
-under a key made of the request's identity (role, backend and model,
+under a key made of the request's identity (role, backend, the model the
+request asks for,
 prompt and context digests, data class, grant, for a harness the
 workspace's starting tree, and for a tool loop's turn the tools offered
 and the turns so far), with the tool calls the model asked for and the
@@ -493,6 +502,14 @@ hale dna work submit --as position:api/dev --attempt <attempt> --token <n> --fro
 - **Nothing to claim**: no attempt of that kind was relayed to legs, or
   none fits your `--classes` or `--capabilities`; the refusal names what
   stood in the way.
+- **`declined: the model mapping refused <model> for this Work`**: a
+  `tools` or `do` Work's category names a model that returns no tool
+  calls. Fill it with one that does (`hale dna models category
+  <mode>.<size> <model> --tools`).
+- **`` `<name>` is not a hand of this Work ``** / **`` `<path>` is outside the
+  worktree ``**: the hat's grant and the worktree bound every hand; a
+  `..` or `.git` component, a control character or a symbolic link on
+  the way is refused.
 - **`unresolved`**: an `uncertain` performer may have acted. Read the
   attempt's history, then `hale dna effect resolve`.
 - **`declined`**: the budget gate admitted no spend

@@ -912,8 +912,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]");
     eprintln!("                                    which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs");
     eprintln!("                                    (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it");
-    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,");
-    eprintln!("                                    renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
+    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,");
+    eprintln!("                                    renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);");
     eprintln!("                                    loop --parallel N is a worker: N children, each its own holder; loop --drain ends one");
     eprintln!("       hale dna definitions [project] [--json]");
     eprintln!("                                    the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store");
@@ -927,11 +927,12 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
-    eprintln!("       hale dna ingest [project] [--at <rev>]");
-    eprintln!("                                    read the repository's graph again at a commit (HEAD); its difference from the record, one Board Review");
-    eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
-    eprintln!("                                    open a position at run time: its node and its mandate, one Board Review");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
+    eprintln!("       hale dna ingest [project] [--at <rev>]");
+    eprintln!("                                    read the repository's graph again at a commit (HEAD): what differs from the record, tools");
+    eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
+    eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
@@ -1012,7 +1013,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
     eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
     eprintln!("       hale dna review <family> approve|reject");
-    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, using, library (a library family is one Review for all its ideas)");
+    eprintln!("                                    decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -1676,12 +1677,6 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkAllowanceAsk") {
         out.push(format!(
             "note    {}/main.hl binds no `dna::WorkAllowanceAsk` (GH #1131): a leg asks the spine for its attempt's spend before its first model call, and the ask arrives over the nerves; unbound, a leg's attempt is declined with no answer. Add `dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
-            ORG_SEED
-        ));
-    }
-    if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::PositionOpenRequested") {
-        out.push(format!(
-            "note    {}/main.hl binds no `dna::PositionOpenRequested`: a position opened at run time (`hale dna position open`) is asked of the organization over the nerves; unbound, the request is never answered. Add `dna::PositionOpenRequested: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
             ORG_SEED
         ));
     }

@@ -2,11 +2,12 @@
 //
 // `RecordedModel { dir, mode, inner }` wraps any backend. `record`
 // forwards to `inner` and writes what came back under a key made of
-// the fields that identify a request: role, the backend's name and
-// model, the prompt and context digests, the data class, the grant
-// (normalized: its path is not part of the request) and, for a
-// backend that works in place, the digest of the workspace's starting
-// tree; for such a call it also writes the PATCH of what the backend
+// the fields that identify a request: role, the backend's name, the
+// model the request asks for (its mapping's, else the backend's own),
+// the prompt and context digests, the data class, the grant
+// (normalized: its path is not part of the request), for a backend
+// that works in place the digest of the workspace's starting tree, and
+// for a tool loop's request digests of its tools and its turns so far; for such a call it also writes the PATCH of what the backend
 // changed in the workspace — the harness's output before import
 // filtering — so a replay reproduces the edit and everything after it
 // (the import, the grant, fmt, check) runs for real. `replay` answers

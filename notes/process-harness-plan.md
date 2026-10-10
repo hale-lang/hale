@@ -66,7 +66,7 @@ A performer's knowledge today comes from a fixed set of targets: the Work's locu
 
 ## The skeleton
 
-It is done when one cycle from scratch, on canned models, is green three times running:
+It is done when one cycle from scratch, on canned models, is green three times running (`scripts/dna-cycle/cycles.sh 3`):
 
 1. `init`, ratification, filling.
 2. A position opened through the operation layer, with its mandate and a model-mapping default.

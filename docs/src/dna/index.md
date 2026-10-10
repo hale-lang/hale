@@ -42,8 +42,8 @@ one chapter that covers it.
 | **spine** | the program every node runs: it relays the record's requests, projects the record into memory, admits and settles work, runs the workflows | `dna/host/host.hl` over the organization in `dna/org/main.hl` | [The spine](./spine.md) |
 | **legs** | the workers: each claims an attempt through the head, wears its hat, hands the outcome back, and holds nothing between tasks | `dna/core/legs/`, performers in `dna/org/work.hl` | [Legs, hands and voice](./legs.md) |
 | **hat** | one content-addressed context per unit of work | `dna/core/hat.hl` | [Legs, hands and voice](./legs.md) |
-| **hands** | what a leg picks up to act: git, the forge, the toolchain | `dna/core/legs/hands.hl` | [Legs, hands and voice](./legs.md) |
-| **voice** | the one seam to any model: the catalog, the adapters, the tape | `dna/core/models.hl`, `dna/core/tape.hl`, the catalog in `dna/org/models.hl` | [Legs, hands and voice](./legs.md) |
+| **hands** | the tools a Work's output contract gives a performer, and what runs them: git, the forge, the toolchain, the record's reads | `dna/core/contracts.hl`, `dna/core/tools.hl`, `dna/core/legs/hands.hl` | [Legs, hands and voice](./legs.md) |
+| **voice** | the one seam to any model: the catalog, the model mapping, the adapters, the tape | `dna/core/models.hl`, `dna/core/model_map.hl`, `dna/core/tape.hl`, the catalog in `dna/org/models.hl` | [Legs, hands and voice](./legs.md) |
 | **heart** | the application itself; its pulse is the events it publishes on its own subjects, each landed as a reading row | your application's seed; the host lands its events in `dna/host/pulse.hl` | [The heart and the body](./heart.md) |
 | **senses** | the readings every long-running part serves, kept in one store | `dna/core/senses.hl`, the store's config in `dna/senses.yml` | [Senses and reflexes](./senses.md) |
 | **reflexes** | reactions that need no plan: an instance that is down is restarted | `dna/reflexes/main.hl`; the node acts in `dna/host/reflex.hl` | [Senses and reflexes](./senses.md) |

@@ -488,6 +488,31 @@ hale dna fill organization:north bob               # bob is north's member
 A position has one owning organization, and a person belongs to one at
 most.
 
+
+### Opening a position
+
+A position the graph does not state yet is opened through the
+organization, as a fill is:
+
+```sh
+hale dna position open api/steward --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --under api --text "keeps the list's api"
+```
+
+The mandate is required: what the position decides, what it may not
+do, what it cites and what it escalates. `--under` names the part it
+unfolds from; a bare name is the seed, work part, position or process
+the graph states by that name, and a name the graph does not state is
+refused. The organization proposes the position's node and its mandate
+as one Board Review, listed under `positions`:
+
+```text
+proposed opening position:api/steward with its mandate: the Board ratifies it as k:… (`hale dna review` lists it under `positions`)
+```
+
+Ratifying it ratifies both. A name the graph already states, or one
+asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
+holder.
+
 ## How the organization grows
 
 The org chart grows the way the code does: by a proposal the Board

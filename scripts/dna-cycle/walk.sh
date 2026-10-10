@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/dna-cycle/walk.sh — the cycle's walk over the organism up.sh left running
 # ($CYCLE_DIR/current), each step checked against what it must come to (notes/process-harness-plan.md,
-# "Skeleton"):
+# "The skeleton"):
 #
 #   1. a position opened through the operation layer (`hale dna position open`), with its mandate,
 #      ratified and filled, and a model-mapping default for it;

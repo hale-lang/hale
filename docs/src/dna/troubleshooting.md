@@ -664,7 +664,9 @@ The Review did not admit the verdict, and says why:
   digest it shows.
 - `authority … does not satisfy …`: the Review needs a higher
   authority (`board` for a Board-class change).
-- `reviewer … authored the candidate`: sign in your own name.
+- `reviewer … authored the candidate`: someone other than the change's
+  author signs it. A governance proposal requiring the Board (a fill, an
+  opening) admits its author; a change to the work never does.
 - `reviewer … holds no position this Review requires (…)`: a routed
   Review admits only holders of the positions `hale dna route` names.
 
