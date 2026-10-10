@@ -7,9 +7,12 @@
 // `graph.ingested` row names the commit. Each operation of a surface the
 // repository serves is a `tool` node, its effect class `uncertain` until a
 // description says more. The same difference at the same commit is proposed
-// once. The commit is checked out beside the record and removed after.
+// once. The commit is checked out beside the record and removed after. The
+// head knows a position a ratified proposal states, read through the record
+// it admits over, until a reviewed retirement ends it.
 
 import "../core" as dna;
+import "../operations" as ops;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -127,6 +130,20 @@ fn check() {
     std::test::assert(back.code == 0 && std::str::contains(back.stdout, "ingested " + first[0..12] + ": 3 added, 0 changed, 1 retired"), "--at reads that commit: its axiom (and two edges) back, the rename it lacks retired: " + back.stdout + back.stderr);
     let bad = dna_cli(repo, "ingest\n--at\nnot-a-commit");
     std::test::assert(bad.code != 0 && std::str::contains(bad.stderr, "names no commit"), "a name that is no commit is refused: " + bad.stderr);
+
+    // 5. the head knows a position a ratified proposal states, reading the
+    // proposal through the record it admits over (a head over memory has no
+    // repository), until a later ratified proposal retires it
+    let mj = dna::MemJournal { };
+    let kept = dna::FileReceipts { dir: scratch + "/receipts" };
+    let opened = "sha256:" + kept.store("{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.node\", \"entity\": \"position:api/steward\", \"body\": \"{}\"}]}");
+    std::test::assert(mj.append(mj.revision(), "knowledge.proposed", opened, "{\"kind\": \"graph\"}").ok && mj.append(mj.revision(), "knowledge.ratified", opened, "{\"decided_by\": \"ada\"}").ok, "an opening, proposed and ratified");
+    let attempts = ops::AttemptCommandCodec { };
+    std::test::assert(attempts.known_position(mj, kept, "position:api/steward#1"), "the position the ratified proposal states is known");
+    std::test::assert(!attempts.known_position(mj, kept, "position:api/other#1"), "and no other");
+    let gone = "sha256:" + kept.store("{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.retired\", \"entity\": \"position:api/steward\", \"body\": \"{}\"}]}");
+    std::test::assert(mj.append(mj.revision(), "knowledge.proposed", gone, "{\"kind\": \"graph\"}").ok && mj.append(mj.revision(), "knowledge.ratified", gone, "{\"decided_by\": \"ada\"}").ok, "a re-ingest's retirement, ratified");
+    std::test::assert(!attempts.known_position(mj, kept, "position:api/steward#1"), "a reviewed retirement ends it");
     dna::scratch_done(scratch);
 }
 
