@@ -1,0 +1,299 @@
+// dna/tests/scenario_test.hl — the operations of a changing organization,
+// as scenarios that compose.
+//
+// A scenario is a list of steps over one fresh organism: a person's act
+// (`open` a position with its mandate, `fill` it) or the Board's (`ratify`
+// the last proposal), and what must then be true (`expect`). After every
+// step the same invariants hold, whatever the scenario: every hold sits on
+// a position the graph states; every position the graph states has a
+// ratified mandate; reading the organization twice from the record gives
+// the same organization. An operation that is not built yet (vacate, merge,
+// split, adopt or retire a pack, expose, depend, externalize, internalize,
+// graft, extract, absorb, re-parent) fails its scenario, and those
+// scenarios are listed in KNOWN_OPEN and asserted to fail: when an
+// operation lands, its scenario passes and its entry has to go.
+//
+// Opening a position is one Board Review: its node and its mandate are two
+// members of one family, ratified together.
+
+import "../core" as dna;
+
+// The scenarios, one step a line: `open <name> | <mandate>`, `ratify by
+// <reviewer>`, `fill <name> <holder>`, `expect position|mandate <name>`,
+// `expect holds <name> <holder>`, `refused <step>`; `#` is a comment. Steps
+// are proposed by `grace`, who may not ratify them.
+const DEV_TEAM: String = "# a small dev team for a CRUD application
+open api/dev | Decides: how the api is built, within its contract. May not: sign its own changes. Cites: the contract and the practices in force. Escalates: contract changes to the Board.
+ratify by riley
+expect position api/dev
+expect mandate api/dev
+open api/reviewer | Decides: whether a change to the api is ready. May not: write the change it reviews. Cites: the change, its evidence and the practices in force. Escalates: disagreements to the Board.
+ratify by riley
+fill api/dev ada
+ratify by riley
+expect holds api/dev ada
+fill api/reviewer bo
+ratify by riley
+expect holds api/reviewer bo
+";
+
+const OPENED_ONCE: String = "# a position is opened once
+open ops/operator | Decides: when the deployment runs. May not: change code. Cites: the readings. Escalates: incidents to the Board.
+ratify by riley
+expect position ops/operator
+refused open ops/operator | Decides: it again.
+refused open no-mandate |
+";
+
+const UNRATIFIED: String = "# nothing is in force until the Board says so
+open web/dev | Decides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.
+expect no-position web/dev
+ratify by riley
+expect position web/dev
+";
+
+// Operations not built yet: their scenarios fail, as asserted below.
+const TEAM_SHRINKS: String = "# the team shrinks: a holder leaves, two positions become one
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+ratify by riley
+fill api/dev ada
+ratify by riley
+vacate api/dev ada
+merge api/dev api/reviewer
+";
+
+const PACK: String = "# a family of practices comes into force as one unit
+adopt-pack publication
+";
+
+const KNOWN_OPEN: String = "TEAM_SHRINKS vacate\nPACK adopt-pack\n";
+
+main locus App {
+    params {
+        body: dna::Dna = dna::Dna { };
+        repo: String = "";
+        asks: Int = 0;
+        last: String = ""; // the last proposal's digest
+    }
+    bus { publish dna::ReviewVerdict; }
+
+    @unbounded
+    fn row_body(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.body.journal.revision() {
+            let e = self.body.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The digests a ratification lands for a proposal: a family's members,
+    // else the proposal itself.
+    fn members(digest: String) -> String {
+        let req = self.row_body("review.requested", "review:" + dna::knowledge_review_id(digest));
+        let ideas = dna::native_json_string(req, "ideas");
+        if len(ideas) == 0 { return digest + "\n"; }
+        let mut out = "";
+        let mut rest = ideas;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let sp = std::str::index_of(line, " ");
+            if sp > 0 { out = out + line[(sp + 1)..len(line)] + "\n"; }
+        }
+        return out;
+    }
+    @unbounded
+    fn ratified_all(digests: String) -> Bool {
+        let mut rest = digests;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let d = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if len(self.row_body("knowledge.ratified", d)) == 0 { return false; }
+        }
+        return true;
+    }
+
+    // ---- the organization, read from the record
+    // `position <id>`, `mandate <id>` and `holds <id> <holder>` lines, sorted.
+    @unbounded
+    fn org() -> String {
+        let j = self.body.journal;
+        let g = dna::record_graph(j, dna::GitReceipts { repo: self.repo });
+        let seats = dna::HoldsReader { location: self.repo };
+        let mut mandates = "\n"; // `<digest> <target>` of mandate proposals
+        let mut ratified = "\n";
+        let mut retired = "\n";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            seats.take(e);
+            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "mandate" { mandates = mandates + e.entity + " " + std::json::find_string_field(e.body, "target") + "\n"; }
+            if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
+            if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
+            i = i + 1;
+        }
+        let mut lines = "";
+        let mut rest = g.nodes;
+        while len(rest) > 1 {
+            let body = rest[1..len(rest)];
+            let nl = std::str::index_of(body, "\n");
+            let id = body[0..nl];
+            rest = body[nl..len(body)];
+            if std::str::starts_with(id, "position:") {
+                lines = lines + "position " + id + "\n";
+                if self.mandated(mandates, ratified, retired, id) { lines = lines + "mandate " + id + "\n"; }
+            }
+        }
+        rest = g.edges;
+        while len(rest) > 1 {
+            let body = rest[1..len(rest)];
+            let nl = std::str::index_of(body, "\n");
+            let id = body[0..nl];
+            rest = body[nl..len(body)];
+            if std::str::starts_with(id, "holds:") {
+                let bar = std::str::index_of(id, "|");
+                let pos = id[6..bar];
+                let holder = id[(bar + 1)..len(id)];
+                if seats.holds(holder, pos) { lines = lines + "holds " + pos + " " + holder + "\n"; }
+            }
+        }
+        return lines;
+    }
+    @unbounded
+    fn mandated(mandates: String, ratified: String, retired: String, position: String) -> Bool {
+        let mut rest = mandates;
+        while len(rest) > 1 {
+            let body = rest[1..len(rest)];
+            let nl = std::str::index_of(body, "\n");
+            let line = body[0..nl];
+            rest = body[nl..len(body)];
+            let sp = std::str::index_of(line, " ");
+            let d = line[0..sp];
+            if line[(sp + 1)..len(line)] == position && std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") { return true; }
+        }
+        return false;
+    }
+    // The invariants every step keeps; "" when they hold, else what broke.
+    @unbounded
+    fn broken(org: String) -> String {
+        if org != self.org() { return "reading the organization twice gave two organizations"; }
+        let mut rest = org;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if std::str::starts_with(line, "holds ") {
+                let tail = line[6..len(line)];
+                let pos = tail[0..std::str::index_of(tail, " ")];
+                if !std::str::contains(org, "position " + pos + "\n") { return "a hold on `" + pos + "`, which the graph does not state"; }
+            }
+            if std::str::starts_with(line, "position ") && !std::str::contains(org, "mandate " + line[9..len(line)] + "\n") { return "`" + line[9..len(line)] + "` has no ratified mandate"; }
+        }
+        return "";
+    }
+
+    // ---- the steps
+    // What the step did: "" when it did what it says, else why not.
+    @unbounded
+    fn step(line: String) -> String {
+        if std::str::starts_with(line, "open ") {
+            let bar = std::str::index_of(line, "|");
+            let name = std::str::trim(line[5..(if bar < 0 { len(line) } else { bar })]);
+            let mandate = if bar < 0 { "" } else { std::str::trim(line[(bar + 1)..len(line)]) };
+            self.asks = self.asks + 1;
+            let id = "p" + to_string(self.asks);
+            self.body.on_position_requested(dna::PositionOpenRequest { request_id: id, position: "position:" + name, text: "The position " + name + ".", mandate: mandate, by: "grace" });
+            let proposed = self.row_body("position.proposed", id);
+            if len(proposed) == 0 { return "not proposed: " + self.row_body("position.refused", id); }
+            self.last = std::json::find_string_field(proposed, "digest");
+            return "";
+        }
+        if std::str::starts_with(line, "fill ") {
+            let rest = std::str::trim(line[5..len(line)]);
+            let sp = std::str::index_of(rest, " ");
+            self.asks = self.asks + 1;
+            let id = "h" + to_string(self.asks);
+            self.body.on_hold_requested(dna::HoldRequest { request_id: id, position: "position:" + rest[0..sp], holder: rest[(sp + 1)..len(rest)], by: "grace" });
+            let proposed = self.row_body("hold.proposed", id);
+            if len(proposed) == 0 { return "not proposed: " + self.row_body("hold.refused", id); }
+            self.last = std::json::find_string_field(proposed, "digest");
+            return "";
+        }
+        if std::str::starts_with(line, "ratify by ") {
+            if len(self.last) == 0 { return "nothing to ratify"; }
+            let reviewer = std::str::trim(line[10..len(line)]);
+            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.last), subject_digest: self.last, verdict: "approve", reviewer: reviewer, authority: "board" };
+            let wanted = self.members(self.last);
+            let mut tries = 0;
+            while tries < 400 * dna::wait_scale() && !self.ratified_all(wanted) {
+                std::time::sleep(25ms);
+                let moved = self.body.journal.refresh();
+                tries = tries + 1;
+            }
+            return if self.ratified_all(wanted) { "" } else { "not ratified within the deadline" };
+        }
+        if std::str::starts_with(line, "expect ") {
+            let what = std::str::trim(line[7..len(line)]);
+            let org = self.org();
+            if std::str::starts_with(what, "no-position ") { return if std::str::contains(org, "position position:" + what[12..len(what)] + "\n") { "`" + what[12..len(what)] + "` is stated" } else { "" }; }
+            if std::str::starts_with(what, "holds ") {
+                let tail = what[6..len(what)];
+                let sp = std::str::index_of(tail, " ");
+                let want = "holds position:" + tail[0..sp] + " " + tail[(sp + 1)..len(tail)] + "\n";
+                return if std::str::contains(org, want) { "" } else { "not held: " + want + "in\n" + org };
+            }
+            let sp = std::str::index_of(what, " ");
+            let want = what[0..sp] + " position:" + what[(sp + 1)..len(what)] + "\n";
+            return if std::str::contains(org, want) { "" } else { "missing: " + want + "in\n" + org };
+        }
+        if std::str::starts_with(line, "refused ") {
+            let why = self.step(line[8..len(line)]);
+            return if len(why) > 0 { "" } else { "was not refused" };
+        }
+        let sp = std::str::index_of(line, " ");
+        return "not built: `" + (if sp < 0 { line } else { line[0..sp] }) + "`";
+    }
+    // A scenario on a fresh organism: "" when every step did what it says
+    // and every invariant held after it, else the step and why.
+    @unbounded
+    fn scenario(name: String, text: String) -> String {
+        self.repo = dna::scratch_root("scenario-" + name);
+        std::io::fs::mkdir(self.repo + "/.hale") or discard;
+        std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
+        let init = dna::run_tool("git\n-C\n" + self.repo + "\ninit\n-q\n-b\nmain");
+        self.body = dna::Dna {
+            journal: dna::GitJournal { repo: self.repo },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: self.repo }, repo: self.repo },
+            board: dna::Board { who: "board" }
+        };
+        self.last = "";
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(line) == 0 || std::str::starts_with(line, "#") { continue; }
+            let why = self.step(line);
+            if len(why) > 0 { return line + ": " + why; }
+            let broken = self.broken(self.org());
+            if len(broken) > 0 { return "after `" + line + "`: " + broken; }
+        }
+        dna::scratch_done(self.repo);
+        return "";
+    }
+    run() {
+        std::test::assert_eq_str(self.scenario("dev-team", DEV_TEAM), "", "a small dev team is opened, filled and ratified, the invariants holding at every step");
+        std::test::assert_eq_str(self.scenario("opened-once", OPENED_ONCE), "", "a stated position is not opened twice, and none opens without a mandate");
+        std::test::assert_eq_str(self.scenario("unratified", UNRATIFIED), "", "nothing is in force until the Board ratifies it");
+        // the known-open table: each fails at the operation it names
+        let shrinks = self.scenario("team-shrinks", TEAM_SHRINKS);
+        std::test::assert(std::str::contains(shrinks, "not built: `vacate`") && std::str::contains(KNOWN_OPEN, "TEAM_SHRINKS vacate"), "known open: vacating a position is not built: " + shrinks);
+        let pack = self.scenario("pack", PACK);
+        std::test::assert(std::str::contains(pack, "not built: `adopt-pack`") && std::str::contains(KNOWN_OPEN, "PACK adopt-pack"), "known open: adopting a pack is not built: " + pack);
+    }
+}
+fn main() { App { }; }

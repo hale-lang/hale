@@ -148,7 +148,7 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | money reserved against grants | spend reserved, settled and compensated under a grant's windows: [The spine](./dna/spine.md) |
 | `runs_under`, policies rendered as projections, per-attachment credentials | **not built**: reserved as a relation for the compiler's registry (GH #1212) |
 | serving a surface over a transport, and placing a locus | `api::serve` over unix and HTTP, `hale api describe` and `call`: [API](./services/api.md); pools and programs: [Concurrency & placement](./services/concurrency.md) |
-| filling a position | `hale dna fill`, ratified by the Board: [Reference](./dna/reference.md) |
-| the other operations on a changing structure: vacate, merge, split, packs, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built** |
+| opening and filling a position | `hale dna position open` (its node and its mandate, one Board Review) and `hale dna fill`, each ratified by the Board: [Reference](./dna/reference.md) |
+| the other operations on a changing structure: vacate, merge, split, packs, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built**; each has a scenario asserted to fail until it is (`dna/tests/scenario_test.hl`) |
 | standard equipment | **not built** |
 | finance capture and books | **not built** |

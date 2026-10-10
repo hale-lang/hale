@@ -133,6 +133,31 @@ locus App {
         }
         return Filled { answer: "", stderr: r.stderr };
     }
+    // A position opened (`hale dna position open`), as `fill`: the CLI's
+    // answer, or the organization's read from the record when it answers
+    // after the CLI stopped waiting.
+    @unbounded
+    fn open_position(args: String, secs: Int) -> Filled {
+        let r = self.dna("position\nopen\n" + args);
+        if r.code == 0 { return Filled { answer: "proposed: " + r.stdout, stderr: r.stderr }; }
+        let cut = std::str::index_of(r.stderr, "journaled no answer for ");
+        if cut < 0 { return Filled { answer: "cli: " + r.stdout + r.stderr, stderr: r.stderr }; }
+        let after = r.stderr[(cut + 24)..len(r.stderr)];
+        let id = after[0..std::str::index_of(after, " ")];
+        let deadline = std::time::now() + secs;
+        while std::time::now() <= deadline {
+            let j = dna::GitJournal { repo: self.repo };
+            let mut i = 0;
+            while i < j.revision() {
+                let e = j.read(i);
+                if e.entity == id && e.kind == "position.proposed" { return Filled { answer: "proposed: " + e.body, stderr: r.stderr }; }
+                if e.entity == id && e.kind == "position.refused" { return Filled { answer: "refused: " + std::json::find_string_field(e.body, "why"), stderr: r.stderr }; }
+                i = i + 1;
+            }
+            std::time::sleep(500ms);
+        }
+        return Filled { answer: "", stderr: r.stderr };
+    }
     // A verdict on one Review, written without the CLI's wait, and the
     // Review's answer read from the record: `settled: <body>` or
     // `refused: <body>`, "" when none came in `secs`. After the Board's
@@ -343,6 +368,19 @@ locus App {
         std::test::assert(std::str::starts_with(seated, "settled: approve"), "nobody holds the board yet, so its authority ratifies: " + seated);
         let boarded = self.show_until(head, "  board [ada] {mandate: pending}\n", 240);
         std::test::assert(std::str::contains(boarded, "  board [ada] {mandate: pending}\n"), "ada holds the board: " + boarded);
+
+        // ---- a position opened at run time: its node and its mandate, one
+        // Review the Board decides once (`hale dna position open`)
+        let opened = self.open_position("web/dev\n--mandate\nDecides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.\n--as\ngrace", 900);
+        std::test::assert(std::str::starts_with(opened.answer, "proposed: "), "grace proposes opening web/dev: " + opened.answer + opened.stderr);
+        let listed_positions = self.dna("review");
+        std::test::assert(std::str::contains(listed_positions.stdout, "positions — 1 position(s) to open, each with its mandate"), "listed under positions: " + listed_positions.stdout);
+        let opening = self.decide(self.review_of("ratify opening the position `web/dev`, with its mandate, as grace proposes"), "approve\n--as\nada", 900);
+        std::test::assert(std::str::starts_with(opening, "settled: approve"), "the Board, ada, ratifies the opening as one Review: " + opening);
+        let twice = self.open_position("web/dev\n--mandate\nDecides: it again.\n--as\ngrace", 900);
+        std::test::assert(std::str::contains(twice.answer, "already a position"), "a position is opened once: " + twice.answer);
+        let staffed = self.fill("web/dev\nbob\n--as\ngrace", 900);
+        std::test::assert(std::str::starts_with(staffed.answer, "proposed: "), "and the opened position is filled as any: " + staffed.answer + staffed.stderr);
         let proposed = self.dna("practice\npropose\nsmall-commits\n--text\nkeep each commit to one change\n--as\ngrace");
         std::test::assert_eq_int(proposed.code, 0, "grace proposes a practice: " + proposed.stderr);
         // the organization proposes it and opens its Review: its id from the

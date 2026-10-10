@@ -114,6 +114,150 @@ locus PositionRecord {
         a.end_object();
         return append_once(self.journal, "hold.proposed", r.request_id, a.result());
     }
+    // A position opened at run time (`PositionOpenRequest`): its node (the
+    // body `init` writes for a hole, `unfold` from the part it is under when
+    // one is named) and its mandate proposed as two members of ONE family
+    // Review, the node first, so the Board decides the operation once and
+    // ratifying it ratifies both. Answered once, however often relayed. The
+    // family's digest; "" when answered already, refused (a name the graph
+    // already states, no mandate, no proposer), or a receipt or row pending.
+    @unbounded
+    fn open_asked(r: PositionOpenRequest) -> String {
+        if len(r.request_id) == 0 { return ""; }
+        if len(first_row(self.journal, "position.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "position.refused", r.request_id).kind) > 0 { return ""; }
+        let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else { "" };
+        let mut why = "";
+        if len(name) == 0 || std::str::contains(name, "|") || std::str::contains(name, " ") { why = "a position is named `position:<name>`, with no space or `|`"; }
+        else if len(std::str::trim(r.mandate)) == 0 { why = "a position is opened with its mandate: what it decides, may not do, cites and escalates"; }
+        else if len(r.by) == 0 { why = "a position is opened by someone: the Review's author"; }
+        else if record_graph_has(record_graph(self.journal, self.receipts).nodes, r.position) { why = "`" + r.position + "` is a position the graph already states"; }
+        if len(why) > 0 {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("why", why);
+            rb.end_object();
+            let x = append_once(self.journal, "position.refused", r.request_id, rb.result());
+            return "";
+        }
+        let node = std::json::Builder { };
+        node.begin_object();
+        node.string_field("kind", "position");
+        node.string_field("name", name);
+        node.string_field("text", r.text);
+        node.begin_object_field("equipment");
+        node.begin_array_field("roles");
+        node.end_array();
+        node.end_object();
+        node.end_object();
+        let question = "ratify opening the position `" + name + "`, with its mandate, as " + r.by + " proposes";
+        let g = std::json::Builder { };
+        g.begin_object();
+        g.string_field("author", r.by);
+        g.string_field("kind", "graph");
+        g.string_field("name", "position/" + name);
+        g.string_field("provenance", "proposed by " + r.by);
+        g.string_field("question", question);
+        g.begin_array_field("rows");
+        g.begin_object();
+        g.string_field("kind", "graph.node");
+        g.string_field("entity", r.position);
+        g.string_field("body", node.result());
+        g.end_object();
+        if len(r.under) > 0 {
+            let e = std::json::Builder { };
+            e.begin_object();
+            e.string_field("kind", "unfold");
+            e.begin_array_field("members");
+            e.begin_object(); e.string_field("role", "parent"); e.string_field("node", r.under); e.end_object();
+            e.begin_object(); e.string_field("role", "child"); e.string_field("node", r.position); e.end_object();
+            e.end_array();
+            e.end_object();
+            g.begin_object();
+            g.string_field("kind", "graph.edge");
+            g.string_field("entity", "unfold:" + r.under + "|" + r.position);
+            g.string_field("body", e.result());
+            g.end_object();
+        }
+        g.end_array();
+        g.string_field("target", r.position);
+        g.string_field("text", if len(r.text) > 0 { r.text } else { "The position " + name + "." });
+        g.end_object();
+        let m = std::json::Builder { };
+        m.begin_object();
+        m.string_field("author", r.by);
+        m.string_field("kind", "mandate");
+        m.string_field("name", "mandate/" + name);
+        m.string_field("provenance", "proposed by " + r.by);
+        m.string_field("target", r.position);
+        m.string_field("text", r.mandate);
+        m.end_object();
+        let graph_digest = self.kept(g.result());
+        let mandate_digest = self.kept(m.result());
+        if len(graph_digest) == 0 || len(mandate_digest) == 0 { return ""; }
+        let ideas = "position/" + name + " " + graph_digest + "\nmandate/" + name + " " + mandate_digest + "\n";
+        let f = std::json::Builder { };
+        f.begin_object();
+        f.string_field("author", r.by);
+        f.int_field("count", 2);
+        f.string_field("ideas", ideas);
+        f.string_field("kind", "family");
+        f.string_field("name", "position/" + name);
+        f.string_field("provenance", "proposed by " + r.by);
+        f.end_object();
+        let family = self.kept(f.result());
+        if len(family) == 0 { return ""; }
+        if !self.member(graph_digest, "graph", r.by, r.position, "position/" + name) { return ""; }
+        if !self.member(mandate_digest, "mandate", r.by, r.position, "mandate/" + name) { return ""; }
+        let review_id = knowledge_review_id(family);
+        let q = std::json::Builder { };
+        q.begin_object();
+        q.string_field("question", question);
+        q.string_field("subject_digest", family);
+        q.string_field("required_authority", "board");
+        q.string_field("author", r.by);
+        q.string_field("knowledge_digest", family);
+        q.string_field("kind", "family");
+        q.string_field("target", r.position);
+        q.string_field("group", "positions");
+        q.string_field("name", "position/" + name);
+        q.int_field("count", 2);
+        q.string_field("ideas", ideas);
+        q.end_object();
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
+        return family;
+    }
+    // A receipt kept, read back: its digest, "" while it is not.
+    fn kept(doc: String) -> String {
+        let raw = self.receipts.store(doc);
+        if len(raw) != 64 || self.receipts.read(raw) != doc { return ""; }
+        return "sha256:" + raw;
+    }
+    // A member of an opening's family: proposed with no Review of its own;
+    // the family's is its Review.
+    fn member(digest: String, kind: String, by: String, target: String, name: String) -> Bool {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("kind", kind);
+        b.string_field("author", by);
+        b.string_field("target", target);
+        b.string_field("class", "initiative");
+        b.string_field("name", name);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        return append_once(self.journal, "knowledge.proposed", digest, b.result());
+    }
+    // The opening's own row once its Review is born.
+    fn open_proposed(r: PositionOpenRequest, family: String) -> Bool {
+        let a = std::json::Builder { };
+        a.begin_object();
+        a.string_field("digest", family);
+        a.string_field("review_id", knowledge_review_id(family));
+        a.string_field("position", r.position);
+        a.string_field("by", r.by);
+        a.end_object();
+        return append_once(self.journal, "position.proposed", r.request_id, a.result());
+    }
 }
 
 // The name of what a hold is for: the position's, or the organization's

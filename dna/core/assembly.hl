@@ -484,6 +484,7 @@ locus Dna {
         subscribe ConcernRaised as on_concern;
         subscribe PracticeRequested as on_practice_requested;
         subscribe HoldRequested as on_hold_requested;
+        subscribe PositionOpenRequested as on_position_requested;
         subscribe ScheduleRequested as on_schedule_requested;
         subscribe KnowledgeNodeRequested as on_knowledge_node_requested;
         subscribe KnowledgeBindingRequested as on_knowledge_binding_requested;
@@ -1887,6 +1888,17 @@ locus Dna {
         if !self.ensure_knowledge_review(review_id) { return; }
         if !self.positions.proposed(r, digest) { return; }
         self.board.notify("holds", r.by + " proposes " + r.holder + " for " + hold_name(r) + ": the Board's to ratify as " + review_id);
+    }
+    // A position opened at run time: its node and mandate proposed as one
+    // family, the Board's one Review.
+    fn on_position_requested(r: PositionOpenRequest) {
+        let moved = self.journal.refresh();
+        let family = self.positions.open_asked(r);
+        if len(family) == 0 { return; }
+        let review_id = knowledge_review_id(family);
+        if !self.ensure_knowledge_review(review_id) { return; }
+        if !self.positions.open_proposed(r, family) { return; }
+        self.board.notify("positions", r.by + " proposes opening " + r.position + ": the Board's to ratify as " + review_id);
     }
     // A generic knowledge command carries the exact native document it means
     // to propose. Delivery is the host's trust boundary; the started row is
