@@ -2039,8 +2039,9 @@ memory is named to it.
   handed back as `result_ref: commit:<sha>` with the commit's patch as
   the first receipt. A hand outside the hat's `tool_grant`, or a path
   outside the worktree or into its `.git` (a `..` or `.git` component in
-  any case or spelling, or a symbolic link anywhere on the way), is
-  refused as the call's answer. `record_history` reads the execution its
+  any case or spelling, a control character, or a symbolic link anywhere
+  on the way), is refused as the call's answer; a changed file git can
+  only name quoted is refused by `validate` rather than passed unchecked. `record_history` reads the execution its
   id belongs to (`/dna/workflows?id=<task>`). A `RecordedModel` keys a
   loop's request on its tools and turns too and keeps the tool calls it
   returned, so a replay follows the same turns. Each model call is a `calls` entry (its response digest

@@ -37,13 +37,21 @@ fn tools_for_model(hands: String) -> String {
     return b.result();
 }
 
-// A path a tool may touch, as spelled: relative, no `..` among its
+// A path a tool may touch, as spelled: relative, no control character
+// (a newline would split the argument the confinement check is handed, so
+// the path checked would not be the path used), no `..` among its
 // components, and no `.git` (in any case) among them either, however the
 // path is written (`./.git`, `a//.git/x`). Where it leads is checked too:
 // `ToolBench.confined` refuses a symlink on the way.
 @unbounded
 fn worktree_path_ok(path: String) -> Bool {
     if len(path) == 0 || std::str::starts_with(path, "/") { return false; }
+    let mut i = 0;
+    while i < len(path) {
+        let c = std::str::byte_at_unchecked(path, i);
+        if c < 32 || c == 127 { return false; }
+        i = i + 1;
+    }
     let mut rest = path + "/";
     while len(rest) > 0 {
         let sl = std::str::index_of(rest, "/");
@@ -150,31 +158,37 @@ locus ToolBench {
         let walked = dna::run_tool("sh\n-c\ncd \"$1\" || exit 2; IFS=/; set -f; p=; for c in $2; do [ -z \"$c\" ] && continue; p=\"${p:+$p/}$c\"; [ -L \"$p\" ] && exit 1; done; exit 0\nsh\n" + self.worktree + "\n" + target);
         return walked.code == 0;
     }
-    // The seeds a change touched: the directory of each file changed since
-    // the base (the root, `.`, for a file at the top), when it holds Hale
-    // source, space-separated; a nested seed is its own.
+    // The seeds a change touched, one a line: the directory of each file
+    // changed since the base (the root, `.`, for a file at the top), when it
+    // holds Hale source; a nested seed is its own. The changed files are
+    // read unquoted (`core.quotePath=false`: a name with a space or beyond
+    // ASCII as it is); a name git still quotes (a control character, a
+    // quote, a backslash) cannot be read back reliably, so it comes back as
+    // `!<name>`, which `validate` refuses rather than passes unchecked.
     @unbounded
     fn touched_seeds() -> String {
-        let st = dna::run_tool("git\n-C\n" + self.worktree + "\nstatus\n--porcelain\n--untracked-files=all");
-        let diff = dna::run_tool("git\n-C\n" + self.worktree + "\ndiff\n--name-only\n" + self.base + "\nHEAD");
-        let mut out = " ";
-        let v = std::str::bytes_view(st.stdout + "\n" + diff.stdout);
+        let changed = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\nls-files\n--modified\n--deleted\n--others\n--exclude-standard");
+        let staged = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--cached");
+        let committed = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n" + self.base + "\nHEAD");
+        let mut out = "\n";
+        let v = std::str::bytes_view(changed.stdout + "\n" + staged.stdout + "\n" + committed.stdout);
         let mut at = 0;
         while at < v.n {
             let mut end = at;
             while end < v.n && std::str::byte_at(v, end) != 10 { end = end + 1; }
-            let line = std::str::trim(std::str::slice(v, at, end));
-            // `git status --porcelain` prefixes two status letters and a space
-            let file = if len(line) > 3 && std::str::index_of(line, " ") == 2 { line[3..len(line)] } else if len(line) > 3 && std::str::index_of(line, " ") == 1 { line[2..len(line)] } else { line };
-            if len(file) > 0 && !std::str::ends_with(file, ".md") {
-                let dir = dir_of(file);
-                let seed = if len(dir) == 0 { "." } else { dir };
-                // a seed is a directory of Hale source; a file elsewhere
-                // (compose, docs, data) is the owner's to verify
-                if !std::str::contains(out, " " + seed + " ") && dna::holds_source(if seed == "." { self.worktree } else { self.worktree + "/" + seed }) { out = out + seed + " "; }
-            }
+            let file = std::str::slice(v, at, end);
             at = end + 1;
+            if len(file) == 0 || std::str::ends_with(file, ".md") { continue; }
+            if std::str::starts_with(file, "\"") {
+                if !std::str::contains(out, "\n!" + file + "\n") { out = out + "!" + file + "\n"; }
+                continue;
+            }
+            let dir = dir_of(file);
+            let seed = if len(dir) == 0 { "." } else { dir };
+            // a seed is a directory of Hale source; a file elsewhere
+            // (compose, docs, data) is the owner's to verify
+            if !std::str::contains(out, "\n" + seed + "\n") && dna::holds_source(if seed == "." { self.worktree } else { self.worktree + "/" + seed }) { out = out + seed + "\n"; }
         }
-        return std::str::trim(out);
+        return out[1..len(out)];
     }
 }

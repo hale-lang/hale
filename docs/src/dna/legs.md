@@ -380,8 +380,9 @@ A `tools` Work's hands are the head's reads (`record_status`,
 `record_history`, the whole execution an id belongs to, and
 `org_chart`), and its answer is text. A hand the hat does not give, or
 a path outside the worktree, is refused and the refusal is the call's
-answer: `..` or `.git` in any spelling, or a symbolic link anywhere on
-the way, since a link in a clone may lead anywhere. Every model call is evidence (each turn
+answer: `..` or `.git` in any spelling, a control character, or a
+symbolic link anywhere on the way, since a link in a clone may lead
+anywhere. Every model call is evidence (each turn
 its own `Idempotency-Key`, `<attempt>:call:<turn>`), every tool call a
 row of the `tool-calls` receipt (the hand, digests of what it was given
 and what it answered, why it failed), and the loop ends at

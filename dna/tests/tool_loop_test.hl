@@ -150,6 +150,7 @@ fn check() {
     // 5. a path outside the worktree is refused, however it is spelled
     std::test::assert(!legs::worktree_path_ok("../escape.hl") && !legs::worktree_path_ok("/etc/passwd") && !legs::worktree_path_ok(".git/config") && legs::worktree_path_ok("app/main.hl"), "a tool touches the worktree alone");
     std::test::assert(!legs::worktree_path_ok("./.git/config") && !legs::worktree_path_ok(".//.git/config") && !legs::worktree_path_ok("app/.GIT/x") && !legs::worktree_path_ok("app/../../x") && legs::worktree_path_ok("./app/main.hl"), "`.git` and `..` are refused in any spelling");
+    std::test::assert(!legs::worktree_path_ok("ordinary\nlink/x.hl") && !legs::worktree_path_ok("a\tb") && legs::worktree_path_ok("my app/main.hl"), "a control character is refused, a space is not: the path checked is the path used");
 
     // 6. a symbolic link in the repository is never followed: it may lead
     // anywhere (here, a directory beside the repository)
@@ -187,6 +188,20 @@ fn check() {
     let p7 = performer(nested, t7, 8);
     let deep = p7.perform_loop(b1, hands, request_of(b1), -1, "do");
     std::test::assert(deep.disposition == "done" && deep.result == "fixed" && calls_in(deep.calls) == 4, "the nested seed's validators refused the broken edit: " + deep.narrative + " " + deep.calls);
+    // and a seed whose directory's name has a space is still that directory
+    let s1 = sh("mkdir\n-p\n" + nested + "/my app");
+    std::io::fs::write_file(nested + "/my app/main.hl", "fn main() {\n    println(\"one\");\n}\n") or discard;
+    let s2 = sh("git\n-C\n" + nested + "\nadd\n-A");
+    let s3 = sh("git\n-C\n" + nested + "\n-c\nuser.name=t\n-c\nuser.email=t@t\ncommit\n-q\n-m\na spaced seed");
+    let t7b = root + "/turns7b";
+    let m7b = sh("mkdir\n-p\n" + t7b);
+    turn(t7b, 1, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"my app/main.hl\", \"text\": \"fn main() {\\n    println(\\\"two\\\")\\n\"}}]}");
+    turn(t7b, 2, "{\"content\": \"done\"}");
+    turn(t7b, 3, "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"my app/main.hl\", \"text\": \"fn main() {\\n    println(\\\"two\\\");\\n}\\n\"}}]}");
+    turn(t7b, 4, "{\"content\": \"fixed\"}");
+    let p7b = performer(nested, t7b, 8);
+    let spaced = p7b.perform_loop(b1, hands, request_of(b1), -1, "do");
+    std::test::assert(spaced.disposition == "done" && spaced.result == "fixed" && calls_in(spaced.calls) == 4, "a spaced seed's validators refused the broken edit: " + spaced.narrative + " " + spaced.calls);
 
     // 8. a taped loop replays turn by turn: the tape keeps each turn's tool
     // calls, and keys each request on its tools and its turns so far

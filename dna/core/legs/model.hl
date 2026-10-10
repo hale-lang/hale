@@ -375,11 +375,15 @@ locus ModelPerformer {
     fn validate(bench: ToolBench, hands: Hands, validators: String) -> String {
         let seeds = bench.touched_seeds();
         let mut out = "";
-        let mut rest = seeds + " ";
-        while len(std::str::trim(rest)) > 0 {
-            let sp = std::str::index_of(rest, " ");
-            let seed = rest[0..sp];
-            rest = rest[(sp + 1)..len(rest)];
+        let mut rest = seeds;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let seed = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::str::starts_with(seed, "!") {
+                out = out + "a changed file git can only name quoted (" + seed[1..len(seed)] + ") cannot be validated: name it without a control character, quote or backslash\n";
+                continue;
+            }
             let mut vs = validators + " ";
             while len(std::str::trim(vs)) > 0 {
                 let vp = std::str::index_of(vs, " ");
