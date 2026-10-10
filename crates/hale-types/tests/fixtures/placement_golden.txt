@@ -10932,7 +10932,7 @@ dynamic	__StdJsonBuilder	on unknown (`performer` passed as a value)|unknown (no 
 -- dynamic	sites in core/legs
 dynamic	__StdJsonBuilder	on unknown (`performer` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core__legs___client__Head	on unknown (`performer` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on unknown (`performer` passed as a value)
+dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on unknown (`performer` passed as a value)|unknown (no instance)
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core___models__FakeModel	on unknown (`performer` passed as a value)

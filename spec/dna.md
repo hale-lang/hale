@@ -2043,6 +2043,16 @@ memory is named to it.
   `{"tool_calls": [{turn, name, arguments_digest, ok, output_digest,
   output_bytes, error}]}`. The loop is bounded by `max_turns` (16) and
   the attempt's allowance.
+- **A person's session** runs the same hands one call at a time: `hale
+  dna work hand --attempt <a> --name <hand> --args <json>` (and `hale
+  mcp`'s `hale_dna_hand`) reads the attempt's hat from the head and runs
+  the named hand through the same bench, a file hand in a clone of the
+  repository kept per attempt under `.hale/dna/work/` with its base
+  recorded beside it; `submit --from-worktree` runs the hat's
+  validators over the touched directories, refuses on a failure, and
+  otherwise submits one commit on that base as `result_ref:
+  commit:<sha>` with its patch as the first receipt, then removes the
+  kept clone.
 - **The claim** is taken at the head. The filter names the performer
   kind and identity, the capabilities the leg has, the data classes it
   may see, the owners it works for and a TTL. The identity is a

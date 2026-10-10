@@ -311,7 +311,7 @@ locus ModelPerformer {
                 }
             } else if mode == "do" {
                 // the answer stands once the validators pass on every seed touched
-                let refused = self.validate(bench, hands, validators);
+                let refused = bench.validate(hands, validators);
                 if len(refused) == 0 {
                     answer = if len(r.output) > 0 { r.output } else { "done" };
                 } else {
@@ -368,30 +368,6 @@ locus ModelPerformer {
             r = self.asked(brief, req);
         }
         return r;
-    }
-    // The validators' refusals over every seed the change touched, "" when
-    // all pass (or nothing was touched: the answer is then judged as it is).
-    @unbounded
-    fn validate(bench: ToolBench, hands: Hands, validators: String) -> String {
-        let seeds = bench.touched_seeds();
-        let mut out = "";
-        let mut rest = seeds + " ";
-        while len(std::str::trim(rest)) > 0 {
-            let sp = std::str::index_of(rest, " ");
-            let seed = rest[0..sp];
-            rest = rest[(sp + 1)..len(rest)];
-            let mut vs = validators + " ";
-            while len(std::str::trim(vs)) > 0 {
-                let vp = std::str::index_of(vs, " ");
-                let v = vs[0..vp];
-                vs = vs[(vp + 1)..len(vs)];
-                if len(v) > 0 && len(seed) > 0 {
-                    let done = bench.call(hands, v, "{\"path\": " + dna::record_json_quote(seed) + "}");
-                    if !done.ok { out = out + v + " " + seed + ": " + done.error + "\n"; }
-                }
-            }
-        }
-        return out;
     }
     @unbounded
     fn perform(brief: Brief, hands: Hands) -> Performance {

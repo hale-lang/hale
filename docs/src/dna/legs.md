@@ -79,7 +79,8 @@ verb's id. Every verb takes `--api`.
 | `brief` | reads the hat, or renders it | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
 | `renew` | extends the lease and keeps the token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (1, 2, … per renewal) |
 | `allowance` | asks the spine for the attempt's spend, and waits (`AttemptAllowance`) | `--as`, `--attempt`, `--token`, `--wait` (60) |
-| `submit` | hands the outcome back under the lease (`AttemptOutcome`) | `--as`, `--attempt`, `--token`, `--result` or `--result-file`, `--disposition` (`done`), `--narrative`, `--evidence-file`, `--receipt-file`, `--receipt-class` (`internal`), `--effect`; the hat it wore: `--hat-digest`, `--hat-head`, `--hat-watermark`, `--prompt-digest`, `--renderer` |
+| `hand` | runs one of the Work's hands here: a file hand in the attempt's kept worktree, an infrastructure hand through the head | `--attempt`, `--name`, `--args` (JSON, as the hand's schema says) |
+| `submit` | hands the outcome back under the lease (`AttemptOutcome`) | `--as`, `--attempt`, `--token`, `--from-worktree` (the kept worktree, validated and committed), `--result` or `--result-file`, `--disposition` (`done`), `--narrative`, `--evidence-file`, `--receipt-file`, `--receipt-class` (`internal`), `--effect`; the hat it wore: `--hat-digest`, `--hat-head`, `--hat-watermark`, `--prompt-digest`, `--renderer` |
 | `settle` | reads the outcome back until the owner answers (`CommandLookup`) | `--attempt`, `--token`, `--wait` (0) |
 | `release` | gives the lease back with no outcome (`AttemptRelease`) | `--as`, `--attempt`, `--token`, `--why` |
 | `friction` | files what got in the way, a row nobody admits (`FrictionFile`) | `--as`, `--text`, `--attempt` |
@@ -450,6 +451,31 @@ with `submit --evidence-file calls.json`, a JSON array of
 `model.called` bodies, each naming its `adapter`. Calls that cost more
 than was granted, or anything when nothing was asked, settle the
 attempt `failed`, naming the overrun.
+
+## A person's session
+
+A person can work a Work with an agent of their own, a coding assistant
+in their editor, say, and still have the organization's hat and hands.
+`hale mcp` gives that agent two tools: `hale_dna_work` for the verbs
+(`next` to claim, `brief` for the hat) and `hale_dna_hand` to run one of
+the Work's hands by name, with its arguments. Every hand runs on the
+person's machine: a file hand (`read`, `edit`, `check`, `test`, `fmt`,
+`patch`) in a worktree kept for the attempt under the project's
+`.hale/dna/work/`, a clone of the repository at its `HEAD`; an
+infrastructure hand through the head's reads. A hand the hat does not
+give is refused, as it is to a model leg. When the change is ready,
+`submit --from-worktree` runs the hat's validators over every touched
+directory holding Hale source, refuses the change if one fails, and
+otherwise hands back one commit on the base with its patch, which the
+owner applies, verifies and reviews as any leg's; the kept worktree
+goes with it.
+
+```sh
+hale dna work next --as position:api/dev
+hale dna work hand --attempt <attempt> --name read --args '{"path": "api/todo.hl"}'
+hale dna work hand --attempt <attempt> --name edit --args '{"path": "api/todo.hl", "text": "…"}'
+hale dna work submit --as position:api/dev --attempt <attempt> --token <n> --from-worktree --result "…"
+```
 
 ## How it breaks
 

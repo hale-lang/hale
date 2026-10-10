@@ -121,6 +121,30 @@ locus ToolBench {
         if name == "fmt" { return hands.toolchain.fmt_check(at); }
         return HandResult { error: "the leg has no hand named `" + name + "`" };
     }
+    // The validators' refusals over every seed the change touched, "" when
+    // all pass (or nothing was touched: the answer is then judged as it is).
+    @unbounded
+    fn validate(hands: Hands, validators: String) -> String {
+        let seeds = self.touched_seeds();
+        let mut out = "";
+        let mut rest = seeds + " ";
+        while len(std::str::trim(rest)) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let seed = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            let mut vs = validators + " ";
+            while len(std::str::trim(vs)) > 0 {
+                let vp = std::str::index_of(vs, " ");
+                let v = vs[0..vp];
+                vs = vs[(vp + 1)..len(vs)];
+                if len(v) > 0 && len(seed) > 0 {
+                    let done = self.call(hands, v, "{\"path\": " + dna::record_json_quote(seed) + "}");
+                    if !done.ok { out = out + v + " " + seed + ": " + done.error + "\n"; }
+                }
+            }
+        }
+        return out;
+    }
     // The seeds a change touched: the first segment of each path changed
     // since the base (the root, `.`, for a file at the top) that holds
     // Hale source, space-separated.
@@ -148,4 +172,39 @@ locus ToolBench {
         }
         return std::str::trim(out);
     }
+}
+
+// A person's session works a Work's change across separate calls (`hale
+// dna work hand`, each its own process): its worktree is kept under the
+// project's `.hale/dna/work/`, one clone of the repository at its HEAD
+// per attempt, its base recorded beside it; `submit --from-worktree` makes
+// the one commit and removes it.
+type SessionTree {
+    ok: Bool = false;
+    path: String = "";
+    base: String = "";
+    error: String = "";
+}
+
+fn session_dir(repo: String, attempt: String) -> String {
+    return repo + "/.hale/dna/work/" + std::str::replace(attempt, "/", "_");
+}
+
+fn session_tree(repo: String, attempt: String, make: Bool) -> SessionTree {
+    let dir = session_dir(repo, attempt);
+    if std::io::fs::file_exists(dir + ".base") {
+        return SessionTree { ok: true, path: dir, base: dna::trim_nl(std::io::fs::read_file(dir + ".base") or "") };
+    }
+    if !make { return SessionTree { error: "no worktree is kept for `" + attempt + "`: a hand that works on files makes it" }; }
+    let up = dna::run_tool("mkdir\n-p\n" + repo + "/.hale/dna/work");
+    let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n" + repo + "\n" + dir);
+    if cloned.code != 0 { return SessionTree { error: "the worktree could not be made: " + dna::trim_nl(cloned.stderr) }; }
+    let base = dna::trim_nl(dna::run_tool("git\n-C\n" + dir + "\nrev-parse\nHEAD").stdout);
+    std::io::fs::write_file(dir + ".base", base) or discard;
+    return SessionTree { ok: true, path: dir, base: base };
+}
+
+fn session_done(repo: String, attempt: String) {
+    let dir = session_dir(repo, attempt);
+    let gone = dna::run_tool("rm\n-rf\n" + dir + "\n" + dir + ".base");
 }

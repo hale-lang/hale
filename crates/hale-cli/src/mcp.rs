@@ -242,7 +242,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "hale_dna_work",
-            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, allowance (ask the spine for the attempt's spend and wait for its answer), submit, settle, release, friction, run (one cycle through the project's performers), loop (worker mode, --parallel N; over MCP only with --once, so the call ends: one JSON line per child as it ends, then the loop's own). An external harness plugs in with next, brief --render agent, allowance before its first model call (it keeps its calls within what is granted), its own work, and submit --evidence-file. Positions are the graph's position:<name> ids. Every verb but loop prints one JSON object.",
+            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, allowance (ask the spine for the attempt's spend and wait for its answer), submit, settle, release, friction, run (one cycle through the project's performers), loop (worker mode, --parallel N; over MCP only with --once, so the call ends: one JSON line per child as it ends, then the loop's own). An external harness plugs in with next, brief --render agent, allowance before its first model call (it keeps its calls within what is granted), its own work, and submit --evidence-file; a person's own agent works the Work's hands with hale_dna_hand and submits with --from-worktree. Positions are the graph's position:<name> ids. Every verb but loop prints one JSON object.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -251,6 +251,21 @@ fn tool_list() -> Vec<Value> {
                     "project": { "type": "string", "description": "The project directory (default: the current one)." }
                 },
                 "required": ["verb"]
+            }
+        }),
+        json!({
+            "name": "hale_dna_hand",
+            "description": "Run one of a claimed Work's hands on this machine (hale dna work hand): the Work's brief (hale_dna_work brief) lists its hands, what each does and its arguments' schema. A file hand (read, edit, check, test, fmt, patch) works in the attempt's own worktree, kept between calls; an infrastructure hand reads the record through the head. A hand the hat does not give is refused. When the change is ready, hale_dna_work submit with --from-worktree runs the hat's validators and hands the worktree back as one commit with its patch.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "attempt": { "type": "string", "description": "The attempt the lease is held on (from next)." },
+                    "name": { "type": "string", "description": "The hand, as the hat names it." },
+                    "arguments": { "type": "object", "description": "The hand's arguments, as its input schema says." },
+                    "api": { "type": "string", "description": "The head's origin (default: HALE_DNA_API, else http://127.0.0.1:8793)." },
+                    "project": { "type": "string", "description": "The project directory (default: the current one)." }
+                },
+                "required": ["attempt", "name"]
             }
         }),
         json!({
@@ -408,6 +423,22 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
             let mut cli = vec!["fetch".into()];
             if let Some(r) = arg_str(args, "repo_root") {
                 cli.push(resolve_path(r)?.display().to_string());
+            }
+            self_exec(&cli)
+        }
+        "hale_dna_hand" => {
+            let attempt = arg_str(args, "attempt").ok_or("attempt required")?;
+            let name = arg_str(args, "name").ok_or("name required")?;
+            let mut cli = vec!["dna".to_string(), "work".to_string()];
+            if let Some(p) = arg_str(args, "project") {
+                cli.push(resolve_path(p)?.display().to_string());
+            }
+            cli.push("hand".to_string());
+            cli.extend(["--attempt".to_string(), attempt.to_string(), "--name".to_string(), name.to_string()]);
+            let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            cli.extend(["--args".to_string(), arguments.to_string()]);
+            if let Some(api) = arg_str(args, "api") {
+                cli.extend(["--api".to_string(), api.to_string()]);
             }
             self_exec(&cli)
         }
