@@ -1,0 +1,194 @@
+// dna/core/legs/tool_loop.hl — the harness's loop: a model drives the
+// hands the hat gives, the leg runs every call.
+//
+// The hat says what the Work owes (its output contract), which hands come
+// with it and which of them validate the outcome (dna/core/contracts.hl).
+// Here those hands are offered to the model as tools; each tool call the
+// model asks for is run by the leg, on the leg's side (a scratch worktree
+// for a change, the head's reads for the record), and its result goes back
+// as the next turn, until the model answers. For a `Patch` the validators
+// then run over every seed the change touched, a failure going back to the
+// model as one more turn; what passes is committed as one commit on the
+// base and handed back as `result_ref: commit:<sha>` with its patch, which
+// the owner applies, verifies again and reviews. Every model call is
+// evidence (`calls`) and every tool call is a row of the `tool-calls`
+// receipt. The loop is bounded by its turns and by the attempt's allowance.
+import ".." as dna;
+
+// The hat's hands as the chat API's tools: a function per hand, its
+// arguments' schema as the hand declares it.
+@unbounded
+fn tools_for_model(hands: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut it = std::json::array_first(hands);
+    while !it.done {
+        b.begin_object();
+        b.string_field("type", "function");
+        b.begin_object_field("function");
+        b.string_field("name", std::json::find_string_field(it.element, "name"));
+        b.string_field("description", std::json::find_string_field(it.element, "description"));
+        b.field("parameters", std::json::find_field_raw(it.element, "input_schema"));
+        b.end_object();
+        b.end_object();
+        it = std::json::array_next(it);
+    }
+    b.end_array();
+    return b.result();
+}
+
+// A path a tool may touch, as spelled: relative, no control character
+// (a newline would split the argument the confinement check is handed, so
+// the path checked would not be the path used), no `..` among its
+// components, and no `.git` (in any case) among them either, however the
+// path is written (`./.git`, `a//.git/x`). Where it leads is checked too:
+// `ToolBench.confined` refuses a symlink on the way.
+@unbounded
+fn worktree_path_ok(path: String) -> Bool {
+    if len(path) == 0 || std::str::starts_with(path, "/") { return false; }
+    let mut i = 0;
+    while i < len(path) {
+        let c = std::str::byte_at_unchecked(path, i);
+        if c < 32 || c == 127 { return false; }
+        i = i + 1;
+    }
+    let mut rest = path + "/";
+    while len(rest) > 0 {
+        let sl = std::str::index_of(rest, "/");
+        let part = rest[0..sl];
+        rest = rest[(sl + 1)..len(rest)];
+        if part == ".." || std::str::lower(part) == ".git" { return false; }
+    }
+    return true;
+}
+
+// The execution an entity's id belongs to: the task id its ids start with
+// (`t4/wf1/s0/w/a0` belongs to `t4`).
+fn execution_root(entity: String) -> String {
+    let sl = std::str::index_of(entity, "/");
+    return if sl < 0 { entity } else { entity[0..sl] };
+}
+
+// The directory part of a relative path, "" for a file at the top.
+fn dir_of(path: String) -> String {
+    let mut at = -1;
+    let mut i = 0;
+    while i < len(path) {
+        if std::str::byte_at_unchecked(path, i) == 47 { at = i; }
+        i = i + 1;
+    }
+    return if at > 0 { path[0..at] } else { "" };
+}
+
+// What a turn's text may carry back to the model, at most.
+const TOOL_OUTPUT_MAX: Int = 32768;
+
+fn clipped(text: String) -> String {
+    if len(text) <= TOOL_OUTPUT_MAX { return text; }
+    return text[0..TOOL_OUTPUT_MAX] + "\n… (" + to_string(len(text) - TOOL_OUTPUT_MAX) + " more bytes not shown)";
+}
+
+// The bench a loop runs its tool calls on: the hands, the worktree a
+// change is made in ("" for a Work that changes no file), and the head the
+// record's reads come from.
+locus ToolBench {
+    params {
+        worktree: String = "";
+        base: String = ""; // the commit the worktree started at
+        grant: String = ""; // the hands the hat gives, by name
+        api: String = ""; // the head's origin, for the infrastructure reads
+        head: Head = Head { };
+        attached: Bool = false;
+    }
+    // A read of the record through the head's API (the infrastructure
+    // family): the head answers what the leg's person may read.
+    fn read_head(path: String) -> HandResult {
+        if !self.attached {
+            self.head = Head { api: self.api };
+            if !self.head.attach() { return HandResult { error: "the head could not be read: " + self.head.error }; }
+            self.attached = true;
+        }
+        let r = self.head.get(self.head.prefix() + path);
+        if !r.ok { return HandResult { error: r.error }; }
+        return HandResult { ok: true, output: r.body };
+    }
+    @unbounded
+    fn call(hands: Hands, name: String, args: String) -> HandResult {
+        if !dna::word_in(name, self.grant) { return HandResult { error: "`" + name + "` is not a hand of this Work; its hands are " + self.grant }; }
+        let path = std::json::find_string_field(args, "path");
+        if name == "record_status" { return self.read_head("/dna/workflows?limit=25"); }
+        // the execution an entity belongs to, as the record states it: its
+        // task, steps, Works and attempts (a task's id roots every id under it)
+        if name == "record_history" { return self.read_head("/dna/workflows?id=" + execution_root(std::json::find_string_field(args, "entity"))); }
+        if name == "org_chart" { return self.read_head("/dna/organization"); }
+        if len(self.worktree) == 0 { return HandResult { error: "this Work has no worktree, so `" + name + "` has nothing to work on" }; }
+        if name == "patch" {
+            let msg = std::json::find_string_field(args, "message");
+            return hands.git.commit(self.worktree, if len(msg) > 0 { msg } else { "the change" });
+        }
+        let target = if len(path) == 0 { "." } else { path };
+        if !worktree_path_ok(target) && target != "." { return HandResult { error: "`" + target + "` is outside the worktree" }; }
+        if !self.confined(target) { return HandResult { error: "`" + target + "` passes through a symbolic link, which may lead outside the worktree" }; }
+        let at = self.worktree + "/" + target;
+        if name == "read" {
+            if !std::io::fs::file_exists(at) { return HandResult { error: "no file `" + target + "`" }; }
+            return HandResult { ok: true, output: std::io::fs::read_file(at) or "" };
+        }
+        if name == "edit" {
+            let dir = dir_of(target);
+            if len(dir) > 0 {
+                let made = dna::run_tool("mkdir\n-p\n" + self.worktree + "/" + dir);
+                if made.code != 0 { return HandResult { error: dna::trim_nl(made.stderr) }; }
+            }
+            let text = std::json::find_string_field(args, "text");
+            std::io::fs::write_file(at, text) or discard;
+            if !std::io::fs::file_exists(at) || len(std::io::fs::read_file(at) or "") != len(text) { return HandResult { error: "`" + target + "` could not be written" }; }
+            return HandResult { ok: true, output: "wrote " + target };
+        }
+        if name == "check" { return hands.toolchain.check(at); }
+        if name == "test" { return hands.toolchain.test(at); }
+        if name == "fmt" { return hands.toolchain.fmt_check(at); }
+        return HandResult { error: "the leg has no hand named `" + name + "`" };
+    }
+    // Whether every component of `target`, as far as it exists, is a plain
+    // file or directory: a symbolic link in a clone may point anywhere (the
+    // leg's own checkout, another directory), so a hand never follows one.
+    fn confined(target: String) -> Bool {
+        if target == "." { return true; }
+        let walked = dna::run_tool("sh\n-c\ncd \"$1\" || exit 2; IFS=/; set -f; p=; for c in $2; do [ -z \"$c\" ] && continue; p=\"${p:+$p/}$c\"; [ -L \"$p\" ] && exit 1; done; exit 0\nsh\n" + self.worktree + "\n" + target);
+        return walked.code == 0;
+    }
+    // The seeds a change touched, one a line: the directory of each file
+    // changed since the base (the root, `.`, for a file at the top), when it
+    // holds Hale source; a nested seed is its own. The changed files are
+    // read unquoted (`core.quotePath=false`: a name with a space or beyond
+    // ASCII as it is); a name git still quotes (a control character, a
+    // quote, a backslash) cannot be read back reliably, so it comes back as
+    // `!<name>`, which `validate` refuses rather than passes unchecked.
+    @unbounded
+    fn touched_seeds() -> String {
+        let changed = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\nls-files\n--modified\n--deleted\n--others\n--exclude-standard");
+        let staged = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--cached");
+        let committed = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n" + self.base + "\nHEAD");
+        let mut out = "\n";
+        let v = std::str::bytes_view(changed.stdout + "\n" + staged.stdout + "\n" + committed.stdout);
+        let mut at = 0;
+        while at < v.n {
+            let mut end = at;
+            while end < v.n && std::str::byte_at(v, end) != 10 { end = end + 1; }
+            let file = std::str::slice(v, at, end);
+            at = end + 1;
+            if len(file) == 0 || std::str::ends_with(file, ".md") { continue; }
+            if std::str::starts_with(file, "\"") {
+                if !std::str::contains(out, "\n!" + file + "\n") { out = out + "!" + file + "\n"; }
+                continue;
+            }
+            let dir = dir_of(file);
+            let seed = if len(dir) == 0 { "." } else { dir };
+            // a seed is a directory of Hale source; a file elsewhere
+            // (compose, docs, data) is the owner's to verify
+            if !std::str::contains(out, "\n" + seed + "\n") && dna::holds_source(if seed == "." { self.worktree } else { self.worktree + "/" + seed }) { out = out + seed + "\n"; }
+        }
+        return out[1..len(out)];
+    }
+}

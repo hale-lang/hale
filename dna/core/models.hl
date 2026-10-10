@@ -34,6 +34,12 @@ type ModelRequest {
     metadata: String = "";
     // sent as `Idempotency-Key`: a retry of one call is the same call; "" = none
     idempotency_key: String = "";
+    // the tools the model may call, a JSON array in the chat API's shape
+    // (`tools_for_model`); "" = none: the caller runs every call (hands)
+    tools: String = "";
+    // the turns after the prompt, a JSON array of chat messages (the
+    // model's tool calls and the results the caller sent back); "" = none
+    messages: String = "";
 }
 
 type ModelResult {
@@ -45,6 +51,9 @@ type ModelResult {
     input_tokens: Int = 0; // the split, as the backend reported it (what its `ModelCalled` carries)
     output_tokens: Int = 0;
     cost_micros: Int = 0;
+    // the tools the model asked to be called, a JSON array of
+    // {id, name, arguments} (arguments as the model wrote them); "" = none
+    tool_calls: String = "";
     refused: String = ""; // why, when !ok
     // whether the backend may have acted on the request (GH #946, effect
     // classes): true unless the refusal came before anything was sent or
@@ -133,6 +142,11 @@ locus FakeModel {
         // if present, else `<dir>/main.hl`. Tests script a multi-file
         // change and a retry with it.
         answers_dir: String = "";
+        // Scripted turns of a tool loop: a request that offers tools is
+        // answered from `<dir>/<turn>.json` (`scripted_turn`), the turn
+        // counted from the model's own messages in the request, so a test
+        // scripts "read this, edit that, answer" without a wire.
+        turns_dir: String = "";
         // A scripted failure: after this many successful calls the next
         // ones are refused (0 = never), so a test can fail an Attempt
         // on cue without a wire.
@@ -216,6 +230,18 @@ locus FakeModel {
             ModelCalled <- ev;
             return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
         }
+        if len(self.turns_dir) > 0 && len(std::str::trim(req.tools)) > 2 {
+            let t = scripted_turn(self.turns_dir, req.messages);
+            if t.found {
+                let out = ModelResult { ok: true, backend: self.name, model: self.model, output: t.content, tool_calls: t.tool_calls, tokens: (len(t.content) + len(t.tool_calls)) / 4, output_tokens: (len(t.content) + len(t.tool_calls)) / 4, cost_micros: self.price_micros };
+                ev.ok = true;
+                ev.output_tokens = out.output_tokens;
+                ev.cost_micros = out.cost_micros;
+                ev.response_digest = digest_of(t.content + t.tool_calls);
+                ModelCalled <- ev;
+                return out;
+            }
+        }
         let found = self.scripted_for(req);
         let scripted = if len(found) > 0 { found } else { self.ruled_for(req) };
         let r = if len(scripted) > 0 {
@@ -295,7 +321,12 @@ fn openai_chat_body_with(model: String, req: ModelRequest, temperature_milli: In
     if len(req.context) > 0 {
         b = b + "{\"role\": \"system\", \"content\": " + jq(req.context) + "}, ";
     }
-    b = b + "{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}]";
+    b = b + "{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}";
+    // the turns since: the model's tool calls and what the caller answered
+    let turns = std::str::trim(req.messages);
+    if len(turns) > 2 { b = b + ", " + turns[1..(len(turns) - 1)]; }
+    b = b + "]";
+    if len(std::str::trim(req.tools)) > 2 { b = b + ", \"tools\": " + req.tools; }
     // a provider's default when none is set: some models refuse the
     // parameter outright (GH #566 F7), and the evidence says which it was
     if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
@@ -328,13 +359,96 @@ fn openai_text(body: String) -> String {
     if first.done { return ""; }
     let msg = std::json::find_field_raw(std::json::iter_substring(first, choices), "message");
     if len(msg) == 0 { return ""; }
+    // a reply that only asks for tools says `"content": null`: no text
+    if std::str::trim(std::json::find_field_raw(msg, "content")) == "null" { return ""; }
     return std::json::find_string_field(msg, "content");
+}
+
+// The tool calls of the first choice's message, as {id, name, arguments};
+// "" when it asks for none.
+@unbounded
+fn openai_tool_calls(body: String) -> String {
+    let choices = std::json::find_field_raw(body, "choices");
+    if len(choices) == 0 { return ""; }
+    let first = std::json::array_first_span(choices);
+    if first.done { return ""; }
+    let calls = std::json::find_field_raw(std::json::find_field_raw(std::json::iter_substring(first, choices), "message"), "tool_calls");
+    if len(calls) < 2 { return ""; }
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut n = 0;
+    let mut it = std::json::array_first(calls);
+    while !it.done {
+        let f = std::json::find_field_raw(it.element, "function");
+        b.begin_object();
+        b.string_field("id", std::json::find_string_field(it.element, "id"));
+        b.string_field("name", std::json::find_string_field(f, "name"));
+        b.string_field("arguments", std::json::find_string_field(f, "arguments"));
+        b.end_object();
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    b.end_array();
+    return if n > 0 { b.result() } else { "" };
+}
+
+// The turn a tool-loop request is on: one more than the model's own
+// messages in it.
+@unbounded
+fn model_turn_of(messages: String) -> Int {
+    let mut n = 1;
+    if len(std::str::trim(messages)) < 2 { return n; }
+    let mut it = std::json::array_first(messages);
+    while !it.done {
+        if std::json::find_string_field(it.element, "role") == "assistant" { n = n + 1; }
+        it = std::json::array_next(it);
+    }
+    return n;
+}
+
+// A scripted answer for a tool loop's turn: `<dir>/<turn>.json`, an object
+// with `content` (the final answer) and/or `tool_calls` (each `{name,
+// arguments}`, the arguments as an object), the calls given ids
+// `call-<turn>-<n>`. Not found when the turn has no file.
+type ScriptedTurn {
+    found: Bool = false;
+    content: String = "";
+    tool_calls: String = "";
+}
+
+@unbounded
+fn scripted_turn(dir: String, messages: String) -> ScriptedTurn {
+    let turn = model_turn_of(messages);
+    let text = std::io::fs::read_file(dir + "/" + to_string(turn) + ".json") or "";
+    if len(text) == 0 { return ScriptedTurn { }; }
+    let raw = std::json::find_field_raw(text, "tool_calls");
+    let mut calls = "";
+    if len(raw) > 2 {
+        let b = std::json::Builder { };
+        b.begin_array();
+        let mut n = 0;
+        let mut it = std::json::array_first(raw);
+        while !it.done {
+            n = n + 1;
+            let args = std::json::find_field_raw(it.element, "arguments");
+            b.begin_object();
+            b.string_field("id", "call-" + to_string(turn) + "-" + to_string(n));
+            b.string_field("name", std::json::find_string_field(it.element, "name"));
+            b.string_field("arguments", if len(args) > 0 { args } else { "{}" });
+            b.end_object();
+            it = std::json::array_next(it);
+        }
+        b.end_array();
+        calls = b.result();
+    }
+    return ScriptedTurn { found: true, content: std::json::find_string_field(text, "content"), tool_calls: calls };
 }
 
 type ChatOutcome {
     ok: Bool = false;
     status: Int = 0;
     text: String = "";
+    tool_calls: String = "";
     reported_model: String = "";
     input_tokens: Int = 0;
     output_tokens: Int = 0;
@@ -347,10 +461,11 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
         return ChatOutcome { status: status, refused: "http " + to_string(status) + " " + why };
     }
     let text = openai_text(body);
-    if len(text) == 0 { return ChatOutcome { status: status, refused: "no completion in the response" }; }
+    let calls = openai_tool_calls(body);
+    if len(text) == 0 && len(calls) == 0 { return ChatOutcome { status: status, refused: "no completion in the response" }; }
     let usage = std::json::find_field_raw(body, "usage");
     return ChatOutcome {
-        ok: true, status: status, text: text,
+        ok: true, status: status, text: text, tool_calls: calls,
         reported_model: std::json::find_string_field(body, "model"),
         input_tokens: std::json::find_int_field(usage, "prompt_tokens"),
         output_tokens: std::json::find_int_field(usage, "completion_tokens")
@@ -466,7 +581,7 @@ locus OpenAiChat {
             return ModelResult { ok: false, backend: self.name, model: ev.requested_model, refused: out.refused, made: made_by_status(resp.status) };
         }
         return ModelResult {
-            ok: true, backend: self.name, model: out.reported_model, output: out.text,
+            ok: true, backend: self.name, model: out.reported_model, output: out.text, tool_calls: out.tool_calls,
             tokens: out.input_tokens + out.output_tokens, input_tokens: out.input_tokens, output_tokens: out.output_tokens, cost_micros: ev.cost_micros
         };
     }

@@ -16,6 +16,13 @@ locus FakeOpenAi {
         if !std::str::contains(req.headers, "Authorization: Bearer ") && req.path == "/v1/chat/completions" {
             return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": {\"message\": \"no bearer\"}}" };
         }
+        if req.path == "/v1/chat/completions" && std::str::contains(req.body, "call a tool") {
+            // a reply that asks for a tool and says nothing
+            return std::http::Response {
+                status: 200, content_type: "application/json",
+                body: "{\"id\": \"chatcmpl-3\", \"model\": \"tool-model\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"c1\", \"type\": \"function\", \"function\": {\"name\": \"read\", \"arguments\": \"{\\\"path\\\": \\\"main.hl\\\"}\"}}]}, \"finish_reason\": \"tool_calls\"}], \"usage\": {\"prompt_tokens\": 9, \"completion_tokens\": 4, \"total_tokens\": 13}}"
+            };
+        }
         if req.path == "/v1/chat/completions" && std::str::contains(req.body, "echo the request") {
             // what crossed the wire, said back: the model asked for, the
             // metadata as sent, and the idempotency key's header
@@ -24,7 +31,11 @@ locus FakeOpenAi {
             let rest = if at < 0 { "" } else { req.headers[(at + 17)..len(req.headers)] };
             let end = std::str::index_of(rest, "\r\n");
             let key = if end < 0 { rest } else { rest[0..end] };
-            let said = "model=" + model + " key=" + key + " metadata=" + std::json::find_field_raw(req.body, "metadata");
+            let turns = std::json::find_field_raw(req.body, "messages");
+            let mut n = 0;
+            let mut it = std::json::array_first(turns);
+            while !it.done { n = n + 1; it = std::json::array_next(it); }
+            let said = "model=" + model + " key=" + key + " tools=" + (if len(std::json::find_field_raw(req.body, "tools")) > 2 { "yes" } else { "no" }) + " messages=" + to_string(n) + " metadata=" + std::json::find_field_raw(req.body, "metadata");
             return std::http::Response {
                 status: 200, content_type: "application/json",
                 body: "{\"id\": \"chatcmpl-2\", \"model\": \"" + model + "\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": " + "\"" + std::json::escape_string(said) + "\"" + "}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 3, \"total_tokens\": 8}}"
@@ -105,7 +116,16 @@ main locus App {
         // a provider that may refuse metadata is not sent it; the model still is
         let h = self.hosted.complete(dna::ModelRequest { attempt_id: "w3/a1", prompt: "echo the request", model: "other-m", metadata: meta });
         std::test::assert(std::str::contains(h.output, "model=other-m ") && std::str::contains(h.output, "key= ") && !std::str::contains(h.output, "position:api/dev"), "no metadata and no key unless asked for: " + h.output);
-        // 6. every call was journaled by the assembly as model.called evidence
+        // 6. a tool loop's wire: the reply's tool calls are read, and the
+        // next request carries the tools and the turns since the prompt
+        let t = self.gateway.complete(dna::ModelRequest { attempt_id: "w4/a0", prompt: "call a tool", tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]" });
+        std::test::assert(t.ok && t.output == "", "a reply that only asks for a tool is an answer, with no text (its content is null): " + t.output + t.refused);
+        std::test::assert(std::str::contains(t.tool_calls, "\"name\": \"read\"") && std::str::contains(t.tool_calls, "\"id\": \"c1\""), "its tool calls are read: " + t.tool_calls);
+        std::test::assert(std::str::contains(t.tool_calls, "main.hl"), "with their arguments: " + t.tool_calls);
+        let turns = "[{\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"c1\", \"type\": \"function\", \"function\": {\"name\": \"read\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"c1\", \"content\": \"fn main() { }\"}]";
+        let e = self.gateway.complete(dna::ModelRequest { attempt_id: "w4/a0", prompt: "echo the request", tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]", messages: turns });
+        std::test::assert(std::str::contains(e.output, "tools=yes messages=3 "), "the prompt and both turns cross, with the tools: " + e.output);
+        // 7. every call was journaled by the assembly as model.called evidence
         std::time::sleep(100ms);
         let mut n = 0;
         let mut i = 0;
@@ -113,7 +133,7 @@ main locus App {
             if self.core.journal.read(i).kind == "model.called" { n = n + 1; }
             i = i + 1;
         }
-        std::test::assert_eq_int(n, 6, "six calls, six evidence rows");
+        std::test::assert_eq_int(n, 8, "eight calls, eight evidence rows");
         let first = self.core.journal.read(0);
         std::test::assert_eq_str(first.entity, "w1/a0", "keyed by attempt");
         std::test::assert(std::str::contains(first.body, "\"reported_model\": \"test-model-2026\""), "evidence body: " + first.body);

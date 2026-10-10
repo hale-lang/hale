@@ -1005,6 +1005,7 @@ fn dna_fixture_set_is_complete() {
             "sync_head_read_test.hl",
             "task_decide_test.hl",
             "task_evidence_test.hl",
+            "tool_loop_test.hl",
             "two_owners_test.hl",
             "usage_test.hl",
             "verification_test.hl",

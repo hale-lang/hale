@@ -257,6 +257,7 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/model.hl",
     "dna/core/legs/performer.hl",
     "dna/core/legs/render.hl",
+    "dna/core/legs/tool_loop.hl",
     "dna/core/legs/verbs.hl",
 ];
 

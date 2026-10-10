@@ -96,6 +96,100 @@ fn call_metadata(brief: Brief) -> String {
     return b.result();
 }
 
+// The loop's messages, in the chat API's shape, comma-joined.
+fn joined(list: String, item: String) -> String { return if len(list) > 0 { list + ", " + item } else { item }; }
+
+@unbounded
+fn assistant_calls_message(text: String, calls: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("role", "assistant");
+    if len(text) > 0 { b.string_field("content", text); } else { b.field("content", "null"); }
+    b.begin_array_field("tool_calls");
+    let mut it = std::json::array_first(calls);
+    while !it.done {
+        b.begin_object();
+        b.string_field("id", std::json::find_string_field(it.element, "id"));
+        b.string_field("type", "function");
+        b.begin_object_field("function");
+        b.string_field("name", std::json::find_string_field(it.element, "name"));
+        b.string_field("arguments", std::json::find_string_field(it.element, "arguments"));
+        b.end_object();
+        b.end_object();
+        it = std::json::array_next(it);
+    }
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
+fn tool_message(id: String, text: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("role", "tool");
+    b.string_field("tool_call_id", id);
+    b.string_field("content", text);
+    b.end_object();
+    return b.result();
+}
+
+fn text_message(role: String, text: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("role", role);
+    b.string_field("content", text);
+    b.end_object();
+    return b.result();
+}
+
+// A tool call as evidence: the turn, the hand, digests of what it was
+// given and what it answered, and why it failed when it did.
+fn tool_row(turn: Int, name: String, args: String, done: HandResult) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("turn", turn);
+    b.string_field("name", name);
+    b.string_field("arguments_digest", dna::digest_of(args));
+    b.string_field("ok", if done.ok { "true" } else { "false" });
+    b.string_field("output_digest", dna::digest_of(done.output));
+    b.int_field("output_bytes", len(done.output));
+    b.string_field("error", if len(done.error) > 300 { done.error[0..300] } else { done.error });
+    b.end_object();
+    return b.result();
+}
+
+// The tool calls as one receipt (`[{class, body}]`), none when there were none.
+fn tool_receipt(rows: String) -> String {
+    if len(rows) == 0 { return "[]"; }
+    return "[" + tool_receipt_object(rows) + "]";
+}
+
+fn tool_receipt_object(rows: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("class", "internal");
+    b.string_field("body", "{\"tool_calls\": [" + rows + "]}");
+    b.end_object();
+    return b.result();
+}
+
+// A Patch's receipts: the commit's patch first (what the owner applies),
+// then the tool calls.
+fn patch_and_tools(patch: String, rows: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("class", "internal");
+    b.string_field("body", patch);
+    b.end_object();
+    return "[" + b.result() + (if len(rows) > 0 { ", " + tool_receipt_object(rows) } else { "" }) + "]";
+}
+
+fn first_line(text: String) -> String {
+    let nl = std::str::index_of(text, "\n");
+    let line = std::str::trim(if nl < 0 { text } else { text[0..nl] });
+    return if len(line) > 0 { line } else { "the change" };
+}
+
 fn role_of(performer_kind: String) -> String {
     if performer_kind == "edit" { return "edit"; }
     if performer_kind == "service" { return "classify"; }
@@ -112,9 +206,15 @@ locus ModelPerformer {
         // `backoff_ms`, each wait double the last, each recorded
         backoff_ms: Int = 1000;
         retries: Int = 3;
+        // a tool loop's bound: the model's turns, tool calls and the
+        // validators' refusals all count (dna/core/legs/tool_loop.hl)
+        max_turns: Int = 16;
+        // the repository a `do` Work changes; "" = the one the leg runs in
+        repo: String = "";
         calls: String = ""; // the calls of the attempt in hand, JSON objects comma-joined
         performed: Int = 0;
         waited_ms: Int = 0; // what the attempt in hand waited on rate limits
+        retried: Int = 0; // the backed-off retries of the attempt in hand's loop
         spent_micros: Int = 0; // what the attempt in hand's calls cost
     }
     fn on_called(ev: dna::ModelEvidence) {
@@ -151,16 +251,158 @@ locus ModelPerformer {
         self.on_called(dna::ModelEvidence {
             attempt_id: brief.attempt_id, adapter: self.router.last_adapter, backend: r.backend, requested_model: r.model, reported_model: r.model,
             prompt_digest: req.prompt_digest, context_digest: brief.hat_digest, knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
-            response_digest: if r.ok { dna::digest_of(r.output) } else { "" }, input_tokens: r.input_tokens, output_tokens: r.output_tokens, cost_micros: r.cost_micros,
+            response_digest: if r.ok { dna::digest_of(r.output + r.tool_calls) } else { "" }, input_tokens: r.input_tokens, output_tokens: r.output_tokens, cost_micros: r.cost_micros,
             elapsed: to_string(std::time::monotonic() - t0), retry_of: req.retry_of, data_class: req.data_class, refused: r.refused
         });
         return r;
+    }
+    // The harness's loop (dna/core/legs/tool_loop.hl): the model is
+    // offered the hat's hands as tools, the leg runs each call it asks
+    // for and sends the result back, until it answers. A `do` Work works
+    // in a scratch worktree of the leg's repository at its HEAD; its answer
+    // stands only once the hat's validators pass on every seed it touched,
+    // and a `Patch` is handed back as one commit on that base with its
+    // patch. Bounded by `max_turns` and the attempt's allowance.
+    @unbounded
+    fn perform_loop(brief: Brief, hands: Hands, first: dna::ModelRequest, allowance: Int, mode: String) -> Performance {
+        let hat = brief.hat;
+        let owed = std::json::find_string_field(hat, "output_contract");
+        let validators = std::json::find_string_field(hat, "validators");
+        let mut worktree = "";
+        let mut base = "";
+        if mode == "do" {
+            let top = if len(self.repo) > 0 { dna::RunResult { code: 0, stdout: self.repo } } else { dna::run_tool("git\nrev-parse\n--show-toplevel") };
+            if top.code != 0 { return Performance { disposition: "declined", narrative: "a `do` Work needs its repository, and the leg runs outside one: " + dna::trim_nl(top.stderr), calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            let wt = hands.git.worktree(dna::trim_nl(top.stdout), "HEAD");
+            if !wt.ok { return Performance { disposition: "declined", narrative: "the Work's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            worktree = wt.output;
+            base = dna::trim_nl(dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD").stdout);
+        }
+        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api };
+        let mut req = first;
+        req.tools = tools_for_model(std::json::find_field_raw(hat, "hands"));
+        let mut messages = "";
+        let mut rows = "";
+        let mut turn = 0;
+        let mut answer = "";
+        let mut refusals = 0;
+        while turn < self.max_turns && len(answer) == 0 {
+            turn = turn + 1;
+            req.messages = "[" + messages + "]";
+            req.idempotency_key = brief.attempt_id + ":call:" + to_string(turn);
+            let priced = if allowance >= 0 && self.spent_micros >= allowance { "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent (" + to_string(self.spent_micros) + ")" } else { self.priced_out(req, allowance) };
+            if len(priced) > 0 { return Performance { disposition: "declined", narrative: priced + " on turn " + to_string(turn), calls: "[" + self.calls + "]", receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            let r = self.asked_with_backoff(brief, hands, req, allowance);
+            if !r.ok {
+                if self.effect == "uncertain" && r.made { return Performance { unresolved: "the call on turn " + to_string(turn) + " may have acted and no answer came back: " + r.refused, calls: "[" + self.calls + "]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+                return Performance { disposition: "failed", narrative: "the model did not answer on turn " + to_string(turn) + ": " + r.refused, calls: "[" + self.calls + "]", receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION };
+            }
+            if len(std::str::trim(r.tool_calls)) > 2 {
+                messages = joined(messages, assistant_calls_message(r.output, r.tool_calls));
+                let mut it = std::json::array_first(r.tool_calls);
+                while !it.done {
+                    let name = std::json::find_string_field(it.element, "name");
+                    let args = std::json::find_string_field(it.element, "arguments");
+                    let done = bench.call(hands, name, args);
+                    let text = if done.ok { done.output } else { "error: " + done.error };
+                    messages = joined(messages, tool_message(std::json::find_string_field(it.element, "id"), clipped(text)));
+                    rows = joined(rows, tool_row(turn, name, args, done));
+                    it = std::json::array_next(it);
+                }
+            } else if mode == "do" {
+                // the answer stands once the validators pass on every seed touched
+                let refused = self.validate(bench, hands, validators);
+                if len(refused) == 0 {
+                    answer = if len(r.output) > 0 { r.output } else { "done" };
+                } else {
+                    refusals = refusals + 1;
+                    messages = joined(messages, text_message("assistant", r.output));
+                    messages = joined(messages, text_message("user", "The validators refused the change:\n" + clipped(refused) + "\nFix it, then answer again."));
+                }
+            } else {
+                answer = if len(r.output) > 0 { r.output } else { "(no text)" };
+            }
+        }
+        let calls = "[" + self.calls + "]";
+        if len(answer) == 0 { return Performance { disposition: "failed", narrative: "no answer within " + to_string(self.max_turns) + " turns" + (if refusals > 0 { " (the validators refused " + to_string(refusals) + " time(s))" } else { "" }), calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+        if mode == "do" && owed == "Patch" {
+            // one commit on the base: everything the loop changed, squashed
+            let soft = dna::run_tool("git\n-C\n" + bench.worktree + "\nreset\n-q\n--soft\n" + bench.base);
+            let changed = dna::run_tool("git\n-C\n" + bench.worktree + "\nstatus\n--porcelain");
+            if soft.code != 0 || len(std::str::trim(changed.stdout)) == 0 { return Performance { disposition: "failed", narrative: "the answer changed no file", calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            let sha = hands.git.commit(bench.worktree, first_line(answer));
+            if !sha.ok { return Performance { disposition: "failed", narrative: "the change could not be committed: " + sha.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            let patch = hands.git.patch(bench.worktree);
+            if !patch.ok { return Performance { disposition: "failed", narrative: "the commit's patch could not be read: " + patch.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            return Performance {
+                disposition: "done", result: answer, result_ref: "commit:" + sha.output,
+                narrative: "the model drove the hands for " + to_string(turn) + " turn(s) and the validators passed" + self.waits_said(),
+                calls: calls, receipts: patch_and_tools(patch.output, rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
+            };
+        }
+        return Performance { disposition: "done", result: answer, narrative: "the model drove the hands for " + to_string(turn) + " turn(s)" + self.waits_said(), calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION };
+    }
+    // What the loop's rate limits cost in time, for its narrative.
+    fn waits_said() -> String {
+        return if self.retried > 0 { ", after " + to_string(self.retried) + " backed-off retries, " + to_string(self.waited_ms) + "ms waited" } else { "" };
+    }
+    // One turn's call, asked again after a backed-off wait while the
+    // backend rate-limits a call it never made, as the single call is: the
+    // lease renewed before each wait, each wait a row of evidence, none
+    // once the allowance is spent. The retry is the same call (its key).
+    fn asked_with_backoff(brief: Brief, hands: Hands, first: dna::ModelRequest, allowance: Int) -> dna::ModelResult {
+        let mut req = first;
+        let mut r = self.asked(brief, req);
+        let mut tries = 0;
+        let mut wait = self.backoff_ms;
+        while !r.ok && rate_limited(r.refused) && !r.made && tries < self.retries {
+            let kept = hands.lease.renew(wait / 1000 + 60);
+            self.waited(brief, r.refused, wait, if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error });
+            sleep_for_ms(wait);
+            self.waited_ms = self.waited_ms + wait;
+            wait = wait * 2;
+            tries = tries + 1;
+            self.retried = self.retried + 1;
+            req.retry_of = brief.attempt_id;
+            if allowance >= 0 && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0) { return r; }
+            r = self.asked(brief, req);
+        }
+        return r;
+    }
+    // The validators' refusals over every seed the change touched, "" when
+    // all pass (or nothing was touched: the answer is then judged as it is).
+    @unbounded
+    fn validate(bench: ToolBench, hands: Hands, validators: String) -> String {
+        let seeds = bench.touched_seeds();
+        let mut out = "";
+        let mut rest = seeds;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let seed = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::str::starts_with(seed, "!") {
+                out = out + "a changed file git can only name quoted (" + seed[1..len(seed)] + ") cannot be validated: name it without a control character, quote or backslash\n";
+                continue;
+            }
+            let mut vs = validators + " ";
+            while len(std::str::trim(vs)) > 0 {
+                let vp = std::str::index_of(vs, " ");
+                let v = vs[0..vp];
+                vs = vs[(vp + 1)..len(vs)];
+                if len(v) > 0 && len(seed) > 0 {
+                    let done = bench.call(hands, v, "{\"path\": " + dna::record_json_quote(seed) + "}");
+                    if !done.ok { out = out + v + " " + seed + ": " + done.error + "\n"; }
+                }
+            }
+        }
+        return out;
     }
     @unbounded
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.performed = self.performed + 1;
         self.calls = "";
         self.waited_ms = 0;
+        self.retried = 0;
         self.spent_micros = 0;
         // a model the mapping named and then refused (a `tools` or `do` Work
         // on a model that returns no tool calls) is never called
@@ -192,6 +434,10 @@ locus ModelPerformer {
         };
         let before = self.priced_out(req, allowance);
         if len(before) > 0 { return Performance { disposition: "declined", narrative: before, calls: "[]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION }; }
+        // a Work with hands, mapped to `tools` or `do`: the model drives
+        // them and the leg runs every call (the harness's loop)
+        let mode = std::json::find_string_field(std::json::find_field_raw(brief.hat, "model"), "mode");
+        if len(std::str::trim(std::json::find_field_raw(brief.hat, "hands"))) > 2 && (mode == "tools" || mode == "do") { return self.perform_loop(brief, hands, req, allowance, mode); }
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
