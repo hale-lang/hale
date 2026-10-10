@@ -7,11 +7,12 @@
   banner-light.png. The README shows the one that matches the reader's
   GitHub theme.
 
-  The art is hale-lang.org's: the mark from public/favicon.svg, the
-  wordmark set as the site header sets it, the palette from
-  src/styles/tokens.css, and the lotus field from src/lib/lotus-field.ts
-  as one still frame (the site's first frame, seed 7). Copy those again if
-  the site changes them.
+  The art is hale-lang.org's: the wordmark set as the site header sets
+  it, the palette from src/styles/tokens.css, and the lotus field from
+  src/lib/lotus-field.ts (seed 7). The field is drawn still, as its
+  lotuses and their routes. The site's stars, the packets travelling its
+  routes and the turning orbits are left out: they read as life when they
+  move and as specks when they do not. Copy those pieces again if the site changes them.
 
   Regenerate after editing, with any headless Chromium (Chrome, or
   Playwright's chrome-headless-shell), at 2x so the hairlines stay sharp:
@@ -53,16 +54,7 @@
     transform: translateY(-50%);
     display: flex;
     align-items: center;
-    gap: 28px;
   }
-  .mark { width: 132px; height: 132px; flex: none; display: block; }
-  /* The mark is drawn for a dark ground: white-to-cyan strokes that
-     vanish on paper. On light, its lines take the light palette (jade,
-     rose, violet) and its four cardinal points the violet. */
-  :root[data-theme='light'] #hale-line stop:nth-of-type(1) { stop-color: #1e7a5a; }
-  :root[data-theme='light'] #hale-line stop:nth-of-type(2) { stop-color: #c2256b; }
-  :root[data-theme='light'] #hale-line stop:nth-of-type(3) { stop-color: #6a3fc9; }
-  :root[data-theme='light'] .mark g[fill="#f8fbff"] { fill: #6a3fc9; }
   .name {
     font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
     font-weight: 500;
@@ -75,58 +67,6 @@
 <body>
 <canvas></canvas>
 <div class="brand">
-<svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" aria-hidden="true">
-<defs>
-  <linearGradient id="hale-line" x1="18" y1="22" x2="142" y2="140" gradientUnits="userSpaceOnUse">
-    <stop offset="0" stop-color="#72e7ff"/>
-    <stop offset="0.48" stop-color="#f7fbff"/>
-    <stop offset="1" stop-color="#9b7cff"/>
-  </linearGradient>
-  <radialGradient id="hale-core">
-    <stop offset="0" stop-color="#ffffff"/>
-    <stop offset="0.22" stop-color="#7ae8ff"/>
-    <stop offset="0.58" stop-color="#756dff" stop-opacity=".92"/>
-    <stop offset="1" stop-color="#756dff" stop-opacity="0"/>
-  </radialGradient>
-  <filter id="hale-glow" x="-80%" y="-80%" width="260%" height="260%">
-    <feGaussianBlur stdDeviation="3.1" result="blur"/>
-    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-  </filter>
-  <filter id="hale-soft" x="-80%" y="-80%" width="260%" height="260%">
-    <feGaussianBlur stdDeviation="8"/>
-  </filter>
-</defs>
-<circle cx="80" cy="82" r="47" fill="#4b75ff" opacity=".08" filter="url(#hale-soft)"/>
-<g fill="none" stroke="url(#hale-line)" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="80" cy="80" r="54" stroke-width="1.15" opacity=".58"/>
-  <path d="M38 46A54 54 0 0 1 122 46M31 91A54 54 0 0 0 129 91" stroke-width=".75" opacity=".34" stroke-dasharray="2 5"/>
-  <path d="M80 18v14M80 128v14M18 80h14M128 80h14" stroke-width="1.2" opacity=".84"/>
-  <path d="M42 80h76M80 42v76" stroke-width=".52" opacity=".2"/>
-  <g stroke-width="1.75" filter="url(#hale-glow)">
-    <path d="M80 89C64 71 66 48 80 31c14 17 16 40 0 58Z"/>
-    <path d="M79.8 91C58 82 45 64 44 47c20 2 34 16 35.8 44Z"/>
-    <path d="M80.2 91C102 82 115 64 116 47c-20 2-34 16-35.8 44Z"/>
-    <path d="M80 103C53 102 34 88 29 69c23-6 43 5 51 34Z"/>
-    <path d="M80 103c27-1 46-15 51-34-23-6-43 5-51 34Z"/>
-    <path d="M80 103c-18 17-38 19-52 7 13-11 31-13 52-7Z"/>
-    <path d="M80 103c18 17 38 19 52 7-13-11-31-13-52-7Z"/>
-    <path d="M35 111c18 27 72 27 90 0"/>
-  </g>
-  <g stroke-width="1.12" opacity=".9">
-    <path d="M80 96C71 86 72 73 80 64c8 9 9 22 0 32Z"/>
-    <path d="M80 98c-12-5-19-14-20-24 12 1 19 9 20 24Z"/>
-    <path d="M80 98c12-5 19-14 20-24-12 1-19 9-20 24Z"/>
-  </g>
-</g>
-<g fill="#f8fbff" filter="url(#hale-glow)">
-  <circle cx="80" cy="18" r="2.7"/>
-  <circle cx="80" cy="142" r="2.7"/>
-  <circle cx="18" cy="80" r="2.7"/>
-  <circle cx="142" cy="80" r="2.7"/>
-</g>
-<circle cx="80" cy="94" r="14" fill="url(#hale-core)" opacity=".78"/>
-<circle cx="80" cy="94" r="2.7" fill="#ffffff" filter="url(#hale-glow)"/>
-</svg>
   <div class="name">hale</div>
 </div>
 <script>
@@ -304,16 +244,24 @@ function draw(ctx, sc, t, col, cam) {
   sc.nodes.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (n) { drawLotus(ctx, n, project(n, n.depth), t, col); });
   sc.packets.forEach(function (pk) { var e = sc.edges[pk.edge], a = project(sc.nodes[e.a], e.depth), b = project(sc.nodes[e.b], e.depth), c = project(e.c, e.depth), tt = clamp(pk.t, 0, 1), pt = q(a, c, b, tt), tg = tangent(a, c, b, tt); drawPacket(ctx, pk, pt, Math.atan2(tg.y, tg.x), col, 0.35 + e.depth * 0.65, col.core); });
 }
-// ---- the site's first frame, held still ----
+// ---- the field held still: lotuses and routes, no stars, packets or orbits ----
 (function () {
   var W = 1280, H = 480, k = 2;
   var canvas = document.querySelector('canvas'), ctx = canvas.getContext('2d');
   canvas.width = W * k; canvas.height = H * k; ctx.setTransform(k, 0, 0, k, 0, 0);
   var cs = getComputedStyle(document.documentElement), v = function (n) { return cs.getPropertyValue(n).trim(); };
   var col = { line: v('--lotus-line'), petal: v('--ink-3'), accent: v('--lotus-petal'), violet: v('--lotus-petal-2'), core: v('--lotus-core'), ink: v('--ink') };
-  var sc = build(W, H, 7);
-  step(sc, 2);
-  draw(ctx, sc, 0, col, { x: 0, y: 4, zoom: 1 });
+  var sc = build(W, H, 7), cam = { x: 0, y: 4, zoom: 1 };
+  // an orbit is a dashed ring that turns on the site; still, its dashes and points are specks too
+  sc.nodes.forEach(function (n) { n.orbit = false; });
+  var project = function (p, depth) { return { x: (p.x - W / 2) * cam.zoom + W / 2 + cam.x * depth, y: (p.y - H / 2) * cam.zoom + H / 2 + cam.y * depth }; };
+  // routes as the site draws them with no traffic on them, minus the dot at each midpoint
+  sc.edges.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (e) {
+    var a = project(sc.nodes[e.a], e.depth), b = project(sc.nodes[e.b], e.depth), c = project(e.c, e.depth), fade = 0.35 + e.depth * 0.65;
+    ctx.strokeStyle = withAlpha(col.line, 0.6 * fade); ctx.lineWidth = 0.7 * (0.7 + e.depth * 0.3);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(c.x, c.y, b.x, b.y); ctx.stroke();
+  });
+  sc.nodes.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (n) { drawLotus(ctx, n, project(n, n.depth), 0, col); });
 })();
 </script>
 </body>
