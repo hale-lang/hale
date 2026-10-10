@@ -461,8 +461,12 @@ The CLI checks first: the holder must be a person the record knows (a
 row in their name, or an organization's member) who has not retired,
 and never a name the organism writes as. The request is a
 `hold.requested` row in your name; the organization answers with a
-Board Review, listed by `hale dna review` under `holds`, which you, the
-asker, may not ratify:
+Board Review, listed by `hale dna review` under `holds`. Whoever holds
+the Board decides it, you included if that is you: a governance proposal
+is the one exception to the rule that a candidate's author may not
+review it, since seating someone is not reviewing your own work (a change
+to the code still needs someone other than its author, even one the
+Board must approve):
 
 ```text
 proposed alice to hold position:board: the Board ratifies it as k:… (`hale dna review` lists it under `holds`)

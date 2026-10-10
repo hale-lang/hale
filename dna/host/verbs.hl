@@ -382,7 +382,7 @@ fn review_list(p: Projection) -> Answer {
     // practice (a Review pins one digest and settles with one outcome),
     // each listed under its own heading so the Board can read it as a set
     let ordered = p.review_ids_in_order();
-    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds");
+    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds") + seeded_listing(p, ordered, "positions");
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
 }
 
@@ -390,7 +390,7 @@ fn review_list(p: Projection) -> Answer {
 // by their name: the declared purpose (GH #995), the toolchain's seeded
 // practices (`design`, `operating`, `using`), the toolchain's library (`library`), and a repository's holes, its marked
 // practices and proposed holders (GH #1091).
-fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds"; }
+fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds" || group == "positions"; }
 
 // The pending Reviews of one seeded family, under its heading ("" when none).
 @unbounded
@@ -408,7 +408,7 @@ fn seeded_listing(p: Projection, ids: String, family: String) -> String {
         i = i + 1;
     }
     if count == 0 { return ""; }
-    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
+    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "positions" { " position(s) to open, each with its mandate" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
     return "  " + family + " — " + what + ":\n" + lines
         + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
 }

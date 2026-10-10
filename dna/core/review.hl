@@ -146,6 +146,12 @@ locus Review {
         subject_digest: String = ""; // the candidate, pinned
         required_authority: String = ""; // e.g. "maintainer", "operator"
         author: String = ""; // the Attempt/performer that authored the candidate
+        // A governance proposal (a practice, a hold, a position's opening, a
+        // graph or knowledge proposal, a binding, an edge): the organization
+        // sets it when it opens one. Only such a Review, requiring the Board,
+        // admits its author's verdict; a change to the work never does,
+        // whatever authority it requires.
+        governance: Bool = false;
         // GH #1089: the positions its route requires, `<position>=<holder>,<holder> …`
         // as they were held when it opened; set, they replace the required
         // authority, and every one must approve
@@ -384,7 +390,12 @@ locus Review {
         if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
         let why = self.standing_refusal(v);
         if len(why) > 0 { return why; }
-        if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
+        // the Board is the exception: a governance proposal requiring the
+        // Board's authority (a fill, an opening, a graph proposal) is not
+        // self-review, so whoever holds the Board may ratify what they asked
+        // for (a solo organization seats itself); every other Review, a
+        // mutation's above all and a Board-required one too, refuses its author
+        if v.reviewer == self.author && !(self.governance && self.required_authority == "board") { return "reviewer " + v.reviewer + " authored the candidate"; }
         return "";
     }
     // Whether the reviewer stands to decide it. With no signers, the

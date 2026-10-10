@@ -699,7 +699,10 @@ repository:
   the work the practice describes — proposes as one and decides as
   the other. The Review's independence rule refuses the candidate's
   *author*, which for a practice is the organization (`org`), never
-  the proposer. This is the design, not an artifact; an organization
+  the proposer; and a governance proposal requiring the Board's
+  authority (a fill, an opening, a graph proposal) admits its author's
+  verdict too, so the Board ratifies what it asked for. A change to the
+  work never does, whatever authority it requires. This is the design, not an artifact; an organization
   that wants the proposer barred from ratifying their own proposal
   needs a review policy that says so, and none ships.
   The text arrives byte for byte, newlines included: the host escapes an
@@ -1436,6 +1439,8 @@ record's.
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
+| `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`) |
+| `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
@@ -4593,7 +4598,12 @@ The live half is memory's, projected from the record by the spine
   asker's name, relayed as `HoldRequested` until the organization answers
   `hold.proposed` (`digest`, `review_id`) or `hold.refused` (`why`). The
   organization proposes it like any hole (`group: holds`), in the asker's
-  name, so the asker may not ratify it. The CLI checks first that the
+  name. Whoever holds the Board may ratify it, the asker included: a
+  governance proposal requiring the Board's authority (the organization
+  marks its knowledge Reviews `governance`) is the one exception to a
+  Review's independence from its author (a solo organization seats
+  itself), which every change to the work keeps, a mutation requiring the
+  Board included. The CLI checks first that the
   position or organization is one the record states or proposes and has
   not retired (`graph.retired`); a firm holding a position needs no
   person checks — only that the firm is an organization the record

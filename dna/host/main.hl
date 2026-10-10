@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -243,6 +243,10 @@ fn main() {
     } else if verb == "show" {
         // GH #1086: `hale dna show org | processes [--json]`, queries over memory
         ans = show_verb(root, word(a, 0), has_flag(a, "--json"));
+    } else if verb == "position" {
+        // `hale dna position open <name> --mandate "<text>" [--text …] [--under …]`
+        if word(a, 0) == "open" { ans = position_open_verb(root, seed, word(a, 1), flag(a, "--mandate"), flag(a, "--text"), flag(a, "--under"), flag(a, "--as"), memory); }
+        else { ans = fail("position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`"); }
     } else if verb == "fill" {
         // GH #1091: `hale dna fill <position> <holder>`, a holder proposed through the organization
         ans = fill_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), memory);

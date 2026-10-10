@@ -995,6 +995,7 @@ fn dna_fixture_set_is_complete() {
             "review_signers_test.hl",
             "routing_test.hl",
             "row_admission_test.hl",
+            "scenario_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
             "senses_reflex_test.hl",

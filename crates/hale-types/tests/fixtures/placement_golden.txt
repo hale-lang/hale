@@ -10718,6 +10718,8 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/review_authority_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
+shared	App@literal1.board_change	__lib_dna__core___review__Review #94d06a02
+shared	App@literal1.board_review	__lib_dna__core___review__Review #94d06a02
 shared	App@literal1.boundary	__lib_dna__core___review__AutonomyBoundary #69613b5b
 shared	App@literal1.review	__lib_dna__core___review__Review #94d06a02
 -- dynamic	sites in core
@@ -10817,6 +10819,21 @@ row	App@literal1	App	main	default
 shared	dynamic	sites in core #9cea11a6
 shared	dynamic	sites in operations #cbf89ec1
 shared	dynamic	sites in tests #58257a56
+shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/scenario_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+shared	App@literal1.body	__lib_dna__core___assembly__Dna #733000a1
+shared	dynamic	sites in core #8d8c3bcd
+shared	dynamic	sites in core/pond/pq #39e83e0a
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___assembly__Board	on main
+dynamic	__lib_dna__core___assembly__Dna	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___roles__HoldsReader	on main
+dynamic	__lib_dna__core___verification__HaleVerification	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/schedule_cli_test.hl
@@ -12775,6 +12792,7 @@ domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@bindi
 domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding12
 domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding13
 domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding14
+domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding15
 row	Host@literal1	Host	main	default
 row	Host@literal2	Host	main	default
 row	Host@literal1.relay	NodeRelay	main	default
@@ -12785,6 +12803,7 @@ row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding11	__lib
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding12	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding12	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding13	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding13	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding14	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding14	binding
+row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding15	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding15	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding2	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding2	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding3	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding3	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding4	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding4	binding

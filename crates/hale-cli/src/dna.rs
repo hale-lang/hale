@@ -581,6 +581,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
+        // a position opened at run time: `hale dna position open <name> --mandate "…"`
+        Some("position") => host_exec("position", Path::new("."), &args[1..]),
         Some("fill") => {
             let mut words = Vec::new();
             let mut forwarded = Vec::new();
@@ -848,6 +850,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
+    eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("                                    open a position at run time: its node and its mandate, one Board Review");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
@@ -1593,6 +1597,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkAllowanceAsk") {
         out.push(format!(
             "note    {}/main.hl binds no `dna::WorkAllowanceAsk` (GH #1131): a leg asks the spine for its attempt's spend before its first model call, and the ask arrives over the nerves; unbound, a leg's attempt is declined with no answer. Add `dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
+            ORG_SEED
+        ));
+    }
+    if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::PositionOpenRequested") {
+        out.push(format!(
+            "note    {}/main.hl binds no `dna::PositionOpenRequested`: a position opened at run time (`hale dna position open`) is asked of the organization over the nerves; unbound, the request is never answered. Add `dna::PositionOpenRequested: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
             ORG_SEED
         ));
     }
@@ -2675,6 +2685,7 @@ main locus Org {{
         dna::ConcernRaised: nats::NatsAdapter {{ }};
         dna::PracticeRequested: nats::NatsAdapter {{ }};
         dna::HoldRequested: nats::NatsAdapter {{ }};
+        dna::PositionOpenRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
