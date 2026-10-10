@@ -194,3 +194,15 @@ cost field is unchanged. In `rows.jsonl` three rows moved, the
 the set (`org/trio position:editor`; `org system:dna position:editor` for
 the organization change `m2`; `org/trio position:editor`); the hat digest
 in them is normalized, so no row shows it.
+
+A position opened at run time (`hale dna position open`) gave the
+generated organization's `main.hl` one more binding, the request over
+the nerves (`dna::PositionOpenRequested: nats::NatsAdapter { }`, after
+`dna::HoldRequested`). Two entries carry that file in their context.
+The organization-growth edit (`abc3822558b3…`, was `25dcff4e759e…`) is
+re-keyed, and its recorded output carries the same one line and nothing
+else. The growth assessment (`9792e47cd54c…`, was `860b4feb6840…`) is
+re-keyed for the changed context alone. Each old context digest was
+checked by reproducing it from the new context, stored as the miss's
+evidence, with the one line taken back out. No fresh model call was
+made; every answer is unchanged.

@@ -24,6 +24,16 @@ main locus App {
             question: "ratify riley holding the position `board`, as riley proposes?",
             subject_digest: "sha256:hold-riley-board",
             required_authority: "board",
+            author: "riley",
+            governance: true
+        };
+        // a change to the work that requires the Board (an escalated
+        // mutation, a change to the law): its author never reviews it
+        board_change: dna::Review = dna::Review {
+            review_id: "r3",
+            question: "apply mutation m9, which touches the law?",
+            subject_digest: "sha256:m9-candidate",
+            required_authority: "board",
             author: "riley"
         };
         boundary: dna::AutonomyBoundary = dna::AutonomyBoundary {
@@ -84,6 +94,13 @@ main locus App {
             verdict: "approve", reviewer: "riley", authority: "board"
         });
         std::test::assert(own && self.board_review.settled && self.board_review.decided_by == "riley", "the Board ratifies what it asked for: " + self.board_review.last_refusal);
+        //    The exception is governance's alone: a change to the work that
+        //    requires the Board still refuses its author.
+        let own_change = self.board_change.consider(dna::Verdict {
+            review_id: "r3", subject_digest: "sha256:m9-candidate",
+            verdict: "approve", reviewer: "riley", authority: "board"
+        });
+        std::test::assert(!own_change && !self.board_change.settled && std::str::contains(self.board_change.last_refusal, "authored the candidate"), "a Board-required change refuses its author: " + self.board_change.last_refusal);
 
         // ---- Disposition is a vector policy -------------------------
         // The disposition is the library's own enum, matched here on the

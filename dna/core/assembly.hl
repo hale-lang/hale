@@ -573,7 +573,7 @@ locus Dna {
             question: native_json_string(req, "question"),
             subject_digest: native_json_string(req, "subject_digest"),
             required_authority: native_json_string(req, "required_authority"),
-            author: native_json_string(req, "author"),
+            author: native_json_string(req, "author"), governance: true,
             signers: need.signers, gates: need.gates, fallback: need.fallback,
             settled: len(settlement.kind) > 0, outcome: outcome
         };
@@ -1955,7 +1955,7 @@ locus Dna {
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
     @unbounded
@@ -1987,7 +1987,7 @@ locus Dna {
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
     @unbounded
