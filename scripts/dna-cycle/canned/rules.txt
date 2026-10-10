@@ -1,0 +1,6 @@
+plan|overdue sweep|kind: appendage\nclass: refactor\ntarget: api/todo.hl\ncount: 1\nassignee: none\nobligation: none\nThe sweep's cadence is one line in the list's own locus.
+locate|overdue sweep|api/todo.hl
+plan||kind: appendage\nclass: refactor\ntarget: api/todo.hl\ncount: 1\nassignee: none\nobligation: none\ncanned default plan
+assess||
+optimize||proposal: none
+review||approve

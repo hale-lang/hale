@@ -42,18 +42,20 @@ locus HatReader {
         return kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.settled" || kind == "step.registered" || kind == "step.activated"
             || kind == "step.completed" || kind == "step.failed" || kind == "attempt.admitted" || kind == "attempt.outcome" || kind == "work.settled";
     }
-    // The execution facts, replayed into the projection under the same
-    // bounds the execution reader keeps.
+    // The execution facts of the one execution a Work belongs to (its root
+    // task's, child tasks included: their ids extend it), replayed into the
+    // projection under the same bounds the execution reader keeps. The
+    // bounds are the execution's: a record's whole history, every task the
+    // organization ever ran, is no measure of what one hat needs.
     @unbounded
-    fn load() -> Bool {
+    fn load(root: String) -> Bool {
         if self.loaded { return true; }
-        if self.j.revision() > 2048 { return self.fail("context_read_limit", "the context reader's event budget was exceeded"); }
         let mut i = 0;
         let mut bytes = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
             if e.kind == "ledger.adopted" && !self.ledger_ready { return self.fail("context_source_unavailable", "this application has adopted a Ledger; the hat reads it from memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here"); }
-            if self.workflow_fact(e.kind) {
+            if self.workflow_fact(e.kind) && of_execution(e.entity, root) {
                 bytes = bytes + len(e.body);
                 if len(e.body) > 65536 || bytes > 524288 || self.p.fact_count() >= 512 { return self.fail("context_read_limit", "the context reader's fact budget was exceeded"); }
                 let applied = dna::replay(self.p, e.kind, e.entity, e.body);
@@ -91,7 +93,7 @@ locus HatReader {
     // and kept in memory under its digest when memory is there.
     @unbounded
     fn read(work_id: String) -> dna::Hat {
-        if !self.load() { return dna::Hat { code: self.code, why: self.problem }; }
+        if !self.load(execution_root(work_id)) { return dna::Hat { code: self.code, why: self.problem }; }
         let mut node = dna::BoundNode { };
         let mut i = 0;
         while i < self.p.node_count() {
@@ -115,6 +117,24 @@ locus HatReader {
         if ready && self.knowledge.keep_hat(sealed.digest, sealed.head, sealed.watermark, dna::hat_body(sealed)) { self.kept = self.kept + 1; }
         return sealed;
     }
+}
+
+// The execution an id belongs to: its root task's id, the part before the
+// first `/` or `.` (`t4/wf1/s0/w` and a child's `t4/wf1.s0.k` are `t4`'s).
+@unbounded
+fn execution_root(id: String) -> String {
+    let mut i = 0;
+    while i < len(id) {
+        let c = std::str::byte_at_unchecked(id, i);
+        if c == 47 || c == 46 { return id[0..i]; }
+        i = i + 1;
+    }
+    return id;
+}
+
+// Whether a fact's entity is of the execution rooted at `root`.
+fn of_execution(entity: String, root: String) -> Bool {
+    return entity == root || std::str::starts_with(entity, root + "/") || std::str::starts_with(entity, root + ".");
 }
 
 // The hat on the wire, as the core renders it.

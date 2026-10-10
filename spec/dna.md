@@ -5285,6 +5285,8 @@ otherwise.
 | Variable | Default | Effect |
 |---|---|---|
 | `HALE_DNA_DISCOVER=off` | discover | `off` makes `init`'s discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the `init` it runs. |
+| `HALE_DNA_TAPE=record\|replay` | the catalog's `mode` | Whether a `RecordedModel` whose `mode_env` names it records answers or replays them; the trio fixture's catalog and `scripts/dna-cycle` name it. |
+| `HALE_DNA_TAPE_DIR=<dir>` | the catalog's `dir` | The tape directory of a `RecordedModel` whose `dir_env` names it. |
 | `HALE_DNA_TOOLCHAIN=<path>` | the running `hale` | The toolchain binary the host and the processes it starts use; `hale dna` sets it to the binary it is. It is part of a seed's build fingerprint. |
 | `HALE_DNA_GENOME=<dir>` | unset | The record root the organization takes its genome from; `hale dna` and the host set it for the organization they start, and the model adapters read it at birth like a credential names its source. |
 | `HALE_DNA_GENOME_POLL=<s>` | 300 | How often the host polls the record's remote for a changed genome, to restart the organization on it. |
