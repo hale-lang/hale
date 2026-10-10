@@ -131,6 +131,9 @@ locus PositionRecord {
         else if len(std::str::trim(r.mandate)) == 0 { why = "a position is opened with its mandate: what it decides, may not do, cites and escalates"; }
         else if len(r.by) == 0 { why = "a position is opened by someone: the Review's author"; }
         else if record_graph_has(record_graph(self.journal, self.receipts).nodes, r.position) { why = "`" + r.position + "` is a position the graph already states"; }
+        // the part it unfolds from is a node the graph states: an edge to
+        // anything else is no edge (memory refuses to project it)
+        else if len(r.under) > 0 && !record_graph_has(record_graph(self.journal, self.receipts).nodes, r.under) { why = "`--under " + r.under + "` names no node the graph states (`seed:<name>`, a position, a work part)"; }
         if len(why) > 0 {
             let rb = std::json::Builder { };
             rb.begin_object();

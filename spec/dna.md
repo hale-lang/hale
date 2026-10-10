@@ -1437,7 +1437,7 @@ record's.
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`) |
-| `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate) |
+| `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |

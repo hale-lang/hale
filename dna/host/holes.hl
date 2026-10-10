@@ -205,6 +205,25 @@ fn fill_equipment(root: String, position: String) -> String {
 // Board Review (`on_position_requested`). The request is a row in the
 // proposer's name; the host beside the organization relays it until it is
 // answered.
+// The node `--under <part>` names: a node id as given, or a bare name as the
+// graph states it (a seed, a work part, a position, a process, in that
+// order); a name the graph does not state goes as given, for the
+// organization to refuse.
+@unbounded
+fn under_node(root: String, under: String) -> String {
+    if len(under) == 0 || std::str::contains(under, ":") { return under; }
+    let nodes = dna::record_graph(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }).nodes;
+    let positions = held_state(root).positions;
+    let mut kinds = "seed work position process ";
+    while len(kinds) > 0 {
+        let sp = std::str::index_of(kinds, " ");
+        let id = ops::graph_node_id(kinds[0..sp], under);
+        kinds = kinds[(sp + 1)..len(kinds)];
+        if dna::record_graph_has(nodes, id) || std::str::contains(positions, "\n" + id + "\n") { return id; }
+    }
+    return under;
+}
+
 @unbounded
 fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [project] [--as <who>]"); }
@@ -213,6 +232,7 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
     let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };
     if std::str::contains(held_state(root).positions, "\n" + position + "\n") { return fail("position open: `" + position + "` is already a position the record states or proposes"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let parent = under_node(root, under);
     let request_id = request_digest_id(root, "p", position + "\n" + mandate + "\n" + who);
     let b = std::json::Builder { };
     b.begin_object();
@@ -220,7 +240,7 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
     b.string_field("position", position);
     b.string_field("text", text);
     b.string_field("mandate", mandate);
-    b.string_field("under", under);
+    b.string_field("under", parent);
     b.string_field("by", who);
     b.end_object();
     if organism_here(root, memory) {

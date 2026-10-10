@@ -195,8 +195,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        459,
-        466,
+        460,
+        467,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -289,6 +289,7 @@ fn host() {
         senses_up_verb  does={syscall,block,alloc}
         show_verb  does={syscall,block,time,env,alloc}
         this_host  does={syscall,block,alloc}
+        under_node  does={syscall,block,time,entropy,env,alloc,secret_use}
         work_verb  does={syscall,block,alloc}
         ",
     );
