@@ -362,6 +362,22 @@ main locus App {
         std::io::fs::unlink(repo2 + "/app/helper space.hl") or discard;
         std::io::fs::unlink(repo2 + "/app/ignored.hl") or discard;
         std::test::assert_eq_str(self.probe.dirty_for("app", repo2), "", "clean again");
+        // a repository organism's seed is its root, which holds no `.hl`
+        // (`hale inputs` finds nothing there): the inputs are those of
+        // the seeds whose files the candidate changes
+        let wt2 = repo2 + "/.hale/dna/wt-root";
+        let wa = sh("git\n-C\n" + repo2 + "\nworktree\nadd\n-q\n--detach\n" + wt2 + "\nHEAD");
+        std::test::assert_eq_int(wa.code, 0, "a worktree at the base: " + wa.stderr);
+        std::io::fs::write_file(wt2 + "/app/main.hl", "import \"../lib\" as lib;\nfn main() { println(lib::one() + 1); }\n") or discard;
+        let wc = sh("git\n-C\n" + wt2 + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-a\n-m\nthe app adds one");
+        std::test::assert_eq_int(wc.code, 0, "the candidate: " + wc.stderr);
+        std::test::assert_eq_str(self.probe.dirty_for(".", wt2), "", "a repository's root seed reads the changed seed's inputs");
+        std::io::fs::write_file(repo2 + "/lib/helper.hl", "fn oops( {\n") or discard;
+        let d10r = self.probe.dirty_for(".", wt2);
+        std::test::assert(std::str::contains(d10r, "?? lib/helper.hl"), "and names their untracked inputs: " + d10r);
+        std::io::fs::unlink(repo2 + "/lib/helper.hl") or discard;
+        let wr = sh("git\n-C\n" + repo2 + "\nworktree\nremove\n--force\n" + wt2);
+        std::test::assert_eq_int(wr.code, 0, "the worktree removed: " + wr.stderr);
         // an inspection that fails authorises nothing (finding 4)
         self.blind = dna::LocalGit { repo: repo2, hale_bin: "/nonexistent/hale-7f3c" };
         let d10d = self.blind.dirty_for("app", repo2);
