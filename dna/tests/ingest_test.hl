@@ -82,6 +82,7 @@ fn check() {
     std::test::assert(std::str::contains(rows, "\\\"effect\\\": \\\"uncertain\\\"") && std::str::contains(rows, "\\\"contract\\\": \\\"contract:spec/todo.md\\\""), "naming its contract, its effect class uncertain: " + rows);
     std::test::assert_eq_int(count_rows(repo, "graph.ingested", first), 1, "the commit is named");
     std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"ingest\""), 1, "one Review for the whole difference");
+    std::test::assert_eq_int(count_rows(repo, "graph.requested", "\"by\": \"hale dna ingest\""), 1, "and the organization is asked to open it");
     std::test::assert(std::str::contains(dna_cli(repo, "review").stdout, "ingest — 1 re-ingest(s) of the repository's graph at a commit"), "listed under ingest");
     std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/ingest/" + first), "the checkout is removed");
     let again = dna_cli(repo, "ingest");

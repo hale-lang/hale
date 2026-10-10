@@ -338,7 +338,15 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
         return answer("ingested " + short + ": the same difference is already proposed as " + dna::knowledge_review_id(digest) + "\n");
     }
     if !keeps_flush(root, keeps) { return fail("ingest: the receipt could not be kept; nothing was proposed"); }
-    let seeded = seed_rows(root, proposal + hole_row("graph.ingested", at, b.result()), "ingest", memory);
+    // the organization opens the Review it is asked to (a running one hears
+    // the request; one started later finds it in the record)
+    let rq = std::json::Builder { };
+    rq.begin_object();
+    rq.string_field("request_id", "g" + digest[7..19]);
+    rq.string_field("review_id", dna::knowledge_review_id(digest));
+    rq.string_field("by", "hale dna ingest");
+    rq.end_object();
+    let seeded = seed_rows(root, proposal + hole_row("graph.ingested", at, b.result()) + hole_row("graph.requested", "g" + digest[7..19], rq.result()), "ingest", memory);
     if !seeded.ok { return seeded; }
     return answer("ingested " + short + ": " + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired) + " retired; the Board ratifies it as " + dna::knowledge_review_id(digest) + " (`hale dna review` lists it under `ingest`)\n");
 }

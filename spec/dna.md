@@ -1435,6 +1435,8 @@ record's.
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
+| `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as a position request is |
+| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`) |
@@ -1771,7 +1773,11 @@ proposal in the group `ingest`: added and changed nodes and edges with
 their bodies, then what is gone as `graph.retired` rows, edges before
 nodes. A `graph.ingested` row names the commit either way; the same
 difference at the same commit is proposed once, and nothing differing
-proposes nothing. An attached application's own re-ingest is not built
+proposes nothing. The host files the proposal and its Review, and a
+`graph.requested` row, relayed like any request, has the running
+organization route and open that Review (`graph.proposed`), so the
+Board's verdict settles it there; an organization started later finds
+it in the record. An attached application's own re-ingest is not built
 yet.
 
 `hale dna definitions [project] [--json]` lists the catalog
