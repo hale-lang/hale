@@ -65,6 +65,12 @@ main locus App {
         let d = git.diff(opened.value, base, cand.value);
         std::test::assert(std::str::contains(d, "+fn main() { println(\"v2\"); }"), "the diff is the edit: " + d);
         std::test::assert(!std::str::contains(d, "vendor/"), "vendor/ is never part of a candidate: " + d);
+        // and a genome that does ignore vendor/ commits its candidates too
+        std::io::fs::write_file(opened.value + "/.gitignore", "/vendor/\n") or discard;
+        let ignored = git.commit_all(opened.value, "ignore vendor/");
+        std::test::assert(len(ignored) == 40, "a candidate commits with vendor/ ignored: " + git.why());
+        let d2 = git.diff(opened.value, cand.value, ignored);
+        std::test::assert(std::str::contains(d2, "+/vendor/") && !std::str::contains(d2, "vendor/lib.hl"), "the .gitignore alone: " + d2);
         std::test::assert(!git.contains(repo, cand.value), "not applied yet");
         let cand2 = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 14);
         std::test::assert(cand2.ok && cand2.replayed && cand2.value == cand.value, "a retried commit replays the same sha");

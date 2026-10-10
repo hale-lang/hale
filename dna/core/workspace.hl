@@ -538,11 +538,14 @@ locus LocalGit {
     // `IsolatedWorktrees.open` puts in every worktree: a genome whose
     // committed `.gitignore` does not name it (`hale dna init`'s edit left
     // uncommitted) would otherwise carry the whole vendored tree in every
-    // candidate.
+    // candidate. It is unstaged after `add -A` rather than excluded by a
+    // pathspec, which git refuses when `vendor/` is already ignored.
     @effects(is: { repo_write })
     fn commit_all(path: String, message: String) -> String {
-        let a = run_tool("git\n-C\n" + path + "\nadd\n-A\n--\n.\n:(exclude)vendor/");
+        let a = run_tool("git\n-C\n" + path + "\nadd\n-A");
         if a.code != 0 { self.last_error = trim_nl(a.stderr); return ""; }
+        let v = run_tool("git\n-C\n" + path + "\nreset\n-q\n--\nvendor");
+        if v.code != 0 { self.last_error = trim_nl(v.stderr); return ""; }
         let c = run_tool("git\n-C\n" + path + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n" + message + "\n--author\n" + self.author);
         if c.code != 0 { self.last_error = trim_nl(c.stderr); return ""; }
         return self.head(path);
