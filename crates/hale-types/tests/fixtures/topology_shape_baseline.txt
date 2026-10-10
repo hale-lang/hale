@@ -621,7 +621,7 @@ crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 35f
 crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 10752f290e4e7986
 crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl 530c777d0fe0f765
 crates/hale-codegen/tests/fixtures/examples/91-module-decls/main.hl 86745b4e2324e4a2
-crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl af4e291a12440363
+crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl a1b135bc7d4fcd3d
 crates/hale-codegen/tests/fixtures/examples/93-units/main.hl c44d33e5cd32e71b
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
@@ -1676,7 +1676,8 @@ crates/hale-types/tests/interface_dispatch.rs#2 a0304268ee0b9373
 crates/hale-types/tests/interface_dispatch.rs#3 3e8236394613d0b0
 crates/hale-types/tests/interface_dispatch.rs#5 28000b6d0e512b10
 crates/hale-types/tests/interface_dispatch.rs#6 6d6f6da0dc6377b2
-crates/hale-types/tests/interface_slot_override.rs#1 c180c95dda5b3cc4
+crates/hale-types/tests/interface_slot_override.rs#10 e60359cb8a15e313
+crates/hale-types/tests/interface_slot_override.rs#2 c180c95dda5b3cc4
 crates/hale-types/tests/intra_locus_pool_safety.rs#1 136877c05cbac3b6
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
@@ -1747,7 +1748,7 @@ crates/hale-types/tests/model_fanout.rs#1 48fefaa10bc3abfc
 crates/hale-types/tests/model_fanout.rs#12 04bdd600e87989c8
 crates/hale-types/tests/model_fanout.rs#13 b0592a5db3cfd991
 crates/hale-types/tests/model_fanout.rs#14 788a618eef9f9674
-crates/hale-types/tests/model_fanout.rs#16 018bd040806fc592
+crates/hale-types/tests/model_fanout.rs#16 dc74483f127a0386
 crates/hale-types/tests/model_fanout.rs#17 929aa0de861fc434
 crates/hale-types/tests/model_fanout.rs#18 a863be2764a92b8e
 crates/hale-types/tests/model_fanout.rs#19 ed98275c99171609

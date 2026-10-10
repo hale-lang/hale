@@ -544,7 +544,7 @@ pub const IDENTITIES: &[Identity] = &[
         producer: ("crates/hale-types/src/evidence.rs", "analysis_inputs_digest"),
         consumers: &["the artifact's `law.inputs_digest`", "`EvidenceTable::validate`", "admission (`topology_law.rs`)"],
         on_mismatch: "the artifact is refused: evidence produced under another analysis snapshot",
-        versioned_by: "a hand-bumped constant (`ANALYSIS_SEMANTICS_VERSION`, 7), and the compiler version",
+        versioned_by: "a hand-bumped constant (`ANALYSIS_SEMANTICS_VERSION`, 8), and the compiler version",
         frozen: None,
     },
     Identity {

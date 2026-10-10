@@ -194,7 +194,7 @@ shift_struct!(UnitDecl { name, equation, span, id });
 shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });
 shift_struct!(ConstitutionDecl { name, extends, entries, span });
-shift_struct!(GroupMember { segments, glob, span });
+shift_struct!(GroupMember { segments, glob, role, span });
 shift_struct!(ClaimsBlock { entries, adopts, lib_tier, span });
 shift_struct!(ClaimDecl { name, form, span });
 

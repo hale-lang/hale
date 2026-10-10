@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/readme/banner.png" alt="Hale" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/banner-dark.png">
+    <img src="assets/readme/banner-light.png" alt="Hale" width="100%">
+  </picture>
 </p>
 
 <p align="center">

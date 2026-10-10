@@ -73,7 +73,8 @@ top_decl          = locus_decl
 group_decl        = "group" , IDENTIFIER , "=" , "{" ,
                     [ group_member , { "," , group_member } , [ "," ] ] ,
                     "}" , [ "may_be_empty" ] , ";" ;
-group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
+group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ]
+                  | "role" , IDENTIFIER ;
 
 (* GH #1109 — `role NAME [includes A, B];` declares authorization
    vocabulary (spec/types.md § "Roles"). `role` and

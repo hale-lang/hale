@@ -1348,6 +1348,7 @@ impl Parser {
     ///                  [ group_member { ',' group_member } [ ',' ] ] ,
     ///                  '}' , [ 'may_be_empty' ] , ';'
     ///   group_member = IDENT { '::' IDENT } [ '::' '*' ]
+    ///                | 'role' IDENT
     ///
     /// `group` and `may_be_empty` are contextual keywords. The glob
     /// is trailing-only and single-`*` — enumeration over a closed
@@ -1601,6 +1602,11 @@ impl Parser {
     /// One group member: `Name`, `alias::Name`, or `alias::*`.
     fn parse_group_member(&mut self) -> Result<GroupMember, Diag> {
         let head = self.expect_ident("group member name")?;
+        if head.name == "role" && matches!(self.peek(), TokenKind::Ident(_)) {
+            let role = self.expect_ident("role name after `role`")?;
+            let span = head.span.merge(role.span);
+            return Ok(GroupMember { segments: vec![role], glob: false, role: true, span });
+        }
         let mut segments = vec![head.clone()];
         let mut glob = false;
         let mut end_span = head.span;
@@ -1633,6 +1639,7 @@ impl Parser {
         Ok(GroupMember {
             segments,
             glob,
+            role: false,
             span: head.span.merge(end_span),
         })
     }
