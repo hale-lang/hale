@@ -18,7 +18,8 @@ locus PositionRecord {
     // GH #1091: a holder proposed for a position, as the organization
     // proposes any hole — a graph proposal whose receipt carries the
     // `holds` edge, one Board Review of its own in the name of whoever
-    // asked (who therefore may not ratify it). What a hold may be is the
+    // asked (who may ratify it as the Board: a Board Review is governance,
+    // not self-review). What a hold may be is the
     // projection's to check when it is ratified (the store is the gate);
     // here only its shape is. Answered once, however often it is relayed.
     // Its rows up to the Board's Review: refused when it is no hold, else

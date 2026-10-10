@@ -699,7 +699,9 @@ repository:
   the work the practice describes — proposes as one and decides as
   the other. The Review's independence rule refuses the candidate's
   *author*, which for a practice is the organization (`org`), never
-  the proposer. This is the design, not an artifact; an organization
+  the proposer; and a Review requiring the Board's authority (a fill,
+  an opening, a graph proposal) admits its author's verdict too, so the
+  Board ratifies what it asked for. This is the design, not an artifact; an organization
   that wants the proposer barred from ratifying their own proposal
   needs a review policy that says so, and none ships.
   The text arrives byte for byte, newlines included: the host escapes an
@@ -4589,7 +4591,10 @@ The live half is memory's, projected from the record by the spine
   asker's name, relayed as `HoldRequested` until the organization answers
   `hold.proposed` (`digest`, `review_id`) or `hold.refused` (`why`). The
   organization proposes it like any hole (`group: holds`), in the asker's
-  name, so the asker may not ratify it. The CLI checks first that the
+  name. Whoever holds the Board may ratify it, the asker included: a
+  Review requiring the Board's authority is the one exception to a
+  Review's independence from its author (a solo organization seats
+  itself), which every other Review, a mutation's above all, keeps. The CLI checks first that the
   position or organization is one the record states or proposes and has
   not retired (`graph.retired`); a firm holding a position needs no
   person checks — only that the firm is an organization the record
