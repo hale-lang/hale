@@ -1482,6 +1482,8 @@ record's.
 | `grant.fenced` | ledger | an admission refused because the grant's epoch moved since |
 | `budget.exhausted` | ledger | the window's model allowance is spent |
 | `model.called` | ledger | a model call and its evidence |
+| `model.rule` | record | the model mapping's rule for a selector (`default`, `position:<name>`, `contract:<Name>`, `task:<id>`): the size it needs and the sizes an override may move it to (`size`, `permit`, `by`); the latest row per selector is the rule (`dna/core/model_map.hl`) |
+| `model.category` | record | which model fills a category `<mode>.<size>` today, whether it returns tool calls and its price (`model`, `tool_calls`, `input_micros_per_1k`, `output_micros_per_1k`, `by`); the latest row per category stands |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
 | `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
 | `violation.recorded` | record | a closure the organism absorbed (GH #989), recorded by the part that owns it, which goes on: `{kind, subject, owner, detail}`. `adapter_undeliverable`: a node's connection to the nerves collapsed, a publish the stream did not acknowledge in its window (subject `nerves`, owner the node's holder); the node stops and exits 75 for its unit to start it again. `lease_unsettled`: a leg's lease expired with no outcome (subject the attempt, owner `spine`), once per lease, before the attempt is asked again. `pulse_stopped`: the heart's pull on its durable refused while the connection held (subject `heart`, owner the spine's holder), once per outage; the durable is made again. The board shows the latest five |
@@ -2000,7 +2002,11 @@ memory is named to it.
   before handing the outcome back (a `Patch` gives `read edit check test
   fmt patch`, validated by `check test fmt`; an `Assessment` the
   read-only `record_status record_history org_chart`; a contract not yet
-  described, none); the data class; the Work's history as facts; the
+  described, none); the **model** the mapping resolves for the Work
+  (`dna/core/model_map.hl`: the mode its hands make, the size of its
+  most specific `model.rule`, a task's override only inside the permitted
+  sizes, the model the `model.category` row names, the rule that decided
+  it, or why no model fills the category); the data class; the Work's history as facts; the
   record head and memory's projection watermark it was rendered at
   (`-1` without memory, and `practices_status` says so); and the
   digest, sha256 over the canonical body with the digest itself left

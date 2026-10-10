@@ -681,8 +681,9 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 // `workflow.admitted`) and the fact `intent` keep their names. The verb
 // writes the row and never publishes (GH #986): the host beside the
 // organism relays it onto the nerves.
-fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, judgment: Bool, memory: dna::Memory) -> Answer {
+fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, judgment: Bool, size: String, memory: dna::Memory) -> Answer {
     if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
+    if len(size) > 0 && !dna::model_size_known(size) { return fail("task create: --size is one of " + dna::MODEL_SIZES); }
     let s0 = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -712,12 +713,16 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         // GH #682, #986: the row is the fact; the host beside the organism,
         // in this clone, relays it onto the nerves on its next tick, and the
         // organism admits an intent once by its id
+        // the model mapping's override for this ask (dna/core/model_map.hl): a
+        // rule on the ask, admitted only inside the sizes its position permits
+        if len(size) > 0 && !append_as(root, "model.rule", "task:" + intent_id, "{\"size\": " + quote(size) + ", \"by\": " + quote(who) + "}", if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the size was not written (the reason is above)"); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         if no_wait { return answer(requested); }
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
         if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
+        if len(size) > 0 && !append_as(root, "model.rule", "task:" + intent_id, "{\"size\": " + quote(size) + ", \"by\": " + quote(who) + "}", if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the size was not written (the reason is above)"); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }

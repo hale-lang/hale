@@ -1,0 +1,163 @@
+// dna/core/model_map.hl — which model a Work gets.
+//
+// Every model call goes through one OpenAI-compatible gateway, and which of
+// its models a Work gets is decided here, in two tables kept as rows in the
+// record, so each has its history and its author:
+//
+// - the habitat's (`model.category`, entity `<mode>.<size>`): what each
+//   category is today, a model the gateway serves, its price and whether it
+//   returns tool calls; swappable without touching the organism's rules;
+// - the organism's (`model.rule`, entity a selector): which size a kind of
+//   work needs, and the sizes it may be moved to.
+//
+// Mode is the harness's: `think` for a Work with no hands, `tools` for hands
+// without a workspace, `do` for a workspace; it is read off the hat's hands.
+// Size is the model's. Selectors, most specific first: `task:<id>` (an
+// override, admitted only inside the permitted sizes of the rule beneath it),
+// `position:<name>`, `contract:<Name>`, `default`; with no rule the size is
+// `standard`. Until the habitat is a level of its own, its table lives in the
+// organism's record beside the rules.
+
+const MODEL_SIZES: String = "quick standard deep";
+const MODEL_MODES: String = "think tools do";
+
+// What a selector says: the size, and the sizes an override may move it to
+// ("" = only its own size).
+type ModelRule {
+    selector: String = "";
+    size: String = "";
+    permit: String = "";
+    by: String = "";
+}
+
+// What a category is today.
+type ModelCategory {
+    category: String = "";
+    model: String = "";
+    tool_calls: Bool = false;
+    input_micros_per_1k: Int = 0;
+    output_micros_per_1k: Int = 0;
+    by: String = "";
+}
+
+// The resolution a hat carries: the category, the model that fills it and
+// the selector whose rule decided the size; `why` names what is missing
+// when no model fills it (the Work is still described; its performer
+// refuses before calling).
+type ModelChoice {
+    ok: Bool = false;
+    mode: String = "";
+    size: String = "";
+    category: String = "";
+    model: String = "";
+    rule: String = "";
+    tool_calls: Bool = false;
+    why: String = "";
+}
+
+// The mode a Work's hands make: a workspace hand is `do`, any other hand
+// `tools`, none `think`.
+@unbounded
+fn model_mode_of(hands: String) -> String {
+    let mut mode = "think";
+    let mut it = std::json::array_first(hands);
+    while !it.done {
+        if std::json::find_string_field(it.element, "family") == "workspace" { return "do"; }
+        mode = "tools";
+        it = std::json::array_next(it);
+    }
+    return mode;
+}
+
+fn model_size_known(size: String) -> Bool { return word_in(size, MODEL_SIZES); }
+
+// A selector's rule: the latest `model.rule` row for it; an empty rule (no
+// size) when the record holds none.
+@unbounded
+fn model_rule_of(j: Journal, selector: String) -> ModelRule {
+    let mut out = ModelRule { selector: selector };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "model.rule" && e.entity == selector {
+            out = ModelRule { selector: selector, size: std::json::find_string_field(e.body, "size"), permit: std::json::find_string_field(e.body, "permit"), by: std::json::find_string_field(e.body, "by") };
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// A category's latest `model.category` row; an empty one (no model) when the
+// record holds none.
+@unbounded
+fn model_category_of(j: Journal, category: String) -> ModelCategory {
+    let mut out = ModelCategory { category: category };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "model.category" && e.entity == category {
+            out = ModelCategory {
+                category: category, model: std::json::find_string_field(e.body, "model"),
+                tool_calls: std::str::trim(std::json::find_field_raw(e.body, "tool_calls")) == "true",
+                input_micros_per_1k: std::json::find_int_field(e.body, "input_micros_per_1k"), output_micros_per_1k: std::json::find_int_field(e.body, "output_micros_per_1k"),
+                by: std::json::find_string_field(e.body, "by")
+            };
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The model for a Work: the size its most specific rule says (a task's
+// override only inside the permitted sizes of the rule beneath it), the mode
+// its hands make, and the model the category names. A `tools` or `do` Work
+// needs a model that returns tool calls.
+fn model_resolve(j: Journal, position: String, owed: String, task_id: String, hands: String) -> ModelChoice {
+    let mode = model_mode_of(hands);
+    let mut base = model_rule_of(j, position);
+    if len(base.size) == 0 { base = model_rule_of(j, "contract:" + owed); }
+    if len(base.size) == 0 { base = model_rule_of(j, "default"); }
+    let mut size = if len(base.size) > 0 { base.size } else { "standard" };
+    let mut rule = if len(base.size) > 0 { base.selector } else { "" };
+    if len(task_id) > 0 {
+        // an override names the Task, or the ask it was admitted for
+        // (`task create --size` writes it before the Task has an id)
+        let mut over = model_rule_of(j, "task:" + task_id);
+        if len(over.size) == 0 { over = model_rule_of(j, "task:" + model_task_request(j, task_id)); }
+        if len(over.size) > 0 && (over.size == size || word_in(over.size, base.permit)) {
+            size = over.size;
+            rule = over.selector;
+        }
+    }
+    let category = mode + "." + size;
+    let c = model_category_of(j, category);
+    if len(c.model) == 0 { return ModelChoice { mode: mode, size: size, category: category, rule: rule, why: "no model fills `" + category + "`: `hale dna models category " + category + " <model>` names one" }; }
+    if mode != "think" && !c.tool_calls { return ModelChoice { mode: mode, size: size, category: category, model: c.model, rule: rule, why: "`" + c.model + "` fills `" + category + "` but returns no tool calls, which a `" + mode + "` Work needs" }; }
+    return ModelChoice { ok: true, mode: mode, size: size, category: category, model: c.model, rule: rule, tool_calls: c.tool_calls };
+}
+
+// The ask a Task was admitted for: its admission's request ("" when none).
+@unbounded
+fn model_task_request(j: Journal, task_id: String) -> String {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted" && e.entity == task_id { return native_json_string(e.body, "request"); }
+        i = i + 1;
+    }
+    return "";
+}
+
+fn model_choice_json(c: ModelChoice) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.bool_field("ok", c.ok);
+    b.string_field("mode", c.mode);
+    b.string_field("size", c.size);
+    b.string_field("category", c.category);
+    b.string_field("model", c.model);
+    b.string_field("rule", c.rule);
+    b.string_field("why", c.why);
+    b.end_object();
+    return b.result();
+}

@@ -16,6 +16,20 @@ locus FakeOpenAi {
         if !std::str::contains(req.headers, "Authorization: Bearer ") && req.path == "/v1/chat/completions" {
             return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": {\"message\": \"no bearer\"}}" };
         }
+        if req.path == "/v1/chat/completions" && std::str::contains(req.body, "echo the request") {
+            // what crossed the wire, said back: the model asked for, the
+            // metadata as sent, and the idempotency key's header
+            let model = std::json::find_string_field(req.body, "model");
+            let at = std::str::index_of(req.headers, "Idempotency-Key: ");
+            let rest = if at < 0 { "" } else { req.headers[(at + 17)..len(req.headers)] };
+            let end = std::str::index_of(rest, "\r\n");
+            let key = if end < 0 { rest } else { rest[0..end] };
+            let said = "model=" + model + " key=" + key + " metadata=" + std::json::find_field_raw(req.body, "metadata");
+            return std::http::Response {
+                status: 200, content_type: "application/json",
+                body: "{\"id\": \"chatcmpl-2\", \"model\": \"" + model + "\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": " + "\"" + std::json::escape_string(said) + "\"" + "}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 3, \"total_tokens\": 8}}"
+            };
+        }
         if req.path == "/v1/chat/completions" || req.path == "/local/v1/chat/completions" {
             let model = std::json::find_string_field(req.body, "model");
             let n = len(req.body) / 4;
@@ -34,6 +48,7 @@ main locus App {
         hosted: dna::OpenAiChat = dna::OpenAiChat { name: "quick", model: "test-model", max_tokens: 64 };
         keyless: dna::OpenAiChat = dna::OpenAiChat { name: "deep", model: "test-model" };
         local: dna::LocalModel = dna::LocalModel { name: "private", model: "local-model" };
+        gateway: dna::OpenAiChat = dna::OpenAiChat { name: "gateway", model: "catalog-default", send_metadata: true };
         core: dna::Dna = dna::Dna { };
     }
     placement { srv: cooperative(pool = io); }
@@ -78,7 +93,19 @@ main locus App {
         std::test::assert(l.ok, "local call succeeded: " + l.refused);
         std::test::assert_eq_str(self.local.last.adapter, "local", "local adapter identity");
         std::test::assert_eq_str(self.local.last.credential, "", "no credential on the local wire");
-        // 5. every call was journaled by the assembly as model.called evidence
+        // 5. a gateway call: the model the mapping resolved, the call's
+        // metadata (a gateway keeps it) and its idempotency key cross the wire
+        let meta = "{\"attempt\": \"w3/a0\", \"position\": \"position:api/dev\", \"holder\": \"riley\"}";
+        let g = self.gateway.complete(dna::ModelRequest { attempt_id: "w3/a0", prompt: "echo the request", model: "coder-m", metadata: meta, idempotency_key: "w3/a0:call:1" });
+        std::test::assert(g.ok, "gateway call succeeded: " + g.refused);
+        std::test::assert(std::str::contains(g.output, "model=coder-m "), "the request names the resolved model, not the catalog's: " + g.output);
+        std::test::assert(std::str::contains(g.output, "key=w3/a0:call:1 "), "the idempotency key is a header: " + g.output);
+        std::test::assert(std::str::contains(g.output, "\"position\": \"position:api/dev\""), "the metadata is in the body: " + g.output);
+        std::test::assert_eq_str(self.gateway.last.requested_model, "coder-m", "the evidence names the model asked for");
+        // a provider that may refuse metadata is not sent it; the model still is
+        let h = self.hosted.complete(dna::ModelRequest { attempt_id: "w3/a1", prompt: "echo the request", model: "other-m", metadata: meta });
+        std::test::assert(std::str::contains(h.output, "model=other-m ") && std::str::contains(h.output, "key= ") && !std::str::contains(h.output, "position:api/dev"), "no metadata and no key unless asked for: " + h.output);
+        // 6. every call was journaled by the assembly as model.called evidence
         std::time::sleep(100ms);
         let mut n = 0;
         let mut i = 0;
@@ -86,7 +113,7 @@ main locus App {
             if self.core.journal.read(i).kind == "model.called" { n = n + 1; }
             i = i + 1;
         }
-        std::test::assert_eq_int(n, 4, "four calls, four evidence rows");
+        std::test::assert_eq_int(n, 6, "six calls, six evidence rows");
         let first = self.core.journal.read(0);
         std::test::assert_eq_str(first.entity, "w1/a0", "keyed by attempt");
         std::test::assert(std::str::contains(first.body, "\"reported_model\": \"test-model-2026\""), "evidence body: " + first.body);
@@ -119,6 +146,11 @@ fn main() {
         local: dna::LocalModel {
             name: "private", model: "local-model",
             endpoint: base + "/local/v1/chat/completions"
+        },
+        gateway: dna::OpenAiChat {
+            name: "gateway", model: "catalog-default", send_metadata: true,
+            endpoint: base + "/v1/chat/completions",
+            credential: dna::HostedCredential { key: "TEST_MODEL_KEY" }
         }
     };
 }

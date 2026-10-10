@@ -169,6 +169,9 @@ hale dna work <verb> …       a leg's verbs against the head's API (--api, --as
                              renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);
                              loop --parallel N is a worker: N children, each its own holder; loop --drain ends one
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each
+hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+                             which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs
+                             (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it
 ```
 
 ### Schedules
@@ -212,7 +215,7 @@ hale dna report [project]    file a report from the record since the last one (r
 [One task, end to end](./workflow.md).
 
 ```text
-hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>
+hale dna task create [--to <locus>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>
                              ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal
                              (on an adopted ledger it prints the request's digest: see `hale dna ledger`)
 hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`

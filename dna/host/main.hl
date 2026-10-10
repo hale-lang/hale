@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -189,7 +189,7 @@ fn main() {
     } else if verb == "task" {
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
         // the outcome is every word after the subverb (asking is one kind of task)
-        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"), has_flag(a, "--judgment"), memory); }
+        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"), has_flag(a, "--judgment"), flag(a, "--size"), memory); }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         else if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), flag(a, "--evidence"), flag(a, "--exception"), flag(a, "--authorized-by"), memory); }
         else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as"), memory); }
@@ -295,6 +295,9 @@ fn main() {
         ans = deploy_verb(root, fleet, plan, word(a, 0), true, memory);
     } else if verb == "github" {
         ans = github_verb(root, seed, word(a, 0), memory);
+    } else if verb == "models-map" {
+        // the model mapping's tables, as rows (dna/core/model_map.hl)
+        ans = model_map_verb(root, word(a, 0), word(a, 1), word(a, 2), flag(a, "--permit"), has_flag(a, "--tools"), flag(a, "--price-in"), flag(a, "--price-out"), flag(a, "--as"), memory);
     } else if verb == "models" {
         ans = models_verb(root, std::env::var("HALE_BIN"));
     } else if verb == "work" {

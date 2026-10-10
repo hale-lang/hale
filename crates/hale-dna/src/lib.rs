@@ -81,6 +81,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "memory_schema",
     "memory_spine",
     "memory_store",
+    "model_map",
     "models",
     "native_json",
     "nerves",

@@ -362,6 +362,36 @@ answered, backend, model, tokens, cost, wall time); the owner journals
 it as `model.called` on the attempt, and `hale dna history <task>`
 sums it (`usage of <task>: …`).
 
+**The model mapping.** Every call can go through one OpenAI-compatible
+gateway, and which of its models a Work gets is decided by two tables of
+rows in the record, each written in the setter's name:
+
+```sh
+hale dna models category do.deep coder-l --tools --price-in 300 --price-out 1200
+hale dna models category think.quick thinker-s
+hale dna models rule default quick
+hale dna models rule position:api/dev deep --permit standard
+hale dna task create --size standard "…"      # an override for this ask
+hale dna models map                           # both tables, as they stand
+```
+
+A category is `<mode>.<size>`. The **mode** is the harness's, read off
+the Work's hands: `think` with none, `tools` with hands but no
+workspace, `do` with a workspace; a `tools` or `do` category needs a
+model that returns tool calls (`--tools`). The **size** is the
+model's, `quick`, `standard` or `deep`, and the most specific rule
+decides it: `position:<name>`, then `contract:<Name>`, then `default`,
+else `standard`. A task's override (`--size`, or a `task:<id>` rule)
+moves it only inside the sizes the rule beneath it permits. The hat
+carries the resolution (`model`: mode, size, category, model and the
+rule that chose it, or why no model fills the category), and the model
+leg names that model in its request, with the call's `metadata` (the
+attempt, position and holder, for attribution only) and an
+`Idempotency-Key`. A backend sends `metadata` only with
+`send_metadata: true`, for a gateway that keeps it; a provider may
+refuse it. With no category filled, the catalog's backend chooses as
+before.
+
 **The tape.** `dna::RecordedModel { dir, mode, inner }` wraps any
 backend. In `record` mode it forwards to `inner` and writes the answer
 under a key made of the request's identity (role, backend and model,

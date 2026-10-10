@@ -1,0 +1,70 @@
+// dna/tests/model_map_cli_test.hl — the model mapping from the CLI.
+//
+// `hale dna models rule` and `models category` write the mapping's rows in
+// the caller's name, `models map` lists what the record holds now (the latest
+// row of each), and a malformed selector, size or category is refused before
+// anything is written. A `tools` or `do` category needs a model that returns
+// tool calls, said with `--tools`.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn models(app: String, args: String) -> dna::RunResult { return in_dir(app, toolchain() + "\ndna\nmodels\n" + args); }
+
+fn journal(app: String) -> String { return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout; }
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("modelmap");
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nmm\n--no-library");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/mm";
+        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+
+        let empty = models(app, "map");
+        std::test::assert(empty.code == 0 && std::str::contains(empty.stdout, "none: every Work is `standard`"), "an empty map says so: " + empty.stdout + empty.stderr);
+
+        let r1 = models(app, "rule\ndefault\nquick\n--as\nriley");
+        std::test::assert(r1.code == 0 && std::str::contains(r1.stdout, "model.rule default: quick"), "a rule is written: " + r1.stdout + r1.stderr);
+        let r2 = models(app, "rule\nposition:editor\ndeep\n--permit\nstandard\n--as\nriley");
+        std::test::assert(r2.code == 0 && std::str::contains(r2.stdout, "(may move to standard)"), "with the sizes it may move to: " + r2.stdout + r2.stderr);
+        let c1 = models(app, "category\ndo.deep\ncoder-l\n--tools\n--price-in\n300\n--price-out\n1200\n--as\nriley");
+        std::test::assert(c1.code == 0 && std::str::contains(c1.stdout, "model.category do.deep: coder-l (tool calls)"), "a category is written: " + c1.stdout + c1.stderr);
+        let c2 = models(app, "category\nthink.quick\nthinker-s\n--as\nriley");
+        std::test::assert_eq_int(c2.code, 0, "a think category needs no tool calls: " + c2.stdout + c2.stderr);
+
+        let rows = journal(app);
+        std::test::assert(std::str::contains(rows, "\"kind\": \"model.rule\"") && std::str::contains(rows, "\"entity\": \"position:editor\""), "the rules are rows of the record: " + rows);
+        std::test::assert(std::str::contains(rows, "\"kind\": \"model.category\"") && std::str::contains(rows, "\"entity\": \"do.deep\""), "and so are the categories");
+
+        let c3 = models(app, "category\ndo.deep\ncoder-xl\n--tools\n--as\nriley");
+        std::test::assert_eq_int(c3.code, 0, "a category moves with one row");
+        let shown = models(app, "map");
+        std::test::assert(std::str::contains(shown.stdout, "position:editor -> deep (may move to standard)  by riley"), "the map lists each rule: " + shown.stdout);
+        std::test::assert(std::str::contains(shown.stdout, "do.deep = coder-xl (tool calls)") && !std::str::contains(shown.stdout, "coder-l "), "and each category as it stands now: " + shown.stdout);
+
+        let before = len(journal(app));
+        let b1 = models(app, "rule\nsomewhere\ndeep");
+        std::test::assert(b1.code != 0 && std::str::contains(b1.stdout + b1.stderr, "a selector is `default`"), "an unknown selector is refused: " + b1.stdout + b1.stderr);
+        let b2 = models(app, "rule\ndefault\nhuge");
+        std::test::assert(b2.code != 0 && std::str::contains(b2.stdout + b2.stderr, "a size is one of quick standard deep"), "an unknown size is refused: " + b2.stdout + b2.stderr);
+        let b3 = models(app, "rule\ndefault\nquick\n--permit\nquick huge");
+        std::test::assert(b3.code != 0 && std::str::contains(b3.stdout + b3.stderr, "--permit names sizes"), "an unknown permitted size is refused: " + b3.stdout + b3.stderr);
+        let b4 = models(app, "category\ndo.deep\ncoder-l");
+        std::test::assert(b4.code != 0 && std::str::contains(b4.stdout + b4.stderr, "needs a model that returns tool calls"), "a do category without tool calls is refused: " + b4.stdout + b4.stderr);
+        let b5 = models(app, "category\nfly.deep\nx\n--tools");
+        std::test::assert(b5.code != 0 && std::str::contains(b5.stdout + b5.stderr, "a category is `<mode>.<size>`"), "an unknown mode is refused: " + b5.stdout + b5.stderr);
+        std::test::assert_eq_int(len(journal(app)), before, "a refusal writes nothing");
+        dna::scratch_done(scratch);
+    }
+}
+fn main() { App { }; }
