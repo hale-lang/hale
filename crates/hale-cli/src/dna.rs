@@ -509,7 +509,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        // `hale dna task create [--to <locus>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>`
+        // `hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>`
         // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -891,8 +891,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");

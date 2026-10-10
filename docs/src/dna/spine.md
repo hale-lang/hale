@@ -141,6 +141,7 @@ binds that word; a plan never widens what you asked. Then:
 | a person's job | `ask-person`: one human leaf, a case handed to the person the Leader named |
 | anything else | `ask-edit`: one edit leaf, a candidate prepared for Review |
 | `hale dna task create --judgment` | `ask-judge`: one judgment leaf, a leg's; no plan is asked |
+| `hale dna task create --to position:<name>` | `ask-position`: one Patch leaf for the leg that holds that position; no plan is asked |
 
 A Leader answer that names no kind and no class leaves the defaults
 standing: an `application` change at the ask's own target. Without a
@@ -233,7 +234,7 @@ The baseline:
 
 | id | steps (store) | admitted today |
 |---|---|---|
-| `ask-edit`, `ask-person`, `ask-judge` | one leaf (record) | every ask, as planned above |
+| `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | one leaf (record) | every ask, as planned above |
 | `practice-ratify` | ratify · hat (record) | every proposal the Board decides |
 | `concern-escalate` | raise (record) | every concern |
 | `optimize-walk` | walk (record) | the optimize pass |

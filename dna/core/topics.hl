@@ -6,7 +6,7 @@
 // the Board and the outside (#521 "domain facts and topic families").
 
 // Human/external intent entering the organism through the Board.
-type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; kind: String = ""; }
+type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; kind: String = ""; position: String = ""; }
 topic IntentOffered { payload: IntentOffer; subject: "dna.intent.offered"; }
 
 // GH #646 card 05: one transition of a workflow execution, proposed by the

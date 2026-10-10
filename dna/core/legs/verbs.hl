@@ -107,11 +107,14 @@ fn worker_holder(position: String, worker: Int) -> String {
 fn words(s: String) -> String { return std::str::trim(std::str::replace(std::str::replace(s, ",", " "), "  ", " ")); }
 
 // The performer kind a position id names: the generated organization's
-// `position:editor` is the edit kind, and every other position its name.
+// `position:editor` is the edit kind and its other positions their names; a
+// position the graph states (`position:api/dev`) works as an agent, and
+// the head adds the Works routed to it (`ask-position`) to what it may take.
 fn kind_of_position(position: String) -> String {
     let name = if std::str::starts_with(position, "position:") { position[9..len(position)] } else { position };
     if name == "editor" { return "edit"; }
-    return name;
+    if dna::word_in(name, "leader agent human service software") { return name; }
+    return "agent";
 }
 
 // What a leg of a kind has, when it does not say: the words the engine

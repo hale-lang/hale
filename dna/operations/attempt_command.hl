@@ -458,6 +458,14 @@ locus AttemptCommandCodec {
     // positions theirs), so until then it claims what an agent does. A
     // position the organization generates (`leader`, `editor`, ...) and a
     // kind a leg names with `--kind` are taken as they are.
+    // Whether a lease's position is one the graph states rather than one the
+    // organization generates (`position:<name>`, not leader, editor, agent,
+    // human, service or software).
+    fn graph_position(performer: String) -> Bool {
+        let base = holder_base(performer);
+        if len(base) < 10 || !std::str::starts_with(base, "position:") { return false; }
+        return !dna::word_in(base[9..len(base)], "leader editor agent human service software");
+    }
     fn claim_kind(j: dna::Journal, location: String, c: GovernanceCommand) -> String {
         let base = holder_base(c.performer);
         if len(base) < 10 || c.performer_kind != base[9..len(base)] || base == "position:leader" { return c.performer_kind; }

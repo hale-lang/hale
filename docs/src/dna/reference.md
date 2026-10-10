@@ -215,8 +215,8 @@ hale dna report [project]    file a report from the record since the last one (r
 [One task, end to end](./workflow.md).
 
 ```text
-hale dna task create [--to <locus>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>
-                             ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal
+hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>
+                             ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal
                              (on an adopted ledger it prints the request's digest: see `hale dna ledger`)
 hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`
                              under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>

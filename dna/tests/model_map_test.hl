@@ -71,6 +71,16 @@ fn check() {
     let asked = hat_for(j, "edit", "Patch", "edit", "t4");
     std::test::assert(model_of(asked, "size") == "standard" && model_of(asked, "rule") == "task:i42", "the override written with the ask reaches the Task admitted for it: " + asked.model);
 
+    // a Work routed to a position wears that position's hat, and its rule
+    let routed = dna::hat_compose(j, dna::HatInputs { work_id: "t5/wf1/s0/w", task_id: "t5", performer_kind: "agent", objective: "make it say two", output_contract: "Patch", requires: "position position:api/dev", head: "abc" }, dna::ContextPackage { }, false);
+    std::test::assert_eq_str(routed.position_id, "position:api/dev", "a routed Work's hat is its position's");
+    row(j, "model.rule", "position:api/dev", "{\"size\": \"deep\", \"by\": \"riley\"}");
+    let routed2 = dna::hat_compose(j, dna::HatInputs { work_id: "t5/wf1/s0/w", task_id: "t5", performer_kind: "agent", objective: "make it say two", output_contract: "Patch", requires: "position position:api/dev", head: "abc" }, dna::ContextPackage { }, false);
+    std::test::assert(model_of(routed2, "rule") == "position:api/dev" && model_of(routed2, "size") == "deep", "and its position's model rule: " + routed2.model);
+    std::test::assert_eq_str(dna::hat_kind_of("position position:api/editor"), "agent", "a routed Work is a leg's, whatever its position's name says");
+    let baseline = dna::baseline_definitions();
+    std::test::assert(baseline.latest("ask-position") >= 1, "the baseline defines ask-position");
+
     // the latest row is the rule
     row(j, "model.category", "do.deep", "{\"model\": \"coder-xl\", \"tool_calls\": true, \"by\": \"riley\"}");
     std::test::assert_eq_str(model_of(hat_for(j, "edit", "Patch", "edit", "t1"), "model"), "coder-xl", "the habitat swaps a model with one row");

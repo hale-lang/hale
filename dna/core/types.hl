@@ -26,6 +26,7 @@ type Intent {
     from: String = ""; // who offered it: "human", a locus name, ...
     to: String = ""; // the position it is for ("" = the organization, `org`); its owner admits it (GH #664)
     kind: String = ""; // "" = a change, the leader's to classify; "judgment" = an assessment, a leg's to perform (GH #946)
+    position: String = ""; // the position a change is routed to (`position:<name>`): a leg holding it makes it; "" = the leader classifies it
 }
 
 // Executor-neutral unit of work: the METHOD is open, the envelope is

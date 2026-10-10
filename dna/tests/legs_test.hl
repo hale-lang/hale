@@ -407,6 +407,39 @@ locus App {
         std::test::assert_eq_str(self.state_of(seat_done), "requested", "and hands it back: " + seat_done);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", a_seat, "and the owner settles it");
+        // a change routed to a position (`task create --to position:api/dev`,
+        // admitted as `ask-position`): its Work requires that position, so a
+        // plain agent leg finds nothing and the position's holder claims it,
+        // briefed in the position's own hat with the workspace hands
+        self.asks = self.asks + 1;
+        let routed_task = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "ask-position", revision: 1, from: "test", inputs: "{\"objective\": \"make it say two\", \"position\": \"position:api/dev\"}" });
+        let a_routed = dna::attempt_id_of(routed_task + "/wf1/s0/w", 0);
+        self.wait_row("attempt.admitted", a_routed, "the engine admits the routed Work's attempt");
+        self.wait_row("effect.relayed", "attempt:" + a_routed, "and asks the leg relay for it");
+        std::test::assert(std::str::contains(self.row_body("attempt.admitted", a_routed), "position:api/dev"), "the Work requires the position it is routed to: " + self.row_body("attempt.admitted", a_routed));
+        let not_yours = self.work_rc("next\n--as\nposition:agent", 1);
+        std::test::assert(self.state_of(not_yours) == "refused" && !std::str::contains(not_yours, a_routed), "a plain agent leg cannot take a Work routed to a position: " + not_yours);
+        let routed = self.work("next\n--as\nposition:api/dev");
+        std::test::assert(self.state_of(routed) == "claimed" && std::json::find_string_field(self.attempt_of(routed), "attempt_id") == a_routed, "the position's holder claims it: " + routed);
+        let routed_hat = std::json::find_field_raw(self.work("brief\n--attempt\n" + a_routed), "hat");
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(routed_hat, "position"), "id"), "position:api/dev", "it is briefed in the position's hat: " + routed_hat);
+        std::test::assert(std::json::find_string_field(routed_hat, "output_contract") == "Patch" && std::str::contains(std::json::find_string_field(routed_hat, "tool_grant"), "edit"), "owing a Patch, with the workspace hands: " + routed_hat);
+        let given_back = self.work("release\n--as\nposition:api/dev\n--attempt\n" + a_routed + "\n--token\n" + self.token_of(routed) + "\n--why\nthe fixture only routes it");
+        // the asker's word reaches it the same way: an intent naming a
+        // position is admitted under `ask-position`, no plan asked
+        self.core.on_intent(dna::IntentOffer { intent_id: "i-routed", outcome: "make it say three", from: "riley", position: "position:api/dev" });
+        let mut routed_admission = "";
+        let mut tries = 0;
+        while tries < 400 * dna::wait_scale() && len(routed_admission) == 0 {
+            let mut k = 0;
+            while k < self.journal.revision() {
+                let e = self.journal.read(k);
+                if e.kind == "workflow.admitted" && dna::native_json_string(e.body, "request") == "i-routed" { routed_admission = e.body; }
+                k = k + 1;
+            }
+            if len(routed_admission) == 0 { std::time::sleep(25ms); tries = tries + 1; }
+        }
+        std::test::assert(dna::native_json_string(routed_admission, "definition") == "ask-position" && std::str::contains(routed_admission, "position:api/dev"), "an intent routed to a position is admitted as ask-position, the position bound: " + routed_admission);
         // a position the record does not state is no position at all
         let nobody = self.work_rc("next\n--as\nposition:nobody/dev", 1);
         std::test::assert(std::str::contains(std::json::find_string_field(nobody, "reason"), "not a position the record knows"), "an unstated position is refused as before: " + nobody);

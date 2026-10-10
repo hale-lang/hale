@@ -695,6 +695,11 @@ locus GovernanceCommands {
                     asked.performer_kind = attempts.claim_kind(rj, self.record.location(), command);
                     // the capabilities a leg defaults to are its kind's: a kind taken as an agent's takes the agent's
                     if asked.performer_kind != command.performer_kind && command.capabilities == command.performer_kind { asked.capabilities = "judgment analysis"; }
+                    // a position the graph states, taken as an agent's, takes the
+                    // Works routed to it as well: `position` and its own id join
+                    // its capabilities, so a Work bound to `position:api/dev`
+                    // (`ask-position`) is that position's holder's alone
+                    if asked.performer_kind == "agent" && attempts.graph_position(command.performer) { asked.capabilities = asked.capabilities + " position " + holder_base(command.performer); }
                     let scan = attempts.candidates(rj, asked);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(asked, scan))); }
                     let mut rest = scan.names; let mut taken = ""; let mut lease = dna::Lease { };
