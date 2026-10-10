@@ -36,7 +36,7 @@
 import ".." as dna;
 
 // The flags with a value; every other `--flag` stands alone.
-const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --worker --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --effect --performer --parallel --only --idle-ms --socket ";
+const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --worker --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --effect --performer --parallel --only --idle-ms --socket --name --args ";
 
 type Args {
     verb: String = "";
@@ -226,6 +226,8 @@ locus Leg {
     params {
         catalog: PerformerCatalog = PerformerCatalog { };
         hands: Hands = Hands { };
+        made_sha: String = ""; // `submit --from-worktree`: the commit it made
+        made_patch: String = ""; // and its patch
         head: Head = Head { };
         a: Args = Args { };
         as_position: String = "";
@@ -393,16 +395,82 @@ locus Leg {
         b.end_array();
         return b.result();
     }
+    // ---- hand: one of the Work's hands, run here (a person's session)
+    // The hat says which hands the Work gives; this runs one, by name, with
+    // its arguments as JSON, on this machine: a file hand in the attempt's
+    // kept worktree, an infrastructure hand through the head's reads. What
+    // it answers is printed; a refusal (a hand the hat does not give, a
+    // path outside the worktree) is exit 1.
+    fn hand() -> Int {
+        let attempt = flag(self.a, "--attempt");
+        let name = flag(self.a, "--name");
+        let args = flag_or(self.a, "--args", "{}");
+        let reply = self.head.context(work_of_attempt(attempt));
+        if !reply.ok { return self.fail("hand", reply.error); }
+        let hat = std::json::find_field_raw(reply.body, "data");
+        let files = dna::word_in(name, "read edit check test fmt patch");
+        let repo = if files { dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout) } else { "" };
+        let tree = if files { session_tree(repo, attempt, true) } else { SessionTree { ok: true } };
+        if !tree.ok { return self.fail("hand", tree.error); }
+        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api };
+        let done = bench.call(self.hands, name, args);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("verb", "hand");
+        b.string_field("state", if done.ok { "ok" } else { "refused" });
+        b.string_field("name", name);
+        b.string_field("output", clipped(done.output));
+        b.string_field("error", done.error);
+        b.string_field("worktree", tree.path);
+        b.end_object();
+        println(b.result());
+        return if done.ok { 0 } else { 1 };
+    }
+    // The kept worktree's change as the outcome (`submit --from-worktree`):
+    // the hat's validators pre-flight on every seed it touched, then one
+    // commit on the base and its patch, as the tool loop hands one back.
+    // "" and the commit and patch in `sha` / `patch`, or why not.
+    fn from_worktree(attempt: String) -> String {
+        let repo = dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout);
+        let tree = session_tree(repo, attempt, false);
+        if !tree.ok { return tree.error; }
+        let reply = self.head.context(work_of_attempt(attempt));
+        if !reply.ok { return reply.error; }
+        let hat = std::json::find_field_raw(reply.body, "data");
+        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api };
+        let refused = bench.validate(self.hands, std::json::find_string_field(hat, "validators"));
+        if len(refused) > 0 { return "the validators refused the change:\n" + refused; }
+        let soft = dna::run_tool("git\n-C\n" + tree.path + "\nreset\n-q\n--soft\n" + tree.base);
+        let changed = dna::run_tool("git\n-C\n" + tree.path + "\nstatus\n--porcelain");
+        if soft.code != 0 || len(std::str::trim(changed.stdout)) == 0 { return "the worktree changes no file"; }
+        let sha = self.hands.git.commit(tree.path, first_line(flag_or(self.a, "--result", "the change")));
+        if !sha.ok { return "the change could not be committed: " + sha.error; }
+        let patch = self.hands.git.patch(tree.path);
+        if !patch.ok { return "the commit's patch could not be read: " + patch.error; }
+        self.made_sha = sha.output;
+        self.made_patch = patch.output;
+        return "";
+    }
     fn submit() -> Int {
         if !self.lease_needed("submit") { return self.usage("`submit` names the lease: --attempt <id> --token <n> and --as position:<name>"); }
         let attempt = flag(self.a, "--attempt"); let token = int_flag(self.a, "--token", -1);
+        let worked = has_flag(self.a, "--from-worktree");
+        if worked {
+            let why = self.from_worktree(attempt);
+            if len(why) > 0 { return self.fail("submit", why); }
+        }
         let result_file = flag(self.a, "--result-file");
         let result = if len(result_file) > 0 { std::io::fs::read_file(result_file) or "" } else { flag(self.a, "--result") };
         let evidence_file = flag(self.a, "--evidence-file");
         let calls = if len(evidence_file) > 0 { std::io::fs::read_file(evidence_file) or "[]" } else { "[]" };
         let request = flag_or(self.a, "--request-id", "work-submit:" + attempt + ":" + to_string(token));
-        return self.done("submit", request, self.head.outcome(request, attempt, self.holder, token, flag_or(self.a, "--effect", self.catalog.person.effect_class()), flag_or(self.a, "--disposition", "done"), result, flag(self.a, "--result-ref"), flag(self.a, "--narrative"), calls, self.receipts_json(),
+        let receipts = if worked { patch_and_tools(self.made_patch, "") } else { self.receipts_json() };
+        let result_ref = if worked { "commit:" + self.made_sha } else { flag(self.a, "--result-ref") };
+        let code = self.done("submit", request, self.head.outcome(request, attempt, self.holder, token, flag_or(self.a, "--effect", self.catalog.person.effect_class()), flag_or(self.a, "--disposition", "done"), result, result_ref, flag(self.a, "--narrative"), calls, receipts,
             flag(self.a, "--hat-digest"), flag(self.a, "--hat-head"), int_flag(self.a, "--hat-watermark", -1), flag(self.a, "--prompt-digest"), flag_or(self.a, "--renderer", RENDERER_VERSION)));
+        // the change is in the receipt now: the kept worktree goes
+        if worked && code == 0 { session_done(dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout), attempt); }
+        return code;
     }
     // ---- settle: WorkSettle — the outcome's command read back until the owner answered
     fn settle() -> Int {
@@ -734,13 +802,14 @@ locus Leg {
         if verb == "brief" && len(flag(self.a, "--work")) == 0 && len(flag(self.a, "--attempt")) == 0 { return "`brief` names the Work: --work <id> or --attempt <id>"; }
         if verb == "brief" && len(flag(self.a, "--render")) > 0 && !render_mode_known(flag(self.a, "--render")) { return "--render is prompt, text or agent"; }
         if verb == "friction" && len(flag(self.a, "--text")) == 0 { return "`friction` says what got in the way: --text <what>"; }
+        if verb == "hand" && (len(flag(self.a, "--attempt")) == 0 || len(flag(self.a, "--name")) == 0) { return "`hand` names the attempt and the hand: --attempt <id> --name <hand> [--args <json>]"; }
         return "";
     }
     fn go() -> Int {
         self.a = parse_args();
         if len(self.a.error) > 0 { return self.usage(self.a.error); }
         let verb = self.a.verb;
-        if verb != "login" && verb != "next" && verb != "brief" && verb != "renew" && verb != "allowance" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
+        if verb != "login" && verb != "next" && verb != "brief" && verb != "renew" && verb != "allowance" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" && verb != "hand" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
         // no default effect class: a catalog with a performer that declares
         // none is refused before a claim or an outcome — the verbs that
         // carry a class — and nowhere else, so a leg rebuilt under a
@@ -765,6 +834,7 @@ locus Leg {
         if verb == "loop" { return self.worker_loop(); }
         if verb == "next" { return self.next(); }
         if verb == "brief" { return self.brief(); }
+        if verb == "hand" { return self.hand(); }
         if verb == "renew" { return self.renew(); }
         if verb == "allowance" { return self.allowance(); }
         if verb == "submit" { return self.submit(); }

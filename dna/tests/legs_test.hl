@@ -427,7 +427,29 @@ locus App {
         let routed_hat = std::json::find_field_raw(self.work("brief\n--attempt\n" + a_routed), "hat");
         std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(routed_hat, "position"), "id"), "position:api/dev", "it is briefed in the position's hat: " + routed_hat);
         std::test::assert(std::json::find_string_field(routed_hat, "output_contract") == "Patch" && std::str::contains(std::json::find_string_field(routed_hat, "tool_grant"), "edit"), "owing a Patch, with the workspace hands: " + routed_hat);
-        let given_back = self.work("release\n--as\nposition:api/dev\n--attempt\n" + a_routed + "\n--token\n" + self.token_of(routed) + "\n--why\nthe fixture only routes it");
+        // a person's session works it (S5): each hand of the hat run here, by
+        // name, in the attempt's kept worktree; a hand the hat does not give
+        // is refused; `submit --from-worktree` checks it, makes the one
+        // commit with its patch, and the owner turns it into a candidate
+        let read = self.work("hand\n--attempt\n" + a_routed + "\n--name\nread\n--args\n{\"path\": \"main.hl\"}");
+        let source = std::json::find_string_field(read, "output");
+        std::test::assert(std::json::find_string_field(read, "state") == "ok" && len(source) > 0, "the session reads the Work's file: " + read);
+        let edit_args = "{\"path\": \"main.hl\", \"text\": " + dna::record_json_quote("// the change, made in a person's session\n" + source) + "}";
+        let wrote = self.work("hand\n--attempt\n" + a_routed + "\n--name\nedit\n--args\n" + edit_args);
+        std::test::assert_eq_str(std::json::find_string_field(wrote, "state"), "ok", "and edits it: " + wrote);
+        let checked = self.work("hand\n--attempt\n" + a_routed + "\n--name\ncheck\n--args\n{\"path\": \".\"}");
+        std::test::assert_eq_str(std::json::find_string_field(checked, "state"), "ok", "and checks it: " + checked);
+        let no_hand = self.work_rc("hand\n--attempt\n" + a_routed + "\n--name\ndeploy", 1);
+        std::test::assert(std::str::contains(std::json::find_string_field(no_hand, "error"), "not a hand of this Work"), "a hand the hat does not give is refused: " + no_hand);
+        let handed = self.work("submit\n--as\nposition:api/dev\n--attempt\n" + a_routed + "\n--token\n" + self.token_of(routed) + "\n--from-worktree\n--result\nthe change, made in a person's session");
+        std::test::assert_eq_str(self.state_of(handed), "requested", "the session hands the change back: " + handed);
+        std::test::assert(!std::io::fs::file_exists(self.app + "/.hale/dna/work/" + std::str::replace(a_routed, "/", "_") + ".base"), "and its kept worktree goes");
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        let asked_back = self.row_body("attempt.outcome_requested", a_routed);
+        std::test::assert(std::str::contains(asked_back, "commit:"), "the outcome names the session's commit: " + asked_back);
+        std::test::assert(std::str::contains(asked_back, "evidence_ref") && std::str::contains(asked_back, "sha256:"), "with its patch filed as evidence: " + asked_back);
+        // (the owner applies it as any leg's: leg_candidate_test proves that path)
+        self.wait_row("attempt.outcome", a_routed, "the owner settles the session's attempt");
         // the asker's word reaches it the same way: an intent naming a
         // position is admitted under `ask-position`, no plan asked
         self.core.on_intent(dna::IntentOffer { intent_id: "i-routed", outcome: "make it say three", from: "riley", position: "position:api/dev" });
@@ -784,6 +806,11 @@ locus App {
         self.with_memory = std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE");
         std::test::assert(std::io::fs::file_exists(self.app + "/dna/org/work.hl"), "init generated the performers");
         std::test::assert(std::io::fs::file_exists(self.app + "/vendor/dna/legs/verbs.hl"), "and vendored the legs seed");
+        // the project committed, as `init`'s user commits what it wrote: a
+        // person's session clones it at its HEAD
+        let staged = dna::run_tool("git\n-C\n" + self.app + "\nadd\n-A");
+        let based = dna::run_tool("git\n-C\n" + self.app + "\n-c\nuser.name=riley\n-c\nuser.email=riley@local\ncommit\n-q\n--allow-empty\n-m\nthe project");
+        std::test::assert_eq_int(based.code, 0, "the project is committed: " + based.stderr);
         self.start_owner();
         self.start_head();
         self.pass("record", "1");
