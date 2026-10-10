@@ -699,6 +699,10 @@ locus GovernanceCommands {
                     // Works routed to it as well: `position` and its own id join
                     // its capabilities, so a Work bound to `position:api/dev`
                     // (`ask-position`) is that position's holder's alone
+                    // These words are the head's to grant, never the caller's: a
+                    // claimant's own `position` or `position:<x>` capabilities are
+                    // dropped first, so no seat names its way into another's Work.
+                    asked.capabilities = without_position_words(asked.capabilities);
                     if asked.performer_kind == "agent" && attempts.graph_position(command.performer) { asked.capabilities = asked.capabilities + " position " + holder_base(command.performer); }
                     let scan = attempts.candidates(rj, asked);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(asked, scan))); }
@@ -1036,4 +1040,21 @@ fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, 
     let fallback = std::json::find_bool_field(routed, "fallback");
     if len(dna::signer_positions(signers, principal)) > 0 || (fallback && as_authority) { return ""; }
     return "forbidden: reviewer " + principal + " holds no position this Review requires (" + dna::approver_owners(signers) + ")" + (if fallback { " and authority " + authority + " does not satisfy " + required } else { "" });
+}
+
+// A claim's capabilities without the words that route a Work to a position
+// (`position`, `position:<name>`): those the head grants from the verified
+// seat alone.
+@unbounded
+fn without_position_words(capabilities: String) -> String {
+    let mut out = "";
+    let mut rest = capabilities + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let word = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(word) == 0 || word == "position" || std::str::starts_with(word, "position:") { continue; }
+        out = if len(out) == 0 { word } else { out + " " + word };
+    }
+    return out;
 }

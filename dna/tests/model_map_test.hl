@@ -10,6 +10,7 @@
 // calls for a Work that needs them, is said, not guessed.
 
 import "../core" as dna;
+import "../core/legs" as legs;
 
 fn hat_for(j: dna::Journal, kind: String, owed: String, requires: String, task: String) -> dna::Hat {
     return dna::hat_compose(j, dna::HatInputs {
@@ -48,6 +49,12 @@ fn check() {
     std::test::assert(filled.digest != empty.digest, "the resolution is in the hat's body");
     let no_tools = hat_for(j, "agent", "Assessment", "judgment", "t1");
     std::test::assert(std::str::contains(model_of(no_tools, "why"), "returns no tool calls"), "a `tools` Work refuses a model without tool calls: " + no_tools.model);
+
+    // the leg never calls a model the mapping refused, nor asks for its spend
+    let refusing = legs::ModelPerformer { router: dna::ModelRouter { quick: dna::FakeModel { name: "q", answer: "should not be asked" }, deep: dna::FakeModel { name: "d", answer: "should not be asked" } }, effect: "idempotent" };
+    let declined = refusing.perform(legs::Brief { attempt_id: "t1/a0", performer_kind: "agent", hat: dna::hat_json(no_tools), rendered: "assess it" }, legs::Hands { });
+    std::test::assert(declined.disposition == "declined" && std::str::contains(declined.narrative, "refused `plain-m`") && declined.calls == "[]", "a refused model is declined before any call: " + declined.narrative);
+    std::test::assert(std::str::contains(dna::hat_json(no_tools), "\"ok\": false"), "the hat says the resolution failed");
 
     // the organism's rules: default < contract < position
     row(j, "model.rule", "default", "{\"size\": \"quick\", \"permit\": \"\", \"by\": \"riley\"}");
