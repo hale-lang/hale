@@ -58,8 +58,14 @@ type TapeEntry {
     data_class: String = "";
     grant: String = "";
     tree: String = "";
+    // the tools offered and the turns since the prompt (a tool loop's),
+    // as digests; "" when the request carried none
+    tools: String = "";
+    turns: String = "";
     ok: Bool = false;
     output: String = "";
+    // the tools the model asked to be called, as the backend returned them
+    tool_calls: String = "";
     refused: String = "";
     tokens: Int = 0;
     cost_micros: Int = 0;
@@ -132,7 +138,11 @@ locus RecordedModel {
             + "\ndata_class=" + req.data_class
             + "\ngrant=" + normalize_grant(req.tool_grant)
             + "\ntree=" + tree_digest(req.workspace)
-            + "\n";
+            + "\n"
+        // a tool loop's request is also its tools and its turns so far;
+        // a request with neither keys as it always did
+            + (if len(req.tools) > 0 { "tools=" + digest_of(req.tools) + "\n" } else { "" })
+            + (if len(req.messages) > 0 { "turns=" + digest_of(req.messages) + "\n" } else { "" });
     }
     fn key_of(fields: String) -> String {
         return hex(std::crypto::sha256(std::bytes::from_string(fields)));
@@ -152,8 +162,11 @@ locus RecordedModel {
             data_class: std::json::find_string_field(t, "data_class"),
             grant: std::json::find_string_field(t, "grant"),
             tree: std::json::find_string_field(t, "tree"),
+            tools: std::json::find_string_field(t, "tools"),
+            turns: std::json::find_string_field(t, "turns"),
             ok: std::json::find_bool_field(t, "ok"),
             output: std::json::find_string_field(t, "output"),
+            tool_calls: std::json::find_field_raw(t, "tool_calls"),
             refused: std::json::find_string_field(t, "refused"),
             tokens: std::json::find_int_field(t, "tokens"),
             cost_micros: std::json::find_int_field(t, "cost_micros"),
@@ -195,8 +208,11 @@ locus RecordedModel {
         b.string_field("data_class", e.data_class);
         b.string_field("grant", e.grant);
         b.string_field("tree", e.tree);
+        b.string_field("tools", e.tools);
+        b.string_field("turns", e.turns);
         b.bool_field("ok", e.ok);
         b.string_field("output", e.output);
+        if len(std::str::trim(e.tool_calls)) > 2 { b.field("tool_calls", e.tool_calls); }
         b.string_field("refused", e.refused);
         b.int_field("tokens", e.tokens);
         b.int_field("cost_micros", e.cost_micros);
@@ -225,6 +241,8 @@ locus RecordedModel {
             if e.data_class != mine.data_class { diff = diff + " data_class"; }
             if e.grant != mine.grant { diff = diff + " grant"; }
             if e.tree != mine.tree { diff = diff + " tree"; }
+            if e.tools != mine.tools { diff = diff + " tools"; }
+            if e.turns != mine.turns { diff = diff + " turns"; }
             return "nearest " + e.key[0..12] + " differs in:" + (if len(diff) == 0 { " nothing (the same request)" } else { diff });
         }
         return "no entry shares this prompt digest";
@@ -235,7 +253,9 @@ locus RecordedModel {
             key: key, role: req.role, backend: self.inner.identity(), model: self.asked_model(req),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context), data_class: req.data_class,
-            grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace)
+            grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace),
+            tools: if len(req.tools) > 0 { digest_of(req.tools) } else { "" },
+            turns: if len(req.messages) > 0 { digest_of(req.messages) } else { "" }
         };
     }
     // Bounded by the calls one run makes.
@@ -273,6 +293,7 @@ locus RecordedModel {
         let mut e = self.identity_of(req, key);
         e.ok = r.ok;
         e.output = r.output;
+        e.tool_calls = r.tool_calls;
         e.refused = r.refused;
         e.tokens = r.tokens;
         e.cost_micros = r.cost_micros;
@@ -337,7 +358,7 @@ locus RecordedModel {
         ev.response_digest = digest_of(e.output);
         self.last = ev;
         ModelCalled <- ev;
-        return ModelResult { ok: e.ok, backend: e.backend, model: e.model, output: e.output, tokens: e.tokens, cost_micros: e.cost_micros, refused: e.refused };
+        return ModelResult { ok: e.ok, backend: e.backend, model: e.model, output: e.output, tool_calls: e.tool_calls, tokens: e.tokens, cost_micros: e.cost_micros, refused: e.refused };
     }
 }
 
