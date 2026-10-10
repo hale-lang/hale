@@ -234,7 +234,9 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(at) < 7 { return fail("ingest: name the commit (--at <sha>)"); }
-    let journal = dna::GitJournal { repo: root };
+    // the record as the organization reads it: a ratification lands in
+    // memory's ledger once the ledger is adopted
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
     if attached_somewhere(journal) { return fail("ingest: an attached application's re-ingest is not built yet; a repository's is"); }
     let g = ops::GraphIngest { root: tree, tools: true };
     let r = g.ingest();
