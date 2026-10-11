@@ -57,6 +57,10 @@ type BatchPlan {
     retirements: String = "";
     // the nurseries it asks the Board to trust, one a line
     nurseries: String = "";
+    // what it would do, as one digest: its graph rows, mandates,
+    // retirements and nurseries. The family carries it, and ratifying
+    // plans the batch again and refuses it when this moved
+    effects: String = "";
 }
 
 // What a plan has made of the steps so far: the org chart after them, the
@@ -65,10 +69,10 @@ type BatchPlan {
 type PlanState {
     why: String = "";
     after: String = "";
-    nodes: String = "";
-    edges: String = "";
-    holds: String = "";
-    retires: String = "";
+    // every graph row the steps write, in the order they write them
+    // (`node|edge|hold\t<id>\t<body>`, `retire\t<id>`); coalesced to
+    // each id's final effect when the plan ends (`batch_rows`)
+    order: String = "";
     mandates: String = "";
     restated: String = "\n";
     retirements: String = ""; // `<name>\t<digest>` of each practice it retires
@@ -532,7 +536,7 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
             if !record_graph_has(g.nodes, p) { st.why = "`expose " + p + " as " + q + "`: the graph states no such node"; }
             else if len(met) > 0 { st.why = "`expose " + p + " as " + q + "`: the contract is met already (`depend` on it, or `internalize` it)"; }
             else {
-                if !record_graph_has(g.nodes, q) { st.nodes = st.nodes + "node\t" + q + "\t" + batch_node_body("contract", q[9..len(q)]) + "\n"; }
+                if !record_graph_has(g.nodes, q) { st.order = st.order + "node\t" + q + "\t" + batch_node_body("contract", q[9..len(q)]) + "\n"; }
                 st = plan_meets(st, q, "server\t" + p + "\n", "");
             }
         } else if verb == "depend" {
@@ -549,7 +553,7 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
             if len(met) == 0 { st.why = "`internalize " + p + "`: nothing meets at that contract"; }
             else if record_graph_has(g.nodes, q) { st.why = "`internalize " + p + " as " + q + "`: the graph states that part already"; }
             else {
-                st.nodes = st.nodes + "node\t" + q + "\t" + batch_node_body("seed", name) + "\n";
+                st.order = st.order + "node\t" + q + "\t" + batch_node_body("seed", name) + "\n";
                 st.after = st.after + "part " + q + "\n";
                 st = plan_meets(st, p, "server\t" + q + "\n" + batch_meets_members(met), batch_lines_without(batch_meets_outside(met), name));
             }
@@ -570,9 +574,40 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         met = body[nl..len(body)];
         restated = restated + "edge\t" + line + "\n";
     }
-    out.graph = st.nodes + st.edges + restated + st.holds + st.retires;
+    out.graph = batch_rows(st.order, restated, g);
+    out.effects = digest_of(out.graph + "\n" + out.mandates + "\n" + out.retirements + "\n" + out.nurseries);
     out.ok = true;
     return out;
+}
+
+// The graph rows a plan files, from the rows its steps wrote in order: each
+// id once, at its last write (an edge assigned after it was unassigned is
+// assigned), and a retirement of an id the record does not state (one the
+// batch itself added) dropped. Nodes, then edges, then holds, then the
+// restated `meets` edges, then what leaves: memory takes a proposal's rows
+// in order.
+@unbounded
+fn batch_rows(order: String, restated: String, g: RecordGraph) -> String {
+    let mut nodes = "";
+    let mut edges = "";
+    let mut holds = "";
+    let mut retires = "";
+    let mut rest = order;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let what = batch_field(line, 0);
+        let id = batch_field(line, 1);
+        // a later write of the same id is the one that stands
+        if std::str::contains(rest, "\t" + id + "\t") || std::str::contains(rest, "\t" + id + "\n") { continue; }
+        if what == "retire" {
+            if record_graph_has(g.nodes, id) || record_graph_has(g.edges, id) { retires = retires + line + "\n"; }
+        } else if what == "node" { nodes = nodes + line + "\n"; }
+        else if what == "edge" { edges = edges + line + "\n"; }
+        else { holds = holds + line + "\n"; }
+    }
+    return nodes + edges + holds + restated + retires;
 }
 
 // Whether the chart holds `line`, and the last words of every line that
@@ -606,8 +641,8 @@ fn batch_lines_without(lines: String, x: String) -> String {
 // A position opened: its node, the `unfold` edge from `under`, its mandate.
 fn plan_open(st: PlanState, p: String, under: String, mandate: String) -> PlanState {
     let mut out = st;
-    out.nodes = out.nodes + "node\t" + p + "\t" + batch_position_body(p[9..len(p)]) + "\n";
-    if len(under) > 0 { out.edges = out.edges + "edge\tunfold:" + under + "|" + p + "\t" + batch_pair_body("unfold", "parent", under, "child", p) + "\n"; }
+    out.order = out.order + "node\t" + p + "\t" + batch_position_body(p[9..len(p)]) + "\n";
+    if len(under) > 0 { out.order = out.order + "edge\tunfold:" + under + "|" + p + "\t" + batch_pair_body("unfold", "parent", under, "child", p) + "\n"; }
     out.mandates = out.mandates + p + "\t" + mandate + "\n";
     out.after = out.after + "position " + p + "\nmandate " + p + "\n";
     return out;
@@ -615,28 +650,28 @@ fn plan_open(st: PlanState, p: String, under: String, mandate: String) -> PlanSt
 
 fn plan_fill(st: PlanState, p: String, h: String) -> PlanState {
     let mut out = st;
-    out.holds = out.holds + "hold\tholds:" + p + "|" + h + "\t" + batch_pair_body("holds", "position", p, "holder", h) + "\n";
+    out.order = out.order + "hold\tholds:" + p + "|" + h + "\t" + batch_pair_body("holds", "position", p, "holder", h) + "\n";
     out.after = out.after + "holds " + p + " " + h + "\n";
     return out;
 }
 
 fn plan_vacate(st: PlanState, p: String, h: String) -> PlanState {
     let mut out = st;
-    out.retires = out.retires + "retire\tholds:" + p + "|" + h + "\n";
+    out.order = out.order + "retire\tholds:" + p + "|" + h + "\n";
     out.after = chart_without(out.after, "holds " + p + " " + h);
     return out;
 }
 
 fn plan_assign(st: PlanState, p: String, subject: String) -> PlanState {
     let mut out = st;
-    out.edges = out.edges + "edge\treviews:" + p + "|" + subject + "\t" + batch_pair_body("reviews", "position", p, "subject", subject) + "\n";
+    out.order = out.order + "edge\treviews:" + p + "|" + subject + "\t" + batch_pair_body("reviews", "position", p, "subject", subject) + "\n";
     out.after = out.after + "reviews " + p + " " + subject + "\n";
     return out;
 }
 
 fn plan_unassign(st: PlanState, p: String, subject: String) -> PlanState {
     let mut out = st;
-    out.retires = out.retires + "retire\treviews:" + p + "|" + subject + "\n";
+    out.order = out.order + "retire\treviews:" + p + "|" + subject + "\n";
     out.after = chart_without(out.after, "reviews " + p + " " + subject);
     return out;
 }
@@ -668,9 +703,9 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
         let nl = std::str::index_of(body, "\n");
         let id = body[0..nl];
         rest = body[nl..len(body)];
-        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) { out.retires = out.retires + "retire\t" + id + "\n"; }
+        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) { out.order = out.order + "retire\t" + id + "\n"; }
     }
-    out.retires = out.retires + "retire\t" + p + "\n";
+    out.order = out.order + "retire\t" + p + "\n";
     out.after = chart_without(chart_without(out.after, "position " + p), "mandate " + p);
     return out;
 }
@@ -712,9 +747,9 @@ fn plan_externalize(st: PlanState, g: RecordGraph, bodies: String, opened: Strin
         let child = id[(len(seed) + 8)..len(id)];
         if std::str::starts_with(child, "position:") && chart_has(out.after, "position " + child) { out = plan_close(out, g, opened, child); }
         if len(out.why) > 0 { return out; }
-        if !std::str::contains(out.retires, "retire\t" + id + "\n") { out.retires = out.retires + "retire\t" + id + "\n"; }
+        if !std::str::contains(out.order, "retire\t" + id + "\n") { out.order = out.order + "retire\t" + id + "\n"; }
     }
-    out.retires = out.retires + "retire\t" + seed + "\n";
+    out.order = out.order + "retire\t" + seed + "\n";
     out.after = chart_without(out.after, "part " + seed);
     return out;
 }
@@ -1139,6 +1174,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     f.begin_object();
     f.string_field("author", by);
     f.string_field("batch", plan.steps);
+    f.string_field("effects", plan.effects);
     f.int_field("count", count);
     f.string_field("ideas", ideas);
     f.string_field("kind", "family");
@@ -1279,9 +1315,14 @@ fn batch_summary(steps: String) -> String {
 
 // Why a batch family can no longer be ratified as it was proposed: planned
 // again against the record as it stands; "" when it still applies.
-fn batch_stale(j: Journal, receipts: Receipts, steps: String) -> String {
+fn batch_stale(j: Journal, receipts: Receipts, steps: String, effects: String) -> String {
     let p = batch_plan(j, receipts, batch_text(steps));
-    return if p.ok { "" } else { p.why };
+    if !p.ok { return p.why; }
+    // the same steps, planned now, must still do what the Board was shown:
+    // a contract that gained a consumer since would lose it to the older
+    // `meets` this batch carries
+    if len(effects) > 0 && p.effects != effects { return "the organization changed what the batch would do (" + batch_summary(p.steps) + ")"; }
+    return "";
 }
 
 // Normalized steps written back as a batch's lines.

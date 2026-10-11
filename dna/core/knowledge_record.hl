@@ -188,7 +188,7 @@ locus KnowledgeRecord {
             let mut stale = "";
             let steps = native_json_string(doc, "batch");
             if outcome == "approve" && len(steps) > 0 && !self.batch_settled(members, ratified, refused, declined) {
-                let why_stale = batch_stale(self.journal, self.receipts, steps);
+                let why_stale = batch_stale(self.journal, self.receipts, steps, native_json_string(doc, "effects"));
                 if len(why_stale) > 0 { stale = "the batch is stale: " + why_stale + "; not ratified — propose it again against the organization as it stands"; }
             }
             // every member's rows, in the family's order

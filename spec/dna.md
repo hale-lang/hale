@@ -4691,9 +4691,15 @@ The live half is memory's, projected from the record by the spine
   contract, or when the part serves none), every position unfolding
   from it closes, and its node retires. `internalize c as seed:s`
   states the part again and restates the edge with it the server and
-  its name out of `outside`. A batch's rows are its nodes, then its
-  edges (each restated `meets` once, at its last body), then its holds,
-  then what it retires. Knowledge bound to a closed position stays
+  its name out of `outside`. A batch's rows are each id once, at the
+  last write its steps make (an `assign` after an `unassign` of the same
+  edge stands; a retirement of an id only the batch added is dropped),
+  filed as its nodes, then its edges (each restated `meets` once, at its
+  last body), then its holds, then what it retires. The family carries
+  `effects`, a digest of those rows and the mandates, retirements and
+  nurseries it proposes; ratifying plans the batch again and refuses it
+  as stale when the steps would now do anything else (a contract that
+  gained a consumer meanwhile keeps it). Knowledge bound to a closed position stays
   bound to its node; rebinding it is not built. The org chart a batch
   is planned against also lists `reviews <position> <node>`, `part
   seed:<name>`, `serves|consumes|carries <node> <contract>` and
