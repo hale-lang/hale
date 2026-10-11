@@ -418,3 +418,99 @@ fn a_recycled_child_cell_never_runs_its_predecessor_s_cells() {
         }
     }
 }
+
+// A pinned thread gets a mailbox when a subscriber may be built on it at
+// run time, here in a free fn its `run()` calls; a pinned thread nothing
+// could post to gets none (spec/runtime.md § "Subscriptions follow the
+// tower"). The one with a mailbox serves it after its `run()` returns,
+// until its dissolve at main's teardown; the one without dissolves as
+// soon as its `run()` returns, as before.
+const PINNED_FREE_FN: &str = r#"
+    type Msg { n: Int; }
+    locus Peer {
+        params { got: Int = 0; }
+        bus { subscribe "peer.msg" as on_msg of type Msg; }
+        fn on_msg(m: Msg) { self.got = self.got + 1; println("handler n=" + to_string(m.n)); }
+    }
+    fn serve_once() {
+        let p = Peer { };
+        std::time::sleep(300ms);
+        println("free fn got=" + to_string(p.got));
+    }
+    locus Host {
+        run() { serve_once(); }
+        dissolve() { println("host dissolve"); }
+    }
+    locus Pub {
+        bus { publish "peer.msg" of type Msg; }
+        run() { std::time::sleep(100ms); "peer.msg" <- Msg { n: 1 }; }
+        dissolve() { println("pub dissolve"); }
+    }
+    main locus App {
+        params { h: Host = Host { }; p: Pub = Pub { }; }
+        placement { h: pinned; p: pinned; }
+        run() {
+            let line = std::io::stdin::read_line();
+            println("main got " + line);
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+/// The body of the LLVM function `name` in `ir`.
+fn ir_fn(ir: &str, name: &str) -> String {
+    let head = format!("@{name}(");
+    let lines: Vec<&str> = ir.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("define") && l.contains(&head))
+        .unwrap_or_else(|| panic!("no `{name}` defined"));
+    let end = start + lines[start..].iter().position(|l| *l == "}").expect("the function ends");
+    lines[start..=end].join("\n")
+}
+
+#[test]
+fn a_pinned_thread_that_may_build_a_subscriber_has_a_mailbox_and_serves_it() {
+    let bin = harness::unique_bin("pinned_free_fn_subscriber");
+    let ir = harness::build_source_ir_text(PINNED_FREE_FN, &bin).expect("build");
+    // Host's thread loops on its mailbox after run(); Pub's has none.
+    assert!(ir_fn(&ir, "__pinned_main_Host").contains("lotus_mailbox_drain_one"), "Host has no mailbox loop");
+    assert!(!ir_fn(&ir, "__pinned_main_Pub").contains("lotus_mailbox_drain_one"), "Pub has a mailbox loop");
+    let mut child = Command::new(&bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seen: Vec<String> = Vec::new();
+    while !seen.iter().any(|l| l.starts_with("free fn got=")) {
+        match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(l) => seen.push(l),
+            Err(_) => break,
+        }
+    }
+    // main is still blocked in read_line: the pinned thread served it
+    stdin.write_all(b"bye\n").unwrap();
+    drop(stdin);
+    let status = child.wait().expect("wait");
+    seen.extend(lines.try_iter());
+    let mut err = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut err);
+    let _ = std::fs::remove_file(&bin);
+    assert!(status.success(), "{status:?}\n{err}");
+    let at = |s: &str| seen.iter().position(|l| l == s).unwrap_or_else(|| panic!("no `{s}` in {seen:?}"));
+    assert!(at("free fn got=1") < at("main got bye"), "{seen:?}");
+    // Pub, with no mailbox, dissolves as its run() returns; Host serves
+    // its mailbox until main's teardown dissolves it
+    assert!(at("pub dissolve") < at("main got bye"), "{seen:?}");
+    assert!(at("main got bye") < at("host dissolve"), "{seen:?}");
+}

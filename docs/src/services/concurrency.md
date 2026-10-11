@@ -293,6 +293,20 @@ subscribes to a topic, its handler runs on the gateway's thread (or
 on `io`'s worker), wherever the publisher is: the runtime routes
 the helper's subscriptions to its anchor's thread.
 
+So does a subscriber a method builds for itself while it runs: a
+`let feed = Feed { };` in a method subscribes on the thread that runs
+the method, and its handlers run there, never on `main`. On a
+`pinned` thread they run at the method's sleeps and yields; on a
+`where async_io` pool, while the method waits; on a classic pool
+they cannot run at all until the method returns, and by then the
+subscriber is gone, so its messages are dropped (`hale check` warns).
+A pinned locus whose code may build a subscriber that way — in a
+method, a hook, or any function they call — gets a mailbox for it,
+and its thread then keeps serving that mailbox after its `run()`
+returns, until the program shuts down, so its `dissolve()` runs at
+the program's end; a pinned locus that can never receive a message
+has no mailbox, and its `dissolve()` follows its `run()` as before.
+
 Under a pinned locus this holds from the start. The gateway's
 params are built on the gateway's own thread, so a helper's
 `birth()` and, for a helper with a `run()`, its `run()` happen

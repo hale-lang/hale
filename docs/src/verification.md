@@ -140,6 +140,15 @@ with how the runtime dispatches:
   at sleep/yield drains, which makes the hang look like a healthy
   idle; the warning names every offender — warning.
 
+- **Dropped scope-local delivery** — a bus subscriber built and
+  dissolved inside one call (a `let`, or a bare statement, not stored
+  or returned or `accept`ed) on a classic cooperative pool. Its
+  handlers run on that pool, which runs one cell at a time, and the
+  call holds the pool's thread for the subscriber's whole life, so
+  every message sent to it is dropped. Place the pool `where
+  async_io` (its handlers run while the call waits) or keep the
+  subscriber beyond the call — warning.
+
   These three judge the `main locus` the build deploys, each field
   by the locus it actually builds (through an alias too); a library's
   `main locus` you import is not deployed by your build, so it is not

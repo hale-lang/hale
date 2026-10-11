@@ -198,13 +198,20 @@ pub struct LoweringView {
 }
 
 /// The pinned anchors of `table` (a root field placed `pinned`, one per
-/// replica, or an adapter in the root's `bindings { }`) with a row
-/// below them, in their own template, that realizes a locus `merged`
-/// declares a `subscribe` in: each by its realized declaration's
-/// lowered name. A locus nested under an anchor runs on the anchor's
-/// thread, so its subscriptions need a route there before they
+/// replica, or an adapter in the root's `bindings { }`) whose thread may
+/// host a subscriber it does not declare itself, each by its realized
+/// declaration's lowered name: a row below the anchor, in its own
+/// template, that realizes a locus `merged` declares a `subscribe` in,
+/// or a subscriber built at run time on the anchor's thread — a dynamic
+/// site of the table (a literal in a hook, a method, or a free fn any of
+/// them reaches through the call graph, the loci those literals build
+/// included) that realizes a subscriber and runs in the anchor's domain,
+/// or whose domains are unknown (a fn passed as a value, so it may run
+/// anywhere). A locus nested under an anchor, or built on its thread,
+/// runs there, so its subscriptions need a route there before they
 /// register; lowering gives these anchors a mailbox for that, whether or
-/// not they subscribe themselves.
+/// not they subscribe themselves. Every other pinned anchor that does
+/// not subscribe has none: nothing could post to one.
 pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program) -> BTreeSet<String> {
     use crate::placement::DomainKind;
     use hale_syntax::ast::{flat_decls, BusMember, LocusMember};
@@ -221,6 +228,19 @@ pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program)
             _ => None,
         })
         .collect();
+    // The domains a subscriber may be built in at run time, and whether
+    // one may be built where the table cannot say.
+    let mut built_in: BTreeSet<crate::placement::DomainId> = BTreeSet::new();
+    let mut built_anywhere = false;
+    for site in &table.dynamic {
+        if !site.realizes.as_ref().is_some_and(|d| subscribers.contains(d.lowered.as_str())) {
+            continue;
+        }
+        if site.domains.is_empty() {
+            built_anywhere = true;
+        }
+        built_in.extend(site.domains.iter().copied());
+    }
     let mut out = BTreeSet::new();
     for domain in &table.domains {
         let DomainKind::Pinned { anchor, .. } = &domain.kind else { continue };
@@ -234,7 +254,7 @@ pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program)
                 && key.path.starts_with(&anchor.path)
                 && row.realizes.as_ref().is_some_and(|d| subscribers.contains(d.lowered.as_str()))
         });
-        if nested_subscriber {
+        if nested_subscriber || built_anywhere || built_in.contains(&domain.id) {
             out.insert(anchor_decl.lowered.clone());
         }
     }

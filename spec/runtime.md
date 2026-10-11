@@ -1236,7 +1236,8 @@ drain its mailbox; on main, at the drains of its statement
 boundaries and its scope exit. A classic pool's cells are
 handler-atomic, and the constructing body holds the worker for the
 subscriber's whole life, so a delivery to a scope-local subscriber
-there waits and is dropped with it. Its dissolve is a reclaim like
+there waits and is dropped with it; `hale check` warns at such a
+literal (spec/verification.md, "Dropped scope-local delivery"). Its dissolve is a reclaim like
 any other: the subscriber is quarantined before its storage goes, so
 a cell still queued for it on the pool or the mailbox is dropped at
 materialization (GH #703), and the release waits for a handler of it
@@ -1245,13 +1246,23 @@ it waits, and the reclaim state a thread keeps as stacks — releases
 entered, owner scopes, records deferred to a handler's end — is the
 parked coroutine's own: a park saves it and puts back the drain's,
 so two coroutines dissolving their subscribers on one worker never
-pop each other's entries. A pinned anchor has a mailbox only when a
-locus nested in its params tree subscribes (below); a pinned thread
-without one has no route of its own, and a subscriber built there
-at run time registers with the global queue. Under a pinned
-anchor that is the anchor's mailbox, which the anchor has whenever
-anything in its tree subscribes, whether or not it subscribes
-itself; under an anchor on `cooperative(pool = X)` it is pool `X`.
+pop each other's entries. A pinned anchor has a mailbox if and only
+if something may post to it, whether or not it subscribes itself: a
+locus nested in its params tree subscribes, or a subscriber may be
+built at run time on its thread — a literal of a subscribing locus
+in one of its hooks or methods, or in its nested loci's, or in any
+fn they reach through the call graph (free fns included, and the
+hooks of every locus those bodies build), as the placement table's
+dynamic sites record it; a literal whose enclosing scope's domains
+are unknown (a fn passed as a value, which may run anywhere) counts
+as one that may run on every pinned thread. Any other pinned thread
+that subscribes to nothing has none, and its lifecycle is as before:
+its `drain()` and `dissolve()` follow its `run()` on its thread. A
+thread with a mailbox serves it after its `run()` returns, until the
+deferred-dissolve flush shuts it down (below): its `drain()` and
+`dissolve()` then run at main's teardown, not as its `run()`
+returns. Under a pinned
+anchor that is the anchor's mailbox; under an anchor on `cooperative(pool = X)` it is pool `X`.
 The route exists before the subscriptions that use it: the anchor's
 mailbox is created before its params are initialized, which is
 where every nested instance registers. A pinned anchor's params
