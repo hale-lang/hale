@@ -4155,7 +4155,7 @@ dynamic	__StdIoTcpConnFlow	on pool:zero
 dynamic	__StdIoTcpConnInline	on pool:zero
 dynamic	__StdIoTcpStream	on pool:zero
 
-== crates/hale-codegen/tests/tcp_substrate.rs#32b14019
+== crates/hale-codegen/tests/tcp_substrate.rs#95e0c216
 root	App	the entry
 domain	pinned:App@literal1.acc
 domain	pinned:App@literal1.web
