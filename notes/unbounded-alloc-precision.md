@@ -311,8 +311,10 @@ as the call's argument, with struct-literal field defaults alike and a
 locus's publishes into its own handlers (a message from another locus
 stays fresh: provenance does not cross loci); a fourth matched a
 self-publish to a handler by literal subject equality, which `t.**`
-taking `t.next` defeats, so the match is now by message type alone,
-whatever the subjects. DNA, final:
+taking `t.next` defeats, and a fifth matched it by type name, which an
+alias (`type Message = Tick`) defeats: a self-publish carrying anything
+of the publisher's fields now reaches every handler of the locus, with
+no subject or type comparison. DNA, final:
 12 decorators silence nothing in any program (0 before; 29 under the
 first cut, 19 under the second; the difference is replaces whose value
 comes from a `self` method's result or a parameter some caller passes

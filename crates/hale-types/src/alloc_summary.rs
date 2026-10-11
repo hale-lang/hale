@@ -952,10 +952,8 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
-    /// GH #1490 (step 4): each publish of the body: its payload's type
-    /// (`None` when the walk cannot name it) and what the payload
-    /// carries.
-    pub(crate) sends: Vec<(Option<String>, Taint)>,
+    /// GH #1490 (step 4): what each publish of the body carries.
+    pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
     /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
     /// `main` (lowered as the program's entry), and for a row the summary
@@ -2570,7 +2568,7 @@ pub fn summarize_identified(
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
-                    subscriptions.insert(locus.clone(), bus_subscriptions(l));
+                    subscriptions.insert(locus.clone(), handlers.clone());
                     for member in &l.members {
                         match member {
                             // A `mode` body was never collected, so
@@ -3348,43 +3346,8 @@ pub fn summarize_identified(
     summary
 }
 
-/// GH #1490 (step 4): each locus's bus handlers with the type of the
-/// message each takes (`None` when the walk cannot name it).
-type Subscriptions = BTreeMap<String, Vec<(String, Option<String>)>>;
-
-fn bus_subscriptions(l: &LocusDecl) -> Vec<(String, Option<String>)> {
-    let mut out = Vec::new();
-    for member in &l.members {
-        if let LocusMember::Bus(bus) = member {
-            for bm in &bus.members {
-                if let BusMember::Subscribe { handler, ty, .. } = bm {
-                    let declared = l.members.iter().find_map(|m| match m {
-                        LocusMember::Fn(f) if f.name.name == handler.name => {
-                            f.params.first().and_then(|p| type_expr_name(&p.ty))
-                        }
-                        _ => None,
-                    });
-                    out.push((handler.name.clone(), declared.or_else(|| ty.as_ref().and_then(type_expr_name))));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// May a value of type `a` be a value of type `b`? Two names the walk
-/// knows are compared by their last identifier (a qualified path and the
-/// name it is merged under end alike); an unknown side may be anything.
-fn types_may_meet(a: &Option<String>, b: &Option<String>) -> bool {
-    let last = |t: &str| -> String {
-        let t = t.rsplit("::").next().unwrap_or(t);
-        t.rsplit("__").next().unwrap_or(t).to_string()
-    };
-    match (a, b) {
-        (Some(a), Some(b)) => last(a) == last(b),
-        _ => true,
-    }
-}
+/// GH #1490 (step 4): each locus's bus handlers.
+type Subscriptions = BTreeMap<String, BTreeSet<String>>;
 
 /// GH #1490 (step 4): each fn's and method's parameters, in order, with
 /// the default each has.
@@ -3532,23 +3495,20 @@ fn resolve_param_provenance(
         }
         // A locus that publishes what it carries of its own `self` may be
         // its own subscriber: the message its handler receives carries it
-        // (the same instance, as a call on `self`). Whether a publish
-        // reaches a subscription is not judged by subject — wildcards
-        // (`t.**`, a transport's `*`), topics declared over subjects and
-        // computed subjects make that answer fragile — but by type: every
-        // handler of the locus whose message may be the payload's type.
+        // (the same instance, as a call on `self`). Which subscription a
+        // publish reaches is not judged — not by subject (wildcards, a
+        // transport's own pattern dialect, topics declared over subjects,
+        // computed subjects) nor by type (aliases): every handler of the
+        // locus receives what any of its publishes carries.
         for f in summary.fns.values() {
             let Some(locus) = &f.key.locus else { continue };
             let Some(subs) = subscriptions.get(locus) else { continue };
-            for (payload_ty, payload) in &f.sends {
+            for payload in &f.sends {
                 let t = payload.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none));
                 if t.is_none() {
                     continue;
                 }
-                for (handler, msg_ty) in subs {
-                    if !types_may_meet(payload_ty, msg_ty) {
-                        continue;
-                    }
+                for handler in subs {
                     let Some(hk) = param_order.keys().find(|k| k.locus.as_deref() == Some(locus.as_str()) && k.fn_name == *handler) else {
                         continue;
                     };
@@ -5132,7 +5092,7 @@ struct Walker<'a> {
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
     /// `FnSummary::sends`.
-    sends: Vec<(Option<String>, Taint)>,
+    sends: Vec<Taint>,
     /// GH #1490 (step 4): the expression walked next is a whole field
     /// of a retired struct replace (`AllocSite::retired_store`).
     retired_init: bool,
@@ -6061,8 +6021,7 @@ impl<'a> Walker<'a> {
                     _ => None,
                 };
                 let payload = self.taint_of(value);
-                let payload_ty = self.receiver_type_name(value);
-                self.sends.push((payload_ty, payload));
+                self.sends.push(payload);
                 self.push_effect_site(
                     EffectSiteKind::Publish(subj),
                     depth,
@@ -8079,11 +8038,11 @@ mod tests {
     }
 
     #[test]
-    fn a_self_publish_reaches_its_handlers_whatever_the_subjects() {
-        // Subjects are not judged — `t.**` takes `t.next`, a transport's
-        // `t.*` one token, a topic its declared subject — so a payload
-        // carrying `self.log` reaches every handler of the locus whose
-        // message may be its type.
+    fn a_self_publish_reaches_every_handler_whatever_its_subject_or_type() {
+        // Neither subjects (`t.**` takes `t.next`, a transport's `t.*` one
+        // token, a topic its declared subject) nor types (aliases) are
+        // judged: a payload carrying `self.log` reaches every handler of
+        // the locus.
         for (sub, publ) in [
             ("\"t.**\"", "\"t.next\""),
             ("\"t.*\"", "\"t.next\""),
@@ -8094,8 +8053,34 @@ mod tests {
             let src = self_publish(sub, publ, "Tick");
             assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf], "subscribe {sub}, publish {publ}");
         }
-        // A payload of another type is not the handler's message.
+        // Another payload type reaches it too (formerly exempt by type).
         let src = self_publish("\"t.**\"", "\"t.next\"", "Note");
+        assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_self_publish_reaches_a_handler_typed_by_an_alias() {
+        // The review's control, and a chain of two aliases.
+        for aliases in ["type Message = Tick;", "type Inner = Tick; type Message = Inner;"] {
+            let src = format!(
+                "type Tick {{ text: String; }}
+                 {aliases}
+                 locus App {{
+                     params {{ log: String = \"\"; }}
+                     bus {{ subscribe \"t.**\" as on_t of type Message; publish \"t.next\" of type Tick; }}
+                     fn on_t(t: Message) {{ self.log = t.text + \"x\"; \"t.next\" <- Tick {{ text: self.log }}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            );
+            assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf], "{aliases}");
+        }
+    }
+
+    #[test]
+    fn a_locus_that_publishes_nothing_of_its_fields_keeps_its_messages_fresh() {
+        // It publishes, but nothing it publishes carries a field of it.
+        let src = self_publish("\"t.**\"", "\"t.next\"", "Tick").replace("{ text: self.log }", "{ text: to_string(1) }");
+        assert!(src.contains("to_string(1)"), "{src}");
         assert!(field_leaks(&src, "on_t").is_empty());
     }
 
