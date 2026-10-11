@@ -108,18 +108,18 @@ The operations are layered. Each layer names a change by its own boundary and is
 - **Internalize.** A contract the organism depended on becomes a part it owns, with the code, positions and knowledge to back it.
 
 **The habitat: several records.**
-- **Graft.** A sapling, a prebuilt business unit published as a template, becomes a child organism under a ceiling its parent grants and a Board its parent seats.
-- **Extract.** A part of one organism becomes its own organism. The source externalizes it, the new organism is born from the copied subgraph with provenance, and the source depends on its contract.
-- **Absorb.** A child organism folds back into its parent. The parent internalizes the contract, and the child retires.
-- **Re-parent.** An organism moves under a different parent. Its ceiling is re-granted and its Board re-seated.
+- **Graft.** A sapling, a prebuilt business unit published as a template, becomes a child organization under a ceiling its parent grants and a Board its parent seats.
+- **Extract.** A part of one organism becomes a child organization that runs it. The source externalizes it, the child is born from the copied subgraph with provenance, and the source depends on its contract.
+- **Absorb.** A child organization folds back into its parent. The parent internalizes the contract, and the child retires.
+- **Re-parent.** An organization moves under a different parent. Its ceiling is re-granted and its Board re-seated.
 
 **Promoting a capability moves along two axes, one step at a time.** Where it runs is the process boundary, and serve and place move it: a heart can become two programs that the same organism still owns and governs. Who owns it is the organism boundary, and externalize moves it, usually only when someone else needs the capability or it should be governed apart. The check that only the surface and its topics cross the cut belongs to the first step, because it is a property of the code, and the compiler can make it; a cut that is not clean is refused with its crossings named.
 
-**Externalize needs no habitat.** To the organism, an externalized capability is a contract it consumes and does not own. Whoever serves it, a sibling organism, a third-party provider or another team's service, is not in its record, so a plain organism can use the operation, and replacing the provider later is an ordinary contract change ([Providers are replaceable](#providers-are-replaceable)).
+**Externalize needs no habitat.** To the organism, an externalized capability is a contract it consumes and does not own. Whoever serves it, a sibling organization, a third-party provider or another team's service, is not in its record, so a plain organism can use the operation, and replacing the provider later is an ordinary contract change ([Providers are replaceable](#providers-are-replaceable)).
 
-**Extract is a composition, seen whole only from the habitat.** The source's record shows "externalized; now depends on this contract". The new organism's record begins with "born from the source at this head". Rows are copied with their provenance, never moved, so each history stays where it happened. Absorb is the same composition in reverse.
+**Extract is a composition, seen whole only from the habitat.** The source's record shows "externalized; now depends on this contract". The child organization's record begins with "born from the source at this head". Rows are copied with their provenance, never moved, so each history stays where it happened. Absorb is the same composition in reverse.
 
-**Packs and saplings are the two sizes of what can be installed.** A pack is rows inside one organism: knowledge, practices, mandates, workflow definitions. A sapling is a whole organism: its program, its starting record, its charter and its law. A pack is adopted by a family Review; a sapling is grafted. An upgrade of either arrives as its next version, proposed against what the host has ratified since, so local amendments are kept and each conflict is a Review of its own.
+**Packs and saplings are the two sizes of what can be installed.** A pack is rows inside one organism: knowledge, practices, mandates, workflow definitions. A sapling is a child organization: its starting record, its charter, its law, its positions and practices, and the program it runs, if it runs one; a unit that starts with workflows, knowledge and people grows a heart later or never. A pack is adopted by a family Review; a sapling is grafted, and the parent governs it through the ceiling it grants and the Board it seats, as it would any child organization. An upgrade of either arrives as its next version, proposed against what the host has ratified since, so local amendments are kept and each conflict is a Review of its own.
 
 ## Money from the first receipt
 
