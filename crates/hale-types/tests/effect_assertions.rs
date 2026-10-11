@@ -999,3 +999,71 @@ fn duplicate_decorators_are_diagnosed() {
         "a repeat across an intervening decorator is still a repeat"
     );
 }
+
+/// GH #1490: `@bounded_by(<name>)` silences what `@unbounded` silences,
+/// so it meets the same three contradictions, under its own spelling and
+/// pointing at it.
+#[test]
+fn bounded_by_meets_the_contradictions_unbounded_does() {
+    let cases: [(&str, &str); 3] = [
+        ("@bounded_by(record)\n@hot\n", "`@bounded_by(...)` and `@hot` contradict"),
+        (
+            "@bounded_by(record)\n@effects(none: { alloc })\n",
+            "`@bounded_by(...)` and an effect assertion that forbids `alloc` contradict",
+        ),
+        (
+            "@bounded_by(record)\n@budget(alloc_per_call = 0)\n",
+            "`@bounded_by(...)` and `@budget(alloc_per_call = 0)` contradict",
+        ),
+    ];
+    for (decorators, needle) in cases {
+        let src = format!(
+            "{}fn grow(n: Int) -> Int {{ return n; }}\n\
+             fn main() {{ println(grow(1)); }}",
+            decorators
+        );
+        let ds = full_diags(&src);
+        let hit = ds.iter().find(|d| d.message.contains(needle)).unwrap_or_else(|| {
+            panic!("expected {needle:?}; got {:?}", ds.iter().map(|d| &d.message).collect::<Vec<_>>())
+        });
+        assert!(src[hit.span.start.as_usize()..].starts_with("@bounded_by(record)"), "points at the decorator");
+        assert!(!hit.related.is_empty(), "and names the one it contradicts: {}", hit.message);
+    }
+    // A ceiling above zero composes, as it does with `@unbounded`.
+    let ds = diags_for(
+        "@bounded_by(record)\n@budget(alloc_per_call = 2)\nfn grow(n: Int) -> Int { return n; }\n\
+         fn main() { println(grow(1)); }",
+    );
+    assert!(!ds.iter().any(|m| m.contains("contradict")), "{ds:?}");
+}
+
+/// GH #1490: on a fn, `@bounded_by` beside `@unbounded` is refused at the
+/// `@bounded_by`, saying which to keep; a second `@bounded_by` is a
+/// duplicate like any other.
+#[test]
+fn bounded_by_with_unbounded_or_twice_is_refused() {
+    for src in [
+        "@unbounded\n@bounded_by(record)\nfn grow(n: Int) -> Int { return n; }\nfn main() { println(grow(1)); }",
+        "@bounded_by(record)\n@unbounded\nfn grow(n: Int) -> Int { return n; }\nfn main() { println(grow(1)); }",
+    ] {
+        let ds = full_diags(src);
+        let hit = ds
+            .iter()
+            .find(|d| d.message.contains("`@unbounded` and `@bounded_by(...)` on `grow`"))
+            .unwrap_or_else(|| panic!("{src}: got {:?}", ds.iter().map(|d| &d.message).collect::<Vec<_>>()));
+        assert!(hit.message.contains("Keep `@bounded_by(<name>)` when you know the input that bounds it"));
+        assert!(src[hit.span.start.as_usize()..].starts_with("@bounded_by"), "points at `@bounded_by`");
+        assert!(!hit.related.is_empty(), "with the `@unbounded` as related");
+    }
+    let src = "@bounded_by(record)\n@bounded_by(queue)\nfn grow(n: Int) -> Int { return n; }\n\
+               fn main() { println(grow(1)); }";
+    let ds = full_diags(src);
+    let hit = ds
+        .iter()
+        .find(|d| d.message.contains("duplicate `@bounded_by`"))
+        .unwrap_or_else(|| panic!("got {:?}", ds.iter().map(|d| &d.message).collect::<Vec<_>>()));
+    assert_eq!(hit.span.line_col(src).0, 2, "at the second one");
+    // Alone, it is coherent.
+    let ds = diags_for("@bounded_by(record)\nfn grow(n: Int) -> Int { return n; }\nfn main() { println(grow(1)); }");
+    assert!(!ds.iter().any(|m| m.contains("bounded_by")), "{ds:?}");
+}

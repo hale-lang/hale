@@ -8449,6 +8449,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ffi: None,
                     export: false,
                     unbounded: false,
+                    bounded_by: None,
                     rpc: None,
                     budget: None,
                     hot: false,
@@ -12061,6 +12062,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .as_ref()
                         .map(|t| Self::substitute_type_expr(t, subst)),
                     unbounded: lc.unbounded,
+                    bounded_by: lc.bounded_by.clone(),
                     body: Self::substitute_block_type_ascriptions(
                         &lc.body, subst,
                     ),
@@ -12097,6 +12099,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ffi: fd.ffi.clone(),
                 export: fd.export,
                 unbounded: fd.unbounded,
+                bounded_by: fd.bounded_by.clone(),
                     rpc: fd.rpc.clone(),
                 budget: fd.budget,
                 hot: fd.hot,
@@ -12315,6 +12318,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ffi: template.ffi.clone(),
             export: template.export,
             unbounded: template.unbounded,
+            bounded_by: template.bounded_by.clone(),
             rpc: template.rpc.clone(),
             budget: template.budget,
             hot: template.hot,

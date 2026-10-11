@@ -334,7 +334,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
         }
         LocusMember::Bus(bb) => bus(bb, f),
         LocusMember::Lifecycle(ld) => {
-            let LifecycleDecl { kind: _, params: ps, ret, unbounded: _, body, span: _, id: _, synthesized: _ } = ld;
+            let LifecycleDecl { kind: _, params: ps, ret, unbounded: _, bounded_by: _, body, span: _, id: _, synthesized: _ } = ld;
             params(ps, f);
             opt_ty(ret, f);
             block(body, f);
@@ -523,6 +523,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         ffi,
         export: _,
         unbounded: _,
+        bounded_by: _,
         budget: _,
         hot: _,
         effects,

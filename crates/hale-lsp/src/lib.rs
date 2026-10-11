@@ -1492,7 +1492,7 @@ fn document_symbols(
 
 /// hale/enforcement: every user fn + locus method in the seed with
 /// its enforcement contract — @hot, @budget(N), fallible payload,
-/// @unbounded — the certification map an agent consults before
+/// @unbounded / @bounded_by(<name>) — the certification map an agent consults before
 /// touching a hot path.
 fn enforcement(
     msg: &Value,
@@ -1534,6 +1534,7 @@ fn enforcement_of(snap: &Snapshot) -> Value {
                 "hot": f.hot,
                 "budget": f.budget,
                 "unbounded": f.unbounded,
+                "bounded_by": f.bounded_by,
                 "fallible": f.fallible.as_ref().map(type_expr_str),
             }));
         };

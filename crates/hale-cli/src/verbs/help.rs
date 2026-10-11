@@ -482,6 +482,12 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 narrowing and the policy that discharges it");
     println!("                                 (stdout; one object with --json)");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
+    println!("  --report-unbounded-use          one stdout line per `@unbounded` or");
+    println!("                                 `@bounded_by(<name>)` fn or hook:");
+    println!("                                 unbounded-use<TAB>path:line<TAB>fn<TAB>survey");
+    println!("                                 sites<TAB>hot-path warnings it silences<TAB>");
+    println!("                                 `unbounded` or `bounded_by(<name>)`");
+    println!("                                 (line = the decorator's; a hook's opens it)");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
 }

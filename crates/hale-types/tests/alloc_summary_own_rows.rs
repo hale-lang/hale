@@ -81,6 +81,7 @@ fn fields(s: &AllocSummary) -> Vec<(String, String)> {
         ("sync_forms".to_string(), format!("{:?}", s.sync_forms)),
         ("carries".to_string(), format!("{:?}", s.carries)),
         ("unbounded_fns".to_string(), format!("{:?}", s.unbounded_fns)),
+        ("bounded_by".to_string(), format!("{:?}", s.bounded_by)),
         ("locus_shapes".to_string(), format!("{:?}", s.locus_shapes)),
         ("fns".to_string(), format!("{:?}", s.fns.keys().collect::<Vec<_>>())),
     ];

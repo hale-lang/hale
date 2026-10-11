@@ -420,6 +420,27 @@ impl AllocSite {
     }
 }
 
+/// GH #1490 (C2): is this a returned value built in an unbounded loop
+/// of its own fn, in a frame whose activation has a boundary of its
+/// own — a method's or handler's per-call scratch, a scratch-local
+/// fn's subregion, or (a free fn no long-lived frame reaches without
+/// one) its nearest such caller's? Then each iteration's value
+/// supersedes the last and the superseded ones die at that boundary
+/// with the call's other temporaries, so the loop multiplies nothing
+/// past the call: the value leaves it once, as its result. A frame
+/// with no boundary (`scratchless`, a `main` / `run` body or a free fn
+/// reached from one without a scratch on the way) keeps every
+/// iteration's value until the locus dissolves, and a literal
+/// `while true` never reaches its boundary — both stay in-loop
+/// accumulation. RSS-validated in `alloc_model_rss.rs`
+/// (`a_returned_loop_accumulator_reclaims_with_its_activation`).
+fn returned_loop_bounded_by_activation(site: &AllocSite, owner_scratchless: bool) -> bool {
+    site.escape == Escape::Returned
+        && site.verdict() == SiteVerdict::AccumulatesUnbounded
+        && !owner_scratchless
+        && !site.in_infinite_loop
+}
+
 /// How a call's callee is written. The edge's [`Callee`] is what the
 /// call resolves to; this is the spelling, which a resolved edge no
 /// longer shows (a cross-seed `alias::name` resolves to its mangled
@@ -910,10 +931,17 @@ pub struct AllocSummary {
     /// propagation is the same engine, this is how a leaf says what it
     /// is.
     pub carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet>,
-    /// Fns carrying `@unbounded` — an acknowledged-intentional
-    /// accumulation. Their leak sites are dropped entirely (the
-    /// greppable carve-out), even under the survey flag.
+    /// Fns carrying `@unbounded` or `@bounded_by(<name>)` — an
+    /// acknowledged-intentional accumulation. Their leak sites are
+    /// dropped entirely (the greppable carve-out), even under the survey
+    /// flag, and the hot-path lint's warnings in them with them. One
+    /// set, so the two decorators are one rule.
     pub unbounded_fns: BTreeSet<FnKey>,
+    /// GH #1490: the fns of `unbounded_fns` that carry
+    /// `@bounded_by(<name>)`, with the name as written — the input that
+    /// bounds the growth. Read for display only (`--dump-alloc-summary`,
+    /// `--report-unbounded-use`); no verdict reads it.
+    pub bounded_by: BTreeMap<FnKey, String>,
     /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
     /// projection cap. Keyed by locus name.
     pub locus_shapes: BTreeMap<String, LocusShape>,
@@ -1213,6 +1241,7 @@ impl AllocSummary {
             sync_forms: self.sync_forms.iter().filter(|l| own_locus(l)).cloned().collect(),
             carries: self.carries.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), *v)).collect(),
             unbounded_fns: self.unbounded_fns.iter().filter(|k| own_key(k)).cloned().collect(),
+            bounded_by: self.bounded_by.iter().filter(|(k, _)| own_key(k)).map(|(k, b)| (k.clone(), b.clone())).collect(),
             locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
             reached: None,
             analysis_copy: BTreeSet::new(),
@@ -1397,7 +1426,11 @@ impl AllocSummary {
     /// never exits inside a handler defeats the "dies at exit"
     /// argument; rare, and the old behavior flagged 155 bounded
     /// per-activation loops to catch it. A scratch-local free fn's
-    /// subregion is such a scratch (F.40 phase 3, E3b).
+    /// subregion is such a scratch (F.40 phase 3, E3b). GH #1490 (C2)
+    /// extends it to a `Returned` value built in the loop (the
+    /// accumulator): its superseded values die with the activation,
+    /// and the value returned is judged once per call, by GAP A
+    /// ([`returned_loop_bounded_by_activation`]).
     ///
     /// E3b — the boundary is judged relative to the loop: a `Local`
     /// in a frame with no boundary of its own (`repeated`, see
@@ -1448,6 +1481,18 @@ impl AllocSummary {
             }
         }
         let owner_scratchless = scratchless.contains(owner);
+        // GH #1490 (C2): a returned value built in its fn's own loop —
+        // the accumulator `out = out + x` — keeps one value per call:
+        // each iteration's value supersedes the last, and the
+        // superseded ones die at the activation boundary, as GAP B's
+        // in-loop `Local` does. What leaves the call is the one value
+        // returned, so the site counts once per invocation and the
+        // cross-invocation arm (GAP A) decides by who consumes it.
+        let intra = if returned_loop_bounded_by_activation(site, owner_scratchless) {
+            SiteVerdict::OncePerInvocation
+        } else {
+            intra
+        };
         match intra {
             SiteVerdict::AccumulatesUnbounded => {
                 // GAP B: in-loop Local in a scratch-ful frame dies
@@ -1521,8 +1566,26 @@ impl AllocSummary {
     }
 
     /// Every site whose final verdict is unbounded accumulation — the
-    /// step-3 result the diagnostic emits.
+    /// step-3 result the diagnostic emits. An `@unbounded` fn's sites are
+    /// dropped ([`AllocSummary::unbounded_fns`]).
     pub fn leak_sites(&self) -> Vec<LeakSite> {
+        self.leak_sites_with(true)
+    }
+
+    /// The leak sites `@unbounded` drops: [`AllocSummary::leak_sites`]
+    /// with the carve-out off, kept only where the owner carries it. The
+    /// carve-out drops a fn's own sites and nothing else (no verdict
+    /// reads it), so these are exactly the sites the decorators silence.
+    pub fn silenced_leak_sites(&self) -> Vec<LeakSite> {
+        self.leak_sites_with(false)
+            .into_iter()
+            .filter(|ls| self.unbounded_fns.contains(&ls.owner))
+            .collect()
+    }
+
+    /// [`AllocSummary::leak_sites`], with the `@unbounded` carve-out on
+    /// (`skip_unbounded`) or off.
+    fn leak_sites_with(&self, skip_unbounded: bool) -> Vec<LeakSite> {
         // M3 stage 5 gap E (2026-07-02): a bundle with NO long-lived
         // entry point — no `run` loop, no bus handler — is a
         // run-to-exit program (a script, a smoke binary, a lib
@@ -1574,12 +1637,14 @@ impl AllocSummary {
             // `@unbounded` is the acknowledged carve-out — its sites never
             // surface, with or without the survey flag, in or out of a
             // `@bounded` locus.
-            if self.unbounded_fns.contains(&f.key) {
+            if skip_unbounded && self.unbounded_fns.contains(&f.key) {
                 continue;
             }
             for s in &f.sites {
                 if self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers) == SiteVerdict::AccumulatesUnbounded {
-                    let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
+                    let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded)
+                        && !returned_loop_bounded_by_activation(s, scratchless.contains(&f.key))
+                    {
                         LeakReason::InUnboundedLoop
                     } else if s.escape == Escape::Local {
                         LeakReason::InCallersArena
@@ -1674,6 +1739,10 @@ impl AllocSummary {
             // frees its `Local` allocations at return, unless recursive.
             if let Some(Frame::ScratchLocal { recursive }) = f.frame {
                 tags.push(if recursive { "scratch-local, recursive" } else { "scratch-local" }.to_string());
+            }
+            // GH #1490: the input a `@bounded_by(<name>)` says bounds it.
+            if let Some(bound) = self.bounded_by.get(&f.key) {
+                tags.push(format!("bounded_by({bound})"));
             }
             let tag = if tags.is_empty() { String::new() } else { format!("   [{}]", tags.join(", ")) };
             out.push_str(&format!("fn {}{}\n", f.key.display(), tag));
@@ -1995,6 +2064,18 @@ pub fn summarize_identified(
     let mut sync_forms: BTreeSet<String> = BTreeSet::new();
     let mut carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet> = BTreeMap::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    let mut bounded_by: BTreeMap<FnKey, String> = BTreeMap::new();
+    // `@unbounded` and `@bounded_by(<name>)` silence the same things: a
+    // fn carrying either joins `unbounded_fns`, and the bound is kept
+    // beside it for display.
+    let mut silence = |key: &FnKey, unbounded: bool, bound: &Option<String>| {
+        if unbounded || bound.is_some() {
+            unbounded_fns.insert(key.clone());
+        }
+        if let Some(b) = bound {
+            bounded_by.insert(key.clone(), b.clone());
+        }
+    };
     let mut analysis_copy_loci: BTreeSet<String> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
@@ -2201,9 +2282,7 @@ pub fn summarize_identified(
                         }
                     }
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
-                    if decl.unbounded {
-                        unbounded_fns.insert(key.clone());
-                    }
+                    silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
                     bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
                 }
@@ -2310,9 +2389,7 @@ pub fn summarize_identified(
                                 } else {
                                     None
                                 };
-                                if decl.unbounded {
-                                    unbounded_fns.insert(key.clone());
-                                }
+                                silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -2335,9 +2412,7 @@ pub fn summarize_identified(
                             LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let (name, entry) = lifecycle_key(lc.kind);
                                 let key = FnKey::method(DeclId::of(universe, lc.id), locus.clone(), name);
-                                if lc.unbounded {
-                                    unbounded_fns.insert(key.clone());
-                                }
+                                silence(&key, lc.unbounded, &lc.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -2750,6 +2825,7 @@ pub fn summarize_identified(
     summary.sync_forms = sync_forms;
     summary.carries = carries;
     summary.unbounded_fns = unbounded_fns;
+    summary.bounded_by = bounded_by;
     summary.locus_shapes = locus_shapes;
 
     // #392 — interface dispatch. A method call on an interface-typed
@@ -3522,6 +3598,105 @@ pub fn advisory_leak_sites(
         .into_iter()
         .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
         .collect()
+}
+
+/// The leak sites `@unbounded` silences, filtered as
+/// [`advisory_leak_sites`] filters the reported ones: the program's own
+/// fns, at an author position. What the survey would report for each
+/// decorated fn were its decorator removed (`hale check
+/// --report-unbounded-use`).
+pub fn silenced_advisory_leak_sites(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+) -> Vec<LeakSite> {
+    let positions = AuthorPositions::of(programs, ids, sources);
+    summary
+        .silenced_leak_sites()
+        .into_iter()
+        .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
+        .collect()
+}
+
+/// One `@unbounded` or `@bounded_by(<name>)` decorator of the program,
+/// and what it silences (`hale check --report-unbounded-use`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnboundedUse {
+    /// The decorated fn or lifecycle hook.
+    pub key: FnKey,
+    /// Where the decorator is written: the `@unbounded` or `@bounded_by`
+    /// of a fn, or the start of a hook's declaration, which a hook's
+    /// decorator opens (a hook takes no other).
+    pub at: Span,
+    /// GH #1490: `Some(name)` for `@bounded_by(<name>)`, `None` for
+    /// `@unbounded`.
+    pub bounded_by: Option<String>,
+    /// The survey's sites it silences ([`silenced_advisory_leak_sites`]):
+    /// what the default whole-program survey would warn in the fn were
+    /// the decorator removed.
+    pub survey: usize,
+    /// The hot-path lint's warnings it silences
+    /// ([`crate::check::hot_path_silenced`]).
+    pub hot_path: usize,
+}
+
+/// Every `@unbounded` and `@bounded_by(<name>)` fn and lifecycle hook the
+/// program's own source declares (its imported seeds' included, the
+/// stdlib's analysis copy and the appended api runtime aside,
+/// [`AllocSummary::is_own`]), with the survey sites it silences and `hot_path`'s count for it, in the
+/// order the declarations are written.
+pub fn unbounded_uses(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+    hot_path: &BTreeMap<FnKey, usize>,
+) -> Vec<UnboundedUse> {
+    let mut survey: BTreeMap<FnKey, usize> = BTreeMap::new();
+    for ls in silenced_advisory_leak_sites(summary, programs, ids, sources) {
+        *survey.entry(ls.owner).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    let mut push = |key: FnKey, at: Span, bounded_by: &Option<String>| {
+        if summary.is_own(&key) {
+            let (survey, hot_path) =
+                (survey.get(&key).copied().unwrap_or(0), hot_path.get(&key).copied().unwrap_or(0));
+            out.push(UnboundedUse { key, at, bounded_by: bounded_by.clone(), survey, hot_path });
+        }
+    };
+    // A fn's decorator: the one `@unbounded` or `@bounded_by` written
+    // (the check refuses both together).
+    let written = |f: &FnDecl| {
+        f.decorators.iter().find(|d| d.name == "unbounded" || d.name == "bounded_by").map_or(f.span, |d| d.span)
+    };
+    let silenced = |f: &FnDecl| f.unbounded || f.bounded_by.is_some();
+    for p in programs {
+        for item in flat_decls(&p.items) {
+            match item {
+                TopDecl::Fn(f) if silenced(f) => {
+                    push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), written(f), &f.bounded_by);
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) if silenced(f) => {
+                                let key = FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone());
+                                push(key, written(f), &f.bounded_by);
+                            }
+                            LocusMember::Lifecycle(lc) if lc.unbounded || lc.bounded_by.is_some() => {
+                                let key = FnKey::method(DeclId::user(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
+                                push(key, lc.span, &lc.bounded_by);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
@@ -6113,6 +6288,144 @@ mod tests {
         );
     }
 
+    // === GH #1490 (C2): a returned loop accumulator ===================
+
+    /// `join_n` builds its result in its own unbounded loop; `callee`
+    /// says how it is declared (a scratch-local fn, a fn landing in its
+    /// caller's arena, or a method), and `consumer` is the frame that
+    /// calls it once per iteration or per message.
+    fn accumulator(callee: &str, consumer: &str) -> String {
+        let (decl, method, call) = match callee {
+            "scratch-local" => (
+                "fn join_n(n: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < n { out = out + \"item-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "",
+                "join_n(20)",
+            ),
+            "callers-arena" => (
+                "fn join_n(r: Row, n: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < n { out = out + r.text + \"-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "",
+                "join_n(self.r, 20)",
+            ),
+            _ => (
+                "",
+                "fn join_n(k: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < k { out = out + self.r.text + \"-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "self.join_n(20)",
+            ),
+        };
+        let body = match consumer {
+            "method" => format!(
+                "fn record(i: Int) {{ self.sink = self.sink + len({call}); }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}"
+            ),
+            "handler" => format!(
+                "bus {{ subscribe \"t\" as on_t of type Int; }}
+                 fn on_t(i: Int) {{ self.sink = self.sink + len({call}); }}"
+            ),
+            _ => format!(
+                "run() {{ let mut i = 0; while i < self.n {{ self.sink = self.sink + len({call}); i = i + 1; }} }}"
+            ),
+        };
+        format!(
+            "type Row {{ text: String; }}
+             {decl}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; r: Row = Row {{ text: \"abc\" }}; }}
+                 {method}
+                 {body}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    fn join_leaks(src: &str) -> Vec<(Escape, LeakReason)> {
+        summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == "join_n")
+            .map(|l| (l.escape, l.reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_returned_loop_accumulator_is_one_value_per_call() {
+        // Consumed in a method or a handler, the accumulator's
+        // superseded values die at an activation boundary and its
+        // result dies with the consumer's per-call scratch — measured
+        // flat (alloc_model_rss.rs). None of the three callee shapes
+        // is a leak.
+        for callee in ["scratch-local", "callers-arena", "method"] {
+            for consumer in ["method", "handler"] {
+                let leaks = join_leaks(&accumulator(callee, consumer));
+                assert!(
+                    leaks.is_empty(),
+                    "a {callee} accumulator consumed in a {consumer} keeps one value \
+                     per call — must not flag: {leaks:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_returned_loop_accumulator_consumed_in_run_still_accumulates() {
+        // `run`'s own loop has no boundary: each call's result lands in
+        // its arena (GAP A), so the value returned is reported — once,
+        // as invoked unboundedly, not as in-loop growth.
+        for callee in ["scratch-local", "method"] {
+            let leaks = join_leaks(&accumulator(callee, "run"));
+            assert_eq!(
+                leaks,
+                vec![(Escape::Returned, LeakReason::InvokedUnboundedly)],
+                "a {callee} accumulator consumed in run's loop accumulates its results"
+            );
+        }
+        // A free fn with no scratch of its own, reached from `run`, is
+        // `run`'s arena: every iteration's value stays (1.9 GB over
+        // 200k calls), so the accumulator keeps its in-loop verdict.
+        let leaks = join_leaks(&accumulator("callers-arena", "run"));
+        assert!(
+            leaks.contains(&(Escape::Returned, LeakReason::InUnboundedLoop)),
+            "a callers-arena accumulator reached from run grows in run's arena: {leaks:?}"
+        );
+    }
+
+    #[test]
+    fn a_returned_accumulator_in_while_true_still_accumulates() {
+        // A literal `while true` never reaches the activation boundary
+        // the superseded values die at (GAP B's hole, kept).
+        let src = r#"
+            locus App {
+                params { sink: Int = 0; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn join_n(k: Int) -> String {
+                    let mut out = "";
+                    while true { out = out + "x"; if len(out) > k { return out; } }
+                    return out;
+                }
+                fn on_t(i: Int) { self.sink = self.sink + len(self.join_n(i)); }
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            join_leaks(src),
+            vec![(Escape::Returned, LeakReason::InUnboundedLoop)],
+        );
+    }
+
     #[test]
     fn bounded_for_range_is_detected() {
         let src = r#"
@@ -6445,6 +6758,48 @@ mod tests {
             plain_advisory(&[&program], &ids, &[], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
+    }
+
+    /// GH #1490: `@bounded_by(<name>)` silences what `@unbounded`
+    /// silences — the same set, one rule — and the summary keeps the
+    /// name, which the dump prints beside the fn.
+    #[test]
+    fn bounded_by_carves_out_as_unbounded_does() {
+        for deco in ["@bounded_by(record)", "@bounded_by(self.open_requests)"] {
+            let src = format!(
+                r#"
+            type Q {{ a: Int; }}
+            @bounded locus C {{
+                {deco} run {{ while true {{ let q = Q {{ a: 1 }}; }} }}
+                {deco} fn grow() {{ while true {{ let q = Q {{ a: 2 }}; }} }}
+            }}
+            fn main() {{ }}
+        "#
+            );
+            let (program, ids) = minted(&src);
+            assert!(plain_advisory(&[&program], &ids, &[], true).is_empty(), "{deco}: silenced under the survey");
+            assert!(plain_advisory(&[&program], &ids, &[], false).is_empty(), "{deco}: silenced in @bounded scope");
+            let s = summarize(&src);
+            let bound = deco.trim_start_matches("@bounded_by(").trim_end_matches(')');
+            for name in ["run", "grow"] {
+                let key = named(&s, Some("C"), name);
+                assert!(s.unbounded_fns.contains(&key), "{deco}: `{name}` is in the one silenced set");
+                assert_eq!(s.bounded_by.get(&key).map(String::as_str), Some(bound));
+                assert!(
+                    s.render().lines().any(|l| l.starts_with(&format!("fn {}", key.display()))
+                        && l.contains(&format!("bounded_by({bound})"))),
+                    "{deco}: the dump shows the bound beside `{name}`:\n{}",
+                    s.render()
+                );
+            }
+        }
+        // The `@unbounded` spelling of the same program records no bound.
+        let s = summarize(
+            "type Q { a: Int; }\n@bounded locus C { @unbounded run { while true { let q = Q { a: 1 }; } } }\nfn main() { }",
+        );
+        assert_eq!(s.unbounded_fns.len(), 1);
+        assert!(s.bounded_by.is_empty());
+        assert!(!s.render().contains("bounded_by("));
     }
 
     /// F.40 phase 2 review F1: a finding is dropped per site, when the

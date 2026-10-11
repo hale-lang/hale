@@ -185,3 +185,47 @@ diagnostic should point at.
 - **Lifetime classification must stay conservative** — a misclassified
   long-running locus as "short-lived" would hide a real leak. Unknown →
   long-running.
+
+## GH #1490 (2026-10-10): the audit's two largest false-positive classes
+
+An audit of DNA's ~1,275 `@unbounded` decorators put ~22% on survey
+false positives; the two largest classes were measured against the
+runtime before the model moved.
+
+**C2 — a returned loop accumulator** (`out = out + x` in the fn's own
+loop, then `return out`). It was a false positive wherever the fn's
+activation has a boundary: the superseded values die there, and the
+value returned leaves once per call. Measured, 200k calls of a
+20-iteration accumulator: 4.7 MB consumed in a method (scratch-local
+callee), 4.6 MB (callee landing in its caller's arena), 4.7 MB (a
+method callee), 9.2 MB in a bus handler against a 9.1 MB control —
+flat; consumed directly in `run`'s loop, 33 MB (scratch-local callee:
+only the results stay), 49 MB (method callee), 1.9 GB (callee in
+`run`'s arena: every iteration's value stays). The model now judges the
+returned site once per invocation when the owner is not a scratchless
+long-lived frame and the loop is not a literal `while true`
+(`returned_loop_bounded_by_activation`), and GAP A decides by the
+consumer; the scratchless case keeps its in-loop verdict. DNA: 76 more
+decorators silence nothing anywhere (847 → 923), `hale check dna/host`
+308 → 305 warnings.
+
+**C3 — a `String` field replaced whole** (`self.f = <fresh String>`):
+**not a false positive**, so the model did not move. The store retires
+the replaced block for reuse at the activation boundary, but reuse is
+by size (best fit within an 8-block probe window, up to size + size/4
++ 16 bytes; first fit below 16 bytes), and a reused block is retired
+again at its new value's `strlen + 1`, so a block only ever shrinks.
+Measured in a method, 1M replaces: lengths 7–8, `"" + i`, a fixed
+length, or alternating 20/30 or 20/60 all stay at the 4.5–4.7 MB
+floor; lengths 6–15 reach 19.7 MB and 6–55 reach 35.7 MB (2M: 66.8 MB,
+linear, ~31 B per replace; the `Rec` arena alone 15.6 MiB at 500k with
+`LOTUS_ARENA_RESIDENCY=1`); a bus handler, 500k messages, 24.5 MB
+against 9.3 MB; directly in `run`'s loop 115 MB; an append
+(`self.log = self.log + "x"`, 20k) 206 MB. The R2 framing above holds
+for Strings: variable-size replace is a real leak. The same reuse
+limit applies to Gap D's struct replace, which the model excuses: a
+one-String-field struct replaced with lengths 6–15 grows 19.7 MB / 1M
+and 35.0 MB / 2M (lengths 7–8: 5.2 MB) — a known false negative of
+the flip, documented in spec/verification.md. The lever is the
+runtime's reuse (keep a block's true size across reuse, or bucket by
+size class), not the model.
