@@ -672,6 +672,14 @@ pub fn run(args: &[String]) -> ExitCode {
                         dir = PathBuf::from(a);
                     }
                 }
+                // memory read as the head: its DSN derived as `hale dna
+                // memory migrate` derives it, unless one is given; it
+                // travels on the host's environment alone, never printed
+                if std::env::var_os("HALE_DNA_MEMORY_DSN_HEAD").is_none() {
+                    if let Some(dsn) = head::derived_head_dsn(&dir) {
+                        return host_exec_env("show", &dir, &forwarded, &[("HALE_DNA_MEMORY_DSN_HEAD", dsn.as_os_str())], &[]);
+                    }
+                }
                 host_exec("show", &dir, &forwarded)
             }
             _ => {

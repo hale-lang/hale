@@ -44,7 +44,7 @@ check() { if [ "$2" = ok ]; then printf -- '- PASS %s\n' "$1" >> "$R"; else prin
 # so its answer is read
 decide() {
     local label=$1; shift; local out
-    out=$(timeout 180 hale dna review "$@" 2>&1); echo "$out" >> "$LOG"
+    out=$(timeout "${DECIDE_TIMEOUT:-180}" hale dna review "$@" 2>&1); echo "$out" >> "$LOG"
     if echo "$out" | grep -q 'settled: approve' && ! echo "$out" | grep -q 'refused'; then check "$label" ok; else check "$label" no "$(echo "$out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; fi
 }
 

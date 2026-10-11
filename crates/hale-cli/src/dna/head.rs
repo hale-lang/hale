@@ -184,6 +184,19 @@ fn head_dsn(project: &Path) -> Option<OsString> {
     None
 }
 
+/// The head's memory DSN for `project`, derived as [`head_dsn`] derives it,
+/// for a verb that reads memory as the head (`hale dna show`): `None`,
+/// quietly, when memory is not up, for that verb to say so its own way.
+pub(super) fn derived_head_dsn(project: &Path) -> Option<OsString> {
+    if memory_down(project).is_some() {
+        return None;
+    }
+    match memory_migrate(project) {
+        Ok(MemoryPlan::Roles { head, .. }) => Some(OsString::from(head)),
+        _ => None,
+    }
+}
+
 /// Why memory is not up for `project`, or `None` when it is: an owner's
 /// own server (HALE_DNA_MEMORY_DSN_OWNER) is the owner's to keep up and
 /// is asked directly; otherwise the project's compose `knowledge-db` must

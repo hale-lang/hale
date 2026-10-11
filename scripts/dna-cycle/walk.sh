@@ -23,8 +23,6 @@ set -u
 source "$(dirname "$0")/lib.sh"
 RUN=$(current_run); APP=$RUN/todo; R=$RUN/walk.md; LOG=$RUN/walk.log; C=$HERE/canned
 export XDG_STATE_HOME=$RUN/state HALE_DNA_API=$HEAD_API HALE_DNA_ID_TOKEN=$(cat "$RUN/id_token" 2>/dev/null)
-# the head's memory, which `show org` reads the graph from (up.sh's `memory migrate` printed it)
-HALE_DNA_MEMORY_DSN_HEAD=$(grep -o 'HALE_DNA_MEMORY_DSN_HEAD=[^ ]*' "$RUN/migrate.out" | head -1 | cut -d= -f2-); export HALE_DNA_MEMORY_DSN_HEAD
 cd "$APP" || exit 1
 POSITION=position:api/steward
 
