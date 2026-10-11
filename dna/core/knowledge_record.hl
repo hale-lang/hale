@@ -121,7 +121,8 @@ locus KnowledgeRecord {
     // they were decided at. A batch that lost the race to another writer is
     // decided again against what landed, so a row that is already there is
     // not written twice.
-    @unbounded
+    // The batch grows by the members of the family document `digest` names.
+    @bounded_by(digest)
     fn resume_family(review_id: String, digest: String, outcome: String, reviewer: String) -> Bool {
         let doc = self.receipts.read(if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest });
         if len(doc) == 0 || digest_of(doc) != digest { return false; }

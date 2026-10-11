@@ -162,7 +162,8 @@ locus KnowledgeBindingCodec {
     fn subject(j: Journal, receipts: Receipts, idea_id: String) -> KnowledgeBindingSubject {
         return self.subject_at(j, receipts, idea_id, j.revision());
     }
-    @unbounded
+    // The replacements grow by the journal's first `end` rows.
+    @bounded_by(end)
     fn subject_at(j: Journal, receipts: Receipts, idea_id: String, end: Int) -> KnowledgeBindingSubject {
         if end < 0 || end > j.revision() { return KnowledgeBindingSubject { }; }
         if !digest_well_formed(idea_id) { return KnowledgeBindingSubject { }; }

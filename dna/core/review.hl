@@ -325,7 +325,8 @@ locus Review {
     }
     // Rebuild only persisted command decisions. A decision survives even if
     // the process stopped before the assembly wrote Review/knowledge facts.
-    @unbounded
+    // The verdicts grow by this Review's command decisions in the journal, each once.
+    @bounded_by(self.journal)
     fn restore_command_decisions() {
         let mut i = 0;
         while i < self.journal.revision() {
@@ -364,7 +365,7 @@ locus Review {
     // at a restart keeps the approvals it held while its gates' runs were
     // not in; a run observed later settles it on them. Nothing settles
     // here: the organization tells it of the runs (`announce_gate_runs`).
-    @unbounded
+    @bounded_by(self.journal)
     fn restore_verdicts() {
         if len(self.organization_source_request.request_id) > 0 { return; }
         let mut i = 0;
@@ -452,9 +453,9 @@ locus Review {
     // an ambiguous error, re-read the same identity before reporting nothing;
     // redelivery can then recover the original acceptance instead of refusing
     // it merely because an in-memory Review had advanced ahead of its Record.
-    @unbounded
     fn command_decide(v: Verdict) -> String {
         if len(v.command_id) == 0 || v.review_id != self.review_id { return ""; }
+        let codec = OrganizationSourceRequestCodec { };
         let mut tries = 0;
         while tries < 20 {
             let moved = self.journal.refresh();
@@ -462,7 +463,7 @@ locus Review {
             let existing = review_command_decision(self.journal, v.command_id);
             if len(existing) > 0 {
                 if !review_command_matches(existing, v) { return ""; }
-                let codec = OrganizationSourceRequestCodec { }; let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
+                let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
                 if std::json::find_bool_field(existing, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
                 self.restore_command_decisions();
                 return existing;
@@ -481,7 +482,7 @@ locus Review {
             let recovered = review_command_decision(self.journal, v.command_id);
             if len(recovered) > 0 {
                 if !review_command_matches(recovered, v) { return ""; }
-                let codec = OrganizationSourceRequestCodec { }; let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
+                let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
                 if std::json::find_bool_field(recovered, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
                 self.restore_command_decisions();
                 return recovered;
@@ -508,9 +509,9 @@ locus Review {
     }
     // A verdict is admitted only if it names THIS candidate, carries the
     // required authority, and is independent of the author. Reached
-    // per verdict from Review's verdict handler: bounded by the reviewers
-    // of one candidate.
-    @unbounded
+    // per verdict from Review's verdict handler: the verdicts grow by those
+    // admitted at this one Review before it settles.
+    @bounded_by(verdicts)
     fn consider(v: Verdict) -> Bool {
         if len(self.organization_source_request.request_id) > 0 {
             self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
@@ -601,8 +602,8 @@ locus AutonomyBoundary {
     // contraction reaches the child at use, not only at birth.
     fn effective() -> Grant { return intersect_grants(self.grant, self.ceiling); }
     // The disposition of a proposed change under the current grant.
-    // One audit row per assessment; bounded by the Mutations proposed.
-    @unbounded
+    // One audit row per assessment, one per Mutation proposed.
+    @bounded_by(mutations)
     fn assess(change_class: String, m: Magnitude, e: Evidence) -> Disposition {
         let d = dispose(self.effective(), change_class, m, e);
         self.decisions = self.decisions + 1;

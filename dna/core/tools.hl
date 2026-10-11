@@ -56,7 +56,7 @@ fn tool_json(t: ToolSpec) -> String {
 
 // The specs of a space-separated list of tool names, as a JSON array in the
 // list's order; a name the toolchain does not ship is left out.
-@unbounded
+@bounded_by(names)
 fn tools_json(names: String) -> String {
     let mut out = "[";
     let mut first = true;

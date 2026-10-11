@@ -120,7 +120,8 @@ locus RoutedJournal {
     // read there, and one written into the record after it was refused
     // admission (#646 decision 3) — the Ledger is the authority for those
     // kinds, and the record's copies stay as history git keeps.
-    @unbounded
+    // The order grows by the rows of the record and the ledger, one placement each.
+    @bounded_by(self.record)
     fn take_new() {
         while self.seen_record < self.record.revision() {
             let e = self.record.read(self.seen_record);

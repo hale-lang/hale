@@ -34,7 +34,7 @@ fn record_graph_put(g: RecordGraph, kind: String, id: String) -> RecordGraph {
     return out;
 }
 
-@unbounded
+@bounded_by(j)
 fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
     let mut g = RecordGraph { };
     let mut i = 0;
@@ -132,7 +132,7 @@ fn target_known(j: Journal, receipts: Receipts, target: String) -> Bool {
 }
 
 // The first `kind` row for `entity`; an empty Event when there is none.
-@unbounded
+@bounded_by(j)
 fn first_row(j: Journal, kind: String, entity: String) -> Event {
     let mut i = 0;
     while i < j.revision() {
@@ -225,7 +225,7 @@ fn routed_row(j: Journal, review_id: String) -> String {
 }
 
 // GH #604 rule 5: whether `who` retired, and to whom their work goes.
-@unbounded
+@bounded_by(j)
 fn retirement(j: Journal, who: String) -> RetiredPerson {
     if len(who) == 0 { return RetiredPerson { }; }
     let n = j.revision();

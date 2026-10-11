@@ -183,7 +183,7 @@ fn parent_dir(rel: String) -> String {
 // file's seed is its nearest ancestor under the root holding a
 // `hale.toml` and a `.hl` of its own, else its own directory — a repository's code sits under
 // its seeds (`api/todo.hl`), and `hale check <repository>` finds no `.hl`.
-@unbounded
+@bounded_by(files)
 fn seeds_of_files(root: String, files: String, sep: String) -> String {
     if root_is_seed(root) { return ".\n"; }
     let mut out = "";

@@ -365,7 +365,8 @@ locus MemRecord {
         }
         return "";
     }
-    @unbounded
+    // The head is the last of the rows on `chain`.
+    @bounded_by(self.rows)
     fn head(chain: String) -> Head {
         let mut last = "";
         let mut i = 0;
@@ -1213,7 +1214,8 @@ locus GitJournal {
     // never reached the threshold, and it never became a proposal
     // (GH #748). A stale view is recoverable; an empty one is not.
     @effects(is: { journal_io })
-    @unbounded
+    // The rows mirror the record's chain, read whole.
+    @bounded_by(self.record)
     fn load() -> Bool {
         let read = self.record.head(self.chain());
         if !read.ok { self.read_failed("the chain's head could not be read: " + read.why); return false; }
@@ -1310,7 +1312,8 @@ locus GitJournal {
         if self.head_sha == "" { return self.rows.len() == 0; }
         return self.record.count(self.chain()) == self.rows.len();
     }
-    @unbounded
+    // One row, author and line per append: the mirror grows as the record's chain does.
+    @bounded_by(self.record)
     fn landed(a: Appended, kind: String, entity: String, body: String, line: String) -> AppendResult {
         let seq = self.rows.len();
         self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: a.id });
@@ -1330,7 +1333,8 @@ locus GitJournal {
     // organism's own rows (an apply, a restart request) were dropped in
     // silence (GH #603).
     @effects(is: { journal_io })
-    @unbounded
+    // One result per call; the row it lands grows the mirror as the record's chain does.
+    @bounded_by(self.record)
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
@@ -1366,7 +1370,7 @@ locus GitJournal {
     // process reloads and reports the revision stale, for the caller to
     // decide again; a batch that fails leaves the rows as they were.
     @effects(is: { journal_io })
-    @unbounded
+    @bounded_by(rows)
     fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }

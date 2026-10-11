@@ -171,8 +171,8 @@ locus Leader {
     // purpose, the law as the genome holds it, and the practices the
     // Board has ratified for the whole organization — each under its
     // own heading, the practices with the package they came from.
-    // Bounded like the caller.
-    @unbounded
+    // One brief, kept in `last_brief` and replaced by the next.
+    @bounded_by(self.last_brief)
     fn brief(query: String) -> String {
         let mut out = "";
         if len(self.charter) > 0 { out = out + "CHARTER\n" + self.charter + "\n\n"; }

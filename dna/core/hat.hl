@@ -153,7 +153,7 @@ fn hat_organization_change(j: Journal, task_id: String) -> Bool {
 // application by `application.attached` (its account name) and, from
 // `init`, by the node `application:<name>`; an edge retired since is gone.
 // "" when the record attaches none or states no edge.
-@unbounded
+@bounded_by(j)
 fn hat_languages(j: Journal, receipts: Receipts) -> String {
     let mut name = "";
     let mut i = 0;

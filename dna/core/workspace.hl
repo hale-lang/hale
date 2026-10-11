@@ -92,7 +92,8 @@ fn in_new_session(argv: String) -> String {
 // Every process in the session `leader` began, newline-separated ("" when
 // none, or when `leader` began no session). The leader itself, while it
 // lives, is among them. Never this process.
-@unbounded
+// One line per process in `leader`'s session.
+@bounded_by(leader)
 fn session_members(leader: String) -> String {
     let sid = std::str::parse_int(leader) or 0;
     if sid <= 0 { return ""; }

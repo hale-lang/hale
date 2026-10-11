@@ -164,7 +164,8 @@ locus FakeModel {
         if len(self.rules_file) > 0 { self.rules = std::io::fs::read_file(self.rules_file) or ""; }
     }
     // The answer the first matching rule gives ("" when none matches).
-    @unbounded
+    // `spent` grows by the `once:` rules spent, each once.
+    @bounded_by(self.rules)
     fn ruled_for(req: ModelRequest) -> String {
         if len(self.rules) == 0 { return ""; }
         let mut rest = self.rules + "\n";

@@ -277,7 +277,7 @@ fn lease_row(token: Int, holder: String, expires: Int) -> String {
 // What the record says about `key` as of `rev`: the take with the
 // highest token is the lease, whatever its position; the renewals and
 // the release that name that token apply to it, whatever theirs.
-@unbounded
+@bounded_by(j)
 fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
     let mut l = Lease { key: key };
     let mut i = 0;
@@ -317,7 +317,7 @@ fn lease_holds_at(j: Journal, key: String, holder: String, token: Int, rev: Int,
 // already this holder's; `present == false` names who holds it instead.
 // The token is the next epoch of the key, allocated under that append.
 // An empty holder names nobody and is refused.
-@unbounded
+@bounded_by(j)
 fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Lease {
     if len(holder) == 0 || len(key) == 0 { return Lease { key: key, present: false }; }
     let mut tries = 0;
@@ -460,7 +460,8 @@ locus TermRows {
 
 locus RetrievalIndex {
     params { rows: TermRows = TermRows { }; indexed: Int = 0; }
-    @unbounded
+    // One row per kind the journal holds.
+    @bounded_by(j)
     fn rebuild(j: Journal) {
         self.indexed = 0;
         let mut i = 0;
