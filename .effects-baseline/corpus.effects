@@ -240,6 +240,7 @@ Triangulator::run  does={syscall,alloc}
 main  does={alloc}
 near_eq  does={syscall}
 ### 56-io-frame-line
+LineFrame::feed  does={alloc}
 main  does={syscall,alloc}
 ### 57-geom-velocity
 main  does={syscall,alloc}
