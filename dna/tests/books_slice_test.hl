@@ -212,7 +212,7 @@ fn word_after(text: String, marker: String) -> String {
 // `hale dna dev` in the background, bounded so a failed assertion leaves
 // nothing running for long; its pid.
 fn start_dev(app: String) -> String {
-    let started = in_dir(app, "sh\n-c\nnohup timeout 900 \"$1\" dna dev . --no-iris --observe 2 >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
+    let started = in_dir(app, "sh\n-c\nnohup timeout --foreground 900 \"$1\" dna dev . --no-iris --observe 2 >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
     return dna::trim_nl(started.stdout);
 }
 

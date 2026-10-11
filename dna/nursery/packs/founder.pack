@@ -1,0 +1,8 @@
+# founder: one person holds every seat the organization leaves open.
+#   hale dna init --with founder --set founder=<who>
+#   hale dna pack apply founder --set founder=<who>
+# With `init`, the seats are the holes init opens (the Board, each part's dev
+# and reviewer, each deployment's operator), proposed in the same breath and
+# ratified by the same `hale dna review all approve`. One person in a part's
+# dev and its reviewer is allowed only under `dna.trust = local`.
+fill * {founder}

@@ -125,7 +125,7 @@ main locus App {
         // genome-restart code (75) and stops on anything else. Stopped, it
         // stops the node as a unit stops it (SIGTERM, which the node's own
         // drain passes to its organization) and waits for it
-        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout 900 sh -c 'stop() { kill -TERM \"$p\" 2>/dev/null; wait \"$p\"; exit 0; }; trap stop TERM; while true; do \"$0\" dna dev . --no-iris & p=$!; wait $p; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout --foreground 900 sh -c 'stop() { kill -TERM \"$p\" 2>/dev/null; wait \"$p\"; exit 0; }; trap stop TERM; while true; do \"$0\" dna dev . --no-iris & p=$!; wait $p; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
         let loop = dna::trim_nl(started.stdout);
         std::test::assert(len(loop) > 0, "the supervisor started");
         std::test::assert(self.recorded("node.started", first, 300), "the node records the genome it runs: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));

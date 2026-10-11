@@ -184,13 +184,13 @@ main locus App {
     // and the nerves' stream, and hands the host the spine's roles), which
     // a shared record not yet on the ledger needs.
     fn start_dev(dir: String, owner: String) -> String {
-        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
         return dna::trim_nl(started.stdout);
     }
     // A body over the shared record, on the ledger: `hale dna run` with the
     // spine's DSN, and the nerves' spine URL and organization (GH #986).
     fn start_body(dir: String, spine_dsn: String, nats_spine: String, nats_org: String) -> String {
-        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" HALE_DNA_NATS_ORG=\"$4\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine_dsn + "\n" + nats_spine + "\n" + nats_org);
+        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" HALE_DNA_NATS_ORG=\"$4\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine_dsn + "\n" + nats_spine + "\n" + nats_org);
         return dna::trim_nl(started.stdout);
     }
     // A body is up once its organization runs: the pid file is written and

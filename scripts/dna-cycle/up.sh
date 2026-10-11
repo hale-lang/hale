@@ -26,7 +26,8 @@ echo "# dna cycle UP $N (hale $(hale --version 2>/dev/null | head -1), $(git -C 
 
 step "copy the repository" bash -c "cp -r '$HW/dna/tests/onboarding/todo' '$RUN/todo' && cd '$RUN/todo' && git init -q -b main && git config user.name riley && git config user.email riley@dna.cycle && git add -A && git commit -q -m 'todo: the repository' && rm -rf bin"
 cd "$RUN/todo" || exit 1
-step "hale dna init ." bash -c "hale dna init . > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
+# the founder holds every seat the repository's holes open: the `founder` pack, planned on those holes
+step "hale dna init . --with founder" bash -c "hale dna init . --with founder --set founder=riley --as riley > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
 step "commit what init wrote" bash -c "git add -A && git commit -q -m 'the organism'"
 case "$MODELS" in canned) mm="canned $HERE/canned";; live) mm=live;; *) mm=record;; esac
 step "models: $MODELS" bash -c "python3 '$HERE/model-mode.py' $mm dna/org/models.hl && git add -A dna/org/models.hl && (git commit -q -m 'models: $MODELS' || true)"
@@ -34,6 +35,7 @@ step "the legs' model: the canned gateway" bash -c "python3 '$HERE/model-mode.py
 step "the gateway's key in the vault" bash -c "echo canned-gateway-key | hale dna secret set CANNED_GATEWAY_KEY"
 note "models: $MODELS$( { [ "$MODELS" = record ] || [ "$MODELS" = replay ]; } && echo " (tape $TAPE_DIR)")"
 note "init: $(grep -E '^graph ' "$RUN/init.out" | head -1 | cut -c1-160)"
+note "init --with founder: $(grep -E '^planned on ' "$RUN/init.out" | head -1 | cut -c1-120)"
 
 systemd-run --user --quiet --collect --unit="dna-cycle-gateway-$N" "${units_env[@]}" python3 "$HERE/canned-gateway.py" 8796 "$RUN/gateway.jsonl"
 systemd-run --user --quiet --collect --unit="dna-cycle-dev-$N" --working-directory="$RUN/todo" "${units_env[@]}" \
@@ -47,14 +49,11 @@ done
 if [ $ready = 1 ]; then check "hale dna dev ready ($(( $(date +%s) - t0 ))s)" ok; else check "hale dna dev ready" no "$(tail -3 "$RUN/dev.log" | tr '\n' ' ' | cut -c1-300)"; fi
 
 step "hale dna review (list)" bash -c "hale dna review > '$RUN/review.out' 2>&1; cat '$RUN/review.out'"; note "review: $(head -1 "$RUN/review.out" | cut -c1-120)"
-# the starting organization ratified in one command: every group, in order
+# the starting organization ratified in one command, its seats included: every group, in order
+# (the holes, then the founder pack planned on them)
 DECIDE_TIMEOUT=900 decide "hale dna review all approve --as riley" all approve --as riley
 step "hale dna review (after)" bash -c "hale dna review > '$RUN/review2.out' 2>&1; cat '$RUN/review2.out'"; note "after: $(head -1 "$RUN/review2.out" | cut -c1-120)"
-# the founder holds every seat the repository's holes opened: one batch, one Review
-printf 'fill board riley\nfill api/dev riley\nfill api/reviewer riley\nfill ui/reviewer riley\nfill compose/operator riley\n' > "$RUN/seats.batch"
-step "hale dna apply seats.batch (one batch, one Review)" bash -c "hale dna apply '$RUN/seats.batch' --as riley > '$RUN/apply.out' 2>&1; rc=\$?; cat '$RUN/apply.out'; exit \$rc"
-DECIDE_TIMEOUT=300 decide "hale dna review all approve --as riley (the seats)" all approve --as riley
-note "onboarding: init, review all approve, apply, review all approve, then dev and head (6 commands)"
+note "onboarding: init --with founder, review all approve, then dev and head (4 commands)"
 step "hale dna show org" bash -c "hale dna show org > '$RUN/org.out' 2>&1; cat '$RUN/org.out'"; note "org: $(grep -c '' "$RUN/org.out") lines"
 step "hale build api -o bin/todo-api" hale build api -o bin/todo-api
 step "docker compose up -d api (todo)" bash -c "TODO_TOKENS='ada=t-ada,bo:reader=t-bo' docker compose up -d api"

@@ -464,13 +464,13 @@ library's fn, typed as that fn (GH #1082: codegen resolved the path
 only in call position, and a value of it failed `hale build` with
 "unresolved path" after passing `hale check`).
 
-One thing stays permissive, because the declaration genuinely is
-not in the bundle: a check of a single FILE of a multi-file seed,
-where the `import` line may live in a sibling — one file is not a
-whole program, the same boundary the unbound-identifier rule
-draws. (GH #833: until then the annotation typed as unknown, so
-nothing was checked against it and the mismatch surfaced at build,
-unlocated, or not at all.)
+A check of a single FILE of a multi-file seed is held to this too:
+the file target loads that file and its own imports, as `hale build
+<file>` does, so a path whose `import` line lives in a sibling names
+nothing in either, and both refuse it. (GH #833: until then the
+annotation typed as unknown, so nothing was checked against it and
+the mismatch surfaced at build, unlocated, or not at all. The single
+file kept that tolerance until 2026-10-11.)
 
 **An unresolvable qualified name is a located error.** The other
 half of the same rule. In a whole program, a qualified path that
@@ -504,12 +504,12 @@ build`: the path reached lowering as a subject with no topic and no
 payload, and a subscription that spelled its payload with `of type`
 was refused, since a topic reference carries its own.)
 
-Permissive, and for the same reason as above — the declaration is
-genuinely absent, or this is not a whole program: an import the
-bundle never RESOLVED (a consumer holding one seed without its
+Permissive, because the declaration is genuinely absent: an import
+the bundle never RESOLVED (a consumer holding one seed without its
 libraries; the language server is not one — it loads the seed and
-every import as `hale check <dir>` does), and a check of a single
-FILE of a multi-file seed. `std::` is
+every import as `hale check <dir>` does). A check of a single FILE of
+a multi-file seed is not permissive: it refuses what the build of
+that file refuses. `std::` is
 exempt because the stdlib tables answer a `std::` path and report
 their own typos, and a head that names a declaration
 (`Color::Red`, a `type C2 = Color;` alias) is not an import at

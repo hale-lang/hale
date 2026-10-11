@@ -361,6 +361,21 @@ someone with the authority answers with their name on it, and the
 answer is a row. [The head and the face](./head.md) has Reviews in
 depth.
 
+`hale dna review all approve --as alice` decides every group in turn,
+the holes included. The holes are positions with nobody in them; to
+take the seats yourself in the same verdict, propose it at `init`:
+
+```sh
+hale dna init . --with founder --set founder=alice --as alice
+hale dna review all approve --as alice      # with `dev` running
+```
+
+The `founder` pack fills every seat the holes open (the board, the
+application's dev and reviewer) with you, planned on those holes while
+they are still proposals, and `review all` ratifies it right after them.
+[A pack at `init`](./shaping.md#a-pack-at-init) has how it waits for
+them and when it is refused.
+
 ## The first task
 
 Ask for an outcome in a sentence, naming the file when you know it:

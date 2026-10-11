@@ -140,7 +140,7 @@ main locus App {
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
         std::test::assert(nerves.code == 0 && len(spine) > 0 && len(app_url) > 0 && len(app_vault) > 0 && app_user == "app-voice" && len(org) > 0 && !std::str::contains(app_url, "@"), "the nerves' stream is in place, its URLs without a password: " + nerves.stdout + nerves.stderr);
 
-        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
         let host_pid = dna::trim_nl(started.stdout);
         let up = logged(a, "the organization reads its facts from the nerves", 300) && logged(a, "hale dna run: genome ", 60);
         std::test::assert(up, "the organization came up and reads its facts from the nerves: " + host_log(a));

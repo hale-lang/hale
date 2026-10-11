@@ -1,0 +1,83 @@
+// dna/tests/reap_test.hl — what a fixture leaves running goes when the
+// fixture does (#637). `dna::reap_on_exit` kills every process under the
+// fixture's scratch root once the fixture is gone: one whose command line
+// names a path under it, and one whose working directory is under it —
+// which is how a program that lives elsewhere is found, an organization
+// started from the build cache in its root above all (its command line
+// names no scratch path, so the reaper used to miss it and the suite's
+// guard found it running after its fixture had passed). Only what is
+// under the root: a process in a sibling directory whose name merely
+// starts the same is left running.
+//
+// A working directory reads back physical, every symlink resolved — on
+// macOS `/tmp` is `/private/tmp`, so every scratch root is reached through
+// one — while a command line keeps the spelling it was given. So the root
+// here is reached through a link too, and the link's target is removed
+// before the reaper fires, as `scratch_done` removes the root: the
+// physical spelling is the one taken when the reaper was armed.
+
+import "../core" as dna;
+
+fn alive(pid: String) -> Bool {
+    return len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0;
+}
+
+// `script` run detached, in the background; its pid.
+fn detached(script: String, arg: String) -> String {
+    return dna::trim_nl(dna::run_tool("sh\n-c\n" + script + " </dev/null >/dev/null 2>&1 & echo $!\nsh\n" + arg).stdout);
+}
+
+fn has_line(lines: String, line: String) -> Bool {
+    return std::str::contains("\n" + lines + "\n", "\n" + line + "\n");
+}
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("reap");
+        dna::reap_on_exit(scratch);
+        // the root the reaper is given is a link to `real`
+        let real = scratch + "/real";
+        let via = scratch + "-via";
+        let app = real + "/app";
+        let beside = scratch + "-beside";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/app\" \"$3\" && ln -s \"$1\" \"$2\"\nsh\n" + real + "\n" + via + "\n" + beside);
+        std::test::assert_eq_int(made.code, 0, "the directories and the link: " + made.stderr);
+        std::io::fs::write_file(app + "/x.log", "") or discard;
+
+        // in the root by its working directory only, which reads back as
+        // `real`'s path: `sleep 120` names no path
+        let by_cwd = detached("cd \"$1\" && exec sleep 120", via + "/app");
+        // by its command line only, in the link's spelling: it runs from `/`
+        let by_name = detached("cd / && exec tail -f \"$1/app/x.log\"", via);
+        // beside the root, not under it
+        let beside_pid = detached("cd \"$1\" && exec sleep 120", beside);
+        std::test::assert(alive(by_cwd) && alive(by_name) && alive(beside_pid), "three processes run");
+
+        let targets = dna::reap_targets(via);
+        std::test::assert(has_line(targets, by_cwd), "a process whose working directory is under the root, reached through a link, is under it: " + targets);
+        std::test::assert(has_line(targets, by_name), "and one whose command line names a path under it as given: " + targets);
+        std::test::assert(!has_line(targets, beside_pid), "a process in a sibling directory is not: " + targets);
+        std::test::assert(has_line(dna::reap_targets(scratch), by_cwd), "and the working directory is under the root that holds the link's target too");
+
+        // the reaper, for a process other than this one: once it ends, what is
+        // under the root goes — its directory removed first, as `scratch_done`
+        // removes it, so the link no longer resolves when the reaper fires
+        let watched = detached("exec sleep 1", "");
+        dna::reap_after(watched, via);
+        let removed = dna::run_tool("rm\n-rf\n" + real);
+        let deadline = std::time::now() + dna::wait_secs(15);
+        while (alive(by_cwd) || alive(by_name)) && std::time::now() <= deadline { std::time::sleep(200ms); }
+        let cwd_gone = !alive(by_cwd);
+        let name_gone = !alive(by_name);
+        let beside_kept = alive(beside_pid);
+        let k = dna::run_tool("kill\n-9\n" + by_cwd + "\n" + by_name + "\n" + beside_pid);
+        let gone = dna::run_tool("rm\n-rf\n" + beside + "\n" + via);
+
+        std::test::assert(cwd_gone, "the reaper kills a process by its working directory, through the link, its target removed");
+        std::test::assert(name_gone, "and by its command line");
+        std::test::assert(beside_kept, "and leaves the one beside the root running");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

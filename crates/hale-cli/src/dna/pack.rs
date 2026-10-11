@@ -18,7 +18,7 @@ use std::process::{Command, ExitCode};
 
 use serde::Deserialize;
 
-const USAGE: &str = "usage: hale dna pack list [--from <dir|git-url[#rev]>]\n       hale dna pack show <name> [--set <param>=<value>]… [--from …]\n       hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]\n       hale dna pack retire <name> [--dry-run] [--as <who>] [project]";
+const USAGE: &str = "usage: hale dna pack list [--from <dir|git-url[#rev]>]\n       hale dna pack show <name> [--set <param>=<value>]… [--from …]\n       hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [--on-holes] [project]\n       hale dna pack retire <name> [--dry-run] [--as <who>] [project]";
 
 #[derive(Deserialize)]
 struct Index {
@@ -200,7 +200,7 @@ pub(super) fn pack_cmd(args: &[String]) -> ExitCode {
                 }
                 i += 2;
             }
-            "--dry-run" => {
+            "--dry-run" | "--on-holes" => {
                 forwarded.push(a.to_string());
                 i += 1;
             }

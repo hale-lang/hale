@@ -209,8 +209,9 @@ pub struct Config {
     pub target: Target,
     pub environment: Option<Environment>,
     /// The whole-program rules (F.18, GH #721): a bare callee or
-    /// identifier nothing binds is an error. On for a whole seed, off
-    /// for one file of a seed, which reads its siblings' names.
+    /// identifier nothing binds is an error. On for every command,
+    /// `hale check <file>` included (it loads what `hale build <file>`
+    /// loads); off only for a library caller's partial program.
     pub whole_program: bool,
     /// `--allow-unowned-subscriber`.
     pub allow_unowned_subscriber: bool,

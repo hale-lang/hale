@@ -9590,6 +9590,16 @@ dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a va
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on unknown (`check` passed as a value)
 shared	dynamic	sites in the stdlib #5050d570
 
+== dna/tests/init_with_test.hl
+row	App@main1	App	main	default
+shared	dynamic	sites in core #b2c4d9f5
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+
 == dna/tests/journal_contention_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -10721,6 +10731,10 @@ shared	dynamic	sites in core #8d8c3bcd
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in tests #aaf83225
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/reap_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
 
 == dna/tests/receipt_retention_test.hl
 root	App	the entry

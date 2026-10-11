@@ -247,12 +247,13 @@ fn legitimate_unknowns_still_check_clean() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// One file of a multi-file seed reads what a sibling declares. The
-/// leniency is load-bearing — the compiler's own seeds do this — so a
-/// FILE target keeps the permissive reading and only the seed is held
-/// to the rule.
+/// One file of a multi-file seed reads what a sibling declares. A FILE
+/// target loads that file alone, as `hale build <file>` does, so the
+/// sibling's const is unbound in the program both verbs see: the check
+/// refuses it as the build does, and says the seed is checked as a
+/// directory. The seed itself binds it and checks clean.
 #[test]
-fn a_single_file_of_a_seed_keeps_the_permissive_reading() {
+fn a_single_file_of_a_seed_is_held_to_what_its_build_holds() {
     let d = seed(
         "partial",
         &[
@@ -264,7 +265,10 @@ fn a_single_file_of_a_seed_keeps_the_permissive_reading() {
         ],
     );
     let (ok, out) = hale(&["check", &d.join("main.hl").to_string_lossy()]);
-    assert!(ok, "one file is not held to the whole-seed rule: {out}");
+    assert!(!ok && out.contains("unknown identifier `LIMIT`"), "one file is held to the rule: {out}");
+    assert!(out.contains("1 other .hl file(s) beside it are not loaded"), "and told the seed is a directory: {out}");
+    let (ok, out) = hale(&["build", &d.join("main.hl").to_string_lossy(), "-o", &d.join("bin").to_string_lossy()]);
+    assert!(!ok && out.contains("unknown identifier `LIMIT`"), "the build of the file refuses it alike: {out}");
     let (ok, out) = hale(&["check", &d.to_string_lossy()]);
     assert!(ok, "and the seed itself binds it: {out}");
     let _ = std::fs::remove_dir_all(&d);

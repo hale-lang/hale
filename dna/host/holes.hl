@@ -148,10 +148,12 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
 // the org chart before and after. Proposed, its receipts are kept and its
 // rows land in the proposer's name, as `ingest`'s do; `graph.requested`
 // asks the running organization to open the Review, and the Board's one
-// verdict ratifies every member in one append.
-fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, memory: dna::Memory) -> Answer {
+// verdict ratifies every member in one append. `on_holes` (`--on-holes`,
+// what `hale dna init --with` passes) plans it on the holes init proposed
+// that the Board has not decided yet (`dna::batch_plan_on`).
+fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
     // `hale dna pack apply` hands the rendered steps over as they are
-    if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, memory); }
+    if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, on_holes, memory); }
     // `hale dna pack retire <name>`: the latest ratified adoption, undone
     if len(retire_pack) > 0 {
         let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
@@ -159,30 +161,30 @@ fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: 
         if len(adopted) == 0 { return fail("pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified"); }
         let inverse = dna::batch_inverse(journal, dna::GitReceipts { repo: root }, adopted);
         if len(inverse) == 0 { return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left"); }
-        return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", memory);
+        return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", false, memory);
     }
     if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
     let text = std::io::fs::read_file(file) or "";
     if len(text) == 0 { return fail("apply: `" + file + "` is not a file with steps in it"); }
-    return apply_text(root, seed, text, dry_run, who_flag, pack, memory);
+    return apply_text(root, seed, text, dry_run, who_flag, pack, on_holes, memory);
 }
 
 // `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`: a holder
 // leaves a position, proposed as a one-step batch, the Board's one Review.
 fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna vacate <position> <holder> [--dry-run] [--as <who>]"); }
-    return apply_text(root, seed, "vacate " + name + " " + holder + "\n", dry_run, who_flag, "", memory);
+    return apply_text(root, seed, "vacate " + name + " " + holder + "\n", dry_run, who_flag, "", false, memory);
 }
 
 // A batch's text planned, printed and, unless `dry_run`, proposed.
-fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, memory: dna::Memory) -> Answer {
+fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     // the record as the organization reads it: a ratification lands in
     // memory's ledger once the ledger is adopted
     let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
     let receipts = dna::GitReceipts { repo: root };
-    let plan = dna::batch_plan(journal, receipts, text);
+    let plan = dna::batch_plan_on(journal, receipts, text, if on_holes { dna::batch_init_holes(journal) } else { "" });
     if !plan.ok { return fail("apply: refused: " + plan.why); }
     let chart = dna::batch_render(plan);
     if dry_run { return answer(chart + "nothing proposed (--dry-run)\n"); }

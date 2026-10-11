@@ -56,7 +56,7 @@ main locus App {
     }
     // A node in the background, bounded; its pid. Its output goes to `log`.
     fn start(name: String, intent: String, lead: String, ttl: Int, log: String) -> String {
-        let r = sh("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" nohup timeout 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 >\"$8\" 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl) + "\n" + log);
+        let r = sh("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" nohup timeout --foreground 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 >\"$8\" 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl) + "\n" + log);
         return dna::trim_nl(r.stdout);
     }
     // Whether `log` comes to hold `text` within `secs`.
@@ -145,7 +145,9 @@ main locus App {
         let log_dead = scratch + "/killed.log";
         let dead = self.start("node-killed", "k1", "no", 4, log_dead);
         std::test::assert(self.says(log_dead, "node: claimed plan/k1", 60), "the first node claims the ask: " + (std::io::fs::read_file(log_dead) or ""));
-        let killed = sh("kill\n-9\n" + dead);
+        // the node itself: `dead` is the `timeout` it runs under, which a
+        // KILL ends without passing anything on
+        let killed = sh("sh\n-c\nc=$(pgrep -P \"$1\"); [ -n \"$c\" ] && kill -9 $c\nsh\n" + dead);
         std::test::assert_eq_int(killed.code, 0, "the first node is killed before its plan lands");
         std::test::assert_eq_int(self.rows("workflow.admitted", "k1"), 0, "nothing was admitted for the ask");
         let second = self.node("node-second", "k1", "yes", 300);
