@@ -324,13 +324,13 @@ locus GovernanceCommands {
     // they may — a record that declares `dna.trust = local` is its one
     // person's, and otherwise the graph's holds say who holds what. The
     // holds are read whole from `rj`, again only when its revision moved,
-    // by a reader that lives for one command's attempts.
-    @bounded_by(rj)
+    // by a reader that lives for one command's attempts and is emptied in
+    // place when the revision moves.
     fn seat_refusal(rj: dna::RoutedJournal, person: String, holder: String) -> String {
         // the trust is the record's config, not a row: asked each time
         if dna::record_trust_local(self.record.location()) { return ""; }
         if rj.revision() != self.seats_at {
-            self.seats = dna::HoldsReader { location: self.record.location() };
+            self.seats.reset(self.record.location());
             let mut i = 0;
             while i < rj.revision() { self.seats.take(rj.read(i)); i = i + 1; }
             self.seats_at = rj.revision();
