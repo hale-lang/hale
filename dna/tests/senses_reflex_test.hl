@@ -166,9 +166,9 @@ main locus App {
         // ---- the organism: the spine, its node, the base deployed
         let reflexes_seed = source() + "/dna/reflexes";
         let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed + "\n-o\n" + scratch + "/reflexes-bin") } else { dna::RunResult { code: -1 } };
-        let host = if up { dna::trim_nl(in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
+        let host = if up { dna::trim_nl(in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
         let reading = up && len(host) > 0 && self.wait_log("the organization reads its facts from the nerves", 300);
-        let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
+        let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
         let deployed = if len(node) > 0 { in_dir(self.app, toolchain() + "\ndna\ndeploy\nHEAD") } else { dna::RunResult { code: -1 } };
         let first_up = if deployed.code == 0 { self.wait_rows("instance.up", "api-0", 1, 180) } else { "" };
         // past the deploy's observation window, so an exit is the reflex's
@@ -183,7 +183,7 @@ main locus App {
         let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
 
         // ---- the reflexes fire, the heart lands it, the node acts
-        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + scratch + "/reflexes-bin\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
+        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout --foreground 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + scratch + "/reflexes-bin\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
         let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };
@@ -201,20 +201,20 @@ main locus App {
         forger.close();
 
         // ---- down, whatever happened
-        // Each process takes the TERM itself, once. What the fixture holds
-        // is the `timeout` each runs under, and `timeout` hands a TERM to
-        // its child and then to its whole group: when the child has taken
-        // the first before the second lands — a loaded machine — the
-        // second ends a Hale program at once, without its drain
-        // (semantics.md, "Drain cascade"), and a host ended so leaves its
-        // organization to the body fence. Then the organization: read
-        // before the stop, since a host that drains removes its pid file,
-        // and waited for until it is gone — with its host, or the fence's
-        // doing — before compose and the scratch root go, which take the
-        // fence's mandate with them. One still up is killed here, so
-        // nothing outlives the fixture, and the fixture fails.
+        // Each process takes one TERM: `timeout --foreground` hands it to
+        // its child alone. Without `--foreground` it went to the child and
+        // then to the child's whole group, and when the child had taken the
+        // first before the second landed — a loaded machine — the second
+        // ended the Hale program at once, without its drain (semantics.md,
+        // "Drain cascade"): a host ended so leaves its organization to the
+        // body fence. Then the organization: read before the stop, since a
+        // host that drains removes its pid file, and waited for until it is
+        // gone — with its host, or the fence's doing — before compose and
+        // the scratch root go, which take the fence's mandate with them. One
+        // still up is killed here, so nothing outlives the fixture, and the
+        // fixture fails.
         let org_pid = dna::trim_nl(text_of(self.app + "/.hale/dna/org.pid"));
-        let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; c=$(pgrep -P \"$t\" 2>/dev/null | head -n 1); kill \"${c:-$t}\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
+        let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; kill \"$t\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
         let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
 
         std::test::assert(up, "the seed compose's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);

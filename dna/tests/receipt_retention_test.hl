@@ -47,7 +47,7 @@ fn line_value(text: String, name: String) -> String {
 // The spine: `hale dna dev` in the background with the owner's DSN (dev
 // migrates and hands the host the spine's role), bounded; its pid.
 fn start_spine(app: String, owner: String) -> String {
-    let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && nohup timeout 600 \"$3\" dna dev . --no-iris >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + owner + "\n" + toolchain());
+    let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && nohup timeout --foreground 600 \"$3\" dna dev . --no-iris >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + owner + "\n" + toolchain());
     return dna::trim_nl(started.stdout);
 }
 

@@ -144,7 +144,7 @@ main locus App {
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stderr);
 
         // ---- dev, on compose's NATS
-        let started = in_dir(self.app, "sh\n-c\nnohup timeout 600 \"$0\" dna dev . --no-iris >.hale/dev.log 2>&1 </dev/null & echo $!\n" + toolchain());
+        let started = in_dir(self.app, "sh\n-c\nnohup timeout --foreground 600 \"$0\" dna dev . --no-iris >.hale/dev.log 2>&1 </dev/null & echo $!\n" + toolchain());
         let host = dna::trim_nl(started.stdout);
         std::test::assert(len(host) > 0, "dev started");
         let reading = self.logged("the organization reads its facts from the nerves", 300, host);
@@ -180,7 +180,14 @@ main locus App {
         let revoked = if removed.code == 0 && dropped.code == 0 { self.app_publish(org, app_name, hp, app_name) } else { -3 };
 
         // ---- down, whatever happened
-        let stop = dna::run_tool("sh\n-c\nkill \"$1\" 2>/dev/null; for i in $(seq 1 100); do kill -0 \"$1\" 2>/dev/null || break; sleep 0.1; done; true\nsh\n" + host);
+        // the body's organization and expression, named before the stop (a
+        // host that drains removes their pid files) and waited for: they go
+        // with their host, or by its fence, before compose and the scratch
+        // root do. `timeout --foreground` hands the host one TERM; one that
+        // outlives its host is killed here, and the fixture fails.
+        let org_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/org.pid") or "");
+        let app_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/app.pid") or "");
+        let stop = dna::run_tool("sh\n-c\nh=$1; lim=$2; shift 2; w=''; for p in \"$@\"; do [ -n \"$p\" ] || continue; c=$(ps -o comm= -p \"$p\" 2>/dev/null); [ -n \"$c\" ] && w=\"$w $p:$c\"; done; kill \"$h\" 2>/dev/null; i=0; while kill -0 \"$h\" 2>/dev/null && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; for e in $w; do p=${e%%:*}; c=${e#*:}; i=0; while [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && kill -9 \"$p\" 2>/dev/null && echo \"pid $p ($c) outlived its host\"; done; true\nsh\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid + "\n" + app_pid);
         let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
 
         std::test::assert(reading, "the organization reads its facts from compose's nerves, as the spine: " + self.log());
@@ -203,6 +210,8 @@ main locus App {
         std::test::assert(!std::str::contains(conf_after, "app-" + app_name) && !std::str::contains(secrets_after, "NATS_APP_") && std::str::contains(secrets_after, "NATS_SPINE_PASSWORD"), "its user leaves the conf and its password the include, and the roles' stay: " + conf_after);
         std::test::assert(!std::io::fs::file_exists(scratch + "/vault/" + dna::nerves_app_vault(org, app_name)), "its entry leaves the vault");
         std::test::assert(revoked == -2 && std::str::contains(self.refused, "Authorization"), "the server refuses the revoked account (" + to_string(revoked) + "): " + self.refused);
+        std::test::assert(len(org_pid) > 0 && len(app_pid) > 0, "the host named its organization's and its expression's pids: " + self.log());
+        std::test::assert_eq_str(stop.stdout, "", "the organization and the expression went with their host: " + self.log());
         std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
 
         // ---- a regenerated seed rotates the passwords

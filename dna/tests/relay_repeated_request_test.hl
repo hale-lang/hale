@@ -159,7 +159,7 @@ main locus App {
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
         std::test::assert(nerves.code == 0 && len(spine) > 0 && len(org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
 
-        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
         let host_pid = dna::trim_nl(started.stdout);
         let mut up = false;
         let deadline = std::time::now() + dna::wait_secs(300);
