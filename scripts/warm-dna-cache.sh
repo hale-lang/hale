@@ -41,11 +41,13 @@ if [[ -f "$host_ir" ]]; then
     rm -f -- "$host_ir"
 fi
 
-# Measured 2026-10-05 on F.40 phase 4's main; each number may move ±10%.
+# Measured 2026-10-11 with structure as batches (#1493): the batch planner,
+# the operations, packs and the nursery, and the head's structure commands
+# grew the host 10.8%; each number may move ±10%.
 # Moving one on purpose is an edit here, with the reason in the commit
 # (the same three numbers for three corpus programs are pinned in
 # crates/hale-codegen/tests/ir_size_band.rs).
-host_ir_pinned="lines=1549084 defines=6017 calls=214003"
+host_ir_pinned="lines=1716679 defines=6262 calls=237696"
 if [[ ! -s "$host_ir_size" ]]; then
     echo "warm: FAILED — the host's IR size was not recorded at $host_ir_size by the build that produced $host_bin" >&2
     exit 1

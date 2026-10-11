@@ -71,123 +71,15 @@ fn hole_row(kind: String, entity: String, body: String) -> String {
 
 // ---- hale dna fill <position> <holder> [project] -------------------------
 
-// What the record says of positions and holders, in its order: every
-// position a graph row or a pending or ratified proposal names, less those
-// retired; every holds edge the same way, `<position>\t<holder>` per line;
-// the persons it knows — who wrote a row in their own name, and the owners
-// map's members — and those it retired.
-// `equipment` is `<position>\t<role>, <role>` per position the record or a
-// proposal states with API roles (the standard equipment of its node).
-type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String = "\n"; retired: String = "\n"; equipment: String = ""; }
-
-// A name the organism writes as, never a person.
-fn held_machine(who: String) -> Bool { return len(who) == 0 || dna::word_in(who, "dna host spine org ledger board hale") || std::str::starts_with(who, "hale dna"); }
-
-@unbounded
-fn held_state(root: String) -> HeldState {
-    let out = HeldState { };
-    let j = dna::GitJournal { repo: root };
-    let mut refused = "\n";
-    let mut i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        if e.kind == "knowledge.declined" || e.kind == "knowledge.refused" || e.kind == "knowledge.retired" { refused = refused + e.entity + "\n"; }
-        i = i + 1;
-    }
-    i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        let who = j.author_of(i);
-        if !held_machine(who) && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
-        if e.kind == "person.retired" { out.retired = out.retired + e.entity + "\n"; }
-        if e.kind == "graph.retired" {
-            out.positions = std::str::replace(out.positions, "\n" + e.entity + "\n", "\n");
-            if std::str::starts_with(e.entity, "holds:") {
-                let bar = std::str::index_of(e.entity, "|");
-                if bar > 0 { out.holds = std::str::replace(out.holds, "\n" + e.entity[6..bar] + "\t" + e.entity[(bar + 1)..len(e.entity)] + "\n", "\n"); }
-            }
-        }
-        let mut rows = "";
-        if e.kind == "graph.node" || e.kind == "graph.edge" { rows = hole_row(e.kind, e.entity, e.body); }
-        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" && !std::str::contains(refused, "\n" + e.entity + "\n") {
-            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
-            rows = rows + dna::proposal_rows(rec(root).body(raw).text);
-        }
-        let mut rest = rows;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let row = rest[0..nl];
-            rest = rest[(nl + 1)..len(rest)];
-            let entity = std::json::find_string_field(row, "entity");
-            if std::json::find_string_field(row, "kind") == "graph.retired" { out.positions = std::str::replace(out.positions, "\n" + entity + "\n", "\n"); }
-            if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") {
-                out.positions = out.positions + entity + "\n";
-                let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(std::json::find_field_raw(std::json::find_string_field(row, "body"), "equipment"), "roles")), false);
-                if len(fitted) > 0 { out.equipment = out.equipment + entity + "\t" + fitted + "\n"; }
-            }
-            if std::str::starts_with(entity, "holds:") {
-                let bar = std::str::index_of(entity, "|");
-                let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
-                if !std::str::contains(out.holds, "\n" + pair + "\n") { out.holds = out.holds + pair + "\n"; }
-            }
-        }
-        i = i + 1;
-    }
-    // an organization's members are persons the record knows too (GH #1123)
-    let mut pairs = out.holds;
-    while len(pairs) > 0 {
-        let nl = std::str::index_of(pairs, "\n");
-        let pair = pairs[0..nl];
-        pairs = pairs[(nl + 1)..len(pairs)];
-        let tab = std::str::index_of(pair, "\t");
-        let who = pair[(tab + 1)..len(pair)];
-        if tab > 0 && std::str::starts_with(pair, "organization:") && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
-    }
-    return out;
-}
-
-// The position a process's other seat is: `api/dev` for `api/reviewer`,
-// and the reverse; "" for any other position.
-fn hold_sibling(position: String) -> String {
-    if std::str::ends_with(position, "/dev") { return position[0..(len(position) - 4)] + "/reviewer"; }
-    if std::str::ends_with(position, "/reviewer") { return position[0..(len(position) - 9)] + "/dev"; }
-    return "";
-}
+// What the record says of positions and holders (ops::held_state_of, which
+// the head's `Commands::fill` and `Commands::open_position` read the same
+// way): every position stated or proposed, every hold, the persons it knows
+// and those it retired.
+fn held_state(root: String) -> ops::HeldState { return ops::held_state_of(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }); }
 
 // Why `holder` may not hold `position` over what the record holds ("" when
-// they may); `warned` set when it is only a warning — the same holder as
-// the process's other seat, under `dna.trust = local`.
-type FillCheck { why: String = ""; warning: String = ""; }
-
-fn fill_check(root: String, position: String, holder: String) -> FillCheck {
-    let st = held_state(root);
-    if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position or organization the record states or proposes" }; }
-    if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name or an organization, with no `|`" }; }
-    // GH #1123: an organization owns a position; a person joins an
-    // organization, known to the record by that membership
-    if std::str::starts_with(holder, "organization:") {
-        if !std::str::starts_with(position, "position:") { return FillCheck { why: "an organization holds a position, not another organization" }; }
-        if !std::str::contains(st.positions, "\n" + holder + "\n") { return FillCheck { why: "`" + holder + "` is no organization the record states or proposes" }; }
-        let at = std::str::index_of(st.holds, "\n" + position + "\torganization:");
-        if at >= 0 {
-            let line = st.holds[(at + 1)..len(st.holds)];
-            let owner = line[(len(position) + 1)..std::str::index_of(line, "\n")];
-            if owner != holder { return FillCheck { why: position + " is owned by " + owner[13..len(owner)] + " already; a position has one owning organization" }; }
-        }
-        return FillCheck { };
-    }
-    let joining = std::str::starts_with(position, "organization:");
-    if held_machine(holder) { return FillCheck { why: holder + " is a name the organism writes as, not a person" }; }
-    if !joining && !std::str::contains(st.persons, "\n" + holder + "\n") { return FillCheck { why: holder + " is no person this record knows (no row in their name, and no organization's member)" }; }
-    if std::str::contains(st.retired, "\n" + holder + "\n") { return FillCheck { why: holder + " retired from this organism (person.retired)" }; }
-    let sibling = hold_sibling(position);
-    if len(sibling) > 0 && std::str::contains(st.holds, "\n" + sibling + "\t" + holder + "\n") {
-        let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
-        if trust_mode(root) != "local" { return FillCheck { why: "refused: " + why + " (dna.trust = " + trust_mode(root) + ")" }; }
-        return FillCheck { warning: why + " — allowed under dna.trust = local, where one person holds every role" };
-    }
-    return FillCheck { };
-}
+// they may); a warning when it is only one (ops::fill_check_of).
+fn fill_check(root: String, position: String, holder: String) -> ops::FillCheck { return ops::fill_check_of(held_state(root), trust_mode(root), position, holder); }
 
 // What a holder of `position` is fitted with, as a sentence ("" when the
 // position's node names no API roles): the roles its surface's `requires`
@@ -207,23 +99,8 @@ fn fill_equipment(root: String, position: String) -> String {
 // proposer's name; the host beside the organization relays it until it is
 // answered.
 // The node `--under <part>` names: a node id as given, or a bare name as the
-// graph states it (a seed, a work part, a position, a process, in that
-// order); a name the graph does not state goes as given, for the
-// organization to refuse.
-@unbounded
-fn under_node(root: String, under: String) -> String {
-    if len(under) == 0 || std::str::contains(under, ":") { return under; }
-    let nodes = dna::record_graph(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }).nodes;
-    let positions = held_state(root).positions;
-    let mut kinds = "seed work position process ";
-    while len(kinds) > 0 {
-        let sp = std::str::index_of(kinds, " ");
-        let id = ops::graph_node_id(kinds[0..sp], under);
-        kinds = kinds[(sp + 1)..len(kinds)];
-        if dna::record_graph_has(nodes, id) || std::str::contains(positions, "\n" + id + "\n") { return id; }
-    }
-    return under;
-}
+// graph states it (ops::under_node_of).
+fn under_node(root: String, under: String) -> String { return ops::under_node_of(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }, held_state(root).positions, under); }
 
 @unbounded
 fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
@@ -265,6 +142,115 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
     return answer("opening " + position + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
+}
+
+// `hale dna apply <file> [--dry-run] [--as <who>]`: several changes to the
+// organization's structure as ONE Board Review (dna/core/batch.hl). The
+// batch is planned against the record as it stands, refused whole with why
+// when any step or the organization it would leave is wrong, and printed as
+// the org chart before and after. Proposed, its receipts are kept and its
+// rows land in the proposer's name, as `ingest`'s do; `graph.requested`
+// asks the running organization to open the Review, and the Board's one
+// verdict ratifies every member in one append.
+fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, memory: dna::Memory) -> Answer {
+    // `hale dna pack apply` hands the rendered steps over as they are
+    if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, memory); }
+    // `hale dna pack retire <name>`: the latest ratified adoption, undone
+    if len(retire_pack) > 0 {
+        let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+        let adopted = dna::pack_adopted_steps(journal, retire_pack);
+        if len(adopted) == 0 { return fail("pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified"); }
+        let inverse = dna::batch_inverse(journal, dna::GitReceipts { repo: root }, adopted);
+        if len(inverse) == 0 { return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left"); }
+        return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", memory);
+    }
+    if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
+    let text = std::io::fs::read_file(file) or "";
+    if len(text) == 0 { return fail("apply: `" + file + "` is not a file with steps in it"); }
+    return apply_text(root, seed, text, dry_run, who_flag, pack, memory);
+}
+
+// `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`: a holder
+// leaves a position, proposed as a one-step batch, the Board's one Review.
+fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
+    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna vacate <position> <holder> [--dry-run] [--as <who>]"); }
+    return apply_text(root, seed, "vacate " + name + " " + holder + "\n", dry_run, who_flag, "", memory);
+}
+
+// A batch's text planned, printed and, unless `dry_run`, proposed.
+@unbounded
+fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, memory: dna::Memory) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    // the record as the organization reads it: a ratification lands in
+    // memory's ledger once the ledger is adopted
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let receipts = dna::GitReceipts { repo: root };
+    let plan = dna::batch_plan(journal, receipts, text);
+    if !plan.ok { return fail("apply: refused: " + plan.why); }
+    let chart = dna::batch_render(plan);
+    if dry_run { return answer(chart + "nothing proposed (--dry-run)\n"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    // the same steps still pending are the same proposal: asked once
+    let pending = dna::batch_pending(journal, plan.steps);
+    if len(pending) > 0 { return answer(chart + "already proposed as " + pending + ", not yet decided\n"); }
+    let request_id = request_digest_id(root, "b", plan.steps + who);
+    let filing = dna::batch_filing(plan, who, request_id, std::time::now(), pack);
+    if !filing.ok { return fail("apply: " + filing.why); }
+    // the same batch at the same head is the same proposal: asked once
+    if len(dna::first_row(journal, "knowledge.proposed", filing.digest).kind) > 0 {
+        return answer(chart + "already proposed as " + filing.review_id + "\n");
+    }
+    let keeps = dna::Texts { };
+    let mut docs = filing.docs;
+    while len(docs) > 0 {
+        let nl = std::str::index_of(docs, "\n");
+        let raw = keep_later(keeps, docs[0..nl]);
+        docs = docs[(nl + 1)..len(docs)];
+    }
+    if !keeps_flush(root, keeps) { return fail("apply: the receipts could not be kept; nothing was proposed"); }
+    if organism_here(root, memory) {
+        let watched = open_projection(root, seed, "", memory);
+        let before = watched.rows();
+        let seeded = seed_rows(root, filing.rows, "apply", memory);
+        if !seeded.ok { return seeded; }
+        let deadline = std::time::now() + dna::wait_secs(60);
+        while std::time::now() <= deadline {
+            let fresh = watch(watched);
+            let r = find_after(watched, before, " graph.proposed graph.refused ", request_id);
+            if r.seq >= 0 {
+                if r.kind == "graph.refused" { return fail("apply: the organization could not open the Review: " + std::json::find_string_field(r.body, "why")); }
+                return answer(chart + "proposed the batch as one Review: the Board ratifies it as " + filing.review_id + " (`hale dna review` lists it under `changes`)\n");
+            }
+            std::time::sleep(150ms);
+        }
+        return fail("proposed the batch as " + filing.review_id + ", but the organization journaled no answer for " + request_id + " in time");
+    }
+    if len(record_remote(root)) == 0 {
+        let seeded = seed_rows(root, filing.rows, "apply", memory);
+        if !seeded.ok { return seeded; }
+        return answer(chart + "proposed the batch as " + filing.review_id + "; the organization opens its Review when it starts (`hale dna run`)\n");
+    }
+    let seeded = seed_rows(root, filing.rows, "apply", memory);
+    if !seeded.ok { return seeded; }
+    let s = sync_record(root, memory);
+    if !s.ok { return fail(s.summary); }
+    return answer(chart + "proposed the batch as " + filing.review_id + " in the record; the organization opens its Review when it hears it\n");
+}
+
+// `hale dna nursery list`: the nurseries the Board trusts, one a line.
+@unbounded
+fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let mut out = "";
+    let mut rest = dna::org_chart(journal, dna::GitReceipts { repo: root });
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::starts_with(line, "nursery ") { out = out + line[8..len(line)] + "\n"; }
+    }
+    return answer(out);
 }
 
 // `hale dna fill <position> <holder>`: a holder proposed, through the

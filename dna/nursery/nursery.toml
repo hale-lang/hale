@@ -1,0 +1,26 @@
+# The toolchain's nursery: the packs `hale dna pack` offers when no
+# `--from` names another. A nursery is a directory or a git repository with
+# this index at its root; each entry is a pack, a batch of steps
+# (`hale dna apply`'s language) with `{param}` placeholders. A line that
+# begins `? ` is kept only when every parameter it names is set.
+
+[[pack]]
+name = "dev-team"
+version = "1"
+path = "packs/dev-team.pack"
+summary = "a dev and a reviewer for one part, and the practices they review by"
+params = { part = "", dev = "", reviewer = "" }
+
+[[pack]]
+name = "small-startup"
+version = "1"
+path = "packs/small-startup.pack"
+summary = "a product lead and one dev team: the smallest company that ships"
+params = { part = "app", founder = "" }
+
+[[pack]]
+name = "content-team"
+version = "1"
+path = "packs/content-team.pack"
+summary = "a team that ships no code: an editor and a writer, briefs and published pieces"
+params = { team = "content", editor = "", writer = "" }

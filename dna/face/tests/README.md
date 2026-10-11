@@ -156,7 +156,8 @@ head serving the face relays the session's line there with the session's token
 as the bearer (`dna/api/bearer.hl`). The face POSTs `{"call", "payload"}` — the
 operation's call as the face names it (`PracticePropose`, `ReviewVerdict`,
 `OrganizationPropose`, `TaskCreate`, `TaskReassign`, `PersonRetire`; the relay
-says which member that is) and its flat payload — to
+says which member that is, and names the structure's too — `PositionOpen`,
+`HoldFill`, `BatchApply`, `BatchPreview` — for a UI that wires them) and its flat payload — to
 `…/applications/{id}/commands` under the same `Origin`, JSON and
 `X-Hale-Command: 1` headers, recovers with a `CommandLookup` line, and reads
 back the exposure's reply as it came (`spec/api.md` § Outcomes): the

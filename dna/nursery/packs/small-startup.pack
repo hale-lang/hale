@@ -1,0 +1,13 @@
+# small-startup: a product lead and one dev team, the smallest company that ships.
+#   hale dna pack apply small-startup [--set part=app] [--set founder=<who>]
+# A founder set holds every seat; a reviewer is never its own dev's, so the
+# founder's reviews are allowed only under `dna.trust = local`.
+open product/lead | Decides: what is built next, and what done means for it. May not: change code, or overrule the Board. Cites: the purpose, what users report, and the record of what shipped. Escalates: a change of direction, a hire or a spend beyond the grant, to the Board.
+open {part}/dev | Decides: how {part} is built, within its contracts and the practices in force. May not: approve its own changes. Cites: the contracts {part} serves, and the practices in force. Escalates: a contract change to the Board.
+open {part}/reviewer | Decides: whether a change to {part} is ready to merge. May not: write the change it reviews. Cites: the change, its tests and evidence. Escalates: a change it cannot judge to the Board.
+practice ship-small | Work ships in the smallest change that is useful on its own; a change that cannot be reviewed in one sitting is split.
+practice write-it-down | A decision that will be asked about again is written into the record, with why, when it is made.
+practice {part}/reviewed-before-merge | Every change to {part} is approved by {part}/reviewer before it merges; the dev who wrote it never approves it.
+? fill product/lead {founder}
+? fill {part}/dev {founder}
+? fill {part}/reviewer {founder}

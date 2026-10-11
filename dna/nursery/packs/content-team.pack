@@ -1,0 +1,8 @@
+# content-team: a team that ships no code.
+#   hale dna pack apply content-team [--set team=content] [--set editor=<who>] [--set writer=<who>]
+open {team}/editor | Decides: what is published, when, and whether a piece is ready. May not: publish a piece it wrote. Cites: the brief, the published record, and the practices in force. Escalates: a piece that speaks for the organization in a new way, or a correction, to the Board.
+open {team}/writer | Decides: how a piece answers its brief. May not: publish. Cites: the brief, its sources, and the practices in force. Escalates: a brief it cannot answer honestly to the editor.
+practice {team}/every-piece-has-a-brief | Every piece starts from a brief the editor accepted: who it is for, what it must leave them knowing, and how it will be judged.
+practice {team}/published-with-a-receipt | A published piece leaves a receipt in the record: what was published, where, by whom, and the brief it answers.
+? fill {team}/editor {editor}
+? fill {team}/writer {writer}
