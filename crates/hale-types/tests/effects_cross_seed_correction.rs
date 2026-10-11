@@ -197,8 +197,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        468,
-        474,
+        469,
+        475,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -280,6 +280,7 @@ fn host() {
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
+        nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
         owner_of_person_here  does={syscall,block,time,env,alloc}
         owners_here  does={syscall,block,time,env,alloc}
@@ -304,8 +305,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        496,
-        516,
+        498,
+        518,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}

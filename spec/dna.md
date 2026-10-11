@@ -1444,7 +1444,7 @@ record's.
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
 | `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as `GraphReviewRequested` (`dna.graph.requested`) |
-| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
+| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not; `graph.refused <row id>` is also memory's refusal of a graph row it would not project, in the record or in a ratified proposal (`kind`, `why`, `row`, `by: memory`) |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`, or `Commands::fill`, whose row carries the command's fields after the CLI's) |
 | `batch.proposed` | record | a batch of changes `hale dna apply` (or `vacate`, or `pack apply`) proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`, and `pack` for a pack: `<name>@<version> sha256:<digest> <source>`; through `Commands::apply_batch`, the command's fields after those); its `graph.requested`, under the same id, asks the organization to open the Review |
@@ -4437,9 +4437,18 @@ The live half is memory's, projected from the record by the spine
   **The tail checks a graph row whole** before memory takes it — the
   kind is the vocabulary's, the anchor comes first, every member names
   a node of the kind its role requires and no node twice, the arity is
-  two or more, and the entity is the id the body implies — and a row that fails stops
-  the projection at that row, `invalid graph.<kind> (row n): <why>`,
-  like any invalid fact. A node or edge is replaced by a later row with
+  two or more, and the entity is the id the body implies. A row that
+  fails is refused as a row, as a refused hold is: memory appends
+  `graph.refused <row id>` (`kind`, `why`, `row`, `by: memory`) once,
+  says it on stderr, and the projection goes on past it, so one bad
+  row never holds back every read waiting on the watermark. A graph
+  row inside a ratified proposal is checked and refused the same way,
+  at the row that ratified it, and the proposal's other rows land. A
+  store that fails to take a valid row still stops the projection at
+  that row: that is the database's failure, retried, not the row's. So
+  does a refusal the record cannot take (an I/O failure; a race with
+  another writer is retried first): the row is never passed without its
+  `graph.refused` or `hold.refused`, and the next pass writes it. A node or edge is replaced by a later row with
   its id (an edge's members with it) and taken out by `graph.retired`; a
   retired node's edges stay as the record left them, and the perspectives
   leave its memberships out (an edge whose anchor is gone is not shown).
@@ -4642,7 +4651,8 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name>
-  <holder>`, `practice <name> | <text>`, `retire-practice <name>`, `assign|unassign <name>
+  <holder>`, `practice <name> | <text>`, `retire-practice <name>`,
+  `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
   contract:<name>`, `depend <kind>:<node> on contract:<name>`,
@@ -4748,8 +4758,15 @@ The live half is memory's, projected from the record by the spine
   that is in force retires (`retire-practice <name>`, a member of kind
   `retirement` superseding the practice, which ratifying retires);
   whatever has gone since is passed over. A pack supersedes nothing, so
-  there is nothing to restore. Adding a nursery as a source the Board
-  ratifies is not built yet.
+  there is nothing to restore. **A git nursery is trusted by the
+  Board** before its packs are adopted: `hale dna nursery add
+  <source>` proposes the batch step `nursery <source>` (a knowledge idea
+  of kind `nursery`, named by the source, target `org`), and once it is
+  ratified the org chart lists `nursery <source>`; `hale dna nursery
+  list` prints the ones in force. `pack apply --from <git URL>` is
+  refused, before anything is fetched, while the URL is not one of
+  them; the toolchain's nursery and a directory need no trust, and
+  reading a nursery (`list`, `show`) needs none either.
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`

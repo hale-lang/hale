@@ -254,6 +254,10 @@ fn main() {
     } else if verb == "apply" {
         // `hale dna apply <file> [--dry-run] [--as <who>]`: a batch of changes to the structure, one Board Review
         ans = apply_verb(root, seed, word(a, 0), flag(a, "--steps"), has_flag(a, "--dry-run"), flag(a, "--as"), flag(a, "--pack"), flag(a, "--retire-pack"), memory);
+    } else if verb == "nursery-sources" {
+        // the nurseries the Board trusts (`hale dna nursery list`, and the
+        // check `hale dna pack apply --from <git URL>` makes)
+        ans = nursery_sources_verb(root, memory);
     } else if verb == "vacate" {
         // `hale dna vacate <position> <holder>`: a one-step batch
         ans = vacate_verb(root, seed, word(a, 0), word(a, 1), has_flag(a, "--dry-run"), flag(a, "--as"), memory);

@@ -721,6 +721,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("ingest") => ingest_cmd(&args[1..]),
         // packs from a nursery: `hale dna pack list | show | apply <name>`
         Some("pack") => pack::pack_cmd(&args[1..]),
+        // the nurseries the Board trusts: `hale dna nursery add <source> | list`
+        Some("nursery") => pack::nursery_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
         // a holder leaves a position, as a one-step batch:
@@ -1035,6 +1037,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna apply <file> [--dry-run] [--as <who>]");
     eprintln!("       hale dna vacate <position> <holder> [--dry-run] [--as <who>]");
     eprintln!("       hale dna pack list | show <name> | apply <name> [--set <param>=<value>]… [--from <dir|git-url[#rev]>] [--dry-run]");
+    eprintln!("       hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] | list");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");

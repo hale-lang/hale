@@ -14,6 +14,7 @@
 //   expose <node> as <contract>         depend <node> on <contract>
 //   externalize <seed>                  internalize <contract> as <seed>
 //   retire-practice <name>
+//   nursery <source>                    (a nursery the Board trusts for packs)
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
 // with or without its `position:` prefix.
@@ -54,6 +55,8 @@ type BatchPlan {
     mandates: String = "";
     // the practices it retires, `<name>\t<digest>` a line
     retirements: String = "";
+    // the nurseries it asks the Board to trust, one a line
+    nurseries: String = "";
 }
 
 // What a plan has made of the steps so far: the org chart after them, the
@@ -69,6 +72,7 @@ type PlanState {
     mandates: String = "";
     restated: String = "\n";
     retirements: String = ""; // `<name>\t<digest>` of each practice it retires
+    nurseries: String = ""; // each nursery it trusts, one a line
 }
 
 // A planned batch, filed: the receipts to keep (one document a line) and the
@@ -134,7 +138,7 @@ fn batch_count(lines: String) -> Int {
 }
 
 // Whether `verb` is a step of a batch, and how it is written.
-fn dna_batch_verb(verb: String) -> Bool { return word_in(verb, "assign unassign close merge split expose depend externalize internalize retire-practice"); }
+fn dna_batch_verb(verb: String) -> Bool { return word_in(verb, "assign unassign close merge split expose depend externalize internalize retire-practice nursery"); }
 
 fn batch_usage(verb: String) -> String {
     if verb == "assign" || verb == "unassign" { return verb + " <name> reviews <kind>:<node>"; }
@@ -145,6 +149,7 @@ fn batch_usage(verb: String) -> String {
     if verb == "depend" { return "depend <kind>:<node> on contract:<name>"; }
     if verb == "externalize" { return "externalize seed:<name>"; }
     if verb == "retire-practice" { return "retire-practice <name>"; }
+    if verb == "nursery" { return "nursery <directory or git URL>"; }
     return "internalize contract:<name> as seed:<name>";
 }
 
@@ -212,6 +217,7 @@ fn batch_steps(text: String) -> BatchPlan {
         }
         if verb == "close" && n == 2 { out.steps = out.steps + "close\t" + batch_position(a1) + "\n"; continue; }
         if verb == "retire-practice" && n == 2 && batch_word(a1) { out.steps = out.steps + "retire-practice\t" + a1 + "\n"; continue; }
+        if verb == "nursery" && n == 2 && batch_word(a1) { out.steps = out.steps + "nursery\t" + a1 + "\n"; continue; }
         if verb == "merge" && n == 4 && a2 == "into" { out.steps = out.steps + "merge\t" + batch_position(a1) + "\t" + batch_position(a3) + "\n"; continue; }
         if verb == "split" && n == 5 && a2 == "into" { out.steps = out.steps + "split\t" + batch_position(a1) + "\t" + batch_position(a3) + "\t" + batch_position(a4) + "\n"; continue; }
         if (verb == "expose" && n == 4 && a2 == "as") || (verb == "depend" && n == 4 && a2 == "on") {
@@ -230,7 +236,7 @@ fn batch_steps(text: String) -> BatchPlan {
             continue;
         }
         if dna_batch_verb(verb) { out.why = at + "`" + verb + "` is written `" + batch_usage(verb) + "`"; return out; }
-        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, retire-practice, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
+        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -267,6 +273,7 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
     let mut refused = "\n";
     let mut gone = "\n";
     let mut named = "\n"; // `<digest> <name>` of practice proposals
+    let mut sources = "\n"; // `<digest> <source>` of nursery proposals
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -276,6 +283,7 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         if e.kind == "hold.refused" { refused = refused + e.entity + "\n"; }
         if e.kind == "person.retired" { gone = gone + e.entity + "\n"; }
         if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && len(native_json_string(e.body, "name")) > 0 { named = named + e.entity + " " + native_json_string(e.body, "name") + "\n"; }
+        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "nursery" && len(native_json_string(e.body, "name")) > 0 { sources = sources + e.entity + " " + native_json_string(e.body, "name") + "\n"; }
         i = i + 1;
     }
     let mut lines = "";
@@ -333,6 +341,18 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         let d = line[0..sp];
         let pname = line[(sp + 1)..len(line)];
         if std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") && !std::str::contains("\n" + lines, "\npractice " + pname + "\n") { lines = lines + "practice " + pname + "\n"; }
+    }
+    // the nurseries the Board trusts
+    rest = sources;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let line = body[0..nl];
+        rest = body[nl..len(body)];
+        let sp = std::str::index_of(line, " ");
+        let d = line[0..sp];
+        let src = line[(sp + 1)..len(line)];
+        if std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") && !std::str::contains("\n" + lines, "\nnursery " + src + "\n") { lines = lines + "nursery " + src + "\n"; }
     }
     return lines;
 }
@@ -445,6 +465,12 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
                 st.retirements = st.retirements + p + "\t" + d + "\n";
                 st.after = chart_without(st.after, "practice " + p);
             }
+        } else if verb == "nursery" {
+            if chart_has(st.after, "nursery " + p) { st.why = "`nursery " + p + "`: the Board trusts it already"; }
+            else {
+                st.nurseries = st.nurseries + p + "\n";
+                st.after = st.after + "nursery " + p + "\n";
+            }
         } else if verb == "close" {
             st = plan_close(st, g, opened, p);
         } else if verb == "merge" {
@@ -533,6 +559,7 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
     out.after = st.after;
     out.mandates = st.mandates;
     out.retirements = st.retirements;
+    out.nurseries = st.nurseries;
     // the restated meets edges, each once, at its latest body
     let mut met = st.restated;
     let mut restated = "";
@@ -1071,6 +1098,19 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         ideas = ideas + "retirement/" + rn + " " + rd + "\n";
         count = count + 1;
     }
+    // a nursery the Board trusts: packs from it may be adopted
+    let mut ns = plan.nurseries;
+    while len(ns) > 0 {
+        let nl = std::str::index_of(ns, "\n");
+        let src = ns[0..nl];
+        ns = ns[(nl + 1)..len(ns)];
+        let ndoc = knowledge_document(Idea { kind: "nursery", text: "packs from " + src + " may be adopted", author: by, name: src, provenance: "proposed by " + by + " in " + name }, "org");
+        let nd = digest_of(ndoc);
+        docs = docs + ndoc + "\n";
+        members = members + batch_member_row(nd, "nursery", by, "org", src, at);
+        ideas = ideas + "nursery " + nd + "\n";
+        count = count + 1;
+    }
     // a mandate per position it opens (a split's two included)
     let mut ms = plan.mandates;
     while len(ms) > 0 {
@@ -1220,7 +1260,7 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
 @unbounded
 fn batch_summary(steps: String) -> String {
     let mut out = "";
-    let mut verbs = "open fill vacate practice retire-practice assign unassign close merge split expose depend externalize internalize ";
+    let mut verbs = "open fill vacate practice retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
     while len(verbs) > 0 {
         let sp = std::str::index_of(verbs, " ");
         let v = verbs[0..sp];
@@ -1261,7 +1301,7 @@ fn batch_text(steps: String) -> String {
             out = out + "practice " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
         } else if verb == "assign" || verb == "unassign" {
             out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2) + "\n";
-        } else if verb == "close" || verb == "externalize" || verb == "retire-practice" {
+        } else if verb == "close" || verb == "externalize" || verb == "retire-practice" || verb == "nursery" {
             out = out + verb + " " + batch_field(step, 1) + "\n";
         } else if verb == "merge" {
             out = out + "merge " + batch_field(step, 1) + " into " + batch_field(step, 2) + "\n";

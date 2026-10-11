@@ -256,6 +256,10 @@ hale dna pack list [--from <dir|git-url[#rev]>]
 hale dna pack show <name> [--set <param>=<value>]… [--from …]
 hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]
 hale dna pack retire <name> [--dry-run] [--as <who>] [project]
+hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]
+hale dna nursery list [project]
+                             a nursery the Board trusts, proposed as one batch step; the ones it trusts (a git nursery's
+                             packs are adopted only once it is trusted)
                              packs from a nursery (the toolchain's, a directory, or a git repository at a revision): a batch
                              with blanks, adopted as one Board Review named for the pack (`review changes approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
@@ -320,7 +324,7 @@ kind it does not know keeps walking.
 | `structure.observed` | record | the compiler's model of one of the application's parts, at `init` |
 | `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it (also inside a ratified graph proposal's receipt) |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (`added`, `changed`, `retired`, the `review_id` of its proposal) |
-| `graph.requested` / `graph.proposed` / `graph.refused` | record | `hale dna ingest` asks the running organization to open its Review; opened, or not |
+| `graph.requested` / `graph.proposed` / `graph.refused` | record | `hale dna ingest` asks the running organization to open its Review; opened, or not. `graph.refused <row id>` with `by: memory` is a graph row memory would not project; the projection goes on past it |
 | `model.rule` | record | the size a selector's Work needs, and the sizes a more specific selector may move it to (`hale dna models rule`, `task create --size`) |
 | `model.category` | record | which model fills `<mode>.<size>`, whether it returns tool calls, and its price (`hale dna models category`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |

@@ -214,6 +214,20 @@ pub(super) fn pack_cmd(args: &[String]) -> ExitCode {
             }
         }
     }
+    // a git nursery's packs are adopted only once the Board trusts it
+    // (`hale dna nursery add`), and nothing is fetched from one it does not;
+    // the toolchain's and a directory of one's own need no trust
+    if sub == Some("apply") {
+        if let Some(url) = from.as_deref().filter(|f| !Path::new(f).is_dir()) {
+            let url = url.split_once('#').map(|(u, _)| u).unwrap_or(url);
+            let dir = words.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let trusted = super::host_run("nursery-sources", &dir, &[]).unwrap_or_default();
+            if !trusted.lines().any(|l| l.trim() == url) {
+                eprintln!("hale dna pack: the Board does not trust the nursery {url} yet: `hale dna nursery add {url}` proposes it");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let n = match nursery(from.as_deref()) {
         Ok(n) => n,
         Err(e) => {
@@ -323,6 +337,55 @@ mod tests {
             }
             let steps = render(&text, &e.params, &set).unwrap();
             assert!(!steps.contains('{'), "{} renders every parameter: {steps}", e.name);
+        }
+    }
+}
+
+/// `hale dna nursery add <source> [--dry-run] [--as <who>] [project]`: a
+/// nursery proposed for the Board to trust, as a one-step batch (`nursery
+/// <source>`); `hale dna nursery list [project]`: the ones it trusts.
+pub(super) fn nursery_cmd(args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            super::host_exec("nursery-sources", &dir, &[])
+        }
+        Some("add") => {
+            let Some(source) = args.get(1) else {
+                eprintln!("usage: hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]");
+                return ExitCode::from(2);
+            };
+            let mut forwarded = Vec::new();
+            let mut dir = PathBuf::from(".");
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--dry-run" => {
+                        forwarded.push(args[i].clone());
+                        i += 1;
+                    }
+                    "--as" if i + 1 < args.len() => {
+                        forwarded.push(args[i].clone());
+                        forwarded.push(args[i + 1].clone());
+                        i += 2;
+                    }
+                    a if !a.starts_with('-') => {
+                        dir = PathBuf::from(a);
+                        i += 1;
+                    }
+                    a => {
+                        eprintln!("hale dna nursery: `{a}` is not a flag of add (--dry-run, --as)");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let mut host_args = vec!["--steps".to_string(), format!("nursery {source}\n")];
+            host_args.extend(forwarded);
+            super::host_exec("apply", &dir, &host_args)
+        }
+        _ => {
+            eprintln!("usage: hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]\n       hale dna nursery list [project]");
+            ExitCode::from(2)
         }
     }
 }

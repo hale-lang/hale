@@ -175,6 +175,12 @@ fn check() {
     std::test::assert(own.code == 0 && std::str::contains(own.stdout, "+ position position:ops/operator\n") && std::str::contains(own.stdout, "nothing proposed"), "a directory is a nursery: " + own.stdout + own.stderr);
     let missing = dna_cli(repo, "pack\napply\nnone\n--from\n" + mine);
     std::test::assert(missing.code != 0 && std::str::contains(missing.stderr, "no pack `none`") && std::str::contains(missing.stderr, "it offers: ops"), "a pack the nursery does not offer is named: " + missing.stderr);
+    // 8. a git nursery's packs wait for the Board to trust it; nothing is
+    // fetched before
+    let untrusted = dna_cli(repo, "pack\napply\nops\n--from\nhttps://nursery.invalid/packs.git");
+    std::test::assert(untrusted.code != 0 && std::str::contains(untrusted.stderr, "the Board does not trust the nursery https://nursery.invalid/packs.git yet"), "an untrusted nursery is refused before it is read: " + untrusted.stderr);
+    let trust = dna_cli(repo, "nursery\nadd\nhttps://nursery.invalid/packs.git\n--dry-run");
+    std::test::assert(trust.code == 0 && std::str::contains(trust.stdout, "+ nursery https://nursery.invalid/packs.git"), "nursery add proposes the trust as a batch: " + trust.stdout + trust.stderr);
     dna::scratch_done(scratch);
 }
 
