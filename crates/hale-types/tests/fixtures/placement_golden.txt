@@ -10704,6 +10704,10 @@ shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in tests #aaf83225
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/reap_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+
 == dna/tests/receipt_retention_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
