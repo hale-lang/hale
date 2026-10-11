@@ -100,7 +100,17 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
 
 fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     let reader = api::SourceReader { root: root };
-    let source = reader.read();
+    let mut source = reader.read();
+    // a running organization writes rows while this reads its snapshot:
+    // read again until one snapshot is whole, rather than refusing to start
+    // because the record moved (a head attached while the Board's
+    // ratifications land)
+    let mut tries = 0;
+    while !source.ok && source.code == "snapshot_changed" && tries < 60 {
+        std::time::sleep(500ms);
+        source = reader.read();
+        tries = tries + 1;
+    }
     if !source.ok {
         eprintln("hale dna practice-review api: ", source.error, "; refusing to start");
         std::process::exit(2);

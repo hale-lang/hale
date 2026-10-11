@@ -28,7 +28,7 @@ their commands over the socket the head names, where the kernel
 vouches for who you are.
 
 Where the head serves OIDC, get the token first. On the local stub
-issuer (the one `dna/face/start.sh` starts), `login` mints it for the
+issuer (the one `hale dna head` starts), `login` mints it for the
 person the record maps, with the client secret read from the vault
 and never printed:
 

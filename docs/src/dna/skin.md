@@ -178,7 +178,7 @@ that builds its token request. An unmapped subject gets no session; a
 member `dna.oidc.board` names acts with the Board's authority. A head
 started with no principal source refuses to start.
 
-Local mode is OIDC too: `dna/face/start.sh` starts a stub provider
+Local mode is OIDC too: `hale dna head` (from a checkout, `dna/face/start.sh`) starts a stub provider
 (`dna/oidc`) on the loopback, under a key made for that launch and the
 `oidc-client-dna-local` secret `init` drew, and signs you in as
 yourself. An issuer on the loopback is anyone's who can bind its port,

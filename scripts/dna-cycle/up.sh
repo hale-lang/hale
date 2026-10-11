@@ -47,12 +47,14 @@ done
 if [ $ready = 1 ]; then check "hale dna dev ready ($(( $(date +%s) - t0 ))s)" ok; else check "hale dna dev ready" no "$(tail -3 "$RUN/dev.log" | tr '\n' ' ' | cut -c1-300)"; fi
 
 step "hale dna review (list)" bash -c "hale dna review > '$RUN/review.out' 2>&1; cat '$RUN/review.out'"; note "review: $(head -1 "$RUN/review.out" | cut -c1-120)"
-for g in $(grep -o -E '^  [a-z]+ —' "$RUN/review.out" | awk '{print $1}' | sort -u); do decide "hale dna review $g approve --as riley" "$g" approve --as riley; done
+# the starting organization ratified in one command: every group, in order
+DECIDE_TIMEOUT=900 decide "hale dna review all approve --as riley" all approve --as riley
 step "hale dna review (after)" bash -c "hale dna review > '$RUN/review2.out' 2>&1; cat '$RUN/review2.out'"; note "after: $(head -1 "$RUN/review2.out" | cut -c1-120)"
-for pos in board api/dev api/reviewer ui/reviewer compose/operator; do step "hale dna fill $pos riley" hale dna fill "$pos" riley --as riley; done
-# a fill is a proposal its asker may not ratify; the Board, as a position no one holds yet, may
-decide "hale dna review holds approve --as position:board" holds approve --as position:board
-step "the head's DSN from memory migrate" bash -c "hale dna memory migrate . > '$RUN/migrate.out' 2>&1; cat '$RUN/migrate.out'; grep -q HEAD '$RUN/migrate.out'"
+# the founder holds every seat the repository's holes opened: one batch, one Review
+printf 'fill board riley\nfill api/dev riley\nfill api/reviewer riley\nfill ui/reviewer riley\nfill compose/operator riley\n' > "$RUN/seats.batch"
+step "hale dna apply seats.batch (one batch, one Review)" bash -c "hale dna apply '$RUN/seats.batch' --as riley > '$RUN/apply.out' 2>&1; rc=\$?; cat '$RUN/apply.out'; exit \$rc"
+DECIDE_TIMEOUT=300 decide "hale dna review all approve --as riley (the seats)" all approve --as riley
+note "onboarding: init, review all approve, apply, review all approve, then dev and head (6 commands)"
 step "hale dna show org" bash -c "hale dna show org > '$RUN/org.out' 2>&1; cat '$RUN/org.out'"; note "org: $(grep -c '' "$RUN/org.out") lines"
 step "hale build api -o bin/todo-api" hale build api -o bin/todo-api
 step "docker compose up -d api (todo)" bash -c "TODO_TOKENS='ada=t-ada,bo:reader=t-bo' docker compose up -d api"
@@ -60,10 +62,9 @@ t0=$(date +%s); while [ $(( $(date +%s) - t0 )) -lt 60 ]; do curl -s -o /dev/nul
 note "api up after $(( $(date +%s) - t0 ))s via compose"
 step "hale api call add" hale api call http://127.0.0.1:8080 Todos::add --title milk --bearer t-ada
 
-# the head, source-built from the hale checkout by dna/face/start.sh
-HEAD_DSN=$(grep -o 'HALE_DNA_MEMORY_DSN_HEAD=[^ ]*' "$RUN/migrate.out" | head -1 | cut -d= -f2-); note "head DSN: ${HEAD_DSN:+set}${HEAD_DSN:-MISSING}"
-systemd-run --user --quiet --collect --unit="dna-cycle-head-$N" --working-directory="$HW" "${units_env[@]}" --setenv=HALE_DNA_MEMORY_DSN_HEAD="$HEAD_DSN" \
-    bash -c "dna/face/start.sh '$RUN/todo' --port 8792 --api-port 8793 --commands-port 8795 > '$RUN/head.log' 2>&1"
+# the head, from the toolchain (`hale dna head`): no checkout, its memory DSN derived
+systemd-run --user --quiet --collect --unit="dna-cycle-head-$N" --working-directory="$RUN/todo" "${units_env[@]}" \
+    bash -c "hale dna head '$RUN/todo' --port 8792 --api-port 8793 --commands-port 8795 > '$RUN/head.log' 2>&1"
 t0=$(date +%s); up=0
 while [ $(( $(date +%s) - t0 )) -lt 600 ]; do
     grep -q -E 'hale dna head: http://127.0.0.1:8792|commands http://127.0.0.1:8795' "$RUN/head.log" 2>/dev/null && { up=1; break; }

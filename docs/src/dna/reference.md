@@ -192,6 +192,11 @@ hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definit
 [The head and the face](./head.md).
 
 ```text
+hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]
+                             the head: the project service serving the browser face (8792), its API child, the stub
+                             OpenID provider and, with a project, the reflexes — built once into the toolchain cache,
+                             no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's
+                             memory DSN derived as `memory migrate` derives it (`hale dna head --help`)
 hale dna ui [project] [--port N]
                              under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,
                              subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;

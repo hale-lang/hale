@@ -232,7 +232,7 @@ What happens next is all rows:
    that did not take becomes one too (`reflex-failed:<id>`), not a quiet
    retry. From there it is a concern like any other.
 
-The face's `dna/face/start.sh` builds and starts the reflexes when it
+The face's launcher (`hale dna head`, or `dna/face/start.sh` from a checkout) builds and starts the reflexes when it
 attaches a project under the local sign-in, with that project's store
 and nerves, and stops them with itself. A store or nerves that does not
 come up leaves the face running without them (`face: no reflexes: …`).

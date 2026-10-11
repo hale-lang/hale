@@ -43,6 +43,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+/// `hale dna head`: the head started from the toolchain, no checkout.
+mod head;
 mod pack;
 
 /// The record (GH #566 F1): one commit per event on this ref, the events as
@@ -375,6 +377,10 @@ pub fn run(args: &[String]) -> ExitCode {
     // starts nothing: `hale dna dev --help` used to read the flag as the
     // project directory and bring the seed's compose up (GH #817's rule
     // — the first argument after a subcommand — at the verb level).
+    // the head's own help, on stdout
+    if args.first().map(String::as_str) == Some("head") {
+        return head::head_cmd(&args[1..]);
+    }
     if matches!(args.first().map(String::as_str), Some(v) if !v.starts_with('-'))
         && matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h"))
     {
@@ -664,6 +670,14 @@ pub fn run(args: &[String]) -> ExitCode {
                     } else {
                         project = true;
                         dir = PathBuf::from(a);
+                    }
+                }
+                // memory read as the head: its DSN derived as `hale dna
+                // memory migrate` derives it, unless one is given; it
+                // travels on the host's environment alone, never printed
+                if std::env::var_os("HALE_DNA_MEMORY_DSN_HEAD").is_none() {
+                    if let Some(dsn) = head::derived_head_dsn(&dir) {
+                        return host_exec_env("show", &dir, &forwarded, &[("HALE_DNA_MEMORY_DSN_HEAD", dsn.as_os_str())], &[]);
                     }
                 }
                 host_exec("show", &dir, &forwarded)
@@ -1095,6 +1109,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
+    eprintln!("       hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
+    eprintln!("                                    the head: the project service serving the browser face (8792), its API child, the stub");
+    eprintln!("                                    OpenID provider and, with a project, the reflexes — built once into the toolchain cache,");
+    eprintln!("                                    no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's");
+    eprintln!("                                    memory DSN derived as `memory migrate` derives it (`hale dna head --help`)");
     eprintln!("       hale dna ui [project] [--port N]");
     eprintln!("                                    under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,");
     eprintln!("                                    subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;");
@@ -1503,6 +1522,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         } else {
             out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
         }
+        // the starting model mapping, from the hosted models this machine
+        // has a key for
+        out.extend(seed_model_map(&root, &found)?);
     }
     // 8. .gitignore hygiene
     let gi = root.join(".gitignore");
@@ -3480,6 +3502,48 @@ fn library_propose(root: &Path, upgrading: bool) -> Result<(usize, usize, usize,
 /// node is added here — with a `written_in` edge to the language), then the
 /// library as proposals, one Review per family (`library/language@<version>`,
 /// `library/design@<version>`).
+/// The starting model mapping (`model.rule`, `model.category`), from what
+/// `discover` found: when a hosted model's key is in the vault, the
+/// `default` rule is `standard` (a more specific selector may move it to
+/// any size), and every category `<mode>.<size>` is filled by the hosted
+/// pair the catalog writes — `quick` by the fast model, `standard` and
+/// `deep` by the frontier one — each returning tool calls, at the
+/// catalog's prices. Nothing is seeded without a hosted key: an ollama
+/// model is the desk's, not a leg's, and a mapping naming models no key
+/// can reach would only be refused later. The rows are in `init`'s name
+/// and change like any other (`hale dna models rule|category`).
+fn seed_model_map(root: &Path, found: &Discovery) -> Result<Vec<String>, String> {
+    if !found.anthropic && !found.openai {
+        return Ok(vec!["skipped models map (no hosted model key in the vault: `hale dna models rule|category` set it by hand)".to_string()]);
+    }
+    let (frontier, fast, _) = found.hosted();
+    let by = "hale dna init";
+    let mut text = String::new();
+    let row = |kind: &str, entity: &str, body: serde_json::Value| serde_json::json!({"kind": kind, "entity": entity, "body": body.to_string()}).to_string() + "\n";
+    text.push_str(&row("model.rule", "default", serde_json::json!({"size": "standard", "permit": "quick standard deep", "by": by})));
+    for mode in ["think", "tools", "do"] {
+        for size in ["quick", "standard", "deep"] {
+            let m = if size == "quick" { &fast } else { &frontier };
+            text.push_str(&row(
+                "model.category",
+                &format!("{mode}.{size}"),
+                serde_json::json!({"model": m.model, "tool_calls": true, "input_micros_per_1k": m.input_micros_per_1k, "output_micros_per_1k": m.output_micros_per_1k, "by": by}),
+            ));
+        }
+    }
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let rows = dna_dir.join(format!("model-map-rows.{}.jsonl", std::process::id()));
+    fs::write(&rows, &text).map_err(|e| e.to_string())?;
+    let seeded = host_run("record-seed", root, &[rows.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&rows);
+    let n: usize = seeded?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
+    if n != 10 {
+        return Err(format!("record-seed appended {n} of 10 model mapping rows"));
+    }
+    Ok(vec![format!("seeded  models map (default: standard; quick = {}, standard and deep = {}, every mode with tool calls; `hale dna models map` lists it)", fast.model, frontier.model)])
+}
+
 fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
