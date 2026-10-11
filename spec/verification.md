@@ -2724,10 +2724,14 @@ assume the others in a build:
   take their defaults where the literal is written. A parameter no call
   passes — a bus handler's message, a hook's argument — carries
   nothing, except that a locus publishing what it carries of its own
-  `self` may be its own subscriber: its handlers whose subjects that
-  publish may reach (two literal subjects or two topic names written
-  alike; anything else is taken to meet) receive what the payload
-  carries. A message from another locus is taken as fresh. So `let previous = self.log; self.log = previous + "x"`,
+  `self` may be its own subscriber: every handler of that locus whose
+  message may be the payload's type (two type names the walk knows
+  that differ do not meet; an unknown one meets anything) receives what
+  the payload carries, whatever the subjects — a subject is not judged,
+  since wildcards (`t.**` takes `t.next`), a transport's own pattern
+  dialect, topics declared over subjects and computed subjects make
+  that answer fragile. A message from another locus is taken as
+  fresh. So `let previous = self.log; self.log = previous + "x"`,
   `self.log = self.previous() + "x"`, `self.log = wrap(self.log) +
   "x"` and `fn append(p: String) { self.log = p + "x"; }` called as
   `self.append(self.log)` are appends and reported, as `self.log =

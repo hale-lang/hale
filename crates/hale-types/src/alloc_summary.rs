@@ -952,9 +952,10 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
-    /// GH #1490 (step 4): each publish of the body, its subject as
-    /// written (`None` when computed) and what its payload carries.
-    pub(crate) sends: Vec<(Option<PublishSubject>, Taint)>,
+    /// GH #1490 (step 4): each publish of the body: its payload's type
+    /// (`None` when the walk cannot name it) and what the payload
+    /// carries.
+    pub(crate) sends: Vec<(Option<String>, Taint)>,
     /// What a free fn's body allocates into, as lowering routes it
     /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
     /// `main` (lowered as the program's entry), and for a row the summary
@@ -3347,21 +3348,23 @@ pub fn summarize_identified(
     summary
 }
 
-/// GH #1490 (step 4): each locus's bus handlers with their subjects.
-type Subscriptions = BTreeMap<String, Vec<(String, Option<PublishSubject>)>>;
+/// GH #1490 (step 4): each locus's bus handlers with the type of the
+/// message each takes (`None` when the walk cannot name it).
+type Subscriptions = BTreeMap<String, Vec<(String, Option<String>)>>;
 
-fn bus_subscriptions(l: &LocusDecl) -> Vec<(String, Option<PublishSubject>)> {
+fn bus_subscriptions(l: &LocusDecl) -> Vec<(String, Option<String>)> {
     let mut out = Vec::new();
     for member in &l.members {
         if let LocusMember::Bus(bus) = member {
             for bm in &bus.members {
-                if let BusMember::Subscribe { handler, subject, .. } = bm {
-                    let s = match subject {
-                        BusSubject::Literal { subject, .. } => Some(PublishSubject { text: subject.clone(), literal: true }),
-                        BusSubject::Topic(id) => Some(PublishSubject { text: id.name.clone(), literal: false }),
-                        BusSubject::QualifiedTopic(_) => None,
-                    };
-                    out.push((handler.name.clone(), s));
+                if let BusMember::Subscribe { handler, ty, .. } = bm {
+                    let declared = l.members.iter().find_map(|m| match m {
+                        LocusMember::Fn(f) if f.name.name == handler.name => {
+                            f.params.first().and_then(|p| type_expr_name(&p.ty))
+                        }
+                        _ => None,
+                    });
+                    out.push((handler.name.clone(), declared.or_else(|| ty.as_ref().and_then(type_expr_name))));
                 }
             }
         }
@@ -3369,17 +3372,16 @@ fn bus_subscriptions(l: &LocusDecl) -> Vec<(String, Option<PublishSubject>)> {
     out
 }
 
-/// May a publish to `sent` reach a subscription to `sub`? Two literal
-/// subjects or two topic names reach each other when they are written
-/// alike; anything else (a topic against a literal, which the topic's
-/// declared subject may equal; a computed or qualified subject) is
-/// taken to.
-fn subjects_may_meet(sent: &Option<PublishSubject>, sub: &Option<PublishSubject>) -> bool {
-    match (sent, sub) {
-        (Some(a), Some(b)) if a.literal == b.literal => {
-            let last = |t: &str| t.rsplit("::").next().unwrap_or(t).to_string();
-            if a.literal { a.text == b.text } else { last(&a.text) == last(&b.text) }
-        }
+/// May a value of type `a` be a value of type `b`? Two names the walk
+/// knows are compared by their last identifier (a qualified path and the
+/// name it is merged under end alike); an unknown side may be anything.
+fn types_may_meet(a: &Option<String>, b: &Option<String>) -> bool {
+    let last = |t: &str| -> String {
+        let t = t.rsplit("::").next().unwrap_or(t);
+        t.rsplit("__").next().unwrap_or(t).to_string()
+    };
+    match (a, b) {
+        (Some(a), Some(b)) => last(a) == last(b),
         _ => true,
     }
 }
@@ -3530,17 +3532,21 @@ fn resolve_param_provenance(
         }
         // A locus that publishes what it carries of its own `self` may be
         // its own subscriber: the message its handler receives carries it
-        // (the same instance, as a call on `self`).
+        // (the same instance, as a call on `self`). Whether a publish
+        // reaches a subscription is not judged by subject — wildcards
+        // (`t.**`, a transport's `*`), topics declared over subjects and
+        // computed subjects make that answer fragile — but by type: every
+        // handler of the locus whose message may be the payload's type.
         for f in summary.fns.values() {
             let Some(locus) = &f.key.locus else { continue };
             let Some(subs) = subscriptions.get(locus) else { continue };
-            for (subject, payload) in &f.sends {
+            for (payload_ty, payload) in &f.sends {
                 let t = payload.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none));
                 if t.is_none() {
                     continue;
                 }
-                for (handler, sub) in subs {
-                    if !subjects_may_meet(subject, sub) {
+                for (handler, msg_ty) in subs {
+                    if !types_may_meet(payload_ty, msg_ty) {
                         continue;
                     }
                     let Some(hk) = param_order.keys().find(|k| k.locus.as_deref() == Some(locus.as_str()) && k.fn_name == *handler) else {
@@ -5126,7 +5132,7 @@ struct Walker<'a> {
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
     /// `FnSummary::sends`.
-    sends: Vec<(Option<PublishSubject>, Taint)>,
+    sends: Vec<(Option<String>, Taint)>,
     /// GH #1490 (step 4): the expression walked next is a whole field
     /// of a retired struct replace (`AllocSite::retired_store`).
     retired_init: bool,
@@ -6055,7 +6061,8 @@ impl<'a> Walker<'a> {
                     _ => None,
                 };
                 let payload = self.taint_of(value);
-                self.sends.push((subj.clone(), payload));
+                let payload_ty = self.receiver_type_name(value);
+                self.sends.push((payload_ty, payload));
                 self.push_effect_site(
                     EffectSiteKind::Publish(subj),
                     depth,
@@ -8047,6 +8054,49 @@ mod tests {
         };
         assert_eq!(field_leaks(&src("self.log"), "on_t"), vec![Escape::StoredToSelf]);
         assert!(field_leaks(&src("to_string(i)"), "on_t").is_empty());
+    }
+
+    /// `App` subscribing `sub` with `on_t(t: Tick)` and publishing a
+    /// `ty` built from `self.log` to `publ` from the handler itself (the
+    /// review's shape).
+    fn self_publish(sub: &str, publ: &str, ty: &str) -> String {
+        let typed = |subject: &str, t: &str| {
+            if subject.starts_with('"') { format!("{subject} of type {t}") } else { subject.to_string() }
+        };
+        let sub_decl = if sub.starts_with('"') { format!("{sub} as on_t of type Tick") } else { format!("{sub} as on_t") };
+        let publ_decl = typed(publ, ty);
+        format!(
+            "type Tick {{ text: String; }}
+             type Note {{ text: String; }}
+             topic Ticks {{ payload: Tick; subject: \"t.ticks\"; }}
+             locus App {{
+                 params {{ log: String = \"\"; }}
+                 bus {{ subscribe {sub_decl}; publish {publ_decl}; }}
+                 fn on_t(t: Tick) {{ self.log = t.text + \"x\"; {publ} <- {ty} {{ text: self.log }}; }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_self_publish_reaches_its_handlers_whatever_the_subjects() {
+        // Subjects are not judged — `t.**` takes `t.next`, a transport's
+        // `t.*` one token, a topic its declared subject — so a payload
+        // carrying `self.log` reaches every handler of the locus whose
+        // message may be its type.
+        for (sub, publ) in [
+            ("\"t.**\"", "\"t.next\""),
+            ("\"t.*\"", "\"t.next\""),
+            ("\"t.*\"", "\"t.a.b\""),
+            ("Ticks", "\"t.next\""),
+            ("\"t\"", "Ticks"),
+        ] {
+            let src = self_publish(sub, publ, "Tick");
+            assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf], "subscribe {sub}, publish {publ}");
+        }
+        // A payload of another type is not the handler's message.
+        let src = self_publish("\"t.**\"", "\"t.next\"", "Note");
+        assert!(field_leaks(&src, "on_t").is_empty());
     }
 
     #[test]
