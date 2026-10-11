@@ -58,7 +58,6 @@ locus MemoryLedger {
     fn ready() -> Bool { return dsn_set(self.dsn_env); }
     // Opened on first use, not at birth: an organism on routing 0 holds a
     // ledger and never asks it anything.
-    @unbounded
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.failure = self.dsn_env + " is not set: no ledger"; return false; }
@@ -181,7 +180,6 @@ locus MemoryLeases {
         races: Int = 0;
     }
     fn ready() -> Bool { return dsn_set(self.dsn_env); }
-    @unbounded
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
@@ -340,7 +338,6 @@ locus MemoryKnowledge {
     // The store scoped to the record as it is now (a record that had no
     // rows when the store opened, and has some now, moves to its own
     // schema), and a connection that still answers.
-    @unbounded
     fn ensure_open() -> Bool {
         let scope = self.record_identity();
         self.store.dsn_env = self.dsn_env;
@@ -359,7 +356,6 @@ locus MemoryKnowledge {
     // is about — ranks the bounded set (K3); an empty query is ratification
     // order. The digest identifies what is handed over — the target and
     // the ideas — and nothing that varies between runs (GH #583 K4).
-    @unbounded
     fn package_for(target: String, query: String) -> ContextPackage {
         if !self.ready() { return ContextPackage { target: target, error: "no memory (" + self.dsn_env + " is not set)" }; }
         self.asked = self.asked + 1;
@@ -422,7 +418,6 @@ locus MemoryKnowledge {
     // A hat by its digest, kept once (GH #946): done when memory holds it,
     // now or before; false, with `last_error`, when memory is not there
     // or would not take it.
-    @unbounded
     fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool {
         if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return false; }
         if !self.ensure_open() { return false; }
@@ -450,7 +445,6 @@ locus MemoryKnowledge {
     // binding fenced to that head), -1 while memory does not hold it
     // ratified — not there, not yet projected, or not reachable, with
     // `last_error` saying which.
-    @unbounded
     fn ratified_at(digest: String) -> Int {
         if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return -1; }
         if !self.ensure_open() { return -1; }

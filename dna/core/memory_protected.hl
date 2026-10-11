@@ -73,7 +73,6 @@ type ProtectedRow {
         self.opened = false;
     }
     fn last_error() -> String { return self.error; }
-    @unbounded
     fn open() -> Bool {
         if self.opened { return true; }
         let dialled = dial_from_env(self.conn, self.dsn_env);

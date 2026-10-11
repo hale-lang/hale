@@ -187,7 +187,6 @@ locus Leader {
     }
     // One decision per Review the org announces; bounded by the
     // Mutations proposed.
-    @unbounded
     fn on_requested(req: ReviewRequest) {
         // GH #1089: a Review its route routes is decided by the positions
         // the route names, never by the leader on its own authority

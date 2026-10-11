@@ -108,9 +108,6 @@ locus NatsClient {
     }
 
     // Record why the last operation failed, as "<kind>: <detail>".
-    // @unbounded: once per failure, and a failure ends the operation
-    // or the connection.
-    @unbounded
     fn note(kind: String, detail: String) { self.last_error = kind + ": " + detail; }
 
     fn fail_with(kind: String, detail: String) -> NatsError {

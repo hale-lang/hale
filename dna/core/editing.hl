@@ -57,7 +57,6 @@ locus WorktreeTools {
         if !self.inside(rel) { return false; }
         return !std::io::fs::file_exists(self.root + "/" + rel);
     }
-    @unbounded
     fn read(rel: String) -> String {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
         self.reads = self.reads + 1;
@@ -78,7 +77,6 @@ locus WorktreeTools {
             std::io::fs::mkdir(self.root + "/" + rel[0..(at - 1)]) or discard;
         }
     }
-    @unbounded
     fn edit(rel: String, content: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
         self.ensure_parents(rel);
@@ -88,7 +86,6 @@ locus WorktreeTools {
         self.edits = self.edits + 1;
         return true;
     }
-    @unbounded
     fn write_failed(e: IoError) {
         self.refused = self.refused + 1;
         self.last_refusal = "write failed: " + e.kind;
@@ -101,7 +98,6 @@ locus WorktreeTools {
     // incomplete-import check could never catch a deletion that did not
     // happen: the candidate was proposed as if the file were gone while
     // it was still there (the review's second round, finding 5).
-    @unbounded
     fn remove(rel: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
         let before = self.refused;
@@ -115,7 +111,6 @@ locus WorktreeTools {
         self.edits = self.edits + 1;
         return true;
     }
-    @unbounded
     fn remove_failed(e: IoError) {
         self.refused = self.refused + 1;
         self.last_refusal = "remove failed: " + e.kind;
@@ -336,7 +331,6 @@ locus SourceEditor {
     // segment it is. Two such entries make it ambiguous: "" with
     // `located_why` naming both. A name no entry answers is "" with
     // `located_why` left as it was. Never a suffix of a longer path.
-    @unbounded
     fn match_entry(listing: String, name: String) -> String {
         let mut first = "";
         let mut second = "";

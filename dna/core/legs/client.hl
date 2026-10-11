@@ -183,7 +183,6 @@ locus Head {
     // commands are on, and the principal: what the reads say, then the
     // binding's own word on what this peer may call. Once per verb, or
     // once per renewal of a lease held through a wait.
-    @unbounded
     fn attach() -> Bool {
         // a read while another leg's row lands answers `snapshot_changed`:
         // read again, for up to ten seconds
