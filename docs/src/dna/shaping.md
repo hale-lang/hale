@@ -441,6 +441,10 @@ $ hale dna fill board alice
 hale dna: fill: `position:board` is no position or organization the record states or proposes
 ```
 
+To seat people in the holes as `init` opens them, give `init` a pack
+that fills them ([A pack at `init`](#a-pack-at-init)): one verdict then
+ratifies the holes and their holders.
+
 For a position the record states or proposes, ask the organization for
 a holder:
 
@@ -548,6 +552,12 @@ A step may also take a holder out: `vacate api/dev ada`. On its own,
 `hale dna vacate api/dev ada` proposes that one step the same way; the
 position stays, and the hold goes once the Board ratifies it.
 
+`fill * ada` fills every seat the batch leaves vacant: each position the
+organization would then state with a mandate and no holder (the batch's
+own included). It is taken after every other step, so `fill api/dev bo`
+beside it keeps that seat for bo, and the Review lists the fills it
+stands for, one a seat.
+
 Without `--dry-run`, `apply` proposes it as one Review, listed under
 `changes`; `hale dna review changes approve` ratifies every step of it
 together. A batch is checked whole before anything is written: a fill
@@ -586,7 +596,7 @@ never closed.
 
 A **pack** is a batch someone wrote once to be adopted many times, with
 blanks to fill: a dev team for a part, a small startup, a team that ships
-no code. Packs come from a **nursery**, a directory or a git repository
+no code, a founder who holds every seat. Packs come from a **nursery**, a directory or a git repository
 with a `nursery.toml` index at its root; the toolchain carries one.
 
 ```sh
@@ -612,6 +622,37 @@ digest and where it came from.
 ratified, as one more Review: the positions the pack opened close, the
 seats it filled and the reviews it assigned elsewhere are taken back,
 and its practices retire. Anything that has already gone is left out.
+
+### A pack at `init`
+
+`hale dna init --with <pack>` proposes a pack in the same breath as the
+holes `init` opens, and the pack may fill those holes:
+
+```sh
+hale dna init . --with founder --set founder=riley --as riley
+hale dna review all approve --as riley
+```
+
+The holes are proposals until the Board ratifies them, so a batch planned
+against the record alone finds no `board` to fill. `init --with` plans
+the pack **on** them instead: as though they were ratified. The batch
+names the pending Reviews it stands on, and the dry run says so:
+
+```text
++ holds position:board riley
++ holds position:api/dev riley
+…
+5 line(s) added to the organization, 0 taken out, 19 unchanged
+planned on 10 pending Review(s) (k:c5a61bce0f4b, …): ratified after them, refused whole if any is not
+```
+
+`review all approve` decides `holes` before `changes`, so one verdict
+ratifies the holes and then the pack. A pack approved before its holes
+waits for them; if the Board declines one of them, the pack is refused
+whole as stale, and nothing of it lands. A pack that opens a position
+`init` already proposes is refused as soon as it is proposed.
+`hale dna apply <file> --on-holes` and `hale dna pack apply … --on-holes`
+plan the same way while init's holes are still pending.
 
 ### From the head's API
 

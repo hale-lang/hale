@@ -198,6 +198,7 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/nursery.toml",
     "dna/nursery/packs/content-team.pack",
     "dna/nursery/packs/dev-team.pack",
+    "dna/nursery/packs/founder.pack",
     "dna/nursery/packs/small-startup.pack",
 ];
 

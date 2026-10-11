@@ -1,0 +1,237 @@
+// dna/tests/init_with_test.hl — onboarding in one verdict: `hale dna init
+// --with <pack>` proposes a pack that fills the holes init itself opens.
+//
+// `init` proposes the holes its graph implies (the Board, each part's dev
+// and reviewer, each deployment's operator), each a Review the Board has not
+// decided when the pack is planned. `--with` plans the pack on them
+// (`dna::batch_plan_on`): read as though they were ratified, so a fill of a
+// hole is no fill of nothing, and named in the batch's family
+// (`planned_on`), whose ratification waits for theirs. The `founder` pack is
+// `fill * <founder>`: every seat left vacant. On the todo fixture
+// (dna/tests/onboarding/todo) that is the five seats the from-scratch cycle
+// used to fill with a second batch and a second verdict; here one `hale dna
+// review all approve` ratifies the holes, then the pack, and the founder
+// holds every seat. Planned on the holes, a pack that opens a position init
+// already proposes is refused when it is proposed, not when the Board
+// decides it. Without `--on-holes` a fill of a hole is refused as before.
+// That a batch is refused whole when a proposal it stands on is declined,
+// and waits when it is approved first, is scenario_test.hl's. The organism
+// half needs memory (HALE_DNA_MEMORY_DSN_OWNER) and the nerves
+// (HALE_DNA_NATS_URL_OWNER).
+
+import "../core" as dna;
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// The value of `NAME=value` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The record as the organization writes it, read through the owner's DSN
+// once a ledger is adopted.
+fn journal_of(repo: String) -> dna::RoutedJournal {
+    return dna::RoutedJournal { record: dna::GitJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+}
+
+// The body of the record's last `kind` row, "" when there is none.
+fn last_body(repo: String, kind: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The todo fixture, a repository of its own.
+fn make(scratch: String, name: String) -> String {
+    let repo = scratch + "/" + name;
+    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + repo + "\n" + source());
+    std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+    return repo;
+}
+
+// The command that starts a project's organization in the background, its
+// log in `.hale/body.log`.
+fn start_of(repo: String, owner: String, nats: String) -> String {
+    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
+}
+
+// The catalog the organism runs on: every backend a `dna::FakeModel`, so
+// it boots with no API key (the Board's Reviews need no model).
+const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the init --with fixture).\n"
+    + "import \"vendor/dna\" as dna;\n"
+    + "\n"
+    + "fn frontier() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"deep\", model: \"deep-1\", price_micros: 0, answer: \"clean\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn fast() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"quick\", model: \"quick-1\", price_micros: 0, answer: \"clean\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn desk() -> dna::LocalFakeModel {\n"
+    + "    return dna::LocalFakeModel { };\n"
+    + "}\n"
+    + "\n"
+    + "fn leader_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn editor_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn agent_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn org_budget() -> dna::BudgetPolicy {\n"
+    + "    return dna::BudgetPolicy { window: \"none\", allowance_micros: 5000000 };\n"
+    + "}\n"
+    + "\n"
+    + "fn probe_catalog() -> String {\n"
+    + "    return dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk());\n"
+    + "}\n";
+
+// The five seats init opens on the todo fixture.
+const SEATS: String = "position:board\nposition:api/dev\nposition:api/reviewer\nposition:ui/reviewer\nposition:compose/operator\n";
+
+locus App {
+    params { repo: String = ""; head: String = ""; }
+    // `hale dna <args>` in the project; once memory is migrated, as the head
+    fn dna(args: String) -> dna::RunResult {
+        if len(self.head) > 0 {
+            return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+        }
+        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
+    }
+    fn organization_up(tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            let pid = dna::trim_nl(std::io::fs::read_file(self.repo + "/.hale/dna/org.pid") or "");
+            if len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0 { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    fn gone(pid: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if dna::run_tool("kill\n-0\n" + pid).code != 0 {
+                let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + self.repo);
+                return true;
+            }
+            std::time::sleep(200ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    // The org chart the record states (`dna::org_chart`, what a batch is
+    // planned against), once it holds every one of `seats` by `who`.
+    fn seated(seats: String, who: String, tries: Int) -> String {
+        let mut n = 0;
+        let mut chart = "";
+        while n < tries {
+            chart = dna::org_chart(journal_of(self.repo), dna::GitReceipts { repo: self.repo });
+            let mut all = true;
+            let mut rest = seats;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                if !std::str::contains(chart, "holds " + rest[0..nl] + " " + who + "\n") { all = false; }
+                rest = rest[(nl + 1)..len(rest)];
+            }
+            if all { return chart; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return "not seated:\n" + chart;
+    }
+    run() {
+        let scratch = dna::scratch_root("init-with");
+
+        // ---- a pack that opens a hole init already proposes is refused
+        // when it is proposed: it is planned on the holes
+        self.repo = make(scratch, "clash");
+        let clash = self.dna("init\n.\n--no-library\n--with\ndev-team\n--set\npart=api");
+        std::test::assert(clash.code != 0 && std::str::contains(clash.stderr, "apply: refused: `position:api/dev` is a position the graph already states"), "the pack's `open api/dev` meets init's own hole: " + clash.stdout + clash.stderr);
+
+        // ---- init --with founder: the pack planned on init's holes
+        self.repo = make(scratch, "todo");
+        let init = self.dna("init\n.\n--no-library\n--with\nfounder\n--set\nfounder=riley\n--as\nriley");
+        std::test::assert_eq_int(init.code, 0, "hale dna init --with founder: " + init.stdout + init.stderr);
+        std::test::assert(std::str::contains(init.stdout, "+ holds position:board riley\n") && std::str::contains(init.stdout, "+ holds position:compose/operator riley\n") && std::str::contains(init.stdout, "5 line(s) added to the organization"), "every seat init opens, filled by the founder: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "planned on 10 pending Review(s) (k:") && std::str::contains(init.stdout, "proposed the batch as k:"), "planned on the five holes and their mandates, and proposed: " + init.stdout);
+        let adopted = last_body(self.repo, "batch.proposed");
+        std::test::assert(std::str::starts_with(dna::native_json_string(adopted, "pack"), "founder@1 sha256:"), "the pack is recorded: " + adopted);
+        std::test::assert(std::str::contains(dna::native_json_string(adopted, "steps"), "fill\tposition:board\triley\n") && !std::str::contains(dna::native_json_string(adopted, "steps"), "*"), "`fill *` is proposed as the fills it stands for: " + adopted);
+        let family = dna::native_json_string(adopted, "digest");
+        let fdoc = dna::GitReceipts { repo: self.repo }.read(family[7..len(family)]);
+        std::test::assert_eq_int(dna::batch_count(dna::native_json_string(fdoc, "planned_on")), 10, "the family names the ten Reviews it stands on: " + fdoc);
+        // init's eleven holes are pending; the work hole is no ground of a fill
+        let holes = dna::batch_init_holes(dna::GitJournal { repo: self.repo });
+        std::test::assert_eq_int(dna::batch_count(holes), 11, "init's holes, still pending: " + holes);
+        let mut ground = dna::native_json_string(fdoc, "planned_on");
+        while len(ground) > 0 {
+            let nl = std::str::index_of(ground, "\n");
+            std::test::assert(std::str::contains(holes, ground[0..(nl + 1)]), "what it stands on is init's: " + ground[0..nl]);
+            ground = ground[(nl + 1)..len(ground)];
+        }
+
+        // ---- without --on-holes a fill of a hole is a fill of nothing
+        std::io::fs::write_file(scratch + "/seat.batch", "fill board ada\n") or discard;
+        let plain = self.dna("apply\n" + scratch + "/seat.batch\n--dry-run");
+        std::test::assert(plain.code != 0 && std::str::contains(plain.stderr, "`fill position:board ada`: no position the graph states or the batch opens"), "planned on the record alone, the hole is no position: " + plain.stderr);
+        let planned = self.dna("apply\n" + scratch + "/seat.batch\n--dry-run\n--on-holes");
+        std::test::assert(planned.code == 0 && std::str::contains(planned.stdout, "+ holds position:board ada\n") && std::str::contains(planned.stdout, "planned on 2 pending Review(s)"), "planned on the holes, it stands on the board's two: " + planned.stdout + planned.stderr);
+
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(owner) == 0 || len(nats) == 0 { eprintln("init_with_test: the organism half not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); dna::scratch_done(scratch); return; }
+
+        // ---- the organism, and ONE verdict
+        std::io::fs::write_file(self.repo + "/dna/org/models.hl", CATALOG) or discard;
+        let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo);
+        std::test::assert_eq_int(committed.code, 0, "what init wrote, and the scripted catalog, committed: " + committed.stderr);
+        let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
+        let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
+        std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stderr);
+        self.head = head;
+        let started = dna::run_tool(start_of(self.repo, owner, nats));
+        let body = dna::trim_nl(started.stdout);
+        std::test::assert(self.organization_up(600), "the organization runs: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+
+        let all = self.dna("review\nall\napprove\n--as\nriley");
+        std::test::assert_eq_int(all.code, 0, "one `review all approve` decides every group: " + all.stdout + all.stderr);
+        std::test::assert(std::str::index_of(all.stdout, "holes:\n") >= 0 && std::str::index_of(all.stdout, "changes:\n") > std::str::index_of(all.stdout, "holes:\n"), "the holes, then the pack planned on them: " + all.stdout);
+        let chart = self.seated(SEATS, "riley", 240);
+        std::test::assert(!std::str::starts_with(chart, "not seated"), "the founder holds every seat after one verdict: " + chart);
+        std::test::assert(len(dna::first_row(journal_of(self.repo), "library.family.ratified", family).kind) > 0, "the pack's family is ratified whole");
+        let left = self.dna("review");
+        std::test::assert(!std::str::contains(left.stdout, "batch(es) of changes") && !std::str::contains(left.stdout, "hole(s) the repository leaves"), "nothing of the starting organization is left pending: " + left.stdout);
+
+        let killed = dna::run_tool("kill\n" + body);
+        std::test::assert(self.gone(body, 600), "the organism stops");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }
