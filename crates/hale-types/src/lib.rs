@@ -154,7 +154,7 @@ pub fn unbounded_alloc_warnings(
     alloc_summary::unbounded_alloc_diags(summary, &progs, &bundle.snapshot, &bundle.sources, include_all)
 }
 
-/// What each `@unbounded` decorator of the program silences: the
+/// What each `@unbounded` or `@bounded_by` decorator of the program silences: the
 /// survey's sites and the hot-path lint's warnings it drops
 /// ([`alloc_summary::unbounded_uses`]). `summary` and `top` are the
 /// bundle's snapshot's (`demand_alloc_summary`, `demand_scope`). Drives

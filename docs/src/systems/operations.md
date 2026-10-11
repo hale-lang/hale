@@ -124,10 +124,15 @@ For a long-lived service, the surface is:
   }
   ```
 
+- **`@bounded_by(<name>)`** — the same carve-out, for growth that
+  is understood: it names the input that bounds it
+  (`@bounded_by(record)` on an in-memory mirror of the record,
+  `@bounded_by(open_requests)` on a queue of them). `@unbounded`
+  means "not yet understood"; a fn carries one or the other.
 - **`--no-warn-unbounded-alloc`** — opts a whole run out.
-- **`--report-unbounded-use`** — prints one line per `@unbounded`
-  fn or hook, with how many survey sites and hot-path warnings it
-  silences in this program. A decorator whose counts are 0 in every
+- **`--report-unbounded-use`** — prints one line per `@unbounded` or
+  `@bounded_by` fn or hook, with how many survey sites and hot-path
+  warnings it silences in this program, and the bound. A decorator whose counts are 0 in every
   program that compiles it acknowledges nothing and can go.
 - `@bounded locus L { … }` is now redundant with the default and
   still accepted.

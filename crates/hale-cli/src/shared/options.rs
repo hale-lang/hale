@@ -79,7 +79,7 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-model", false),
     ("--json", false),
     ("--no-warn-unbounded-alloc", false),
-    // GH #1490: which `@unbounded` decorators silence anything.
+    // GH #1490: which `@unbounded` / `@bounded_by` decorators silence anything.
     ("--report-unbounded-use", false),
     // Retired opt-in spelling from when the unbounded-alloc survey
     // was off by default. It is a no-op now (the survey is on), but

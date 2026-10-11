@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# List the `@unbounded` decorators in dna/ that silence nothing in any
-# program that compiles them (GH #1490).
+# List the `@unbounded` and `@bounded_by(<name>)` decorators in dna/
+# that silence nothing in any program that compiles them (GH #1490).
 #
 # `@unbounded` on a fn or lifecycle hook drops two things: the
 # memory-bound survey's sites in it and the hot-path allocation lint's
-# warnings for it. `hale check --report-unbounded-use` prints, for one
+# warnings for it. `@bounded_by(<name>)` drops the same two and names
+# the input that bounds the growth; the two are judged alike and listed
+# with their kind. `hale check --report-unbounded-use` prints, for one
 # program, every decorated fn it contains (its imported seeds'
 # included) with how many of each the decorator silences there. A
 # seed's decorator is judged in every program that compiles the seed
@@ -24,8 +26,9 @@
 # (crates/hale-stdlib/hl/*.hl). They sit in the stdlib's analysis copy,
 # which the per-program report leaves out.
 #
-# Output: stdout, one `path:line<TAB>fn` per decorator that silences
-# nothing anywhere, sorted; stderr, the programs that did not check and
+# Output: stdout, one `path:line<TAB>fn<TAB>decorator` per decorator
+# that silences nothing anywhere (`decorator` is `unbounded` or
+# `bounded_by(<name>)`, as the report spells it), sorted; stderr, the programs that did not check and
 # reported nothing (`unreported`), the decorators no program reported
 # (`unjudged`), any reported line no decorator is written on (`stray`,
 # none expected), and a summary. A decorator's place is `path:line`
@@ -96,9 +99,10 @@ while IFS= read -r t; do
     fi
 done < "$work/targets"
 
-# Every decorator written in dna/, by `path:line`.
+# Every decorator written in dna/, by `path:line`: `@unbounded`, or
+# `@bounded_by(<name>)`.
 grep -rnE --include='*.hl' --exclude-dir=node_modules \
-    '^[[:space:]]*(@[A-Za-z_]+(\([^)]*\))?[[:space:]]+)*@unbounded([[:space:]]|$)' dna \
+    '^[[:space:]]*(@[A-Za-z_]+(\([^)]*\))?[[:space:]]+)*@(unbounded|bounded_by\([^)]*\))([[:space:]]|$)' dna \
     | cut -d: -f1,2 | sort -u > "$work/written" || exit 1
 : > "$work/unjudged" || exit 1
 : > "$work/stray" || exit 1
@@ -107,6 +111,8 @@ cat "$work"/out/*[0-9] 2>/dev/null | awk -F'\t' -v written="$work/written" -v un
     $1 == "unbounded-use" {
         seen[$2] = 1
         if (!($2 in name)) name[$2] = $3
+        # A report before GH #1490 had no sixth field: `@unbounded`.
+        if (!($2 in kind)) kind[$2] = ($6 == "" ? "unbounded" : $6)
         if ($4 + $5 > 0) used[$2] = 1
         if ($4 > 0) survey[$2] = 1
         programs[$2]++
@@ -119,20 +125,22 @@ cat "$work"/out/*[0-9] 2>/dev/null | awk -F'\t' -v written="$work/written" -v un
             if (w ~ /(^|\/)tests\// || w ~ /_test\.hl:/) nt++
             if (!(w in seen)) print w > unjudged
         }
-        nseen = 0; nunused = 0; nhot = 0; nsurvey = 0; nsingle = 0
+        nseen = 0; nunused = 0; nhot = 0; nsurvey = 0; nsingle = 0; nbound = 0; nbunused = 0
         for (k in seen) {
             nseen++
+            bound = (kind[k] ~ /^bounded_by\(/)
+            if (bound) nbound++
             if (!(k in all)) print k > stray
-            if (!(k in used)) { print k "\t" name[k]; nunused++ }
+            if (!(k in used)) { print k "\t" name[k] "\t" kind[k]; nunused++; if (bound) nbunused++ }
             if ((k in used) && !(k in survey)) nhot++
             if (k in survey) nsurvey++
             if ((k in used) && using[k] == 1 && programs[k] > 1) nsingle++
         }
-        printf "%d %d %d %d %d %d %d\n", nw, nt, nseen, nunused, nsurvey, nhot, nsingle > summary
+        printf "%d %d %d %d %d %d %d %d %d\n", nw, nt, nseen, nunused, nsurvey, nhot, nsingle, nbound, nbunused > summary
     }
 ' | sort -t: -k1,1 -k2,2n || exit 1
 
-read -r nw nt nseen nunused nsurvey nhot nsingle < "$work/summary" || exit 1
+read -r nw nt nseen nunused nsurvey nhot nsingle nbound nbunused < "$work/summary" || exit 1
 if [ -s "$work/failed" ]; then
     cat "$work/failed" >&2
 fi
@@ -140,7 +148,7 @@ if [ -s "$work/unjudged" ]; then
     sed 's/^/unjudged\t/' "$work/unjudged" >&2
 fi
 if [ -s "$work/stray" ]; then
-    # A reported line no `@unbounded` is written on: the report and the
+    # A reported line no decorator is written on: the report and the
     # inventory disagree about where a decorator is.
     sed 's/^/stray\t/' "$work/stray" >&2
 fi
@@ -153,5 +161,6 @@ nstray=$(wc -l < "$work/stray") || exit 1
     echo "unbounded-unused: $nseen judged: $nunused silence nothing anywhere," \
         "$nsurvey silence a survey site somewhere, $nhot silence only hot-path warnings," \
         "$nsingle silence something in exactly one of the several programs that contain them;" \
-        "$nunjudged unjudged (no program reported them); $nstray stray"
+        "$nunjudged unjudged (no program reported them); $nstray stray;" \
+        "of the judged, $nbound are \`@bounded_by\`, $nbunused of them silencing nothing"
 } >&2

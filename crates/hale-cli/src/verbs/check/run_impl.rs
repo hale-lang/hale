@@ -216,8 +216,10 @@ fn unit_report_place(
 
 /// `--report-unbounded-use`'s lines: `unbounded-use`, the decorator's
 /// `path:line` (the path relative to the working directory), the fn's
-/// name as the program spells it, and the survey sites and the hot-path
-/// warnings it silences, tab-separated, sorted by path and line.
+/// name as the program spells it, the survey sites and the hot-path
+/// warnings it silences, and the decorator (`unbounded`, or
+/// `bounded_by(<name>)` with the name as written, GH #1490),
+/// tab-separated, sorted by path and line.
 fn render_unbounded_use(
     rows: &[hale_types::alloc_summary::UnboundedUse],
     file_bases: &[(u32, std::path::PathBuf, u32)],
@@ -240,7 +242,11 @@ fn render_unbounded_use(
                 })
                 .unwrap_or_else(|| ("<unknown>".to_string(), 0));
             let name = demangler.demangle(&u.key.display());
-            let text = format!("unbounded-use\t{path}:{line}\t{name}\t{}\t{}\n", u.survey, u.hot_path);
+            let deco = match &u.bounded_by {
+                Some(bound) => format!("bounded_by({bound})"),
+                None => "unbounded".to_string(),
+            };
+            let text = format!("unbounded-use\t{path}:{line}\t{name}\t{}\t{}\t{deco}\n", u.survey, u.hot_path);
             ((path, line, name), text)
         })
         .collect();
@@ -899,12 +905,12 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     if let Ok(summary) = snap.demand_alloc_summary() {
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, survey_all));
     }
-    // GH #1490: which `@unbounded` decorators silence anything. One line
-    // per decorated fn or hook of the program (its imported seeds'
-    // included), with the survey sites and hot-path warnings it drops,
-    // on stdout, so a script can aggregate across every program that
-    // compiles a shared seed. It changes nothing the check reports or
-    // its exit code.
+    // GH #1490: which `@unbounded` / `@bounded_by` decorators silence
+    // anything. One line per decorated fn or hook of the program (its
+    // imported seeds' included), with the survey sites and hot-path
+    // warnings it drops, on stdout, so a script can aggregate across
+    // every program that compiles a shared seed. It changes nothing the
+    // check reports or its exit code.
     if std::env::args().any(|a| a == "--report-unbounded-use") {
         match (snap.demand_alloc_summary(), snap.demand_scope()) {
             (Ok(summary), Ok(top)) => {

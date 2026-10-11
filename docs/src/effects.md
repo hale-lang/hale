@@ -103,13 +103,16 @@ cannot be enforced. `@unbounded` says "there is an allocation here and I
 mean it"; `@hot`, `@effects(none: {alloc})` and
 `@budget(alloc_per_call = 0)` each say "there is none" — so pairing
 `@unbounded` with any of those is an error, as is writing the same
-decorator twice. A per-call ceiling *above* zero is fine next to
-`@unbounded`: "at most two allocations per call, and their aggregate
-growth is intended" is a coherent thing to say about a cache.
+decorator twice. `@bounded_by(<name>)`, which silences what `@unbounded`
+silences and names the input that bounds the growth, meets the same
+three, and is an error beside `@unbounded` itself. A per-call ceiling
+*above* zero is fine next to `@unbounded`: "at most two allocations per
+call, and their aggregate growth is intended" is a coherent thing to say
+about a cache.
 
-A lifecycle hook takes `@unbounded` and nothing else — a hook is
-one-shot, so a per-call budget has no calls to divide by. Put the other
-contracts on a `fn` the hook calls.
+A lifecycle hook takes `@unbounded` or `@bounded_by(<name>)`, once, and
+nothing else — a hook is one-shot, so a per-call budget has no calls to
+divide by. Put the other contracts on a `fn` the hook calls.
 
 `@deterministic` is the one to know for replay: a fn that reads no
 clock, no randomness and no environment is a function of its inputs,

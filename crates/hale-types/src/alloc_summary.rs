@@ -931,10 +931,17 @@ pub struct AllocSummary {
     /// propagation is the same engine, this is how a leaf says what it
     /// is.
     pub carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet>,
-    /// Fns carrying `@unbounded` — an acknowledged-intentional
-    /// accumulation. Their leak sites are dropped entirely (the
-    /// greppable carve-out), even under the survey flag.
+    /// Fns carrying `@unbounded` or `@bounded_by(<name>)` — an
+    /// acknowledged-intentional accumulation. Their leak sites are
+    /// dropped entirely (the greppable carve-out), even under the survey
+    /// flag, and the hot-path lint's warnings in them with them. One
+    /// set, so the two decorators are one rule.
     pub unbounded_fns: BTreeSet<FnKey>,
+    /// GH #1490: the fns of `unbounded_fns` that carry
+    /// `@bounded_by(<name>)`, with the name as written — the input that
+    /// bounds the growth. Read for display only (`--dump-alloc-summary`,
+    /// `--report-unbounded-use`); no verdict reads it.
+    pub bounded_by: BTreeMap<FnKey, String>,
     /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
     /// projection cap. Keyed by locus name.
     pub locus_shapes: BTreeMap<String, LocusShape>,
@@ -1234,6 +1241,7 @@ impl AllocSummary {
             sync_forms: self.sync_forms.iter().filter(|l| own_locus(l)).cloned().collect(),
             carries: self.carries.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), *v)).collect(),
             unbounded_fns: self.unbounded_fns.iter().filter(|k| own_key(k)).cloned().collect(),
+            bounded_by: self.bounded_by.iter().filter(|(k, _)| own_key(k)).map(|(k, b)| (k.clone(), b.clone())).collect(),
             locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
             reached: None,
             analysis_copy: BTreeSet::new(),
@@ -1732,6 +1740,10 @@ impl AllocSummary {
             if let Some(Frame::ScratchLocal { recursive }) = f.frame {
                 tags.push(if recursive { "scratch-local, recursive" } else { "scratch-local" }.to_string());
             }
+            // GH #1490: the input a `@bounded_by(<name>)` says bounds it.
+            if let Some(bound) = self.bounded_by.get(&f.key) {
+                tags.push(format!("bounded_by({bound})"));
+            }
             let tag = if tags.is_empty() { String::new() } else { format!("   [{}]", tags.join(", ")) };
             out.push_str(&format!("fn {}{}\n", f.key.display(), tag));
             if f.sites.is_empty() && f.calls.is_empty() && f.loops.is_empty() {
@@ -2052,6 +2064,18 @@ pub fn summarize_identified(
     let mut sync_forms: BTreeSet<String> = BTreeSet::new();
     let mut carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet> = BTreeMap::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    let mut bounded_by: BTreeMap<FnKey, String> = BTreeMap::new();
+    // `@unbounded` and `@bounded_by(<name>)` silence the same things: a
+    // fn carrying either joins `unbounded_fns`, and the bound is kept
+    // beside it for display.
+    let mut silence = |key: &FnKey, unbounded: bool, bound: &Option<String>| {
+        if unbounded || bound.is_some() {
+            unbounded_fns.insert(key.clone());
+        }
+        if let Some(b) = bound {
+            bounded_by.insert(key.clone(), b.clone());
+        }
+    };
     let mut analysis_copy_loci: BTreeSet<String> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
@@ -2258,9 +2282,7 @@ pub fn summarize_identified(
                         }
                     }
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
-                    if decl.unbounded {
-                        unbounded_fns.insert(key.clone());
-                    }
+                    silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
                     bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
                 }
@@ -2367,9 +2389,7 @@ pub fn summarize_identified(
                                 } else {
                                     None
                                 };
-                                if decl.unbounded {
-                                    unbounded_fns.insert(key.clone());
-                                }
+                                silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -2392,9 +2412,7 @@ pub fn summarize_identified(
                             LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let (name, entry) = lifecycle_key(lc.kind);
                                 let key = FnKey::method(DeclId::of(universe, lc.id), locus.clone(), name);
-                                if lc.unbounded {
-                                    unbounded_fns.insert(key.clone());
-                                }
+                                silence(&key, lc.unbounded, &lc.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -2807,6 +2825,7 @@ pub fn summarize_identified(
     summary.sync_forms = sync_forms;
     summary.carries = carries;
     summary.unbounded_fns = unbounded_fns;
+    summary.bounded_by = bounded_by;
     summary.locus_shapes = locus_shapes;
 
     // #392 — interface dispatch. A method call on an interface-typed
@@ -3600,16 +3619,19 @@ pub fn silenced_advisory_leak_sites(
         .collect()
 }
 
-/// One `@unbounded` decorator of the program, and what it silences
-/// (`hale check --report-unbounded-use`).
+/// One `@unbounded` or `@bounded_by(<name>)` decorator of the program,
+/// and what it silences (`hale check --report-unbounded-use`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnboundedUse {
     /// The decorated fn or lifecycle hook.
     pub key: FnKey,
-    /// Where the decorator is written: the `@unbounded` of a fn, or the
-    /// start of a hook's declaration, which a hook's decorator opens
-    /// (a hook takes no other).
+    /// Where the decorator is written: the `@unbounded` or `@bounded_by`
+    /// of a fn, or the start of a hook's declaration, which a hook's
+    /// decorator opens (a hook takes no other).
     pub at: Span,
+    /// GH #1490: `Some(name)` for `@bounded_by(<name>)`, `None` for
+    /// `@unbounded`.
+    pub bounded_by: Option<String>,
     /// The survey's sites it silences ([`silenced_advisory_leak_sites`]):
     /// what the default whole-program survey would warn in the fn were
     /// the decorator removed.
@@ -3619,10 +3641,10 @@ pub struct UnboundedUse {
     pub hot_path: usize,
 }
 
-/// Every `@unbounded` fn and lifecycle hook the program's own source
-/// declares (its imported seeds' included, the stdlib's analysis copy
-/// and the appended api runtime aside, [`AllocSummary::is_own`]), with
-/// the survey sites it silences and `hot_path`'s count for it, in the
+/// Every `@unbounded` and `@bounded_by(<name>)` fn and lifecycle hook the
+/// program's own source declares (its imported seeds' included, the
+/// stdlib's analysis copy and the appended api runtime aside,
+/// [`AllocSummary::is_own`]), with the survey sites it silences and `hot_path`'s count for it, in the
 /// order the declarations are written.
 pub fn unbounded_uses(
     summary: &AllocSummary,
@@ -3636,31 +3658,35 @@ pub fn unbounded_uses(
         *survey.entry(ls.owner).or_default() += 1;
     }
     let mut out = Vec::new();
-    let mut push = |key: FnKey, at: Span| {
+    let mut push = |key: FnKey, at: Span, bounded_by: &Option<String>| {
         if summary.is_own(&key) {
             let (survey, hot_path) =
                 (survey.get(&key).copied().unwrap_or(0), hot_path.get(&key).copied().unwrap_or(0));
-            out.push(UnboundedUse { key, at, survey, hot_path });
+            out.push(UnboundedUse { key, at, bounded_by: bounded_by.clone(), survey, hot_path });
         }
     };
+    // A fn's decorator: the one `@unbounded` or `@bounded_by` written
+    // (the check refuses both together).
+    let written = |f: &FnDecl| {
+        f.decorators.iter().find(|d| d.name == "unbounded" || d.name == "bounded_by").map_or(f.span, |d| d.span)
+    };
+    let silenced = |f: &FnDecl| f.unbounded || f.bounded_by.is_some();
     for p in programs {
         for item in flat_decls(&p.items) {
             match item {
-                TopDecl::Fn(f) if f.unbounded => {
-                    let at = f.decorators.iter().find(|d| d.name == "unbounded").map_or(f.span, |d| d.span);
-                    push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), at);
+                TopDecl::Fn(f) if silenced(f) => {
+                    push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), written(f), &f.bounded_by);
                 }
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         match m {
-                            LocusMember::Fn(f) if f.unbounded => {
-                                let at =
-                                    f.decorators.iter().find(|d| d.name == "unbounded").map_or(f.span, |d| d.span);
-                                push(FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone()), at);
+                            LocusMember::Fn(f) if silenced(f) => {
+                                let key = FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone());
+                                push(key, written(f), &f.bounded_by);
                             }
-                            LocusMember::Lifecycle(lc) if lc.unbounded => {
+                            LocusMember::Lifecycle(lc) if lc.unbounded || lc.bounded_by.is_some() => {
                                 let key = FnKey::method(DeclId::user(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
-                                push(key, lc.span);
+                                push(key, lc.span, &lc.bounded_by);
                             }
                             _ => {}
                         }
@@ -6732,6 +6758,48 @@ mod tests {
             plain_advisory(&[&program], &ids, &[], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
+    }
+
+    /// GH #1490: `@bounded_by(<name>)` silences what `@unbounded`
+    /// silences — the same set, one rule — and the summary keeps the
+    /// name, which the dump prints beside the fn.
+    #[test]
+    fn bounded_by_carves_out_as_unbounded_does() {
+        for deco in ["@bounded_by(record)", "@bounded_by(self.open_requests)"] {
+            let src = format!(
+                r#"
+            type Q {{ a: Int; }}
+            @bounded locus C {{
+                {deco} run {{ while true {{ let q = Q {{ a: 1 }}; }} }}
+                {deco} fn grow() {{ while true {{ let q = Q {{ a: 2 }}; }} }}
+            }}
+            fn main() {{ }}
+        "#
+            );
+            let (program, ids) = minted(&src);
+            assert!(plain_advisory(&[&program], &ids, &[], true).is_empty(), "{deco}: silenced under the survey");
+            assert!(plain_advisory(&[&program], &ids, &[], false).is_empty(), "{deco}: silenced in @bounded scope");
+            let s = summarize(&src);
+            let bound = deco.trim_start_matches("@bounded_by(").trim_end_matches(')');
+            for name in ["run", "grow"] {
+                let key = named(&s, Some("C"), name);
+                assert!(s.unbounded_fns.contains(&key), "{deco}: `{name}` is in the one silenced set");
+                assert_eq!(s.bounded_by.get(&key).map(String::as_str), Some(bound));
+                assert!(
+                    s.render().lines().any(|l| l.starts_with(&format!("fn {}", key.display()))
+                        && l.contains(&format!("bounded_by({bound})"))),
+                    "{deco}: the dump shows the bound beside `{name}`:\n{}",
+                    s.render()
+                );
+            }
+        }
+        // The `@unbounded` spelling of the same program records no bound.
+        let s = summarize(
+            "type Q { a: Int; }\n@bounded locus C { @unbounded run { while true { let q = Q { a: 1 }; } } }\nfn main() { }",
+        );
+        assert_eq!(s.unbounded_fns.len(), 1);
+        assert!(s.bounded_by.is_empty());
+        assert!(!s.render().contains("bounded_by("));
     }
 
     /// F.40 phase 2 review F1: a finding is dropped per site, when the

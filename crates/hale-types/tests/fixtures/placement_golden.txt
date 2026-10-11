@@ -510,6 +510,12 @@ dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 row	Acc@main1	Acc	main	default
 row	Src@main2	Src	main	default
 
+== crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl#562ea9e3
+row	Acc@main1	Acc	main	default
+row	Fan@main2	Fan	main	default
+row	Src@main3	Src	main	default
+dynamic	Conn	on main	in the seed
+
 == crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl#a3cbc405
 row	Acc@main1	Acc	main	default
 row	Src@main2	Src	main	default
@@ -4858,6 +4864,9 @@ row	~.leaf	Leaf	main	inherited
 
 == crates/hale-types/tests/hot_path_alloc.rs#209b55a3
 dynamic	Conn	on main	in the seed
+
+== crates/hale-types/tests/hot_path_alloc.rs#a25020b2
+dynamic	Conn	on main|unknown (no instance)	in the seed
 
 == crates/hale-types/tests/hot_path_alloc.rs#39fccec9
 

@@ -627,6 +627,43 @@ fn main() { spawn_many(3); }
     assert!(w.is_empty(), "@unbounded fn must silence the advisory, got: {:?}", w);
 }
 
+/// GH #1490: `@bounded_by(<name>)` silences the advisory exactly as
+/// `@unbounded` does, on a hook and on a fn.
+#[test]
+fn bounded_by_silences_locus_in_loop_advisory() {
+    let src = r#"
+locus Conn { run() { } }
+
+locus Server {
+    params { fan: Int = 4; }
+    @bounded_by(self.fan)
+    run() {
+        let mut n = 0;
+        while n < self.fan {
+            let c = Conn { };
+            n = n + 1;
+        }
+    }
+}
+
+@bounded_by(n)
+fn spawn_many(n: Int) {
+    let mut i = 0;
+    while i < n {
+        let c = Conn { };
+        i = i + 1;
+    }
+}
+
+fn main() { spawn_many(3); }
+"#;
+    let w = warnings(src);
+    assert!(w.is_empty(), "@bounded_by must silence the advisory, got: {:?}", w);
+    // Without it, both warn: the silence is the decorator's.
+    let bare = src.replace("@bounded_by(self.fan)", "").replace("@bounded_by(n)", "");
+    assert_eq!(warnings(&bare).len(), 2, "{:?}", warnings(&bare));
+}
+
 // (`@hot` and `@unbounded` cannot stack — the parser admits only
 // `@budget` after `@hot` — so "hot still errors under unbounded" has
 // no representable program; the `emit` gate keeps the precedence

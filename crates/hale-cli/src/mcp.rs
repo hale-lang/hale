@@ -280,7 +280,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "hale_enforcement",
-            "description": "Every user fn/method with its @hot / @budget / fallible / @unbounded contract — the certification map to consult before touching a hot path.",
+            "description": "Every user fn/method with its @hot / @budget / fallible / @unbounded / @bounded_by contract — the certification map to consult before touching a hot path.",
             "inputSchema": path_schema("A file in the seed to analyze.")
         }),
         json!({

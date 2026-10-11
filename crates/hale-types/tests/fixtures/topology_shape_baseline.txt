@@ -35,6 +35,7 @@ crates/hale-cli/tests/ffi_export_reentry.rs#2 367067d4491c583a
 crates/hale-cli/tests/fixtures/api_clients/main.hl b04fa4b898f028b3
 crates/hale-cli/tests/fixtures/api_description/main.hl 0891de1d9f60f8e5
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
+crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl 4d85266ab5ef7e98
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl 8f5063eb4b200eb0
@@ -1666,10 +1667,11 @@ crates/hale-types/tests/hot_path_alloc.rs#17 b1f059c2b92900ae
 crates/hale-types/tests/hot_path_alloc.rs#18 ab273330600fc920
 crates/hale-types/tests/hot_path_alloc.rs#19 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#20 7e39a961fbd87bc6
-crates/hale-types/tests/hot_path_alloc.rs#22 234c5f1f87e43729
-crates/hale-types/tests/hot_path_alloc.rs#23 57668da480423fea
-crates/hale-types/tests/hot_path_alloc.rs#24 d58a6f68d4edfc90
+crates/hale-types/tests/hot_path_alloc.rs#21 fad5d045323aa1f3
+crates/hale-types/tests/hot_path_alloc.rs#23 234c5f1f87e43729
+crates/hale-types/tests/hot_path_alloc.rs#24 57668da480423fea
 crates/hale-types/tests/hot_path_alloc.rs#25 d58a6f68d4edfc90
+crates/hale-types/tests/hot_path_alloc.rs#26 d58a6f68d4edfc90
 crates/hale-types/tests/hot_path_alloc.rs#4 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#7 8b5c9b6ca27eb054

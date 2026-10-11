@@ -51,6 +51,18 @@ pub fn parse_in(
     }
 }
 
+/// GH #1490: the refusal of `@bounded_by(<name>)` beside `@unbounded` on
+/// one fn or hook (`what`: "this hook", "`f`"). The parser says it of a
+/// hook, the check of a fn; the sentence is one.
+pub fn bounded_by_with_unbounded(what: &str) -> String {
+    format!(
+        "`@unbounded` and `@bounded_by(...)` on {what}: both silence the \
+         same warnings, and they say opposite things about the growth. Keep \
+         `@bounded_by(<name>)` when you know the input that bounds it, \
+         `@unbounded` while it is not yet understood."
+    )
+}
+
 /// GH #723: the fn-level contract decorators collected from one run.
 ///
 /// `@unbounded` (the memory-bound advisory carve-out), `@hot` (hot-path
@@ -63,6 +75,9 @@ pub fn parse_in(
 #[derive(Default)]
 struct FnDecorators {
     unbounded: bool,
+    /// GH #1490: `@bounded_by(<name>)` — the first one written; a second
+    /// is kept in `written` for the check's duplicate rule.
+    bounded_by: Option<String>,
     hot: bool,
     budget: Option<u32>,
     /// GH #1417: `@rpc` / `@rpc(requires: [R, …])`.
@@ -94,6 +109,7 @@ impl FnDecorators {
     /// clause spelled with the fn decorators' syntax.
     fn is_contract_free(&self) -> bool {
         !self.unbounded
+            && self.bounded_by.is_none()
             && !self.hot
             && self.budget.is_none()
             && self.quantities.is_empty()
@@ -114,6 +130,9 @@ impl FnDecorators {
     fn apply_to_fn(self, fn_decl: &mut FnDecl) {
         if self.unbounded {
             fn_decl.unbounded = true;
+        }
+        if self.bounded_by.is_some() {
+            fn_decl.bounded_by = self.bounded_by;
         }
         if self.hot {
             fn_decl.hot = true;
@@ -3033,6 +3052,7 @@ impl Parser {
     /// what it promises, and each is exclusive with the other.
     fn is_fn_decorator(name: &str) -> bool {
         name == "unbounded"
+            || name == "bounded_by"
             || name == "hot"
             || name == "budget"
             || name == "gated"
@@ -3084,6 +3104,14 @@ impl Parser {
                 out.rpc = Some(attr);
                 continue;
             }
+            if name == "bounded_by" {
+                let (bound, bspan) = self.parse_bounded_by_annotation()?;
+                if out.bounded_by.is_none() {
+                    out.bounded_by = Some(bound);
+                }
+                out.note("bounded_by", bspan);
+                continue;
+            }
             if name == "budget" {
                 let (alloc, dims, bspan) = self.parse_budget_full()?;
                 if alloc.is_some() {
@@ -3122,6 +3150,48 @@ impl Parser {
             out.note(&name, at.span);
         }
         Ok(out)
+    }
+
+    /// GH #1490: `@bounded_by(<name>)` — the input that bounds a fn's or
+    /// hook's growth. Returns the name as written (an identifier or a
+    /// dotted name, `record` or `self.open_requests`; a keyword is
+    /// admitted as a segment, since the name is documentation and is
+    /// never resolved) and the annotation's span.
+    ///
+    /// Grammar: `'@' 'bounded_by' '(' NAME ('.' NAME)* ')'`.
+    fn parse_bounded_by_annotation(&mut self) -> Result<(String, Span), Diag> {
+        const SHAPE: &str = "`@bounded_by` takes one argument, the input that \
+                             bounds the growth: `@bounded_by(record)`, \
+                             `@bounded_by(open_requests)`. Write `@unbounded` \
+                             instead while the bound is not yet understood.";
+        let at = self.expect(TokenKind::At, "@")?;
+        let kw = self.bump(); // `bounded_by`
+        if !self.at(&TokenKind::LParen) {
+            return Err(Diag::parse(at.span.merge(kw.span), SHAPE));
+        }
+        self.bump();
+        let mut name = String::new();
+        loop {
+            let tok = self.peek_token().clone();
+            let seg = match &tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                other => match other.keyword_lexeme() {
+                    Some(kw) => kw.to_string(),
+                    None => return Err(Diag::parse(tok.span, SHAPE)),
+                },
+            };
+            self.bump();
+            name.push_str(&seg);
+            if !self.eat(&TokenKind::Dot) {
+                break;
+            }
+            name.push('.');
+        }
+        if !self.at(&TokenKind::RParen) {
+            return Err(Diag::parse(self.peek_token().span, SHAPE));
+        }
+        let close = self.bump();
+        Ok((name, at.span.merge(close.span)))
     }
 
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -3786,6 +3856,8 @@ impl Parser {
                         "the only `@` annotations valid on a locus member are \
                          `@unbounded` (on a `fn` or a lifecycle hook — \
                          acknowledge an intentionally-unbounded body), \
+                         `@bounded_by(<name>)` (where `@unbounded` goes — \
+                         name the input that bounds the growth), \
                          `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
                          allocation contract), `@hot` (on a `fn` — \
                          hot-path certification, promotes the hot-path lint \
@@ -3822,39 +3894,47 @@ impl Parser {
                     | TokenKind::Run
                     | TokenKind::Drain
                     | TokenKind::Dissolve => {
-                        // A lifecycle hook takes `@unbounded` and
-                        // nothing else: a hook is one-shot (so a
-                        // per-call ceiling has no calls to divide by)
-                        // and it is not a fn a caller can assert over.
-                        // `LifecycleDecl` therefore carries the one
-                        // flag rather than a decorator list, which is
-                        // also why a repeat is caught here instead of
-                        // at check time.
-                        if let Some((i, d)) = decos
-                            .written
-                            .iter()
-                            .enumerate()
-                            .find(|(i, d)| *i > 0 || d.name != "unbounded")
-                        {
+                        // A lifecycle hook takes `@unbounded` or
+                        // `@bounded_by(<name>)` (GH #1490) and nothing
+                        // else: a hook is one-shot (so a per-call ceiling
+                        // has no calls to divide by) and it is not a fn a
+                        // caller can assert over. `LifecycleDecl`
+                        // therefore carries the flag and the bound rather
+                        // than a decorator list, which is also why a
+                        // repeat or the pair is caught here instead of at
+                        // check time.
+                        let silencer = |n: &str| n == "unbounded" || n == "bounded_by";
+                        if let Some(d) = decos.written.iter().find(|d| !silencer(&d.name)) {
                             return Err(Diag::parse(
                                 d.span,
-                                if i > 0 && d.name == "unbounded" {
-                                    "duplicate `@unbounded` on a lifecycle \
-                                     hook — state it once"
-                                        .to_string()
-                                } else {
+                                format!(
+                                    "`@{}` can't precede a lifecycle hook \
+                                     — a hook takes `@unbounded` or \
+                                     `@bounded_by(<name>)` and nothing \
+                                     else. Put the other contracts on a \
+                                     `fn` the hook calls.",
+                                    d.name
+                                ),
+                            ));
+                        }
+                        if let Some(d) = decos.written.get(1) {
+                            let first = &decos.written[0].name;
+                            return Err(Diag::parse(
+                                d.span,
+                                if &d.name == first {
                                     format!(
-                                        "`@{}` can't precede a lifecycle hook \
-                                         — a hook takes `@unbounded` and \
-                                         nothing else. Put the other \
-                                         contracts on a `fn` the hook calls.",
+                                        "duplicate `@{}` on a lifecycle \
+                                         hook — state it once",
                                         d.name
                                     )
+                                } else {
+                                    bounded_by_with_unbounded("this hook")
                                 },
                             ));
                         }
                         let mut lc = self.parse_lifecycle_decl()?;
-                        lc.unbounded = true;
+                        lc.unbounded = decos.unbounded;
+                        lc.bounded_by = decos.bounded_by;
                         if let Some(s) = decos.span {
                             lc.span = s.merge(lc.span);
                         }
@@ -3864,7 +3944,8 @@ impl Parser {
                         self.peek_token().span,
                         format!(
                             "expected `fn` after {} (or a lifecycle hook \
-                             — `run`, `birth`, … — after `@unbounded`)",
+                             — `run`, `birth`, … — after `@unbounded` or \
+                             `@bounded_by(<name>)`)",
                             decos.written_list()
                         ),
                     )),
@@ -5519,6 +5600,7 @@ impl Parser {
             params,
             ret,
             unbounded: false,
+            bounded_by: None,
             span: kw_tok.span.merge(body.span),
             body,
             id: NodeId::NONE,
@@ -6363,6 +6445,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
+                bounded_by: None,
                                 rpc: None,
                 budget: None,
                 hot: false,
@@ -6394,6 +6477,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
+                bounded_by: None,
                                 rpc: None,
                 budget: None,
                 hot: false,
@@ -6421,6 +6505,7 @@ impl Parser {
             ffi,
             export: false,
             unbounded: false,
+            bounded_by: None,
                         rpc: None,
             budget: None,
             hot: false,
@@ -9134,6 +9219,82 @@ locus L {
             msg.contains("duplicate `@unbounded` on a lifecycle hook"),
             "wrong error: {msg}"
         );
+    }
+
+    // === GH #1490: @bounded_by(<name>) ====================
+
+    /// The messages of `src`'s parse refusal, one per line.
+    fn refusal(src: &str) -> String {
+        let err = parse_str(src).expect_err(src);
+        err.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `@bounded_by(<name>)` records the name as written — an identifier
+    /// or a dotted name, a keyword admitted as a segment — on a free fn,
+    /// a method and a lifecycle hook, and stacks with the other fn
+    /// contracts.
+    #[test]
+    fn parse_bounded_by_records_the_name() {
+        let src = r#"
+@bounded_by(record) fn mirror() { }
+locus L {
+    @no_syscall @bounded_by(open_requests) fn handle() { }
+    @bounded_by(self.queue.len) run() { }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let TopDecl::Fn(f) = &prog.items[0] else { panic!("expected fn") };
+        assert_eq!(f.bounded_by.as_deref(), Some("record"));
+        assert!(!f.unbounded, "`@bounded_by` is not `@unbounded`");
+        let names: Vec<&str> = f.decorators.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["bounded_by"]);
+        let TopDecl::Locus(l) = &prog.items[1] else { panic!("expected locus") };
+        let LocusMember::Fn(h) = &l.members[0] else { panic!("expected method") };
+        assert_eq!(h.bounded_by.as_deref(), Some("open_requests"));
+        assert_eq!(h.effects.len(), 1, "stacks with `@no_syscall`");
+        let LocusMember::Lifecycle(lc) = &l.members[1] else { panic!("expected hook") };
+        assert_eq!(lc.bounded_by.as_deref(), Some("self.queue.len"));
+        assert!(!lc.unbounded);
+    }
+
+    /// One argument, a name: a missing or empty argument, two of them,
+    /// or something that is not a name is refused, and the refusal
+    /// says what to write.
+    #[test]
+    fn parse_bounded_by_refuses_a_missing_or_malformed_argument() {
+        for src in [
+            "@bounded_by fn f() { }",
+            "@bounded_by() fn f() { }",
+            "@bounded_by(a, b) fn f() { }",
+            "@bounded_by(1) fn f() { }",
+            "@bounded_by(a.) fn f() { }",
+            "@bounded_by(\"record\") fn f() { }",
+            "locus L { @bounded_by run() { } }",
+        ] {
+            let msg = refusal(src);
+            assert!(msg.contains("`@bounded_by` takes one argument"), "{src}: wrong error: {msg}");
+        }
+    }
+
+    /// A hook carries the flag and the bound, not a decorator list, so
+    /// its repeat and the `@unbounded` pair are refused where it parses.
+    #[test]
+    fn parse_bounded_by_on_a_hook_refuses_a_repeat_and_unbounded() {
+        let msg = refusal("locus L { @bounded_by(a) @bounded_by(b) run() { } }");
+        assert!(msg.contains("duplicate `@bounded_by` on a lifecycle hook"), "wrong error: {msg}");
+        for src in [
+            "locus L { @unbounded @bounded_by(a) run() { } }",
+            "locus L { @bounded_by(a) @unbounded run() { } }",
+        ] {
+            let msg = refusal(src);
+            assert!(
+                msg.contains("`@unbounded` and `@bounded_by(...)` on this hook")
+                    && msg.contains("Keep `@bounded_by(<name>)` when you know"),
+                "{src}: wrong error: {msg}"
+            );
+        }
+        let msg = refusal("locus L { @hot @bounded_by(a) run() { } }");
+        assert!(msg.contains("a hook takes `@unbounded` or `@bounded_by(<name>)`"), "wrong error: {msg}");
     }
 
     // === Lever 2: @budget(alloc_per_call = N) =============
