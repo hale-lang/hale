@@ -2698,18 +2698,32 @@ assume the others in a build:
   proven by provenance, never assumed: the walk tracks which fields of
   `self` every binding may carry — what it was bound with and every
   write into it (whole, or through a field or an element), and, for a
-  binding a loop writes, anything (a later iteration's write reaches an
-  earlier read) — and a value carries what its operands carry: a read
-  of `self.<f>` carries `f`, a free fn's or a builtin's call what its
+  binding a loop writes, what every iteration writes into it (replayed
+  to a fixpoint, since a later iteration's write reaches an earlier
+  read) — and a value carries what its operands carry: a read of
+  `self.<f>` carries `f`, a free fn's or a builtin's call what its
   arguments carry (it reaches `self` only through them), a method of
-  another receiver its receiver's and arguments'. A method of `self`,
-  `self` itself, a call through a local, an `if`, a `match` or a block
-  value, and any form the walk does not follow may carry every field.
-  So `let previous = self.log; self.log = previous + "x"`, `self.log =
-  self.previous() + "x"` and `self.log = wrap(self.log) + "x"` are
-  appends and reported, as `self.log = self.log + "x"` is; a value built
-  from params, other fields, `to_string` or a free fn of those is a
-  replace. The same rule judges a concatenation that is a whole field
+  another receiver its receiver's and arguments', an `if` whose arms
+  are values one of its arms'. A method of `self`, `self` itself, a
+  call through a local, a `match`, an arm or block with statements in
+  it, and any form the walk does not follow may carry every field.
+  A parameter carries what its callers pass, over every call the
+  survey sees, to a fixpoint (a value passed down a chain of calls
+  keeps what it carries): from a call on `self`, what the argument
+  carries (the same instance); from a call on any other receiver,
+  every field when the argument carries anything of the caller's
+  `self` (the receiver may be the same instance); a call the survey
+  cannot resolve passing such an argument makes every method of that
+  name, or (through a function value) every free fn, carry every
+  field; a default that reads `self` does too. A parameter no call
+  passes — a bus handler's message, a hook's argument — carries
+  nothing. So `let previous = self.log; self.log = previous + "x"`,
+  `self.log = self.previous() + "x"`, `self.log = wrap(self.log) +
+  "x"` and `fn append(p: String) { self.log = p + "x"; }` called as
+  `self.append(self.log)` are appends and reported, as `self.log =
+  self.log + "x"` is; a value built from a handler's message, other
+  fields, `to_string`, a free fn of those, or a parameter every caller
+  passes such a value is a replace. The same rule judges a concatenation that is a whole field
   of a struct replaced whole, against the struct's field of `self`. Measured (`alloc_model_rss.rs`): 1M replaces in a method at
   lengths 6–55 stay at the 4.7 MB floor of near-constant lengths
   (before: 35.7 MB), a one-`String`-field struct at lengths 6–55 the

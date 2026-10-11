@@ -291,17 +291,27 @@ the field it replaces, is `retired_store` (store-latest, judged as Gap
 D: not reported from a frame with an activation boundary; reported in a
 `run()` loop, a scratchless frame, or as an append). The proof is field
 provenance (`Taint` in `alloc_summary.rs`): which fields of `self` each
-binding may carry, joined over every write into it and taken as
-anything for a binding a loop writes; a method of `self` and the forms
-the walk does not follow may carry anything. A first cut excused any
-value that did not spell `self.<f>` (review of #1502): `let previous =
-self.log; self.log = previous + "x"` and `self.log = self.previous() +
-"x"` append to the live value as `self.log = self.log + "x"` does, and
-were excused. DNA: 19 decorators now silence nothing in any program (0
-before; 29 under the first cut, the 10 more were values from methods of
-`self`, e.g. `self.error = "put: " + r.err.kind` with `r` a `self`
-method's result, which the walk cannot prove independent); `hale check`
-warning lines over every DNA program 590 -> 586 (the NATS adapter's two
-replaces, one test's, and `Ui::discovered`; the provenance rule adds
-none); the survey sites the decorators silence fall from 205 / 168 /
-176 / 156 to 167 / 134 / 147 / 122 (host, operations, api, core).
+binding may carry, joined over every write into it (a loop's writes
+replayed to a fixpoint), and what each parameter was passed by every
+call the survey sees (`resolve_param_provenance`: from a call on
+`self`, what the argument carries; from any other receiver, everything
+when the argument carries anything of the caller's `self`; nothing for
+a parameter no call passes, such as a handler's message); a method of
+`self` and the forms the walk does not follow may carry anything. Two
+review rounds of #1502 closed holes in this: a first cut excused any
+value that did not spell `self.<f>` (`let previous = self.log;
+self.log = previous + "x"`, `self.log = self.previous() + "x"`), a
+second took every parameter to carry nothing (`fn append(p: String) {
+self.log = p + "x"; }` called as `self.append(self.log)`); all append
+to the live value as `self.log = self.log + "x"` does. DNA, final:
+12 decorators silence nothing in any program (0 before; 29 under the
+first cut, 19 under the second; the difference is replaces whose value
+comes from a `self` method's result or a parameter some caller passes
+such a value, which the survey cannot prove independent, e.g.
+`self.error = what + ": " + e.kind` with `e` a database result);
+`hale check` warning lines over every DNA program 590 -> 587 (the NATS
+adapter's two replaces before, one now: `NatsConn::note` is passed
+`self.last_error` back and genuinely appends; one test's replace; and
+`Ui::discovered`); the survey sites the decorators silence fall from
+205 / 168 / 176 / 156 to 178 / 144 / 157 / 132 (host, operations, api,
+core).

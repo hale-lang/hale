@@ -196,37 +196,84 @@ fn is_string_type(te: &TypeExpr) -> bool {
     }
 }
 
-/// GH #1490 (step 4): which fields of `self` a value may carry — the
-/// provenance a field replace's independence is judged by. `Top` is a
-/// value the walk cannot trace (a method of `self`, `self` itself, a
-/// binding a loop rewrites, an expression form the walk does not
-/// follow): it may carry any field.
+/// GH #1490 (step 4): what a value may carry of `self` — the provenance
+/// a field replace's independence is judged by. A [`Src::Field`] is a
+/// field of the body's `self`; a [`Src::Param`] is whatever the body's
+/// parameter of that name was passed, which the callers decide
+/// ([`resolve_param_provenance`]). `Top` is a value the walk cannot
+/// trace (a method of `self`, `self` itself, a binding a loop rewrites,
+/// an expression form the walk does not follow): it may carry anything.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Src {
+    Field(String),
+    Param(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Taint {
+pub(crate) enum Taint {
     Top,
-    Fields(BTreeSet<String>),
+    Of(BTreeSet<Src>),
 }
 
 impl Taint {
     fn none() -> Self {
-        Taint::Fields(BTreeSet::new())
+        Taint::Of(BTreeSet::new())
+    }
+
+    fn field(f: &str) -> Self {
+        Taint::Of(BTreeSet::from([Src::Field(f.to_string())]))
+    }
+
+    fn param(p: &str) -> Self {
+        Taint::Of(BTreeSet::from([Src::Param(p.to_string())]))
     }
 
     fn join(self, other: Taint) -> Taint {
         match (self, other) {
-            (Taint::Fields(mut a), Taint::Fields(b)) => {
+            (Taint::Of(mut a), Taint::Of(b)) => {
                 a.extend(b);
-                Taint::Fields(a)
+                Taint::Of(a)
             }
             _ => Taint::Top,
         }
     }
 
-    /// May the value carry `self.<field>`?
+    /// Carries nothing at all.
+    fn is_none(&self) -> bool {
+        matches!(self, Taint::Of(s) if s.is_empty())
+    }
+
+    /// May the value carry `self.<field>` directly (a parameter is
+    /// answered once its callers are known)?
     fn may_carry(&self, field: &str) -> bool {
         match self {
             Taint::Top => true,
-            Taint::Fields(f) => f.contains(field),
+            Taint::Of(s) => s.contains(&Src::Field(field.to_string())),
+        }
+    }
+
+    /// The parameters it depends on.
+    fn params(&self) -> BTreeSet<String> {
+        match self {
+            Taint::Top => BTreeSet::new(),
+            Taint::Of(s) => s
+                .iter()
+                .filter_map(|x| match x {
+                    Src::Param(p) => Some(p.clone()),
+                    Src::Field(_) => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Replace each parameter by what it was passed (`of`).
+    fn substitute(&self, of: &dyn Fn(&str) -> Taint) -> Taint {
+        match self {
+            Taint::Top => Taint::Top,
+            Taint::Of(s) => s.iter().fold(Taint::none(), |t, x| match x {
+                Src::Field(f) => t.join(Taint::field(f)),
+                Src::Param(p) => t.join(of(p)),
+            }),
         }
     }
 }
@@ -516,6 +563,11 @@ pub struct AllocSite {
     /// A struct literal written as the whole right side of a
     /// `self.<field> = …` replace: the assignment statement's span.
     pub self_replace: Option<Span>,
+    /// GH #1490 (step 4): a field replace whose new value carries
+    /// nothing of the field but what the body's parameters were passed
+    /// (`(field, params)`): `retired_store` once every caller is shown
+    /// to pass none of it ([`resolve_param_provenance`]).
+    pub(crate) retire_if_params: Option<(String, BTreeSet<String>)>,
     pub span: Span,
 }
 
@@ -627,6 +679,12 @@ pub enum Callee {
 /// One call edge out of a body.
 #[derive(Debug, Clone)]
 pub struct CallEdge {
+    /// GH #1490 (step 4): what each argument may carry of the caller's
+    /// `self` and parameters ([`Taint`]).
+    pub(crate) arg_taints: Vec<Taint>,
+    /// GH #1490 (step 4): the call is a method of `self`, on the same
+    /// instance as the caller.
+    pub(crate) self_call: bool,
     pub callee: Callee,
     /// #341: the receiver's declared type name for a method call.
     ///
@@ -2172,6 +2230,16 @@ pub fn summarize_identified(
     // the String fields of every struct type and locus, so a `+` is
     // read as a concatenation by its operands' declared types.
     let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
+    // GH #1490 (step 4): parameters whose default reads `self` — what
+    // a caller that leaves them passes is its own `self`'s.
+    let mut self_default_params: BTreeSet<(FnKey, String)> = BTreeSet::new();
+    let note_self_defaults = |key: &FnKey, params: &[Param], out: &mut BTreeSet<(FnKey, String)>| {
+        for p in params {
+            if p.default.as_ref().is_some_and(mentions_self) {
+                out.insert((key.clone(), p.name.name.clone()));
+            }
+        }
+    };
     let mut str_fields: BTreeMap<String, BTreeMap<String, StrTy>> = BTreeMap::new();
     let universe_of = |ids: &crate::snapshot::Snapshot| {
         if is_stdlib_copy(ids) {
@@ -2428,6 +2496,7 @@ pub fn summarize_identified(
                     if decl.ret.as_ref().is_some_and(is_string_type) {
                         string_rets.insert(key.clone());
                     }
+                    note_self_defaults(&key, &decl.params, &mut self_default_params);
                     bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
                 }
                 TopDecl::Type(td) => {
@@ -2541,6 +2610,7 @@ pub fn summarize_identified(
                                 if decl.ret.as_ref().is_some_and(is_string_type) {
                                     string_rets.insert(key.clone());
                                 }
+                                note_self_defaults(&key, &decl.params, &mut self_default_params);
                                 bodies.push((
                                     key,
                                     &decl.body,
@@ -2841,7 +2911,7 @@ pub fn summarize_identified(
             string_rets: &string_rets,
             str_fields: &str_fields,
             strs: vec![str_params.iter().cloned().collect()],
-            taints: vec![params.iter().map(|p| (p.clone(), Taint::none())).collect()],
+            taints: vec![params.iter().map(|p| (p.clone(), Taint::param(p))).collect()],
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -3254,7 +3324,135 @@ pub fn summarize_identified(
         summary.reached = Some(reached);
     }
     summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
+    let param_order: BTreeMap<FnKey, Vec<String>> =
+        bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
+    resolve_param_provenance(&mut summary, &param_order, &self_default_params);
     summary
+}
+
+/// GH #1490 (step 4): does `e` mention `self`? Conservative: a form this
+/// does not walk answers yes.
+fn mentions_self(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => false,
+        Expr::KwSelf(_) => true,
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => mentions_self(receiver),
+        Expr::Binary { left, right, .. } => mentions_self(left) || mentions_self(right),
+        Expr::Unary { operand, .. } => mentions_self(operand),
+        Expr::Index { receiver, index, .. } => mentions_self(receiver) || mentions_self(index),
+        Expr::Call { callee, args, .. } => mentions_self(callee) || args.iter().any(mentions_self),
+        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().any(mentions_self),
+        Expr::Struct { inits, .. } => inits.iter().any(|si| mentions_self(&si.value)),
+        _ => true,
+    }
+}
+
+/// GH #1490 (step 4): what each parameter of each body may have been
+/// passed, from every call the summary sees, and the field replaces that
+/// depended on it settled.
+///
+/// A parameter's provenance is the join, over every call of its fn, of
+/// what the argument carries with the caller's own parameters replaced
+/// by theirs (iterated to a fixpoint, so a value passed down a chain of
+/// calls keeps what it carries). A method called on `self` is the same
+/// instance: the argument's fields are the callee's. A method called on
+/// any other receiver may be the same instance or not: an argument
+/// carrying anything of the caller's `self` makes the parameter carry
+/// anything. A free fn has no `self`; what it is passed passes through
+/// to whatever it calls. A call the walk could not resolve passing such
+/// an argument makes every method of that name carry anything (a
+/// method call) or every free fn's parameters carry anything (a call
+/// through a function value), and a parameter whose default reads
+/// `self` carries anything. A parameter with no call — a bus handler's
+/// message, a hook's argument — carries nothing: the runtime passes a
+/// fresh value.
+///
+/// A field replace whose new value read only parameters then retires
+/// what it replaces when none of them may carry the field.
+fn resolve_param_provenance(
+    summary: &mut AllocSummary,
+    param_order: &BTreeMap<FnKey, Vec<String>>,
+    self_defaults: &BTreeSet<(FnKey, String)>,
+) {
+    let mut val: BTreeMap<(FnKey, String), Taint> =
+        self_defaults.iter().map(|k| (k.clone(), Taint::Top)).collect();
+    let mut tainted_methods: BTreeSet<String> = BTreeSet::new();
+    let mut unknown_flow = false;
+    loop {
+        let mut changed = false;
+        fn contribute(val: &mut BTreeMap<(FnKey, String), Taint>, k: (FnKey, String), t: Taint) -> bool {
+            if t.is_none() {
+                return false;
+            }
+            let old = val.get(&k).cloned().unwrap_or_else(Taint::none);
+            let new = old.clone().join(t);
+            if new != old {
+                val.insert(k, new);
+                return true;
+            }
+            false
+        }
+        for f in summary.fns.values() {
+            for e in &f.calls {
+                let args: Vec<Taint> = e
+                    .arg_taints
+                    .iter()
+                    .map(|t| t.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none)))
+                    .collect();
+                match &e.callee {
+                    Callee::Resolved(ck) => {
+                        let Some(names) = param_order.get(ck) else { continue };
+                        for (a, pn) in args.into_iter().zip(names) {
+                            let t = if ck.locus.is_none() {
+                                a
+                            } else if e.self_call && f.key.locus == ck.locus {
+                                a
+                            } else if a.is_none() {
+                                Taint::none()
+                            } else {
+                                Taint::Top
+                            };
+                            changed |= contribute(&mut val, (ck.clone(), pn.clone()), t);
+                        }
+                    }
+                    Callee::Unresolved(name) => {
+                        if args.iter().all(Taint::is_none) {
+                            continue;
+                        }
+                        if e.indirect {
+                            unknown_flow = true;
+                        } else if e.receiver_present && tainted_methods.insert(name.clone()) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        for (k, names) in param_order {
+            let all = if k.locus.is_some() { tainted_methods.contains(&k.fn_name) } else { unknown_flow };
+            if all {
+                for pn in names {
+                    changed |= contribute(&mut val, (k.clone(), pn.clone()), Taint::Top);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for f in summary.fns.values_mut() {
+        let key = f.key.clone();
+        for s in f.sites.iter_mut() {
+            if let Some((field, params)) = &s.retire_if_params {
+                if params
+                    .iter()
+                    .all(|p| !val.get(&(key.clone(), p.clone())).is_some_and(|t| t.may_carry(field)))
+                {
+                    s.retired_store = true;
+                }
+            }
+        }
+    }
 }
 
 /// GH #1490: the loci a program with a `fn main` can start — `None` when
@@ -4845,6 +5043,7 @@ impl<'a> Walker<'a> {
             in_loop: self.loops_as_written > 0,
             bare_stmt: false,
             self_replace: None,
+            retire_if_params: None,
             span,
         }
     }
@@ -5184,6 +5383,7 @@ impl<'a> Walker<'a> {
             in_loop: self.loops_as_written > 0,
             bare_stmt: false,
             self_replace: None,
+            retire_if_params: None,
             span,
         });
     }
@@ -5243,7 +5443,7 @@ impl<'a> Walker<'a> {
             Expr::KwSelf(_) => Taint::Top,
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
                 if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
-                    Taint::Fields(BTreeSet::from([name.name.clone()]))
+                    Taint::field(&name.name)
                 } else {
                     self.taint_of(receiver)
                 }
@@ -5283,7 +5483,27 @@ impl<'a> Walker<'a> {
                     _ => Taint::Top,
                 }
             }
+            // A value-only `if` (`if c { a } else { b }`, no statements in
+            // its arms): one of its arms' values. Its condition chooses
+            // and is not in the value.
+            Expr::If(ifs) => self.if_taint(ifs),
+            Expr::Block(b) if b.stmts.is_empty() => b.tail.as_deref().map_or(Taint::none(), |t| self.taint_of(t)),
             _ => Taint::Top,
+        }
+    }
+
+    fn if_taint(&self, ifs: &IfStmt) -> Taint {
+        let arm = |b: &Block| -> Taint {
+            if !b.stmts.is_empty() {
+                return Taint::Top;
+            }
+            b.tail.as_deref().map_or(Taint::none(), |t| self.taint_of(t))
+        };
+        let then = arm(&ifs.then_block);
+        match ifs.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => then.join(arm(b)),
+            Some(ElseBranch::ElseIf(e)) => then.join(self.if_taint(e)),
+            None => then,
         }
     }
 
@@ -5321,10 +5541,116 @@ impl<'a> Walker<'a> {
             self.unresolve(&name);
         }
         // GH #1490 (step 4): a binding the loop writes may carry, at any
-        // point of the loop, what a later iteration wrote into it: its
-        // provenance is not traced through the loop.
-        for name in loop_assigned_heads(cond, body) {
-            self.join_taint(&name, Taint::Top);
+        // point of the loop, what a later iteration wrote into it.
+        self.loop_taints(cond, body);
+    }
+
+    /// GH #1490 (step 4): join into each binding declared outside the
+    /// loop what any iteration writes into it, to a fixpoint: the body's
+    /// statements are replayed for provenance alone (its own `let`s bound
+    /// afresh each time) until no outside binding changes. A binding the
+    /// loop writes where the replay does not reach (inside an
+    /// expression's block) may carry anything.
+    fn loop_taints(&mut self, cond: Option<&Expr>, body: &Block) {
+        let heads = loop_assigned_heads(cond, body);
+        if heads.is_empty() {
+            return;
+        }
+        let base = self.taints.len();
+        let mut seen = BTreeMap::new();
+        let mut first = true;
+        loop {
+            let mut changed = false;
+            let mut pass = BTreeMap::new();
+            self.replay_block(body, base, &mut pass, &mut changed);
+            if first {
+                seen = pass;
+                first = false;
+            }
+            if !changed {
+                break;
+            }
+        }
+        // An assignment the replay did not reach (inside an expression's
+        // block): what it writes is not traced.
+        for (h, n) in &heads {
+            if seen.get(h) != Some(n) {
+                self.join_taint(h, Taint::Top);
+            }
+        }
+    }
+
+    fn replay_block(&mut self, b: &Block, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        self.taints.push(BTreeMap::new());
+        for st in &b.stmts {
+            self.replay_stmt(st, base, seen, changed);
+        }
+        self.taints.pop();
+    }
+
+    fn replay_stmt(&mut self, st: &Stmt, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        match st {
+            Stmt::Let { name, value, .. } => {
+                let t = self.taint_of(value);
+                self.bind_taint(&name.name, t);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let t = self.taint_of(value);
+                for n in names {
+                    self.bind_taint(&n.name, t.clone());
+                }
+            }
+            Stmt::Assign { target, value, .. } if target.head.name != "self" => {
+                let t = self.taint_of(value);
+                *seen.entry(target.head.name.clone()).or_default() += 1;
+                let name = &target.head.name;
+                if let Some(i) = self.taints.iter().rposition(|sc| sc.contains_key(name)) {
+                    let old = self.taints[i].get(name).cloned().unwrap_or_else(Taint::none);
+                    let new = old.clone().join(t);
+                    if new != old {
+                        self.taints[i].insert(name.clone(), new);
+                        if i < base {
+                            *changed = true;
+                        }
+                    }
+                }
+            }
+            Stmt::If(i) => self.replay_if(i, base, seen, changed),
+            Stmt::Match(m) => {
+                let t = self.taint_of(&m.scrutinee);
+                for arm in &m.arms {
+                    let mut bound = BTreeMap::new();
+                    pattern_bindings(&arm.pattern, &mut bound);
+                    self.taints.push(bound.keys().map(|n| (n.clone(), t.clone())).collect());
+                    if let MatchArmBody::Block(b) = &arm.body {
+                        self.replay_block(b, base, seen, changed);
+                    }
+                    self.taints.pop();
+                }
+            }
+            Stmt::For { name, iter, body, .. } => {
+                let t = self.taint_of(iter);
+                self.taints.push(BTreeMap::from([(name.name.clone(), t)]));
+                self.replay_block(body, base, seen, changed);
+                self.taints.pop();
+            }
+            Stmt::While { body, .. } => self.replay_block(body, base, seen, changed),
+            Stmt::Block(b) => self.replay_block(b, base, seen, changed),
+            Stmt::ShmWrite { binding, body, .. } => {
+                self.taints.push(BTreeMap::from([(binding.name.clone(), Taint::Top)]));
+                self.replay_block(body, base, seen, changed);
+                self.taints.pop();
+            }
+            _ => {}
+        }
+    }
+
+    fn replay_if(&mut self, i: &IfStmt, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        self.replay_block(&i.then_block, base, seen, changed);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.replay_block(b, base, seen, changed),
+            Some(ElseBranch::ElseIf(e)) => self.replay_if(e, base, seen, changed),
+            None => {}
         }
     }
 
@@ -5819,9 +6145,22 @@ impl<'a> Walker<'a> {
                     } else {
                         None
                     };
-                    let retired_store = target_field.as_deref().is_some_and(|f| {
-                        (retired_init || self.self_field_str(f) == StrTy::Str) && !self.taint_of(expr).may_carry(f)
-                    });
+                    // Independent of the field here; a parameter it reads is
+                    // answered by the callers, once all are known.
+                    let (retired_store, retire_if_params) = match target_field.as_deref() {
+                        Some(f) if retired_init || self.self_field_str(f) == StrTy::Str => {
+                            let t = self.taint_of(expr);
+                            let params = t.params();
+                            if t.may_carry(f) {
+                                (false, None)
+                            } else if params.is_empty() {
+                                (true, None)
+                            } else {
+                                (false, Some((f.to_string(), params)))
+                            }
+                        }
+                        _ => (false, None),
+                    };
                     self.sites.push(AllocSite {
                         kind: AllocKind::StringConcat,
                         escape,
@@ -5840,6 +6179,7 @@ impl<'a> Walker<'a> {
                         in_loop: self.loops_as_written > 0,
                         bare_stmt: false,
                         self_replace: None,
+                        retire_if_params,
                         span,
                     });
                 }
@@ -5848,7 +6188,7 @@ impl<'a> Walker<'a> {
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, args.len(), *span, depth, escape);
+                self.record_call(callee, args, *span, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -5916,7 +6256,13 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, arity: usize, span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, depth: u32, escape: Escape) {
+        let arity = args.len();
+        // GH #1490 (step 4): what each argument carries, for the callee's
+        // parameters' provenance, and whether the call is on `self`.
+        let arg_taints: Vec<Taint> = args.iter().map(|a| self.taint_of(a)).collect();
+        let self_call = matches!(callee, Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)));
         let mut recv_ty: Option<String> = None;
         let mut receiver_present = false;
         let mut via_local: Option<String> = None;
@@ -6036,6 +6382,8 @@ impl<'a> Walker<'a> {
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),
             span,
             callee_span: callee.span(),
+            arg_taints,
+            self_call,
         });
     }
 }
@@ -6064,7 +6412,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
 /// assignment runs, on a later iteration, the value the assignment
 /// stored. Every walker that tracks bindings uses this one rule.
 pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeSet::new() };
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -6076,8 +6424,8 @@ pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<Str
 /// field or an index (`x = …`, `x.f = …`), wherever it is declared — an
 /// over-approximation, which only makes a field-provenance answer more
 /// conservative.
-fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeSet::new() };
+fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeMap<String, usize> {
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -6090,8 +6438,9 @@ fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
 struct Reassigned {
     scopes: Vec<BTreeSet<String>>,
     out: BTreeSet<String>,
-    /// [`loop_assigned_heads`]: every assigned binding.
-    heads: BTreeSet<String>,
+    /// [`loop_assigned_heads`]: every assigned binding, with how many
+    /// assignments write it.
+    heads: BTreeMap<String, usize>,
 }
 
 impl Reassigned {
@@ -6131,7 +6480,7 @@ impl Reassigned {
                 self.expr(value);
                 let name = &target.head.name;
                 if name != "self" {
-                    self.heads.insert(name.clone());
+                    *self.heads.entry(name.clone()).or_default() += 1;
                 }
                 if target.tail.is_empty() && !self.scopes.iter().any(|s| s.contains(name)) {
                     self.out.insert(name.clone());
@@ -7344,6 +7693,7 @@ mod tests {
             "self.log = piece(m) + \"!\";",
             "let s = piece(m); self.log = s + self.tag;",
             "let s = to_string(m); let t = s; self.log = t + \"x\";",
+            "let n = if m > 0 { m - 1 } else { m }; self.log = (if n > 2 { \"a\" } else { to_string(n) }) + \"x\";",
         ] {
             let leaks = field_leaks(&field_store(body), "on_t");
             assert!(leaks.is_empty(), "`{body}` replaces `self.log` whole: {leaks:?}");
@@ -7354,6 +7704,79 @@ mod tests {
                 params { log: String = ""; }
                 bus { subscribe "t" as on_t of type String; }
                 fn on_t(s: String) { self.log = s + "!"; }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(src, "on_t").is_empty());
+    }
+
+    /// `App` with a `log` field and the methods `methods`, a handler
+    /// `on_t` whose body is `on_t`; and a second locus `Peer` with a
+    /// `log` field and `put(p)` appending `p` to it.
+    fn caller_provenance(methods: &str, on_t: &str) -> String {
+        format!(
+            "locus Peer {{
+                 params {{ log: String = \"\"; }}
+                 fn put(p: String) {{ self.log = p + \"x\"; }}
+             }}
+             locus App {{
+                 params {{ log: String = \"\"; peer: Peer = Peer {{ }}; }}
+                 bus {{ subscribe \"t\" as on_t of type Int; }}
+                 {methods}
+                 fn on_t(m: Int) {{ {on_t} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_parameter_carries_what_its_callers_pass() {
+        let append = "fn append(previous: String) { self.log = previous + \"x\"; }";
+        // The review's control: the parameter is `self.log`, so the
+        // store appends to the live value.
+        let src = caller_provenance(append, "self.append(self.log);");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // Its twin: every caller passes a constant, so it replaces.
+        let src = caller_provenance(append, "self.append(\"fresh\");");
+        assert!(field_leaks(&src, "append").is_empty());
+        // Two hops: `a` passes its parameter on to `b`.
+        let chain = "fn a(q: String) { self.b(q); }
+                     fn b(p: String) { self.log = p + \"x\"; }";
+        let src = caller_provenance(chain, "self.a(self.log);");
+        assert_eq!(field_leaks(&src, "b"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance(chain, "self.a(to_string(m));");
+        assert!(field_leaks(&src, "b").is_empty());
+        // One tainted caller among clean ones is enough.
+        let src = caller_provenance(append, "self.append(\"fresh\"); self.append(self.log + \"!\");");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // Through another receiver the instance may be the same: an
+        // argument carrying anything of the caller's `self` is taken to
+        // carry the callee's field.
+        let src = caller_provenance("", "self.peer.put(self.log);");
+        assert_eq!(field_leaks(&src, "put"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance("", "self.peer.put(to_string(m));");
+        assert!(field_leaks(&src, "put").is_empty());
+        // A loop's bindings carry what any iteration writes into them: a
+        // counter carries nothing, a value a later iteration takes from
+        // the field carries it into the next call.
+        let src = caller_provenance(append, "let mut i = 0; while i < 2 { self.append(to_string(i)); i = i + 1; }");
+        assert!(field_leaks(&src, "append").is_empty());
+        let src = caller_provenance(
+            append,
+            "let mut q = to_string(m); let mut i = 0; while i < 2 { self.append(q); let t = self.log; q = t; i = i + 1; }",
+        );
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_handlers_message_carries_nothing_of_self() {
+        // A bus handler's parameter is the message the runtime passes.
+        let src = r#"
+            type Tick { text: String; }
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Tick; }
+                fn on_t(t: Tick) { self.log = t.text + "!"; }
             }
             fn main() { let a = App { }; }
         "#;
