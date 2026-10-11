@@ -1238,6 +1238,12 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
 row	App@main1	App	main	default
 
+== crates/hale-codegen/tests/alloc_model_rss.rs#f55749e4
+row	App@main1	App	main	default
+
+== crates/hale-codegen/tests/alloc_model_rss.rs#5a9b68bb
+row	App@main1	App	main	default
+
 == crates/hale-codegen/tests/api_http.rs#babf5820
 root	Desk	the entry
 domain	pool:__api_http	async_io

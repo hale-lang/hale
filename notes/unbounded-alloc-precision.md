@@ -185,3 +185,26 @@ diagnostic should point at.
 - **Lifetime classification must stay conservative** — a misclassified
   long-running locus as "short-lived" would hide a real leak. Unknown →
   long-running.
+
+## GH #1490 (2026-10-10): the audit's two largest false-positive classes
+
+An audit of DNA's ~1,275 `@unbounded` decorators put ~22% on survey
+false positives; the two largest classes were measured against the
+runtime before the model moved.
+
+**C2 — a returned loop accumulator** (`out = out + x` in the fn's own
+loop, then `return out`). It was a false positive wherever the fn's
+activation has a boundary: the superseded values die there, and the
+value returned leaves once per call. Measured, 200k calls of a
+20-iteration accumulator: 4.7 MB consumed in a method (scratch-local
+callee), 4.6 MB (callee landing in its caller's arena), 4.7 MB (a
+method callee), 9.2 MB in a bus handler against a 9.1 MB control —
+flat; consumed directly in `run`'s loop, 33 MB (scratch-local callee:
+only the results stay), 49 MB (method callee), 1.9 GB (callee in
+`run`'s arena: every iteration's value stays). The model now judges the
+returned site once per invocation when the owner is not a scratchless
+long-lived frame and the loop is not a literal `while true`
+(`returned_loop_bounded_by_activation`), and GAP A decides by the
+consumer; the scratchless case keeps its in-loop verdict. DNA: 76 more
+decorators silence nothing anywhere (847 → 923), `hale check dna/host`
+308 → 305 warnings.

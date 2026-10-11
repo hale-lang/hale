@@ -574,3 +574,85 @@ fn hashmap_small_value_replace_churn_recycles_stays_flat() {
         ctrl_rss
     );
 }
+
+// === GH #1490 (C2): a returned loop accumulator is one value per call ===
+//
+// `join_n` builds its result in its own loop (`out = out + …`) and lands
+// in its caller's arena (it takes a `type` value, so it has no scratch of
+// its own). Consumed in a method, its superseded values and its result
+// all die at the method's per-call scratch destroy; consumed in `run`'s
+// own loop, every iteration's value stays in `run`'s arena. The model
+// says each, and RSS agrees.
+
+const ACCUMULATOR_IN_METHOD: &str = r#"
+    type Row { text: String; }
+    fn join_n(r: Row, n: Int) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < n { out = out + r.text + "-" + to_string(i) + ","; i = i + 1; }
+        return out;
+    }
+    locus App {
+        params { n: Int = 10000; sink: Int = 0; r: Row = Row { text: "abcdefgh" }; }
+        fn record(i: Int) { self.sink = self.sink + len(join_n(self.r, 20)); }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+const ACCUMULATOR_IN_RUN: &str = r#"
+    type Row { text: String; }
+    fn join_n(r: Row, n: Int) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < n { out = out + r.text + "-" + to_string(i) + ","; i = i + 1; }
+        return out;
+    }
+    locus App {
+        params { n: Int = 10000; sink: Int = 0; r: Row = Row { text: "abcdefgh" }; }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.sink = self.sink + len(join_n(self.r, 20)); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_returned_loop_accumulator_reclaims_with_its_activation() {
+    let in_method = model_leaks(ACCUMULATOR_IN_METHOD);
+    assert!(
+        !in_method.iter().any(|l| l.starts_with("join_n ")),
+        "the model must not say an accumulator consumed in a method accumulates: {in_method:?}"
+    );
+    let in_run = model_leaks(ACCUMULATOR_IN_RUN);
+    assert!(
+        in_run.iter().any(|l| l == "join_n InUnboundedLoop"),
+        "the model should say the accumulator grows in run's arena: {in_run:?}"
+    );
+
+    // Measured self-RSS 2026-10-10: 4.6 MB consumed in a method (the
+    // same as an alloc-free loop) against 100 MB consumed in run's loop,
+    // over 10k calls of 20 iterations.
+    let method_rss = build_and_rss("accumulator_in_method", ACCUMULATOR_IN_METHOD);
+    let run_rss = build_and_rss("accumulator_in_run", ACCUMULATOR_IN_RUN);
+    assert!(
+        method_rss < 30,
+        "an accumulator consumed in a method should stay at the runtime floor: \
+         {method_rss}MB. If it grew, its superseded values no longer die at the \
+         method's scratch destroy, and the C2 rule (returned_loop_bounded_by_activation) \
+         must be revisited."
+    );
+    assert!(
+        run_rss >= method_rss + 40,
+        "the same accumulator consumed in run's loop should add >40MB: \
+         run={run_rss}MB, method={method_rss}MB."
+    );
+}

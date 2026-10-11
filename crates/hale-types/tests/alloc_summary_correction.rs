@@ -559,7 +559,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 8),
-            ("once-per-invocation -> per-iteration-reclaim", 177),
+            ("once-per-invocation -> per-iteration-reclaim", 179),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
@@ -621,9 +621,9 @@ fn verdict_changes() {
             "__lib_dna__operations___task_policy__FixedTaskAuthority::authorize",
         ],
         &[
-            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 14),
             ("once-per-invocation -> per-iteration-reclaim", 22),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 228),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 235),
         ],
         &[
             "__lib_dna__core___decision__decision_line StringConcat @951745..951852 InvokedUnboundedly",
@@ -755,7 +755,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 8),
-            ("once-per-invocation -> per-iteration-reclaim", 26),
+            ("once-per-invocation -> per-iteration-reclaim", 27),
         ],
         &[
             "Ui::begin_sign_in CollectionInsert(\"vec\") @12489..12592 InvokedUnboundedly",

@@ -420,6 +420,27 @@ impl AllocSite {
     }
 }
 
+/// GH #1490 (C2): is this a returned value built in an unbounded loop
+/// of its own fn, in a frame whose activation has a boundary of its
+/// own — a method's or handler's per-call scratch, a scratch-local
+/// fn's subregion, or (a free fn no long-lived frame reaches without
+/// one) its nearest such caller's? Then each iteration's value
+/// supersedes the last and the superseded ones die at that boundary
+/// with the call's other temporaries, so the loop multiplies nothing
+/// past the call: the value leaves it once, as its result. A frame
+/// with no boundary (`scratchless`, a `main` / `run` body or a free fn
+/// reached from one without a scratch on the way) keeps every
+/// iteration's value until the locus dissolves, and a literal
+/// `while true` never reaches its boundary — both stay in-loop
+/// accumulation. RSS-validated in `alloc_model_rss.rs`
+/// (`a_returned_loop_accumulator_reclaims_with_its_activation`).
+fn returned_loop_bounded_by_activation(site: &AllocSite, owner_scratchless: bool) -> bool {
+    site.escape == Escape::Returned
+        && site.verdict() == SiteVerdict::AccumulatesUnbounded
+        && !owner_scratchless
+        && !site.in_infinite_loop
+}
+
 /// How a call's callee is written. The edge's [`Callee`] is what the
 /// call resolves to; this is the spelling, which a resolved edge no
 /// longer shows (a cross-seed `alias::name` resolves to its mangled
@@ -1397,7 +1418,11 @@ impl AllocSummary {
     /// never exits inside a handler defeats the "dies at exit"
     /// argument; rare, and the old behavior flagged 155 bounded
     /// per-activation loops to catch it. A scratch-local free fn's
-    /// subregion is such a scratch (F.40 phase 3, E3b).
+    /// subregion is such a scratch (F.40 phase 3, E3b). GH #1490 (C2)
+    /// extends it to a `Returned` value built in the loop (the
+    /// accumulator): its superseded values die with the activation,
+    /// and the value returned is judged once per call, by GAP A
+    /// ([`returned_loop_bounded_by_activation`]).
     ///
     /// E3b — the boundary is judged relative to the loop: a `Local`
     /// in a frame with no boundary of its own (`repeated`, see
@@ -1448,6 +1473,18 @@ impl AllocSummary {
             }
         }
         let owner_scratchless = scratchless.contains(owner);
+        // GH #1490 (C2): a returned value built in its fn's own loop —
+        // the accumulator `out = out + x` — keeps one value per call:
+        // each iteration's value supersedes the last, and the
+        // superseded ones die at the activation boundary, as GAP B's
+        // in-loop `Local` does. What leaves the call is the one value
+        // returned, so the site counts once per invocation and the
+        // cross-invocation arm (GAP A) decides by who consumes it.
+        let intra = if returned_loop_bounded_by_activation(site, owner_scratchless) {
+            SiteVerdict::OncePerInvocation
+        } else {
+            intra
+        };
         match intra {
             SiteVerdict::AccumulatesUnbounded => {
                 // GAP B: in-loop Local in a scratch-ful frame dies
@@ -1597,7 +1634,9 @@ impl AllocSummary {
             }
             for s in &f.sites {
                 if self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers) == SiteVerdict::AccumulatesUnbounded {
-                    let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
+                    let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded)
+                        && !returned_loop_bounded_by_activation(s, scratchless.contains(&f.key))
+                    {
                         LeakReason::InUnboundedLoop
                     } else if s.escape == Escape::Local {
                         LeakReason::InCallersArena
@@ -6220,6 +6259,144 @@ mod tests {
             summarize(in_loop).leak_sites().len(),
             1,
             "a non-escaping local in an unbounded loop still accumulates within the call"
+        );
+    }
+
+    // === GH #1490 (C2): a returned loop accumulator ===================
+
+    /// `join_n` builds its result in its own unbounded loop; `callee`
+    /// says how it is declared (a scratch-local fn, a fn landing in its
+    /// caller's arena, or a method), and `consumer` is the frame that
+    /// calls it once per iteration or per message.
+    fn accumulator(callee: &str, consumer: &str) -> String {
+        let (decl, method, call) = match callee {
+            "scratch-local" => (
+                "fn join_n(n: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < n { out = out + \"item-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "",
+                "join_n(20)",
+            ),
+            "callers-arena" => (
+                "fn join_n(r: Row, n: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < n { out = out + r.text + \"-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "",
+                "join_n(self.r, 20)",
+            ),
+            _ => (
+                "",
+                "fn join_n(k: Int) -> String {
+                    let mut out = \"\";
+                    let mut i = 0;
+                    while i < k { out = out + self.r.text + \"-\" + to_string(i) + \",\"; i = i + 1; }
+                    return out;
+                }",
+                "self.join_n(20)",
+            ),
+        };
+        let body = match consumer {
+            "method" => format!(
+                "fn record(i: Int) {{ self.sink = self.sink + len({call}); }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}"
+            ),
+            "handler" => format!(
+                "bus {{ subscribe \"t\" as on_t of type Int; }}
+                 fn on_t(i: Int) {{ self.sink = self.sink + len({call}); }}"
+            ),
+            _ => format!(
+                "run() {{ let mut i = 0; while i < self.n {{ self.sink = self.sink + len({call}); i = i + 1; }} }}"
+            ),
+        };
+        format!(
+            "type Row {{ text: String; }}
+             {decl}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; r: Row = Row {{ text: \"abc\" }}; }}
+                 {method}
+                 {body}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    fn join_leaks(src: &str) -> Vec<(Escape, LeakReason)> {
+        summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == "join_n")
+            .map(|l| (l.escape, l.reason))
+            .collect()
+    }
+
+    #[test]
+    fn a_returned_loop_accumulator_is_one_value_per_call() {
+        // Consumed in a method or a handler, the accumulator's
+        // superseded values die at an activation boundary and its
+        // result dies with the consumer's per-call scratch — measured
+        // flat (alloc_model_rss.rs). None of the three callee shapes
+        // is a leak.
+        for callee in ["scratch-local", "callers-arena", "method"] {
+            for consumer in ["method", "handler"] {
+                let leaks = join_leaks(&accumulator(callee, consumer));
+                assert!(
+                    leaks.is_empty(),
+                    "a {callee} accumulator consumed in a {consumer} keeps one value \
+                     per call — must not flag: {leaks:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_returned_loop_accumulator_consumed_in_run_still_accumulates() {
+        // `run`'s own loop has no boundary: each call's result lands in
+        // its arena (GAP A), so the value returned is reported — once,
+        // as invoked unboundedly, not as in-loop growth.
+        for callee in ["scratch-local", "method"] {
+            let leaks = join_leaks(&accumulator(callee, "run"));
+            assert_eq!(
+                leaks,
+                vec![(Escape::Returned, LeakReason::InvokedUnboundedly)],
+                "a {callee} accumulator consumed in run's loop accumulates its results"
+            );
+        }
+        // A free fn with no scratch of its own, reached from `run`, is
+        // `run`'s arena: every iteration's value stays (1.9 GB over
+        // 200k calls), so the accumulator keeps its in-loop verdict.
+        let leaks = join_leaks(&accumulator("callers-arena", "run"));
+        assert!(
+            leaks.contains(&(Escape::Returned, LeakReason::InUnboundedLoop)),
+            "a callers-arena accumulator reached from run grows in run's arena: {leaks:?}"
+        );
+    }
+
+    #[test]
+    fn a_returned_accumulator_in_while_true_still_accumulates() {
+        // A literal `while true` never reaches the activation boundary
+        // the superseded values die at (GAP B's hole, kept).
+        let src = r#"
+            locus App {
+                params { sink: Int = 0; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn join_n(k: Int) -> String {
+                    let mut out = "";
+                    while true { out = out + "x"; if len(out) > k { return out; } }
+                    return out;
+                }
+                fn on_t(i: Int) { self.sink = self.sink + len(self.join_n(i)); }
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            join_leaks(src),
+            vec![(Escape::Returned, LeakReason::InUnboundedLoop)],
         );
     }
 

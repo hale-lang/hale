@@ -1825,6 +1825,30 @@ assume the others in a build:
   locus instantiation is not a value in its caller's arena (the
   instance's arena is its own). `--dump-alloc-summary` tags a
   scratch-local fn `[scratch-local]`, or `[scratch-local, recursive]`.
+
+  **A returned accumulator is one value per call** (GH #1490). A value
+  a fn builds in an unbounded loop of its own body and returns — the
+  `let mut out = ""; while … { out = out + x; } return out;` shape, or
+  a `found = Row { … }` the loop replaces — is not judged as growing
+  with the loop when the fn's activation has a boundary: a method's or
+  handler's per-call scratch, a scratch-local fn's subregion, or, for a
+  free fn that lands in its caller's arena, a caller that has one (the
+  fn is reached from no `main` / `run` body, nor from a free fn of
+  theirs, without a scratch on the way). Each iteration's value
+  supersedes the last, and the superseded ones die at that boundary
+  with the call's other temporaries, so the site counts once per
+  invocation; whether the value returned accumulates is then the
+  caller's question, as for any returned value — reported when a direct
+  caller is a `main` / `run` body or a free fn reached from one (its
+  result lands there each call: "in a fn invoked unboundedly"), not
+  when the caller is a method or handler, whose scratch frees it. The
+  in-loop verdict stays where there is no boundary — the fn's frame is
+  such a long-lived frame's arena, so every iteration's value stays
+  until the locus dissolves — and inside a literal `while true`, which
+  never reaches it. RSS-validated: an accumulator of 20 iterations
+  called 10k times adds nothing over the runtime floor consumed in a
+  method (4.6 MB), and ~96 MB consumed directly in `run`'s loop
+  (`alloc_model_rss.rs::a_returned_loop_accumulator_reclaims_with_its_activation`).
 - **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
   The dual of `@unbounded`: where `@unbounded` acknowledges intentional
   unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and
