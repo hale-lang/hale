@@ -1519,6 +1519,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         } else {
             out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
         }
+        // the starting model mapping, from the hosted models this machine
+        // has a key for
+        out.extend(seed_model_map(&root, &found)?);
     }
     // 8. .gitignore hygiene
     let gi = root.join(".gitignore");
@@ -3496,6 +3499,48 @@ fn library_propose(root: &Path, upgrading: bool) -> Result<(usize, usize, usize,
 /// node is added here — with a `written_in` edge to the language), then the
 /// library as proposals, one Review per family (`library/language@<version>`,
 /// `library/design@<version>`).
+/// The starting model mapping (`model.rule`, `model.category`), from what
+/// `discover` found: when a hosted model's key is in the vault, the
+/// `default` rule is `standard` (a more specific selector may move it to
+/// any size), and every category `<mode>.<size>` is filled by the hosted
+/// pair the catalog writes — `quick` by the fast model, `standard` and
+/// `deep` by the frontier one — each returning tool calls, at the
+/// catalog's prices. Nothing is seeded without a hosted key: an ollama
+/// model is the desk's, not a leg's, and a mapping naming models no key
+/// can reach would only be refused later. The rows are in `init`'s name
+/// and change like any other (`hale dna models rule|category`).
+fn seed_model_map(root: &Path, found: &Discovery) -> Result<Vec<String>, String> {
+    if !found.anthropic && !found.openai {
+        return Ok(vec!["skipped models map (no hosted model key in the vault: `hale dna models rule|category` set it by hand)".to_string()]);
+    }
+    let (frontier, fast, _) = found.hosted();
+    let by = "hale dna init";
+    let mut text = String::new();
+    let row = |kind: &str, entity: &str, body: serde_json::Value| serde_json::json!({"kind": kind, "entity": entity, "body": body.to_string()}).to_string() + "\n";
+    text.push_str(&row("model.rule", "default", serde_json::json!({"size": "standard", "permit": "quick standard deep", "by": by})));
+    for mode in ["think", "tools", "do"] {
+        for size in ["quick", "standard", "deep"] {
+            let m = if size == "quick" { &fast } else { &frontier };
+            text.push_str(&row(
+                "model.category",
+                &format!("{mode}.{size}"),
+                serde_json::json!({"model": m.model, "tool_calls": true, "input_micros_per_1k": m.input_micros_per_1k, "output_micros_per_1k": m.output_micros_per_1k, "by": by}),
+            ));
+        }
+    }
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let rows = dna_dir.join(format!("model-map-rows.{}.jsonl", std::process::id()));
+    fs::write(&rows, &text).map_err(|e| e.to_string())?;
+    let seeded = host_run("record-seed", root, &[rows.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&rows);
+    let n: usize = seeded?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
+    if n != 10 {
+        return Err(format!("record-seed appended {n} of 10 model mapping rows"));
+    }
+    Ok(vec![format!("seeded  models map (default: standard; quick = {}, standard and deep = {}, every mode with tool calls; `hale dna models map` lists it)", fast.model, frontier.model)])
+}
+
 fn seed_library(root: &Path, app: Option<&App>) -> Result<Vec<String>, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;

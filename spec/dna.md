@@ -3833,6 +3833,12 @@ The organization's models are a catalog in source (GH #583 M1):
   appends `model.category` (prices in micro-dollars per 1k tokens); a
   `tools` or `do` category without `--tools` is refused. **`models
   map`** lists the latest row per selector and per category. `hale dna
+  init` seeds a starting mapping when a hosted model's key is in the
+  vault: `model.rule default` at `standard` (permitting every size), and
+  every category `<mode>.<size>` filled by the hosted pair the catalog
+  writes, `quick` by the fast model and `standard` and `deep` by the
+  frontier one, each with tool calls and the catalog's prices, in the
+  name `hale dna init`; with no hosted key it seeds none. `hale dna
   task create --size <size>` appends `model.rule task:<intent id>`, an
   override that holds only inside the sizes the rule beneath it
   permits.
