@@ -165,7 +165,6 @@ fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
 }
 
 // GH #682: when a row was last relayed (`<key>@<unix>` lines), -1 never.
-@unbounded
 fn relayed_at(list: String, key: String) -> Int {
     let mut at = -1;
     let mut rest = list;
@@ -329,7 +328,6 @@ fn build_cache_dir() -> String {
 // each, in the order the compiler lists them; "" when it cannot say.
 // A path under `root` is named relative to it, so the fingerprint is
 // of the project and not of where the project happens to sit.
-@unbounded
 fn input_digests(hale: String, root: String, seed_dir: String) -> String {
     let r = dna::run_tool(hale + "\ninputs\n" + seed_dir);
     if r.code != 0 { return ""; }
@@ -388,7 +386,6 @@ fn seed_relative(root: String, seed_dir: String) -> String {
 // The content fingerprint of a build of `seed_dir`; "" when any part
 // of it could not be read, which is how the cache declines rather
 // than guesses.
-@unbounded
 fn build_fingerprint(hale: String, root: String, seed_dir: String) -> String {
     let files = input_digests(hale, root, seed_dir);
     if len(files) == 0 { return ""; }
@@ -461,7 +458,6 @@ type SeedBuild { bin: String = ""; why: String = ""; }
 // be taken whole) it is built into
 // `<root>/.hale/dna/build/<seed>/<seed name>`, the tree `.hale/` already
 // is. `cache` is "" for "no cache".
-@unbounded
 fn build_seed_at(hale: String, root: String, seed_dir: String, cache: String) -> SeedBuild {
     let sl = last_index_of(seed_dir, "/");
     let name = if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] };
@@ -544,7 +540,6 @@ locus NodeRelay {
     // again. The rows this view held when the node started are its past,
     // never told; at most ANNOUNCE_AT_ONCE a pass, the rest the next.
     // How many were told.
-    @unbounded
     fn announce(memory: dna::Memory) -> Int {
         if !self.live { return 0; }
         let p = open_projection(self.root, self.seed, self.toolchain, memory);
@@ -711,7 +706,6 @@ locus NodeRelay {
     // organization subscribes, once it is in this node's record, and again
     // every RELAY_AGAIN_AFTER while the record holds no answer to it. The
     // row is the durable fact; the publish only tells the organization.
-    @unbounded
     fn relay(memory: dna::Memory) -> Int {
         let mut state = RelayState { relayed: self.relayed };
         // no record, or one that could not be read: nothing to do this pass
@@ -1884,7 +1878,6 @@ main locus Host {
         }
         let pw2 = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
     }
-    @unbounded
     fn tick() {
         if !self.body_alive() { self.stop_body(3); }
         self.org_log = drain_log(self.org, self.org_log);

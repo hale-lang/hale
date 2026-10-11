@@ -48,7 +48,6 @@ locus NatsTransport {
 
 // Lowercase hex of `b`.
 // @unbounded: two characters per byte of a fixed-size random id.
-@unbounded
 fn hex_of(b: Bytes) -> String {
     let digits = "0123456789abcdef";
     let mut out = "";

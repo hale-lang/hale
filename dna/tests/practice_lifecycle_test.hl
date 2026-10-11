@@ -12,7 +12,6 @@ fn lifecycle_request(id: String, operation: String, kind: String, text: String, 
     r.candidate_digest = dna::digest_of(codec.document(r));
     return r;
 }
-@unbounded
 fn lifecycle_event(j: dna::Journal, kind: String, id: String) -> dna::Event {
     let refreshed = j.refresh(); let mut i = 0;
     while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { return e; } i = i + 1; }

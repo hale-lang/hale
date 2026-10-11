@@ -70,7 +70,6 @@ fn evidence_json(ev: dna::ModelEvidence) -> String {
 }
 
 // `ms` milliseconds of waiting, in 50ms steps (the runtime's sleep takes a literal).
-@unbounded
 fn sleep_for_ms(ms: Int) {
     let mut left = ms;
     while left > 0 { std::time::sleep(50ms); left = left - 50; }
@@ -97,7 +96,6 @@ fn call_metadata(brief: Brief) -> String {
 // The loop's messages, in the chat API's shape, comma-joined.
 fn joined(list: String, item: String) -> String { return if len(list) > 0 { list + ", " + item } else { item }; }
 
-@unbounded
 fn assistant_calls_message(text: String, calls: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -263,7 +261,6 @@ locus ModelPerformer {
     // stands only once the hat's validators pass on every seed it touched,
     // and a `Patch` is handed back as one commit on that base with its
     // patch. Bounded by `max_turns` and the attempt's allowance.
-    @unbounded
     fn perform_loop(brief: Brief, hands: Hands, first: dna::ModelRequest, allowance: Int, mode: String) -> Performance {
         let hat = brief.hat;
         let owed = std::json::find_string_field(hat, "output_contract");
@@ -369,7 +366,6 @@ locus ModelPerformer {
         }
         return r;
     }
-    @unbounded
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.performed = self.performed + 1;
         self.calls = "";

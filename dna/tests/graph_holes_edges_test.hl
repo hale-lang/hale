@@ -26,7 +26,6 @@ fn graph() -> ops::GraphIngest {
 }
 
 // How often `needle` occurs; a proposal's own `"name"` is once per line.
-@unbounded
 fn count(text: String, needle: String) -> Int {
     let mut n = 0;
     let mut rest = text;

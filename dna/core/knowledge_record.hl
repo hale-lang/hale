@@ -68,7 +68,6 @@ locus KnowledgeRecord {
     }
     // The `review.requested` body of a knowledge proposal's Review, ""
     // for any other.
-    @unbounded
     fn request_of(review_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -83,7 +82,6 @@ locus KnowledgeRecord {
     // A ratified successor reserves its predecessor before the separate
     // retirement row lands. A crash between those writes must not admit a
     // second successor while the first one's retirement is being resumed.
-    @unbounded
     fn replacing_digest(digest: String) -> String {
         let retired = self.retired_by(digest);
         if len(retired) > 0 { return retired; }
@@ -102,7 +100,6 @@ locus KnowledgeRecord {
         }
         return "";
     }
-    @unbounded
     fn resume_result(review_id: String, outcome: String, reviewer: String) -> Bool {
         let req = self.request_of(review_id);
         let digest = native_json_string(req, "knowledge_digest");
@@ -306,7 +303,6 @@ locus KnowledgeRecord {
     }
     // Whether any member of a family has settled: ratified, refused or
     // declined.
-    @unbounded
     fn batch_settled(members: String, ratified: String, refused: String, declined: String) -> Bool {
         let mut rest = members[1..len(members)];
         while len(rest) > 0 {
@@ -319,7 +315,6 @@ locus KnowledgeRecord {
     }
     // One idea's rows from a Review's outcome: ratified (and what it
     // supersedes retired), declined, or refused.
-    @unbounded
     fn resume_one(review_id: String, digest: String, kind_of: String, target_of: String, class_of: String, outcome: String, reviewer: String) -> Bool {
         let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let doc = self.receipts.read(raw);
@@ -377,7 +372,6 @@ locus KnowledgeRecord {
     }
     // The row that settled a family's Review (`library.family.ratified`,
     // `.refused` or `.declined`), "" while none has.
-    @unbounded
     fn family_row(digest: String) -> String {
         let ratified = first_row(self.journal, "library.family.ratified", digest);
         if len(ratified.kind) > 0 { return ratified.kind; }
@@ -386,13 +380,11 @@ locus KnowledgeRecord {
         return first_row(self.journal, "library.family.declined", digest).kind;
     }
     // Whether the Review of `digest` is a family's (the toolchain's library).
-    @unbounded
     fn is_family(digest: String) -> Bool {
         return native_json_string(self.request_of(knowledge_review_id(digest)), "kind") == "family";
     }
     // The digest of the last idea a family names ("" when it names none):
     // the one memory's projection reaches last.
-    @unbounded
     fn last_member(digest: String) -> String {
         let ideas = native_json_string(self.request_of(knowledge_review_id(digest)), "ideas");
         let mut out = "";
@@ -407,7 +399,6 @@ locus KnowledgeRecord {
         return out;
     }
     // GH #604: whether the Board ratified the knowledge at `digest`.
-    @unbounded
     fn ratified(digest: String) -> Bool {
         let n = self.journal.revision();
         let mut i = 0;
@@ -420,7 +411,6 @@ locus KnowledgeRecord {
     }
     // GH #604: the digest of the practice named `name` that is ratified
     // and not retired ("" when none is in force).
-    @unbounded
     fn practice_in_force(name: String) -> String {
         let n = self.journal.revision();
         let mut found = "";
@@ -448,7 +438,6 @@ locus KnowledgeRecord {
     }
     // The digest that retired `digest` (`knowledge.retired <digest>`,
     // its `by`), "" while it is not retired.
-    @unbounded
     fn retired_by(digest: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -463,7 +452,6 @@ locus KnowledgeRecord {
 
     // GH #1026: a node request that is neither answered nor started under
     // another body, the rows the family reads before its owner's check.
-    @unbounded
     fn node_fresh(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         let proposed = first_row(self.journal, "knowledge.node.proposed", r.request_id);
@@ -475,7 +463,6 @@ locus KnowledgeRecord {
     // A node request its owner admits: refused when its candidate is not
     // the exact document or it binds laterally, else started. Whether it
     // is started.
-    @unbounded
     fn node_started(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         if digest_of(codec.document(r)) != r.candidate_digest {
@@ -492,14 +479,12 @@ locus KnowledgeRecord {
         }
         return append_once(self.journal, "knowledge.node.started", r.request_id, codec.started(r));
     }
-    @unbounded
     fn node_proposed(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         return append_once(self.journal, "knowledge.node.proposed", r.request_id, codec.proposed(r));
     }
     // A binding request this organization received and has not answered,
     // the rows read before its owner's check.
-    @unbounded
     fn binding_fresh(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { };
         if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return false; }
@@ -512,7 +497,6 @@ locus KnowledgeRecord {
     // A binding request its owner admits, up to the Board's Review:
     // refused, or started with its candidate stored and the
     // `review.requested` written. Whether the Review is asked.
-    @unbounded
     fn binding_asked(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { };
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
@@ -536,14 +520,12 @@ locus KnowledgeRecord {
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
         return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
     }
-    @unbounded
     fn binding_proposed(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { };
         return append_once(self.journal, "knowledge.binding.proposed", r.request_id, codec.proposed(r));
     }
     // A settled binding Review's effect, written once: bound or unbound,
     // declined, or refused because the binding or its subject moved.
-    @unbounded
     fn binding_result(r: KnowledgeBindingRequest, review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
         let codec = KnowledgeBindingCodec { };
         let mut tries = 0;
@@ -579,7 +561,6 @@ locus KnowledgeRecord {
     }
     // A relationship request this organization received and has not
     // answered, the rows read before its owner's check.
-    @unbounded
     fn edge_fresh(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { };
         if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return false; }
@@ -591,7 +572,6 @@ locus KnowledgeRecord {
     }
     // The endpoints a relationship request names, as the record and the
     // receipts hold them: whose they are is the owner's check.
-    @unbounded
     fn edge_endpoints(r: KnowledgeEdgeRequest) -> KnowledgeEdgeEndpoints {
         let codec = KnowledgeEdgeCodec { };
         return codec.endpoints(self.journal, self.receipts, r, self.journal.revision());
@@ -599,7 +579,6 @@ locus KnowledgeRecord {
     // A relationship request its owner admits, up to the Board's Review:
     // refused, or started with its candidate stored and the
     // `review.requested` written. Whether the Review is asked.
-    @unbounded
     fn edge_asked(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { };
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
@@ -620,7 +599,6 @@ locus KnowledgeRecord {
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
         return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
     }
-    @unbounded
     fn edge_proposed(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { };
         return append_once(self.journal, "knowledge.edge.proposed", r.request_id, codec.proposed(r));
@@ -628,7 +606,6 @@ locus KnowledgeRecord {
     // A settled relationship Review's effect, written once: linked or
     // unlinked, declined, or refused because the edge or its endpoints
     // moved.
-    @unbounded
     fn edge_result(r: KnowledgeEdgeRequest, review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
         let codec = KnowledgeEdgeCodec { };
         let mut tries = 0;

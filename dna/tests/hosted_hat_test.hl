@@ -64,7 +64,6 @@ main locus App {
         while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { return true; } i = i + 1; }
         return false;
     }
-    @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
         while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }

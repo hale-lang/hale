@@ -73,7 +73,6 @@ main locus App {
         return if std::str::contains(r, "\"success\":true") { "" } else { "the delete answered: " + r + " " + c.last_error };
     }
     // Whether the heart's durable is there again within ten seconds.
-    @unbounded
     fn heart_again(org: String, hp: String) -> Bool {
         let c = nats::NatsClient { url: "nats://" + hp, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "fixture-owner", timeout: 2s };
         if !c.open() { return false; }
@@ -90,7 +89,6 @@ main locus App {
     }
     fn log() -> String { return std::io::fs::read_file(self.app + "/.hale/dev.log") or ""; }
     // Whether the host's log comes to say `text` within `secs`.
-    @unbounded
     // Whether `text` reaches dev's log within `secs`. A dev that cannot
     // start compose, or that has ended, never will: that is known at once,
     // and said, rather than after the whole deadline.

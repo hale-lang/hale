@@ -55,9 +55,7 @@ main locus App {
         };
     }
     // The first row of `kind` for `entity` after row `from`, waited for, bounded; "" when none came.
-    @unbounded
     fn answer_after(from: Int, kind: String, entity: String) -> String { return self.answer_within(from, kind, entity, 20); }
-    @unbounded
     fn answer_within(from: Int, kind: String, entity: String, secs: Int) -> String {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {

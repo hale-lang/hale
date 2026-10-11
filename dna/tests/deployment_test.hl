@@ -27,7 +27,6 @@ main locus App {
         dna: dna::Dna = dna::Dna { };
     }
     bus { publish dna::ReviewVerdict; }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;

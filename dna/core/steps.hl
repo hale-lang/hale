@@ -10,7 +10,6 @@ locus StepRecord {
         waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
     }
     // Whether the step of `attempt_id` waits already.
-    @unbounded
     fn waiting(attempt_id: String) -> Bool {
         let mut i = 0;
         while i < self.waiting_steps.len() {

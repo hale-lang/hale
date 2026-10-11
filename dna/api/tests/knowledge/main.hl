@@ -12,7 +12,6 @@ import "../../../core" as dna;
 import "../../../operations" as ops;
 import "../fixture" as fixtures;
 
-@unbounded
 fn seed(root: String, count: Int) {
     std::test::assert(count >= 0 && count <= 50, "bounded knowledge fixture size");
     let f = fixtures::Fixture { root: root, port: 1 };
@@ -81,7 +80,6 @@ fn mutate(root: String, action: String) {
     if len(spine) > 0 { tick(root, dna::parse_dsn(spine)); }
 }
 
-@unbounded
 fn project(root: String) {
     let j = dna::GitJournal { repo: root };
     let id = j.genesis();

@@ -31,7 +31,6 @@ locus AttemptRecord {
         if !row_exists(self.journal, "attempt.outcome", r.attempt_id) && !self.reported(r.attempt_id) { self.pending_reports.push(r); }
     }
     // Whether a report for the attempt is kept, its outcome not yet seen.
-    @unbounded
     fn reported(attempt_id: String) -> Bool {
         let mut i = 0;
         while i < self.pending_reports.len() {
@@ -42,7 +41,6 @@ locus AttemptRecord {
         return false;
     }
     // Every held report whose outcome the record holds is released.
-    @unbounded
     fn release_recorded() {
         let mut i = 0;
         while i < self.pending_reports.len() {
@@ -58,7 +56,6 @@ locus AttemptRecord {
     // ---- edits (card 15)
     fn edit_reported() { self.edits_reported = self.edits_reported + 1; }
     // Whether an attempt is already waiting here.
-    @unbounded
     fn waiting(attempt_id: String) -> Bool {
         let mut i = 0;
         while i < self.waiting_edits.len() {
@@ -72,7 +69,6 @@ locus AttemptRecord {
     @unbounded
     fn wait(e: EditAsk) { if !self.waiting(e.attempt_id) { self.waiting_edits.push(e); } }
     // How many attempts wait here (the form keeps released slots).
-    @unbounded
     fn waiting_held() -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -101,14 +97,12 @@ locus AttemptRecord {
     // ---- GH #946 slice 3: a leg's outcome, through the head ---------------
     // The latest `attempt.claimed` row of an attempt: who holds the lease,
     // its token and until when (0 when none was taken).
-    @unbounded
     fn claim_of(attempt_id: String) -> Lease {
         let c = recorded_leg_claim(self.journal, attempt_id, self.journal.revision());
         return Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
     }
     // Whether this submission's request was refused already (a relay
     // after a lost publish is answered once).
-    @unbounded
     fn answered(s: WorkSubmission) -> Bool {
         if len(s.request) == 0 { return false; }
         let n = self.journal.revision();
@@ -122,7 +116,6 @@ locus AttemptRecord {
     }
     // An outcome a leg handed back, refused: a row naming why and the
     // request it answers, counted.
-    @unbounded
     fn refuse(s: WorkSubmission, why: String) {
         self.submissions_refused = self.submissions_refused + 1;
         let b = std::json::Builder { };
@@ -143,7 +136,6 @@ locus AttemptRecord {
     // taken again at once. One `<attempt>\t<key>\t<resolved>\t<holder>\t
     // <token>\t<expires>` line per attempt to ask again, which the
     // assembly asks through its runtime, each in turn.
-    @unbounded
     fn expired(now: Int, me: String) -> String {
         let n = self.journal.revision();
         // one pass: the attempts a leg ever claimed, and those since settled
@@ -179,7 +171,6 @@ locus AttemptRecord {
     // A lease asked again: noted, so this incarnation asks it once; and,
     // when it expired unsettled, a closure the owner absorbs, named in the
     // record once per lease (GH #989).
-    @unbounded
     fn reopening(attempt: String, key: String, resolved: Bool, holder: String, token: String, expires: String) {
         self.reopened = set_add(self.reopened, key);
         if !resolved {

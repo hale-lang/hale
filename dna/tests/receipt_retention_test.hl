@@ -72,7 +72,6 @@ main locus App {
     }
     // The spine's graph projection watermark once it reaches `at` or
     // `secs` pass; the watermark it last read (-1 when unread).
-    @unbounded
     fn projected_to(record: String, at: Int, secs: Int) -> Int {
         let deadline = std::time::now() + dna::wait_secs(secs);
         let mut projected = -1;
@@ -85,7 +84,6 @@ main locus App {
     }
     // Whether memory comes to keep `want` bodies under `digest` within
     // `secs` (the spine erases on its tick).
-    @unbounded
     fn kept_becomes(record: String, digest: String, want: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
@@ -94,7 +92,6 @@ main locus App {
         }
         return false;
     }
-    @unbounded
     fn last(repo: String, kind: String, entity: String) -> String {
         let j = dna::GitJournal { repo: repo };
         let mut out = "";
@@ -106,7 +103,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn rows_of(repo: String, kind: String, entity: String) -> Int {
         let j = dna::GitJournal { repo: repo };
         let mut n = 0;

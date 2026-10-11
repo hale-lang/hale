@@ -75,7 +75,6 @@ fn record_graph_has(ids: String, id: String) -> Bool { return std::str::contains
 // a line, the latest body of every node and edge (a row, or a ratified
 // graph proposal's), none for an id retired since. What a re-ingest is
 // diffed against.
-@unbounded
 fn record_graph_bodies(j: Journal, receipts: Receipts) -> String {
     let mut out = "\n";
     let mut i = 0;
@@ -165,7 +164,6 @@ fn rows_agree(kind: String, existing: String, body: String) -> Bool {
 // Append a `kind` row for `entity` once: true when the record holds it
 // (appended here, or already there saying the same), false when another
 // writer recorded something else for it or the record kept moving.
-@unbounded
 fn append_once(j: Journal, kind: String, entity: String, body: String) -> Bool {
     let mut tries = 0;
     while tries < 20 {
@@ -186,7 +184,6 @@ fn append_once(j: Journal, kind: String, entity: String, body: String) -> Bool {
 
 // The `review.requested` body of a mutation's Review, "" for any other
 // (the purpose Review, an unknown id).
-@unbounded
 fn mutation_review_request(j: Journal, review_id: String) -> String {
     let n = j.revision();
     let mut i = 0;
@@ -200,7 +197,6 @@ fn mutation_review_request(j: Journal, review_id: String) -> String {
 }
 
 // The last `mutation.<disposition>` recorded for an id.
-@unbounded
 fn mutation_disposition(j: Journal, mutation_id: String) -> String {
     let n = j.revision();
     let mut i = 0;
@@ -217,7 +213,6 @@ fn mutation_disposition(j: Journal, mutation_id: String) -> String {
 
 // The body of the latest `review.routed` row for `review_id`, "" when
 // none: a re-routing supersedes the one before it.
-@unbounded
 fn routed_row(j: Journal, review_id: String) -> String {
     let mut out = "";
     let mut i = 0;

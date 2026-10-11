@@ -47,7 +47,6 @@ fn __sq_kind(rc: Int, fallback: String) -> String {
 // sqlite-owned, so it is cloned before the next column read.
 // NULL columns read as "" (glue.c maps NULL to the empty string).
 // @unbounded: concatenates one row's columns, bounded by the statement's column count.
-@unbounded
 fn __sq_collect_row(stmt: Int) -> String {
     let ncols = lotus_sqlite_column_count(stmt);
     let mut row = "";

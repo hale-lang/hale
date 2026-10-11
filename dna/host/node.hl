@@ -171,7 +171,6 @@ locus Node {
         return true;
     }
     // What exited since the last tick.
-    @unbounded
     fn reap() {
         let mut i = 0;
         let mut gone = false;
@@ -200,7 +199,6 @@ locus Node {
         }
         if gone { let s = sync_record(self.root, self.memory); }
     }
-    @unbounded
     fn tick() {
         let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
@@ -226,7 +224,6 @@ locus Node {
     // an instance of this node and has no `reflex.acted` row yet: the
     // instance restarted at the deploy's revision, through express, and
     // the row landed — the outcome whatever it was.
-    @unbounded
     fn act_on_reflexes(p: Projection, deploy: dna::Event) {
         let mut i = 0;
         let mut acted = 0;

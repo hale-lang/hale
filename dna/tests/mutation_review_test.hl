@@ -37,7 +37,6 @@ main locus App {
         if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
     }
     // The last body journaled for a kind and entity, "" when none.
-    @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;

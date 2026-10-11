@@ -89,7 +89,6 @@ fn has(s: String, needle: String) -> Bool {
 }
 
 // The member names a surface's served description lists, space-separated.
-@unbounded
 fn members_of(line: String) -> String {
     let value = std::json::find_field_raw(line, "value");
     let mut out = "";
@@ -108,7 +107,6 @@ fn friction(id: String, request: String, text: String) -> String {
 }
 
 // The `friction.filed` rows of the record whose body names `text`.
-@unbounded
 fn filed_rows(repo: String, text: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let moved = j.refresh();

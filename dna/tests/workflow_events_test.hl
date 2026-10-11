@@ -16,7 +16,6 @@ main locus App {
         cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         back: dna::WorkflowCatalog = dna::WorkflowCatalog { };
     }
-    @unbounded
     fn ids(c: dna::WorkflowCatalog) -> String {
         let mut out = "";
         let mut i = 0;

@@ -366,7 +366,6 @@ fn openai_text(body: String) -> String {
 
 // The tool calls of the first choice's message, as {id, name, arguments};
 // "" when it asks for none.
-@unbounded
 fn openai_tool_calls(body: String) -> String {
     let choices = std::json::find_field_raw(body, "choices");
     if len(choices) == 0 { return ""; }
@@ -394,7 +393,6 @@ fn openai_tool_calls(body: String) -> String {
 
 // The turn a tool-loop request is on: one more than the model's own
 // messages in it.
-@unbounded
 fn model_turn_of(messages: String) -> Int {
     let mut n = 1;
     if len(std::str::trim(messages)) < 2 { return n; }
@@ -416,7 +414,6 @@ type ScriptedTurn {
     tool_calls: String = "";
 }
 
-@unbounded
 fn scripted_turn(dir: String, messages: String) -> ScriptedTurn {
     let turn = model_turn_of(messages);
     let text = std::io::fs::read_file(dir + "/" + to_string(turn) + ".json") or "";
@@ -611,7 +608,6 @@ fn anthropic_messages_body(model: String, req: ModelRequest, temperature_milli: 
 
 // The text blocks of a Messages reply, concatenated; "" when the
 // shape is not a message.
-@unbounded
 fn anthropic_text(body: String) -> String {
     let content = std::json::find_field_raw(body, "content");
     if len(content) == 0 { return ""; }
@@ -925,7 +921,6 @@ locus Bubblewrap {
         let r = run_tool(self.command + "\n--version");
         return r.code == 0;
     }
-    @unbounded
     fn wrap(argv: String, cwd: String, mask: String) -> String {
         self.uses = self.uses + 1;
         let mut out = self.command + "\n--dev-bind\n/\n/\n--die-with-parent";

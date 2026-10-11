@@ -136,7 +136,6 @@ locus StubIssuer {
         b.end_object();
         return self.json(b);
     }
-    @unbounded
     fn handle(req: std::http::Request) -> std::http::Response {
         let ctx = std::http::build_context(req);
         let b = std::json::Builder { };

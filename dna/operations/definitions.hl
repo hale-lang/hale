@@ -58,7 +58,6 @@ locus ProjectWorkflowCatalog {
         error: String = "";
     }
     fn supported() -> Bool { return true; }
-    @unbounded
     fn snapshot() -> DefinitionSnapshot {
         let src = std::io::fs::read_file(self.root + "/dna/org/workflows.hl") or "";
         let own = std::io::fs::read_file(self.root + "/dna/org/own_workflows.hl") or "";

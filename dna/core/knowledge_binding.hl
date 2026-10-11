@@ -14,7 +14,6 @@ type KnowledgeBindingEffect {
 }
 locus KnowledgeBindingCodec {
     params { }
-    @unbounded
     fn visible(j: Journal, syntax: KnowledgeBindingPolicySyntax, digest: String, end: Int) -> Bool {
         if !digest_well_formed(digest) || end < 1 || end > j.revision() { return false; }
         let raw = digest[7..len(digest)]; let mut i = 0;
@@ -111,7 +110,6 @@ locus KnowledgeBindingCodec {
     fn apply_refused(r: KnowledgeBindingRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
-    @unbounded
     fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {
         let mut found = Event { }; let mut i = 0;
         while i < end {
@@ -161,7 +159,6 @@ locus KnowledgeBindingCodec {
         if e.body != expected { return KnowledgeBindingEffect { }; }
         return KnowledgeBindingEffect { ok: true, request: r, decision_command_id: decision, decided_by: reviewer, state: if bound { "bound" } else if unbound { "unbound" } else if declined { "declined" } else { "refused" }, reason_code: code, observed_basis: observed };
     }
-    @unbounded
     fn subject(j: Journal, receipts: Receipts, idea_id: String) -> KnowledgeBindingSubject {
         return self.subject_at(j, receipts, idea_id, j.revision());
     }
@@ -185,7 +182,6 @@ locus KnowledgeBindingCodec {
         }
         return KnowledgeBindingSubject { ok: true, ratified: ratified, active: ratified && !retired, author: author, target: target };
     }
-    @unbounded
     fn basis(j: Journal, receipts: Receipts, r: KnowledgeBindingRequest, end: Int) -> KnowledgeBindingBasis {
         if end < 0 || end > j.revision() || r.binding_id != self.identity(r.idea_id, r.target, r.author) { return KnowledgeBindingBasis { }; }
         let subject = self.subject_at(j, receipts, r.idea_id, end);

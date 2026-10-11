@@ -25,7 +25,6 @@ locus EventStream {
     params { port: Int = 0; fd: Int = -1; seen: String = ""; }
     dissolve() { if self.fd >= 0 { std::io::tcp::close_fd(self.fd); } }
     // Opens the stream: the status line and headers the head answered.
-    @unbounded
     fn open() -> String {
         self.fd = std::io::tcp::connect("127.0.0.1", self.port) or - 1;
         std::test::assert(self.fd >= 0, "connected to the head");
@@ -43,7 +42,6 @@ locus EventStream {
     }
     // Whether an event naming `what` arrives within `secs`, reading what
     // came since the last call; `poke` runs before each read.
-    @unbounded
     fn heard(what: String, secs: Int, poke: Poker) -> Bool {
         let st = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
         let deadline = std::time::now() + dna::wait_secs(secs);
@@ -62,7 +60,6 @@ locus EventStream {
 // The streams opened past the first, kept open until the fixture ends.
 locus Held {
     params { port: Int = 0; fds: String = ""; }
-    @unbounded
     dissolve() {
         let mut rest = self.fds;
         while len(rest) > 0 {
@@ -72,7 +69,6 @@ locus Held {
         }
     }
     // Opens one more stream and keeps it: what the head answered.
-    @unbounded
     fn one_more() -> String {
         let s = EventStream { port: self.port };
         let h = s.open();

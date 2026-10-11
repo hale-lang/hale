@@ -122,7 +122,6 @@ locus RetirementCases {
         eprintln("native " + mode + " passed");
     }
 }
-@unbounded
 fn main() {
     let cases = RetirementCases { }; cases.policy_case();
     cases.plan_case("hidden"); cases.plan_case("hidden-terminal"); cases.plan_case("reference"); cases.plan_case("transfer"); cases.plan_case("unsupported"); cases.plan_case("ledger"); cases.plan_case("done"); cases.plan_case("arrival"); cases.plan_case("other"); cases.plan_case("aba"); cases.plan_case("limit");

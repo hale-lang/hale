@@ -50,7 +50,6 @@ fn request_of(b: legs::Brief) -> dna::ModelRequest {
     return dna::ModelRequest { attempt_id: b.attempt_id, role: "edit", prompt: b.rendered, prompt_digest: legs::prompt_digest(b.rendered), data_class: "internal" };
 }
 
-@unbounded
 fn tool_names(receipts: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(receipts);
@@ -67,7 +66,6 @@ fn tool_names(receipts: String) -> String {
     return std::str::trim(out);
 }
 
-@unbounded
 fn calls_in(calls: String) -> Int {
     let mut n = 0;
     let mut it = std::json::array_first(calls);

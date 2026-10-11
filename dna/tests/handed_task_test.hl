@@ -18,7 +18,6 @@ main locus App {
             }
         };
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -31,7 +30,6 @@ main locus App {
     }
     // card 18: an ask is admitted once the leader's word lands; the
     // execution admitted under the intent's identity, "" when none yet.
-    @unbounded
     fn admitted(intent: String) -> String {
         let mut tries = 0;
         while tries < 300 {

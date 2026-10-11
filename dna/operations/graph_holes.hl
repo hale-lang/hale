@@ -111,7 +111,6 @@ locus HoleDoc {
         self.row("graph.edge", e.id(), e.body());
     }
     // The receipt: what the Board ratifies, and what the projection writes.
-    @unbounded
     fn document() -> String {
         let b = std::json::Builder { };
         b.begin_object();
@@ -217,7 +216,6 @@ fn hole_role_position(role: String) -> String {
 // The roles, space-separated and once each, that the surfaces of `contracts`
 // (one per line) require and `kind` (`dev`, `reviewer`, `operator`, an
 // operational role) is fitted with. `roles` is `<contract>\t<role>` per line.
-@unbounded
 fn hole_equipment(roles: String, contracts: String, kind: String) -> String {
     let mut out = "";
     let mut cs = contracts;
@@ -243,7 +241,6 @@ const HOLE_ROLES: String = "support accounts billing on-call";
 // `pairs` (`<node>\t<other>` per line) with a seed a process unfolds into
 // read as that process: a cell naming the seed (a link, a path inside it)
 // names the part it belongs to.
-@unbounded
 fn hole_by_part(pairs: String, unfolds: String) -> String {
     let mut out = "";
     let mut rest = pairs;

@@ -27,7 +27,6 @@ fn escape_arg(s: String) -> String {
     return std::str::replace(std::str::replace(s, "\\", "\\\\"), "\n", "\\n");
 }
 
-@unbounded
 fn unescape_arg(s: String) -> String {
     if !std::str::contains(s, "\\") { return s; }
     let mut out = "";

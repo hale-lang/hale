@@ -93,7 +93,6 @@ locus Owner {
     params { scope: String = ""; cat: dna::WorkflowCatalog = dna::WorkflowCatalog { }; asked: Int = 0; }
     bus { subscribe WorkflowAsks as on_ask where key == self.scope; }
     accept(w: dna::WorkflowRun) { }
-    @unbounded
     fn on_ask(a: WorkflowAsk) {
         self.asked = self.asked + 1;
         let mut leaves = dna::LeafSpecRows { };
@@ -142,7 +141,6 @@ main locus App {
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
     fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -153,7 +151,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -166,7 +163,6 @@ main locus App {
     }
     // The execution claims of one task, in the order the record holds
     // them: "<work>/<attempt> " each — the exact order of dispatch.
-    @unbounded
     fn claims(task_id: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -186,7 +182,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until(list_is_lives: Bool, item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {

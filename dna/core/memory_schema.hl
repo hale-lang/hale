@@ -66,7 +66,6 @@ fn owner_role(record_id: String, owner: String) -> String {
 
 // `s` as part of an identifier: lowercase letters and digits, anything
 // else `_`, at most `n` bytes.
-@unbounded
 fn identifier_part(s: String, n: Int) -> String {
     let mut out = "";
     let mut i = 0;
@@ -82,7 +81,6 @@ fn identifier_part(s: String, n: Int) -> String {
 // keys (HALE_DNA_OWNER_KEYS, `<owner>=<key> …`), space-separated, "" for
 // one owner. The keys themselves stay the record's until the vault holds
 // them (GH #989); memory never holds signature bytes.
-@unbounded
 fn owners_of_keys(keys: String) -> String {
     let mut out = "";
     let mut rest = keys + " ";
@@ -112,7 +110,6 @@ fn role_password(role: String) -> String {
 // The record's own roles into the vault (the spine's and the head's, and
 // each of `owners`' head roles): drawn where none is. "" when every one
 // has a password, else why not. The bootstrap's step, and a fixture's.
-@unbounded
 fn provision_record_roles(record_id: String, owners: String) -> String {
     if len(provision_role(spine_role(record_id))) == 0 { return "the spine's role password could not be provisioned in the vault"; }
     if len(provision_role(head_role(record_id))) == 0 { return "the head's role password could not be provisioned in the vault"; }
@@ -440,7 +437,6 @@ fn receipt_key_step(c: pq::PgConn) -> String {
 // transaction: the tables of every store, the record's claim on its
 // schema, the projection protocol, the spine's role and grants, and the
 // version row. Idempotent; a memory a newer toolchain migrated is refused.
-@unbounded
 fn migrate(owner: Dsn, record_id: String) -> Migrated {
     return migrate_for(owner, record_id, owners_of_keys(if std::env::var_exists("HALE_DNA_OWNER_KEYS") { std::env::var("HALE_DNA_OWNER_KEYS") } else { "" }));
 }

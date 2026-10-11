@@ -103,7 +103,6 @@ locus RecordTaskWriterAdmission {
 
 // ---- task create ----------------------------------------------------
 
-@unbounded
 // GH #596 W: a person reports a handed Task done. A row in the record
 // in their name; nothing runs, nothing is applied — the organism's
 // part ended when it handed the Task on. Refused for a Task that is
@@ -221,7 +220,6 @@ fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
 // condition is authorized by its authorizer, in their own name, as a row;
 // the assignee then closes the Task citing it. Not the assignee's own, and
 // only one of the people the bound practice names when it names them.
-@unbounded
 fn task_authorize_verb(root: String, seed: String, id: String, exception: String, who_flag: String, memory: dna::Memory) -> Answer {
     let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_authorize_admit(root, seed, id, exception, who_flag, writer, memory);
@@ -279,7 +277,6 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
 // kept in the row, so a later change of practice never rewrites what was
 // admitted. The reporter is the Task's assignee (GH #604 rule 4) and never
 // the decider.
-@unbounded
 fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
     let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_decide_admit(root, seed, id, decided_by, via, evidence_flag, note, who_flag, writer, memory);
@@ -357,7 +354,6 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
 // can cite. Internal text goes under the record's receipts with a
 // `receipt.filed` row; a protected class is kept in memory alone (GH #606),
 // and is refused when this head names no memory.
-@unbounded
 fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(path) == 0 { return fail("receipt file: `hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]`"); }
     let no_head = record_refusal(root);
@@ -400,7 +396,6 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
 
 // GH #604 rule 5: a handed Task moves to another person as a row that
 // names both; the Task stays handed. Reached per command.
-@unbounded
 fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String, memory: dna::Memory) -> Answer {
     let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_reassign_admit(root, seed, id, to, by_flag, writer, memory);
@@ -504,7 +499,6 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
 // `task.reassigned` row, and the retirement is a row in the retiring
 // or retiring-them person's name. Refused while they hold work and no
 // successor is named: pending work is accounted for, never dropped.
-@unbounded
 fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: String, memory: dna::Memory) -> Answer {
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
     let synced = sync_record(root, memory);
@@ -517,7 +511,6 @@ fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: Str
 // what they hold is transferred to a named successor (`task.reassigned`
 // each), and the retirement is a row in the retiring or retiring-them
 // person's name. Refused while they hold work and no successor is named.
-@unbounded
 fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: String, memory: dna::Memory) -> Answer {
     let p = open_projection(root, seed, "", memory);
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
@@ -566,7 +559,6 @@ fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: Str
 
 // The ids in a retirement plan's task array, space-separated, as the
 // refusal names them (`noor holds 1 handed task(s): t2`).
-@unbounded
 fn held_task_ids(tasks: String) -> String {
     let mut out = "";
     let mut entries = std::json::array_first(tasks);
@@ -580,7 +572,6 @@ fn held_task_ids(tasks: String) -> String {
 
 // Trusted-local CLI attribution is its existing authority model. The HTTP
 // provider independently requires its explicit application policy grant.
-@unbounded
 fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: String, batch: ops::GovernanceBatchRecord, memory: dna::Memory) -> Answer {
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
     let synced = sync_record(root, memory);
@@ -939,7 +930,6 @@ fn verdict_command_verb(root: String, seed: String, id: String, verdict: String,
 }
 
 // Whether `group` has a pending Review.
-@unbounded
 fn pending_in(p: Projection, group: String) -> Bool {
     let ids = p.review_ids_in_order();
     let n = list_len(ids);
@@ -954,7 +944,6 @@ fn pending_in(p: Projection, group: String) -> Bool {
 
 // ---- a verdict ------------------------------------------------------
 
-@unbounded
 fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, memory: dna::Memory) -> Answer {
     if !(verdict == "approve" || verdict == "revise" || verdict == "reject" || verdict == "abstain") {
         return fail("review: verdict `" + verdict + "` is not one of approve | revise | reject | abstain");
@@ -1156,7 +1145,6 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
 // it and why, and opens the Board's Review. Nothing is in force until the
 // Board approves it. `hale dna practice` lists practices as the record has
 // them.
-@unbounded
 fn practice_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String, memory: dna::Memory) -> Answer {
     let usage = "practice: `hale dna practice propose <name> --text <text> [--because <what prompted it>] [--supersedes <digest>] [--as <who>]`, or `hale dna practice` to list";
     let no_head = record_refusal(root);
@@ -1249,7 +1237,6 @@ fn sync_verb(root: String, memory: dna::Memory) -> Answer {
 // Fold `.` and `..` out of a path, so a plan's `seed` (relative to the
 // plan) and a mutation's seed (relative to the root) compare as the
 // same directory.
-@unbounded
 fn normalize(path: String) -> String {
     let mut out = "";
     let mut rest = path + "/";
@@ -1284,7 +1271,6 @@ type Deploy {
 
 // The instances a change to `seed` touches: every instance a node
 // expresses whose seed is that directory; every one when the seed is "".
-@unbounded
 fn touched_by(root: String, plan_rel: String, plan: String, seed: String) -> String {
     let plan_dir = plan_dir_of(plan_rel);
     let want = if len(seed) == 0 { "" } else { normalize(root + "/" + seed) };
@@ -1319,7 +1305,6 @@ fn touched_json(touched: String) -> String {
 
 // Ask the fleet to express `rev`: the revision pushed where every node
 // fetches from (`refs/dna/revisions/<rev>`), then one `fleet.deploy` row.
-@unbounded
 fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, seed: String, entity: String, reason: String, memory: dna::Memory) -> Deploy {
     let rev = genome_commit(root, rev_in);
     if len(rev) == 0 { return Deploy { error: "no such revision: " + rev_in }; }
@@ -1443,7 +1428,6 @@ fn routed_gates(p: Projection, id: String) -> String {
 // for its job is the run of, "" when none: a gate is a workflow's job,
 // and the forge names a job's run by the job — a matrix leg as `job
 // (<values>)`, a reusable workflow's as `job / <callee job>`.
-@unbounded
 fn gate_of_run(gates: String, name: String) -> String {
     let mut i = 0;
     while len(dna::nth_word(gates, i)) > 0 {

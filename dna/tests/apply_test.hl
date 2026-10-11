@@ -57,7 +57,6 @@ main locus App {
         dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: what, reviewer: "riley", authority: authority };
         std::time::sleep(150ms);
     }
-    @unbounded
     fn count_for(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -68,7 +67,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn count_in(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -79,7 +77,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last_in(j: dna::Journal, kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -90,7 +87,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -101,7 +97,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;

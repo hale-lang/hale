@@ -138,7 +138,6 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
 // row did reuses it instead of writing a second (#637). A mailbox that
 // could not be read says so in `why` and is never one without the
 // envelope: taken for that, the envelope was written twice (GH #961).
-@unbounded
 fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> PeerWrite {
     let cache = peer_cache(root, c.name);
     if len(cache) == 0 { return PeerWrite { }; }
@@ -165,7 +164,6 @@ fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -
 }
 
 // The envelope rows a mailbox ref in this clone holds ("" when absent).
-@unbounded
 fn mailbox_text(root: String, ref: String) -> String {
     let chain = if std::str::starts_with(ref, "refs/dna/") { ref[9..len(ref)] } else { ref };
     // a lookup: a mailbox that could not be read lists nothing
@@ -185,7 +183,6 @@ fn mailbox_text_for(root: String, peer: String) -> String {
 
 // This clone's inbound mailboxes (its sync fetches them from its remote),
 // newline-separated ref names.
-@unbounded
 fn mailboxes(root: String) -> String {
     let mut out = "";
     let mut rest = rec(root).pointers("exchange");
@@ -201,7 +198,6 @@ fn mailboxes(root: String) -> String {
 // A connection as the record has it: its latest proposal, an approval by
 // a board member other than its proposer (a verified row under signed
 // trust), its Review's settlement, its closing.
-@unbounded
 fn connection_of(p: Projection, name: String) -> Connection {
     let ent = "connection:" + name;
     let signed = trust_mode(p.root) == "signed";
@@ -249,7 +245,6 @@ fn settle_connection(root: String, c: Connection, memory: dna::Memory) {
 }
 
 // The connection names the record holds, newline-separated, first-proposed first.
-@unbounded
 fn connection_names(p: Projection) -> String {
     let mut names = "\n";
     let mut i = 0;
@@ -265,7 +260,6 @@ fn connection_names(p: Projection) -> String {
 }
 
 // The connection in force to record `peer`, if any.
-@unbounded
 fn connection_to(p: Projection, peer: String) -> Connection {
     let mut rest = connection_names(p);
     while len(rest) > 0 {
@@ -281,7 +275,6 @@ fn connection_to(p: Projection, peer: String) -> Connection {
 
 // ---- hale dna connect | disconnect ------------------------------------
 
-@unbounded
 fn connect_verb(root: String, seed: String, url_in: String, name: String, position: String, purpose: String, classes: String, by_flag: String, memory: dna::Memory) -> Answer {
     if len(url_in) == 0 { return connections_list(root, seed, memory); }
     if len(name) == 0 || len(position) == 0 || len(purpose) == 0 || len(classes) == 0 {
@@ -336,7 +329,6 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (git exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
 }
 
-@unbounded
 fn connections_list(root: String, seed: String, memory: dna::Memory) -> Answer {
     let s = sync_record(root, memory);
     let no_head = record_refusal(root);
@@ -380,7 +372,6 @@ fn disconnect_verb(root: String, seed: String, name: String, why: String, by_fla
 
 // ---- hale dna handoff -------------------------------------------------
 
-@unbounded
 fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, subject_in: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
     if (kind != "task" && kind != "receipt") || len(subject_in) == 0 {
         return fail("handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list");
@@ -532,7 +523,6 @@ fn admission_refusal(p: Projection, body: String) -> String {
 
 // A received envelope: its row line from this clone's mailboxes, the one a
 // mailbox holds under its own sender's name ("" when none).
-@unbounded
 fn received_line(root: String, entity: String) -> String {
     let mut refs = mailboxes(root);
     while len(refs) > 0 {
@@ -556,7 +546,6 @@ fn received_line(root: String, entity: String) -> String {
     return "";
 }
 
-@unbounded
 fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer {
     let s = sync_record(root, memory);
     let no_head = record_refusal(root);
@@ -599,7 +588,6 @@ fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
     return answer("handed across: " + (if len(sent) == 0 { "none\n" } else { "\n" + sent }) + "received: " + (if len(got) == 0 { "none\n" } else { "\n" + got }));
 }
 
-@unbounded
 fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(hid) == 0 { return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`"); }
     let s = sync_record(root, memory);
@@ -654,7 +642,6 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
 
 // Every connection in force: the acceptances its other record sent to this
 // record's own mailbox, each admitted once. A closed connection is not read.
-@unbounded
 fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer {
     let s = sync_record(root, memory);
     let no_head = record_refusal(root);

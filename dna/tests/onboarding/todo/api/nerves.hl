@@ -42,7 +42,6 @@ locus Nerves {
 
     /// An item has become overdue: a concern about the list, with the item
     /// as its payload. Says nothing when the list is not attached.
-    @unbounded
     fn overdue(id: Int, title: String, due: String) {
         if !self.attached() { return; }
         let body = "{\"id\":" + quoted("overdue-" + to_string(id))

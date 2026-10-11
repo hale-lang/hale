@@ -89,7 +89,6 @@ locus ScriptedPerformer {
     fn kind() -> String { return self.performer_kind; }
     fn identity() -> String { return self.name; }
     // One result per attempt; bounded by the caller's attempt cap.
-    @unbounded
     fn perform(req: WorkRequest) -> WorkResult {
         if req.attempt_no < self.fail_first {
             return WorkResult {

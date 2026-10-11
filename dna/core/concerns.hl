@@ -20,7 +20,6 @@ locus ConcernRecord {
     // once it persists from one source, `appendage.proposed` — a proposal
     // for an organ, never one. A request is answered once (GH #986): a
     // redelivery finds its answer and counts nothing.
-    @unbounded
     fn pressure(p: Pressure) -> PressureAnswer {
         let mut seen = 1;
         let n = self.journal.revision();
@@ -50,7 +49,6 @@ locus ConcernRecord {
     }
     // What a concern request already has in the record: the raise it wrote,
     // and whether another concern under its request was refused.
-    @unbounded
     fn prior(c: Concern) -> ConcernPrior {
         let n = self.journal.revision();
         let mut already = "";
@@ -83,7 +81,6 @@ locus ConcernRecord {
     // the parent it is routed to (none when its execution raised it
     // already, or it is owed: its raises are the record's), and whether its
     // source has now crossed the threshold with no proposal.
-    @unbounded
     fn raise(task: String, x: String) -> RaiseAnswer {
         let source = std::json::find_string_field(x, "source");
         let what = std::json::find_string_field(x, "what");
@@ -142,7 +139,6 @@ locus ConcernRecord {
     // A source with no parent was already refused where it crossed the
     // threshold and is left alone. One `<ask id>\t<inputs>` line per
     // source owed, which the assembly admits.
-    @unbounded
     fn owed() -> String {
         let n = self.journal.revision();
         let mut sources = "\n";

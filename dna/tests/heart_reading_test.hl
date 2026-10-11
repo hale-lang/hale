@@ -42,7 +42,6 @@ fn line_value(text: String, name: String) -> String {
 fn host_log(app: String) -> String { return std::io::fs::read_file(app + "/host.log") or ""; }
 
 // Whether the host's log comes to say `text` within `secs`.
-@unbounded
 fn logged(app: String, text: String, secs: Int) -> Bool {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
@@ -53,7 +52,6 @@ fn logged(app: String, text: String, secs: Int) -> Bool {
 }
 
 // The record's `reading.recorded` rows for `entity`, and the last one's body.
-@unbounded
 fn readings(repo: String, entity: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;
@@ -66,7 +64,6 @@ fn readings(repo: String, entity: String) -> Int {
     return n;
 }
 
-@unbounded
 fn reading_body(repo: String, entity: String) -> String {
     let j = dna::GitJournal { repo: repo };
     let mut body = "";
@@ -80,7 +77,6 @@ fn reading_body(repo: String, entity: String) -> String {
 }
 
 // Rows of `kind` whose body's `request` is `request`.
-@unbounded
 fn concerns(repo: String, kind: String, request: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;
@@ -94,7 +90,6 @@ fn concerns(repo: String, kind: String, request: String) -> Int {
 }
 
 // Rows of `kind` whose entity is `entity`.
-@unbounded
 fn count_kind(repo: String, kind: String, entity: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;

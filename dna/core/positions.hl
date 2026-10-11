@@ -26,7 +26,6 @@ locus PositionRecord {
     // the receipt stored, `knowledge.proposed` and `review.requested`
     // written. The proposal's digest, "" when it was answered already,
     // refused, or its receipt or a row is pending.
-    @unbounded
     fn asked(r: HoldRequest) -> String {
         if len(r.request_id) == 0 { return ""; }
         if len(first_row(self.journal, "hold.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "hold.refused", r.request_id).kind) > 0 { return ""; }
@@ -102,7 +101,6 @@ locus PositionRecord {
         return digest;
     }
     // The hold's own row once its Review is born.
-    @unbounded
     fn proposed(r: HoldRequest, digest: String) -> Bool {
         let review_id = knowledge_review_id(digest);
         let a = std::json::Builder { };
@@ -122,7 +120,6 @@ locus PositionRecord {
     // ratifying it ratifies both. Answered once, however often relayed. The
     // family's digest; "" when answered already, refused (a name the graph
     // already states, no mandate, no proposer), or a receipt or row pending.
-    @unbounded
     fn open_asked(r: PositionOpenRequest) -> String {
         if len(r.request_id) == 0 { return ""; }
         if len(first_row(self.journal, "position.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "position.refused", r.request_id).kind) > 0 { return ""; }

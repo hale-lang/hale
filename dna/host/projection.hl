@@ -135,7 +135,6 @@ locus Projection {
         return e.entity;
     }
     // ids, sorted, as the projection always listed them
-    @unbounded
     fn task_ids() -> String {
         let mut ids = "\n";
         let mut i = 0;
@@ -146,7 +145,6 @@ locus Projection {
         }
         return ids;
     }
-    @unbounded
     fn review_ids() -> String {
         let mut ids = "\n";
         let mut i = 0;
@@ -160,7 +158,6 @@ locus Projection {
     // The same Reviews in the order the record requested them: a seeded
     // group is listed, and decided by its name, in the order it was
     // proposed (a position, then its mandate), not by digest.
-    @unbounded
     fn review_ids_in_order() -> String {
         let mut ids = "\n";
         let mut i = 0;
@@ -174,7 +171,6 @@ locus Projection {
         }
         return ids;
     }
-    @unbounded
     fn mutation_ids() -> String {
         let mut ids = "\n";
         let mut i = 0;
@@ -196,7 +192,6 @@ locus Projection {
     }
     // GH #616: the digest of the practice named `name` that the Board
     // ratified and nothing retired ("" when none is in force).
-    @unbounded
     fn practice_in_force(name: String) -> String {
         let mut found = "";
         let mut i = 0;
@@ -267,7 +262,6 @@ locus Projection {
             target: r.target
         };
     }
-    @unbounded
     fn mutation_of(id: String) -> MutationRow {
         let mut m = MutationRow { id: id };
         let mut i = 0;
@@ -344,7 +338,6 @@ locus Projection {
         }
         return dna::Event { seq: -1 };
     }
-    @unbounded
     fn pending_reviews() -> Int {
         let ids = self.review_ids();
         let n = list_len(ids);
@@ -400,7 +393,6 @@ locus Projection {
     }
     // `status.json`, as `hale dna status --json` prints it and the
     // surface reads it.
-    @unbounded
     fn json() -> String {
         self.build();
         let b = std::json::Builder { };
@@ -598,7 +590,6 @@ locus Projection {
         return dna::Event { seq: -1 };
     }
     // `hale dna status`, as text.
-    @unbounded
     fn text() -> String {
         self.build();
         let mut out = "organism:   " + self.organism_line() + "\n";

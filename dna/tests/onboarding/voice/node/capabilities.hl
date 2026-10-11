@@ -31,7 +31,6 @@ fn capabilities_problem(file: String) -> String {
 /// The capabilities as the node declares them: each engine with what its
 /// kind supplies, and without its `local` object. Runs once, at start, over
 /// the operator's own file, so the loop is bounded by that file.
-@unbounded
 fn declared_capabilities(file: String) -> String {
     let engines = top_value(file, "engines");
     let mut out = "{\"max_in_flight\": " + top_value(file, "max_in_flight") + ", \"engines\": [";

@@ -59,7 +59,6 @@ main locus App {
         };
     }
     bus { publish dna::ConcernRaised; publish dna::ReviewRequested; }
-    @unbounded
     fn rows(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -69,7 +68,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;

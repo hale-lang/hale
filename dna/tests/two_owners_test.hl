@@ -65,7 +65,6 @@ fn line_value(text: String, name: String) -> String {
     return if nl < 0 { rest } else { rest[0..nl] };
 }
 
-@unbounded
 fn row_with(text: String, needle: String) -> String {
     let mut rest = text;
     while len(rest) > 0 {
@@ -78,7 +77,6 @@ fn row_with(text: String, needle: String) -> String {
 }
 
 // How many lines of `text` carry `needle`.
-@unbounded
 fn count_rows(text: String, needle: String) -> Int {
     let mut n = 0;
     let mut rest = text;
@@ -107,7 +105,6 @@ fn ledger(app: String, head_dsn: String) -> String {
 const POLLS: Int = 240;
 const BOOT: Int = 600;
 
-@unbounded
 fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String {
     let limit = tries * dna::wait_scale();
     let mut n = 0;
@@ -199,7 +196,6 @@ main locus App {
     // A body is up once its organization runs: the pid file is written and
     // the process is alive. What the record asks of it waits in the
     // nerves' stream until it reads it (GH #986).
-    @unbounded
     fn body_up(dir: String, tries: Int) -> Bool {
         let limit = tries * dna::wait_scale();
         let mut n = 0;
@@ -210,7 +206,6 @@ main locus App {
         }
         return false;
     }
-    @unbounded
     fn wait_gone(pid: String, tries: Int) -> Bool {
         let limit = tries * dna::wait_scale();
         let mut n = 0;
@@ -223,7 +218,6 @@ main locus App {
     }
     // The lease in memory under `key` once it is (or is no longer) held,
     // read as a head; as it was last read either way.
-    @unbounded
     fn wait_lease(key: String, held: Bool, tries: Int) -> dna::StoredLease {
         let limit = tries * dna::wait_scale();
         let mut n = 0;

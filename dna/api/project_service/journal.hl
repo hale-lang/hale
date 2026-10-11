@@ -91,7 +91,6 @@ fn canonical_value(key: String, raw: String) -> String {
 // line that does not parse are dropped with a notice, never folded.
 // Unbounded by design: a journal is as long as the operator's own
 // commands, and compaction is a follow-up.
-@unbounded
 fn whole_lines(path: String, what: String) -> String {
     let text = std::io::fs::read_file(path) or "";
     let mut out = "";
@@ -419,7 +418,6 @@ locus HeadJournal {
     // Every `running` run-kind receipt that ended, died or passed its
     // deadline is finalized, its outcome from `outcomes`. The count.
     // Unbounded by design: as many receipts as ran since the last request.
-    @unbounded
     fn settle(now: Int, outcomes: Outcomes) -> Int {
         let mut n = 0;
         let mut rest = self.running_ids("run");

@@ -28,7 +28,6 @@ fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 main locus App {
     params { repo: String = ""; bin: String = ""; spine: String = ""; }
     // The rows of `kind` under `entity`, their `holder` fields in order.
-    @unbounded
     fn holders(kind: String, entity: String) -> String {
         let j = dna::GitJournal { repo: self.repo };
         let mut out = "";
@@ -40,7 +39,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let j = dna::GitJournal { repo: self.repo };
         let mut n = 0;
@@ -62,7 +60,6 @@ main locus App {
         return dna::trim_nl(r.stdout);
     }
     // Whether `log` comes to hold `text` within `secs`.
-    @unbounded
     fn says(log: String, text: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
@@ -73,7 +70,6 @@ main locus App {
     }
     // Whether the node logging to `log` ends within `secs`: admitted here,
     // or answered by an admission another node made.
-    @unbounded
     fn ended(log: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {

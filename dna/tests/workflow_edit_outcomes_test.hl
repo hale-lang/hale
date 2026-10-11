@@ -115,7 +115,6 @@ main locus App {
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -126,7 +125,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let moved = j.refresh();
         let mut n = 0;
@@ -138,7 +136,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
         let moved = j.refresh();
         let mut out = "";
@@ -158,7 +155,6 @@ main locus App {
         }
     }
     // Wait for the record to hold `n` rows of `kind` for `entity`.
-    @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -167,7 +163,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until(list_is_lives: Bool, item: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -246,7 +241,6 @@ main locus App {
         dna::ReviewVerdict <- dna::Verdict { review_id: mutation_id, subject_digest: cand, verdict: what, reviewer: "riley", authority: "maintainer" };
     }
     // The attempts the assembly still holds waiting (its form keeps released slots).
-    @unbounded
     fn held_waiters() -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -258,7 +252,6 @@ main locus App {
         return n;
     }
     // The reports the assembly still holds (its form keeps released slots).
-    @unbounded
     fn held_reports() -> Int {
         let mut n = 0;
         let mut i = 0;

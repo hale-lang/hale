@@ -149,7 +149,6 @@ main locus App {
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
     fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + " "; }
     fn on_child(c: dna::ChildSettlement) { self.answers = self.answers + c.step_id + "/" + c.key + "=" + c.task_id + ":" + c.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -166,7 +165,6 @@ main locus App {
         let ib = std::str::index_of(self.lives, " " + b + " ");
         return ia >= 0 && ib >= 0 && ia < ib;
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -179,7 +177,6 @@ main locus App {
     }
     // Every execution claim in the record, in order: the exact order of
     // dispatch across the whole tree.
-    @unbounded
     fn claims() -> String {
         let mut out = "";
         let mut i = 0;
@@ -197,7 +194,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until(list_is_lives: Bool, item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {

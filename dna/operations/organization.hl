@@ -200,7 +200,6 @@ locus Organization {
             decls = std::json::array_next(decls);
         }
     }
-    @unbounded
     fn load() -> Bool {
         if self.loaded { return self.valid; }
         self.loaded = true;

@@ -10,7 +10,6 @@ fn class_known(c: String) -> Bool {
 }
 
 // A comma-separated class list, each trimmed, joined by commas.
-@unbounded
 fn classes_normal(classes: String) -> String {
     let mut out = "";
     let mut rest = classes + ",";
@@ -24,7 +23,6 @@ fn classes_normal(classes: String) -> String {
 }
 
 // Why a class list is refused ("" when every class is known and there is one).
-@unbounded
 fn classes_refusal(classes: String) -> String {
     let norm = classes_normal(classes);
     if len(norm) == 0 { return "name the data classes the connection may carry: `--classes internal[,customer][,confidential]`"; }
@@ -44,7 +42,6 @@ fn classes_allow(classes: String, class: String) -> Bool {
 }
 
 // Why a connection name is refused ("" when it is usable).
-@unbounded
 fn connection_name_refusal(name: String) -> String {
     if len(name) == 0 || len(name) > 40 { return "a connection name is 1 to 40 characters"; }
     if name == "accept" || name == "sync" { return "`" + name + "` is a handoff verb, not a connection name"; }

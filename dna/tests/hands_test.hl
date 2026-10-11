@@ -19,7 +19,6 @@ fn worn(j: dna::Journal, kind: String, owed: String, requires: String) -> dna::H
     }, dna::ContextPackage { }, false);
 }
 
-@unbounded
 fn names(hands: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(hands);
@@ -30,7 +29,6 @@ fn names(hands: String) -> String {
     return out;
 }
 
-@unbounded
 fn role_of(hands: String, name: String) -> String {
     let mut it = std::json::array_first(hands);
     while !it.done {

@@ -58,7 +58,6 @@ interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 // own act.
 locus HeadLease {
     params { api: String = ""; attempt: String = ""; holder: String = ""; token: Int = 0; renewals: Int = 0; }
-    @unbounded
     fn renew(ttl: Int) -> HandResult {
         if len(self.attempt) == 0 { return HandResult { error: "no lease is held" }; }
         self.renewals = self.renewals + 1;
@@ -77,7 +76,6 @@ locus HeadLease {
     // back until the spine answers, within `wait` seconds. Granted: the
     // allowance in micro-dollars (-1 when nothing bounds it). Refused, or
     // no answer in time: why, and the performer makes no call.
-    @unbounded
     fn allowance(wait: Int) -> HandResult {
         if len(self.attempt) == 0 { return HandResult { error: "no lease is held, so no spend can be asked for" }; }
         let head = Head { api: self.api };
@@ -130,7 +128,6 @@ locus ScratchGit {
         let gone = dna::run_tool("rm\n-f\n" + file);
         return hand_result(out, "");
     }
-    @unbounded
     fn clean() {
         let mut rest = self.roots;
         while len(rest) > 0 {

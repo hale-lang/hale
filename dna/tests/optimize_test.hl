@@ -34,7 +34,6 @@ main locus App {
             models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: SECRETARY }, deep: dna::FakeModel { name: "deep", answer: SECRETARY } }
         };
     }
-    @unbounded
     fn last(j: dna::Journal, kind: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -45,7 +44,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn count(j: dna::Journal, kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -58,7 +56,6 @@ main locus App {
     // GH #1143: the optimize pass is a schedule of optimize-walk, convened
     // by the leader here (a seeded operating practice declares the
     // organization's own); the occurrence it was declared at.
-    @unbounded
     fn cadence(d: dna::Dna, every_ms: Int) -> Int {
         std::test::assert_eq_str(d.scheduler.declare(dna::Schedule { id: "optimize", every_ms: every_ms, definition: "optimize-walk", args: "{}", convener: "position:leader" }, d.catalog, d.knowledge_client), "", "the optimize cadence is declared");
         let mut out = 0;

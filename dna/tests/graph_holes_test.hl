@@ -26,7 +26,6 @@ fn source() -> String {
 }
 
 // The value of `NAME=value` on its own line of `text`.
-@unbounded
 fn line_value(text: String, name: String) -> String {
     let at = std::str::index_of(text, name + "=");
     if at < 0 { return ""; }
@@ -168,7 +167,6 @@ locus App {
         return false;
     }
     // Whether the body's log says `needle`, within `tries` half-seconds.
-    @unbounded
     fn logged(needle: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
@@ -178,7 +176,6 @@ locus App {
         }
         return false;
     }
-    @unbounded
     fn count_rows(kind: String) -> Int {
         let j = journal_of(self.repo);
         let mut n = 0;
@@ -188,7 +185,6 @@ locus App {
     }
     // How many practice-ratify executions the record admitted (`admitted`),
     // or settled done (`settled`).
-    @unbounded
     fn ratification_rows(what: String) -> Int {
         let j = journal_of(self.repo);
         let mut tasks = "\n";
@@ -207,7 +203,6 @@ locus App {
     }
     // `hale dna show org` as the head, once memory has projected the whole
     // record (bounded).
-    @unbounded
     fn show_org(head: String, tries: Int) -> String {
         let mut n = 0;
         while n < tries {

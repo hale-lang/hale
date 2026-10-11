@@ -31,7 +31,6 @@ main locus App {
     }
     // card 18: an ask is admitted once the leader's word lands; the
     // execution admitted under the intent's identity, "" when none yet.
-    @unbounded
     fn admitted(intent: String) -> String {
         let mut tries = 0;
         while tries < 300 {
@@ -46,7 +45,6 @@ main locus App {
         }
         return "";
     }
-    @unbounded
     fn until_handed(case: String) {
         let mut tries = 0;
         while tries < 300 && len(self.last("task.handed", case)) == 0 { std::time::sleep(20ms); tries = tries + 1; }

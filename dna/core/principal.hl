@@ -69,7 +69,6 @@ fn p256_spki(x_b64url: String, y_b64url: String) -> String {
 // and whose `kid` breaks no line. `pinned` (a SubjectPublicKeyInfo,
 // "" for none) keeps that key alone: a loopback issuer is anyone's on
 // the machine, so its key is the record's to name (`dna.oidc.key`).
-@unbounded
 fn jwks_keys(doc: String, pinned: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(doc, "keys"));
@@ -93,7 +92,6 @@ fn issuer_loopback(url: String) -> Bool {
 }
 
 // A SubjectPublicKeyInfo (base64) as the PEM the verifier reads.
-@unbounded
 fn spki_pem(b64: String) -> Bytes {
     let mut body = "";
     let mut i = 0;
@@ -108,7 +106,6 @@ fn spki_pem(b64: String) -> Bytes {
 // Why a JWT's signature is refused ("" when it verifies): ES256 alone,
 // under the key its header names (`kid`) among `keys` (`jwks_keys`), or
 // the one key when the header names none and there is one.
-@unbounded
 fn es256_refusal(jwt: String, keys: String) -> String {
     let a = std::str::index_of(jwt, ".");
     if a < 0 { return "token: not a JWT"; }
@@ -193,7 +190,6 @@ fn bearer_refusal(c: IdClaims, issuer: String, client: String, now: Int) -> Stri
 
 // Whether an `aud` (a string, or a JSON array of strings) names `client`
 // exactly.
-@unbounded
 fn audience_names(aud: String, client: String) -> Bool {
     if !std::str::starts_with(aud, "[") { return aud == client; }
     let mut it = std::json::array_first(aud);
@@ -206,7 +202,6 @@ fn audience_names(aud: String, client: String) -> Bool {
 }
 
 // The member a subject maps to, from `subject=name` lines ("" when none).
-@unbounded
 fn member_of(mapping: String, subject: String) -> String {
     if len(subject) == 0 { return ""; }
     let mut rest = mapping + "\n";
@@ -287,7 +282,6 @@ fn discovery_refusal(issuer: String, authorize: String, token: String) -> String
 }
 
 // The value of cookie `name` in a Cookie header ("" when absent).
-@unbounded
 fn cookie_value(header: String, name: String) -> String {
     let mut rest = header + ";";
     while len(rest) > 0 {
@@ -301,7 +295,6 @@ fn cookie_value(header: String, name: String) -> String {
 
 // A header of a client response by name, case-insensitively.
 // (`std::http::header` takes a Request or a Response, not a ClientResponse.)
-@unbounded
 fn response_header(headers: String, name: String) -> String {
     let want = std::str::lower(name) + ":";
     let mut rest = headers + "\r\n";

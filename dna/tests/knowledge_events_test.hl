@@ -26,7 +26,6 @@ main locus App {
     fn on_settled(s: dna::ReviewSettlement) {
         if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -36,7 +35,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last(j: dna::Journal, kind: String) -> dna::Event {
         let mut out = dna::Event { };
         let mut i = 0;

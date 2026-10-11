@@ -67,7 +67,6 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory
 
 // GH #1026: the genome each node runs, from its last `node.started` row,
 // and a newer one that did not build, from its last `node.build_failed`.
-@unbounded
 fn genome_line(p: Projection) -> String {
     let mut holders = "";
     let mut i = 0;
@@ -261,7 +260,6 @@ fn has(ids: String, id: String) -> Bool {
     return std::str::contains(ids, "\n" + id + "\n");
 }
 
-@unbounded
 fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -362,7 +360,6 @@ fn mentioned_by_any(e: dna::Event, ids: String) -> Bool {
 
 // ---- reviews --------------------------------------------------------
 
-@unbounded
 fn review_list(p: Projection) -> Answer {
     let ids = p.review_ids();
     let n = list_len(ids);
@@ -394,7 +391,6 @@ fn review_list(p: Projection) -> Answer {
 fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds" || group == "positions" || group == "changes" || group == "ingest"; }
 
 // The pending Reviews of one seeded family, under its heading ("" when none).
-@unbounded
 fn seeded_listing(p: Projection, ids: String, family: String) -> String {
     let n = list_len(ids);
     let mut count = 0;
@@ -471,7 +467,6 @@ fn indent_lines(text: String, prefix: String) -> String {
 
 // The latest `review.routed` body of a Review (GH #1089), "" when none:
 // a re-routing supersedes the one before it.
-@unbounded
 fn routed_of(p: Projection, id: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -614,7 +609,6 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
 
 // ---- board ----------------------------------------------------------
 
-@unbounded
 fn board_verb(p: Projection) -> Answer {
     let mut mine = 0;
     let mut lines = "";
@@ -683,7 +677,6 @@ fn board_verb(p: Projection) -> Answer {
 // an adapter that could not deliver, a leg that did not settle within its
 // lease, a heart whose pulse stopped), newest last, at most five, and how
 // many there are in all. "" when there are none.
-@unbounded
 fn violations_board(p: Projection) -> String {
     let total = p.count(dna::VIOLATION_KIND);
     if total == 0 { return ""; }
@@ -704,7 +697,6 @@ fn violations_board(p: Projection) -> String {
 
 // ---- report ---------------------------------------------------------
 
-@unbounded
 fn report_verb(p: Projection, memory: dna::Memory) -> Answer {
     let last = p.last_of("report.filed");
     let since = if last.seq >= 0 { last.seq + 1 } else { 0 };
@@ -744,7 +736,6 @@ fn report_verb(p: Projection, memory: dna::Memory) -> Answer {
 
 // ---- pressure -------------------------------------------------------
 
-@unbounded
 fn pressure_list(p: Projection) -> Answer {
     let raised = p.count("pressure.raised");
     let mut out = "pressure: " + to_string(raised) + " signal(s) raised\n";
@@ -773,7 +764,6 @@ fn pressure_list(p: Projection) -> Answer {
 
 // ---- fleet ----------------------------------------------------------
 
-@unbounded
 fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
     if len(fleet) == 0 { return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here"); }
     let plan = std::io::fs::read_file(p.root + "/" + plan_rel) or "";
@@ -1215,7 +1205,6 @@ fn credential_gap(p: Projection) -> String {
 // `hale dna schedule [list | pause <id> | resume <id>]`: the schedules
 // the org chart declared, as the record has them; pause and resume are
 // rows in your name that the organism reads at its next tick.
-@unbounded
 fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -1354,7 +1343,6 @@ fn schedule_declare(root: String, seed: String, id: String, who: String, every: 
 // reader for a purpose, as a row in your name; `receipt show <digest>
 // --purpose <p>` reads it from memory in your name (GH #985).
 
-@unbounded
 fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -1528,7 +1516,6 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
 
 // "redacted by <who> under <policy>: <why>" when the record redacted
 // `digest` (GH #606), else "".
-@unbounded
 fn redaction_line(root: String, digest: String) -> String {
     // display only: a record that could not be read shows no redaction,
     // and the receipt beside it is still withheld or absent on its own
@@ -1556,7 +1543,6 @@ fn redaction_line(root: String, digest: String) -> String {
 // source) — and its broker account revoked: its user gone from
 // dna/nats.conf, its password from the include and the vault, and the
 // nerves restarted to drop what it holds.
-@unbounded
 fn application_remove_verb(root: String, who_flag: String) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }

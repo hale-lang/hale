@@ -128,7 +128,6 @@ locus WorktreeTools {
     // (`seeds_of_files`): a repository's root holds no `.hl`, its code sits
     // under its seeds. Each seed once, in order; the format keeps the first
     // failure, the check stops at it.
-    @unbounded
     @effects(is: { toolchain_run })
     fn fmt_files(files: String) -> RunResult {
         let mut out = RunResult { code: 0 };
@@ -142,7 +141,6 @@ locus WorktreeTools {
         }
         return out;
     }
-    @unbounded
     @effects(is: { toolchain_run })
     fn check_files(files: String) -> RunResult {
         let mut out = RunResult { code: 0 };
@@ -272,9 +270,7 @@ locus SourceEditor {
     // grant over the repository's root that listed only the root's own files
     // listed nothing (the todo repository's `api/`). Hidden directories and
     // the organization's own (`dna`, `vendor`) are not the grant's code.
-    @unbounded
     fn files() -> String { return self.files_under("", 0); }
-    @unbounded
     fn files_under(rel: String, depth: Int) -> String {
         let dir = if len(rel) == 0 { self.tools.root } else { self.tools.root + "/" + rel };
         let n = std::io::fs::list_dir_count(dir) or 0;
@@ -365,7 +361,6 @@ locus SourceEditor {
     // The files an objective is about (GH #566 F3): every listed file the
     // objective names, else the quick tier's plan from the listing, one
     // per line — only listed files are ever targets. Space-separated.
-    @unbounded
     fn plan(attempt: String, objective: String) -> String {
         let listing = self.files();
         let mut named = "";
@@ -406,7 +401,6 @@ locus SourceEditor {
     // of the previous try, when any, travel in the prompt. A hosted model
     // wraps a file in a code fence however it is asked (GH #566 F7); the
     // fence is not the file.
-    @unbounded
     fn edit_one(attempt: String, file: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
         let refused_before = self.tools.refused;
         // a file that is not there is not an empty file: an edit of it
@@ -523,7 +517,6 @@ locus SourceEditor {
     // files it changed derived from the export's diff, never from its
     // answer; then the same fmt, check, retry and assessment as the
     // file-by-file flow. Bounded by `max_tries`.
-    @unbounded
     fn perform_in_place(req: WorkRequest) -> WorkResult {
         let mut tries = 0;
         let mut diagnostics = "";

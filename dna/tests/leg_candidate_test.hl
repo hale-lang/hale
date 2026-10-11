@@ -51,21 +51,18 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.define("change", 1, "record", "a change a leg makes"), "", "change");
         std::test::assert_eq_str(self.core.catalog.leaf("change", 1, 0, "c", dna::WorkRequest { objective: "change main", output_contract: "Patch" }, 1), "", "c");
     }
-    @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let moved = self.journal.refresh();
         let mut out = ""; let mut i = 0;
         while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
         return out;
     }
-    @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
         while tries < 400 * dna::wait_scale() && len(self.row_body(kind, entity)) == 0 { std::time::sleep(25ms); tries = tries + 1; }
         std::test::assert(len(self.row_body(kind, entity)) > 0, what + ": no `" + kind + " " + entity + "` row within the deadline");
     }
     // The Mutations bound to an attempt, one id per line.
-    @unbounded
     fn mutations_of(attempt: String) -> String {
         let moved = self.journal.refresh();
         let mut out = ""; let mut i = 0;

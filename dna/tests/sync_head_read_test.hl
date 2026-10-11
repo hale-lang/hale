@@ -44,7 +44,6 @@ fn write_shim(dir: String, real_git: String, ref: String, state: String) {
     let x = dna::run_tool("chmod\n+x\n" + dir + "/git");
 }
 
-@unbounded
 fn on_chain(r: dna::GitRecord, id: String) -> Bool {
     return std::str::contains(r.ids("journal"), id + "\n");
 }

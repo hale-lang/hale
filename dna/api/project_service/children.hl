@@ -102,7 +102,6 @@ fn exit_code(p: Proc) -> Int {
 // `pid` itself, newline-separated, from `ps`. A tool a program started
 // through `run_tool` has a process group of its own, so killing the
 // program, or its group, misses it (the third review of #622).
-@unbounded
 fn descendants(pid: String) -> String {
     let table = dna::run_tool("ps\n-eo\npid=,ppid=").stdout;
     let mut found = "\n" + pid + "\n";

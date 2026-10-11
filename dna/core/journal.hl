@@ -50,7 +50,6 @@ interface Journal {
 
 // A batch as a loop of the journal's own `append`s: what a journal that
 // has no cheaper write does for `append_batch`.
-@unbounded
 fn append_rows(j: Journal, expected: Int, rows: RowBatch) -> AppendResult {
     let mut at = expected;
     let mut i = 0;
@@ -132,7 +131,6 @@ fn chain_ok(rows: EventRows) -> Bool {
 // The git-backed `GitJournal`, `GitReceipts` and `GitLeases` live in
 // record.hl, over the `Record` interface (GH #646 stage 0).
 
-@unbounded
 fn ref_safe(key: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -231,7 +229,6 @@ locus MemLeases {
 
 // The last `effect.result` body for `key`, "" when none: what a person
 // or a restart said about the effect.
-@unbounded
 fn effect_result_body(j: Journal, key: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -342,7 +339,6 @@ fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Le
 
 // Renew the lease this holder holds under `token`: the token stays, the
 // expiry moves. False when the lease is no longer this holder's.
-@unbounded
 fn lease_renew(j: Journal, key: String, holder: String, token: Int, now: Int, ttl: Int) -> Bool {
     let mut tries = 0;
     while tries < 6 {
@@ -358,7 +354,6 @@ fn lease_renew(j: Journal, key: String, holder: String, token: Int, now: Int, tt
 }
 
 // Release the lease this holder holds under `token`.
-@unbounded
 fn lease_release(j: Journal, key: String, holder: String, token: Int) -> Bool {
     let mut tries = 0;
     while tries < 6 {
@@ -414,7 +409,6 @@ fn effect_status(j: Journal, key: String) -> EffectStatus {
 // lost race and a reload, without re-reading); only the writer whose
 // row is the FIRST request for the key dispatches — the other's row
 // stays in the record as a contended claim, and it does not act.
-@unbounded
 fn effect_request(j: Journal, key: String, body: String) -> Bool {
     let st = effect_status(j, key);
     if st.requested { return false; }

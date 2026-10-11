@@ -78,7 +78,6 @@ fn record_row(app: String, kind: String, entity: String, secs: Int) -> String {
 }
 
 // How many of the record's rows are `kind` about `entity`.
-@unbounded
 fn record_count(app: String, kind: String, entity: String) -> Int {
     let j = dna::GitJournal { repo: app };
     let mut n = 0;
@@ -92,7 +91,6 @@ fn record_count(app: String, kind: String, entity: String) -> Int {
 }
 
 // The lines of `text` that carry `needle`: the first, and how many.
-@unbounded
 fn row_with(text: String, needle: String) -> String {
     let mut rest = text;
     while len(rest) > 0 {
@@ -104,7 +102,6 @@ fn row_with(text: String, needle: String) -> String {
     return "";
 }
 
-@unbounded
 fn count_rows(text: String, needle: String) -> Int {
     let mut n = 0;
     let mut rest = text;
@@ -119,7 +116,6 @@ fn count_rows(text: String, needle: String) -> Int {
 
 // The ledger's rows, read as a head, once they hold `needle` or `secs`
 // pass; the rows it last read.
-@unbounded
 fn ledger_holding(app: String, head_dsn: String, needle: String, secs: Int) -> String {
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut rows = "";

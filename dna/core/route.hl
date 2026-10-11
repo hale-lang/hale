@@ -77,7 +77,6 @@ locus Router {
     // directory), else a document, else a deployment (the file it was read
     // from, when that is no document), else the seed holding it; "" for
     // none.
-    @unbounded
     fn node_of(path: String) -> String {
         let mut seed = "";
         let mut deployment = "";
@@ -123,7 +122,6 @@ locus Router {
     }
     // The positions unfolded under `part` — a process or a seed — and,
     // for a seed, under the processes that unfold into it.
-    @unbounded
     fn positions_under(part: String) -> String {
         let mut out = "";
         let mut parents = part + "\n" + (if std::str::starts_with(part, "seed:") { self.related(self.unfold, part, true) } else { "" });
@@ -218,7 +216,6 @@ locus Router {
 }
 
 // The route for `paths` (one per line) over the routing query's answer.
-@unbounded
 // `law` is the contracts (and other nodes) a practice ratified as law is
 // bound to, one per line: the caller reads each bound practice's receipt
 // (`law_targets`), for memory holds a practice's binding but not whether
@@ -238,7 +235,6 @@ fn graph_route(json: String, paths: String, law: String) -> Route {
 }
 
 // The holders of `position`, `, `-joined, from the routing query's holds.
-@unbounded
 fn route_holders(json: String, position: String) -> String {
     let r = Router { };
     r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
@@ -248,7 +244,6 @@ fn route_holders(json: String, position: String) -> String {
 // The `<idea>\t<target>` pairs of the routing query's `bound`: a ratified
 // practice and what it is bound to, for the caller to keep those ratified
 // as law.
-@unbounded
 fn route_bound(json: String) -> String { return route_pairs(std::json::find_field_raw(json, "bound")); }
 
 // ---- what a Review requires, from its route (GH #1089) ----------------------
@@ -353,7 +348,6 @@ fn route_requirement(json: String, r: Route) -> RouteRequirement {
 // `signers` with each position's holders read again from the routing
 // query's answer: the positions a Review requires stay the route's, and
 // who holds them is who holds them now.
-@unbounded
 fn signers_held_now(json: String, signers: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -380,7 +374,6 @@ fn board_requirement(json: String) -> RouteRequirement {
 // ---- how the graph's names are shown ---------------------------------------
 
 // The last segment of a path.
-@unbounded
 fn ingest_base(path: String) -> String {
     let mut rest = path;
     let mut slash = std::str::index_of(rest, "/");
@@ -412,7 +405,6 @@ fn show_strings(raw: String) -> String {
 }
 
 // Lines as a `, `-joined list, each shown by `show_name` when `names`.
-@unbounded
 fn show_list(lines: String, names: Bool) -> String {
     let mut out = "";
     let mut rest = lines;

@@ -117,7 +117,6 @@ locus Refusing {
 
 // What a durable store says about an attempt: the invocation it holds
 // is the outcome, and the effect is not performed twice.
-@unbounded
 fn recorded(store: dna::MemJournal, kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
     let id = attempt_of(req);
     let mut i = 0;
@@ -186,7 +185,6 @@ main locus App {
     }
 
     // ---- reading -----------------------------------------------------------
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -197,7 +195,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows_in(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -210,7 +207,6 @@ main locus App {
     }
     fn rows(kind: String, entity: String) -> Int { return self.rows_in(self.boot.rt.journal, kind, entity); }
     // the position of the first such row, -1 for none
-    @unbounded
     fn at(kind: String, entity: String) -> Int {
         let mut i = 0;
         while i < self.boot.rt.journal.revision() {
@@ -220,7 +216,6 @@ main locus App {
         }
         return -1;
     }
-    @unbounded
     fn body_of(kind: String, entity: String) -> String {
         let mut i = 0;
         while i < self.boot.rt.journal.revision() {
@@ -236,7 +231,6 @@ main locus App {
     fn invocations(attempt_id: String) -> Int { return self.rows_in(self.store, "invocation", attempt_id); }
     fn claims(attempt_id: String) -> Int { return self.rows("effect.requested", "attempt:" + attempt_id); }
     // every row of t's tree, "<kind> <entity>\n" per row, in the record's order
-    @unbounded
     fn tree_rows(j: dna::Journal, t: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -249,7 +243,6 @@ main locus App {
         return out;
     }
     // born minus dissolved among the residents of t's tree
-    @unbounded
     fn live_of(t: String) -> Int {
         let mut n = 0;
         let mut rest = self.lives;
@@ -277,7 +270,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -287,7 +279,6 @@ main locus App {
         }
         std::test::assert(false, "timed out waiting for " + to_string(n) + " " + kind + " " + entity);
     }
-    @unbounded
     fn until_outcome(item: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -297,7 +288,6 @@ main locus App {
         }
         std::test::assert(false, "timed out waiting for " + to_string(n) + " " + item);
     }
-    @unbounded
     fn until_reclaimed(t: String) {
         let mut i = 0;
         while i < 1500 {
@@ -412,7 +402,6 @@ main locus App {
     // `effect.redelivered` each); `unacted` those among them whose first
     // delivery never reached the adapter (the process died between the
     // claim and the effect), so the adapter saw them once.
-    @unbounded
     fn verify_shape(t: String, again: String, unacted: String) {
         let a = self.a_of(t);
         let b = self.b_of(t);
@@ -464,7 +453,6 @@ main locus App {
         std::test::assert(attempts >= 3, t + ": at least the three leaves' attempts were admitted");
         std::test::assert_eq_int(self.rows_in(self.store, "invocation", "") - self.invocations_outside(t), attempts + self.count_words(again) - self.count_words(unacted), t + ": the adapters hold exactly the tree's invocations");
     }
-    @unbounded
     fn count_words(s: String) -> Int {
         let mut n = 0;
         let mut rest = s;
@@ -476,7 +464,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn invocations_outside(t: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -486,7 +473,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows_before(t: String, kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -818,7 +804,6 @@ main locus App {
     fn run_runner(bin: String, repo: String, store: String, die: String) -> dna::RunResult {
         return sh("sh\n-c\nHALE_DNA_DISCOVER=off \"$1\" \"$2\" \"$3\" \"$4\"; echo \"exit=$?\"\nsh\n" + bin + "\n" + repo + "\n" + store + "\n" + die);
     }
-    @unbounded
     fn lines_of(path: String, needle: String) -> Int {
         let text = std::io::fs::read_file(path) or "";
         let mut n = 0;
@@ -832,7 +817,6 @@ main locus App {
         return n;
     }
     // the adapter's file, one attempt id per line, as invocation rows
-    @unbounded
     fn load_store(path: String) {
         let mut rest = std::io::fs::read_file(path) or "";
         while len(rest) > 0 {

@@ -33,7 +33,6 @@ locus ReviewRecord {
     // that is named and does not answer routes nothing: the Review is not
     // opened (`recorded: false`) and reconcile asks again, so it never
     // opens on its claimed authority alone.
-    @unbounded
     fn routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool, knowledge: MemoryKnowledge, receipts: Receipts) -> RouteRequirement {
         let row = routed_row(self.journal, review_id);
         let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
@@ -57,7 +56,6 @@ locus ReviewRecord {
     }
     // The fallback: a Review on it is decided by its own required
     // authority. A change's is recorded once, with why.
-    @unbounded
     fn fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
         if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
         if !append_once(self.journal, "review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
@@ -70,7 +68,6 @@ locus ReviewRecord {
     // `review.routed` row that supersedes the last, and the Review takes them.
     // The Reviews routed again, one id a line, which the assembly tells
     // their holders.
-    @unbounded
     fn reroute(knowledge: MemoryKnowledge) -> String {
         if !knowledge.ready() { return ""; }
         let mut routed = "\n";
@@ -134,7 +131,6 @@ locus ReviewRecord {
         return out;
     }
     // ---- the Reviews this incarnation has born
-    @unbounded
     fn knowledge_known(id: String) -> Bool {
         let mut i = 0;
         while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
@@ -142,7 +138,6 @@ locus ReviewRecord {
     }
     @unbounded
     fn knowledge_born(id: String) { self.knowledge_reviews.push(id); }
-    @unbounded
     fn source_known(id: String) -> Bool {
         let mut i = 0;
         while i < self.organization_source_reviews.len() { if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1; }
@@ -179,7 +174,6 @@ locus ReviewRecord {
             let w = self.journal.append(self.journal.revision(), "review.reasoned", review_id, comment);
         }
     }
-    @unbounded
     fn approved(mutation_id: String) -> Bool {
         let n = self.journal.revision();
         let mut i = 0;
@@ -193,7 +187,6 @@ locus ReviewRecord {
     }
     // The settled verdict on a Mutation's review — "approve", "reject",
     // "revise" — or "" while it is open.
-    @unbounded
     fn outcome_of(mutation_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;

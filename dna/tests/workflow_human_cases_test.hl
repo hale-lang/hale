@@ -130,7 +130,6 @@ main locus App {
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -141,7 +140,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let moved = j.refresh();
         let mut n = 0;
@@ -153,7 +151,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
         let moved = j.refresh();
         let mut out = "";
@@ -166,7 +163,6 @@ main locus App {
         return out;
     }
     // The index of the first row of `kind` for `entity`, -1 when none.
-    @unbounded
     fn at(j: dna::Journal, kind: String, entity: String) -> Int {
         let moved = j.refresh();
         let mut i = 0;
@@ -184,7 +180,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
         while i < 1500 {

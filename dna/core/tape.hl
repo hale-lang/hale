@@ -31,7 +31,6 @@ fn normalize_grant(g: String) -> String {
 // A short digest of a directory's files: every path with its content's
 // sha256, in listing order, hashed. "" for no directory. Bounded by
 // the files of one workspace.
-@unbounded
 fn tree_digest(dir: String) -> String {
     if len(dir) == 0 { return ""; }
     let acc = std::str::builder_new();
@@ -107,7 +106,6 @@ locus RecordedModel {
     fn adapter() -> String { return "recorded"; }
     // A recorded answer's cost is known before it is replayed; recording,
     // the inner backend's price is the call's (GH #1131).
-    @unbounded
     fn price_micros(req: ModelRequest) -> Int {
         if self.mode == "record" { return self.inner.price_micros(req); }
         let f = self.fields(req);
@@ -224,7 +222,6 @@ locus RecordedModel {
     }
     // The nearest entry on a miss: one that shares the prompt digest,
     // and which of the other fields differed. Bounded by the tape.
-    @unbounded
     fn nearest(prompt_digest: String, mine: TapeEntry) -> String {
         let n = std::io::fs::list_dir_count(self.dir) or 0;
         let mut i = 0;
@@ -260,7 +257,6 @@ locus RecordedModel {
         };
     }
     // Bounded by the calls one run makes.
-    @unbounded
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
         let f = self.fields(req);

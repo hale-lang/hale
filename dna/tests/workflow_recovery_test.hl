@@ -154,7 +154,6 @@ main locus App {
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
     fn on_refused(r: dna::ExecutionRefusal) { self.refusals = self.refusals + r.task_id + "|" + r.why + "\\n"; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -165,7 +164,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -177,7 +175,6 @@ main locus App {
         return n;
     }
     // The index just past the first row of `kind` for `entity`, -1 when none.
-    @unbounded
     fn after(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut i = 0;
         while i < j.revision() {
@@ -188,7 +185,6 @@ main locus App {
         return -1;
     }
     // Every execution claim in the record, in order.
-    @unbounded
     fn claims(j: dna::Journal) -> String {
         let mut out = "";
         let mut i = 0;
@@ -199,7 +195,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
         let mut i = 0;
         while i < n {
@@ -209,7 +204,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
         let mut i = 0;
         while i < j.revision() {
@@ -226,7 +220,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until(list_is_lives: Bool, item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -237,7 +230,6 @@ main locus App {
     }
     // The order the last three settlements came in: the tail of the
     // outcomes.
-    @unbounded
     fn tail3() -> String {
         let mut items = "";
         let mut rest = self.outcomes;
@@ -286,7 +278,6 @@ main locus App {
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, agent_reconciler: dna::IdempotentReplay { }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" }, lone: dna::Executions { scope: "lone" } };
     }
     // Every claim of a rerun-free record: each attempt claimed once.
-    @unbounded
     fn each_once(j: dna::Journal) -> Bool {
         let cs = self.claims(j);
         let mut rest = cs;

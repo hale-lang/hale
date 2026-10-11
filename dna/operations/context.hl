@@ -47,7 +47,6 @@ locus HatReader {
     // projection under the same bounds the execution reader keeps. The
     // bounds are the execution's: a record's whole history, every task the
     // organization ever ran, is no measure of what one hat needs.
-    @unbounded
     fn load(root: String) -> Bool {
         if self.loaded { return true; }
         let mut i = 0;
@@ -69,7 +68,6 @@ locus HatReader {
     }
     // The Work's history as facts: every execution fact about the Work —
     // its attempts admitted and settled, its settlement — by record order.
-    @unbounded
     fn history_json(work_id: String) -> String {
         let b = std::json::Builder { };
         b.begin_array();
@@ -91,7 +89,6 @@ locus HatReader {
     }
     // The hat for a Work, at this reading of the record: built, digested,
     // and kept in memory under its digest when memory is there.
-    @unbounded
     fn read(work_id: String) -> dna::Hat {
         if !self.load(execution_root(work_id)) { return dna::Hat { code: self.code, why: self.problem }; }
         let mut node = dna::BoundNode { };
@@ -121,7 +118,6 @@ locus HatReader {
 
 // The execution an id belongs to: its root task's id, the part before the
 // first `/` or `.` (`t4/wf1/s0/w` and a child's `t4/wf1.s0.k` are `t4`'s).
-@unbounded
 fn execution_root(id: String) -> String {
     let mut i = 0;
     while i < len(id) {

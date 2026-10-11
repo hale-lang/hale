@@ -122,7 +122,6 @@ locus KnowledgeEdgeCodec {
     fn apply_refused(r: KnowledgeEdgeRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
-    @unbounded
     fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {
         let mut found = Event { }; let mut i = 0;
         while i < end {
@@ -179,7 +178,6 @@ locus KnowledgeEdgeCodec {
         return KnowledgeEdgeEndpoints { ok: true, ratified: from.ratified && to.ratified, active: from.active && to.active,
             from_author: from.author, from_target: from.target, to_author: to.author, to_target: to.target };
     }
-    @unbounded
     fn basis(j: Journal, receipts: Receipts, direct: KnowledgeDirectEdgeFacts, r: KnowledgeEdgeRequest, end: Int) -> KnowledgeEdgeBasis {
         if end < 1 || end > j.revision() || j.read(0).digest != r.application_id || !digest_well_formed(r.from_id) || !digest_well_formed(r.to_id)
             || r.edge_id != self.identity(r.from_id, r.to_id, r.rel) { return KnowledgeEdgeBasis { }; }

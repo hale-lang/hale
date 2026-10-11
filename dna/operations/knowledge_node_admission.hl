@@ -17,7 +17,6 @@ locus KnowledgeNodeAdmission {
         }
         return false;
     }
-    @unbounded
     fn subject(record: GovernanceRecord, j: GovernanceJournal, digest: String) -> KnowledgeNodeSubject {
         let codec = KnowledgeCommandCodec { }; let commands = KnowledgeCommands { }; let wire = GovernanceCommandCodec { };
         if !codec.digest(digest) || !commands.visible(j, digest) { return KnowledgeNodeSubject { }; }

@@ -96,7 +96,6 @@ locus Shared {
         self.landed = true;
         let o = self.inner.append(self.inner.revision(), "attempt.outcome", self.land_outcome_for, dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: self.land_outcome_for, work_id: self.land_outcome_for[0..(len(self.land_outcome_for) - 3)], disposition: "done", performer: "counter", result: "settled meanwhile" }));
     }
-    @unbounded
     fn refresh() -> Bool {
         self.looks = 0;
         let mut moved = false;
@@ -166,7 +165,6 @@ main locus App {
             work: dna::WorkSystem { software: dna::ScriptedPerformer { name: "script", outcome: "cancelled" } }
         };
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;

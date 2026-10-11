@@ -24,7 +24,6 @@ main locus Node {
         core: dna::Dna = dna::Dna { };
         leader: dna::Leader = dna::Leader { };
     }
-    @unbounded
     fn admitted() -> String {
         let moved = self.core.journal.refresh();
         let mut i = 0;

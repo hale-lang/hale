@@ -54,7 +54,6 @@ fn relay_once(app: String, relayed: String) -> host::NodeRelay {
 }
 
 // The merged index of an attempt's requested row in a projection, -1 when none.
-@unbounded
 fn requested_at(p: host::Projection, attempt: String) -> Int {
     let mut k = 0; let mut at = -1;
     while k < p.j.revision() { let e = p.j.read(k); if e.kind == "attempt.outcome_requested" && e.entity == attempt { at = k; } k = k + 1; }
@@ -88,9 +87,7 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.define("person", 1, "record", "a person's job"), "", "person");
         std::test::assert_eq_str(self.core.catalog.leaf("person", 1, 0, "p", dna::WorkRequest { objective: "sign the lease", requires: "human" }, 1), "", "p");
     }
-    @unbounded
     fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
-    @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let moved = self.journal.refresh();
         let mut out = "";
@@ -102,7 +99,6 @@ locus App {
         }
         return out;
     }
-    @unbounded
     fn count_rows(kind: String, entity: String) -> Int {
         let moved = self.journal.refresh();
         let mut n = 0;
@@ -114,7 +110,6 @@ locus App {
         }
         return n;
     }
-    @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
         while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }
@@ -227,7 +222,6 @@ locus App {
         return hat;
     }
     // ---- the whole of it, over the journal as it stands (routing 0, or adopted)
-    @unbounded
     fn exercise(label: String) {
         let record = dna::GitRecord { repo: self.app };
         let identity = record.identity();
@@ -608,7 +602,6 @@ locus App {
         self.wait_row("work.settled", ops::usage_work_of(a5), l + "and the Work, its attempts spent, settles: the repeats are bounded");
     }
     // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
-    @unbounded
     fn adopt() {
         let moved = self.journal.refresh();
         let b = std::json::Builder { };

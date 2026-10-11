@@ -87,7 +87,6 @@ fn usage_work_of(attempt: String) -> String {
 }
 
 // A key with no spaces, so a breakdown line parses back.
-@unbounded
 fn usage_key(s: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -100,7 +99,6 @@ fn usage_key(s: String) -> String {
 }
 
 // The number of lines a breakdown holds.
-@unbounded
 fn usage_line_count(lines: String) -> Int {
     let mut n = 0;
     let mut rest = lines;
@@ -154,7 +152,6 @@ fn usage_line_text(l: UsageLine) -> String {
 
 // `lines` with one call added under `key`: its line grown, or a new
 // line at the end.
-@unbounded
 fn usage_bump(lines: String, key: String, input: Int, output: Int, cost: Int) -> String {
     let n = usage_line_count(lines);
     let mut out = "";
@@ -180,7 +177,6 @@ fn usage_bump(lines: String, key: String, input: Int, output: Int, cost: Int) ->
 // One breakdown as a JSON array of objects whose first field is `name`
 // and whose counters are decimal strings, as the contract carries
 // native integers.
-@unbounded
 fn usage_lines_json(lines: String, name: String) -> String {
     let b = std::json::Builder { };
     b.begin_array();
@@ -249,7 +245,6 @@ locus Usage {
     params { j: dna::Journal; }
     // The task born of an ask (`task.born <task>` with a body `<ask>: …`),
     // "" when none was.
-    @unbounded
     fn task_of_ask(ask: String) -> String {
         let n = self.j.revision();
         let mut i = 0;
@@ -262,7 +257,6 @@ locus Usage {
     }
     // The task a Mutation was asked for: its request names it; an older
     // record says it in the proposal's summary, `task <id> <class>: …`.
-    @unbounded
     fn task_of_mutation(m: String) -> String {
         let n = self.j.revision();
         let mut i = 0;
@@ -282,7 +276,6 @@ locus Usage {
         return "";
     }
     // The task a Review decides: the request names it, or its Mutation.
-    @unbounded
     fn task_of_review(r: String) -> String {
         if std::str::starts_with(r, "k:") { return "knowledge"; }
         let n = self.j.revision();
@@ -301,7 +294,6 @@ locus Usage {
     }
     // The task a wf1 attempt was admitted under, and its performer kind,
     // as `<task> <kind>`; "" when no admission names it.
-    @unbounded
     fn admission_of(attempt: String) -> String {
         let n = self.j.revision();
         let mut i = 0;
@@ -315,7 +307,6 @@ locus Usage {
         return "";
     }
     // The task a task runs under (a child workflow's parent), "" at a root.
-    @unbounded
     fn parent_of(task: String) -> String {
         let n = self.j.revision();
         let mut i = 0;
@@ -327,7 +318,6 @@ locus Usage {
         return "";
     }
     // Whether `task` is `root` or runs under it.
-    @unbounded
     fn within(task: String, root: String) -> Bool {
         let mut at = task;
         let mut hops = 0;
@@ -339,7 +329,6 @@ locus Usage {
         return false;
     }
     // Whose call an attempt's evidence is.
-    @unbounded
     fn owner_of(attempt: String) -> UsageOwner {
         if std::str::ends_with(attempt, "/plan") {
             let ask = attempt[0..(len(attempt) - 5)];
@@ -373,7 +362,6 @@ locus Usage {
         return len(o.task) > 0 && self.within(o.task, id);
     }
     // The sums under `id` (the whole record for "").
-    @unbounded
     fn under(id: String) -> UsageTotals {
         let mut t = UsageTotals { };
         let n = self.j.revision();

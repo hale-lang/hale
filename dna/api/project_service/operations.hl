@@ -500,7 +500,6 @@ fn catalog_credentials(root: String) -> String {
 }
 
 // The regular files under `dir`, space-separated names.
-@unbounded
 fn file_names(dir: String) -> String {
     let n = std::io::fs::list_dir_count(dir) or 0;
     let mut out = "";
@@ -530,7 +529,6 @@ fn words_json(words: String) -> String {
 
 // The keys among `words` whose vault slot holds a value (GH #989: the one
 // source a key is read from), asked by presence, never read.
-@unbounded
 fn vault_present(words: String) -> String {
     let mut out = "";
     let mut rest = words;
@@ -544,7 +542,6 @@ fn vault_present(words: String) -> String {
 }
 
 // The names among `words` that are set in this process's environment.
-@unbounded
 fn env_present(words: String) -> String {
     let mut out = "";
     let mut rest = words;

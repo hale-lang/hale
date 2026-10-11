@@ -313,7 +313,6 @@ locus AttemptCommandCodec {
     // ratified, or one the generated organization's kinds name
     // (`position:leader`, `position:editor`, `position:agent`,
     // `position:human`, `position:service`, `position:software`).
-    @unbounded
     fn known_position(j: dna::Journal, receipts: dna::Receipts, holder: String) -> Bool {
         let base = holder_base(holder);
         if base == "position:leader" || base == dna::hat_position_of("edit") || base == dna::hat_position_of("agent") || base == dna::hat_position_of("human") || base == dna::hat_position_of("service") || base == dna::hat_position_of("software") { return true; }
@@ -345,7 +344,6 @@ locus AttemptCommandCodec {
     // The claim rows an attempt has: without memory the next lease's token
     // (GH #946 review), so a lease taken again after a release or an
     // expiry is not the same token as the one before it.
-    @unbounded
     fn claim_rows(j: dna::Journal, attempt_id: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -354,7 +352,6 @@ locus AttemptCommandCodec {
     }
     // Whether an outcome handed back under any lease of the attempt awaits
     // the owner: such an attempt awaits nobody else.
-    @unbounded
     fn outcome_awaiting(j: dna::Journal, attempt_id: String) -> Bool {
         let mut requests = "\n";
         let mut refused = "\n";
@@ -431,7 +428,6 @@ locus AttemptCommandCodec {
     // owner (hardening, B3): an `attempt.outcome_requested` row naming this
     // holder and token that no `attempt.outcome_refused` names. One the
     // owner refused, or one under an earlier lease, stands in nobody's way.
-    @unbounded
     fn outcome_outstanding(j: dna::Journal, attempt_id: String, holder: String, token: Int) -> Bool {
         let mut requests = "\n";
         let mut refused = "\n";
@@ -485,7 +481,6 @@ locus AttemptCommandCodec {
     // The attempts that await such a leg, in record order, one id per
     // line — and, for the refusal, why the other outstanding attempts of
     // the leg's kind did not.
-    @unbounded
     fn candidates(j: dna::Journal, c: GovernanceCommand) -> AttemptCandidates {
         let mut out = AttemptCandidates { };
         let mut i = 0;
@@ -652,7 +647,6 @@ locus AttemptCommandCodec {
     // claim is its row; an outcome is `requested` until the owner's
     // `attempt.outcome` settles it or an `attempt.outcome_refused` naming
     // the command refuses it.
-    @unbounded
     fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
         let c = a.command; let context = a.context;
         if a.unknown {

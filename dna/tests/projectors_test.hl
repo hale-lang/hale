@@ -43,7 +43,6 @@ main locus App {
         return r.stdout;
     }
     // The rows the projectors said they applied, summed.
-    @unbounded
     fn applied(said: String) -> Int {
         let mut total = 0;
         let mut rest = said;

@@ -29,7 +29,6 @@ main locus Org {
         leader: dna::Leader = dna::Leader { };
     }
     bus { publish dna::ReviewVerdict; }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -40,7 +39,6 @@ main locus Org {
         }
         return out;
     }
-    @unbounded
     fn count_role(role: String) -> Int {
         let mut n = 0;
         let mut i = 0;

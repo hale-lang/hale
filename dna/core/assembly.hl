@@ -226,7 +226,6 @@ fn verdict_by(body: String) -> String {
 // Task, the child-Task form of §4 — stable across redeliveries, and
 // naming the exact parent Work by construction.
 // The part of an id after its last `/`, the whole id when it has none.
-@unbounded
 fn last_segment(id: String) -> String {
     let mut start = 0;
     let mut i = 0;
@@ -500,7 +499,6 @@ locus Dna {
     }
     // Every model call's evidence, journaled (never the prompt), what was
     // sent filed by the evidence family.
-    @unbounded
     fn on_model_called(ev: ModelEvidence) { self.spending.called(ev, self.evidence.call_bodies(ev), self.budget); }
     // The window's allowance is spent: journaled once per window, the
     // Board told; the caller refuses or waits (GH #1131).
@@ -528,7 +526,6 @@ locus Dna {
     // that is named and does not answer routes nothing: the Review is not
     // opened (`recorded: false`) and reconcile asks again, so it never
     // opens on its claimed authority alone.
-    @unbounded
     fn review_routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool) -> RouteRequirement {
         return self.reviews.routing(review_id, definition, paths, open, gated, self.knowledge_client, self.verification.receipts);
     }
@@ -537,7 +534,6 @@ locus Dna {
     // position filled after it opened can sign, and a holder who left no
     // longer does. The positions stay the route's; the new holders are a
     // `review.routed` row that supersedes the last, and the Review takes them.
-    @unbounded
     fn reroute_reviews() { self.tell_routes(self.reviews.reroute(self.knowledge_client)); }
     // GH #1161: a gate run the host observed at the forge (`gate.observed`)
     // is told to its Review, once, routed again as it stands, and the
@@ -545,11 +541,9 @@ locus Dna {
     // digest, not its position: a merged order is rebuilt when a ledger is
     // adopted. Every run again after a restart: a Review rebuilt then hears
     // them all, and one already settled ignores them.
-    @unbounded
     fn announce_gate_runs() { self.tell_routes(self.reviews.gate_runs()); }
     // Each Review named, one id a line, told its holders as its latest
     // `review.routed` row has them.
-    @unbounded
     fn tell_routes(lines: String) {
         let mut rest = lines;
         while len(rest) > 0 {
@@ -559,7 +553,6 @@ locus Dna {
             ReviewRouted <- ReviewRouting { review_id: id, signers: native_json_string(routed_row(self.journal, id), "signers") };
         }
     }
-    @unbounded
     fn ensure_knowledge_review(review_id: String) -> Bool {
         let req = self.knowledge_record.request_of(review_id);
         if len(req) == 0 { return false; }
@@ -788,7 +781,6 @@ locus Dna {
     // The apply itself: through the gateway under the candidate's key
     // and the Mutation's lease, then the restart request with the
     // fitness signals the proposal declared.
-    @unbounded
     fn apply_candidate(mutation_id: String, candidate: String, now: Int) -> String {
         let lease = self.gateway.take(mutation_id, "dna", now);
         let r = self.gateway.apply(self.journal, mutation_id, candidate, lease.token, now);
@@ -819,7 +811,6 @@ locus Dna {
     // Back to the Mutation's base through the gateway, and the old
     // expression asked for. Shared by a bad observation window and a
     // post-review rejection.
-    @unbounded
     fn rollback_to_base(mutation_id: String, why: String, now: Int) {
         let req = mutation_review_request(self.journal, mutation_id);
         let base = std::json::find_string_field(req, "base_commit");
@@ -844,7 +835,6 @@ locus Dna {
     // applied Mutation is judged: healthy retains it and dissolves its
     // worktree; anything else rolls the genome back to the Mutation's
     // base and asks for the old expression back.
-    @unbounded
     fn on_observed(o: Observation) {
         let x = self.journal.append(self.journal.revision(), "expression.observed", o.mutation_id, o.outcome + " " + o.model_hash + " " + o.detail);
         if mutation_disposition(self.journal, o.mutation_id) != "applied" { return; }
@@ -867,7 +857,6 @@ locus Dna {
     // GH #596 O: the record's structural signals, as the leader reads
     // them — what the design's practice on signals names, counted from
     // the record. Bounded by the record.
-    @unbounded
     fn signals() -> String {
         let n = self.journal.revision();
         let mut unparsed = 0;
@@ -905,7 +894,6 @@ locus Dna {
     // passes `std::time::nanos(std::time::current()) / 1000000`): an
     // occurrence is a time the cadence names, so a monotonic clock names
     // none (GH #1143).
-    @unbounded
     fn tick(now: Int) {
         // pause/resume rows appended from a clone reach the record the
         // organism holds; read what arrived (a git journal is re-read
@@ -950,7 +938,6 @@ locus Dna {
     // asking it again is one execution — and the convener as its position:
     // its owner admits it, and the admission names it. The scheduler records
     // what it became: that execution, this one, or a refusal.
-    @unbounded
     fn admit_occurrence(i: Int, t: Int) {
         let s = self.scheduler.at(i);
         let key = s.id + "@" + to_string(t);
@@ -963,7 +950,6 @@ locus Dna {
     // The leader's answer: clean, or one small proposal — which enters
     // as an ask in the leader's name and takes the whole road (planned,
     // proposed, reviewed by the Board as an organization change).
-    @unbounded
     fn on_org_reviewed(r: OrgReview) {
         let b = std::json::Builder { };
         b.begin_object();
@@ -985,7 +971,6 @@ locus Dna {
     // A planned ask becomes a Mutation under the class and target the
     // leader named; an ask the leader calls a person's job is handed
     // rather than mutated. Bounded by the Tasks the Board admits.
-    @unbounded
     fn on_planned(p: Plan) {
         // card 16: a human attempt awaiting the leader's word is handed
         // as the case the leader described; nothing of the plan runs
@@ -1024,7 +1009,6 @@ locus Dna {
     // the attempt performs nothing: it is answered from a review of its
     // Task's candidate already settled, or waits for one. No Work of an
     // admitted execution settles its Task: the engine's workflow does.
-    @unbounded
     fn on_edit_requested(e: EditAsk) {
         // the engine's rows — the admission, the attempt — are another
         // writer's: read them fresh before deciding on them; and the
@@ -1097,7 +1081,6 @@ locus Dna {
     // the leader: the terms bound at admission stand. In an organism the
     // leader plans for, the leader says who and under what obligation,
     // as for a job today, once per case; else the case is unassigned.
-    @unbounded
     fn on_case_requested(c: CaseAsk) {
         let moved = self.journal.refresh();
         let req = c.request;
@@ -1156,7 +1139,6 @@ locus Dna {
     // Assignee, obligation, acceptance practice and required evidence
     // bind as a job's do today; a person of another owner's makes it a
     // transfer, as today.
-    @unbounded
     fn hand_case(c: CaseAsk, assignee_named: String, obligation: String, by: String, narrative: String) {
         let req = c.request;
         let case_id = case_id_of(req);
@@ -1193,7 +1175,6 @@ locus Dna {
     // accepts it (`task.transfer_accepted`, `admit_transfers`). A row the
     // record refuses holds the case for the recovery signals; the
     // hand-off is announced once it is durable. True when the rows are.
-    @unbounded
     fn ensure_case_rows(case_id: String) -> Bool {
         let r = self.cases.rows(case_id, self.ownership.me);
         if len(r.held) > 0 { self.board.notify("record", "the " + r.held + " row of case " + case_id + " was refused by the record (" + r.why + "); held"); }
@@ -1201,7 +1182,6 @@ locus Dna {
         return r.ok;
     }
     // The held compatibility rows put again: how many cases completed.
-    @unbounded
     fn retry_rows() -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -1239,7 +1219,6 @@ locus Dna {
     // the bound condition refuses is noted once and connects nothing; a
     // later valid one connects. True when the attempt's outcome was
     // reported now.
-    @unbounded
     fn revisit_case(case_id: String) -> Bool {
         let adm = self.cases.recorded(case_id);
         if len(adm) == 0 { return false; }
@@ -1270,7 +1249,6 @@ locus Dna {
     // when the record resumes, on `redrive`, and at the tick whose
     // record has rows past the revision last examined here. How many
     // attempts were reported.
-    @unbounded
     fn revisit_cases() -> Int {
         let n = self.journal.revision();
         let mut reported = 0;
@@ -1288,7 +1266,6 @@ locus Dna {
     // them (card 16). Another owner's cases are theirs to complete; a
     // transfer to this owner is handed by `admit_transfers` once
     // accepted.
-    @unbounded
     fn restore_cases() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -1323,7 +1300,6 @@ locus Dna {
         return WorkResult { };
     }
     // The body of the latest `kind` row of `entity`, "" when none.
-    @unbounded
     fn row_body_of(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -1356,7 +1332,6 @@ locus Dna {
     }
     // Bounded by the attempts the engine admits: a kept report is released
     // when the record is seen to hold its outcome.
-    @unbounded
     fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
         self.attempts.edit_reported();
         self.report_attempt(e.scope, e.attempt_id, WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id });
@@ -1369,7 +1344,6 @@ locus Dna {
     // is one `model.called` row on the attempt id, accounted by the
     // budget like a call made here (the prompt and the context are the
     // leg's receipts, named by digest; no body travels in a submission).
-    @unbounded
     fn journal_calls(attempt_id: String, calls: String) {
         if len(calls) == 0 || !std::json::valid(calls) { return; }
         let mut it = std::json::array_first(calls);
@@ -1410,7 +1384,6 @@ locus Dna {
     // is — this holder, this token, live as of the head's admission — then
     // the one gate, with the attempt's own cost ceiling. The answer is a
     // row naming the request: granted with the allowance, or refused.
-    @unbounded
     fn on_work_allowance(a: WorkAllowance) {
         let moved = self.journal.refresh();
         if len(a.attempt_id) == 0 { return; }
@@ -1442,7 +1415,6 @@ locus Dna {
     // nothing; the calls it made are journaled on the attempt; the runtime
     // settles the attempt as it settles every reply, or the refusal is a
     // row naming why. Either answers the request.
-    @unbounded
     fn on_work_submit(s: WorkSubmission) {
         let moved = self.journal.refresh();
         if len(s.attempt_id) == 0 { return; }
@@ -1540,7 +1512,6 @@ locus Dna {
     // is not a durable one: kept, once, until the record is seen to hold
     // the outcome — now, when the runtime settled it in place, or on the
     // next resume or redrive.
-    @unbounded
     fn report_attempt(scope: String, attempt_id: String, result: WorkResult) {
         let r = AttemptReport { scope: scope, attempt_id: attempt_id, result: result };
         AttemptReported <- r;
@@ -1550,7 +1521,6 @@ locus Dna {
     // Every report the record has not been seen to hold is put again;
     // one it holds is released. The edit is never performed again: the
     // report is the validated outcome, re-persisted. How many were put.
-    @unbounded
     fn retry_reports() -> Int {
         let moved = self.journal.refresh();
         let mut n = 0;
@@ -1582,7 +1552,6 @@ locus Dna {
     }
     // The disposition a Work settled on (`work.settled`), "" while it has
     // not.
-    @unbounded
     fn settlement_of(work_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -1601,7 +1570,6 @@ locus Dna {
     // Mutation bound (card 14) to the attempt its settlement accepted —
     // a first attempt that failed and was retried is not it. "" while
     // the Work has not settled, or its accepted attempt bound none.
-    @unbounded
     fn candidate_of(work_id: String) -> String {
         if len(work_id) == 0 { return ""; }
         let n = self.journal.revision();
@@ -1619,7 +1587,6 @@ locus Dna {
     }
     // The Mutation bound to an attempt (card 14), by the attempt's id in
     // the Mutation's own request row; "" when none.
-    @unbounded
     fn mutation_of_attempt(attempt_id: String) -> String {
         if len(attempt_id) == 0 { return ""; }
         let n = self.journal.revision();
@@ -1638,7 +1605,6 @@ locus Dna {
     // an occasion to look again. A producer settled other than done
     // fails its waiter: there is no candidate. Each waiter is answered
     // once, when its state is an outcome; the others keep waiting.
-    @unbounded
     fn revisit_waiting() {
         if self.attempts.waiting_held() == 0 { return; }
         let moved = self.journal.refresh();
@@ -1673,7 +1639,6 @@ locus Dna {
     // How many were driven.
     // GH #946 hardening (D3): the leases that expired with no outcome,
     // each asked again through the runtime, in turn (the family's scan).
-    @unbounded
     fn reopen_expired_claims() -> Int {
         let mut rest = self.attempts.expired(std::time::now(), self.ownership.me);
         let mut count = 0;
@@ -1688,7 +1653,6 @@ locus Dna {
         }
         return count;
     }
-    @unbounded
     fn redrive() -> Int {
         let moved = self.journal.refresh();
         let mut n = self.retry_reports();
@@ -1720,7 +1684,6 @@ locus Dna {
     }
     // Bounded by the humans offering intent; each birth is a Task the
     // Metabolism owns and settles.
-    @unbounded
     fn on_intent(o: IntentOffer) {
         let mut from = o.from;
         if from == "" { from = "membrane"; }
@@ -1743,7 +1706,6 @@ locus Dna {
     // that named nobody, or comes back on itself (the second review of
     // #619: a successor who also retired still received the work).
     // Bounded by the retirements in the record.
-    @unbounded
     fn admissible(who: String) -> String {
         let mut at = who;
         // Each distinct retired identity needs a Record row. More hops
@@ -1759,7 +1721,6 @@ locus Dna {
         return "";
     }
     // The last `task.<state>` journaled for an id ("" when only born).
-    @unbounded
     fn task_state(task_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -1779,7 +1740,6 @@ locus Dna {
     // A request is answered once (GH #986): the node relays a
     // `pressure.requested` row until the `pressure.raised` naming it is in
     // the record, so a redelivery finds its answer and counts nothing.
-    @unbounded
     fn on_pressure(p: Pressure) {
         let a = self.concerns.pressure(p);
         if !a.proposed { return; }
@@ -1799,7 +1759,6 @@ locus Dna {
     // knowledge proposal by that source bound to that parent for the
     // Board to ratify. A source with no parent has nothing to bind to and
     // is refused at the threshold, saying so.
-    @unbounded
     fn on_concern(c: Concern) {
         let n = self.journal.revision();
         // the row this request already wrote, if it was delivered before
@@ -1849,7 +1808,6 @@ locus Dna {
     // practice-ratify writes what follows (GH #995); who proposed it and
     // what prompted it stay on the `practice.proposed` row. Nothing is in
     // force until the Board approves it.
-    @unbounded
     fn on_practice_requested(r: PracticeRequest) {
         let moved = self.journal.refresh();
         // GH #682: a request relayed again after a lost publish is answered once
@@ -1881,7 +1839,6 @@ locus Dna {
     // the Board admits its author). What a hold may be is the
     // projection's to check when it is ratified (the store is the gate);
     // here only its shape is. Answered once, however often it is relayed.
-    @unbounded
     fn on_hold_requested(r: HoldRequest) {
         let moved = self.journal.refresh();
         let digest = self.positions.asked(r);
@@ -1951,7 +1908,6 @@ locus Dna {
         if !self.knowledge_record.node_proposed(r) { return; }
         self.board.notify("knowledge", r.by + " proposes " + r.kind + ": the Board's to ratify as " + knowledge_review_id(digest));
     }
-    @unbounded
     fn ensure_binding_review(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { }; let id = codec.review_id(r.candidate_digest);
         if self.reviews.knowledge_known(id) { return true; }
@@ -1976,14 +1932,12 @@ locus Dna {
         if !self.knowledge_record.binding_proposed(r) { return; }
         self.board.notify("knowledge", r.by + " proposes a binding change: the Board's to decide as " + codec.review_id(r.candidate_digest));
     }
-    @unbounded
     fn resume_binding_result(review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
         let codec = KnowledgeBindingCodec { }; let r = codec.request_of(self.journal, review_id);
         if !codec.valid(r) || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return false; }
         self.bind_owner(); if !self.ownership.admits(r.author) || !self.ownership.admits(r.target) { return false; }
         return self.knowledge_record.binding_result(r, review_id, outcome, reviewer, decision);
     }
-    @unbounded
     fn ensure_edge_review(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { }; let id = codec.review_id(r.candidate_digest);
         if self.reviews.knowledge_known(id) { return true; }
@@ -2010,7 +1964,6 @@ locus Dna {
         if !self.knowledge_record.edge_proposed(r) { return; }
         self.board.notify("knowledge", r.by + " proposes a relationship change: the Board's to decide as " + codec.review_id(r.candidate_digest));
     }
-    @unbounded
     fn resume_edge_result(review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
         let codec = KnowledgeEdgeCodec { }; let r = codec.request_of(self.journal, review_id);
         if !codec.valid(r) || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return false; }
@@ -2025,7 +1978,6 @@ locus Dna {
         if !codec.owner_token(r.source_owner) || r.source_owner != self.ownership.me { return false; }
         return !self.ownership.shared() || (len(r.source_owner) > 0 && word_in(r.source_owner, self.ownership.owners()));
     }
-    @unbounded
     fn ensure_organization_source_review(r: OrganizationSourceRequest, candidate: String) -> Bool {
         let codec = OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
         let req = codec.fact(self.journal, "review.requested", "review:" + id);
@@ -2052,13 +2004,11 @@ locus Dna {
     // prepared-source Review. A generic mutation settlement or another caller's
     // approval cannot supply this command's authority or original application,
     // and the request is one this organization's owner holds.
-    @unbounded
     fn organization_source_verdict(r: OrganizationSourceRequest, command_id: String) -> Verdict {
         let codec = OrganizationSourceRequestCodec { };
         if !codec.valid(r) || !self.organization_source_owner(r) { return Verdict { }; }
         return self.org_source.verdict(r, command_id, self.gateway.workspaces.path_of(codec.mutation_id(r)));
     }
-    @unbounded
     fn resume_organization_source_verdict(command_id: String) -> Bool {
         let decision = review_command_decision(self.journal, command_id);
         let id = native_json_string(decision, "review_id"); let req = mutation_review_request(self.journal, id);
@@ -2078,7 +2028,6 @@ locus Dna {
     // The original native apply key and gateway remain authoritative. Claimed
     // effects are only reconciled by exact post-apply proof, never dispatched
     // again; a successful replay repairs the missing restart handoff.
-    @unbounded
     fn apply_organization_source(id: String, now: Int) -> String {
         let codec = OrganizationSourceRequestCodec { }; let req = mutation_review_request(self.journal, id);
         let r = self.org_source.request(native_json_string(req, "organization_source_request_id"));
@@ -2397,7 +2346,6 @@ locus Dna {
         return self.admit_ask(i, Plan { kind: "app", change_class: "application" }, false);
     }
     // Whether an ask is awaiting the leader's word.
-    @unbounded
     fn in_planning(intent_id: String) -> Bool {
         let mut i = 0;
         while i < self.pending_asks.len() {
@@ -2494,7 +2442,6 @@ locus Dna {
     }
     // The Task a bound Work belongs to: its Step's Task, as the recipe binds
     // them ("" when the recipe does not hold the Step).
-    @unbounded
     fn task_of_bound(w: BoundNode) -> String {
         let mut i = 0;
         while i < self.catalog.bound.len() {
@@ -2540,7 +2487,6 @@ locus Dna {
     // drains them — so a settled root with a Work of its tree still
     // owed a settlement is asked for again, and a drained record is
     // asked for nothing and written nothing.
-    @unbounded
     fn resume_executions() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -2557,7 +2503,6 @@ locus Dna {
     // Work — its own workflow's and every child's, found by their
     // admissions' `parent_task` — that admitted an attempt, and every
     // admitted child itself. Bounded by the record.
-    @unbounded
     fn drained(root: String) -> Bool {
         let n = self.journal.revision();
         // the tasks of the tree: the root and every admission under it
@@ -2605,7 +2550,6 @@ locus Dna {
     // failed; one that waits (a verdict, the leader's word, memory's
     // projection) is kept and performed again when what it waits on may
     // have arrived: a verdict, the leader's answer, the tick.
-    @unbounded
     fn on_step_requested(s: StepAsk) {
         let moved = self.journal.refresh();
         self.attempts.release_recorded();
@@ -2614,7 +2558,6 @@ locus Dna {
     }
     // Every waiting step performed again; those that reported leave the
     // list, which empties when none waits.
-    @unbounded
     // `on_tick` revisits the steps that wait on memory too, asking memory
     // once whether its projection caught up; a verdict or an answer
     // revisits the others, never blocking on memory.
@@ -2633,7 +2576,6 @@ locus Dna {
         self.steps.walked(left);
     }
     // Perform one step; whether its outcome was reported.
-    @unbounded
     fn perform_step(s: StepAsk) -> Bool {
         if row_exists(self.journal, "attempt.outcome", s.attempt_id) || self.attempts.reported(s.attempt_id) { return true; }
         let task = s.request.task_id;
@@ -2657,7 +2599,6 @@ locus Dna {
     // Whoever proposed it — a person's request, a concern, the record's
     // birth — the Board's decision is admitted as one execution, once,
     // whose steps write the ratification and what the hat reads.
-    @unbounded
     fn ratify_through(review_id: String) {
         // each Review once per incarnation, once its execution exists: a
         // reconciliation walks every settled one at every tick, and the
@@ -2684,7 +2625,6 @@ locus Dna {
     // GH #1143: the schedule a ratified practice carries (its receipt's
     // `schedule`, a JSON object as text), declared; "" when it carries none
     // or it was declared, else why not.
-    @unbounded
     fn declare_practice_schedule(digest: String) -> String {
         let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let doc = self.verification.receipts.read(raw);
@@ -2699,7 +2639,6 @@ locus Dna {
             convener: std::json::find_string_field(sched, "convener")
         }, self.catalog, self.knowledge_client);
     }
-    @unbounded
     fn practice_step(task: String, key: String, x: String) -> StepVerdict {
         let digest = std::json::find_string_field(x, "digest");
         if len(digest) == 0 { return step_failed("practice-ratify names no proposal"); }
@@ -2744,7 +2683,6 @@ locus Dna {
     // One step, one burst of the record: the concern raised — its row names
     // the parent it is routed to — and, once its source crossed the
     // threshold, the proposal by that source bound to that parent.
-    @unbounded
     fn concern_step(task: String, key: String, x: String) -> StepVerdict {
         if key != "raise" { return step_failed("concern-escalate has no step `" + key + "`"); }
         let source = std::json::find_string_field(x, "source");
@@ -2893,7 +2831,6 @@ locus Dna {
     // the id may be another execution's now, in which case the refusal is
     // written under the ask instead. A refusal never attaches to an
     // execution another body admitted.
-    @unbounded
     fn refuse_task(id: String, rev: Int, a: WorkflowAsk, why: String) -> String {
         let mut at = rev;
         let mut tries = 0;
@@ -2931,7 +2868,6 @@ locus Dna {
     // body's answer with no row of its own; one for another reason takes
     // the ordinal, and this body's takes the next. Written and checked:
     // when the record will not take even that, the answer says so.
-    @unbounded
     fn refuse_ask(a: WorkflowAsk, why: String) -> String {
         let mut tries = 0;
         while tries < 6 {
@@ -2977,7 +2913,6 @@ locus Dna {
     // The Task an admission under this request id created, "" when none
     // did — as the record read at `rev`, so the decision and the append
     // that follows it are about one reading.
-    @unbounded
     fn workflow_admission_of(request: String, rev: Int) -> String {
         let mut i = 0;
         while i < rev {
@@ -2991,7 +2926,6 @@ locus Dna {
     // Whether a Task id is already spoken for as the record read at
     // `rev`: admitted as a workflow, refused as one (the id was minted
     // for it, as the restart's count also has it), or born the legacy way.
-    @unbounded
     fn task_id_taken(id: String, rev: Int) -> Bool {
         let mut i = 0;
         while i < rev {
@@ -3006,7 +2940,6 @@ locus Dna {
     // discriminator (§8). Such a Task is never legacy edit work, whatever
     // summary rows it has or lacks; its recovery is the new engine's
     // (later cards), not `resume_work`'s.
-    @unbounded
     fn workflow_admitted(task_id: String) -> Bool {
         let n = self.journal.revision();
         let mut i = 0;
@@ -3070,7 +3003,6 @@ locus Dna {
     // request named, in this owner's name — the same `task.handed` row a
     // job of its own gets, so completion is admitted in the assignee's
     // name as always. Bounded by the transfers in the ledger; idempotent.
-    @unbounded
     fn admit_transfers() -> Int {
         self.bind_owner();
         let me = self.ownership.me;
@@ -3088,7 +3020,6 @@ locus Dna {
         }
         return handed_n;
     }
-    @unbounded
     fn admit_transfer(task_id: String, me: String) -> Bool {
         let mut attempt = 0;
         while attempt < 8 {
@@ -3149,7 +3080,6 @@ locus Dna {
     // ownership at all: a body that names its organization then admits
     // nothing rather than keep a view that may have moved; with no memory
     // named the view stays as born (one owner, or nothing for a named body).
-    @unbounded
     fn refresh_ownership() {
         if !self.knowledge_client.ready() { return; }
         self.ownership.reload(self.knowledge_client.ownership());
@@ -3207,7 +3137,6 @@ locus Dna {
     // them, before anything is admitted. A row from before the body was
     // structured (`ceiling <from> -> <to> …`) is read too, each such row
     // one epoch.
-    @unbounded
     fn restore_contractions() {
         let parent = self.ceiling.child;
         if len(parent) == 0 { return; }
@@ -3244,7 +3173,6 @@ locus Dna {
     // back at birth, it leaves nothing granted and the epoch where it left
     // it, before anything is admitted. A row from before the body was
     // structured (`by <who>; epoch <n>`) is read too.
-    @unbounded
     fn restore_revocations() {
         let child = self.boundary.child;
         if len(child) == 0 { return; }
@@ -3325,7 +3253,6 @@ locus Dna {
         if change_class == "organization" { return self.org_seed; }
         return self.genome_seed;
     }
-    @unbounded
     fn mutate(task_id: String, change_class: String, objective: String, target: String, now: Int) -> String {
         return self.mutate_for(WorkRequest { task_id: task_id }, change_class, objective, target, now);
     }
@@ -3464,7 +3391,6 @@ locus Dna {
     // put to its Review (or denied): the one tail of every candidate — the
     // editor's in process (`mutate_for`) and a leg's (`mutate_from_leg`).
     // `m` names everything but the candidate; `author` is whose change it is.
-    @unbounded
     fn candidate_review(prepared: Mutation, step: String, author: String, token: Int, now: Int) -> String {
         let id = prepared.id;
         let committed = self.gateway.commit(self.journal, id, step, prepared.change_class + ": " + prepared.rationale, token, now);
@@ -3576,7 +3502,6 @@ locus Dna {
     }
     // The receipt among `digests` (space-separated `sha256:<hex>`) that is
     // commit `sha`'s own patch: its first line `From <sha> `. "" when none.
-    @unbounded
     fn leg_patch(sha: String, digests: String) -> String {
         if len(sha) == 0 { return ""; }
         let mut rest = digests + " ";
@@ -3595,7 +3520,6 @@ locus Dna {
     // whatever the grant says — block on a human Review pinned to the
     // exact candidate. The request carries everything a reviewer
     // renders: the evidence steps, the magnitude, where the diffs are.
-    @unbounded
     fn review_mutation(m: Mutation, r: VerificationReport, author: String) -> String {
         return self.review_mutation_mode(m, r, author, OrganizationSourceRequest { });
     }
@@ -3803,7 +3727,6 @@ locus Dna {
     // raises nothing more (its raises are the record's) and proposes by
     // the rule that would have. A source with no parent was already
     // refused where it crossed the threshold and is left alone.
-    @unbounded
     fn escalate_owed_concerns() {
         let mut rest = self.concerns.owed();
         while len(rest) > 0 {
@@ -3820,7 +3743,6 @@ locus Dna {
     // marked unknown where it does not; an unknown effect is never
     // re-dispatched in silence — the gate refuses it until a person
     // resolves it (`hale dna effect resolve`).
-    @unbounded
     fn reconcile_effects() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -3862,7 +3784,6 @@ locus Dna {
     // no admission naming it (card 18) was admitted and lost, or never admitted —
     // the record cannot tell which, and work may already have run. It
     // is not re-offered; the record says so, and the asker asks again.
-    @unbounded
     fn note_unrecovered_intents() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -3906,7 +3827,6 @@ locus Dna {
         return if len(exact) > 0 { exact } else { summary };
     }
     // The Mutation proposed for a Task, by the Task it names; "" when none.
-    @unbounded
     fn mutation_of_task(task_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -3923,7 +3843,6 @@ locus Dna {
     // organization stopped (GH #566 F7). Nobody resumes an attempt: it
     // failed, and the record says so instead of showing it in flight
     // forever. Bounded by the mutations the record holds.
-    @unbounded
     fn fail_in_flight() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -3980,7 +3899,6 @@ locus Dna {
     // Take `key` for `ttl` seconds in memory (GH #1026): true when this
     // node holds it now. Nothing is recorded yet: a claim is recorded
     // once the node has read that the act is still its to take.
-    @unbounded
     fn take_claim(key: String, ttl: Int) -> Bool {
         let me = self.node_name();
         let l = self.claims.claim(key, me, ttl);
@@ -3992,7 +3910,6 @@ locus Dna {
     // token and until when: the record shows who took what, and a second
     // node's take after the first one's expiry. Without memory there is
     // no one to race and nothing to record.
-    @unbounded
     fn note_claim(key: String) {
         if !self.claims.ready() { return; }
         let b = std::json::Builder { };
@@ -4005,7 +3922,6 @@ locus Dna {
     }
     // Give `key` back on completion; a claim that was recorded is given
     // back as a `claim.released` row.
-    @unbounded
     fn give_up_claim(key: String, noted: Bool) {
         let me = self.node_name();
         if !self.claims.release_claim(key, me) || !noted || !self.claims.ready() { return; }

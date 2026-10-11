@@ -30,7 +30,6 @@ fn head_of(repo: String, rev: String) -> String {
 main locus App {
     params { node: String = ""; }
     // The `sha` of each of the record's rows of `kind`, in order, one per line.
-    @unbounded
     fn shas(kind: String) -> String {
         let j = dna::GitJournal { repo: self.node };
         let mut out = "";
@@ -44,7 +43,6 @@ main locus App {
     }
     // Whether the record comes to hold a row of `kind` whose sha is `sha`
     // within `secs`.
-    @unbounded
     fn recorded(kind: String, sha: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
@@ -61,7 +59,6 @@ main locus App {
     }
     // Whether the node comes to start again after its last failed build,
     // within `secs`: the start that fell back to the last genome that built.
-    @unbounded
     fn fell_back(secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
@@ -77,7 +74,6 @@ main locus App {
         return if len(g) == 0 { -1 } else { std::json::find_int_field(g, "polls") };
     }
     // Whether the node comes to have made `n` polls within `secs`.
-    @unbounded
     fn polled_past(n: Int, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
@@ -87,7 +83,6 @@ main locus App {
         return false;
     }
     // Whether the node's log comes to say `text` within `secs`.
-    @unbounded
     fn logged(text: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {

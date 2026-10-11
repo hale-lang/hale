@@ -52,7 +52,6 @@ fn ingest_ext(path: String, exts: String) -> Bool {
 // `target` read from a document in `dir`: repository-relative, no
 // `./`, `..` folded, no fragment, no trailing `/`. "" for a link that
 // leaves the repository (a URL, a mail address, an absolute path above it).
-@unbounded
 fn ingest_join(dir: String, target: String) -> String {
     let hash = std::str::index_of(target, "#");
     let t = std::str::trim(if hash >= 0 { target[0..hash] } else { target });
@@ -75,7 +74,6 @@ fn ingest_join(dir: String, target: String) -> String {
     return out;
 }
 
-@unbounded
 fn ingest_indent(line: String) -> Int {
     let mut n = 0;
     while n < len(line) && line[n..(n + 1)] == " " { n = n + 1; }
@@ -115,7 +113,6 @@ fn md_bold(text: String) -> String {
 }
 
 // The code spans of `text`, one per line.
-@unbounded
 fn md_code(text: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -132,7 +129,6 @@ fn md_code(text: String) -> String {
 }
 
 // The links of `text`, one per line, `<text>\t<target>`.
-@unbounded
 fn md_links(text: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -156,7 +152,6 @@ fn md_links(text: String) -> String {
 }
 
 // `text` with its links taken out whole, their text with them.
-@unbounded
 fn md_unlinked(text: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -181,7 +176,6 @@ fn md_unlinked(text: String) -> String {
 
 // `text` with its links, code spans and emphasis taken out whole: what a
 // table cell says in plain words.
-@unbounded
 fn md_plain(text: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -205,7 +199,6 @@ fn md_plain(text: String) -> String {
 }
 
 // `text` as words: code spans and links keep their text, emphasis goes.
-@unbounded
 fn md_words(text: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -223,7 +216,6 @@ fn md_words(text: String) -> String {
 }
 
 // Cell `n` of a table row.
-@unbounded
 fn md_cell(row: String, n: Int) -> String {
     let mut t = std::str::trim(row);
     if std::str::starts_with(t, "|") { t = t[1..len(t)]; }
@@ -240,7 +232,6 @@ fn md_cell(row: String, n: Int) -> String {
 }
 
 // The column of a table's header whose text is `name`, -1 when none.
-@unbounded
 fn md_column(header: String, name: String) -> Int {
     let mut i = 0;
     while i < 32 {
@@ -384,7 +375,6 @@ locus GraphIngest {
     fn add(e: GraphEdge, role: String, node: String) { if len(node) > 0 && !e.has(node) { e.member(role, node); } }
     // A repository path as the node it is: a contract, a document, the
     // compose deployment, or the seed that holds it; "" when none.
-    @unbounded
     fn resolve(path: String) -> String {
         if len(path) == 0 { return ""; }
         if std::str::contains(self.contracts, "\n" + path + "\n") { return "contract:" + path; }
@@ -421,7 +411,6 @@ locus GraphIngest {
     // The purpose: the README's title and its first paragraph. A
     // repository with no README declares no purpose; an application with none
     // is for the purpose `init` declares for it.
-    @unbounded
     fn purpose_step() {
         if !self.tracked("README.md") {
             if len(self.app) > 0 && len(self.declared) > 0 { self.purpose = self.node("purpose", self.app, self.declared, "dna/org/purpose.hl"); }
@@ -448,7 +437,6 @@ locus GraphIngest {
     // The processes, then the deployment compose runs: a perspective lists
     // in the record's order, and the process model comes before what
     // deploys it.
-    @unbounded
     fn compose_step() {
         let mut i = 0;
         while len(dna::nth_word(INGEST_COMPOSE, i)) > 0 {
@@ -494,7 +482,6 @@ locus GraphIngest {
         self.edge(runs);
     }
     // Which deployment runs which process, for the equipment of an operator.
-    @unbounded
     fn note_runs(e: GraphEdge) {
         let mut deployment = "";
         let mut ms = e.members;
@@ -566,7 +553,6 @@ locus GraphIngest {
     // The contracts: `spec/*.yaml`, `spec/*.yml`, `spec/*.md`, and each
     // directory under `spec/vendor/` (taken by reference); the nouns each
     // names, and what refers to what.
-    @unbounded
     fn contracts_step() {
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -596,7 +582,6 @@ locus GraphIngest {
     }
     // The `.md` or `.yaml` contract whose stem is `stem` (lower-case), as
     // its node; "" when none.
-    @unbounded
     fn stem_contract(stem: String) -> String {
         let mut cs = self.contracts;
         while len(cs) > 1 {
@@ -619,7 +604,6 @@ locus GraphIngest {
     // roles, not a contract of its own (no node), read for the `.md` or
     // `.yaml` contract whose stem matches it case-insensitively. Each
     // member's `requires` names roles; a role is kept once per contract.
-    @unbounded
     fn descriptions_step() {
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -660,7 +644,6 @@ locus GraphIngest {
     // `stream:<Topic>`. A contract a table already declares keeps the
     // table's `meets`. The `requires` of its members are the equipment of
     // the positions that serve it, never an organization.
-    @unbounded
     fn surfaces_step() {
         if len(self.appseed) == 0 || len(self.description) == 0 { return; }
         // only what the application serves: `surfaces` lists every declared
@@ -718,7 +701,6 @@ locus GraphIngest {
         self.served = self.served + line;
     }
     // The roles `holder` (a member, or a stream) requires of its callers.
-    @unbounded
     fn requires(c: String, holder: String) {
         let mut required = std::json::array_first(std::json::find_field_raw(holder, "requires"));
         while !required.done {
@@ -731,7 +713,6 @@ locus GraphIngest {
     // `$ref` from one schema to another that the matched names, a refers.
     // Every noun is written before any edge names it; a `$ref` that leaves
     // the matched, or names a schema it does not hold, is no edge.
-    @unbounded
     fn schemas_of(spec: String, text: String) {
         let names = GraphEdge { kind: "names" };
         self.add(names, "contract", spec);
@@ -776,7 +757,6 @@ locus GraphIngest {
     // A markdown contract's SQL: each `CREATE TABLE` a noun; then each
     // `REFERENCES` from the table being declared to a table the contract
     // declares, a refers.
-    @unbounded
     fn tables_of(spec: String, text: String) {
         let names = GraphEdge { kind: "names" };
         self.add(names, "contract", spec);
@@ -839,7 +819,6 @@ locus GraphIngest {
         }
     }
     // Every document.
-    @unbounded
     fn documents_step() {
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -854,7 +833,6 @@ locus GraphIngest {
     }
 
     // ---- the two conventions ---------------------------------------------
-    @unbounded
     fn markdown_step() {
         let mut rest = self.documents;
         while len(rest) > 1 {
@@ -865,7 +843,6 @@ locus GraphIngest {
             self.markdown(f, self.read(f));
         }
     }
-    @unbounded
     fn markdown(path: String, text: String) {
         let dir = ingest_dir(path);
         let it = std::iter::Lines { };
@@ -912,7 +889,6 @@ locus GraphIngest {
     // One list item, when it is a marked axiom: the node, under the
     // purpose, and what it shaped. An axiom whose bold sentence is missing
     // names nothing, and refuses the ingest.
-    @unbounded
     fn item(path: String, dir: String, text: String) {
         let mut mark = "";
         let mut i = 0;
@@ -953,7 +929,6 @@ locus GraphIngest {
     // receipt document, proposed as advice at record birth (GH #1091) and
     // ratified — as law where the Board chooses — by the knowledge path.
     // Its target is the first node it links, else the organization.
-    @unbounded
     fn practice(path: String, dir: String, mark: String, body: String) {
         let mut name = md_bold(body);
         while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) { name = name[0..(len(name) - 1)]; }
@@ -983,7 +958,6 @@ locus GraphIngest {
     }
     // One row of a `Served by | Consumed by | Over` table. A row that links
     // no contract declares nothing, and refuses the ingest.
-    @unbounded
     fn meets_row(path: String, dir: String, header: String, row: String) {
         let e = GraphEdge { kind: "meets" };
         let mut links = md_links(row);
@@ -1019,7 +993,6 @@ locus GraphIngest {
     // The nodes a cell names in `role`, and when `parties`, the parties
     // outside the repository its plain words name. A name in code that is
     // no process, seed or path of this repository refuses the ingest.
-    @unbounded
     fn cell_members(path: String, e: GraphEdge, dir: String, cell: String, role: String, parties: Bool) {
         // a link's text is the link's: its code spans are not names
         let mut code = md_code(md_unlinked(cell));
@@ -1050,7 +1023,6 @@ locus GraphIngest {
         }
     }
     // One row of a `Deployment | Runs` table.
-    @unbounded
     fn runs_row(path: String, dir: String, header: String, row: String) {
         let first = md_cell(row, 0);
         let mut deployment = "";
@@ -1085,7 +1057,6 @@ locus GraphIngest {
     // ---- gates and witnesses ---------------------------------------------
     // Each CI job a gate, `<workflow>/<job>`, guarding the seeds, contracts
     // and compose deployment its steps name.
-    @unbounded
     fn gates_step() {
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -1097,7 +1068,6 @@ locus GraphIngest {
             self.workflow(f, self.read(f));
         }
     }
-    @unbounded
     fn workflow(path: String, text: String) {
         let base = dna::ingest_base(path);
         let mut workflow = base[0..std::str::index_of(base, ".")];
@@ -1138,7 +1108,6 @@ locus GraphIngest {
         }
         if len(job) > 0 { self.gate(path, workflow, job, name, block); }
     }
-    @unbounded
     fn gate(path: String, workflow: String, job: String, name: String, block: String) {
         let g = self.node("gate", workflow + "/" + (if len(name) > 0 { name } else { job }), "", path);
         if len(g) == 0 { return; }
@@ -1168,7 +1137,6 @@ locus GraphIngest {
     }
     // Each `FRICTION.md` entry a witness, and each issue it links; each
     // about the seeds, contracts and documents the entry names.
-    @unbounded
     fn witnesses_step() {
         let mut rest = self.files;
         while len(rest) > 1 {
@@ -1241,7 +1209,6 @@ locus GraphIngest {
     }
 
     // ---- the whole -------------------------------------------------------
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut rest = self.kinds;
@@ -1253,7 +1220,6 @@ locus GraphIngest {
         return n;
     }
     // The graph's rows, or why the repository cannot be taken as it is.
-    @unbounded
     fn ingest() -> IngestAnswer {
         // paths as git holds them, not octal-quoted: a name with a byte
         // above ASCII is a name like any other

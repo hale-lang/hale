@@ -289,7 +289,6 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
 // what this format is — one encoder's own output, read back — and it is
 // not enough to validate a document from somewhere else. Anything read
 // from outside wants a real parser in front of it.
-@unbounded
 fn json_whole(text: String) -> Bool {
     let size = len(text);
     let mut open = ""; // the containers still open, innermost last
@@ -346,7 +345,6 @@ fn is_digit(c: String) -> Bool {
 
 // Why one node of a recipe cannot be read, "" when it can. `at` is its
 // position, so a refusal says which node broke without an id to name.
-@unbounded
 fn node_gap(e: String, at: Int) -> String {
     let at_node = " (node " + to_string(at) + ")";
     if !json_whole(e) { return "a node ends mid-document" + at_node; }
@@ -464,7 +462,6 @@ locus WorkflowCatalog {
 
     // ---- reading -------------------------------------------------------
 
-    @unbounded
     fn has(id: String, revision: Int) -> Bool {
         let mut i = 0;
         while i < self.workflows.len() {
@@ -474,7 +471,6 @@ locus WorkflowCatalog {
         }
         return false;
     }
-    @unbounded
     fn definition(id: String, revision: Int) -> WorkflowDef {
         let mut i = 0;
         while i < self.workflows.len() {
@@ -487,7 +483,6 @@ locus WorkflowCatalog {
     // The newest revision of `id` the catalog holds, 0 when none: what a new
     // Task binds. A Task already born keeps the revision it was admitted
     // under, whatever the catalog offers later.
-    @unbounded
     fn latest(id: String) -> Int {
         let mut best = 0;
         let mut i = 0;
@@ -501,7 +496,6 @@ locus WorkflowCatalog {
     // Why a definition, or one it invokes, cannot be admitted for a part
     // that is not built: the first step on one, named; "" when every part
     // it touches is built.
-    @unbounded
     fn part_missing(id: String, revision: Int) -> String {
         let d = self.definition(id, revision);
         if d.steps < 0 { return ""; }
@@ -548,7 +542,6 @@ locus WorkflowCatalog {
     }
     // The first organism step of `id` or of anything it invokes, as
     // `<n> (<key>)`; "" when none.
-    @unbounded
     fn organism_below(id: String, revision: Int) -> String {
         let mut m = 0;
         while m < self.members.len() {
@@ -563,7 +556,6 @@ locus WorkflowCatalog {
         return "";
     }
     // The keys of a step's members, `+`-joined: how a listing names a step.
-    @unbounded
     fn step_key(id: String, revision: Int, step: Int) -> String {
         let mut out = "";
         let mut m = 0;
@@ -593,7 +585,6 @@ locus WorkflowCatalog {
     }
     // The ids of the bound nodes of `kind` whose parent is `parent`, in
     // order, space-separated.
-    @unbounded
     fn bound_children(kind: String, parent: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -612,7 +603,6 @@ locus WorkflowCatalog {
     // whose expansion would be enormous is refused from those counts, in
     // one pass over the definitions, without materializing a node of it.
 
-    @unbounded
     fn stat_at(id: String, revision: Int) -> Int {
         let mut i = 0;
         while i < self.stats.len() {
@@ -625,7 +615,6 @@ locus WorkflowCatalog {
     fn stat_set(i: Int, st: DefStat) { self.stats.set(i, st) or discard; }
     // A member of this definition whose step is outside its steps, "" when
     // every member is inside.
-    @unbounded
     fn stray_member(id: String, revision: Int, steps: Int) -> String {
         let mut i = 0;
         while i < self.members.len() {
@@ -713,7 +702,6 @@ locus WorkflowCatalog {
     // After an expansion: every bound leaf whose definition bound no
     // objective takes `objective` — the ask's, from the admission's
     // inputs — so the recipe the admission carries is whole.
-    @unbounded
     fn bind_objective(objective: String) {
         let mut i = 0;
         while i < self.bound.len() {
@@ -864,7 +852,6 @@ locus WorkflowCatalog {
     // child's admission carries (card 06), so a child is admitted for
     // exactly what its parent bound under it and nothing it expanded for
     // itself.
-    @unbounded
     fn encode_bound_under(task_id: String) -> String {
         let b = std::json::Builder { };
         b.begin_object();
@@ -916,7 +903,6 @@ locus WorkflowCatalog {
     // node of it is bound: a document that was cut off, or that carries a
     // node without an identity or with a field of the wrong type, is not a
     // smaller recipe, it is half of one.
-    @unbounded
     fn recipe_gap(text: String) -> String {
         if std::json::find_string_field(text, "format") != "dna.workflow-recipe/1" {
             return "not a workflow recipe (format " + std::json::find_string_field(text, "format") + ")";
@@ -984,7 +970,6 @@ locus WorkflowCatalog {
     // ---- the machine form ------------------------------------------------
 
     // Every definition and member, as one JSON document.
-    @unbounded
     fn encode() -> String {
         let b = std::json::Builder { };
         b.begin_object();
@@ -1122,7 +1107,6 @@ fn organism_leaf(c: WorkflowCatalog, id: String, step: Int, key: String, what: S
     let x = c.leaf(id, 1, step, key, WorkRequest { requires: "organism", objective: what }, 1);
 }
 
-@unbounded
 fn baseline_definitions() -> WorkflowCatalog {
     let c = WorkflowCatalog { };
     define_baseline(c);
@@ -1130,7 +1114,6 @@ fn baseline_definitions() -> WorkflowCatalog {
 }
 
 // The baseline, defined into `c`.
-@unbounded
 fn define_baseline(c: WorkflowCatalog) {
     // an ask: one change prepared for review, a person's job, or a
     // judgment. The ask's own objective is bound at admission.

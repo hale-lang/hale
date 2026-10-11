@@ -24,7 +24,6 @@ main locus App {
         dup: dna::WorkflowCatalog = dna::WorkflowCatalog { };
     }
     // The bound ids of one kind, in order, space-separated.
-    @unbounded
     fn ids(kind: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -35,7 +34,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn copy_ids() -> String {
         let mut out = "";
         let mut i = 0;
@@ -45,7 +43,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn cat_ids() -> String {
         let mut out = "";
         let mut i = 0;

@@ -209,7 +209,6 @@ fn version_gap(text: String, what: String) -> String {
 
 // The first of `names` (space-separated) the text does not carry, "" when
 // it carries them all.
-@unbounded
 fn missing_field(text: String, names: String) -> String {
     let mut rest = names + " ";
     while len(rest) > 0 {
@@ -225,7 +224,6 @@ fn missing_field(text: String, names: String) -> String {
 // number, "" when it carries them all. An absent field and one written as
 // text both answer 0 through `find_int_field`: a fact that said nothing
 // may not be read as if it had said zero.
-@unbounded
 fn missing_number(text: String, names: String) -> String {
     let mut rest = names + " ";
     while len(rest) > 0 {

@@ -324,7 +324,6 @@ locus PqLedger {
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         return self.gate(expected, kind, entity, body);
     }
-    @unbounded
     fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
         let mut attempt = 0;
         while attempt < 200 {

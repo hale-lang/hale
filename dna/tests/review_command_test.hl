@@ -38,7 +38,6 @@ fn verdict(command: String, review: String, value: String, reviewer: String) -> 
     };
 }
 
-@unbounded
 fn decisions(j: dna::Journal, command: String) -> Int {
     let mut count = 0;
     let mut i = 0;

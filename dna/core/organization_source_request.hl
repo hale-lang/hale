@@ -206,7 +206,6 @@ locus OrganizationSourceRequestCodec {
         self.field(b, "candidate_commit", candidate); self.field(b, "reason_code", reason_code); b.append_str("}");
         return std::str::from_bytes(b.snapshot() or raise);
     }
-    @unbounded
     fn fact(j: Journal, kind: String, entity: String) -> Event {
         let mut found = Event { }; let mut i = 0;
         while i < j.revision() {
@@ -222,7 +221,6 @@ locus OrganizationSourceRequestCodec {
     // Gate the Review itself before any live or persisted acceptance. The
     // caller supplies a strict cutoff so later rows cannot legitimize an older
     // untagged decision during restoration.
-    @unbounded
     fn verdict_admitted(j: Journal, facts: OrganizationSourceFacts, r: OrganizationSourceRequest, v: Verdict, before: Int) -> Bool {
         if !self.valid(r) || len(v.command_id) == 0 || v.review_id != self.mutation_id(r) { return false; }
         let original = self.started_request(j, facts, r.request_id);

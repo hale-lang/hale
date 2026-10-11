@@ -43,7 +43,6 @@ locus GovernanceProjection {
         }
         return true;
     }
-    @unbounded
     fn fact(j: dna::Journal, kind: String, entity: String, review_request: Bool) -> GovernanceProjectionFact {
         let mut found = GovernanceProjectionFact { }; let count = j.revision(); let mut i = 0;
         while i < count {

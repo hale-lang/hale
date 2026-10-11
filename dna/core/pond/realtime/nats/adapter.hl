@@ -166,7 +166,6 @@ locus NatsConn {
     // Record why delivery is in trouble.
     // @unbounded: once per refused publish, server error, or the
     // violation that ends this conn.
-    @unbounded
     fn note(what: String, detail: String) { self.last_error = what + detail; }
 
     birth() {
@@ -418,7 +417,6 @@ locus NatsConn {
 
     // @unbounded: the connection's receive loop, for the conn's life;
     // each pass reads at most 256 frames or waits 10 ms.
-    @unbounded
     run() {
         let started = std::time::monotonic_ns();
         while !self.draining {

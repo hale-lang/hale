@@ -44,7 +44,6 @@ type Args {
     error: String = "";
 }
 
-@unbounded
 fn parse_args() -> Args {
     let mut a = Args { };
     let n = std::env::args_count();
@@ -191,7 +190,6 @@ fn stub_issuer(issuer: String, client: String) -> Bool {
 }
 
 // The subject the record's `dna.oidc.member` lines (`<subject>=<person>`) map to `person`.
-@unbounded
 fn subject_of(mapping: String, person: String) -> String {
     let mut rest = mapping + "\n";
     while len(rest) > 0 {
@@ -204,7 +202,6 @@ fn subject_of(mapping: String, person: String) -> String {
     return "";
 }
 // The persons the mapping names, space-separated.
-@unbounded
 fn members_in(mapping: String) -> String {
     let mut out = "";
     let mut rest = mapping + "\n";
@@ -707,7 +704,6 @@ locus Leg {
     // its own tells a running loop, through a marker beside the leg
     // (`.hale/dna/legs/drain`), to take no new work and end once its
     // children have.
-    @unbounded
     fn worker_loop() -> Int {
         let marker = ".hale/dna/legs/drain";
         if has_flag(self.a, "--drain") {
@@ -883,7 +879,6 @@ locus LegPool {
         }
         self.slots.push(w);
     }
-    @unbounded
     fn at(slot: Int) -> LegSlot {
         let mut i = 0;
         while i < self.slots.len() { let w = self.slots.get(i) or LegSlot { }; if w.slot == slot { return w; } i = i + 1; }

@@ -23,7 +23,6 @@ fn source() -> String {
 }
 
 // The value of `NAME=value` on its own line of `text`.
-@unbounded
 fn line_value(text: String, name: String) -> String {
     let at = std::str::index_of(text, name + "=");
     if at < 0 { return ""; }
@@ -110,7 +109,6 @@ locus App {
     // revision the fill was asked at, bounded by `secs` (the slice is the
     // real bound). `proposed: …`, `refused: …`, or `cli: <why>` for a check
     // the CLI makes before it asks; the CLI's warnings stay on `stderr`.
-    @unbounded
     fn fill(args: String, secs: Int) -> Filled {
         let before = dna::GitJournal { repo: self.repo }.revision();
         let r = self.dna("fill\n" + args);
@@ -136,7 +134,6 @@ locus App {
     // A position opened (`hale dna position open`), as `fill`: the CLI's
     // answer, or the organization's read from the record when it answers
     // after the CLI stopped waiting.
-    @unbounded
     fn open_position(args: String, secs: Int) -> Filled {
         let r = self.dna("position\nopen\n" + args);
         if r.code == 0 { return Filled { answer: "proposed: " + r.stdout, stderr: r.stderr }; }
@@ -185,7 +182,6 @@ locus App {
         return "";
     }
     // Whether the body's log says `needle`, within `tries` half-seconds.
-    @unbounded
     fn logged(needle: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
@@ -195,7 +191,6 @@ locus App {
         }
         return false;
     }
-    @unbounded
     fn count_rows(kind: String) -> Int {
         let j = dna::GitJournal { repo: self.repo };
         let mut n = 0;
@@ -204,7 +199,6 @@ locus App {
         return n;
     }
     // The Review whose question carries `text`: its id.
-    @unbounded
     fn review_of(text: String) -> String {
         let listed = self.dna("review").stdout;
         let at = std::str::index_of(listed, text);
@@ -218,7 +212,6 @@ locus App {
     }
     // `hale dna show org` as the head, once memory has projected the whole
     // record (bounded).
-    @unbounded
     fn show_org(head: String, tries: Int) -> String {
         let mut n = 0;
         while n < tries {
@@ -229,7 +222,6 @@ locus App {
         }
         return "";
     }
-    @unbounded
     fn show_until(head: String, needle: String, tries: Int) -> String {
         let mut n = 0;
         let mut last = "";

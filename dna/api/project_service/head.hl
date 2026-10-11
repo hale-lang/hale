@@ -152,7 +152,6 @@ fn body_alive(cfg: HeadConfig) -> Bool {
 // `.cmd`, or still one of the wrappers `start` runs it through on its
 // way there (`cmdline_is`), is re-adopted; anything else is forgotten
 // (its pid file removed).
-@unbounded
 fn readopt_children(cfg: HeadConfig) -> String {
     let mut kept = "";
     let mut rest = "api body";
@@ -181,7 +180,6 @@ fn child_proof(cfg: HeadConfig) -> String {
 // Starts `<api-binary> <root> <api-port>` as `children/api` and waits
 // for its readiness (§2.1): 200 on `/applications` naming `identity`,
 // within 15 s; the child exiting first is a failure with its log tail.
-@unbounded
 fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
     let dir = children_dir(cfg);
     std::io::fs::mkdir(dir) or discard;
@@ -334,7 +332,6 @@ locus HeadOutcomes {
 // Every `running` receipt that can be settled from its files is (§2.3):
 // runs from `run.{pid,exit,log}` and their deadlines, the body child
 // from its liveness and the operations file's readiness predicate.
-@unbounded
 fn settle_all(cfg: HeadConfig) {
     let j = HeadJournal { state_dir: cfg.state_dir };
     let outcomes = HeadOutcomes { cfg: cfg };

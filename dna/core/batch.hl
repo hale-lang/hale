@@ -116,7 +116,6 @@ fn batch_words(line: String) -> String {
 }
 
 // The `k`th line of `lines` ("" past the end), and how many there are.
-@unbounded
 fn batch_nth(lines: String, k: Int) -> String {
     let mut rest = lines;
     let mut i = 0;
@@ -129,7 +128,6 @@ fn batch_nth(lines: String, k: Int) -> String {
     return "";
 }
 
-@unbounded
 fn batch_count(lines: String) -> Int {
     let mut n = 0;
     let mut rest = lines;
@@ -249,7 +247,6 @@ fn batch_steps(text: String) -> BatchPlan {
 }
 
 // The tab-separated field `k` of a normalized step (0 is its verb).
-@unbounded
 fn batch_field(step: String, k: Int) -> String {
     let mut rest = step;
     let mut i = 0;
@@ -362,7 +359,6 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
 }
 
 // Whether a ratified mandate for `position` is in force.
-@unbounded
 fn batch_mandated(mandates: String, ratified: String, retired: String, position: String) -> Bool {
     let mut rest = mandates;
     while len(rest) > 1 {
@@ -848,7 +844,6 @@ fn batch_meets_outside(body: String) -> String {
     return out;
 }
 
-@unbounded
 fn batch_meets_body(met: String, members: String, outside: String) -> String {
     let e = std::json::Builder { };
     e.begin_object();
@@ -943,7 +938,6 @@ fn batch_mandate_text(j: Journal, receipts: Receipts, position: String) -> Strin
 // The org chart before and after a planned batch: every line of the after
 // chart, `+ ` where the batch adds it, then `- ` for each line it takes out,
 // then a count.
-@unbounded
 fn batch_render(plan: BatchPlan) -> String {
     let mut out = "";
     let mut added = 0;
@@ -980,7 +974,6 @@ type BatchDiff {
     unchanged: String = "";
 }
 
-@unbounded
 fn batch_diff(plan: BatchPlan) -> BatchDiff {
     let mut added = "";
     let mut removed = "";
@@ -1005,7 +998,6 @@ fn batch_diff(plan: BatchPlan) -> BatchDiff {
 // The Review of a batch with these normalized steps the Board has not
 // decided yet, "" when there is none: the same steps still pending are the
 // same proposal, asked once (`hale dna apply`, `Commands::apply_batch`).
-@unbounded
 fn batch_pending(j: Journal, steps: String) -> String {
     let mut proposed = "";
     let mut i = 0;
@@ -1248,7 +1240,6 @@ fn batch_practice_digest(j: Journal, name: String) -> String {
 // that stays vacated, what it assigned there unassigned, and its practices
 // retired; whatever has already gone is passed over, so retiring after a
 // later change takes out only what is left. "" when nothing is left.
-@unbounded
 fn batch_inverse(j: Journal, receipts: Receipts, steps: String) -> String {
     let chart = org_chart(j, receipts);
     let mut opened = "\n";
@@ -1280,7 +1271,6 @@ fn batch_inverse(j: Journal, receipts: Receipts, steps: String) -> String {
 
 // The steps of the latest adoption of the pack `name` the Board ratified,
 // "" when none was.
-@unbounded
 fn pack_adopted_steps(j: Journal, name: String) -> String {
     let mut found = "";
     let mut i = 0;
@@ -1326,7 +1316,6 @@ fn batch_stale(j: Journal, receipts: Receipts, steps: String, effects: String) -
 }
 
 // Normalized steps written back as a batch's lines.
-@unbounded
 fn batch_text(steps: String) -> String {
     let mut out = "";
     let mut rest = steps;

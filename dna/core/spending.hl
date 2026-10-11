@@ -16,7 +16,6 @@ locus SpendRecord {
     // Every model call's evidence, journaled (never the prompt), and its
     // cost counted against the window. What was sent is filed by the
     // evidence family and named here (`bodies`).
-    @unbounded
     fn called(ev: ModelEvidence, bodies: String, budget: Budget) {
         let b = std::json::Builder { };
         b.begin_object();
@@ -100,7 +99,6 @@ locus SpendRecord {
         return a;
     }
     // Whether the gate refused a spend for `entity` in the window `now` is in.
-    @unbounded
     fn refused_in_window(entity: String, now: Int, budget: Budget) -> Bool {
         let w = budget.window_of(now);
         let n = self.journal.revision();
@@ -115,7 +113,6 @@ locus SpendRecord {
     // The spend a lease was granted (GH #1131): the latest
     // `attempt.allowance_granted` on the attempt under this holder and
     // token. Not present when none was asked.
-    @unbounded
     fn granted_to(attempt_id: String, holder: String, token: Int) -> SpendAdmission {
         let mut g = SpendAdmission { };
         let n = self.journal.revision();
@@ -131,7 +128,6 @@ locus SpendRecord {
     }
     // Whether the spine answered this ask already (a relay after a lost
     // publish is answered once).
-    @unbounded
     fn allowance_answered(a: WorkAllowance) -> Bool {
         if len(a.request) == 0 { return false; }
         let n = self.journal.revision();
@@ -145,7 +141,6 @@ locus SpendRecord {
     }
     // A leg's ask for spend refused before the gate: its attempt, its lease
     // or memory's claim says no (`why`), a row naming the request.
-    @unbounded
     fn allowance_refused(a: WorkAllowance, why: String) {
         let b = std::json::Builder { };
         b.begin_object();
@@ -167,7 +162,6 @@ locus SpendRecord {
     // it, so two children cannot each spend the same remainder.
     // `g` is the grant as it binds now (through the ceiling), `own` and
     // `above` the child's and the ceiling's own, as the assembly read them.
-    @unbounded
     fn reserve(s: Spend, g: Grant, own: Grant, above: Grant, child: String, parent: String, now: Int) -> Admission {
         let why = permits(g, s, now);
         if len(why) > 0 { return self.refuse(child, s, why); }
@@ -217,7 +211,6 @@ locus SpendRecord {
         let x = self.journal.append(self.journal.revision(), "grant.reservation_refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
         return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: why };
     }
-    @unbounded
     fn spend_reserved(child: String, op: String, upto: Int) -> Bool {
         let mut i = 0;
         while i < upto {
@@ -248,7 +241,6 @@ locus SpendRecord {
         return if settled { "" + total } else { "" };
     }
     // How many settled attempts an operation has, and the sequence of the last.
-    @unbounded
     fn attempts_of(op: String, upto: Int) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -259,7 +251,6 @@ locus SpendRecord {
         }
         return n;
     }
-    @unbounded
     fn last_settled_seq(op: String, upto: Int) -> Int {
         let mut at = -1;
         let mut i = 0;
@@ -272,7 +263,6 @@ locus SpendRecord {
     }
     // A window's use: every reservation in it (one child's, or every
     // child's under a ceiling), at what was actually spent once settled.
-    @unbounded
     fn window_used(by_ceiling: Bool, who: String, currency: String, window: String, start: Int, upto: Int) -> Decimal {
         let mut used = 0.0d;
         let mut i = 0;
@@ -299,7 +289,6 @@ locus SpendRecord {
     // once: appended only at the revision "not yet settled by another"
     // was read at, and a settlement another writer landed in between is
     // read as the answer, never doubled.
-    @unbounded
     fn settle(op: String, spent: String, child: String) -> String {
         let v = std::str::parse_decimal(spent) or - 1.0d;
         if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }

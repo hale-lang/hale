@@ -50,7 +50,6 @@ fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthorit
 // (the spine's DSN where no head's is named); "" when no memory is named or
 // it does not answer — one owner, or, for a body that names its
 // organization, nothing it may admit.
-@unbounded
 fn ownership_graph_here(root: String) -> String {
     // one owner — the record states no organization and this body names
     // none — asks memory nothing
@@ -68,7 +67,6 @@ fn ownership_graph_here(root: String) -> String {
 // kind `organization`, less the retired — read from the record itself,
 // the membership's source, so a shared record is known as one with no
 // memory at all.
-@unbounded
 fn organizations_in_record(root: String) -> String {
     let j = dna::GitJournal { repo: root };
     let mut out = "";
@@ -97,7 +95,6 @@ fn organizations_in_record(root: String) -> String {
 // before it named one, the project's directory, as `hale dna init` names
 // it — and "" when none is attached or an `application.detached` row
 // removed it. The record is the membership source.
-@unbounded
 fn attached_application(root: String) -> String {
     let j = dna::GitJournal { repo: root };
     let mut name = "";
@@ -273,7 +270,6 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // wedged repository reaches. Three tries used to be the bound, and a
 // host reconciling beside a busy organism lost them all and dropped the
 // row (GH #603).
-@unbounded
 fn append_as(repo: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
     if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
     return len(record_append(repo, kind, entity, body, author)) > 0;
@@ -311,7 +307,6 @@ fn keeps_flush(repo: String, keeps: dna::Texts) -> Bool { return rec(repo).keep_
 // Rows written together, one commit each, at the tail however often the
 // chain moves under them: the id of the last, "" when they could not be
 // written (and then none was).
-@unbounded
 fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
     let r = rec(repo);
     let sign = signing(repo);
@@ -332,7 +327,6 @@ fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
 // the record is one batch, a row of the ledger goes to it where it falls.
 // The count appended, -1 when the record refused (the runs before it
 // stay: each run is its own write).
-@unbounded
 fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
     let routing = routing_here(repo);
     let pending = dna::RowBatch { };

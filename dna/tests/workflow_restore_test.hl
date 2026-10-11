@@ -225,7 +225,6 @@ main locus App {
     fn on_reply(r: dna::AttemptReply) { self.replies = self.replies + r.attempt_id + ":" + (if r.ok { "ok" } else { "refused" }) + ":" + r.disposition + "|" + r.why + "\n"; }
     // Whether two records hold the same rows: kind, entity and body, in
     // order — the redelivery rows aside, which only a restart writes.
-    @unbounded
     fn same_rows(a: dna::Journal, b: dna::Journal, bodies: Bool) -> Bool {
         let mut i = 0;
         let mut k = 0;
@@ -242,7 +241,6 @@ main locus App {
         }
         return true;
     }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -253,7 +251,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -266,13 +263,11 @@ main locus App {
     }
     // Whether `a` was seen before `b` in the lives, counting from the
     // `skip`th occurrence of each (earlier incarnations aside).
-    @unbounded
     fn before(a: String, skip_a: Int, b: String, skip_b: Int) -> Bool {
         let ia = self.nth(a, skip_a);
         let ib = self.nth(b, skip_b);
         return ia >= 0 && ib >= 0 && ia < ib;
     }
-    @unbounded
     fn nth(item: String, skip: Int) -> Int {
         let mut n = 0;
         let mut pos = 0;
@@ -289,7 +284,6 @@ main locus App {
         return -1;
     }
     // The index of the first row of `kind`, -1 when none.
-    @unbounded
     fn first(j: dna::Journal, kind: String) -> Int {
         let mut i = 0;
         while i < j.revision() {
@@ -300,7 +294,6 @@ main locus App {
     }
     // The first `n` rows of `src`, byte for byte, into `dst`: the record
     // as the crash left it.
-    @unbounded
     fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
         let mut i = 0;
         while i < n {
@@ -317,7 +310,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_life(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -326,7 +318,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_outcome(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {

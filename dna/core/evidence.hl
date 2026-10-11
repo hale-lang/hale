@@ -21,7 +21,6 @@ locus EvidenceStore {
     // record; when no service can keep it, the body is withheld — the
     // record says so, with the class — and nothing holds it. The digest
     // is answered either way, so evidence keeps its identity.
-    @unbounded
     fn file(text: String, class: String, by: String) -> String {
         // evidence the record says was redacted is not filed again, in git or
         // in the knowledge service: its digest is answered, and no body is
@@ -49,7 +48,6 @@ locus EvidenceStore {
     // record keeps the digest with a `receipt.redacted` row naming who,
     // why and under what policy, so provenance survives the body and a
     // reader knows it is gone rather than missing. "" when done, else why.
-    @unbounded
     fn redact(digest: String, by: String, why: String, policy: String) -> String {
         if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who, why and the policy"; }
         let moved = self.journal.refresh();
@@ -110,7 +108,6 @@ locus EvidenceStore {
         return if x.ok { "" } else { x.error };
     }
     // "who: why" of a hold standing on `digest` ("" when none).
-    @unbounded
     fn hold_of(digest: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -125,7 +122,6 @@ locus EvidenceStore {
     // The class the record gives a digest: `customer` or `confidential`
     // when it was classified or withheld, `internal` otherwise. A request
     // that puts the body in a prompt carries it, so a hosted model refuses.
-    @unbounded
     fn class_of(digest: String) -> String {
         let moved = self.journal.refresh();
         let mut out = "internal";

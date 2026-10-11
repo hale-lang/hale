@@ -81,7 +81,6 @@ locus OrganizationSourceRecord {
     // Only the tagged, strictly decoded incoming command can continue a
     // prepared-source Review. A generic mutation settlement or another caller's
     // approval cannot supply this command's authority or original application.
-    @unbounded
     // The exact verdict `command_id` decided on a request its owner holds
     // (the assembly's check), or no verdict.
     fn verdict(r: OrganizationSourceRequest, command_id: String, worktree: String) -> Verdict {
