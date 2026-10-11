@@ -4430,7 +4430,10 @@ The live half is memory's, projected from the record by the spine
   row inside a ratified proposal is checked and refused the same way,
   at the row that ratified it, and the proposal's other rows land. A
   store that fails to take a valid row still stops the projection at
-  that row: that is the database's failure, retried, not the row's. A node or edge is replaced by a later row with
+  that row: that is the database's failure, retried, not the row's. So
+  does a refusal the record cannot take (an I/O failure; a race with
+  another writer is retried first): the row is never passed without its
+  `graph.refused` or `hold.refused`, and the next pass writes it. A node or edge is replaced by a later row with
   its id (an edge's members with it) and taken out by `graph.retired`; a
   retired node's edges stay as the record left them, and the perspectives
   leave its memberships out (an edge whose anchor is gone is not shown).
