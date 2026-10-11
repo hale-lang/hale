@@ -27,7 +27,6 @@ main locus App {
         gate: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 100 } };
         unmetered: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 0 } };
     }
-    @unbounded
     fn last_of(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -38,7 +37,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -48,7 +46,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last_body(kind: String) -> String {
         let mut out = "";
         let mut i = 0;

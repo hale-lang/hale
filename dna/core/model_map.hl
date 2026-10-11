@@ -57,7 +57,6 @@ type ModelChoice {
 
 // The mode a Work's hands make: a workspace hand is `do`, any other hand
 // `tools`, none `think`.
-@unbounded
 fn model_mode_of(hands: String) -> String {
     let mut mode = "think";
     let mut it = std::json::array_first(hands);
@@ -137,7 +136,6 @@ fn model_resolve(j: Journal, position: String, owed: String, task_id: String, ha
 }
 
 // The ask a Task was admitted for: its admission's request ("" when none).
-@unbounded
 fn model_task_request(j: Journal, task_id: String) -> String {
     let mut i = 0;
     while i < j.revision() {

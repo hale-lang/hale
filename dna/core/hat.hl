@@ -132,7 +132,6 @@ fn admission_edit_class(inputs: String) -> String {
 // Whether the Task's recorded admission states an organization change:
 // the class its plan makes the edit as (`admission_edit_class`) is
 // `organization`. False when the Task has no admission or no plan.
-@unbounded
 fn hat_organization_change(j: Journal, task_id: String) -> Bool {
     let mut i = 0;
     while i < j.revision() {
@@ -202,7 +201,6 @@ fn hat_knowledge_targets(j: Journal, receipts: Receipts, target: String, organiz
 
 // The text of the record's graph node for an id ("" when none): the
 // latest `graph.node` row for it, a retirement taking it back.
-@unbounded
 fn hat_node_text(j: Journal, id: String) -> String {
     let mut out = "";
     let mut i = 0;

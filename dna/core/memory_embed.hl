@@ -18,7 +18,6 @@ locus Floats { capacity { heap rows of Float; } }
 locus Words { capacity { heap rows of String; } }
 
 // `[0.1,-0.2,…]`: the literal pgvector reads and writes.
-@unbounded
 fn render_vector(v: Floats) -> String {
     let out = std::str::builder_new();
     std::str::builder_append(out, "[");
@@ -33,7 +32,6 @@ fn render_vector(v: Floats) -> String {
 }
 
 // The literal back into floats; a malformed literal is all zeros.
-@unbounded
 fn parse_vector(lit: String, into: Floats) {
     let mut i = 0;
     while i < DIM { into.push(0.0); i = i + 1; }
@@ -82,7 +80,6 @@ fn embed_text(text: String) -> String {
 }
 
 // Cosine similarity of two literals; 0 when either is the zero vector.
-@unbounded
 fn cosine(a: String, b: String) -> Float {
     let va = Floats { };
     let vb = Floats { };
@@ -106,7 +103,6 @@ fn cosine(a: String, b: String) -> Float {
 
 // `%XX` back to bytes, `+` to a space: what the service reads from a
 // query string the client encoded.
-@unbounded
 fn url_decode(s: String) -> String {
     let out = std::str::builder_new();
     let mut i = 0;

@@ -40,7 +40,6 @@ locus SourceReader {
 // The value after `<key>:` on its own line of a model's answer, "" when
 // the line is absent. The key may come back capitalised; the value is
 // the model's, leading blanks dropped.
-@unbounded
 fn plan_line(text: String, key: String) -> String {
     let want = key + ":";
     let mut rest = text + "\n";
@@ -96,7 +95,6 @@ locus Leader {
     // its reasoning, or say the state is clean. Never a large
     // restructure unprompted; never work for the sake of activity. One
     // answer per pass; bounded by the cadence.
-    @unbounded
     fn on_optimize(req: OptimizeRequest) {
         self.optimizations = self.optimizations + 1;
         let brief = self.brief("optimize: is the organization's machinery still right?");
@@ -128,7 +126,6 @@ locus Leader {
     // leaves the defaults standing (an appendage, class `application`,
     // the ask's own target), and the record says the answer did not
     // parse. One plan per ask; bounded by the Tasks the Board admits.
-    @unbounded
     fn on_plan(req: PlanRequest) {
         let brief = self.brief(req.objective);
         let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", req.objective) } else { "" };
@@ -237,7 +234,6 @@ locus Leader {
 }
 
 // The first word of a model's answer, lower-cased, punctuation dropped.
-@unbounded
 fn first_word(text: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -253,7 +249,6 @@ fn first_word(text: String) -> String {
     return lower_ascii(out);
 }
 
-@unbounded
 fn lower_ascii(s: String) -> String {
     let up = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let lo = "abcdefghijklmnopqrstuvwxyz";

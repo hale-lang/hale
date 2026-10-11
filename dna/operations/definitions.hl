@@ -58,7 +58,6 @@ locus ProjectWorkflowCatalog {
         error: String = "";
     }
     fn supported() -> Bool { return true; }
-    @unbounded
     fn snapshot() -> DefinitionSnapshot {
         let src = std::io::fs::read_file(self.root + "/dna/org/workflows.hl") or "";
         let own = std::io::fs::read_file(self.root + "/dna/org/own_workflows.hl") or "";
@@ -195,6 +194,9 @@ locus DefinitionCodec {
     // Map exact decoded text into native data; the core round-trip JSON decoder
     // does not preserve every valid escaped control byte. Semantic validation
     // still belongs to WorkflowCatalog.define and native preflight below.
+    // The catalog grows by the members of this one document, which shape()
+    // has held to the reader's budget.
+    @bounded_by(document)
     fn decode_exact(catalog: dna::WorkflowCatalog, document: String) -> String {
         let workflows = std::json::find_field_raw(document, "workflows");
         let members = std::json::find_field_raw(document, "members");

@@ -234,7 +234,6 @@ locus Head {
     // legs and the owner write moves often; the answer is never the leg's to
     // give up on.
     // `effect_class` is the performer's (GH #946): the claim is filtered on it
-    @unbounded
     fn claim(request_id: String, performer_kind: String, performer: String, effect_class: String, capabilities: String, data_classes: String, organizations: String, ttl: Int) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Claim { request_id: request_id, record_head: self.record_head, performer_kind: performer_kind, performer: performer, effect_class: effect_class, capabilities: capabilities, data_classes: data_classes, organizations: organizations, ttl: ttl };
@@ -245,7 +244,6 @@ locus Head {
         }
         return r;
     }
-    @unbounded
     fn renew(request_id: String, attempt_id: String, holder: String, token: Int, ttl: Int) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Renewal { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token, ttl: ttl };
@@ -256,7 +254,6 @@ locus Head {
         }
         return r;
     }
-    @unbounded
     fn give_back(request_id: String, attempt_id: String, holder: String, token: Int, why: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Release { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token, why: why };
@@ -269,7 +266,6 @@ locus Head {
     }
     // The outcome: `evidence` and `receipts` travel as JSON arrays in text;
     // the hat fields are empty and -1 when no hat was worn.
-    @unbounded
     fn outcome(request_id: String, attempt_id: String, holder: String, token: Int, effect_class: String, disposition: String, result: String, result_ref: String, narrative: String, evidence: String, receipts: String, hat_digest: String, hat_head: String, hat_watermark: Int, prompt_digest: String, renderer: String) -> Reply {
         // the hat's five fields travel together or not at all
         let worn = len(hat_digest) > 0;
@@ -285,7 +281,6 @@ locus Head {
     // The ask for the attempt's spend (GH #1131), under the lease: the
     // spine answers it with a row, which the ask's lookup reads back
     // (`granted` with the allowance, or `refused` with why).
-    @unbounded
     fn allowance(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Allowance { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token };
@@ -296,7 +291,6 @@ locus Head {
         }
         return r;
     }
-    @unbounded
     fn friction(request_id: String, position: String, attempt_id: String, text: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Friction { request_id: request_id, record_head: self.record_head, position: position, attempt_id: attempt_id, text: text };
@@ -308,7 +302,6 @@ locus Head {
         return r;
     }
     // A command read back by the request id the leg minted.
-    @unbounded
     fn lookup(request_id: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let req = hc::Lookup { request_id: request_id };
@@ -323,7 +316,6 @@ locus Head {
     // prompt (a read). The head refuses a hat the record moved under
     // while it was built (`snapshot_changed`, another leg's row landing):
     // read again, as a command is asked again, for up to ten seconds.
-    @unbounded
     fn context(work_id: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let mut r = self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));

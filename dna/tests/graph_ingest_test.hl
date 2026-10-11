@@ -83,7 +83,6 @@ fn edge_line(body: String) -> String {
 locus App {
     params { nodes: String = ""; edges: String = "\n"; dangling: String = ""; }
     // How many lines of `text` begin with `prefix`.
-    @unbounded
     fn count(text: String, prefix: String) -> Int {
         let mut n = 0;
         let mut rest = text;

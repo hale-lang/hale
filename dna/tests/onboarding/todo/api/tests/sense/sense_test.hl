@@ -64,7 +64,6 @@ main locus SenseDesk {
     }
     placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
 
-    @unbounded
     run() {
         let entry = std::secret::vault_local_dir() + "/todo-sense-test-vault-entry";
         std::io::fs::write_file(entry, "hunter2") or discard;

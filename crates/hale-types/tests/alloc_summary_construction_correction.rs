@@ -494,34 +494,34 @@ fn reached_oidc() {
             "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5095..5144",
             "- fn StubIssuer::handle   [invoked-unboundedly]",
             "+ fn StubIssuer::handle",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7470..7709",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7470..7709",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7545..7707",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7545..7707",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8410..8487",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8410..8487",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8717..8803",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8717..8803",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9079..9224",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9079..9224",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9151..9212",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9151..9212",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9924..10033",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9924..10033",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10313..10423",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10313..10423",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11160..11268",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11160..11268",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11295..11349",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11295..11349",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7455..7694",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7455..7694",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7530..7692",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7530..7692",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8395..8472",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8395..8472",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8702..8788",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8702..8788",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9064..9209",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9064..9209",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9136..9197",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9136..9197",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9909..10018",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9909..10018",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10298..10408",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10298..10408",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11145..11253",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11145..11253",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11280..11334",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11280..11334",
             "- fn StubIssuer::json   [invoked-unboundedly]",
             "+ fn StubIssuer::json",
             "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6376..6463",
             "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6376..6463",
             "- fn StubIssuer::service_token   [invoked-unboundedly]",
             "+ fn StubIssuer::service_token",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12135..12244",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12135..12244",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12120..12229",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12120..12229",
             "- fn StubIssuer::token_answer   [invoked-unboundedly]",
             "+ fn StubIssuer::token_answer",
         ],
@@ -1059,8 +1059,8 @@ fn startable_moves(target: &str) -> Option<Vec<String>> {
 /// `std::http::Server`, stays long-lived). Among the targets only the
 /// host's verb program moves: it starts no locus with a hook or a
 /// handler, so it runs to exit, and every leak site of its fns goes —
-/// counted by the seed the fn is declared in (the host's 129, the core's
-/// 85, …). The correction only narrows: no target gains a site. The old
+/// counted by the seed the fn is declared in (the host's 565, the core's
+/// 145, …). The correction only narrows: no target gains a site. The old
 /// answer is the corrected summary with `startable` cleared.
 #[test]
 fn startable_only_the_verb_program_runs_to_exit() {
@@ -1076,11 +1076,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 85",
+                "dna__core: 145",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 129",
-                "dna__operations: 20",
+                "dna__host: 565",
+                "dna__operations: 121",
                 "the stdlib's copy: 1",
             ])
         )]

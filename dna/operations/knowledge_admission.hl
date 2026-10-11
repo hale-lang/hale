@@ -115,7 +115,6 @@ locus KnowledgeCommands {
             reason: if !allowed { "This principal has no explicit grant for this Knowledge operation." } else { "" }
         };
     }
-    @unbounded
     fn find(s: GovernanceSnapshot, j: GovernanceJournal, context: GovernanceContext, request_id: String) -> KnowledgeFound {
         let codec = KnowledgeCommandCodec { }; let wire = GovernanceCommandCodec { };
         let id = codec.identity(context, request_id); let mut found = KnowledgeFound { };

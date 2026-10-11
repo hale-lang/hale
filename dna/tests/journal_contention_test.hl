@@ -15,7 +15,6 @@ main locus App {
     params {
         j: dna::GitJournal = dna::GitJournal { };
     }
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -25,7 +24,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn has_body(body: String) -> Bool {
         let mut i = 0;
         while i < self.j.revision() {

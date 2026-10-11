@@ -67,7 +67,6 @@ fn performer_source(pause_ms: Int) -> String {
 }
 
 // A JSON array's objects' `field`, one per line.
-@unbounded
 fn field_of(raw: String, field: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(raw);
@@ -110,7 +109,6 @@ locus App {
         return hc::api_lists(self.socket(), "", "Commands::claim");
     }
     // Ratify every proposal `author` made, as the review path writes it.
-    @unbounded
     fn ratify(author: String) {
         let j = dna::GitJournal { repo: self.repo };
         let mut rows = "";
@@ -156,7 +154,6 @@ locus App {
         store.close();
     }
     // ---- rows
-    @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let moved = self.journal.refresh();
         let mut out = ""; let mut i = 0;
@@ -165,14 +162,12 @@ locus App {
     }
     fn has_row(kind: String, entity: String) -> Bool { return len(self.row_body(kind, entity)) > 0; }
     // The Mutation bound to an attempt ("" when none).
-    @unbounded
     fn mutation_of(attempt: String) -> String {
         let moved = self.journal.refresh();
         let mut out = ""; let mut i = 0;
         while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == "mutation.requested" && dna::decode_binding(e.body).attempt_id == attempt { out = e.entity; } i = i + 1; }
         return out;
     }
-    @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
         while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }

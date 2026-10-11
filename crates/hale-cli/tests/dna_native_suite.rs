@@ -838,33 +838,49 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
     let _ = std::fs::remove_dir_all(&decoy);
 }
 
+/// `hale verify` is a gate on DNA's source (GH #1490): the core, the
+/// host's two programs (its body and its verb program), the operations
+/// and the API report no finding, the memory-bound survey's advisories
+/// included. A growth the survey reports is answered at its cause: fixed,
+/// or marked `@bounded_by(<input>)` with what bounds it, or `@unbounded`
+/// with an issue while it is not yet understood (docs/src/dna/standard.md).
+///
+/// One test, not one per target: CI's `--partition count:N/4` deals this
+/// binary's alphabetical test list round-robin, and a test sorted before
+/// `dna_fixtures_slice_00` moves every slice to another part.
 #[test]
-fn dna_core_verifies_clean() {
-    let dir = repo_root().join("dna/core");
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .arg("verify")
-        .arg(&dir)
-        .output()
-        .expect("invoke hale verify dna/core");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    // The one finding allowed: the reveal rule's warning at a Postgres
-    // site that waits on `pq` taking a `Credential` (spec/semantics.md
-    // § "`@sealed` and a revealed secret"). Anything else fails.
-    let findings: Vec<&str> = stdout
-        .lines()
-        .chain(stderr.lines())
-        .filter(|l| l.contains("warning:") || l.contains("error:"))
-        .collect();
-    let others: Vec<&&str> = findings
-        .iter()
-        .filter(|l| !(l.contains("warning:") && l.contains("Deferred: `pq` takes a `std::secret::Credential`")))
-        .collect();
+fn dna_core_host_operations_api_verify_clean() {
+    let mut failed = Vec::new();
+    for target in ["dna/core", "dna/host", "dna/host/verb", "dna/operations", "dna/api"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .arg("verify")
+            .arg(repo_root().join(target))
+            .output()
+            .unwrap_or_else(|e| panic!("invoke hale verify {target}: {e}"));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings: Vec<&str> = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.contains("warning:") || l.contains("error:"))
+            .collect();
+        // The one finding allowed, in the core: the reveal rule's warning
+        // at a Postgres site that waits on `pq` taking a `Credential`
+        // (spec/semantics.md § "`@sealed` and a revealed secret").
+        let deferred = |l: &&&str| {
+            target == "dna/core" && l.contains("warning:") && l.contains("Deferred: `pq` takes a `std::secret::Credential`")
+        };
+        let others: Vec<&&str> = findings.iter().filter(|l| !deferred(l)).collect();
+        // `verify` exits 1 on any finding, the deferral too; with none it
+        // must succeed.
+        if !others.is_empty() || !(out.status.success() || !findings.is_empty()) {
+            failed.push(format!("hale verify {target}:\nstdout:\n{stdout}\nstderr:\n{stderr}"));
+        }
+    }
     assert!(
-        others.is_empty() && (out.status.success() || !findings.is_empty()),
-        "hale verify dna/core must report zero findings but the pq deferral.\nstdout:\n{}\nstderr:\n{}",
-        stdout,
-        stderr
+        failed.is_empty(),
+        "hale verify must report zero findings on dna/core (but the pq deferral), dna/host, dna/host/verb, dna/operations and dna/api.\n{}",
+        failed.join("\n")
     );
 }
 

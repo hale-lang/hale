@@ -39,7 +39,6 @@ main locus App {
         rat: dna::Dna = dna::Dna { planned: true, org_id: "sched-rat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("schedule-receipts") } }, knowledge_client: dna::MemoryKnowledge { dsn_env: "HALE_DNA_TEST_NO_MEMORY" } };
     }
     placement { cadence_publisher: pinned; }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -50,7 +49,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last_body(j: dna::Journal, kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -62,7 +60,6 @@ main locus App {
         return out;
     }
     // Executions admitted for occurrences of `id`, and for one occurrence.
-    @unbounded
     fn occurrences(j: dna::Journal, id: String, at: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -205,7 +202,6 @@ main locus App {
     }
     // ---- a practice that carries a schedule declares it once the Board
     // ratifies it, as the seeded `operating/optimize-cadence` does
-    @unbounded
     fn ratified() {
         let r = self.rat;
         let sched = "{\"id\": \"optimize\", \"every_ms\": 86400000, \"definition\": \"optimize-walk\", \"args\": \"{}\", \"convener\": \"position:leader\"}";
@@ -228,7 +224,6 @@ main locus App {
         dna::scratch_done("/tmp/dna-schedule-receipts-" + to_string(std::process::pid()));
     }
     // ---- a convener nobody holds: refused, naming the hole
-    @unbounded
     fn hole() {
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
         if len(owner) == 0 { eprintln("schedule_test: the hole case not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }

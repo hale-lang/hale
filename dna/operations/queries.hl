@@ -112,7 +112,6 @@ fn review_id_of(e: dna::Event) -> String {
 // Native projection, shared with terminal consumers. It deliberately retains
 // every existing Review field. Hosted readers use Queries.review_of, which also
 // applies receipt visibility to knowledge-derived free text.
-@unbounded
 fn review_row(j: dna::Journal, id: String) -> ReviewRow {
     let mut r = ReviewRow { };
     let mut i = 0;
@@ -331,7 +330,6 @@ locus Queries {
         if len(doc) == 0 || len(doc) > 98304 || dna::digest_of(doc) != row.id || doc != native.document(r) { return row; }
         let mut out = row; out.request_id = id; out.requester = r.by; out.because = r.because; return out;
     }
-    @unbounded
     fn candidate_metadata(digest: String, named_only: Bool) -> PracticeRow {
         let mut r = PracticeRow { };
         let mut i = 0;

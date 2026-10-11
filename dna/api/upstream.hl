@@ -36,7 +36,6 @@ fn upstream_header(headers: String, name: String) -> String {
 
 // `METHOD target` against 127.0.0.1:`port` with `headers` (CRLF lines,
 // each terminated) and `body`; read to EOF or `timeout_ns`.
-@unbounded
 fn exchange(port: Int, method: String, target: String, headers: String, body: String, timeout_ns: Int) -> Upstream {
     let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
     if fd < 0 { return Upstream { code: "connect_failed" }; }

@@ -73,7 +73,6 @@ locus TaskCreateCommandCodec {
     // complete up to the head this row is appended at, so an id this Record
     // already holds steps to the next millisecond; an ask written by another
     // host's clock in the same millisecond stays outside this check.
-    @unbounded
     fn intent_id(j: dna::Journal, millis: Int) -> String {
         let mut offset = 0;
         while offset <= j.revision() {

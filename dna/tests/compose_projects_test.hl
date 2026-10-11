@@ -30,7 +30,6 @@ fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; 
 
 // The host port a compose file publishes a service's `inner` port on
 // (`"127.0.0.1:<host>:<inner>"`), -1 when it names none.
-@unbounded
 fn published(compose: String, inner: String) -> Int {
     let mut rest = compose;
     while true {

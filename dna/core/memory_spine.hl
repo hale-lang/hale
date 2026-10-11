@@ -203,7 +203,6 @@ locus MemoryLeases {
     // Land `l` under `key` only if the store's token is `expected` (0 for
     // none). False when another holder moved it first, or memory cannot be
     // reached (`reachable` says which).
-    @unbounded
     fn put(key: String, l: Lease, expected: Int) -> Bool {
         if !self.ensure_open() { self.reachable = false; return false; }
         let ok = self.store.put(key, l.holder, l.token, l.expires, l.present, expected);
@@ -213,7 +212,6 @@ locus MemoryLeases {
         return false;
     }
     // ---- Coordination, as MemLeases and GitLeases have it
-    @unbounded
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.current(key);
         if !self.reachable { return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false }; }
@@ -227,14 +225,12 @@ locus MemoryLeases {
         }
         return l;
     }
-    @unbounded
     fn complete(key: String, token: Int, now: Int) -> Bool {
         let cur = self.current(key);
         if !cur.present { return false; }
         if cur.token != token { return false; }
         return self.put(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false }, cur.token);
     }
-    @unbounded
     fn holder_of(key: String) -> String {
         let cur = self.current(key);
         if cur.present { return cur.holder; }
@@ -254,7 +250,6 @@ locus MemoryLeases {
     // renews it. Without memory (no DSN) there is no one to race and the
     // claim is granted; with memory that cannot be reached, nothing is
     // claimed (`reachable` false).
-    @unbounded
     fn claim(key: String, holder: String, ttl: Int) -> Lease {
         if !self.ready() { return Lease { key: key, holder: holder, token: 0, expires: std::time::now() + ttl, present: true }; }
         if !self.ensure_open() { self.reachable = false; return Lease { key: key }; }
@@ -264,7 +259,6 @@ locus MemoryLeases {
         return Lease { key: key, holder: s.holder, token: s.token, expires: s.expires, present: s.present };
     }
     // Give a claim back on completion: true when `holder` held it.
-    @unbounded
     fn release_claim(key: String, holder: String) -> Bool {
         if !self.ready() { return true; }
         if !self.ensure_open() { self.reachable = false; return false; }
@@ -302,7 +296,6 @@ const PACKAGE_WAIT_SECS: Int = 20;
 // The seq of the record's last row that changes what a package holds —
 // an idea ratified or retired, a binding made or undone (the tail applies
 // the rest, but no package reads it); -1 when there is none.
-@unbounded
 fn last_knowledge_row(repo: String) -> Int {
     let j = GitJournal { repo: repo };
     let mut i = j.revision() - 1;
@@ -358,7 +351,6 @@ locus MemoryKnowledge {
     }
     // What the evidence names for a target: the package and the ids it
     // included, as `bindings_of` renders them.
-    @unbounded
     fn bindings_for(target: String, query: String) -> String {
         return bindings_of(self.package_for(target, query));
     }
@@ -445,7 +437,6 @@ locus MemoryKnowledge {
     // knowledge row only when that moved (GH #1225: every tick asks, and a
     // quiet organism's record has nothing new to say), and memory's
     // watermark, which moves on its own, is asked every time.
-    @unbounded
     fn caught_up(revision: Int) -> Bool {
         if !self.ready() || !self.ensure_open() { return false; }
         if revision != self.knowledge_rev {
@@ -470,7 +461,6 @@ locus MemoryKnowledge {
     }
     // The graph's routing perspective (GH #1089): what a Review's route is
     // computed over, "" when memory is not there or does not answer.
-    @unbounded
     fn routing() -> String {
         if !self.ready() || !self.ensure_open() { return ""; }
         self.store.forget_error();
@@ -479,14 +469,12 @@ locus MemoryKnowledge {
     // The graph's ownership (GH #1123): JSON `[node, holder]` pairs of
     // the `holds` edges an organization is in, "" when memory is not there
     // or does not answer.
-    @unbounded
     fn ownership() -> String {
         if !self.ready() || !self.ensure_open() { return ""; }
         self.store.forget_error();
         return self.store.graph_ownership();
     }
     // The body memory keeps under a hat's digest, "" when none.
-    @unbounded
     fn hat(digest: String) -> String {
         if !self.ready() || !self.ensure_open() { return ""; }
         return self.store.hat(digest);
@@ -523,7 +511,6 @@ locus MemoryVault {
         self.opened = true;
         return true;
     }
-    @unbounded
     fn has_row(kind: String, entity: String) -> Bool {
         let mut i = 0;
         while i < self.j.revision() {
@@ -534,7 +521,6 @@ locus MemoryVault {
         return false;
     }
     // A `receipt.disclosed` row naming this reader and this purpose.
-    @unbounded
     fn disclosed(digest: String, reader: String, purpose: String) -> Bool {
         let mut i = 0;
         while i < self.j.revision() {
@@ -545,7 +531,6 @@ locus MemoryVault {
         return false;
     }
     // "who: why" of a hold that stands on `digest` ("" when none).
-    @unbounded
     fn hold_of(digest: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -558,7 +543,6 @@ locus MemoryVault {
         return out;
     }
     // "by <who> under <policy>: <why>" of a redaction ("" when none).
-    @unbounded
     fn redaction_of(digest: String) -> String {
         let mut i = 0;
         while i < self.j.revision() {
@@ -572,7 +556,6 @@ locus MemoryVault {
     // record says was redacted is not kept again: a replay, a retry or a
     // re-run intake would put erased bytes back behind a record that says
     // they are gone (#636).
-    @unbounded
     fn keep(text: String, class: String, by: String) -> String {
         self.last_error = "";
         if !protected_class(class) { self.last_error = "class: `" + class + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt"; return ""; }
@@ -600,7 +583,6 @@ locus MemoryVault {
     // decision is in the record before a byte is erased, at the revision the
     // hold was read at: a redaction the record cannot hold erases nothing,
     // and one recorded before an interrupted erasure is completed.
-    @unbounded
     fn erase(digest: String, by: String, why: String, policy: String) -> String {
         if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who (`by`), why and the policy"; }
         if !self.ensure_open() { return self.last_error; }
@@ -653,7 +635,6 @@ locus MemoryVault {
     // A read in a reader's name, for a purpose: refused unless disclosed,
     // and a row either way — a read the record cannot hold is not answered,
     // and no byte of the body leaves.
-    @unbounded
     fn read(digest: String, reader: String, purpose: String) -> VaultRead {
         if len(reader) == 0 || len(purpose) == 0 { return VaultRead { refused: "a read names a reader and a purpose" }; }
         if !dsn_set(self.dsn_env) { return VaultRead { refused: "no memory (" + self.dsn_env + " is not set)" }; }
@@ -759,7 +740,6 @@ locus LedgerAdoption {
     // had, carried out under a claim on the asking row. 1 when this node
     // carried one out, 0 when there was none (or another node holds it), -1
     // with `last_error` when memory could not be reached.
-    @unbounded
     fn tick(leases: MemoryLeases) -> Int {
         if !self.ledger.ready() { return 0; }
         let moved = self.j.refresh();

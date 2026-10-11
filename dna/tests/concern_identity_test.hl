@@ -35,7 +35,6 @@ main locus App {
         };
     }
     bus { publish dna::ConcernRaised; }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -46,7 +45,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn answered(request: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -69,7 +67,6 @@ main locus App {
         let deadline = std::time::now() + 20;
         while std::time::now() <= deadline && self.count("workflow.admitted") > self.count("workflow.settled") { std::time::sleep(50ms); }
     }
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -138,7 +135,6 @@ main locus App {
         std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 5, "shorter words under that id are not that concern again");
         std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 3, "they are a conflict, whichever is a prefix of which");
     }
-    @unbounded
     fn last_refused() -> String {
         let mut out = "";
         let mut i = 0;
@@ -149,7 +145,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn last_raised() -> String {
         let mut out = "";
         let mut i = 0;

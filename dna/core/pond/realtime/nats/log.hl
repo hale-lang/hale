@@ -14,7 +14,6 @@ locus NatsInts { capacity { heap items of Int; } }
 // Remove the first `k` entries of `v`, keeping the order of the rest.
 // @unbounded: one pass over the vec; callers amortize (they cut only
 // once the removed prefix is a large share of it).
-@unbounded
 fn ints_drop_front(v: NatsInts, k: Int) {
     let n = v.len();
     if k <= 0 { return; }
@@ -32,7 +31,6 @@ fn ints_drop_front(v: NatsInts, k: Int) {
 
 // Empty `v`.
 // @unbounded: one pop per entry, run when a queue drains.
-@unbounded
 fn ints_clear(v: NatsInts) {
     while v.len() > 0 { let gone = v.pop() or 0; }
 }
@@ -70,7 +68,6 @@ locus NatsMsgLog {
 
     /// Forget the oldest `k` messages.
     // @unbounded: one pass over the index; see ints_drop_front.
-    @unbounded
     fn drop_front(k: Int) {
         let n = self.starts.len();
         if k <= 0 { return; }

@@ -22,7 +22,6 @@ fn show_empty(what: String) -> String { return if what == "org" { "[]" } else { 
 // The positions whose mandate the record proposes and the Board has not
 // decided, `\n`-wrapped: a proposal of kind `mandate` is pending until a
 // ratification, a refusal or a retirement names its digest.
-@unbounded
 fn mandates_pending(record: dna::GitJournal) -> String {
     let mut asked = ""; // `<digest>\t<target>` per proposal
     let mut decided = "\n";
@@ -92,7 +91,6 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
 
 // Lines as a JSON array of strings; with `pairs`, `<a>\t<b>` lines as
 // objects named by `first` and `second`.
-@unbounded
 fn route_json_list(lines: String, first: String, second: String) -> String {
     let b = std::json::Builder { };
     b.begin_array();
@@ -113,7 +111,6 @@ fn route_json_list(lines: String, first: String, second: String) -> String {
 }
 
 // `<a>\t<b>` lines as text: `<a>` padded, then `<b>`.
-@unbounded
 fn route_text(lines: String, shown: Bool) -> String {
     let mut out = "";
     let mut rest = lines;
@@ -135,7 +132,6 @@ fn route_text(lines: String, shown: Bool) -> String {
 // route it.
 const ROUTE_FALLBACK: String = "the Review's own authority (the task routers of GH #697 when they exist)";
 
-@unbounded
 fn route_verb(root: String, args: Args) -> Answer {
     let json = has_flag(args, "--json");
     let range = flag(args, "--diff");

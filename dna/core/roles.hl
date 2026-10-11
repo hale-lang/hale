@@ -75,7 +75,6 @@ locus RecordRoles {
     fn row(i: Int) -> Event { return if self.memory { self.rows.get(i) or Event { } } else { self.git.read(i) }; }
     // A fixture's row: the record in memory grows by what the fixture
     // writes, which is its domain bound.
-    @unbounded
     fn remember(kind: String, entity: String, body: String) {
         self.rows.push(Event { seq: self.rows.len(), kind: kind, entity: entity, body: body });
     }
@@ -136,7 +135,6 @@ locus RecordRoles {
     // the position the role names — `owner` is the board, `position` any
     // live position at all, any other role the position spelled with `/`
     // where the role has `_`.
-    @unbounded
     fn holds(p: std::api::Principal, r: String) -> Bool {
         if !authenticated(p) || len(r) == 0 { return false; }
         self.scan();
@@ -267,7 +265,6 @@ locus HoldsReader {
     // Whether `person` holds `position`: in their own name, or as a member
     // of an organization that holds it (GH #1123) — the route's reading of
     // a firm-held position. A membership alone is no seat.
-    @unbounded
     fn holds(person: String, position: String) -> Bool {
         if len(person) == 0 || !std::str::starts_with(position, "position:") { return false; }
         if std::str::contains(self.live, "\t" + position + "\t" + person + "\n") { return true; }
@@ -282,7 +279,6 @@ locus HoldsReader {
     fn is_retired(person: String) -> Bool { return std::str::contains(self.retired, "\n" + person + "\n"); }
     // Whether `person` holds any position at all, in their own name or
     // through an organization: never by a membership alone.
-    @unbounded
     fn holds_any(person: String) -> Bool {
         if len(person) == 0 { return false; }
         let holders = "\n" + person + "\n" + self.memberships(person);
@@ -299,7 +295,6 @@ locus HoldsReader {
         return false;
     }
     // The organizations `person` is a member of, one node id per line.
-    @unbounded
     fn memberships(person: String) -> String {
         let mut out = "";
         let mut rest = self.live[1..len(self.live)];
@@ -317,7 +312,6 @@ locus HoldsReader {
     // The positions `person` holds, space-separated, in the order held: in
     // their own name or through an organization they belong to (GH
     // #1123) — never an organization node itself.
-    @unbounded
     fn positions_of(person: String) -> String {
         if len(person) == 0 { return ""; }
         let holders = "\n" + person + "\n" + self.memberships(person);
@@ -348,7 +342,6 @@ fn record_trust_local(repo: String) -> Bool {
 // The node a member of `role` names in a `graph.edge` body ("" when
 // none): the first `{"role": …, "node": …}` object of `members` whose
 // role is `role`.
-@unbounded
 fn graph_member(body: String, role: String) -> String {
     let members = std::json::find_field_raw(body, "members");
     let mut rest = members;

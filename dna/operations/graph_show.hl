@@ -32,7 +32,6 @@
 // The org chart, from `graph_perspective("org")`. `pending` is the
 // positions (`\n`-wrapped node ids) whose mandate is proposed and awaits
 // the Board: the perspective knows only the ratified ones, bound in memory.
-@unbounded
 fn show_org(json: String, pending: String) -> String {
     // the nodes positions sit under, in order, and the widest name
     let mut parents = "\n";
@@ -94,7 +93,6 @@ fn show_org(json: String, pending: String) -> String {
 }
 
 // The process model, from `graph_perspective("processes")`.
-@unbounded
 fn show_processes(json: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(json, "meets"));

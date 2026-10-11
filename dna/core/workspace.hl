@@ -123,7 +123,6 @@ fn body_scan() -> String {
 
 // Every process whose environment carries `HALE_DNA_BODY=<mark>`,
 // newline-separated ("" when none, or when this machine has no scan).
-@unbounded
 fn marked(mark: String) -> String {
     if len(mark) == 0 { return ""; }
     let needle = "HALE_DNA_BODY=" + mark;
@@ -266,7 +265,6 @@ fn wait_secs(secs: Int) -> Int { return secs * wait_scale(); }
 // `organization:acme alice` — as memory's `graph_ownership()` answers
 // them, JSON `[node, holder]` pairs: a fixture states who owns what in the
 // graph's own terms without a memory to hold it.
-@unbounded
 fn graph_ownership_of(lines: String) -> String {
     let b = std::json::Builder { };
     b.begin_array();
@@ -585,7 +583,6 @@ locus LocalGit {
     // source — is not. `seed` empty asks about tracked files alone;
     // `.hale/` never counts. A graph that cannot be inspected is dirt:
     // an inspection that failed authorises nothing (finding 4).
-    @unbounded
     fn dirty_for(seed: String, worktree: String) -> String {
         let r = run_tool("git\n-C\n" + self.repo + "\nstatus\n--porcelain");
         if r.code != 0 { return ""; }
@@ -609,7 +606,6 @@ locus LocalGit {
     // the seeds that hold the files the candidate changes (`api/`), a
     // rename as both its names, so the seed a file leaves is read too. A
     // directory holding no `.hl` (`docs/`) builds nothing and is no seed.
-    @unbounded
     fn candidate_inputs(seed: String, worktree: String) -> String {
         if seed != "." || root_is_seed(worktree) { return self.untracked_inputs(seed, worktree); }
         let changed = changed_paths(worktree, self.head(self.repo), "HEAD");
@@ -628,7 +624,6 @@ locus LocalGit {
     // `?? <path>` lines: the graph is read in `worktree`, its
     // directories are looked at on the destination, and git names
     // the destination's untracked files unquoted, one per line.
-    @unbounded
     fn untracked_inputs(seed: String, worktree: String) -> String {
         let hale = resolve_toolchain(self.hale_bin);
         let dir = if seed == "." { worktree } else { worktree + "/" + seed };
@@ -903,7 +898,6 @@ locus MutationGateway {
     }
     // The last `mutation.candidate` body for the key's Mutation — the
     // sha a replayed commit returns.
-    @unbounded
     fn recorded(j: Journal, key: String) -> String {
         let mut out = "";
         let mut i = 0;

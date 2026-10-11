@@ -302,7 +302,6 @@ main locus App {
     }
     bus { publish dna::ReviewVerdict; }
 
-    @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -330,7 +329,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn ratified_all(digests: String) -> Bool {
         let mut rest = digests;
         while len(rest) > 0 {
@@ -346,7 +344,6 @@ main locus App {
     // one a batch is planned against): `position <id>`, `mandate <id>` and
     // `holds <id> <holder>` lines
     fn org() -> String { return dna::org_chart(self.body.journal, dna::GitReceipts { repo: self.repo }); }
-    @unbounded
     fn settled_all(digests: String) -> Bool {
         let mut rest = digests;
         while len(rest) > 0 {
@@ -360,7 +357,6 @@ main locus App {
     // A batch proposed as the host proposes one (`hale dna apply`): planned,
     // its receipts kept, its rows appended, and its Review opened as a
     // running organization opens it when `graph.requested` is relayed.
-    @unbounded
     fn apply(text: String) -> String {
         let receipts = dna::GitReceipts { repo: self.repo };
         let plan = dna::batch_plan(self.body.journal, receipts, text);
@@ -394,7 +390,6 @@ main locus App {
     }
 
     // The invariants every step keeps; "" when they hold, else what broke.
-    @unbounded
     fn broken(org: String) -> String {
         if org != self.org() { return "reading the organization twice gave two organizations"; }
         let mut rest = org;
@@ -414,7 +409,6 @@ main locus App {
 
     // ---- the steps
     // What the step did: "" when it did what it says, else why not.
-    @unbounded
     fn step(line: String) -> String {
         if std::str::starts_with(line, "open ") || std::str::starts_with(line, "fill ") {
             let parsed = dna::batch_steps(line);
@@ -536,7 +530,6 @@ main locus App {
     }
     // A scenario on a fresh organism: "" when every step did what it says
     // and every invariant held after it, else the step and why.
-    @unbounded
     fn scenario(name: String, text: String) -> String {
         self.repo = dna::scratch_root("scenario-" + name);
         std::io::fs::mkdir(self.repo + "/.hale") or discard;

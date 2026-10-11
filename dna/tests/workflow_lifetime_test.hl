@@ -109,7 +109,6 @@ locus Responder {
         Replies <- Rep { key: r.key, stage: r.stage, disposition: "done" };
     }
     // Answer the held request for `key` (its latest stage), `times` times.
-    @unbounded
     fn on_flush(f: Flush) {
         let mut stage = -1;
         let mut rest = self.held;
@@ -286,7 +285,6 @@ main locus App {
     }
     fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_done(d: Done) { self.done = self.done + d.key + ":" + d.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -298,7 +296,6 @@ main locus App {
         return n;
     }
     // How many space-separated items start with `prefix` and end with `suffix`.
-    @unbounded
     fn count_prefix(list: String, prefix: String, suffix: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -322,7 +319,6 @@ main locus App {
     }
     // Wait until `item` has been seen `n` times in `lives`, or give up
     // after twenty seconds and let the assertion say what happened.
-    @unbounded
     fn until_life(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -331,7 +327,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_prefix(list: String, prefix: String, suffix: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -340,7 +335,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_done(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {

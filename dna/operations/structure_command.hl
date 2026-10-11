@@ -48,7 +48,6 @@ type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String
 // A name the organism writes as, never a person.
 fn held_machine(who: String) -> Bool { return len(who) == 0 || dna::word_in(who, "dna host spine org ledger board hale") || std::str::starts_with(who, "hale dna"); }
 
-@unbounded
 fn held_row(kind: String, entity: String, body: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -59,7 +58,6 @@ fn held_row(kind: String, entity: String, body: String) -> String {
     return b.result() + "\n";
 }
 
-@unbounded
 fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
     let out = HeldState { };
     let mut refused = "\n";
@@ -126,7 +124,6 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
 // The position a process's other seat is: `api/dev` for `api/reviewer`,
 // and the reverse; "" for any other position. Asked once a fill, and once
 // per admission attempt of `Commands::fill` (at most eight).
-@unbounded
 fn hold_sibling(position: String) -> String {
     if std::str::ends_with(position, "/dev") { return position[0..(len(position) - 4)] + "/reviewer"; }
     if std::str::ends_with(position, "/reviewer") { return position[0..(len(position) - 9)] + "/dev"; }
@@ -140,7 +137,6 @@ type FillCheck { why: String = ""; warning: String = ""; }
 
 // Once a fill, and once per admission attempt of `Commands::fill` (at most
 // eight).
-@unbounded
 fn fill_check_of(st: HeldState, trust: String, position: String, holder: String) -> FillCheck {
     if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position or organization the record states or proposes" }; }
     if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name or an organization, with no `|`" }; }
@@ -174,7 +170,6 @@ fn fill_check_of(st: HeldState, trust: String, position: String, holder: String)
 // as the graph states it (a seed, a work part, a position, a process, in
 // that order); a name the graph does not state goes as given, for the
 // organization to refuse.
-@unbounded
 fn under_node_of(j: dna::Journal, receipts: dna::Receipts, positions: String, under: String) -> String {
     if len(under) == 0 || std::str::contains(under, ":") { return under; }
     let nodes = dna::record_graph(j, receipts).nodes;
@@ -370,7 +365,6 @@ locus StructureCommandCodec {
     // The recorded command, re-derived from the record on every read: the
     // organization's answer to the request row, if any (`a.entity` is the
     // row's own id).
-    @unbounded
     fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
         let c = a.command; let context = a.context;
         let mut state = if a.unknown { "unknown" } else { "requested" };

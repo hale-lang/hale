@@ -36,7 +36,6 @@ main locus App {
         j: dna::GitJournal = dna::GitJournal { };
         one: dna::Dna = dna::Dna { };
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -47,7 +46,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -71,7 +69,6 @@ main locus App {
         while std::time::now() <= deadline && !self.raised(entity, request) { std::time::sleep(50ms); }
         self.settle();
     }
-    @unbounded
     fn raised(entity: String, request: String) -> Bool {
         let mut i = 0;
         while i < self.one.journal.revision() {
@@ -82,7 +79,6 @@ main locus App {
         return false;
     }
     // Wait, bounded, until every admitted execution has settled.
-    @unbounded
     fn settle() {
         let deadline = std::time::now() + 20;
         while std::time::now() <= deadline && self.rows("workflow.admitted", "") > self.rows("workflow.settled", "") { std::time::sleep(50ms); }

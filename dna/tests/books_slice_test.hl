@@ -62,7 +62,6 @@ fn line_end(v: std::str::ByteView, from: Int) -> Int {
 }
 
 // Rows of `kind` about `entity` ("" = any) whose body contains `needle`.
-@unbounded
 fn count(app: String, kind: String, entity: String, needle: String) -> Int {
     let mut n = 0;
     let v = std::str::bytes_view(journal(app));
@@ -96,7 +95,6 @@ fn rows_about(app: String, entity: String) -> String {
     return out;
 }
 
-@unbounded
 fn body(app: String, kind: String, entity: String) -> String {
     let mut out = "";
     let v = std::str::bytes_view(journal(app));
@@ -177,7 +175,6 @@ fn wait_file(path: String, secs: Int) -> Bool {
 
 // Wait until `hale dna <args>` says `needle`; its last output either way,
 // so a failed assertion still prints what the organization answered.
-@unbounded
 fn wait_cli(app: String, args: String, needle: String, secs: Int) -> String {
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut out = dna_cli(app, args);
@@ -189,7 +186,6 @@ fn wait_cli(app: String, args: String, needle: String, secs: Int) -> String {
 }
 
 // Wait until the Genome at HEAD says `needle`; its last content either way.
-@unbounded
 fn wait_genome(app: String, needle: String, secs: Int) -> String {
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut out = in_dir(app, "git\nshow\nHEAD:main.hl").stdout;

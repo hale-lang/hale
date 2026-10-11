@@ -75,7 +75,6 @@ locus MemExchange {
         if std::str::starts_with(peer_url, "mem://") { return peer_url[6..len(peer_url)]; }
         return "";
     }
-    @unbounded
     fn find(at: String, from: String, kind: String, entity: String) -> Int {
         let mut i = 0;
         while i < self.boxes.len() {
@@ -97,7 +96,6 @@ locus MemExchange {
         let have = self.find(self.peer_identity(name, peer_url), mine, kind, entity);
         return if have < 0 { "" } else { "mem" + to_string(have) };
     }
-    @unbounded
     fn received() -> String {
         let mut out = "";
         let mut i = 0;

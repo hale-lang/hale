@@ -202,17 +202,18 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 92 of 455 rows.
+/// host: 98 of 480 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        470,
-        476,
+        474,
+        480,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
         Host::birth  does={env}
+        Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use,journal_io}
         Host::build_genome  does={syscall,block,env,alloc}
         Host::build_seed  does={syscall,block,env,alloc}
         Host::cut_artifact  does={syscall,block,alloc}
@@ -290,6 +291,7 @@ fn host() {
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
+        node_main  does={syscall,env,alloc}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
         owner_of_person_here  does={syscall,block,time,env,alloc}

@@ -87,7 +87,6 @@ const NERVES_OWNER_ENV: String = "HALE_DNA_OWNER";
 
 // An owner's name as a NATS subject token and a durable's name:
 // letters, digits, `-` and `_` kept, anything else `_`.
-@unbounded
 fn nerves_token(s: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -159,7 +158,6 @@ fn nerves_server_url(base: String) -> String {
 
 // The roles of `org` whose credential the vault lacks, space-separated
 // ("" when it holds every one): asked by presence, never read.
-@unbounded
 fn nerves_missing(org: String) -> String {
     let mut missing = "";
     let mut rest = NERVES_ROLES + " ";

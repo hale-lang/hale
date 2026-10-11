@@ -102,7 +102,6 @@ locus NervesWatch {
     }
     // Write `frame` to every stream; a stream that will not take it is
     // closed and its slot freed.
-    @unbounded
     fn send_all(frame: String) {
         let mut i = 0;
         while i < PUSH_SLOTS {
@@ -182,7 +181,6 @@ locus NervesWatch {
         return f + "|api:" + to_string(self.api_answering());
     }
     // `dir`'s files, each with its size.
-    @unbounded
     fn dir_state(dir: String) -> String {
         let mut f = "";
         let n = std::io::fs::list_dir_count(dir) or 0;
@@ -206,7 +204,6 @@ locus NervesWatch {
         if api_ready(self.cfg.api_port, a.application_id, child_proof(self.cfg)) { self.api_ready_pid = pid; return pid; }
         return -1;
     }
-    @unbounded
     run() {
         while !self.draining {
             let now = std::time::now();

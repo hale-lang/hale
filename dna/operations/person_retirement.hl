@@ -29,6 +29,8 @@ type PersonRetirementFact {
 // identities from an already verified Journal; it never reads a moving ref.
 locus RetirementPrefix {
     params { rows: dna::EventRows = dna::EventRows { }; valid: Bool = false; }
+    // The first `end` rows of the journal, at most its revision.
+    @bounded_by(end)
     fn capture(j: dna::Journal, end: Int) -> Bool {
         if end < 1 || end > j.revision() || !j.verify_chain() { return false; }
         let mut i = 0; let mut previous = "genesis";

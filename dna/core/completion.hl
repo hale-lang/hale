@@ -44,7 +44,6 @@ fn completion_by(body: String) -> String {
 
 // The case's completion as the record holds it, judged against the
 // admission's bound terms. Bounded by the record.
-@unbounded
 fn case_completion(j: Journal, case_id: String, admission: String) -> CaseCompletion {
     let mut assignee = std::json::find_string_field(admission, "assignee");
     let evidence_required = std::str::trim(std::json::find_field_raw(admission, "evidence_required")) == "true";

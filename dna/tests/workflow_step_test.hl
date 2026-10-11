@@ -114,7 +114,6 @@ locus Owner {
     params { scope: String = ""; cat: dna::WorkflowCatalog = dna::WorkflowCatalog { }; asked: Int = 0; }
     bus { subscribe StepAsks as on_ask where key == self.scope; }
     accept(s: dna::StepRun) { }
-    @unbounded
     fn on_ask(a: StepAsk) {
         self.asked = self.asked + 1;
         let mut leaves = dna::LeafSpecRows { };
@@ -173,7 +172,6 @@ main locus App {
     fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + (if len(s.failed_member) > 0 { ":" + s.failed_member } else { "" }) + " "; }
     fn on_retired(m: dna::MemberRetirement) { self.members = self.members + m.step_id + "/" + m.key + ":retired " + m.work_id + " "; }
     fn on_member(m: dna::MemberSettlement) { self.members = self.members + m.step_id + "/" + m.key + ":" + m.disposition + " "; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -184,7 +182,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -205,7 +202,6 @@ main locus App {
     }
     // Wait until `item` has been seen `n` times in `lives`, or give up
     // after twenty seconds and let the assertion say what happened.
-    @unbounded
     fn until_life(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -214,7 +210,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_step(item: String) {
         let mut i = 0;
         while i < 1000 {

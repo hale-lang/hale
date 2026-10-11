@@ -27,7 +27,6 @@ fn toolchain() -> String {
 }
 
 // A JSON array's objects' `field`, one per line.
-@unbounded
 fn field_of(raw: String, field: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(raw);
@@ -44,7 +43,6 @@ locus App {
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
     }
     // Ratify every proposal `author` made, as the review path writes it.
-    @unbounded
     fn ratify(author: String) {
         let j = dna::GitJournal { repo: self.repo };
         let mut rows = "";
@@ -78,7 +76,6 @@ locus App {
             std::test::assert(j.append(j.revision(), "knowledge.ratified", line[0..t1], b.result()).ok, "ratified " + line[0..t1]);
         }
     }
-    @unbounded
     fn project() {
         let spine = dna::migrated(self.owner, self.identity);
         std::test::assert(spine.ok, "memory migrates: " + spine.why);

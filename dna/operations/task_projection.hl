@@ -39,6 +39,9 @@ locus TaskProjection {
         b.append_str(",\"kind\":"); b.append_str(wire.quote(e.kind)); b.append_str(",\"entity\":"); b.append_str(wire.quote(e.entity));
         b.append_str(",\"body\":"); b.append_str(wire.quote(e.body)); b.append_str("}"); return dna::digest_of(std::str::from_bytes(b.snapshot() or raise));
     }
+    // One event of the journal `load` reads whole: the entries and their
+    // histories grow by its tasks, held to 512 tasks of 128 handoffs.
+    @bounded_by(self.j)
     fn apply(e: dna::Event) -> String {
         let wire = GovernanceCommandCodec { }; let at = self.index(e.entity);
         if !wire.bounded(e.entity, 256, true, false) || !wire.bounded(e.digest, 256, true, false) { return "task_source_invalid"; }

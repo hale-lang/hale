@@ -69,7 +69,6 @@ fn graph_id_kind(id: String) -> String {
 }
 
 // One field of an edge kind's shape, `n` = 1 anchor, 2 second, 3 others.
-@unbounded
 fn graph_shape(kind: String, n: Int) -> String {
     let mut i = 0;
     while len(dna::nth_word(GRAPH_EDGE_SHAPES, i)) > 0 {
@@ -89,7 +88,6 @@ fn graph_shape(kind: String, n: Int) -> String {
 }
 
 // The node kind `role` requires on an edge of `kind` ("" = any).
-@unbounded
 fn graph_role_kind(kind: String, role: String) -> String {
     let want = kind + "." + role + ":";
     let mut i = 0;
@@ -103,7 +101,6 @@ fn graph_role_kind(kind: String, role: String) -> String {
 
 // A name or a holder: present, bounded, one line of printable text, and
 // no `|` — the separator of a pair edge's id, so every id reads one way.
-@unbounded
 fn graph_text_ok(s: String) -> Bool {
     if len(s) == 0 || len(s) > GRAPH_NAME_MAX { return false; }
     let mut i = 0;
@@ -155,7 +152,6 @@ locus GraphEdge {
     // Whether `node` is a member already.
     fn has(node: String) -> Bool { return std::str::contains("\n" + self.members, "\t" + node + "\n"); }
     // The members so far.
-    @unbounded
     fn size() -> Int {
         let mut n = 0;
         let mut at = std::str::index_of(self.members, "\n");
@@ -168,7 +164,6 @@ locus GraphEdge {
         return n;
     }
     fn id() -> String { return graph_edge_id(self.kind, self.members); }
-    @unbounded
     fn body() -> String {
         let b = std::json::Builder { };
         b.begin_object();

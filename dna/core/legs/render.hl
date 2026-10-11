@@ -13,7 +13,6 @@ const RENDERER_VERSION: String = "legs-render/2";
 // model is sent, `agent` is the prompt with the hands the grant allows.
 fn render_mode_known(mode: String) -> Bool { return mode == "text" || mode == "prompt" || mode == "agent"; }
 
-@unbounded
 fn practice_lines(hat: String, bullet: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(hat, "practices"));
@@ -24,7 +23,6 @@ fn practice_lines(hat: String, bullet: String) -> String {
     return out;
 }
 
-@unbounded
 fn history_lines(hat: String, bullet: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(hat, "history"));
@@ -84,7 +82,6 @@ fn render_prompt(hat: String) -> String {
 
 // The hands of a hat, one line each: the tool's name and what it does,
 // and whether it judges the outcome.
-@unbounded
 fn hand_lines(hat: String, bullet: String) -> String {
     let validators = std::json::find_string_field(hat, "validators");
     let mut out = "";

@@ -100,7 +100,6 @@ locus Budget {
     // The counters from the record: every `model.called` row's cost at
     // its time, and whether this window's exhaustion was announced.
     // Bounded by the rows the record holds.
-    @unbounded
     fn rehydrate(j: Journal, now: Int) {
         let live = self.roll(now);
         let n = j.revision();

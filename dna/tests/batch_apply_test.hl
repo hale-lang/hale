@@ -47,7 +47,6 @@ fn count_rows(repo: String, kind: String, needle: String) -> Int {
 }
 
 // The body of the record's last `kind` row, "" when there is none.
-@unbounded
 fn last_body(repo: String, kind: String) -> String {
     let j = dna::GitJournal { repo: repo };
     let mut out = "";

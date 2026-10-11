@@ -156,7 +156,6 @@ locus WorkflowRuntime {
         let r = transition_of(e.body);
         return TransitionProposal { scope: r.scope, key: r.key, proposal_id: r.proposal_id, kind: e.kind, entity: e.entity, body: e.body };
     }
-    @unbounded
     fn on_proposal(t: TransitionProposal) {
         // the body carries the reference the row will be committed under
         // (§8): it must be this proposal's own, whole, or the row would
@@ -262,7 +261,6 @@ locus WorkflowRuntime {
     // never acts, and the attempt is redelivered pending for a leg to
     // claim anew. The Work hears the reply as it hears every outstanding
     // one, and keeps waiting.
-    @unbounded
     fn reopen(attempt_id: String) -> Executed {
         let moved = self.journal.refresh();
         let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
@@ -287,7 +285,6 @@ locus WorkflowRuntime {
     // holds rows it refused, for the reason a dry replay of the last
     // one gives. A child of another Task is not recovered here: it is
     // recovered through its parent, in its bound position.
-    @unbounded
     fn on_admission(q: AdmissionAsk) {
         let moved = self.journal.refresh();
         let seen = self.catch_up();
@@ -872,7 +869,6 @@ locus TaskRun {
     }
     // A step of this Task dispatches a child member: the subtree the
     // recipe bound under it, exactly, goes to the executions owner.
-    @unbounded
     fn on_child(r: ChildRequest) {
         let n = self.cat.bound_node(r.child_task);
         if n.kind != "task" || n.parent != self.task_id || n.spawning_step != r.step_id || n.member_key != r.key { return; }
@@ -989,7 +985,6 @@ locus Executions {
     // A root is run as the record admitted it: the owner asks the runtime
     // for the admission under a question of its own identity, holds the
     // question outstanding, and births the Task from the answer to it
-    @unbounded
     fn on_root(a: ExecutionAsk) {
         if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
         self.asked = self.asked + 1;
@@ -1320,7 +1315,6 @@ locus StepRun {
         }
         RunLives <- RunLife { key: self.step_id, what: "born" };
     }
-    @unbounded
     fn members_text() -> String {
         let mut out = "";
         let mut i = 0;
@@ -1341,7 +1335,6 @@ locus StepRun {
     }
     // The child Task bound under a member key, "" when the key is no
     // child member.
-    @unbounded
     fn bound_child(key: String) -> String {
         let mut i = 0;
         while i < self.mine_children.len() {
@@ -1352,7 +1345,6 @@ locus StepRun {
         return "";
     }
     // The Work bound under a member key, "" when the key is no member.
-    @unbounded
     fn bound_work(key: String) -> String {
         let mut i = 0;
         while i < self.mine.len() {
@@ -1433,7 +1425,6 @@ locus StepRun {
         if set_count(self.answered) + set_count(self.retired) < set_count(self.required) { return false; }
         return self.children_left();
     }
-    @unbounded
     fn children_left() -> Bool {
         let mut i = 0;
         while i < self.mine_children.len() {

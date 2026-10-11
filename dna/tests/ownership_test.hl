@@ -104,7 +104,6 @@ main locus App {
         // a proposal's Review whose Board acme holds: its members sign
         boarded: dna::Review = dna::Review { review_id: "k1", subject_digest: "d1", required_authority: "board", author: "editor" };
     }
-    @unbounded
     fn until(j: dna::Journal, kind: String, entity: String) {
         let mut tries = 0;
         while tries < 400 {

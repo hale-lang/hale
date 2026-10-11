@@ -26,6 +26,9 @@ locus WorkflowRead {
         return syntax.decode(std::json::find_field_raw(text, key));
     }
     fn fail(code: String, why: String) -> Bool { self.code = code; self.problem = why; return false; }
+    // The roots grow by the executions of the journal it reads whole, held
+    // to its event budget.
+    @bounded_by(self.j)
     fn load() -> Bool {
         if self.j.revision() > 2048 { return self.fail("workflow_read_limit", "the execution reader's event budget was exceeded"); }
         let mut i = 0;

@@ -20,7 +20,6 @@ main locus SilentDesk {
     }
     placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
 
-    @unbounded
     run() {
         let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
         let d = self.door;

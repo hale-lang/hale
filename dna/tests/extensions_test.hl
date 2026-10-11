@@ -38,7 +38,6 @@ main locus App {
         publish dna::ExpressionObserved;
         publish dna::PressureRaised;
     }
-    @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -55,7 +54,6 @@ main locus App {
         }
     }
     fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -66,7 +64,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn count(kind: String) -> Int {
         let mut n = 0;
         let mut i = 0;

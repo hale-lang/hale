@@ -53,7 +53,6 @@ fn route(routing: Int, kind: String) -> String {
 // The routing an organism's record says it is on: the last
 // `ledger.adopted` row sets it, a later `ledger.abandoned` returns it
 // to 0. Rows are read from a journal of the record's rows.
-@unbounded
 fn routing_of(record: Journal) -> Int {
     let mut routing = 0;
     let mut i = 0;
@@ -69,7 +68,6 @@ fn routing_of(record: Journal) -> Int {
 
 // The checkpoint an adopted record names: the record's head at
 // adoption ("" when not adopted).
-@unbounded
 fn checkpoint_of(record: Journal) -> String {
     let mut at = "";
     let mut i = 0;
@@ -191,7 +189,6 @@ locus RoutedJournal {
     // record (the record's `append_batch`: one commit per row, the chain
     // moved once); a batch with a Ledger row in it goes row by row, each to
     // its own memory.
-    @unbounded
     fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
         let rev = self.order.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
@@ -232,7 +229,6 @@ locus RoutedJournal {
 
 // The routing an organism's record is on, read from the record's own
 // text (for a caller that holds a `Record` and no journal).
-@unbounded
 fn routing_of_text(text: String) -> Int {
     let mut routing = 0;
     let mut rest = text;

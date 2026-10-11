@@ -141,7 +141,6 @@ locus Knowledge {
     // The bounded projection a performer receives: ideas bound to the
     // target or to any of its ancestors (goals flow down, initiatives
     // stay local), capped by `budget`, with the omission counted.
-    @unbounded
     fn context_for(target: String, budget: Int, data_class: String) -> ContextPackage {
         let mut included = "";
         let mut omitted_ids = "";

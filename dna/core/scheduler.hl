@@ -29,7 +29,6 @@ locus Scheduler {
     // unfired and unmissed, and a resume goes on from the next one. The
     // occurrence to admit, which the assembly admits and `admitted`
     // records; 0 when none is.
-    @unbounded
     fn due(i: Int, now: Int, catalog: WorkflowCatalog) -> Int {
         let mut s = self.rows.get(i) or Schedule { };
         if s.paused {
@@ -87,7 +86,6 @@ locus Scheduler {
     // became: the execution it already was (asked again, by a redelivery
     // or a restart), the one it admitted, or a refusal, a
     // `schedule.refused` row naming the occurrence.
-    @unbounded
     fn admitted(i: Int, t: Int, task: String, again: Bool) {
         let mut s = self.rows.get(i) or Schedule { };
         if again {
@@ -159,7 +157,6 @@ locus Scheduler {
     // and `convenes(position, definition)` with the cadence of every
     // schedule declared for that pair in its body, or the edge retired
     // when none is left; memory projects them as it does every graph row.
-    @unbounded
     fn convenes_rows(convener: String, definition: String) {
         let node = "definition:" + definition;
         let edge = "convenes:" + convener + "|" + node;
@@ -199,7 +196,6 @@ locus Scheduler {
         let e = self.journal.append(self.journal.revision(), "graph.edge", edge, b.result());
     }
     // Why `s` cannot be declared, "" when it can.
-    @unbounded
     fn refusal(s: Schedule, catalog: WorkflowCatalog, knowledge: MemoryKnowledge) -> String {
         if len(s.id) == 0 || std::str::contains(s.id, "@") || std::str::contains(s.id, " ") { return "a schedule needs an id, with no `@` or space"; }
         if s.every_ms <= 0 && len(s.cron) == 0 { return "an interval (every_ms) or a cron expression"; }
@@ -233,7 +229,6 @@ locus Scheduler {
     // reaches it through who holds it — a person, or an organization's
     // members — as memory's graph says, and one nobody holds is the hole
     // the declaration names. With no memory to ask, nothing is assumed.
-    @unbounded
     fn convener_hole(convener: String, knowledge: MemoryKnowledge) -> String {
         if word_in(convener[9..len(convener)], ORGANISM_POSITIONS) { return ""; }
         if !knowledge.ready() { return "who holds " + convener + " is the graph's, and no memory is named to ask"; }
@@ -245,7 +240,6 @@ locus Scheduler {
     // GH #1143: the schedules as the record holds them — declarations,
     // pause and resume from any clone, and each one's occurrences so far,
     // read from where they were last read.
-    @unbounded
     fn read_rows() {
         let n = self.journal.revision();
         let mut i = self.read;
@@ -312,7 +306,6 @@ locus Scheduler {
     // GH #1143: a schedule asked of the organization, declared or refused,
     // answered once under the request's id. Declaring is the Board's, or
     // the convener's own holder's.
-    @unbounded
     fn answer(r: ScheduleRequest, catalog: WorkflowCatalog, knowledge: MemoryKnowledge) {
         let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
@@ -333,7 +326,6 @@ locus Scheduler {
     // graph says. While nobody holds the Board, or no memory is named, the
     // verified requester declares, as a Review's fallback decides by its
     // required authority (#1153).
-    @unbounded
     fn authority(by: String, convener: String, knowledge: MemoryKnowledge) -> String {
         if len(by) == 0 { return "a schedule is declared by someone (`--as`)"; }
         if !knowledge.ready() { return ""; }
@@ -528,7 +520,6 @@ fn wall_ms() -> Int { return std::time::nanos(std::time::current()) / 1000000; }
 // GH #1143: the occurrence of `s` due at `now` (wall ms): an interval's
 // step from the epoch, or a cron's latest matching minute within the last
 // week; 0 when none.
-@unbounded
 fn occurrence_at(s: Schedule, now: Int) -> Int {
     if s.every_ms > 0 { return (now / s.every_ms) * s.every_ms; }
     if len(s.cron) == 0 { return 0; }
@@ -546,7 +537,6 @@ fn occurrence_at(s: Schedule, now: Int) -> Int {
 // `before` at most.
 type OccurrenceRun { count: Int = 0; first: Int = 0; last: Int = 0; }
 
-@unbounded
 fn missed_between(s: Schedule, after: Int, before: Int) -> OccurrenceRun {
     if s.every_ms > 0 {
         let n = (before - after) / s.every_ms - 1;

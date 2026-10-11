@@ -40,7 +40,6 @@ locus NatsFake {
     closure delivery { captures: sent, acked, last_error; epoch inline; }
 
     // @unbounded: once, on the violation that ends this fake.
-    @unbounded
     fn note(why: String) { self.last_error = why; }
 
     fn on_out(o: Outbound) {

@@ -59,7 +59,6 @@ main locus App {
         // publishes the evidence of the refused call, prompt included
         probe: dna::FakeModel = dna::FakeModel { name: "probe" };
     }
-    @unbounded
     fn row_body(attempt: String) -> String {
         let mut out = "";
         let mut i = 0;

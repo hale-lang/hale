@@ -33,7 +33,6 @@ main locus App {
     fn in_dir(dir: String, argv: String) -> dna::RunResult {
         return dna::run_tool_timeout(dna::wait_secs(120), "sh\n-c\ncd \"$1\" && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + self.head + "\n" + argv);
     }
-    @unbounded
     fn last(repo: String, kind: String) -> String {
         let j = dna::GitJournal { repo: repo };
         let mut out = "";

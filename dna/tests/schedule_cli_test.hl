@@ -52,7 +52,6 @@ main locus App {
         core: dna::Dna = dna::Dna { };
     }
     // Executions admitted for occurrences of `id`.
-    @unbounded
     fn fired(id: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -64,7 +63,6 @@ main locus App {
         return n;
     }
     // The occurrence `id` was declared at.
-    @unbounded
     fn from(id: String) -> Int {
         let mut out = 0;
         let mut i = 0;

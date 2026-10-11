@@ -50,6 +50,8 @@ type Landed { ok: Bool = false; id: String = ""; error: String = ""; }
 locus GovernanceJournal {
     params { snapshot: GovernanceSnapshot = GovernanceSnapshot { }; rows: dna::EventRows = dna::EventRows { }; authors: dna::Authors = dna::Authors { }; valid: Bool = false; }
     birth() { self.valid = self.load(); }
+    // One row per line of the pinned snapshot, read once, at birth.
+    @bounded_by(self.snapshot)
     fn load() -> Bool {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let fields = DefinitionCodec { };
         let mut text = self.snapshot.text; let mut ids = self.snapshot.ids; let mut seq = 0; let mut previous = "genesis";
@@ -340,7 +342,6 @@ locus GovernanceCommands {
     // record, or the record with the adopted ledger (rows the record holds
     // of those kinds are read there, so a row is found once). A record
     // row's author is the record's line; a ledger row's is the ledger's.
-    @unbounded
     fn find_attempt(s: GovernanceSnapshot, rj: dna::RoutedJournal, ledger: dna::MemoryLedger, context: GovernanceContext, request_id: String) -> GovernanceAdmission {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let attempts = AttemptCommandCodec { };
         let id = codec.identity(context, request_id); let mut found = GovernanceAdmission { };
@@ -1088,7 +1089,6 @@ locus GovernanceCommands {
     // the proposer's name — `batch.proposed` carrying the command — built on
     // the captured head and made visible together through one ref move, as
     // a retirement's are.
-    @unbounded
     fn publish_batch(s: GovernanceSnapshot, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, rows: String) -> StructureLanded {
         let structure = StructureCommandCodec { };
         let before = self.structure_record.head("journal");
@@ -1133,7 +1133,6 @@ locus GovernanceCommands {
     // memory alone, under the head's role, and the record gets its digest
     // and class; a public or internal body is an ordinary git receipt.
     // The digests, space-separated, or `!` and why one could not be filed.
-    @unbounded
     fn file_receipts(context: GovernanceContext, command: GovernanceCommand) -> String {
         if len(command.receipts) == 0 { return ""; }
         let location = self.record.location();
@@ -1169,7 +1168,6 @@ locus GovernanceCommands {
 // authority; with none, the grant's authority. "" when it does, else
 // `forbidden: <why>`, the refusal naming what the Review requires as the
 // Review's own does.
-@unbounded
 fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, authority: String, required: String) -> String {
     let mut routed = "";
     let mut i = 0;
@@ -1192,7 +1190,6 @@ fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, 
 // A claim's capabilities without the words that route a Work to a position
 // (`position`, `position:<name>`): those the head grants from the verified
 // seat alone.
-@unbounded
 fn without_position_words(capabilities: String) -> String {
     let mut out = "";
     let mut rest = capabilities + " ";

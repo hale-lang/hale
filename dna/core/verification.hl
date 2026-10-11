@@ -53,7 +53,6 @@ fn has_facet(diff: String, facet: String) -> Bool {
 // space-separated names. Intrinsic classes (alloc, publish) count as
 // widening; a declared class (a user's `effect outbound_email;`) is
 // what external blast radius is read from.
-@unbounded
 fn gained_classes(diff: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_field_raw(diff, "effects"), "classes"));
@@ -76,7 +75,6 @@ fn is_intrinsic_class(c: String) -> Bool {
 // `lineage_applied` is how many mutations this lineage has applied
 // before: novelty is coarse — 3 with none, 1 with some — until
 // accepted lineage carries change classes to compare against.
-@unbounded
 fn assess_structure(diff: String, lineage_applied: Int) -> Magnitude {
     let summary = std::json::find_field_raw(diff, "summary");
     let gained = gained_classes(diff);
@@ -133,7 +131,6 @@ fn changed_paths(worktree: String, base: String, candidate: String) -> RunResult
 // edit, space-separated: those not under `seed` (the repository root when
 // `.`), and those under `fenced` — the organization's own seed, for a
 // change of any other class (GH #1156).
-@unbounded
 fn paths_outside(names: String, seed: String, fenced: String) -> String {
     let mut out = "";
     let mut rest = names;
@@ -275,7 +272,6 @@ locus HaleVerification {
     // One step's receipt: the output content-addressed on disk, the
     // event on the candidate. Returns the exit code. (Per-run
     // allocation, bounded by the runs a Review asks for.)
-    @unbounded
     fn record(j: Journal, candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
         let text = r.stdout + r.stderr;
         let digest = self.receipts.store(text);
@@ -389,7 +385,6 @@ locus HaleVerification {
         return self.last;
     }
     // One report per run; bounded by the runs a Review asks for.
-    @unbounded
     fn assemble(id: String, cand: String, shape: String, e: Evidence, mag: Magnitude, fmt: Int, check: Int, verify: Int, test: Int, diff: Int, rehearsed: Int, fleet: Int, topo: String, diff_json: String, diff_text: String) -> VerificationReport {
         return VerificationReport {
             mutation_id: id, candidate: cand, candidate_shape: shape, evidence: e, magnitude: mag,

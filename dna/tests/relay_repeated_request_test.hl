@@ -106,7 +106,6 @@ fn answers(repo: String, request: String) -> Int {
     return n;
 }
 
-@unbounded
 fn rows(repo: String, kind: String, needle: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;
@@ -124,7 +123,6 @@ fn record(app: String) -> String {
     return journal_text(j);
 }
 
-@unbounded
 fn journal_text(j: dna::GitJournal) -> String {
     let mut out = "";
     let mut i = 0;

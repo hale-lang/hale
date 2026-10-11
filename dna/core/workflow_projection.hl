@@ -165,7 +165,6 @@ fn set_add(set: String, key: String) -> String {
 }
 
 // The set without `key`: the whole key, never a prefix of one.
-@unbounded
 fn set_remove(set: String, key: String) -> String {
     let mut out = "";
     let mut rest = set;
@@ -180,7 +179,6 @@ fn set_remove(set: String, key: String) -> String {
 }
 
 // How many keys a space-separated set names.
-@unbounded
 fn set_count(set: String) -> Int {
     if len(set) == 0 { return 0; }
     let mut n = 1;
@@ -325,7 +323,6 @@ locus WorkflowProjection {
     // How many Works of a task hold an admitted attempt and no
     // settlement: what a cancelled execution still owes before it has
     // drained (card 12a).
-    @unbounded
     fn outstanding_works(task_id: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -342,7 +339,6 @@ locus WorkflowProjection {
     // step holds only a child member owes the child, admitted attempt or
     // none, and drains it through that step, born fenced, which asks the
     // child again). Bounded by the tree.
-    @unbounded
     fn outstanding_in_tree(task_id: String) -> Int {
         let mut tasks = " " + task_id + " ";
         let mut grew = true;
@@ -377,7 +373,6 @@ locus WorkflowProjection {
     }
     // The index of the first step of a task the record has not completed,
     // in the recipe's order: where an execution still open resumes.
-    @unbounded
     fn current_step(task_id: String) -> Int {
         let mut index = 0;
         let mut found = true;
@@ -407,7 +402,6 @@ locus WorkflowProjection {
         return TaskView { };
     }
 
-    @unbounded
     fn node(id: String) -> BoundNode {
         let mut i = 0;
         while i < self.tree.len() {
@@ -434,7 +428,6 @@ locus WorkflowProjection {
     }
 
     // The members a Step is still waiting for, in registration order.
-    @unbounded
     fn pending(step_id: String) -> String {
         let s = self.step(step_id);
         let mut out = "";
@@ -502,7 +495,6 @@ locus WorkflowProjection {
 
     // One line per row, in order: what two projections of one history
     // must agree on, and what an invalid fact must leave as it was.
-    @unbounded
     fn digest() -> String {
         let mut out = "";
         let mut i = 0;
@@ -534,7 +526,6 @@ locus WorkflowProjection {
 
     // ---- the fact already recorded under an identity ----------------------
 
-    @unbounded
     fn recorded(kind: String, id: String) -> String {
         let mut i = 0;
         while i < self.facts.len() {
@@ -570,7 +561,6 @@ locus WorkflowProjection {
 
     // ---- applying one fact ---------------------------------------------
 
-    @unbounded
     fn apply(kind: String, entity: String, body: String) -> Applied {
         if kind == "workflow.admitted" { return self.admitted(entity, body); }
         if kind == "workflow.refused" { return self.refusal(entity, body); }
@@ -698,7 +688,6 @@ locus WorkflowProjection {
     // Why the recipe just read is not the subtree already bound under
     // `task_id`, "" when it is: every node it carries is bound, the same
     // in every field, and it carries every node bound there.
-    @unbounded
     fn subtree_gap(task_id: String) -> String {
         let mut i = 0;
         while i < self.reader.bound_count() {
@@ -751,7 +740,6 @@ locus WorkflowProjection {
     }
 
     // The decisions recorded on one ask, "" when none.
-    @unbounded
     fn ask_decisions(request: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -767,7 +755,6 @@ locus WorkflowProjection {
 
     // The members the recipe bound under one Step, as `<key>:<kind>=<id>`:
     // the Works whose parent it is, and the child Tasks it spawns.
-    @unbounded
     fn bound_members(step_id: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -862,7 +849,6 @@ locus WorkflowProjection {
 
     // Whether every step the recipe binds before this one, in this
     // workflow, has completed. "" when it has; else the step still ahead.
-    @unbounded
     fn step_ahead(task_id: String, index: Int) -> String {
         let mut i = 0;
         while i < self.tree.len() {
@@ -875,7 +861,6 @@ locus WorkflowProjection {
         return "";
     }
 
-    @unbounded
     fn activated(entity: String, body: String) -> Applied {
         let read = decode_activation(body);
         if !read.ok { return refused(read.why); }
@@ -982,7 +967,6 @@ locus WorkflowProjection {
 
     // An outcome is recorded for the current attempt, once — under a
     // cancelled Task too: what was admitted still says how it ended.
-    @unbounded
     fn attempt_outcome(entity: String, body: String) -> Applied {
         let read = decode_attempt_outcome(body);
         if !read.ok { return refused(read.why); }
@@ -1016,7 +1000,6 @@ locus WorkflowProjection {
 
     // ---- a Work settles on its basis --------------------------------------
 
-    @unbounded
     fn work_settled(entity: String, body: String) -> Applied {
         let read = decode_work_outcome(body);
         if !read.ok { return refused(read.why); }
@@ -1095,7 +1078,6 @@ locus WorkflowProjection {
 
     // A member that settled `done` joins its Step's settled set, once, by
     // its key. Two answers from one member are one member.
-    @unbounded
     fn join(step_id: String, key: String) -> Applied {
         let mut i = 0;
         while i < self.steps.len() {
@@ -1113,7 +1095,6 @@ locus WorkflowProjection {
 
     // ---- a Step settles on its members ----------------------------------
 
-    @unbounded
     fn step_settled(kind: String, entity: String, body: String) -> Applied {
         let read = decode_step_outcome(body);
         if !read.ok { return refused(read.why); }
@@ -1175,7 +1156,6 @@ locus WorkflowProjection {
 
     // ---- an execution settles on its steps ---------------------------------
 
-    @unbounded
     fn workflow_settled(entity: String, body: String) -> Applied {
         let read = decode_workflow_outcome(body);
         if !read.ok { return refused(read.why); }
@@ -1235,7 +1215,6 @@ locus WorkflowProjection {
     // attempted, every child admitted — settled: the root settles last.
     // Cancelled is the stop, and needs nothing: it fences what is
     // outstanding, which then records its own outcome.
-    @unbounded
     fn task_basis(t: TaskView, disposition: String) -> String {
         if disposition == "cancelled" { return ""; }
         if disposition != "done" && disposition != "failed" {

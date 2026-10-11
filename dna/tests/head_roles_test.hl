@@ -76,7 +76,6 @@ fn has(s: String, needle: String) -> Bool {
 }
 
 // The member names a surface's served description lists, space-separated.
-@unbounded
 fn members_of(description: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(description, "members"));

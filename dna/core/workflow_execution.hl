@@ -82,7 +82,6 @@ fn execution_key(attempt_id: String) -> String {
 
 // The recorded outcome of an attempt as the record reads below `rev`,
 // ok false when there is none.
-@unbounded
 fn recorded_attempt_outcome(j: Journal, attempt_id: String, rev: Int) -> DecodedAttemptOutcome {
     let mut i = 0;
     while i < rev {
@@ -95,7 +94,6 @@ fn recorded_attempt_outcome(j: Journal, attempt_id: String, rev: Int) -> Decoded
 
 // The admission of an attempt as the record reads below `rev`, ok false
 // when there is none.
-@unbounded
 fn recorded_attempt_admission(j: Journal, attempt_id: String, rev: Int) -> DecodedAttempt {
     let mut i = 0;
     while i < rev {
@@ -107,7 +105,6 @@ fn recorded_attempt_admission(j: Journal, attempt_id: String, rev: Int) -> Decod
 }
 
 // Whether the execution of an attempt is claimed below `rev`.
-@unbounded
 fn attempt_claimed(j: Journal, attempt_id: String, rev: Int) -> Bool {
     let key = execution_key(attempt_id);
     let mut i = 0;
@@ -183,7 +180,6 @@ fn attach_attempt(j: Journal, attempt_id: String, why: String, f: Fence) -> Exec
 // Walked through the admissions (a child's names its parent), bounded
 // by the rows read: an ancestry that does not resolve is reported, and
 // admits nothing.
-@unbounded
 fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
     let mut task = task_id;
     let mut hops = 0;
@@ -211,7 +207,6 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
     return "";
 }
 
-@unbounded
 fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
@@ -297,7 +292,6 @@ fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttem
 // is `unmarked`: the runtime keeps no claim of it, so the next ask finds
 // the attempt claimed by nobody alive, the relay's reconciliation
 // redelivers it, and the row is recorded then.
-@unbounded
 fn mark_relayed(j: Journal, attempt_id: String, relay: String, f: Fence) -> String {
     let key = execution_key(attempt_id);
     let mut tries = 0;
@@ -320,7 +314,6 @@ fn mark_relayed(j: Journal, attempt_id: String, relay: String, f: Fence) -> Stri
 // it was closed already or its close just landed; false when the record
 // refused it — and then the outcome is not the answer yet, and the Work
 // keeps its responsibility until a later request or reply closes it.
-@unbounded
 fn claim_closed(j: Journal, attempt_id: String, disposition: String, f: Fence) -> Bool {
     let key = execution_key(attempt_id);
     let mut tries = 0;
@@ -363,7 +356,6 @@ fn close_refused(attempt_id: String) -> Executed {
 // outcome, no fence and the claim: the redelivery is a row appended at
 // that revision, and an outcome or a cancellation landing meanwhile
 // makes it stale and the decision is taken again.
-@unbounded
 fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
@@ -507,7 +499,6 @@ type LegClaim {
     effect_class: String = ""; // the performer's, as the claim declared it (GH #946): what a lapse leaves behind
 }
 
-@unbounded
 fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
     let mut out = LegClaim { };
     let mut i = 0;
@@ -531,7 +522,6 @@ fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
 
 // Whether the attempt was redelivered (`effect.redelivered`) after its
 // latest leg claim was taken: once per lease, whatever restarts since.
-@unbounded
 fn redelivered_since_claim(j: Journal, attempt_id: String, rev: Int) -> Bool {
     let key = execution_key(attempt_id);
     let mut claimed_at = -1;
@@ -549,7 +539,6 @@ fn redelivered_since_claim(j: Journal, attempt_id: String, rev: Int) -> Bool {
 // A reply that arrives later, for an attempt that ran and was left
 // outstanding: checked by the same rules and persisted the same way. A
 // reply for an attempt whose outcome is recorded changes nothing.
-@unbounded
 fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: String, r: WorkResult, f: Fence) -> Executed {
     let moved = j.refresh();
     let rev = j.revision();
@@ -577,7 +566,6 @@ fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: Strin
 // When the record moved, read again: an outcome recorded meanwhile — the
 // same reply delivered twice, or another invocation's — is the accepted
 // one, and this reply changes nothing.
-@unbounded
 fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, ran: Bool, f: Fence) -> Executed {
     let outcome = AttemptOutcome {
         attempt_id: v.attempt_id, work_id: v.work_id, disposition: r.disposition,

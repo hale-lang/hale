@@ -27,7 +27,6 @@ locus Durable {
         let r = self.store.append(self.store.revision(), "invocation", id, "posted " + req.objective);
         return dna::WorkResult { disposition: "done", result: "posted " + req.objective, performer: self.name, attempt_id: id };
     }
-    @unbounded
     fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
         let id = req.work_id + "/a" + to_string(req.attempt_no);
         let mut i = 0;
@@ -150,7 +149,6 @@ main locus App {
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
     fn on_reply(r: dna::AttemptReply) { self.replies = self.replies + r.attempt_id + ":" + (if r.ok { "ok" } else { "refused" }) + ":" + r.disposition + "|" + r.why + "\\n"; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -161,7 +159,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -172,7 +169,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -183,7 +179,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
         let mut i = 0;
         while i < n {
@@ -200,7 +195,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_outcome(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {
@@ -209,7 +203,6 @@ main locus App {
             i = i + 1;
         }
     }
-    @unbounded
     fn until_life(item: String, n: Int) {
         let mut i = 0;
         while i < 1000 {

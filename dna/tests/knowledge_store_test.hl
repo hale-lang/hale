@@ -40,7 +40,6 @@ locus App {
         receipts: dna::FileReceipts = dna::FileReceipts { dir: dna::scratch_root("know-receipts") };
         pg: dna::Pq = dna::Pq { };
     }
-    @unbounded
     fn exercise(store: dna::KnowledgeStore, label: String) {
         // the record: a goal proposed by a parent for its child, ratified;
         // a sibling's initiative proposed and declined; other rows between

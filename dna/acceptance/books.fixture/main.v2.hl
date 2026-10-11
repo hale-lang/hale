@@ -25,7 +25,6 @@ type Bill {
 }
 
 // The value of a `key: value` line ("" when absent).
-@unbounded
 fn field(text: String, key: String) -> String {
     let mut rest = text + "\n";
     while len(rest) > 0 {
@@ -97,7 +96,6 @@ fn digest_of(text: String) -> String {
 }
 
 // Whether a row of `kind` whose entity or body names `needle` is in the journal text.
-@unbounded
 fn journal_has(journal: String, kind: String, needle: String) -> Bool {
     let mut rest = journal;
     while len(rest) > 0 {
@@ -115,7 +113,6 @@ fn journal_has(journal: String, kind: String, needle: String) -> Bool {
 // once one is) and not refused (the second review of #634: a bill
 // delivered again before the organism heard the first request queued a
 // second, independent one).
-@unbounded
 fn requested_standing(journal: String, evidence: String) -> Bool {
     let mut asked = "\n";
     let mut refused = "\n";
@@ -186,7 +183,6 @@ fn capture(path: String) -> String {
 }
 
 // Whether `a` sorts before `b` (lowercase names, digits, `-`, `.`).
-@unbounded
 fn name_before(a: String, b: String) -> Bool {
     let order = "-.0123456789abcdefghijklmnopqrstuvwxyz";
     let mut i = 0;
@@ -226,7 +222,6 @@ fn csv_field(s: String) -> String {
 }
 
 // The body of the last row of `kind` about `entity` ("" when none).
-@unbounded
 fn last_body(journal: String, kind: String, entity: String) -> String {
     let mut out = "";
     let mut rest = journal;
@@ -240,7 +235,6 @@ fn last_body(journal: String, kind: String, entity: String) -> String {
 }
 
 // The Task whose birth names `evidence`, and its last state.
-@unbounded
 fn task_of(journal: String, evidence: String) -> String {
     let mut rest = journal;
     while len(rest) > 0 {
@@ -252,7 +246,6 @@ fn task_of(journal: String, evidence: String) -> String {
     return "";
 }
 
-@unbounded
 fn state_of(journal: String, task: String) -> String {
     let mut out = "born";
     let mut rest = journal;
@@ -321,7 +314,6 @@ fn drain_once() {
 // Who holds a Task now: the last reassignment's `to`, else whom it was
 // handed to (#637: the export named the first assignee after a
 // reassignment).
-@unbounded
 fn assignee_of(journal: String, task: String) -> String {
     let moved = last_body(journal, "task.reassigned", task);
     if len(moved) > 0 { return std::json::find_string_field(moved, "to"); }

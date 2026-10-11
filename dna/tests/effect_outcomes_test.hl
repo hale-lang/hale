@@ -21,7 +21,6 @@ main locus App {
         j2: dna::GitJournal = dna::GitJournal { };
         one: dna::Dna = dna::Dna { };
     }
-    @unbounded
     fn result_of(key: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -32,7 +31,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn requests(j: dna::GitJournal, key: String) -> Int {
         let mut n = 0;
         let mut i = 0;

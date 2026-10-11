@@ -441,7 +441,6 @@ fn tab_field(line: String, n: Int) -> String {
 }
 
 // The first column of every row, space-separated.
-@unbounded
 fn ids_of(csv: String) -> String {
     let mut out = "";
     let v = std::str::bytes_view(csv);
@@ -804,7 +803,6 @@ locus Pq {
     }
     // The tower rule in one query: bound to the target, or to any prefix
     // of its path; goals flow down, initiatives stay local.
-    @unbounded
     fn context_ids(target: String, budget: Int) -> String {
         let a = db::Args { };
         a.add(target);
@@ -827,7 +825,6 @@ locus Pq {
     // The ranked bound and the watermark under one REPEATABLE READ
     // snapshot: what the spine's tick applies between the two reads is
     // not seen by either.
-    @unbounded
     fn ranked_at(target: String, budget: Int, query_vec: String) -> Ranked {
         if !self.opened || self.conn.tx_status() != "idle" { self.error = "ranked read: store is not idle and open"; return Ranked { }; }
         let begun = self.conn.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");

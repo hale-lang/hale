@@ -75,7 +75,6 @@ fn count_lines(s: String) -> Int {
 }
 
 // Whether every sample line of an exposition carries `part=`.
-@unbounded
 fn every_series_has_part(exposition: String) -> Bool {
     let mut rest = exposition;
     let mut samples = 0;
@@ -96,7 +95,6 @@ main locus App {
     fn log(name: String) -> String { return text_of(self.app + "/" + name + ".log"); }
     fn logs() -> String { return "--- host\n" + self.log("host") + "\n--- node\n" + text_of(self.app + "/../node.log") + "\n--- reflexes\n" + text_of(self.app + "/../reflexes.log"); }
     // Wait until `rows(kind, entity)` has `n` lines, within `secs`.
-    @unbounded
     fn wait_rows(kind: String, entity: String, n: Int, secs: Int) -> String {
         let deadline = std::time::now() + dna::wait_secs(secs);
         let mut got = rows(self.app, kind, entity);
@@ -106,7 +104,6 @@ main locus App {
         }
         return got;
     }
-    @unbounded
     fn wait_body(url: String, needle: String, secs: Int) -> String {
         let deadline = std::time::now() + dna::wait_secs(secs);
         let mut body = get(url);
@@ -226,7 +223,6 @@ main locus App {
         std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
         dna::scratch_done(scratch);
     }
-    @unbounded
     fn wait_log(text: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {

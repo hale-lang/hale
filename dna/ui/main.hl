@@ -205,7 +205,6 @@ locus Ui {
         return c.sub;
     }
     // The ID token a request's session signed in with ("" when none is live).
-    @unbounded
     fn session_token(req: std::http::Request) -> String {
         let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
         if len(id) == 0 { return ""; }
@@ -219,7 +218,6 @@ locus Ui {
         return "";
     }
     // The subject a request's session signed in as ("" when none is live).
-    @unbounded
     fn session_subject(req: std::http::Request) -> String {
         let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
         if len(id) == 0 { return ""; }
@@ -251,7 +249,6 @@ locus Ui {
     // The nonce of the sign-in `state` names, consumed; "" when unknown,
     // older than ten minutes, or not started by this browser (a mismatch
     // leaves it for the browser that did start it).
-    @unbounded
     fn take_pending(state: String, binding: String) -> String {
         if len(state) == 0 || len(binding) == 0 { return ""; }
         let now = std::time::now();
@@ -289,7 +286,6 @@ locus Ui {
         return redirect("/", "dna_session=" + id + "; HttpOnly; SameSite=Lax; Path=/" + secure);
     }
     // The member a request's session maps to ("" when none is live).
-    @unbounded
     fn session_name(req: std::http::Request) -> String {
         let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
         if len(id) == 0 { return ""; }
@@ -302,7 +298,6 @@ locus Ui {
         }
         return "";
     }
-    @unbounded
     fn end_session(req: std::http::Request) {
         let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
         let mut i = 0;

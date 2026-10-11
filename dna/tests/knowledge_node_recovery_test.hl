@@ -31,13 +31,11 @@ locus NodeStageJournal {
     }
 }
 
-@unbounded
 fn event(j: dna::Journal, kind: String, entity: String) -> dna::Event {
     let mut i = 0;
     while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == entity { return e; } i = i + 1; }
     return dna::Event { };
 }
-@unbounded
 fn count(j: dna::Journal, kind: String, entity: String) -> Int {
     let mut i = 0; let mut n = 0;
     while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == entity { n = n + 1; } i = i + 1; }

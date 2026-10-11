@@ -93,7 +93,6 @@ fn s3_body_mode(ctx: HeadContext) -> String {
 
 // The catalog's credentials that are set in the head's environment: the
 // names an `env` secret source may name. Names only, never values.
-@unbounded
 fn s3_env_present(root: String) -> String {
     let mut out = "";
     let mut rest = catalog_credentials(root);
@@ -208,7 +207,6 @@ fn s3_bool_of(arguments: String, key: String) -> Int {
 }
 
 // The `classes` array joined by commas ("" when absent).
-@unbounded
 fn s3_classes_of(arguments: String) -> String {
     let raw = std::str::trim(json_raw(arguments, "classes"));
     if !std::str::starts_with(raw, "[") { return ""; }
@@ -740,7 +738,6 @@ fn s3_connection_names(journal: String) -> String {
 // `verdict`, `reviewer`, `authority` — and its `connection.closed`
 // (body: by, why). Rows are read as admitted: the head attaches
 // local-trust projects.
-@unbounded
 fn s3_connection_of(journal: String, name: String) -> S3Connection {
     let ent = "connection:" + name;
     let mut c = S3Connection { };

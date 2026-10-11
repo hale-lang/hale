@@ -221,7 +221,6 @@ locus App {
         std::test::assert(self.j.append(self.j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
     }
     // The body of the last row of `kind` for `entity`, "" when none.
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -233,7 +232,6 @@ locus App {
         return out;
     }
     // One `N|…` or `E|…` line as the row it describes.
-    @unbounded
     fn row(line: String) {
         if field(line, 0) == "N" {
             let kind = field(line, 1);
@@ -253,7 +251,6 @@ locus App {
         }
         self.append("graph.edge", e.id(), e.body());
     }
-    @unbounded
     fn rows(text: String) {
         let mut rest = text;
         while len(rest) > 0 {

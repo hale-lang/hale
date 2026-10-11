@@ -91,7 +91,6 @@ main locus App {
         builder: dna::Dna = dna::Dna { };
         stuck: dna::SourceEditor = dna::SourceEditor { };
     }
-    @unbounded
     fn last_body(j: dna::Journal, kind: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -102,7 +101,6 @@ main locus App {
         }
         return out;
     }
-    @unbounded
     fn evidence_with(j: dna::Journal, needle: String) -> String {
         let mut out = "";
         let mut i = 0;

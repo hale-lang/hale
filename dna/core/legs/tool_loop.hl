@@ -17,7 +17,6 @@ import ".." as dna;
 
 // The hat's hands as the chat API's tools: a function per hand, its
 // arguments' schema as the hand declares it.
-@unbounded
 fn tools_for_model(hands: String) -> String {
     let b = std::json::Builder { };
     b.begin_array();
@@ -43,7 +42,6 @@ fn tools_for_model(hands: String) -> String {
 // components, and no `.git` (in any case) among them either, however the
 // path is written (`./.git`, `a//.git/x`). Where it leads is checked too:
 // `ToolBench.confined` refuses a symlink on the way.
-@unbounded
 fn worktree_path_ok(path: String) -> Bool {
     if len(path) == 0 || std::str::starts_with(path, "/") { return false; }
     let mut i = 0;
@@ -112,7 +110,6 @@ locus ToolBench {
         if !r.ok { return HandResult { error: r.error }; }
         return HandResult { ok: true, output: r.body };
     }
-    @unbounded
     fn call(hands: Hands, name: String, args: String) -> HandResult {
         if !dna::word_in(name, self.grant) { return HandResult { error: "`" + name + "` is not a hand of this Work; its hands are " + self.grant }; }
         let path = std::json::find_string_field(args, "path");
@@ -152,7 +149,6 @@ locus ToolBench {
     }
     // The validators' refusals over every seed the change touched, "" when
     // all pass (or nothing was touched: the answer is then judged as it is).
-    @unbounded
     fn validate(hands: Hands, validators: String) -> String {
         let seeds = self.touched_seeds();
         let mut out = "";
@@ -193,7 +189,6 @@ locus ToolBench {
     // ASCII as it is); a name git still quotes (a control character, a
     // quote, a backslash) cannot be read back reliably, so it comes back as
     // `!<name>`, which `validate` refuses rather than passes unchecked.
-    @unbounded
     fn touched_seeds() -> String {
         let changed = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\nls-files\n--modified\n--deleted\n--others\n--exclude-standard");
         let staged = dna::run_tool("git\n-C\n" + self.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--cached");

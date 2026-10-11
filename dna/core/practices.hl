@@ -18,7 +18,6 @@ locus PracticeRecord {
     }
     fn bind(j: Journal) { self.journal = j; }
     // GH #682: whether a practice request already has its answer.
-    @unbounded
     fn answered(request_id: String) -> Bool {
         if len(request_id) == 0 { return false; }
         let n = self.journal.revision();
@@ -33,9 +32,7 @@ locus PracticeRecord {
     // A practice request's own rows: refused for want of a name and a text,
     // started once the body received it, proposed with the knowledge's
     // digest. Whether each is in the record.
-    @unbounded
     fn refused(r: PracticeRequest) -> Bool { return append_once(self.journal, "practice.refused", r.request_id, "a practice has a name and a text"); }
-    @unbounded
     fn started(r: PracticeRequest) -> Bool {
         let started = std::json::Builder { };
         started.begin_object();
@@ -48,7 +45,6 @@ locus PracticeRecord {
         started.end_object();
         return append_once(self.journal, "practice.started", r.request_id, started.result());
     }
-    @unbounded
     fn proposed(r: PracticeRequest, digest: String) -> Bool {
         let b = std::json::Builder { };
         b.begin_object();
@@ -69,7 +65,6 @@ locus PracticeRecord {
     fn ratified_now(review_id: String) { self.ratified_through = self.ratified_through + review_id + "\n"; }
     // ---- practice-ratify ----
     // The execution a knowledge proposal is ratified under, "" when none.
-    @unbounded
     fn ratification_of(digest: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -82,7 +77,6 @@ locus PracticeRecord {
     }
     // practice-ratify's `hat` step for a family (the library): done once
     // memory's projection holds the family's last idea, ratified.
-    @unbounded
     fn family_hat(task: String, digest: String, last: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
         let read = first_row(self.journal, "practice.read", digest);
         if len(read.kind) > 0 { return step_done(digest, "memory read the family at row " + to_string(std::json::find_int_field(read.body, "head"))); }
@@ -106,7 +100,6 @@ locus PracticeRecord {
     // the package for the target at memory's head, and whether it carries
     // the proposal, the row it was fenced to. `memory_ready`: memory's
     // projection had caught up when last asked.
-    @unbounded
     fn hat(task: String, digest: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
         // what the hat reads once memory's projection holds the idea and its
         // binding: the package for the target at memory's head, and whether

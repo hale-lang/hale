@@ -36,7 +36,6 @@ fn source() -> String {
 }
 
 // The value of `NAME=value` on its own line of `text`.
-@unbounded
 fn line_value(text: String, name: String) -> String {
     let at = std::str::index_of(text, name + "=");
     if at < 0 { return ""; }
@@ -63,7 +62,6 @@ const DESCRIPTION: String = "{\"inventory\": 1, \"app\": \"App\", \"surfaces\": 
 
 // The roles a proposal's position node names, space-separated: the node row
 // of the proposal named `name` (the position's own), its `equipment.roles`.
-@unbounded
 fn equipment_of(proposals: String, name: String) -> String {
     let mut rest = proposals;
     while len(rest) > 0 {
@@ -84,7 +82,6 @@ fn equipment_of(proposals: String, name: String) -> String {
 }
 
 // How many proposals of `kind` the holes hold.
-@unbounded
 fn kind_count(proposals: String, kind: String) -> Int {
     let mut n = 0;
     let mut rest = proposals;
@@ -182,7 +179,6 @@ locus App {
         return false;
     }
     // Whether the body's log says `needle`, within `tries` half-seconds.
-    @unbounded
     fn logged(needle: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
@@ -192,7 +188,6 @@ locus App {
         }
         return false;
     }
-    @unbounded
     fn count_rows(kind: String) -> Int {
         let j = journal_of(self.repo);
         let mut n = 0;
@@ -202,7 +197,6 @@ locus App {
     }
     // How many practice-ratify executions the record admitted (`admitted`),
     // or settled done (`settled`).
-    @unbounded
     fn ratification_rows(what: String) -> Int {
         let j = journal_of(self.repo);
         let mut tasks = "\n";
@@ -221,7 +215,6 @@ locus App {
     }
     // `hale dna show org` as the head, once memory has projected the whole
     // record (bounded).
-    @unbounded
     fn show_org(head: String, tries: Int, needle: String) -> String {
         let mut n = 0;
         while n < tries {

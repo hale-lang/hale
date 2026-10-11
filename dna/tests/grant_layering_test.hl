@@ -31,7 +31,6 @@ main locus App {
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs refactor", max_magnitude: 5, review: "pre" } }
         };
     }
-    @unbounded
     fn last(j: dna::Journal, kind: String) -> String {
         let mut out = "";
         let mut i = 0;

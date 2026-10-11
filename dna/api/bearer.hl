@@ -118,7 +118,6 @@ fn command_member(call: String) -> String {
 
 // The calls a description lists, as the face's slice names them: the
 // exposure's members the caller may call, by the face's names.
-@unbounded
 fn listed_commands(description: String) -> String {
     let mut out = "";
     let mut rest = COMMAND_CALLS;

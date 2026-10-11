@@ -68,7 +68,6 @@ locus FiringJson {
 }
 
 // `s` for a URL's query: every byte but the unreserved ones percent-encoded.
-@unbounded
 fn query_escape(s: String) -> String {
     let hex = "0123456789ABCDEF";
     let v = std::str::bytes_view(s);
@@ -86,7 +85,6 @@ fn query_escape(s: String) -> String {
 
 // `s` as a segment of a firing's id, which the heart reads as a token:
 // letters, digits and `-_.`, anything else `_`.
-@unbounded
 fn id_segment(s: String) -> String {
     let mut out = "";
     let mut i = 0;

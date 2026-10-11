@@ -31,7 +31,6 @@ main locus App {
         // no memory named: a ratification's hat has nothing to read
         one: dna::Dna = dna::Dna { org_id: "cat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("workflow-catalog-receipts") } }, knowledge_client: dna::MemoryKnowledge { dsn_env: "HALE_DNA_TEST_NO_MEMORY" } };
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -42,7 +41,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -54,7 +52,6 @@ main locus App {
         return out;
     }
     // How many `workflow.refused` rows refuse `definition` at `revision`.
-    @unbounded
     fn refusals_of(definition: String, revision: Int) -> Int {
         let mut n = 0;
         let mut i = 0;

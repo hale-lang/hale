@@ -78,7 +78,6 @@ locus App {
         return dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && if [ -n \"$3\" ]; then export HALE_DNA_MEMORY_DSN_SPINE=\"$3\"; fi && shift 3 && exec \"$@\"\nsh\n" + dir + "\n" + self.head + "\n" + spine + "\n" + toolchain() + "\ndna\nshow\n" + args);
     }
     fn show(args: String) -> dna::RunResult { return self.show_in(self.repo, "", args); }
-    @unbounded
     fn project(owner: String, identity: String) {
         let spine = dna::migrated(owner, identity);
         std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);

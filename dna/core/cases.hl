@@ -25,7 +25,6 @@ locus CaseRecord {
     }
     fn bind(j: Journal) { self.journal = j; }
     // The admission of a case, "" when none.
-    @unbounded
     fn recorded(case_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
@@ -40,7 +39,6 @@ locus CaseRecord {
     // never an executable root, never legacy edit work.
     fn admitted(task_id: String) -> Bool { return len(self.recorded(task_id)) > 0; }
     // The case admitted for an attempt, "" when none.
-    @unbounded
     fn of_attempt(attempt_id: String) -> String {
         if len(attempt_id) == 0 { return ""; }
         let n = self.journal.revision();
@@ -54,7 +52,6 @@ locus CaseRecord {
     }
     // ---- the leader's word, awaited (card 16)
     // Whether a case awaits the leader's word already.
-    @unbounded
     fn awaiting(case_id: String) -> Bool {
         let mut i = 0;
         while i < self.pending_cases.len() {
@@ -68,7 +65,6 @@ locus CaseRecord {
     fn await_plan(c: CaseAsk) { self.pending_cases.push(c); }
     // The case awaiting the leader's word on this Work, taken from the
     // waiting (an empty ask when none waits).
-    @unbounded
     fn planned(task_id: String, work_id: String) -> CaseAsk {
         let mut c = 0;
         while c < self.pending_cases.len() {
@@ -146,7 +142,6 @@ locus CaseRecord {
     // record refuses holds the case for the recovery signals; the
     // hand-off is announced once it is durable: what the rows came to, the
     // notice the assembly gives the Board, and the row the record refused.
-    @unbounded
     fn rows(case_id: String, me: String) -> CaseRows {
         let adm = self.recorded(case_id);
         if len(adm) == 0 { return CaseRows { }; }
@@ -198,7 +193,6 @@ locus CaseRecord {
         }
         self.held_rows.push(case_id);
     }
-    @unbounded
     fn release_rows(case_id: String) {
         let mut i = 0;
         while i < self.held_rows.len() {
@@ -210,7 +204,6 @@ locus CaseRecord {
     fn held_row(i: Int) -> String { return self.held_rows.get(i) or ""; }
     // ---- completion (card 17)
     fn completed_now() { self.cases_completed = self.cases_completed + 1; }
-    @unbounded
     fn noted(case_id: String) -> Bool {
         let mut i = 0;
         while i < self.refused_completions.len() {

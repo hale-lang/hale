@@ -21,7 +21,6 @@ import "../operations" as ops;
 // The rows that propose one hole, one JSON object per line as `seed_rows`
 // takes them; the receipt is queued in `keeps`, for the caller to keep
 // before the rows land (`keeps_flush`).
-@unbounded
 fn hole_rows(keeps: dna::Texts, line: String, author: String) -> String {
     let doc = std::json::find_string_field(line, "doc");
     let raw = keep_later(keeps, doc);
@@ -58,7 +57,6 @@ fn hole_rows(keeps: dna::Texts, line: String, author: String) -> String {
     return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
 }
 
-@unbounded
 fn hole_row(kind: String, entity: String, body: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -102,7 +100,6 @@ fn fill_equipment(root: String, position: String) -> String {
 // graph states it (ops::under_node_of).
 fn under_node(root: String, under: String) -> String { return ops::under_node_of(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }, held_state(root).positions, under); }
 
-@unbounded
 fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [--as <who>]"); }
     let no_head = record_refusal(root);
@@ -178,7 +175,6 @@ fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run
 }
 
 // A batch's text planned, printed and, unless `dry_run`, proposed.
-@unbounded
 fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -239,7 +235,6 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
 }
 
 // `hale dna nursery list`: the nurseries the Board trusts, one a line.
-@unbounded
 fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
     let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
     let mut out = "";
@@ -257,7 +252,6 @@ fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the
 // host beside the organization relays it until it is answered.
-@unbounded
 fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]"); }
     let no_head = record_refusal(root);

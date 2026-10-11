@@ -69,7 +69,6 @@ locus ReviewJournal {
 
 // The positions among `signers` (`<position>=<holder>,<holder> …`) that
 // `person` holds, space-separated.
-@unbounded
 fn signer_positions(signers: String, person: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -125,7 +124,6 @@ fn review_command_matches(body: String, v: Verdict) -> Bool {
         && old.authority == v.authority && old.comment == v.comment;
 }
 
-@unbounded
 fn review_command_decision(j: Journal, command_id: String) -> String {
     let mut i = 0;
     while i < j.revision() {
@@ -205,7 +203,6 @@ locus Review {
     // the positions and what they signed stay. GH #1161: routed again too
     // when a gate run was observed, and the approvals it holds are weighed
     // again — every gate's passing run in, it settles on the last of them.
-    @unbounded
     fn on_routed(r: ReviewRouting) {
         if len(r.signers) > 0 && len(self.signers) > 0 { self.signers = r.signers; }
         if self.recheck() { ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment }; }
@@ -267,7 +264,6 @@ locus Review {
     // opened at (`gate.observed` rows naming the forge its `github.pr`
     // row names; the host's forge sync writes them, and a receipt anyone
     // files is no run), space-separated.
-    @unbounded
     fn observed_gates() -> String {
         let mut out = "";
         let mut forge = "";
@@ -284,7 +280,6 @@ locus Review {
         }
         return out;
     }
-    @unbounded
     fn on_verdict(v: Verdict) {
         if len(v.command_id) > 0 {
             let decision = self.command_decide(v);
@@ -392,7 +387,6 @@ locus Review {
         let codec = OrganizationSourceRequestCodec { };
         return codec.verdict_admitted(self.journal, self.organization_source_facts, self.organization_source_request, v, before);
     }
-    @unbounded
     fn command_refusal(v: Verdict) -> String {
         if !self.source_verdict_admitted(v, self.journal.revision()) { return "prepared source requires its exact authorized command profile"; }
         if self.settled { return "already settled: " + self.outcome; }
@@ -409,7 +403,6 @@ locus Review {
     // digest it names, the reviewer's standing and independence from the
     // author. One rule for the Board, a command and a restart. A gate's
     // run is no verdict's to cite: the host observes it (GH #1161).
-    @unbounded
     fn refusal(v: Verdict) -> String {
         if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
         let why = self.standing_refusal(v);
@@ -428,7 +421,6 @@ locus Review {
     // #1123), or — where the route left a path to it — one claiming the
     // required authority. A verdict counts toward every requirement it
     // meets.
-    @unbounded
     fn standing_refusal(v: Verdict) -> String {
         let as_authority = authority_satisfies(v.authority, self.required_authority);
         if len(self.signers) == 0 {
@@ -441,7 +433,6 @@ locus Review {
     // Whether an admitted `v` settles the Review: anything but an
     // abstention or an approval settles it; an approval does once every
     // required position and every gate is in.
-    @unbounded
     fn settles_with(v: Verdict) -> Bool {
         if v.verdict == "abstain" { return false; }
         if v.verdict != "approve" { return true; }
@@ -451,14 +442,12 @@ locus Review {
         return words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced) && (!self.fallback || authority);
     }
     // An admitted verdict's standing and evidence, kept.
-    @unbounded
     fn note(v: Verdict) {
         self.evidenced = self.observed_gates();
         if v.verdict != "approve" { return; }
         self.signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
         if self.fallback && authority_satisfies(v.authority, self.required_authority) { self.authority_signed = true; }
     }
-    @unbounded
     fn command_settles(v: Verdict) -> Bool { return self.settles_with(v); }
     // The exact append is the decision. No live state changes before it. On
     // an ambiguous error, re-read the same identity before reporting nothing;
@@ -546,7 +535,6 @@ locus Review {
         return true;
     }
     // What the approval that settled it gathered, said.
-    @unbounded
     fn approvals() -> String {
         let mut out = "";
         if len(self.signers) > 0 { out = "every required position approved: " + self.signed; }
@@ -556,7 +544,6 @@ locus Review {
     fn verdict_count() -> Int { return self.verdicts.len(); }
     // GH #1089: what an approval still waits for — the required positions
     // not in, the gates with no passing run observed — "" when nothing.
-    @unbounded
     fn awaiting() -> String {
         let mut out = "";
         let mut i = 0;

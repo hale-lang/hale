@@ -100,7 +100,6 @@ main locus App {
     }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
     fn on_plan_request(p: dna::PlanRequest) { self.plan_requests = self.plan_requests + 1; }
-    @unbounded
     fn count(list: String, item: String) -> Int {
         let mut n = 0;
         let mut rest = list;
@@ -111,7 +110,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let j = self.dna.journal;
         let moved = j.refresh();
@@ -124,7 +122,6 @@ main locus App {
         }
         return n;
     }
-    @unbounded
     fn body_of(kind: String, entity: String) -> String {
         let j = self.dna.journal;
         let moved = j.refresh();
@@ -150,7 +147,6 @@ main locus App {
         }
     }
     // a wait that runs out is a failure, never a silence (card 19)
-    @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
         while i < 1500 {
@@ -208,7 +204,6 @@ main locus App {
             genome_seed: "."
         };
     }
-    @unbounded
     fn until_attempt_kind(attempt_id: String) -> String {
         let mut tries = 0;
         while tries < 400 {

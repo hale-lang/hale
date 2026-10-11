@@ -47,7 +47,6 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
 // projector is already past ends this pass (`yielded`), having written
 // nothing; a row whose effects fail lands nothing, and the next pass
 // begins it again. Bounded by the record.
-@unbounded
 fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
     return apply_record_to(store, j, receipts, j.revision(), "", "local", NoAuthors { });
 }
@@ -275,7 +274,6 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
 }
 
 // The row that proposed `digest`, before row `i` (`i` when none did).
-@unbounded
 fn proposed_at(j: dna::Journal, digest: String, i: Int) -> Int {
     let mut k = 0;
     while k < i {
@@ -378,7 +376,6 @@ fn hold_person(holder: String) -> Bool {
 // Whether `holder` is a person the record knew before row `i` (GH #1087
 // review, G4): an organization's member (GH #1123), or who wrote a row in
 // their own name — never a name the organism writes as.
-@unbounded
 fn hold_known(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, holder: String) -> Bool {
     if !hold_person(holder) { return false; }
     if store.org_member(holder) { return true; }
@@ -446,7 +443,6 @@ fn refusal_written(j: dna::Journal, kind: String, entity: String, row: Int, body
 }
 
 // Whether the record redacted `digest` (GH #606).
-@unbounded
 fn redacted_in(j: dna::Journal, digest: String) -> Bool {
     let mut i = 0;
     while i < j.revision() {
@@ -731,7 +727,6 @@ locus MemoryProjection {
     }
     // The rows from `from` to `to` a reader refuses (GH #1026): their
     // digests, one per line, each said once on stderr.
-    @unbounded
     fn refused(from: Int, to: Int) -> String {
         let trust = self.j.record.setting("trust");
         if trust != "signed" { return ""; }
@@ -749,7 +744,6 @@ locus MemoryProjection {
         return out;
     }
     // The rows this pass projects: the record's, or up to `until`.
-    @unbounded
     fn extent() -> Int {
         if len(self.until) == 0 { return self.j.revision(); }
         let mut i = self.j.revision();

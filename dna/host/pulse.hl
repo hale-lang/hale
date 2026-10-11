@@ -48,7 +48,6 @@ type Landing {
 
 // An id or a name as a row's entity carries it: letters, digits and
 // `-_.:`, at most 128 bytes.
-@unbounded
 fn reading_token(s: String) -> Bool {
     if len(s) == 0 || len(s) > 128 { return false; }
     let mut i = 0;
@@ -83,7 +82,6 @@ fn reading_of(subject: String, prefix: String, body: String) -> Reading {
 fn reading_entity(r: Reading) -> String { return r.app + "/" + r.event + "/" + r.id; }
 
 // Whether `entity`'s reading is in the organism's memory.
-@unbounded
 fn reading_landed(p: Projection, entity: String) -> Bool {
     let mut i = p.rows() - 1;
     while i >= 0 {
@@ -144,7 +142,6 @@ const CONCERN_EVENT: String = "concern.raised";
 // (letters, digits and `-_.`), at most 128 bytes, one of them the
 // application whose subject it came on — an application speaks for its
 // own parts, never another's. "" when it is not one.
-@unbounded
 fn concern_source(source: String, app: String) -> String {
     if len(source) == 0 || len(source) > 128 { return ""; }
     let mut named = false;
