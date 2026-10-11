@@ -319,6 +319,29 @@ fn a_wildcard_subscription_judges_the_wires_it_covers() {
 }
 
 #[test]
+fn a_topic_address_spelled_with_a_wildcard_is_still_a_route() {
+    // The reviewer's control: the topic's own subject is
+    // `pay.inner.**`. The bus delivers a send to it on `pay.**`, so it
+    // is a route of the group — not a pattern's remainder to skip.
+    let src = WILD
+        .replace("\"pay.event\"", "\"pay.inner.**\"")
+        .replace("SUB", "pay.**")
+        .replace("SEND", "or discard");
+    for claim in [GROUP, TOPIC] {
+        let src = src.replace("CLAIM", claim);
+        let ds = claim_diags(&src);
+        assert_eq!(ds.len(), 1, "{claim}: {:?} {:?}", ds, diags(&src));
+        assert!(ds[0].contains("violated"), "{}", ds[0]);
+        assert!(
+            ds[0].contains("send in `App::run` on `Payments`"),
+            "{}",
+            ds[0]
+        );
+        assert!(ds[0].contains("`or discard`"), "{}", ds[0]);
+    }
+}
+
+#[test]
 fn a_wildcard_subscription_finds_a_swallowing_topic_under_it() {
     let src = wild("pay.**", "", GROUP).replace("on_unmatched: fail;", "");
     let ds = claim_diags(&src);

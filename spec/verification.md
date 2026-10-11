@@ -354,9 +354,10 @@ The remaining verbs (#382 phases 2–5):
   modeled boundary on a named route is configured to discard
   silently. A route is a wire subject; `all G` takes every route a
   member publishes or subscribes (a group touching none is an error);
-  a wildcard endpoint contributes every modeled wire its pattern
-  covers (`wildcard_match`) plus the pattern itself for the
-  unmodeled remainder, and on a pattern route endpoints and holes
+  a wildcard endpoint contributes every modeled address its pattern
+  matches (`wildcard_match`, the address read as literal send text —
+  a topic, send or binding address spelled with `**` included) plus
+  the pattern itself for the unmodeled remainder, and on a pattern route endpoints and holes
   are matched by subject-set overlap. Read from the model at every boundary on the route: the topic's
   `on_unmatched: swallow`, a subscription's `drop_old` / `drop_new`
   shed policy, a send's `or discard`, a binding whose loss behavior

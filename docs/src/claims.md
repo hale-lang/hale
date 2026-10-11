@@ -547,10 +547,13 @@ group still sits on the route.
 
 A **wildcard endpoint** is a route for every wire it covers. A group
 member subscribing `"pay.**"` (or declaring `publish "pay.**"`)
-brings in each modeled subject under the pattern — `pay.event`'s
+brings in each modeled address the pattern matches — `pay.event`'s
 topic policy, its sends and its bindings are judged as if the member
 had named it — and the pattern itself, for the remainder no modeled
-endpoint names. Subjects match the way the bus matches them.
+endpoint names. Addresses match the way the bus matches them: an
+address is the literal text a send carries, so a topic whose own
+subject is spelled `"pay.inner.**"` is a wire under `"pay.**"` and is
+judged like any other.
 
 | boundary | setting read | silent when |
 |---|---|---|

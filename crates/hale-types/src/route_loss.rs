@@ -25,9 +25,11 @@
 //! send on the route waits.
 //!
 //! A wildcard endpoint is a route for every wire it covers: a group
-//! subscribing `pay.**` is judged on each modeled subject under the
-//! pattern (its topics, sends and bindings), and on the pattern
-//! itself for the remainder no modeled endpoint names.
+//! subscribing `pay.**` is judged on each modeled address the
+//! pattern matches as the bus does (its topics, sends and bindings —
+//! an address spelled with `**`, like a topic on `pay.inner.**`,
+//! included), and on the pattern itself for the remainder no modeled
+//! endpoint names.
 //!
 //! A publisher the model could not resolve is missing route
 //! evidence: a computed send (`subj <- v`) whose locus's declared
@@ -286,11 +288,12 @@ pub fn judge(
 ///
 /// A wildcard endpoint (`subscribe "pay.**"`, a declared `publish
 /// "pay.**"`) is a route for EVERY wire it covers: each modeled
-/// subject under the pattern joins the set, so the topics, sends and
-/// bindings on those wires are judged. The pattern itself stays in
-/// the set for the remainder no modeled endpoint names — what can
-/// arrive there is only unresolved publishers, which `judge` asks
-/// about by overlap.
+/// subject the pattern matches joins the set — a concrete one, or a
+/// topic's, send's or binding's address even when it is spelled with
+/// `**` — so the topics, sends and bindings on those wires are
+/// judged. The pattern itself stays in the set for the remainder no
+/// modeled endpoint names — what can arrive there is only unresolved
+/// publishers, which `judge` asks about by overlap.
 pub fn group_routes(
     model: &ApplicationModel,
     loci: &BTreeSet<u32>,
@@ -319,22 +322,36 @@ pub fn group_routes(
             out.insert(su.subject);
         }
     }
-    let subjects = &model.entities.subjects;
+    // The ADDRESSES a message is sent to: a topic's subject, a
+    // send's, a binding's. One may be spelled with `**` (a topic on
+    // `pay.inner.**`) and is still a wire the bus delivers on — a
+    // `pay.**` subscription receives it — so it is judged as a route,
+    // not mistaken for a pattern's remainder.
+    let e = &model.entities;
+    let addresses: BTreeSet<SubjectId> = e
+        .topics
+        .iter()
+        .map(|t| t.subject)
+        .chain(r.publishes.iter().map(|p| p.subject))
+        .chain(e.bindings.iter().map(|b| b.subject))
+        .collect();
     let patterns: Vec<&str> = out
         .iter()
-        .map(|s| subjects[s.index()].pattern.as_str())
+        .map(|s| e.subjects[s.index()].pattern.as_str())
         .filter(|p| p.contains("**"))
         .collect();
-    let covered: Vec<SubjectId> = subjects
+    let covered: Vec<SubjectId> = e
+        .subjects
         .iter()
         .enumerate()
-        .filter(|(_, row)| {
-            !row.pattern.contains("**")
-                && patterns
-                    .iter()
-                    .any(|p| crate::wildcard_match(p, &row.pattern))
+        .map(|(i, row)| (SubjectId(i as u32), row.pattern.as_str()))
+        .filter(|(id, spelled)| {
+            (!spelled.contains("**") || addresses.contains(id))
+                // The bus's match: the address is the literal text a
+                // send carries, tested against the endpoint's pattern.
+                && patterns.iter().any(|p| crate::wildcard_match(p, spelled))
         })
-        .map(|(i, _)| SubjectId(i as u32))
+        .map(|(id, _)| id)
         .collect();
     out.extend(covered);
     out
