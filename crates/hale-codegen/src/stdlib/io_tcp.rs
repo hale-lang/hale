@@ -87,6 +87,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         label: &str,
         with_fd: bool,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_local_port(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_io_tcp_io_error_kind(
         &mut self,
         args: &[Expr],
@@ -788,6 +793,36 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let v = self
             .builder
             .build_call(f, &call_args, &format!("tcp.{label}"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// `std::io::tcp::__local_port(fd) -> Int`: the bound port
+    /// (`lotus_tcp_local_port`, getsockname), -1 for none.
+    fn lower_std_io_tcp_local_port(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__local_port takes 1 arg, got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__local_port: fd must be Int, got {fd_ty:?}"
+            )));
+        }
+        let f = self.module.get_function("lotus_tcp_local_port").expect("lotus_tcp_local_port declared");
+        let v = self
+            .builder
+            .build_call(f, &[fd_val.into()], "tcp.local_port")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()

@@ -17878,6 +17878,18 @@ int64_t lotus_tcp_listener_name(const char *name, int64_t fd) {
 
 int lotus_tcp_shutdown_listen_socket(int fd);
 
+/* `std::io::tcp::__local_port(fd)`: the port a socket is bound to (what a
+ * port-0 bind was given), -1 when it has none. A listener's default name
+ * is its host and this port, so two port-0 listeners are two names. */
+int64_t lotus_tcp_local_port(int64_t fd) {
+    if (fd < 0) return -1;
+    struct sockaddr_in a;
+    socklen_t len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    if (getsockname((int)fd, (struct sockaddr *)&a, &len) != 0) return -1;
+    return (int64_t)ntohs(a.sin_port);
+}
+
 /* `std::io::tcp::stop(name)`: shut the named listener's socket down (its
  * accept returns, its loop ends). 1 when a listener had the name. */
 int64_t lotus_tcp_listener_stop(const char *name) {

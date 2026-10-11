@@ -16,6 +16,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
@@ -224,4 +225,149 @@ fn the_replicas_run_clean_under_asan() {
     }
     assert!(status.success(), "{status:?}\n{stderr}");
     let _ = std::fs::remove_file(&bin);
+}
+
+// Two servers on ephemeral ports, pinned, with no name given (review of
+// #1508): each default name is its bound address, so each consumer takes
+// its own server's connections only. NAMES are the two `name` params, or
+// none.
+const TWO_SERVERS: &str = r#"
+    locus Tag {
+        params { tag: String = ""; hits: Int = 0; }
+        fn handle(req: std::http::Request) -> std::http::Response {
+            self.hits = self.hits + 1;
+            return std::http::Response { status: 200, body: self.tag + " " + to_string(self.hits) };
+        }
+    }
+    main locus App {
+        params {
+            a: std::http::Server = std::http::Server { port: 0, handler: Tag { tag: "a" }NAME_A };
+            b: std::http::Server = std::http::Server { port: 0, handler: Tag { tag: "b" }NAME_B };
+        }
+        placement { a: pinned; b: pinned; }
+        on_failure(s: std::http::Server, err: ClosureViolation) {
+            println("refused " + err.closure);
+        }
+        run() {
+            println("ports " + to_string(std::io::tcp::__local_port(self.a.listen_fd)) + " " + to_string(std::io::tcp::__local_port(self.b.listen_fd)));
+            println("names " + self.a.name + " " + self.b.name);
+            while !self.draining { std::time::sleep(20ms); }
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+struct Pair {
+    child: Child,
+    ports: (i64, i64),
+    names: String,
+    refused: Option<String>,
+}
+
+impl Drop for Pair {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_pair(tag: &str, names: (&str, &str), expect_refusal: bool) -> Pair {
+    let src = TWO_SERVERS.replace("NAME_A", names.0).replace("NAME_B", names.1);
+    let bin = build(tag, &src);
+    let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let (mut ports, mut names, mut refused) = ((-1, -1), None::<String>, None);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    // the names line, and, when one is expected, the refusal (the
+    // supervisor hears it on its own schedule)
+    while Instant::now() < deadline && (names.is_none() || (expect_refusal && refused.is_none())) {
+        let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) else { continue };
+        if let Some(r) = l.strip_prefix("refused ") {
+            refused = Some(r.to_string());
+        } else if let Some(p) = l.strip_prefix("ports ") {
+            let v: Vec<i64> = p.split(' ').map(|x| x.parse().unwrap()).collect();
+            ports = (v[0], v[1]);
+        } else if let Some(n) = l.strip_prefix("names ") {
+            names = Some(n.to_string());
+        }
+    }
+    let _ = std::fs::remove_file(&bin);
+    Pair { child, ports, names: names.expect("the program printed its names"), refused }
+}
+
+/// The process's listening sockets: its socket descriptors whose inode
+/// `/proc/<pid>/net/tcp` lists in the LISTEN state (`0A`).
+fn listening(pid: u32) -> usize {
+    let inodes: BTreeSet<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| std::fs::read_link(e.path()).ok())
+                .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
+    table
+        .lines()
+        .skip(1)
+        .filter(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.len() > 9 && f[3] == "0A" && inodes.contains(f[9])
+        })
+        .count()
+}
+
+/// Every request to `port` is answered by the handler tagged `tag`, in
+/// order: no other consumer takes a connection of this server.
+fn answered_by(port: i64, tag: &str, n: usize) {
+    for i in 1..=n {
+        let got = get(port as u16).map(|(_, b)| b);
+        assert_eq!(got.as_deref(), Some(format!("{tag} {i}").as_str()), "request {i} to {port}");
+    }
+}
+
+#[test]
+fn two_ephemeral_servers_have_their_own_names_and_their_own_connections() {
+    let p = start_pair("tcp_substrate_two_ephemeral", ("", ""), false);
+    assert!(p.refused.is_none(), "{:?}", p.refused);
+    let (a, b) = p.ports;
+    assert!(a > 0 && b > 0 && a != b, "two bound ports: {a} {b}");
+    assert_eq!(p.names, format!("127.0.0.1:{a} 127.0.0.1:{b}"), "each default name is its bound address");
+    // interleaved, so a shared route would hand one server's connection
+    // to the other's handler
+    for i in 1..=5 {
+        assert_eq!(get(a as u16).map(|(_, b)| b), Some(format!("a {i}")));
+        assert_eq!(get(b as u16).map(|(_, b)| b), Some(format!("b {i}")));
+    }
+    assert_eq!(listening(p.child.id()), 2, "two listening sockets");
+}
+
+#[test]
+fn an_explicit_name_another_listener_holds_fails_at_birth_with_its_socket_closed() {
+    let p = start_pair("tcp_substrate_dup_name", (", name: \"dup\"", ", name: \"dup\""), true);
+    assert_eq!(p.refused.as_deref(), Some("name_taken"), "the second server's birth is the violation");
+    // the refused server's socket is closed: of the two ports bound at
+    // instantiation, one answers and the other refuses the connection
+    let (a, b) = p.ports;
+    let answers = |port: i64| TcpStream::connect(("127.0.0.1", port as u16)).is_ok();
+    assert!(answers(a) != answers(b), "exactly one of {a} {b} listens");
+    let (live, tag) = if answers(a) { (a, "a") } else { (b, "b") };
+    answered_by(live, tag, 3);
+    assert_eq!(listening(p.child.id()), 1, "the refused server's socket is closed");
+}
+
+#[test]
+fn distinct_explicit_names_both_serve() {
+    let p = start_pair("tcp_substrate_distinct_names", (", name: \"one\"", ", name: \"two\""), false);
+    assert!(p.refused.is_none(), "{:?}", p.refused);
+    assert_eq!(p.names, "one two");
+    answered_by(p.ports.0, "a", 3);
+    answered_by(p.ports.1, "b", 3);
+    assert_eq!(listening(p.child.id()), 2);
 }

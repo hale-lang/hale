@@ -121,8 +121,10 @@ https requests, `std::process::run`, file reads hold the pool's one
 thread, and with it every request. `hale check` warns about a
 blocking call reachable from an `async_io` locus.
 
-To stop the server from another locus, give it a `name` and call
-`std::io::tcp::stop(name)` — a plain function, so it works from any
+To stop the server from another locus, give it a `name` (unique in
+the process: a name another server holds fails the second one at
+birth; without one, the name is `127.0.0.1:<the port it bound>`) and
+call `std::io::tcp::stop(name)` — a plain function, so it works from any
 pool (calling `self.web.shutdown()` from `App`'s pool is refused: a
 method call may not cross pools). Stopping ends the accept and lets
 the requests already accepted finish: the server's `run()` returns once

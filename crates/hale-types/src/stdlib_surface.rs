@@ -870,6 +870,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__on_pool", PURE, [] -> Int, Intrinsic(IoTcpOnPoolRaw)),
             // A listener's name, its address in the process for `stop`.
             row!("__name_listener", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpNameListenerRaw)),
+            row!("__local_port", SYSCALL, [Int] -> Int, Intrinsic(IoTcpLocalPortRaw)),
             row!("__stop_listener", SYSCALL, [Str] -> Int, Intrinsic(IoTcpStopListenerRaw)),
             row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Str, Intrinsic(IoTcpRecvRaw)),
             row!("__recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTcpRecvBytesRaw)),
@@ -1567,6 +1568,7 @@ pub enum IntrinsicId {
     IoTcpOnPoolRaw,
     IoTcpNameListenerRaw,
     IoTcpStopListenerRaw,
+    IoTcpLocalPortRaw,
     IoTcpRecvRaw,
     IoTcpRecvBytesRaw,
     IoTcpSendRaw,

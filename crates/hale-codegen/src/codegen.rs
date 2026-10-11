@@ -26747,6 +26747,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpStopListenerRaw => {
                 self.lower_std_io_tcp_named_listener(args, scope, "lotus_tcp_listener_stop", "__stop_listener", false)
             }
+            Id::IoTcpLocalPortRaw => self.lower_std_io_tcp_local_port(args, scope),
             Id::IoTcpIoErrorKindRaw => {
                 self.lower_std_io_tcp_io_error_kind(args, scope)
             }
@@ -27659,6 +27660,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpOnPoolRaw
             | Id::IoTcpNameListenerRaw
             | Id::IoTcpStopListenerRaw
+            | Id::IoTcpLocalPortRaw
             | Id::IoTcpRecvBytesRaw
             | Id::IoTcpRecvInto
             | Id::IoTcpRecvRaw
