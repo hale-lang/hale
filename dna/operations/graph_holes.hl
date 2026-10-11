@@ -88,7 +88,8 @@ locus HoleDoc {
         rows: String = "";
         error: String = "";
     }
-    @unbounded
+    // One proposal's rows: as many as the ingested graph gives its hole.
+    @bounded_by(graph)
     fn row(kind: String, entity: String, body: String) {
         let g = if kind == "graph.node" { graph_node_row(entity, body) } else { graph_edge_row(entity, body) };
         if !g.ok && len(self.error) == 0 { self.error = "the hole `" + self.name + "` would write an invalid " + kind + ": " + g.why; }
@@ -181,7 +182,7 @@ fn hole_mandate(name: String, text: String) -> String {
 
 // The `<a>\t<b>` lines of `pairs` whose `<a>` is `key`: their `<b>`s, one
 // per line.
-@unbounded
+@bounded_by(pairs)
 fn hole_seconds(pairs: String, key: String) -> String {
     let mut out = "";
     let mut rest = pairs;
@@ -268,8 +269,9 @@ fn hole_kind(part: String) -> String { return if std::str::starts_with(part, "se
 // Every hole of the graph an ingest read, as proposals in the order the
 // org chart lists them: the board, each part's positions, each
 // deployment's, then the work, then the practices. `roles` is the project's
-// opt-in operational roles, space-separated ("" for none).
-@unbounded
+// opt-in operational roles, space-separated ("" for none). One proposal,
+// and its rows, per hole of the graph `g` it walks whole.
+@bounded_by(g)
 fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
     let mut out = HolesAnswer { };
     let mut docs = "";

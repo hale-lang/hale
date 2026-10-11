@@ -64,8 +64,9 @@ locus NoAuthors { fn author_of(i: Int) -> String { return ""; } }
 // projected. `trust` is the record's `dna.trust` (`local` unless it says
 // otherwise): what a ratified hold that breaks the same-holder rule is
 // under it — a warning, or not projected. `authors` says who wrote each
-// row: a holder is a person the record knows.
-@unbounded
+// row: a holder is a person the record knows. The tallies grow by the
+// rows of `j` it applies.
+@bounded_by(j)
 fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, n: Int, refused: String, trust: String, authors: RowAuthors) -> ProjectionApplied {
     let mut out = ProjectionApplied { watermark: store.watermark() };
     let mut i = out.watermark;
@@ -92,8 +93,9 @@ fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::R
     return out;
 }
 
-// One record row's effects on the graph, inside the row's transaction.
-@unbounded
+// One record row's effects on the graph, inside the row's transaction:
+// what its body names, and for a retirement the seats its person held.
+@bounded_by(e)
 fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int, trust: String, authors: RowAuthors) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
     // GH #1026: the org chart the Ledger's gate checks — a person the
@@ -290,7 +292,7 @@ fn proposed_at(j: dna::Journal, digest: String, i: Int) -> Int {
 // the gate): a retired holder is not projected; a holder of the process's
 // other seat is a warning under `dna.trust = local` and not projected under
 // any other trust.
-@unbounded
+@bounded_by(rows)
 fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAuthors, rows: String, seq: Int, i: Int, trust: String) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
     if !std::str::starts_with(rows, "[") { out.error = "a ratified graph proposal carries no rows (row " + to_string(i) + ")"; return out; }
@@ -422,8 +424,9 @@ fn graph_row_refused(j: dna::Journal, kind: String, entity: String, why: String,
 
 // A refusal row, appended once: "" when the record holds it (already, or
 // now), else why it could not be appended. `row` >= 0 keys the refusal by
-// the row it was at too; a race with another writer is retried.
-@unbounded
+// the row it was at too; a race with another writer is retried, five
+// times, each a scan of the journal `j`.
+@bounded_by(j)
 fn refusal_written(j: dna::Journal, kind: String, entity: String, row: Int, body: String) -> String {
     let mut tries = 0;
     while tries < 5 {

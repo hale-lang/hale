@@ -322,8 +322,10 @@ locus GovernanceCommands {
     }
     // GH #1162: why `person` may not act as `holder`'s position, "" when
     // they may — a record that declares `dna.trust = local` is its one
-    // person's, and otherwise the graph's holds say who holds what.
-    @unbounded
+    // person's, and otherwise the graph's holds say who holds what. The
+    // holds are read whole from `rj`, again only when its revision moved,
+    // by a reader that lives for one command's attempts.
+    @bounded_by(rj)
     fn seat_refusal(rj: dna::RoutedJournal, person: String, holder: String) -> String {
         // the trust is the record's config, not a row: asked each time
         if dna::record_trust_local(self.record.location()) { return ""; }
@@ -643,7 +645,8 @@ locus GovernanceCommands {
     }
     // At most eight attempts, each holding a bounded snapshot until this call
     // returns. This lifetime deliberately keeps its policy/query basis pinned.
-    @unbounded
+    // One journal and its codecs per attempt, freed when it returns.
+    @bounded_by(self.limits.attempts)
     fn execute(context: GovernanceContext, command: GovernanceCommand, recovery: Bool) -> GovernanceResult {
         let codec = GovernanceCommandCodec { };
         if len(codec.identity(context, command.request_id)) == 0 || (!recovery && !self.command_valid(context, command)) { return GovernanceResult { code: "invalid_command" }; }
