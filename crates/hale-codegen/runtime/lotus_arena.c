@@ -17341,7 +17341,11 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * its connections concurrently, and a burst of clients larger than
      * the backlog lost SYNs to the kernel and paid TCP's 1 s retransmit
      * (50 concurrent requests took 2 s instead of 1). The kernel clamps
-     * the value to net.core.somaxconn. */
+     * the value to net.core.somaxconn. WASI's headers declare no
+     * SOMAXCONN; there the backlog takes Linux's long-standing 128. */
+#ifndef SOMAXCONN
+#define SOMAXCONN 128
+#endif
     if (listen(sock, SOMAXCONN) < 0) {
         perror("lotus_tcp_listen_socket: listen");
         close(sock);
