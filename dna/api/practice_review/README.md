@@ -116,6 +116,19 @@ can look up a key that never landed and read `command_not_found` instead of a
 denial. See the [API README](../README.md#raising-work) for the wire shape and
 the row it writes.
 
+## The structure needs a seat, not a policy
+
+This head also supports the structure (`dna/operations/structure_command.hl`):
+`dna.position.open@1`, `dna.hold.fill@1` and `dna.batch.apply@1`, the
+surface's `Commands::open_position`, `Commands::fill` and
+`Commands::apply_batch`. They take no grant from a policy file either: the
+surface's `requires: [position]` is the gate, and what the change may be is
+the organization's to propose and the Board's to decide. Each writes the rows
+its CLI verb writes, at the `record_head` it was prepared against; a batch's
+rows land together through the Record it was composed with
+(`structure_record`). Like raising work, they are `commands_unsupported` once
+the Record's ledger is adopted. See the [API README](../README.md#commands).
+
 ## The same operations from the CLI
 
 The source-built host uses this same policy and native command service for

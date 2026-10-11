@@ -139,14 +139,41 @@ the socket and over HTTP:
 | --- | --- | --- |
 | `owner` | a holder of `position:board` | `propose_organization`, `reassign_task`, `retire_person` |
 | `reviewer` | a holder of `position:reviewer` | `verdict` |
-| `position` | a holder of any live position | `propose`, the attempt rows (`claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance`), `file_friction`, the `*_knowledge` changes |
-| none | any person the head can name | `create_task`, `lookup`, `lookup_knowledge` |
+| `position` | a holder of any live position | `propose`, the attempt rows (`claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance`), `file_friction`, the `*_knowledge` changes, the structure (`open_position`, `fill`, `apply_batch`) |
+| none | any person the head can name | `create_task`, `lookup`, `lookup_knowledge`, `preview_batch` |
 
 Over HTTP a command is `POST /call/<member>` on the commands port, under
 the caller's bearer. A browser holds a session, not a bearer: the
 head that serves the page relays its `POST …/commands` with the
 session's token, after checking what a cookie needs (the exact
 `Origin`, `X-Hale-Command: 1`, a JSON body).
+
+**Every mutation is a head command; the UI is a client** of the
+generated surface. A change to the organization's structure made from a
+UI is not a second code path: `open_position`, `fill` and `apply_batch`
+write exactly the rows `hale dna position open`, `hale dna fill` and
+`hale dna apply` write, in the caller's name, and refuse what those verbs
+refuse, with the same words. The organization answers the rows whoever
+sent them, and the Board decides through `verdict`. `vacate` is a
+one-step batch (`vacate <position> <holder>`). Each takes the Record's
+`head` it was prepared against as `record_head`, and a moved Record is
+`stale_subject`. `preview_batch` is a read: the batch planned against
+the head, not proposed, as data (the org chart's lines before and after,
+and those it adds, takes out and keeps), so a UI shows the change, then
+applies it at the head the preview names:
+
+```text
+preview_batch { steps }            → { ok, why, head, before, after, added, removed, unchanged, pending }
+apply_batch { request_id, record_head: head, steps, pack: "" }
+                                   → receipt.structure { state: requested, request_id, review_id, … }
+```
+
+The receipt's `structure` reads `requested` until the organization
+answers, then `proposed` (with the Review) or `refused` (with why); the
+same steps still pending answer `already_proposed`, naming their Review.
+The clients are generated from the surface (`hale api client --surface
+HeadCommands`); the legs' Hale client is committed in
+`dna/core/legs/head_commands`.
 
 A command is one act per request id. Its receipt names the command and
 request ids, the operation, the principal (`principal_mode`,

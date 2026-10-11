@@ -43,6 +43,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod pack;
+
 /// The record (GH #566 F1): one commit per event on this ref, the events as
 /// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
 const RECORD_REF: &str = "refs/dna/journal";
@@ -380,9 +382,54 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     match args.first().map(String::as_str) {
         Some("init") => {
-            // the directory is the first argument that is not a flag
-            let dir = args[1..].iter().find(|a| !a.starts_with("--")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-            report(init(&dir, !args.iter().any(|a| a == "--no-library")))
+            // the directory is the first argument that is neither a flag nor
+            // a flag's value; `--with <pack> [--set <param>=<value>]…` then
+            // proposes a pack from the toolchain's nursery as one batch
+            let mut dir = None;
+            let mut with = None;
+            let mut sets = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--with" | "--set" => {
+                        let Some(v) = args.get(i + 1) else {
+                            eprintln!("hale dna init: `{}` takes a value\nusage: hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]", args[i]);
+                            return ExitCode::from(2);
+                        };
+                        if args[i] == "--with" { with = Some(v.clone()) } else { sets.push(v.clone()) }
+                        i += 2;
+                    }
+                    a if a.starts_with("--") => i += 1,
+                    a => {
+                        dir.get_or_insert_with(|| PathBuf::from(a));
+                        i += 1;
+                    }
+                }
+            }
+            if with.is_none() && !sets.is_empty() {
+                eprintln!("hale dna init: `--set` sets a pack's parameter; name the pack with `--with <pack>`");
+                return ExitCode::from(2);
+            }
+            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+            match init(&dir, !args.iter().any(|a| a == "--no-library")) {
+                Ok(lines) => {
+                    for l in lines {
+                        println!("{l}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("hale dna: {e}");
+                    return ExitCode::from(1);
+                }
+            }
+            let Some(pack) = with else { return ExitCode::SUCCESS };
+            let mut pack_args = vec!["apply".to_string(), pack];
+            for v in sets {
+                pack_args.push("--set".to_string());
+                pack_args.push(v);
+            }
+            pack_args.push(dir.to_string_lossy().to_string());
+            pack::pack_cmd(&pack_args)
         }
         Some("new") => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
@@ -658,8 +705,49 @@ pub fn run(args: &[String]) -> ExitCode {
         // a holder asked of the organization, which proposes it to the Board
         // the repository's graph read again at a commit, its difference proposed
         Some("ingest") => ingest_cmd(&args[1..]),
+        // packs from a nursery: `hale dna pack list | show | apply <name>`
+        Some("pack") => pack::pack_cmd(&args[1..]),
+        // the nurseries the Board trusts: `hale dna nursery add <source> | list`
+        Some("nursery") => pack::nursery_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
+        // a holder leaves a position, as a one-step batch:
+        // `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`
+        Some("vacate") => host_exec("vacate", Path::new("."), &args[1..]),
+        // several changes to the structure as one Board Review:
+        // `hale dna apply <file> [--dry-run] [--as <who>]`; the file is read
+        // by the host, so it goes as an absolute path
+        Some("apply") => {
+            let mut forwarded = Vec::new();
+            let mut file = None;
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--as" {
+                    forwarded.push(a.clone());
+                    if let Some(v) = rest.next() {
+                        forwarded.push(v.clone());
+                    }
+                } else if a == "--dry-run" {
+                    forwarded.push(a.clone());
+                } else if a.starts_with('-') {
+                    eprintln!("hale dna apply: `{a}` is not a flag of apply (--dry-run, --as)\nusage: hale dna apply <file> [--dry-run] [--as <who>]");
+                    return ExitCode::from(2);
+                } else if file.is_none() {
+                    file = Some(a.clone());
+                } else {
+                    eprintln!("hale dna apply: one batch file at a time\nusage: hale dna apply <file> [--dry-run] [--as <who>]");
+                    return ExitCode::from(2);
+                }
+            }
+            let Some(file) = file else {
+                eprintln!("usage: hale dna apply <file> [--dry-run] [--as <who>]");
+                return ExitCode::from(2);
+            };
+            let path = std::fs::canonicalize(&file).unwrap_or_else(|_| PathBuf::from(&file));
+            let mut words = vec![path.to_string_lossy().to_string()];
+            words.extend(forwarded);
+            host_exec("apply", Path::new("."), &words)
+        }
         Some("fill") => {
             let mut words = Vec::new();
             let mut forwarded = Vec::new();
@@ -889,7 +977,7 @@ fn print_embedded_provenance(dir: &Path) {
 }
 
 fn usage(code: u8) -> ExitCode {
-    eprintln!("usage: hale dna init [app-dir] [--no-library]");
+    eprintln!("usage: hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]");
     eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
     eprintln!("                                    nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the library, not the practices)");
     eprintln!("       hale dna new <name> [--no-library]");
@@ -932,6 +1020,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    read the repository's graph again at a commit (HEAD): what differs from the record, tools");
     eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
     eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("       hale dna apply <file> [--dry-run] [--as <who>]");
+    eprintln!("       hale dna vacate <position> <holder> [--dry-run] [--as <who>]");
+    eprintln!("       hale dna pack list | show <name> | apply <name> [--set <param>=<value>]… [--from <dir|git-url[#rev]>] [--dry-run]");
+    eprintln!("       hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] | list");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");

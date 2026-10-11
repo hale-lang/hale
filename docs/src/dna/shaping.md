@@ -513,6 +513,117 @@ Ratifying it ratifies both. A name the graph already states, or one
 asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
 holder.
 
+### Changing several things at once
+
+A team is several positions and the people who hold them. Opening and
+filling each one is a Review apiece; a **batch** proposes them all as one,
+and the Board decides it once. Write the steps in a file:
+
+```text
+# the api team
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/dev ada
+fill api/reviewer bo
+```
+
+and read what it would do before proposing it:
+
+```sh
+hale dna apply team.batch --dry-run
+```
+
+```text
++ position position:api/dev
++ mandate position:api/dev
++ position position:api/reviewer
++ mandate position:api/reviewer
++ holds position:api/dev ada
++ holds position:api/reviewer bo
+6 line(s) added to the organization, 0 unchanged
+nothing proposed (--dry-run)
+```
+
+A step may also take a holder out: `vacate api/dev ada`. On its own,
+`hale dna vacate api/dev ada` proposes that one step the same way; the
+position stays, and the hold goes once the Board ratifies it.
+
+Without `--dry-run`, `apply` proposes it as one Review, listed under
+`changes`; `hale dna review changes approve` ratifies every step of it
+together. A batch is checked whole before anything is written: a fill
+of a position nobody opens, a position opened twice, an `under` naming
+nothing, and the batch is refused with the step that is wrong. The
+order of the steps does not matter. If the organization changed before
+the Board decides, so that the batch no longer applies (one of its
+positions was opened meanwhile), approving it refuses it whole, and
+nothing of it lands: propose it again against the organization as it
+is.
+
+### Reshaping the organization
+
+The same file takes the operations that change a structure that exists:
+
+```text
+assign api/reviewer reviews contract:spec/todo.md
+merge api/reviewer into api/dev          # holders and reviews carry over, then api/reviewer closes
+split api/dev into api/frontend api/backend
+close ops/oncall
+expose seed:billing as contract:spec/billing.md
+depend seed:web on contract:spec/billing.md
+externalize seed:billing                 # the part leaves; the organism depends on its contract
+internalize contract:spec/billing.md as seed:billing
+```
+
+Each is a step like `open` or `fill`, so several of them are one Review,
+and the dry run shows what they add and take out: `reviews` lines for
+what a position signs, `part` lines for the parts, `serves`, `consumes`
+and `outside` lines for who meets at a contract. A split starts both new
+positions from the old one's mandate, for the Board to amend. Closing a
+position takes its holders and reviews with it; the Board's position is
+never closed.
+
+### Packs
+
+A **pack** is a batch someone wrote once to be adopted many times, with
+blanks to fill: a dev team for a part, a small startup, a team that ships
+no code. Packs come from a **nursery**, a directory or a git repository
+with a `nursery.toml` index at its root; the toolchain carries one.
+
+```sh
+hale dna pack list
+hale dna pack show dev-team --set part=api
+hale dna pack apply dev-team --set part=api --set dev=ada --dry-run
+hale dna pack apply dev-team --set part=api --set dev=ada
+```
+
+`show` prints the steps with the blanks filled; `apply` proposes them as
+one Review, named for the pack, like any batch. A pack may open
+positions, fill them and propose the practices its people work by
+(`practice <name> | <text>` is a batch step too). A line marked `? ` is
+left out when a blank it uses is not given, so `--set dev=ada` fills the
+dev's seat and leaving out `reviewer` leaves that seat open. Another
+nursery is named with `--from`: a directory, or a git URL with `#<rev>`
+for the revision to read. A git nursery's packs are adopted only once
+the Board trusts it: `hale dna nursery add <url>` proposes that, and
+`hale dna nursery list` shows the ones it trusts. The Review records which pack it was, its
+digest and where it came from.
+
+`hale dna pack retire dev-team` undoes the latest adoption the Board
+ratified, as one more Review: the positions the pack opened close, the
+seats it filled and the reviews it assigned elsewhere are taken back,
+and its practices retire. Anything that has already gone is left out.
+
+### From the head's API
+
+The same changes are commands of the head, for a UI or any program: every
+mutation is a head command, and the UI is a client of the generated
+surface. `Commands::open_position`, `Commands::fill` and
+`Commands::apply_batch` write the rows `position open`, `fill` and `apply`
+write, in the caller's name; `Commands::preview_batch` is the dry run, as
+data. They need a seat (any position), and the organization answers them
+as it answers the CLI. [The head](./head.md#commands-and-their-receipts)
+has the shapes.
+
 ## How the organization grows
 
 The org chart grows the way the code does: by a proposal the Board
