@@ -141,6 +141,7 @@
     hidden.querySelector('span').textContent=[hiddenNodes?hiddenNodes+' '+(hiddenNodes===1?'entity':'entities'):'',hiddenEdges?hiddenEdges+' '+(hiddenEdges===1?'relationship':'relationships'):''].filter(Boolean).join(' and ')+' hidden by this view’s filters.';
     updateActivityOutline();
     renderActivityLog();
+    renderOperatorActivity();
   }
   function recordActivityEvent(event) {
     const now=new Date(), two=value=>String(value).padStart(2,'0');
@@ -296,7 +297,10 @@
     else if (button.hasAttribute('data-activity-seek')) {holdActivity();activityTrigger='Selected event';presentActivity(Number(button.dataset.activitySeek));}
     else if (button.hasAttribute('data-activity-inspect')) {openActivityInspector();return;}
     else if (button.hasAttribute('data-activity-reveal')) {graphFilters[currentPart]={};graphFocus=null;spatialHiddenDimensions=[];renderGraphWorkspace();}
-    else if (button.dataset.activityTarget) {graphSelection={kind:'node',id:button.dataset.activityTarget};inspector.close();renderGraphWorkspace();}
+    else if (button.dataset.activityTarget) {
+      if(operatorIsActive()) {openOperatorEvidence({part:currentPart,view:currentGraphView().id,node:button.dataset.activityTarget});return;}
+      graphSelection={kind:'node',id:button.dataset.activityTarget};inspector.close();renderGraphWorkspace();
+    }
     else if (button.hasAttribute('data-activity-clear-log')) {activityLog=activityLog.filter(entry=>activityIndex.get(entry.eventId)?.part!==currentPart);renderActivityLog();}
     else if (button.hasAttribute('data-activity-log-more')) {if(activityExpandedLogs.has(currentPart))activityExpandedLogs.delete(currentPart);else activityExpandedLogs.add(currentPart);renderActivityLog();}
     else if (button.dataset.activityLogEntry) {

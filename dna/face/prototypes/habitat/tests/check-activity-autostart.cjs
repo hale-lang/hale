@@ -48,6 +48,7 @@ function harness(part = 'nerves') {
       return { nodes: view.nodes, edges: view.edges.map(edge => ({ ...edge, id: [edge.from, edge.label, edge.to].join('::') })), primary: null };
     },
     renderGraphWorkspace() { ctx.ensureActivityScope(); ctx.renderActivityPanel(); },
+    renderOperatorActivity() {},
     console, Map, Set, Date, Math, JSON, Number, String, Array, Object,
   });
   vm.runInContext(engine, ctx);

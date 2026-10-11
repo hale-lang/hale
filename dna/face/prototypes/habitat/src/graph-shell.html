@@ -1,5 +1,14 @@
 <template id="graph-workbench-template">
   <div class="graph-workbench">
+    <div class="operator-modebar"><div class="operator-modes" role="group" aria-label="Page depth"><button type="button" data-page-depth="overview" aria-pressed="true">Overview</button><button type="button" data-page-depth="explore" aria-pressed="false">Explore graph</button></div><span>Sample snapshot · 09:42</span></div>
+    <section class="operator-overview" aria-label="Operator overview">
+      <div class="operator-brief"><p class="operator-question"></p><h2 class="operator-headline"></h2><p class="operator-summary"></p></div>
+      <div class="operator-checks" aria-label="Key facts"></div>
+      <div class="operator-main"><section class="operator-attention" aria-label="Next up"></section><section class="operator-context"><div class="operator-context-heading"><h3>Working context</h3><button type="button" class="activity-inspect" data-operator-full-graph>Explore →</button></div><div class="operator-map" aria-label="Focused relationships"></div><p class="operator-map-caption"></p></section></div>
+      <div class="operator-activity"><span class="operator-activity-status">Sample activity</span><button type="button" class="operator-activity-event" data-activity-inspect>Waiting for activity</button><button type="button" class="ui-button" data-operator-play>Pause</button><button type="button" class="activity-inspect" data-operator-log>Activity log →</button></div>
+      <p class="operator-footnote">A focused read of this sample. Open any fact or next step for its evidence.</p>
+    </section>
+    <div class="graph-explorer" hidden>
     <div class="graph-context"><span>Atlas <span aria-hidden="true">/</span> <span class="graph-context-part"></span></span><span class="graph-capture">Sample snapshot · 09:42</span></div>
     <div class="graph-toolbar">
       <div class="graph-perspectives" role="group" aria-label="Perspective"></div>
@@ -29,5 +38,6 @@
     <section class="graph-inspection" aria-label="Selection inspector" aria-live="polite"></section>
     <div class="graph-evidence-strip"><span class="graph-coverage"></span><span>Fixture · no live connection</span></div>
     <details class="graph-records"><summary>Supporting records &amp; controls</summary><div class="graph-record-content"></div></details>
+    </div>
   </div>
 </template>

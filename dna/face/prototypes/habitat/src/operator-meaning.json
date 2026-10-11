@@ -1,0 +1,349 @@
+{
+  "head": {
+    "question": "Did my request reach the organism, and what happens next?",
+    "headline": "Request recorded; work is waiting",
+    "summary": "The release checklist has a durable receipt. Spine has not admitted the work in this snapshot.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {
+        "label": "Session",
+        "value": "Riley · current",
+        "target": {
+          "part": "head",
+          "view": "authority",
+          "node": "session"
+        }
+      },
+      {
+        "label": "Request 104",
+        "value": "Receipt recorded",
+        "target": {
+          "part": "head",
+          "view": "receipts",
+          "node": "receipt-104"
+        }
+      },
+      {
+        "label": "Next stage",
+        "value": "Awaiting admission",
+        "target": {
+          "part": "head",
+          "view": "receipts",
+          "node": "spine"
+        }
+      }
+    ],
+    "focus": {
+      "view": "receipts",
+      "nodes": [
+        "request-104",
+        "receipt-104",
+        "intent-104",
+        "spine"
+      ],
+      "edges": [
+        "request-104::returned::receipt-104",
+        "request-104::recorded intent::intent-104",
+        "intent-104::awaits admission::spine"
+      ]
+    }
+  },
+  "face": {
+    "question": "Which workspace can I use, and what is it showing me?",
+    "headline": "Organism view available; delivery workspace is a sketch",
+    "summary": "Atlas owns this interface. Head supplies authorized reads and commands; arriving notices prompt a fresh read.",
+    "tone": "limited",
+    "attention": [],
+    "checks": [
+      {
+        "label": "Default workspace",
+        "value": "Organism view",
+        "target": {
+          "part": "face",
+          "view": "connections",
+          "node": "organism-view"
+        }
+      },
+      {
+        "label": "Application workspace",
+        "value": "Delivery · sketch",
+        "target": {
+          "part": "face",
+          "view": "connections",
+          "node": "application-view"
+        }
+      },
+      {
+        "label": "Data and commands",
+        "value": "Through Head",
+        "target": {
+          "part": "face",
+          "view": "connections",
+          "node": "head-api"
+        }
+      }
+    ],
+    "focus": {
+      "view": "connections",
+      "nodes": [
+        "face",
+        "head-api",
+        "organism-view",
+        "head-events"
+      ],
+      "edges": [
+        "face::calls through::head-api",
+        "face::presents::organism-view",
+        "head-events::prompts fresh read::face"
+      ]
+    }
+  },
+  "skin": {
+    "question": "Does the organism have the access it needs?",
+    "headline": "Forge operations need a credential",
+    "summary": "The Spine memory slot and application account are present. The Forge token is missing.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Forge token missing",
+        "why": "Forge operations remain unavailable while the operator-provisioned slot is absent.",
+        "next": "Inspect the slot requirements; provisioning uses secure operator input on the host.",
+        "action": "Inspect requirements",
+        "target": {
+          "part": "skin",
+          "view": "compartments",
+          "node": "forge-slot"
+        }
+      }
+    ],
+    "checks": [
+      {
+        "label": "Spine memory slot",
+        "value": "Present",
+        "target": {
+          "part": "skin",
+          "view": "compartments",
+          "node": "spine-memory-slot"
+        }
+      },
+      {
+        "label": "Application account",
+        "value": "Present · publish only",
+        "target": {
+          "part": "skin",
+          "view": "compartments",
+          "node": "app-broker-slot"
+        }
+      },
+      {
+        "label": "Forge token",
+        "value": "Missing",
+        "target": {
+          "part": "skin",
+          "view": "compartments",
+          "node": "forge-slot"
+        }
+      }
+    ],
+    "focus": {
+      "view": "compartments",
+      "nodes": [
+        "spine",
+        "spine-memory-slot",
+        "memory",
+        "heart",
+        "app-broker-slot",
+        "forge-slot"
+      ],
+      "edges": [
+        "spine::uses::spine-memory-slot",
+        "spine-memory-slot::grants scoped access::memory",
+        "heart::uses::app-broker-slot"
+      ]
+    }
+  },
+  "memory": {
+    "question": "What knowledge is in force, and which evidence can I inspect?",
+    "headline": "Retry practice in force; investigation evidence held",
+    "summary": "The ratified retry practice applies within org/ingest. The delivery trace remains sealed under its investigation hold.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {
+        "label": "Retry practice",
+        "value": "In force · org/ingest",
+        "target": {
+          "part": "memory",
+          "view": "scope",
+          "node": "knowledge-retry"
+        }
+      },
+      {
+        "label": "Delivery trace",
+        "value": "Held · incident review",
+        "target": {
+          "part": "memory",
+          "view": "evidence",
+          "node": "evidence-delivery"
+        }
+      },
+      {
+        "label": "Memory projection",
+        "value": "Through row 284",
+        "target": {
+          "part": "memory",
+          "view": "evidence",
+          "node": "memory"
+        }
+      }
+    ],
+    "focus": {
+      "view": "scope",
+      "nodes": [
+        "org-root",
+        "org-ingest",
+        "knowledge-purpose",
+        "knowledge-retry",
+        "review-retry"
+      ],
+      "edges": [
+        "org-root::contains::org-ingest",
+        "knowledge-purpose::bound to subtree::org-root",
+        "knowledge-retry::bound to subtree::org-ingest",
+        "review-retry::ratified::knowledge-retry"
+      ]
+    }
+  },
+  "record": {
+    "question": "Which decision is waiting, and is its evidence available?",
+    "headline": "m17 is waiting for a Board decision",
+    "summary": "The review request is recorded at row 284. Candidate checks and replay receipts are retained; no verdict is recorded.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Board review remains pending",
+        "why": "The retry change exceeds the Leader's grant. Passing checks does not settle the required decision.",
+        "next": "Inspect the pinned candidate, its evidence and required authority before a verdict is considered.",
+        "action": "Inspect review",
+        "target": {
+          "part": "record",
+          "view": "provenance",
+          "node": "review-m17"
+        }
+      }
+    ],
+    "checks": [
+      {
+        "label": "Decision",
+        "value": "m17 · pending Board",
+        "target": {
+          "part": "record",
+          "view": "provenance",
+          "node": "review-m17"
+        }
+      },
+      {
+        "label": "Verification",
+        "value": "Checks and replay passed",
+        "target": {
+          "part": "record",
+          "view": "provenance",
+          "node": "candidate-checks"
+        }
+      },
+      {
+        "label": "Relay handoff",
+        "value": "t19 · accepted",
+        "target": {
+          "part": "record",
+          "view": "connections",
+          "node": "handoff-accepted"
+        }
+      }
+    ],
+    "focus": {
+      "view": "provenance",
+      "nodes": [
+        "candidate-m17",
+        "candidate-checks",
+        "review-m17",
+        "board-position",
+        "record"
+      ],
+      "edges": [
+        "candidate-m17::supported by::candidate-checks",
+        "candidate-m17::awaits decision::review-m17",
+        "review-m17::requires authority::board-position",
+        "candidate-checks::retained with::record"
+      ]
+    }
+  },
+  "genome": {
+    "question": "What is running, and what would the next change do?",
+    "headline": "a48bc20 is current; m17 remains proposed",
+    "summary": "Candidate 7f0c921 would consult the existing delivery result before retrying. The current source remains unchanged.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Retry change needs Board review",
+        "why": "The candidate has verification evidence, but its application change is outside the Leader's grant.",
+        "next": "Compare the delivery handler with the proposed result-first retry behavior, then inspect the review requirement.",
+        "action": "Compare candidate",
+        "target": {
+          "part": "genome",
+          "view": "candidate",
+          "node": "candidate-handler"
+        }
+      }
+    ],
+    "checks": [
+      {
+        "label": "Current source",
+        "value": "a48bc20",
+        "target": {
+          "part": "genome",
+          "view": "candidate",
+          "node": "revision-current"
+        }
+      },
+      {
+        "label": "Proposed source",
+        "value": "7f0c921 · m17",
+        "target": {
+          "part": "genome",
+          "view": "candidate",
+          "node": "candidate-m17"
+        }
+      },
+      {
+        "label": "Required decision",
+        "value": "Board · pending",
+        "target": {
+          "part": "genome",
+          "view": "candidate",
+          "node": "review-m17"
+        }
+      }
+    ],
+    "focus": {
+      "view": "candidate",
+      "nodes": [
+        "revision-current",
+        "candidate-m17",
+        "delivery-handler",
+        "candidate-handler",
+        "candidate-checks",
+        "review-m17"
+      ],
+      "edges": [
+        "revision-current::candidate based on::candidate-m17",
+        "revision-current::contains::delivery-handler",
+        "delivery-handler::proposed replacement::candidate-handler",
+        "candidate-m17::proposes::candidate-handler",
+        "candidate-m17::supported by::candidate-checks",
+        "candidate-handler::awaits approval::review-m17"
+      ]
+    }
+  }
+}

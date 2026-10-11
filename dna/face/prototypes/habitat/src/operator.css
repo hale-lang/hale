@@ -1,0 +1,57 @@
+#hale-habitat-wireframe .operator-modebar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding-bottom:20px; border-bottom:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .operator-modebar>span { color:var(--habitat-muted); font:400 11px/1.4 ui-monospace,monospace; }
+#hale-habitat-wireframe .operator-modes { display:flex; gap:5px; }
+#hale-habitat-wireframe .operator-modes button { font:400 12px/1.4 system-ui,sans-serif; padding:7px 11px; border:1px solid transparent; background:transparent; color:var(--habitat-muted); border-radius:5px; }
+#hale-habitat-wireframe .operator-modes button[aria-pressed="true"] { background:var(--habitat-hover); color:var(--habitat-text); border-color:var(--habitat-line); }
+#hale-habitat-wireframe .operator-brief { padding:24px 0 20px; }
+#hale-habitat-wireframe .operator-question { color:var(--habitat-muted); font:400 12px/1.4 system-ui,sans-serif; margin:0 0 8px; }
+#hale-habitat-wireframe .operator-headline { color:var(--habitat-text); font:500 23px/1.25 system-ui,sans-serif; letter-spacing:-.4px; margin:0 0 10px; max-width:690px; }
+#hale-habitat-wireframe .operator-summary { color:var(--habitat-muted); font:400 13px/1.6 system-ui,sans-serif; margin:0; max-width:660px; }
+#hale-habitat-wireframe .operator-checks { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-top:1px solid var(--habitat-line); border-bottom:1px solid var(--habitat-line); }
+#hale-habitat-wireframe .operator-check { text-align:left; border:0; background:none; color:var(--habitat-text); padding:15px 18px 15px 0; font:400 13px/1.5 system-ui,sans-serif; }
+#hale-habitat-wireframe .operator-check+.operator-check { border-left:1px solid var(--habitat-line); padding-left:18px; }
+#hale-habitat-wireframe .operator-check span { display:block; color:var(--habitat-muted); font-size:11px; margin-bottom:5px; }
+#hale-habitat-wireframe .operator-check strong { font-weight:500; }
+#hale-habitat-wireframe .operator-check:hover strong { color:var(--graph-focus); }
+#hale-habitat-wireframe .operator-main { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,.9fr); gap:30px; padding-top:24px; }
+#hale-habitat-wireframe .operator-attention h3,#hale-habitat-wireframe .operator-context h3 { margin:0; font:500 13px/1.5 system-ui,sans-serif; color:var(--habitat-text); }
+#hale-habitat-wireframe .operator-next { margin-top:18px; padding-left:14px; border-left:2px solid var(--habitat-warn); }
+#hale-habitat-wireframe .operator-next h4 { margin:0 0 7px; font:500 14px/1.4 system-ui,sans-serif; color:var(--habitat-text); }
+#hale-habitat-wireframe .operator-next p { font:400 12px/1.6 system-ui,sans-serif; color:var(--habitat-muted); margin:0 0 9px; }
+#hale-habitat-wireframe .operator-next .operator-next-step { color:var(--habitat-text); }
+#hale-habitat-wireframe .operator-next .ui-button { padding:6px 10px; margin-top:3px; }
+#hale-habitat-wireframe .operator-quiet { color:var(--habitat-muted); font:400 13px/1.7 system-ui,sans-serif; max-width:300px; margin:18px 0; }
+#hale-habitat-wireframe .operator-context-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+#hale-habitat-wireframe .operator-map { height:255px; position:relative; margin-top:5px; }
+#hale-habitat-wireframe .operator-map .spatial-svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+#hale-habitat-wireframe .operator-node { position:absolute; width:106px; padding:3px 2px; border:0; background:var(--habitat-bg); color:var(--habitat-text); font:400 11px/1.35 system-ui,sans-serif; text-align:center; border-radius:3px; }
+#hale-habitat-wireframe .operator-node:hover { color:var(--graph-focus); background:var(--habitat-hover); }
+#hale-habitat-wireframe .operator-station { fill:var(--habitat-bg); stroke:var(--graph-focus); stroke-width:1.6; }
+#hale-habitat-wireframe .operator-label-leader { stroke:var(--habitat-line); stroke-width:1; fill:none; }
+#hale-habitat-wireframe .operator-map-caption { margin:0; color:var(--habitat-muted); font:400 11px/1.5 system-ui,sans-serif; }
+#hale-habitat-wireframe .operator-activity { display:flex; align-items:center; flex-wrap:wrap; gap:9px 14px; border-top:1px solid var(--habitat-line); padding:15px 0; margin-top:22px; }
+#hale-habitat-wireframe .operator-activity-status { font:400 11px/1.4 ui-monospace,monospace; color:var(--habitat-muted); }
+#hale-habitat-wireframe .operator-activity-event { flex:1; text-align:left; border:0; background:none; color:var(--habitat-text); font:400 12px/1.5 system-ui,sans-serif; padding:0; }
+#hale-habitat-wireframe .operator-activity-event:hover { color:var(--graph-focus); }
+#hale-habitat-wireframe .operator-activity .ui-button { padding:4px 9px; font-size:11px; }
+#hale-habitat-wireframe .operator-footnote { color:var(--habitat-muted); font:400 11px/1.5 system-ui,sans-serif; margin:0; }
+#hale-habitat-wireframe .operator-evidence .operator-evidence-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+#hale-habitat-wireframe .operator-evidence h2 { font:500 21px/1.3 system-ui,sans-serif; margin:12px 0; }
+#hale-habitat-wireframe .operator-evidence p { font:400 13px/1.6 system-ui,sans-serif; color:var(--habitat-muted); }
+#hale-habitat-wireframe .operator-evidence small { color:var(--habitat-muted); font-size:11px; }
+@container (max-width:730px) {
+  #hale-habitat-wireframe .operator-main { grid-template-columns:minmax(0,1fr); gap:22px; }
+  #hale-habitat-wireframe .operator-context { max-width:560px; }
+  #hale-habitat-wireframe .operator-map { height:240px; }
+}
+@container (max-width:440px) {
+  #hale-habitat-wireframe .operator-headline { font-size:20px; }
+  #hale-habitat-wireframe .operator-checks { grid-template-columns:1fr; }
+  #hale-habitat-wireframe .operator-check { padding:10px 0; }
+  #hale-habitat-wireframe .operator-check+.operator-check { border-left:0; border-top:1px solid var(--habitat-line); padding-left:0; }
+  #hale-habitat-wireframe .operator-check span { margin-bottom:2px; }
+  #hale-habitat-wireframe .operator-activity-event { flex-basis:100%; order:-1; }
+}
+@media (pointer:coarse) {
+  #hale-habitat-wireframe .operator-modes button,#hale-habitat-wireframe .operator-node,#hale-habitat-wireframe .operator-activity button { min-height:44px; }
+}

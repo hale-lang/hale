@@ -471,7 +471,7 @@
     if (window.habitatPreview?.setWidgetState) {
       window.habitatPreview.setWidgetState({
         modelContent: { accountPreview: signedIn ? 'signed-in' : 'signed-out', theme, view: activeView, organism: currentOrganism, part: currentPart, graphSelection, perspective: currentGraphView()?.id, activityEvent: currentActivityEvent()?.id || null },
-        privateContent: { signedIn, theme, activeView, currentOrganism, currentPart, previewVersion: 3, graphSelection, graphPerspectives, graphMode, graphFilters, spatialProjection, spatialRelated, spatialHiddenDimensions, activityCursors, activityLog }
+        privateContent: { signedIn, theme, activeView, currentOrganism, currentPart, previewVersion: 3, graphSelection, graphPerspectives, graphMode, graphFilters, spatialProjection, spatialRelated, spatialHiddenDimensions, activityCursors, activityLog, operatorViews }
       }).catch(() => {});
     }
   }
@@ -538,6 +538,7 @@
       graphFilters = validateGraphFilters(saved.privateContent?.graphFilters);
       restoreSpatialState(saved.privateContent);
       restoreActivityState(saved.privateContent);
+      operatorViews = validatedOperatorViews(saved.privateContent?.operatorViews);
       render();
       renderGraphWorkspace();
     }

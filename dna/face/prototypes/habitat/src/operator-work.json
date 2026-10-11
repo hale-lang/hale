@@ -1,0 +1,111 @@
+{
+  "spine": {
+    "question": "Is work moving, and what is holding it up?",
+    "headline": "Assessment is running; patch work needs a person",
+    "summary": "The migration assessment has a claimed attempt. The separate patch attempt has an unresolved effect.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Resolve the patch attempt's uncertain effect",
+        "why": "A scratch commit exists, but t139 has no settled outcome. Its worker slot is stopped.",
+        "next": "A person must review the history and record what happened before this path can continue.",
+        "action": "Review unresolved effect",
+        "target": {"part": "legs", "view": "uncertainty", "node": "human-resolution-t139"}
+      }
+    ],
+    "checks": [
+      {"label": "Assessment", "value": "Running · step 0", "target": {"part": "spine", "view": "execution", "node": "execution-t142"}},
+      {"label": "Next milestone", "value": "Outcome, then owner settlement", "target": {"part": "spine", "view": "execution", "node": "outcome-t142"}},
+      {"label": "Month close", "value": "Schedule paused", "target": {"part": "spine", "view": "dependencies", "node": "schedule-month-close"}}
+    ],
+    "focus": {
+      "view": "execution",
+      "nodes": ["execution-t142", "work-t142-a", "attempt-a0", "outcome-t142", "settlement-t142"],
+      "edges": ["execution-t142::registers::work-t142-a", "work-t142-a::has attempt::attempt-a0", "attempt-a0::must submit::outcome-t142", "outcome-t142::awaits::settlement-t142"]
+    }
+  },
+  "legs": {
+    "question": "Who is doing the work, and who needs help?",
+    "headline": "One active claim; one worker stopped",
+    "summary": "Slot 1 holds the assessment lease. Slot 2 is waiting for a person to resolve the patch attempt's effect.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Slot 2 needs an evidence-based resolution",
+        "why": "The performer lost its lease after invoking tools. Commit c17b8e2 survives, so repeating the attempt could repeat an effect.",
+        "next": "Review the commit and attempt history; the resolution must record ok or failed with evidence.",
+        "action": "Inspect resolution evidence",
+        "target": {"part": "legs", "view": "uncertainty", "node": "human-resolution-t139"}
+      }
+    ],
+    "checks": [
+      {"label": "Active holder", "value": "Riley · agent slot 1", "target": {"part": "legs", "view": "claim", "node": "worker-agent1"}},
+      {"label": "Assessment context", "value": "Available under active lease", "target": {"part": "legs", "view": "claim", "node": "hat"}},
+      {"label": "Patch worker", "value": "Stopped · effect unresolved", "target": {"part": "legs", "view": "uncertainty", "node": "worker-agent2"}}
+    ],
+    "focus": {
+      "view": "uncertainty",
+      "nodes": ["attempt-t139-a0", "patch-c17b8e2", "outcome-t139", "human-resolution-t139", "resolution-receipt-t139"],
+      "edges": ["attempt-t139-a0::left evidence::patch-c17b8e2", "patch-c17b8e2::is checked against::outcome-t139", "outcome-t139::requires::human-resolution-t139", "human-resolution-t139::must record::resolution-receipt-t139"]
+    }
+  },
+  "hands": {
+    "question": "Can the work's output move forward?",
+    "headline": "Patch preserved; owner handoff is waiting",
+    "summary": "Commit c17b8e2 and its receipt are present. Owner application, verification and Review remain pending.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "The unresolved attempt gates this patch",
+        "why": "The three-file scratch commit is evidence of a change, not a settled outcome or a verified candidate.",
+        "next": "Inspect the unresolved effect before the owner can accept the outcome and continue the patch path.",
+        "action": "Review attempt evidence",
+        "target": {"part": "legs", "view": "uncertainty", "node": "attempt-t139-a0"}
+      }
+    ],
+    "checks": [
+      {"label": "Patch evidence", "value": "c17b8e2 · 3 files", "target": {"part": "hands", "view": "patch", "node": "patch-c17b8e2"}},
+      {"label": "Owner verification", "value": "Pending", "target": {"part": "hands", "view": "patch", "node": "verification-t139"}},
+      {"label": "Review", "value": "Not opened", "target": {"part": "hands", "view": "patch", "node": "review-t139"}}
+    ],
+    "focus": {
+      "view": "patch",
+      "nodes": ["attempt-t139-a0", "patch-c17b8e2", "patch-receipt-t139", "owner-apply-t139", "verification-t139", "review-t139"],
+      "edges": ["attempt-t139-a0::produced::patch-c17b8e2", "patch-c17b8e2::is accompanied by::patch-receipt-t139", "patch-c17b8e2::would be applied by::owner-apply-t139", "owner-apply-t139::must precede::verification-t139", "verification-t139::must support::review-t139"]
+    }
+  },
+  "hat": {
+    "question": "What do I need to know to do this Work?",
+    "headline": "Your assessment brief is ready",
+    "summary": "Assess whether the storage migration preserves existing readers. Return a judgment, cited evidence and unresolved assumptions.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {"label": "Access", "value": "Riley holds the active lease", "target": {"part": "hat", "view": "identity", "node": "attempt-lease"}},
+      {"label": "Required practice", "value": "Preserve the reader window", "target": {"part": "hat", "view": "assembly", "node": "reader-practice"}},
+      {"label": "Work brief", "value": "Pinned context · h:8ac21f", "target": {"part": "hat", "view": "identity", "node": "rendered-brief"}}
+    ],
+    "focus": {
+      "view": "assembly",
+      "nodes": ["work-t142-a", "hat", "position-charter", "reader-practice", "migration-evidence"],
+      "edges": ["work-t142-a::defines objective::hat", "position-charter::informs::hat", "reader-practice::applies::hat", "migration-evidence::bound evidence::hat"]
+    }
+  },
+  "voice": {
+    "question": "Can model-backed work proceed within its budget?",
+    "headline": "$16.58 remains in today's model budget",
+    "summary": "41 recorded calls account for $8.42 of the $25 daily limit. Attempt allowances remain subject to their own ceilings.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {"label": "Recorded spend", "value": "$8.42 / $25 today", "target": {"part": "voice", "view": "accounting", "node": "budget-day"}},
+      {"label": "Assessment allowance", "value": "$0.50 · not reserved funds", "target": {"part": "legs", "view": "claim", "node": "allowance-t142"}},
+      {"label": "Hosted credential", "value": "Slot present", "target": {"part": "voice", "view": "routing", "node": "model-slot"}}
+    ],
+    "focus": {
+      "view": "accounting",
+      "nodes": ["budget-day", "work-allowance", "call-t140", "call-receipt-t140"],
+      "edges": ["budget-day::bounds::work-allowance", "work-allowance::limits::call-t140", "call-t140::records usage::call-receipt-t140", "call-receipt-t140::accounts spend::budget-day"]
+    }
+  }
+}

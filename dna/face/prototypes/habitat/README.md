@@ -30,6 +30,18 @@ perspectives: Head, Face, Heart, Spine, Nerves, Memory, Record, Genome, Body,
 Legs, Hands, Hat, Voice, Senses, Reflexes and Skin. Account and organism cards
 establish the navigation flow; five theme choices include the system setting.
 
+Each part opens in a curated Overview: a working brief, three evidence-linked
+facts, up to two authored next steps and a small map of three to six entities.
+These are selected views of the same fixture identities and relationships.
+Opening a fact, next step or map label pauses the scenario and shows its source
+evidence. From there, **Explore these relationships** opens the relevant graph
+perspective and focuses the selected entity, including across body parts.
+
+Attention is authored from the sample's evidence. Pending work, a held receipt
+or a historical failure does not automatically become an alarm. Overview does
+not calculate a health score or create shortcut edges. **Explore graph** opens
+the complete controls; the choice is remembered separately for each body part.
+
 Each perspective presents stable entities and typed relationships as a 2D route
 map or an unfolding 3D graph. Structure, authority, work, signal and evidence
 routes have distinct colors. Observed, declared and proposed relationships use
@@ -60,19 +72,22 @@ and the modular JavaScript, CSS, JSON and page sources under `src/`, then rebuil
 python3 dna/face/prototypes/habitat/build.py
 ```
 
-Check that the committed output matches its sources, and run the event checks:
+Check that the committed output matches its sources, and run the behavior checks:
 
 ```sh
 python3 dna/face/prototypes/habitat/build.py --check
 node dna/face/prototypes/habitat/tests/check-event-replay.cjs
 node dna/face/prototypes/habitat/tests/check-activity-autostart.cjs
+node dna/face/prototypes/habitat/tests/check-operator-overview.cjs
 ```
 
 For a browser smoke check:
 
-1. Enter Atlas and switch body parts and perspectives; each should start its
-   own finite sample scenario.
-2. Watch Nerves message packets and Reflexes event traces traverse edges in
+1. Enter Atlas and switch body parts. Each opens its Overview with a finite
+   sample scenario. Open a fact or next step and inspect its evidence, then
+   follow **Explore these relationships** to the selected graph entity.
+2. Use **Explore graph** to switch perspectives. Watch Nerves message packets
+   and Reflexes event traces traverse edges in
    both 2D and 3D. Pause, select an entity and move the camera; the held scene
    should stay paused.
 3. Filter Memory or Senses, inspect an event and revisit an activity-log entry.
@@ -107,3 +122,8 @@ Protected Hat context remains lease-scoped, credentials remain redacted, and
 command receipt, admission, execution and settlement must remain distinct.
 RPC schemas provide typed integration surfaces; each application still owns
 the layout and interaction semantics of its Face.
+
+Overview briefs, facts and next steps are authored fixtures, not generated
+diagnoses or promised RPC projections. Production overviews need authorized
+evidence and explicit rules for current attention, with the same evidence
+targets available in their deeper graph views.

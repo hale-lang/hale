@@ -61,14 +61,35 @@ for part, page in activity.items():
         assert len([event for event in page['events'] if event['view'] == view['id']]) >= 3
 
 
+operator = {}
+for group in ('meaning', 'runtime', 'work'):
+    operator.update(json.loads((SOURCE / f'operator-{group}.json').read_text(encoding='utf-8')))
+assert set(operator) == expected
+for part, page in operator.items():
+    assert page['tone'] in {'steady', 'attention', 'limited'}
+    assert all(isinstance(page[field], str) for field in ('question', 'headline', 'summary'))
+    assert len(page['checks']) == 3 and len(page['attention']) <= 2
+    focus = page['focus']
+    view = next(view for view in data[part]['views'] if view['id'] == focus['view'])
+    assert 3 <= len(focus['nodes']) <= 6
+    assert len(focus['nodes']) == len(set(focus['nodes']))
+    assert set(focus['nodes']) <= {node['id'] for node in view['nodes']}
+    focus_edges = [edge for edge in view['edges'] if '::'.join((edge['from'],edge['label'],edge['to'])) in focus['edges']]
+    assert len(focus_edges) == len(focus['edges'])
+    assert all(edge['from'] in focus['nodes'] and edge['to'] in focus['nodes'] for edge in focus_edges)
+    for row in page['checks'] + page['attention']:
+        target = row['target']
+        target_view = next(view for view in data[target['part']]['views'] if view['id'] == target['view'])
+        assert target['node'] in {node['id'] for node in target_view['nodes']}
+
 fragment = (SOURCE / 'shell.html').read_text(encoding='utf-8')
 pages = '\n'.join((SOURCE / ('pages-' + group + '.html')).read_text(encoding='utf-8') for group in ('boundary','memory','work','runtime'))
 page_ids = re.findall(r'<template id="page-([a-z]+)"', pages)
 assert len(page_ids) == len(set(page_ids)) and set(page_ids) == expected
 assert set(re.findall(r'data-inspect="([^"]+)"', pages)) <= set(re.findall(r'data-detail="([^"]+)"', pages))
 assert set(re.findall(r'data-go-part="([^"]+)"', pages)) <= expected
-css = '\n'.join((SOURCE / name).read_text(encoding='utf-8') for name in ('graph.css','spatial.css','event.css'))
-engine = '  const graphData = ' + json.dumps(data,ensure_ascii=False,separators=(',', ':')) + ';\n  const activityData = ' + json.dumps(activity,ensure_ascii=False,separators=(',', ':')) + ';\n' + '\n'.join((SOURCE / name).read_text(encoding='utf-8') for name in ('graph-engine.js','spatial-layout.js','spatial-engine.js','event-engine.js'))
+css = '\n'.join((SOURCE / name).read_text(encoding='utf-8') for name in ('graph.css','spatial.css','event.css','operator.css'))
+engine = '  const graphData = ' + json.dumps(data,ensure_ascii=False,separators=(',', ':')) + ';\n  const activityData = ' + json.dumps(activity,ensure_ascii=False,separators=(',', ':')) + ';\n  const operatorData = ' + json.dumps(operator,ensure_ascii=False,separators=(',', ':')) + ';\n' + '\n'.join((SOURCE / name).read_text(encoding='utf-8') for name in ('graph-engine.js','spatial-layout.js','spatial-engine.js','event-engine.js','operator-engine.js'))
 replacements = {
     '<!-- GRAPH_SHELL -->': (SOURCE / 'graph-shell.html').read_text(encoding='utf-8'),
     '<!-- BODY_PART_TEMPLATES -->': pages,

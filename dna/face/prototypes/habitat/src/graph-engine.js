@@ -76,7 +76,8 @@
   }
   function currentGraphView() {
     const page = graphData[currentPart];
-    return page?.views.find(view => view.id === graphPerspectives[currentPart]) || page?.views[0];
+    const viewId = operatorIsActive() ? operatorData[currentPart]?.focus.view : graphPerspectives[currentPart];
+    return page?.views.find(view => view.id === viewId) || page?.views[0];
   }
   function mountGraphPage() {
     graphResizeObserver?.disconnect();
@@ -92,9 +93,10 @@
       const width = Math.round(entries[0].contentRect.width);
       if (width !== lastWidth) { lastWidth = width; if (width > 0) drawGraph(); }
     });
-    graphResizeObserver.observe(partContent.querySelector('.graph-canvas'));
+    graphResizeObserver.observe(partContent.querySelector('.graph-workbench'));
   }
   function visibleGraph() {
+    if (operatorIsActive()) return operatorGraph();
     const view = getSpatialView(currentGraphView());
     if (!view) return null;
     let nodes = view.nodes, edges = view.edges.filter(edge => !spatialHiddenDimensions.includes(edge.dimension));
@@ -130,6 +132,8 @@
   function renderGraphWorkspace() {
     ensureActivityScope();
     const workbench = partContent.querySelector('.graph-workbench');
+    renderPageDepth();
+    if (workbench && operatorIsActive()) { renderOperatorPage(); return; }
     const data = visibleGraph();
     if (!workbench || !data) return;
     workbench.dataset.presentation = graphMode;
@@ -173,7 +177,7 @@
     return ids;
   }
   function drawGraph() {
-    drawSpatialGraph();
+    if(operatorIsActive())drawOperatorContext();else drawSpatialGraph();
   }
   function renderGraphOutline() {
     const host = partContent.querySelector('.graph-outline');
@@ -241,7 +245,8 @@
       const part = target.dataset.graphReveal;
       const membership = (graphMembership.get(target.dataset.entity) || []).find(item => item.part === part);
       if (membership) graphPerspectives[part] = membership.view;
-      currentPart = part; graphFocus = null; render(); save(); return;
+      operatorViews[part] = 'explore';
+      currentPart = part; graphSelection = {kind:'node',id:target.dataset.entity}; graphFocus = null; render(); save(); return;
     } else return;
     renderGraphWorkspace();
     if (target.dataset.graphNode || target.dataset.graphEdge) queueActivitySimulation('Selection',graphSelection);

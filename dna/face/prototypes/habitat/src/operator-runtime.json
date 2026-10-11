@@ -1,0 +1,118 @@
+{
+  "heart": {
+    "question": "Is the application expressing the change we kept?",
+    "headline": "Atlas reports the retained revision",
+    "summary": "All three instance receipts match a48bc20. The m16 observation completed and the change was retained.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {"label": "Attached application", "value": "Atlas delivery", "target": {"part": "heart", "view": "boundary", "node": "atlas-application"}},
+      {"label": "Instance evidence", "value": "3 reports · a48bc20", "target": {"part": "heart", "view": "expression", "node": "deploy-m16"}},
+      {"label": "Latest expression", "value": "m16 retained", "target": {"part": "heart", "view": "expression", "node": "retention-m16"}}
+    ],
+    "focus": {
+      "view": "expression",
+      "nodes": ["deploy-m16", "api-0", "api-1", "worker-0", "observation-m16", "retention-m16"],
+      "edges": ["deploy-m16::is answered by::api-0", "deploy-m16::is answered by::api-1", "deploy-m16::is answered by::worker-0", "worker-0::is included in::observation-m16", "observation-m16::supports::retention-m16"]
+    }
+  },
+  "body": {
+    "question": "Where is Atlas running, and what do its instances report?",
+    "headline": "Three instances report Up",
+    "summary": "The fleet reports a48bc20 across edge-1 and edge-2. The body lease is held separately on control-1.",
+    "tone": "steady",
+    "attention": [],
+    "checks": [
+      {"label": "Body lease holder", "value": "control-1", "target": {"part": "body", "view": "placement", "node": "control-1"}},
+      {"label": "Latest instance receipts", "value": "3 Up · 2 hosts", "target": {"part": "body", "view": "placement", "node": "api-0"}},
+      {"label": "Reported revision", "value": "a48bc20", "target": {"part": "body", "view": "placement", "node": "revision-current"}}
+    ],
+    "focus": {
+      "view": "placement",
+      "nodes": ["edge-1", "edge-2", "api-0", "worker-0", "api-1", "revision-current"],
+      "edges": ["edge-1::reports running::api-0", "edge-1::reports running::worker-0", "edge-2::reports running::api-1", "api-0::expresses::revision-current", "worker-0::expresses::revision-current", "api-1::expresses::revision-current"]
+    }
+  },
+  "nerves": {
+    "question": "Are requests reaching an answer?",
+    "headline": "The capacity request still needs an answer",
+    "summary": "pressure-018 has a transport acknowledgement. The answering record row has not landed.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Follow pressure-018 through to its answer",
+        "why": "Delivery is acknowledged, but neither pressure.raised nor pressure.refused is present for this request.",
+        "next": "Inspect the receiving route and answer evidence. The existing relay keeps the same request identity.",
+        "action": "Inspect request",
+        "target": {"part": "nerves", "view": "request", "node": "answer-pressure-018"}
+      }
+    ],
+    "checks": [
+      {"label": "Transport", "value": "Acknowledged", "target": {"part": "nerves", "view": "request", "node": "ack-pressure-018"}},
+      {"label": "Organizational answer", "value": "Pending", "target": {"part": "nerves", "view": "request", "node": "answer-pressure-018"}},
+      {"label": "Relay policy", "value": "Every 30 s until answered", "target": {"part": "nerves", "view": "request", "node": "relay-pressure-018"}}
+    ],
+    "focus": {
+      "view": "request",
+      "nodes": ["pressure-018", "publish-pressure-018", "ack-pressure-018", "spine", "answer-pressure-018", "relay-pressure-018"],
+      "edges": ["pressure-018::is relayed as::publish-pressure-018", "publish-pressure-018::has transport receipt::ack-pressure-018", "publish-pressure-018::is delivered to::spine", "spine::must record answer::answer-pressure-018", "answer-pressure-018::is checked before::relay-pressure-018", "relay-pressure-018::reuses identity of::pressure-018"]
+    }
+  },
+  "senses": {
+    "question": "What is the organism telling us it needs?",
+    "headline": "Delivery is asking for more capacity",
+    "summary": "Two capacity raises are answered; the next request is pending. A dispatcher concern has also reached its parent.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Check the outstanding capacity request",
+        "why": "pressure-018 is awaiting an answer. It does not yet count toward the third answered raise.",
+        "next": "Read the source and request trace before deciding whether more capacity is warranted.",
+        "action": "Inspect capacity request",
+        "target": {"part": "senses", "view": "escalation", "node": "pressure-018"}
+      },
+      {
+        "title": "Review the delivery acknowledgement concern",
+        "why": "The dispatcher reports acknowledgements falling behind; two occurrences are recorded and routed to atlas/delivery.",
+        "next": "Inspect the concern and its parent context to understand what is falling behind.",
+        "action": "Inspect concern",
+        "target": {"part": "senses", "view": "escalation", "node": "concern-c0017"}
+      }
+    ],
+    "checks": [
+      {"label": "Latest api-0 reading", "value": "Up · 09:42:18", "target": {"part": "senses", "view": "observations", "node": "reading-api0"}},
+      {"label": "Spine pulse", "value": "Present · 09:42:18", "target": {"part": "senses", "view": "observations", "node": "spine"}},
+      {"label": "Capacity raises", "value": "2 answered · 1 pending", "target": {"part": "senses", "view": "escalation", "node": "pressure-threshold"}}
+    ],
+    "focus": {
+      "view": "escalation",
+      "nodes": ["locus-delivery", "pressure-018", "pressure-threshold", "locus-dispatcher", "concern-c0017", "concern-parent-delivery"],
+      "edges": ["locus-delivery::raised request::pressure-018", "pressure-018::counts after answer::pressure-threshold", "locus-dispatcher::emitted::concern-c0017", "concern-c0017::was routed to::concern-parent-delivery", "locus-dispatcher::has parent::locus-delivery"]
+    }
+  },
+  "reflexes": {
+    "question": "Did automatic recovery work, and is anything recurring?",
+    "headline": "Two restarts left a repeated-outage concern",
+    "summary": "The 09:25 and 09:31 outages each have a restart receipt. api-0's later instance report is Up.",
+    "tone": "attention",
+    "attention": [
+      {
+        "title": "Review why api-0 needed two restarts",
+        "why": "Two distinct historical outages within ten minutes produced a concern, even though both restart actions succeeded.",
+        "next": "Inspect the repeated-outage evidence alongside the later instance report before choosing any intervention.",
+        "action": "Inspect recovery pattern",
+        "target": {"part": "reflexes", "view": "pattern", "node": "concern-reflex-api0"}
+      }
+    ],
+    "checks": [
+      {"label": "Latest instance receipt", "value": "api-0 · Up", "target": {"part": "body", "view": "placement", "node": "api-0"}},
+      {"label": "09:31 action receipt", "value": "Restarted", "target": {"part": "reflexes", "view": "rule", "node": "reflex-action-0931"}},
+      {"label": "Repeated-outage follow-up", "value": "Concern recorded", "target": {"part": "reflexes", "view": "pattern", "node": "concern-reflex-api0"}}
+    ],
+    "focus": {
+      "view": "pattern",
+      "nodes": ["outage-api0-0925", "firing-api0-0925", "outage-api0-0931", "firing-api0-0931", "concern-reflex-api0", "reflexes"],
+      "edges": ["outage-api0-0925::triggered::firing-api0-0925", "outage-api0-0931::triggered::firing-api0-0931", "firing-api0-0925::is prior evidence for::concern-reflex-api0", "firing-api0-0931::triggered::concern-reflex-api0", "concern-reflex-api0::routes to::reflexes"]
+    }
+  }
+}
