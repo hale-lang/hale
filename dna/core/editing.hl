@@ -65,8 +65,9 @@ locus WorktreeTools {
     // The directories a path needs, created one segment at a time and
     // only under the grant's root. A harness that adds a new seed writes
     // `newdir/new.hl`, and the write failed with `not_found` while the
-    // import went on without it (the shakeout's finding 11).
-    @unbounded
+    // import went on without it (the shakeout's finding 11). A path per
+    // directory segment of `rel`.
+    @bounded_by(rel)
     fn ensure_parents(rel: String) {
         let mut at = 0;
         while true {
@@ -286,7 +287,6 @@ locus SourceEditor {
     // Which file the objective is about (GH #529 D7 step 5): a file the
     // objective names, else the quick tier's pick from the listing —
     // and only a listed file is ever a target.
-    @unbounded
     fn locate(attempt: String, objective: String) -> String {
         let listing = self.files();
         self.located_why = "";
@@ -316,7 +316,8 @@ locus SourceEditor {
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
         if !pick.ok {
-            self.located_why = "the model could not be asked which file (" + (if len(pick.refused) > 0 { pick.refused } else { "no answer" }) + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
+            let refused = if len(pick.refused) > 0 { pick.refused } else { "no answer" };
+            self.located_why = "the model could not be asked which file (" + refused + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
             return "";
         }
         let name = trim_nl(pick.output);
@@ -446,13 +447,12 @@ locus SourceEditor {
     // differs or is new is written through the tools, one that is gone
     // is removed; a change outside the grant is counted and left behind.
     // Returns the grant-relative files changed, space-separated.
-    // Bounded by the files of one worktree.
-    @unbounded
     fn import_from(dir: String) -> String {
         self.import_error = "";
         let mut changed = "";
+        let mut failed = ""; // the file the tools could not write or remove
         let mut lines = self.listing(dir);
-        while len(lines) > 0 {
+        while len(lines) > 0 && len(failed) == 0 {
             let nl = std::str::index_of(lines, "\n");
             let rel = if nl < 0 { lines } else { lines[0..nl] };
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
@@ -472,10 +472,11 @@ locus SourceEditor {
             // inside the grant, so a refusal here is an I/O failure, not
             // a boundary: a partial import must not become a candidate
             if self.tools.edit(g, after) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { self.import_error = "could not import " + g + ": " + self.tools.last_refusal; return ""; }
+            else { failed = g; }
         }
+        if len(failed) > 0 { self.import_error = "could not import " + failed + ": " + self.tools.last_refusal; return ""; }
         let mut gone = self.listing(self.worktree);
-        while len(gone) > 0 {
+        while len(gone) > 0 && len(failed) == 0 {
             let nl = std::str::index_of(gone, "\n");
             let rel = if nl < 0 { gone } else { gone[0..nl] };
             if nl < 0 { gone = ""; } else { gone = gone[(nl + 1)..len(gone)]; }
@@ -483,8 +484,9 @@ locus SourceEditor {
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
             if self.tools.remove(g) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { self.import_error = "could not remove " + g + ": " + self.tools.last_refusal; return ""; }
+            else { failed = g; }
         }
+        if len(failed) > 0 { self.import_error = "could not remove " + failed + ": " + self.tools.last_refusal; return ""; }
         return trim_nl(changed);
     }
     // One try of the harness: export, then ask with the export as its
@@ -586,10 +588,11 @@ locus SourceEditor {
             performer: self.name
         };
     }
-    // Bounded by the attempt cap of the Work that owns this performer
-    // and by `max_tries` (GH #566 F3): a proposal that does not check
-    // is tried again with the diagnostics fed back, then fails.
-    @unbounded
+    // One result per request, returned to the caller that asked; within
+    // it, the tries are held to `max_tries` (GH #566 F3): a proposal that
+    // does not check is tried again with the diagnostics fed back, then
+    // fails.
+    @bounded_by(req)
     fn perform(req: WorkRequest) -> WorkResult {
         self.attempts = self.attempts + 1;
         self.bindings = req.knowledge_bindings;

@@ -47,7 +47,7 @@ locus NatsTransport {
 }
 
 // Lowercase hex of `b`.
-// @unbounded: two characters per byte of a fixed-size random id.
+// Two characters per byte of a fixed-size random id.
 fn hex_of(b: Bytes) -> String {
     let digits = "0123456789abcdef";
     let mut out = "";
@@ -310,9 +310,9 @@ locus NatsClient {
         self.last.data = data;
     }
 
-    // @unbounded: one entry per message that arrives while a `request`
-    // waits; read_msg empties the stash once it has handed them all out.
-    @unbounded
+    // One entry per message that arrives while a `request` waits;
+    // read_msg empties the stash once it has handed them all out.
+    @bounded_by(request)
     fn set_aside() {
         let f = self.framer.frame;
         self.stash.push(f.subject, f.data);

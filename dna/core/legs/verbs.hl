@@ -869,7 +869,7 @@ locus LegSlotRows { capacity { heap rows of LegSlot; } }
 locus LegPool {
     params { slots: LegSlotRows = LegSlotRows { }; idle_ms: Int = 2000; }
     // one row per slot, replaced in place: the pool is as wide as --parallel
-    @unbounded
+    @bounded_by(parallel)
     fn keep(w: LegSlot) {
         let mut i = 0;
         while i < self.slots.len() {
@@ -932,7 +932,8 @@ locus LegPool {
     fn finish(slot: Int) { let w = self.at(slot); self.keep(LegSlot { slot: slot, stopped: true, idles: w.idles }); }
     // The process drains: every running child is told to end (TERM), and
     // after a grace, made to (KILL); each is reaped by `reap` as it goes.
-    @unbounded
+    // A child handle per slot.
+    @bounded_by(self.slots)
     fn terminate_all() {
         let mut i = 0;
         while i < self.slots.len() {
@@ -941,7 +942,7 @@ locus LegPool {
             i = i + 1;
         }
     }
-    @unbounded
+    @bounded_by(self.slots)
     fn kill_all() {
         let mut i = 0;
         while i < self.slots.len() {

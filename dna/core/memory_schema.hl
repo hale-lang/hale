@@ -442,8 +442,8 @@ fn migrate(owner: Dsn, record_id: String) -> Migrated {
 }
 
 // As `migrate`, for the owners named (space-separated, "" for one owner):
-// each gets a head role of its own (GH #1026).
-@unbounded
+// each gets a head role of its own (GH #1026): a DSN line per owner.
+@bounded_by(owners)
 fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
     // the organism's roles are provisioned by its bootstrap and only
@@ -472,7 +472,8 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))), owner_dsns: dsns };
 }
 
-@unbounded
+// The principals statement grows by a row per owner in `owners`.
+@bounded_by(owners)
 fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
     // pgvector ranks inside the bound (K3) and pgcrypto seals protected
     // evidence (GH #606); a Postgres without either says so here

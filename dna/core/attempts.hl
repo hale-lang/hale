@@ -25,10 +25,18 @@ locus AttemptRecord {
     fn bind(j: Journal) { self.journal = j; }
     // ---- reports (card 15, card 17)
     // A report the assembly published, kept, once, until the record is
-    // seen to hold its outcome.
-    @unbounded
+    // seen to hold its outcome. One slot per report unrecorded at once: a
+    // slot a release emptied is taken again before the queue grows.
+    @bounded_by(self.pending_reports)
     fn keep(r: AttemptReport) {
-        if !row_exists(self.journal, "attempt.outcome", r.attempt_id) && !self.reported(r.attempt_id) { self.pending_reports.push(r); }
+        if row_exists(self.journal, "attempt.outcome", r.attempt_id) || self.reported(r.attempt_id) { return; }
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let k = self.pending_reports.get(i) or AttemptReport { };
+            if len(k.attempt_id) == 0 { self.pending_reports.set(i, r) or discard; return; }
+            i = i + 1;
+        }
+        self.pending_reports.push(r);
     }
     // Whether a report for the attempt is kept, its outcome not yet seen.
     fn reported(attempt_id: String) -> Bool {
@@ -65,9 +73,19 @@ locus AttemptRecord {
         }
         return false;
     }
-    // An edit attempt waiting on its review's outcome, once.
-    @unbounded
-    fn wait(e: EditAsk) { if !self.waiting(e.attempt_id) { self.waiting_edits.push(e); } }
+    // An edit attempt waiting on its review's outcome, once. One slot per
+    // attempt waiting at once: a slot `waited` released is taken again.
+    @bounded_by(self.waiting_edits)
+    fn wait(e: EditAsk) {
+        if self.waiting(e.attempt_id) { return; }
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let w = self.waiting_edits.get(i) or EditAsk { };
+            if len(w.attempt_id) == 0 { self.waiting_edits.set(i, e) or discard; return; }
+            i = i + 1;
+        }
+        self.waiting_edits.push(e);
+    }
     // How many attempts wait here (the form keeps released slots).
     fn waiting_held() -> Int {
         let mut n = 0;
@@ -83,9 +101,19 @@ locus AttemptRecord {
     fn waiting_at(i: Int) -> EditAsk { return self.waiting_edits.get(i) or EditAsk { }; }
     fn waited(i: Int) { self.waiting_edits.set(i, EditAsk { }) or discard; }
     // An edit attempt whose Mutation's request row the record refused,
-    // held for `redrive`.
-    @unbounded
-    fn hold(e: EditAsk) { self.held_edits.push(e); }
+    // held for `redrive`. One slot per attempt held at once: a slot
+    // `take_held` released is taken again, so an attempt the record
+    // refuses at every redrive keeps one slot.
+    @bounded_by(self.held_edits)
+    fn hold(e: EditAsk) {
+        let mut i = 0;
+        while i < self.held_edits.len() {
+            let h = self.held_edits.get(i) or EditAsk { };
+            if len(h.attempt_id) == 0 { self.held_edits.set(i, e) or discard; return; }
+            i = i + 1;
+        }
+        self.held_edits.push(e);
+    }
     fn held_count() -> Int { return self.held_edits.len(); }
     // The held edit at `k`, taken from the held.
     fn take_held(k: Int) -> EditAsk {

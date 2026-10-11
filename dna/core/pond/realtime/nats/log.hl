@@ -12,7 +12,7 @@
 locus NatsInts { capacity { heap items of Int; } }
 
 // Remove the first `k` entries of `v`, keeping the order of the rest.
-// @unbounded: one pass over the vec; callers amortize (they cut only
+// One pass over the vec; callers amortize (they cut only
 // once the removed prefix is a large share of it).
 fn ints_drop_front(v: NatsInts, k: Int) {
     let n = v.len();
@@ -30,7 +30,7 @@ fn ints_drop_front(v: NatsInts, k: Int) {
 }
 
 // Empty `v`.
-// @unbounded: one pop per entry, run when a queue drains.
+// One pop per entry, run when a queue drains.
 fn ints_clear(v: NatsInts) {
     while v.len() > 0 { let gone = v.pop() or 0; }
 }
@@ -45,9 +45,11 @@ locus NatsMsgLog {
 
     fn len() -> Int { return self.starts.len(); }
 
-    // @unbounded: the owner bounds the log (drop_front / clear); every
-    // owner in this lib does, and its README gives the soak.
-    @unbounded
+    // The log holds what its owner keeps open and cuts it (drop_front /
+    // clear): a connection's unacknowledged publishes, a client's messages
+    // set aside while a request waits. Every owner in this lib does, and
+    // its README gives the soak.
+    @bounded_by(owner)
     fn push(subject: String, data: Bytes) {
         self.starts.push(self.buf.len());
         self.buf.append_str(subject);
@@ -67,7 +69,7 @@ locus NatsMsgLog {
     }
 
     /// Forget the oldest `k` messages.
-    // @unbounded: one pass over the index; see ints_drop_front.
+    // One pass over the index; see ints_drop_front.
     fn drop_front(k: Int) {
         let n = self.starts.len();
         if k <= 0 { return; }

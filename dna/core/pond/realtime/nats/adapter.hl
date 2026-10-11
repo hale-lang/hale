@@ -164,7 +164,7 @@ locus NatsConn {
     closure delivery { captures: sent, acked, last_error; epoch inline; }
 
     // Record why delivery is in trouble.
-    // @unbounded: once per refused publish, server error, or the
+    // Once per refused publish, server error, or the
     // violation that ends this conn.
     fn note(what: String, detail: String) { self.last_error = what + detail; }
 
@@ -181,10 +181,10 @@ locus NatsConn {
     }
 
     // Runs on this locus's thread, between reads (run() yields for it).
-    // @unbounded: one entry per message the server has not acknowledged;
-    // advance() cuts them as acknowledgements arrive and the audit ends
-    // the conn if they stop.
-    @unbounded
+    // One entry per message the server has not acknowledged; advance()
+    // cuts them as acknowledgements arrive and the audit ends the conn if
+    // they stop.
+    @bounded_by(unacknowledged)
     fn on_out(o: Outbound) {
         if o.ack {
             if self.client.connected { self.client.pub_msg(o.subject, "", o.data) or discard; }
@@ -415,7 +415,7 @@ locus NatsConn {
         }
     }
 
-    // @unbounded: the connection's receive loop, for the conn's life;
+    // The connection's receive loop, for the conn's life;
     // each pass reads at most 256 frames or waits 10 ms.
     run() {
         let started = std::time::monotonic_ns();
