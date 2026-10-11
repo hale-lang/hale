@@ -17041,7 +17041,12 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
         close(sock);
         return -1;
     }
-    if (listen(sock, 16) < 0) {
+    /* SOMAXCONN, not 16: a std::http::Server on an async_io pool serves
+     * its connections concurrently, and a burst of clients larger than
+     * the backlog lost SYNs to the kernel and paid TCP's 1 s retransmit
+     * (50 concurrent requests took 2 s instead of 1). The kernel clamps
+     * the value to net.core.somaxconn. */
+    if (listen(sock, SOMAXCONN) < 0) {
         perror("lotus_tcp_listen_socket: listen");
         close(sock);
         return -1;
@@ -17061,6 +17066,16 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
 int lotus_io_on_async_io_pool(void) {
     lotus_coop_pool_t *p = g_current_pool_tls;
     return p && p->async_io_enabled;
+}
+
+/* `std::io::tcp::__parks()`: 1 when a blocking socket call made here
+ * parks the calling coroutine (an async_io pool's worker), 0 when it
+ * holds the thread (main, a pinned thread, a classic pool). The
+ * std::http::Server reads it to serve each connection on a coroutine of
+ * its own only where one parks: on a classic pool a connection's run()
+ * would queue behind the accept loop, which never returns. */
+int64_t lotus_tcp_parks(void) {
+    return lotus_io_on_async_io_pool() ? 1 : 0;
 }
 
 /* F.35 Slice 3: idempotent O_NONBLOCK toggle. Called by the

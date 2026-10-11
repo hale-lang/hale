@@ -898,6 +898,16 @@ pub struct FormShape {
 pub struct AllocSummary {
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
+    /// Flow loci: the types some `release(c: T)` clause names, the
+    /// stdlib's included. A flow's arena is reclaimed the moment its
+    /// `run()` returns (spec/semantics.md § "`release(c)` and flow
+    /// children"), so a flow `run()` with no loop of its own is one
+    /// activation, not a long-lived frame: it bounds what it and the free
+    /// fns it calls allocate, as a method's scratch does
+    /// ([`AllocSummary::scratchless_longlived`]). A flow whose `run()`
+    /// loops (a connection serving many messages) stays long-lived: what
+    /// its loop allocates accumulates for the connection's life.
+    pub flow_loci: BTreeSet<String>,
     /// One row per fn-like declaration, keyed by its identity.
     pub fns: BTreeMap<FnKey, FnSummary>,
     /// The row a call that spells `(locus, name)` reaches: the walk's
@@ -1243,6 +1253,7 @@ impl AllocSummary {
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
             by_name: self.by_name.iter().filter(|(_, k)| own_key(k)).map(|(n, k)| (n.clone(), k.clone())).collect(),
             bounded_loci: self.bounded_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
@@ -1342,13 +1353,21 @@ impl AllocSummary {
     /// lifetime arena. Member fns and bus handlers open a per-call
     /// method scratch, and a scratch-local free fn its own subregion
     /// ([`FnSummary::frees_at_return`]), so they STOP the propagation
-    /// — a value consumed there dies at its exit.
+    /// — a value consumed there dies at its exit. A flow's loop-free
+    /// `run()` is not long-lived either: it runs once per flow instance,
+    /// and the flow's arena is reclaimed when it returns
+    /// ([`AllocSummary::flow_loci`]), so it seeds nothing.
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
+        let flow_run = |f: &FnSummary| {
+            f.entry == Some(EntryKind::Run)
+                && f.loops.is_empty()
+                && f.key.locus.as_ref().is_some_and(|l| self.flow_loci.contains(l))
+        };
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
             .filter(|f| {
-                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run))
+                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f)
             })
             .map(|f| f.key.clone())
             .collect();
@@ -2146,6 +2165,22 @@ pub fn summarize_identified(
     // appearance as an accept() param type, or `main` status
     // disqualifies.
     let mut eager_only_loci: BTreeSet<String> = BTreeSet::new();
+    // The flow loci: every type a `release(c: T)` clause names.
+    let mut flow_loci: BTreeSet<String> = BTreeSet::new();
+    for program in programs {
+        for item in flat_decls(&program.items) {
+            let TopDecl::Locus(l) = item else { continue };
+            for member in &l.members {
+                if let LocusMember::Lifecycle(lc) = member {
+                    if lc.kind == LifecycleKind::Release {
+                        if let Some(n) = lc.params.first().and_then(|p| single_named_type_name(&p.ty)) {
+                            flow_loci.insert(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
     {
         let mut all: BTreeSet<String> = BTreeSet::new();
         let mut deferred: BTreeSet<String> = BTreeSet::new();
@@ -2652,6 +2687,7 @@ pub fn summarize_identified(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
+    summary.flow_loci = flow_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
     summary.appended_runtime_loci = runtime_loci;
     // What each body starts, and whose it is, for `reached`.

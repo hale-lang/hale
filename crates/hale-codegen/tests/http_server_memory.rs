@@ -48,6 +48,40 @@ const BIG_BODY_SERVER: &str = r#"
     }
 "#;
 
+// The same server placed on an async_io pool, where each connection is a
+// flow child of its own (reclaimed as its run() returns) rather than an
+// inline child: the per-request region still goes with the connection.
+const BIG_BODY_ASYNC_SERVER: &str = r#"
+    locus Big {
+        params { body: String = ""; }
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: self.body };
+        }
+    }
+    fn body() -> String {
+        let b = std::str::builder_new();
+        let mut i = 0;
+        while i < 20000 { std::str::builder_append(b, "{\"id\":" + i + ",\"t\":\"Kid\"},"); i = i + 1; }
+        return std::str::builder_finish(b);
+    }
+    main locus App {
+        params {
+            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            web: std::http::Server = std::http::Server {
+                host: "127.0.0.1",
+                port: self.port,
+                handler: Big { body: body() },
+                ready_signal: "ready"
+            };
+        }
+        placement { web: cooperative(pool = web) where async_io; }
+        run() {
+            while !self.draining { std::time::sleep(20ms); }
+        }
+    }
+    fn main() { App { }; }
+"#;
+
 fn rss_kb(pid: u32) -> u64 {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
     status
@@ -78,8 +112,21 @@ fn get(port: u16) -> usize {
 
 #[test]
 fn a_server_answering_large_bodies_keeps_its_memory_flat() {
-    let bin = harness::unique_bin("http_server_memory");
-    build_opts::build_source(BIG_BODY_SERVER, &bin, &build_opts::options()).expect("build");
+    memory_stays_flat(BIG_BODY_SERVER, "http_server_memory", 1);
+}
+
+#[test]
+fn a_concurrent_server_answering_large_bodies_keeps_its_memory_flat() {
+    // eight clients at a time, so connections are parked mid-response
+    // while others complete and are reclaimed
+    memory_stays_flat(BIG_BODY_ASYNC_SERVER, "http_server_memory_async", 8);
+}
+
+/// Warm the server with 50 requests, then send 400 more, `parallel` at a
+/// time: its resident set moves by at most a few chunks.
+fn memory_stays_flat(source: &str, name: &str, parallel: usize) {
+    let bin = harness::unique_bin(name);
+    build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut child = Command::new(&bin)
         .arg(port.to_string())
@@ -95,12 +142,20 @@ fn a_server_answering_large_bodies_keeps_its_memory_flat() {
     assert_eq!(ready.trim(), "ready", "the server did not start on {port}");
     let pid = child.0.id();
 
-    for _ in 0..50 {
-        assert!(get(port) > 400_000, "a full body");
+    let round = |n: usize| -> Vec<usize> {
+        let mut sizes = Vec::new();
+        for _ in 0..(n / parallel) {
+            let hs: Vec<_> = (0..parallel).map(|_| std::thread::spawn(move || get(port))).collect();
+            sizes.extend(hs.into_iter().map(|h| h.join().unwrap()));
+        }
+        sizes
+    };
+    for size in round(50) {
+        assert!(size > 400_000, "a full body");
     }
     let warm = rss_kb(pid);
-    for _ in 0..400 {
-        get(port);
+    for size in round(400) {
+        assert!(size > 400_000, "a full body");
     }
     let after = rss_kb(pid);
     drop(child);

@@ -840,6 +840,10 @@ and-resume instead of blocking the OS thread. The user code
 inside the locus is unchanged — `recv_bytes(stream)` reads the
 same line of source whether the pool is `async_io` or not; the
 substrate picks the right lowering at the syscall boundary.
+`std::http::Server` is the stdlib's case of it: placed on an
+`async_io` pool it serves each connection on a coroutine of its own,
+and anywhere else one connection at a time (`spec/stdlib.md` §
+"Server concurrency").
 
 **One worker thread per named cooperative pool — a promise, not
 an implementation detail** (Crumb batch-3, 2026-07-28). Every

@@ -398,9 +398,12 @@ interface __StdHttpHandler {
 // scope-flush mechanism, which closes the conn fd.
 //
 // Guards: a 5s recv timeout bounds a stalled (slowloris-style)
-// client on classic/pinned pools, where recv blocks the worker
-// thread; on async_io pools the fd is epoll-parked and a
-// stalled conn parks only its coroutine. A 1 MiB cap bounds
+// client. Where a blocking call holds the thread (main, a pinned
+// thread, a classic pool) the Server serves one connection at a
+// time, so a stalled client holds the whole server for up to that
+// long; on an async_io pool each connection is a coroutine of its
+// own (`__StdHttpServerFlow`), the recv parks only that one, and the
+// deadline still ends it. A 1 MiB cap bounds
 // total request bytes: a declared Content-Length over the cap
 // answers 413 before buffering; overflow without a complete
 // header block closes without a response (the framing can't be
@@ -492,6 +495,12 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
 // every response leaked its size (a 450 KB body grew RSS 450 KB a
 // request). Born per connection, dissolved when it is served, the child
 // takes that work's region with it.
+//
+// This child serves its connection inline, in its birth(), on the
+// Server's thread: the shape for main, a pinned thread and a classic
+// pool, where a blocking call holds the thread and nothing else could
+// run meanwhile anyway. (A child whose run() did the work would, on a
+// classic pool, be queued behind the accept loop, which never returns.)
 locus __StdHttpServerConn {
     params {
         conn_fd: Int = -1;
@@ -502,12 +511,57 @@ locus __StdHttpServerConn {
     }
 }
 
+// One connection on a coroutine of its own: the shape on an async_io
+// pool. Its run() is the connection's flow, posted to the pool while the
+// accept loop goes on accepting; a park in it (the request's recv, a
+// `sleep` or an outbound call in the handler, a send to a slow client)
+// yields the pool's one worker to the other connections and to the
+// accept loop. Its owner declares `release`, so it is a flow: reclaimed,
+// region and all, the moment run() returns — the GH #578 fix, per
+// connection.
+locus __StdHttpServerFlow {
+    params {
+        conn_fd: Int = -1;
+        handler: std::http::Handler;
+    }
+    run() {
+        __http_handle_one_conn(self.conn_fd, self.handler);
+    }
+}
+
+// The Server's connections in flight on an async_io pool. Their owner is
+// this child rather than the Server, so the Server itself declares no
+// `accept()` and can still be placed `pinned` (a pinned locus may not
+// accept). `active` counts the flows between their accept and their
+// release; the Server's bound and its drain read it.
+locus __StdHttpServerConns {
+    params {
+        active: Int = 0;
+    }
+    fn serve(conn_fd: Int, h: std::http::Handler) {
+        __StdHttpServerFlow { conn_fd: conn_fd, handler: h };
+    }
+    accept(c: __StdHttpServerFlow) {
+        self.active = self.active + 1;
+    }
+    release (c: __StdHttpServerFlow) {
+        self.active = self.active - 1;
+    }
+}
+
 /// The HTTP/1.1 server: binds host:port, accepts, reassembles
 /// each request (multi-segment safe, 1 MiB cap, 5s recv
 /// timeout), dispatches to `handler`, writes the response,
-/// closes (`Connection: close`; no keep-alive). `max_accepts`
-/// bounds the loop for tests; `ready_signal` prints when the
-/// listen socket is up; `shutdown()` is cross-thread safe.
+/// closes (`Connection: close`; no keep-alive). Placed on a
+/// `where async_io` pool it serves connections concurrently, a
+/// coroutine each (at most `max_connections` at once); anywhere
+/// else (main, pinned, a classic pool) one at a time. Calls to
+/// `handler.handle` never run in parallel: they share the pool's
+/// one thread and interleave only where a handler parks.
+/// `max_accepts` bounds the loop for tests; `ready_signal` prints
+/// when the listen socket is up; `shutdown()` is cross-thread
+/// safe, and run() returns once the connections in flight are
+/// answered (a drain, never a cut).
 locus __StdHttpServer {
     params {
         host: String = "127.0.0.1";
@@ -529,9 +583,17 @@ locus __StdHttpServer {
         // connect-with-retry. Empty (the default) skips the
         // print entirely. Canonical value: "READY".
         ready_signal: String = "";
+        // On an async_io pool, the most connections served at
+        // once: the next waits in the kernel's backlog until one
+        // ends. Bounds the descriptors and coroutine stacks (64 KiB
+        // each) a burst of slow requests holds. Elsewhere the server
+        // serves one at a time and this is not read.
+        max_connections: Int = 256;
         // not-yet-bound sentinel so dissolve() on a
         // partially-constructed Server skips the close.
         listen_fd: Int = -1;
+        // the connections in flight on an async_io pool (their owner)
+        conns: __StdHttpServerConns = __StdHttpServerConns { };
     }
     // v1.x polish (2026-05-20): violate at birth() when the
     // listen socket can't bind. Previously birth() proceeded
@@ -557,8 +619,16 @@ locus __StdHttpServer {
         }
     }
     run() {
+        // Where a blocking call parks (an async_io pool) each connection
+        // is a coroutine of its own; anywhere else it holds the thread
+        // whatever shape it has, so it is served inline.
+        let parks = std::io::tcp::__parks() == 1;
         let mut accepted = 0;
         while self.max_accepts < 0 || accepted < self.max_accepts {
+            // at the bound, a connection ends before the next is taken
+            while parks && self.conns.active >= self.max_connections {
+                std::time::sleep(1ms);
+            }
             let conn = std::io::tcp::__accept_one(self.listen_fd);
             // C-iii (2026-05-21): graceful exit on accept failure.
             // Before, a -1 return (fd closed cross-thread, listen
@@ -575,8 +645,19 @@ locus __StdHttpServer {
             if conn < 0 {
                 break;
             }
-            __StdHttpServerConn { conn_fd: conn, handler: self.handler };
+            if parks {
+                self.conns.serve(conn, self.handler);
+            } else {
+                __StdHttpServerConn { conn_fd: conn, handler: self.handler };
+            }
             accepted = accepted + 1;
+        }
+        // The drain: every connection accepted is answered before run()
+        // returns and dissolve() runs, so no connection's coroutine is
+        // ever torn down mid-request (`max_accepts` reached, or
+        // `shutdown()`). Inline connections are already done here.
+        while self.conns.active > 0 {
+            std::time::sleep(1ms);
         }
     }
     // C-iii (2026-05-21): cross-thread shutdown signal. Calls
