@@ -17,12 +17,16 @@
 use crate::ast::*;
 
 /// One thing a program spells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Spelled<'a> {
     /// An identifier, or a string the AST keeps as a `name`.
     Name(&'a str),
     /// Any other string the program writes.
     Text(&'a str),
+    /// A path as written (`dna::Senses`, `Review`, `Disposition::Review`),
+    /// reported before each of its segments is reported as a `Name`: a
+    /// reader that resolves what a path names needs the segments together.
+    Path(&'a [Ident]),
 }
 
 type Visit<'v, 'a> = dyn FnMut(Spelled<'a>) + 'v;
@@ -67,6 +71,7 @@ fn opt_text<'a>(s: &'a Option<String>, f: &mut Visit<'_, 'a>) {
 
 fn qualified<'a>(q: &'a QualifiedName, f: &mut Visit<'_, 'a>) {
     let QualifiedName { segments, span: _ } = q;
+    f(Spelled::Path(segments));
     names(segments, f);
 }
 

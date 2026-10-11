@@ -127,9 +127,11 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
     }
     let mut seeds: Vec<(&str, &str)> = wanted.iter().map(|(_, s)| (s.seed, s.bin)).collect();
     // with a project, the host answers memory's migration here and the
-    // launcher's `senses up` and `nerves migrate`: built beside the head
+    // launcher's `senses up` and `nerves migrate` (its verb program): its
+    // two programs built beside the head, as any host verb builds both
     if project.is_some() {
         seeds.push((hale_dna::HOST_SEED, hale_dna::HOST_BIN));
+        seeds.push((hale_dna::HOST_VERB_SEED, hale_dna::HOST_VERB_BIN));
     }
     let built = crate::iris::ensure_all_built_in(&cache, &seeds, "the head")?;
     let me = std::env::current_exe().map_err(|e| format!("cannot locate the hale binary: {e}"))?;

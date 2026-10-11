@@ -5327,18 +5327,31 @@ routes; it never plans on a reading.
 ## The host is a Hale program
 
 Everything `hale dna` does beside the compiler that is DNA behaviour
-rather than manifest or scaffolding is `dna/host`, a Hale seed
-embedded in the toolchain beside the core and the surface, built once
-into the toolchain cache. `hale dna <verb>`
-resolves the project from the manifest (the root, the application's
-seed, the fleet and its plan under `[dna]`) and execs the host:
-`host <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
-toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. The host owns the
-projections (`status`, `history`, `review`, `board`, `report`,
-`pressure`, `fleet`), the writers (`task create`, a verdict, `pressure raise`,
-`sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`,
-`dev`), in which it is its program's `main locus` and binds the nerves,
-and the node agent (`hale node`). It reads the record through
+rather than manifest or scaffolding is the host, `dna/host`, embedded
+in the toolchain beside the core and the surface. It is two programs
+over one seed, one command per process (GH #1490):
+
+- **the body**, `dna/host` itself: `run` and `dev` (the supervision, in
+  which the host is its program's `main locus` and binds the nerves),
+  `node` (the node agent, `hale node`) and `body-fence` (the renewer a
+  body starts beside itself, from its own binary). Each runs until it
+  is stopped.
+- **the verb program**, `dna/host/verb`: every other verb, one-shot —
+  the projections (`status`, `history`, `review`, `board`, `report`,
+  `pressure`, `fleet`), the writers (`task create`, a verdict,
+  `pressure raise`, `sync`, `deploy`, `rollback`, `github sync`) and
+  the rest. It imports the host's seed and starts no locus that runs
+  or handles the bus, so it runs to exit, and the memory-bound survey
+  judges it as it judges a script (`spec/verification.md`).
+
+`hale dna <verb>` resolves the project from the manifest (the root, the
+application's seed, the fleet and its plan under `[dna]`), builds both
+programs once into the toolchain cache (side by side, the first time
+any host verb needs either), and execs the one the verb belongs to in
+place — the pid that ran `hale dna <verb>` is the host:
+`<program> <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
+toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. Either program
+refuses a verb that is the other's. The host reads the record through
 the core's `GitJournal`, appends in a person's or a node's name with
 the ref compare-and-swapped, and starts every child — the
 organization, the application, iris, an instance — through `sh`,
@@ -5403,7 +5416,7 @@ does not identify that source — two builds of one version can embed
 different `dna/` source — so the toolchain names it (GH #726):
 `EMBEDDED_DIGEST` is a length-framed SHA-256 over the sorted `(path,
 content)` pairs of every embedded file (`dna/core`, `dna/host`,
-`dna/operations`, `dna/organization_runtime`,
+`dna/host/verb`, `dna/operations`, `dna/organization_runtime`,
 `dna/organization_source`, `dna/ui`, and pond's driver and NATS client
 pinned under `dna/core/pond`), computed when the toolchain is built. It is:
 

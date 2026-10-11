@@ -415,6 +415,8 @@ fn targets() -> Vec<String> {
             && !p.ends_with("tests")
             && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
     });
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push("dna/host/verb".to_string());
     out.sort();
     out
 }
@@ -549,10 +551,11 @@ fn per_target_moves() {
 }
 
 /// `factory_field_owner_test` loses `churn`'s in-loop
-/// temporary; `dna/host` loses three of its own fns' (two in
-/// `magnitude_facets`), and gains the caller-arena sites of its CLI verbs
-/// and of `Host::run`'s tick (`exit_code` → `alive`): of those with an
-/// author position, the advisory's, 133 appear and 2 go. Every other
+/// temporary; `dna/host` loses one of its own fns' sites and gains the
+/// caller-arena sites of what its body reaches, `Host::run`'s tick
+/// (`exit_code` → `alive`) among them. Its one-shot verbs are the verb
+/// program's since GH #1490 (`dna/host/verb`), which runs to exit and
+/// has no leak site on either side: it moves its dump alone. Every other
 /// target moves its dump's tags and reclaim columns alone.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
@@ -571,7 +574,8 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
     "dna/api: 0 go, 0 appear; dump 347 tags, 710 reclaim, 0 verdicts",
     "dna/core: 0 go, 0 appear; dump 279 tags, 630 reclaim, 0 verdicts",
-    "dna/host: 6 go, 284 appear; dump 413 tags, 700 reclaim, 686 verdicts",
+    "dna/host: 1 go, 31 appear; dump 413 tags, 773 reclaim, 43 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 413 tags, 700 reclaim, 658 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "dna/operations: 0 go, 0 appear; dump 337 tags, 702 reclaim, 0 verdicts",
     "dna/organism: 0 go, 0 appear; dump 290 tags, 648 reclaim, 0 verdicts",

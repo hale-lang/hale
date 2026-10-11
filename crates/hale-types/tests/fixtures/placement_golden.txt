@@ -12940,53 +12940,33 @@ shared	dynamic	sites in dna/core/pond/pq #39e83e0a
 dynamic	__StdBytesBytesBuilder	on main|pinned:Host@literal1.nerves|pinned:Host@literal2.nerves
 dynamic	__StdJsonBuilder	on main|pinned:Host@literal1.nerves|pinned:Host@literal2.nerves|unknown (no caller)
 -- dynamic	sites in dna/host
-dynamic	DesignStates	on main
-dynamic	DigestNames	on main
 dynamic	FileForge	on main
 dynamic	GitHubForge	on main
-dynamic	GovernanceCli	on main|unknown (no caller)
-dynamic	LocalTransport	on main
 dynamic	Node	on main
 dynamic	OrganizationRollbackCodec	on main
 dynamic	Projection	on main
-dynamic	RecordTaskWriterAdmission	on main
-dynamic	ReferenceInfrastructure	on main
-dynamic	SshTransport	on main
-dynamic	__StdJsonBuilder	on main
-dynamic	__StdSecretCredential	on main
+dynamic	__StdJsonBuilder	on main|unknown (no caller)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___forge__NoForge	on main
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
-dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
-dynamic	__lib_dna__core___memory_store__Pq	on main
+dynamic	__lib_dna__core___memory_store__Pq	on main|unknown (no caller)
 dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
 dynamic	__lib_dna__core___ownership__Ownership	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__GitJournal	on main
-dynamic	__lib_dna__core___record__GitReceipts	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___routing__RoutedJournal	on main
-dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no caller)
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no caller)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no caller)
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main
-dynamic	__lib_dna__operations___governance_policy__FixedAuthority	on main
-dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main
-dynamic	__lib_dna__operations___queries__Queries	on main
-dynamic	__lib_dna__operations___usage__Usage	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)
+dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main|unknown (no caller)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on main|unknown (no caller)
 dynamic	__lib_dna__organization_runtime___launch__OrganizationLaunchSource	on main
 dynamic	__lib_dna__organization_source___publication_guard__OrganizationPublicationInputs	on main
 dynamic	__lib_iris__process_identity___main__Identity	on main
 -- dynamic	sites in dna/operations
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdIterLines	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no instance)
@@ -13009,7 +12989,6 @@ dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on main|unknown (no instance)
-dynamic	__lib_dna__operations___graph__GraphEdge	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main|unknown (no instance)

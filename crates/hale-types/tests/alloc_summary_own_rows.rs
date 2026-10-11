@@ -67,6 +67,8 @@ fn targets() -> Vec<String> {
             && !p.ends_with("tests")
             && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
     });
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push("dna/host/verb".to_string());
     out.sort();
     out
 }

@@ -45,7 +45,7 @@ pub const FILES: &[EmbeddedFile] = &[
 
 /// Everything the toolchain cache holds: the iris tree, and beside it
 /// the DNA sources `hale dna` builds from the same cache under the
-/// same build lock — the host and the surface,
+/// same build lock — the host (its body and its verb program) and the surface,
 /// with the core, operations and pond's driver they import — and the
 /// head `hale dna head` builds and launches (`hale_dna::HEAD_FILES`: its
 /// seeds, the face's assets and `dna/face/start.sh`), so the key covers
@@ -60,6 +60,7 @@ pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
         .chain(std::iter::once((hale_dna::UI_MAIN.path, hale_dna::UI_MAIN.content)))
         .chain(std::iter::once((hale_dna::UI_HTML.path, hale_dna::UI_HTML.content)))
         .chain(hale_dna::HOST_FILES.iter().map(|f| (f.path, f.content)))
+        .chain(hale_dna::HOST_VERB_FILES.iter().map(|f| (f.path, f.content)))
         .chain(hale_dna::OPERATION_FILES.iter().map(|f| (f.path, f.content)))
         .chain(hale_dna::ORGANIZATION_FILES.iter().map(|f| (f.path, f.content)))
         .chain(hale_dna::HEAD_FILES.iter().map(|f| (f.path, f.content)))
@@ -301,7 +302,7 @@ mod tests {
             assert!(!content.is_empty(), "{} is empty", path);
             assert!(seen.insert(path), "{} listed twice", path);
         }
-        for seed in [hale_dna::HOST_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED, hale_dna::HEAD_API.seed, hale_dna::HEAD_SERVICE.seed, hale_dna::HEAD_OIDC.seed, hale_dna::HEAD_REFLEXES.seed] {
+        for seed in [hale_dna::HOST_SEED, hale_dna::HOST_VERB_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED, hale_dna::HEAD_API.seed, hale_dna::HEAD_SERVICE.seed, hale_dna::HEAD_OIDC.seed, hale_dna::HEAD_REFLEXES.seed] {
             let dir = format!("{seed}/");
             assert!(all_files().any(|(p, _)| p.starts_with(&dir)), "hale dna builds {seed} from this cache");
         }

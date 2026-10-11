@@ -679,6 +679,8 @@ pub const IDENTITIES: &[Identity] = &[
 pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
     ("dna/core", &["hl"]),
     ("dna/host", &["hl"]),
+    // the host's verb program (GH #1490): its own seed, beside the body's
+    ("dna/host/verb", &["hl"]),
     ("dna/operations", &["hl"]),
     ("dna/organization_runtime", &["hl"]),
     ("dna/organization_source", &["hl"]),

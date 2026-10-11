@@ -148,12 +148,38 @@ macro_rules! host {
 
 /// The host (`dna/host`, GH #566 F8): what `hale dna` does beside the
 /// compiler — the projections, the record's sync and appends in a
-/// person's name, the relay onto the nerves, the supervision — as a Hale
-/// program `hale dna` builds once into the toolchain cache and execs
-/// with the project resolved.
+/// person's name, the relay onto the nerves, the supervision — as Hale
+/// programs `hale dna` builds once into the toolchain cache and execs
+/// with the project resolved. This seed is the host's body (`run`,
+/// `dev`, `node`, `body-fence`: the `main locus` and the renewer beside
+/// it), and the library the verb program imports.
 pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
+
+/// The host's verb program (`dna/host/verb`, GH #1490): every one-shot
+/// verb, one per process, over the host's seed imported. It starts no
+/// locus that runs or handles the bus, so it runs to exit.
+pub const HOST_VERB_FILES: &[EmbeddedFile] = &[EmbeddedFile {
+    path: "dna/host/verb/main.hl",
+    content: include_str!("../../../dna/host/verb/main.hl"),
+}];
+pub const HOST_VERB_SEED: &str = "dna/host/verb";
+pub const HOST_VERB_BIN: &str = "dna/host/verb/verb";
+
+/// The verbs the host's body runs: each starts a process that runs until
+/// it is stopped. Every other host verb is the verb program's.
+pub const HOST_BODY_VERBS: [&str; 4] = ["run", "dev", "node", "body-fence"];
+
+/// The seed and the binary that answer `verb`: the body for
+/// [`HOST_BODY_VERBS`], the verb program for every other.
+pub fn host_program_for(verb: &str) -> (&'static str, &'static str) {
+    if HOST_BODY_VERBS.contains(&verb) {
+        (HOST_SEED, HOST_BIN)
+    } else {
+        (HOST_VERB_SEED, HOST_VERB_BIN)
+    }
+}
 
 macro_rules! at {
     ($($path:literal),* $(,)?) => {
@@ -378,6 +404,7 @@ pub fn embedded_files() -> impl Iterator<Item = &'static EmbeddedFile> {
     FILES
         .iter()
         .chain(HOST_FILES)
+        .chain(HOST_VERB_FILES)
         .chain(OPERATION_FILES)
         .chain(ORGANIZATION_FILES)
         .chain(POND_FILES)
@@ -420,6 +447,16 @@ mod tests {
         let mut host_embedded: Vec<String> = HOST_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
         host_embedded.sort();
         assert_eq!(host_embedded, host_on_disk, "a dna/host file was added or removed without updating hale-dna");
+        let verb_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(HOST_VERB_SEED);
+        let mut verb_on_disk: Vec<String> = std::fs::read_dir(&verb_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).map(|n| format!("{HOST_VERB_SEED}/{n}")).collect();
+        verb_on_disk.sort();
+        let mut verb_embedded: Vec<String> = HOST_VERB_FILES.iter().map(|f| f.path.to_string()).collect();
+        verb_embedded.sort();
+        assert_eq!(verb_embedded, verb_on_disk, "a dna/host/verb file was added or removed without updating hale-dna");
+        for (seed, bin) in [(HOST_SEED, HOST_BIN), (HOST_VERB_SEED, HOST_VERB_BIN)] {
+            let name = seed.rsplit('/').next().unwrap();
+            assert_eq!(bin, format!("{seed}/{name}"), "`hale build` names a seed's binary after its directory");
+        }
         let operations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/operations");
         let mut operations_on_disk: Vec<String> = std::fs::read_dir(&operations_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).collect();
         operations_on_disk.sort();
@@ -465,6 +502,24 @@ mod tests {
         let mut legs_embedded: Vec<String> = LEGS_FILES.iter().map(|f| f.path.to_string()).collect();
         legs_embedded.sort();
         assert_eq!(legs_embedded, legs_on_disk, "a dna/core/legs file was added or removed without updating hale-dna");
+    }
+
+    /// GH #1490: the CLI execs the body for `HOST_BODY_VERBS` and the verb
+    /// program for every other verb; the body's `main` dispatches exactly
+    /// those, and the verb program refuses each of them.
+    #[test]
+    fn a_host_verb_runs_in_its_program() {
+        let body = HOST_FILES.iter().find(|f| f.path == "dna/host/main.hl").unwrap().content;
+        let verbs = HOST_VERB_FILES[0].content;
+        for v in HOST_BODY_VERBS {
+            assert_eq!(host_program_for(v), (HOST_SEED, HOST_BIN));
+            let spelled = format!("verb == \"{v}\"");
+            assert!(body.contains(&spelled), "the body's main dispatches `{v}`");
+            assert!(verbs.contains(&spelled), "the verb program refuses `{v}`");
+        }
+        for v in ["status", "review", "apply", "sync", "memory-migrate", "record-seed"] {
+            assert_eq!(host_program_for(v), (HOST_VERB_SEED, HOST_VERB_BIN));
+        }
     }
 
     /// `hale dna head` builds the head from `HEAD_FILES` alone: every file

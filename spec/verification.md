@@ -1737,6 +1737,16 @@ assume the others in a build:
     `hale/allocSummary` decide with the same rule);
     run-to-exit programs (a `main` with no `run` loop and no bus handler
     of the program's own) warn nothing — a script owes the proof nothing.
+    A `run` loop or bus handler counts only on a locus the program can
+    start (GH #1490): every locus its own seed declares, and every
+    imported or stdlib locus a path in a fn its `main` reaches (or in a
+    started locus's declaration) names — a literal, a param field of its
+    type, a binding's adapter. An imported seed's handlers run in the
+    processes that start them, so a program that only calls a seed's
+    fns runs to exit however many handlers the seed declares (the host's
+    verb program over `dna/host` and `dna/core`). A call through a
+    function value the walk cannot resolve leaves the set unknown, and
+    every own `run` loop and handler counts, as before.
     The survey judges the program's own sites over the whole program:
     calls into imported seeds and into the stdlib's Hale-source bodies
     are followed, so a site reached unboundedly through them (a stdlib

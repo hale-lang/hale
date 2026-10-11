@@ -22,6 +22,10 @@ iris_dir=$("$hale" iris --where)
 host_bin=$iris_dir/dna/host/host
 host_ir=$iris_dir/dna/host/host.ll
 host_ir_size=$iris_dir/dna/host/host.ir-size
+# the host's verb program (GH #1490), built beside the body by the same
+# first host verb; its IR is dumped too, and not kept
+verb_bin=$iris_dir/dna/host/verb/verb
+verb_ir=$iris_dir/dna/host/verb/verb.ll
 
 # The host's IR size, a standing check between closes (F.40 phase 4):
 # phase 3's build regression on dna/host showed first as IR growth
@@ -35,6 +39,7 @@ host_ir_size=$iris_dir/dna/host/host.ir-size
 # always has its numbers.
 if [[ -s "$host_bin" && ! -s "$host_ir_size" ]]; then rm -f -- "$host_bin"; fi
 LOTUS_DUMP_IR=1 "$hale" dna new "$tmp/warm" >/dev/null
+rm -f -- "$verb_ir"
 if [[ -f "$host_ir" ]]; then
     echo "lines=$(( $(wc -l < "$host_ir") )) defines=$(grep -c '^define ' "$host_ir")" \
          "calls=$(grep -cE '^[[:space:]]+(%[^ ]+ = )?((tail|musttail|notail) )?call ' "$host_ir")" > "$host_ir_size"
@@ -77,10 +82,13 @@ if [[ ! -e "$tests_cache/hale" ]]; then ln -s "$cache/hale" "$tests_cache/hale";
 # say the size — right here, before the caller's save step trusts
 # this directory.
 sizes="host=$(stat -c%s "$host_bin" 2>/dev/null || stat -f%z "$host_bin" 2>/dev/null || echo MISSING)"
-if [[ ! -s "$host_bin" ]]; then
-    echo "warm: FAILED — $host_bin is missing or empty after the build that was supposed to produce it" >&2
-    exit 1
-fi
+for bin in "$host_bin" "$verb_bin"; do
+    if [[ ! -s "$bin" ]]; then
+        echo "warm: FAILED — $bin is missing or empty after the build that was supposed to produce it" >&2
+        exit 1
+    fi
+done
+sizes="$sizes verb=$(stat -c%s "$verb_bin" 2>/dev/null || stat -f%z "$verb_bin" 2>/dev/null || echo MISSING)"
 if [[ "${HALE_WARM_SKIP_IRIS:-}" != 1 ]]; then
     observer_bin=$iris_dir/iris/consumer/fuse-hl/fuse-hl
     sizes="$sizes observer=$(stat -c%s "$observer_bin" 2>/dev/null || stat -f%z "$observer_bin" 2>/dev/null || echo MISSING)"

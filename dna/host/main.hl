@@ -1,13 +1,18 @@
-// dna/host — the host: what `hale dna` does beside the compiler, as a
-// Hale program (GH #566 F8). `hale dna <verb>` builds it once into the
-// toolchain cache and execs it with the project resolved:
+// dna/host — the host: what `hale dna` does beside the compiler, as Hale
+// (GH #566 F8). Two programs share this seed. This one is the host's
+// body: `run`, `dev` and `node` start the `main locus` (`Host`), and
+// `body-fence` is the renewer a body starts beside itself. The one-shot
+// verbs — status, review, apply and the rest — are the verb program's
+// (`dna/host/verb`), which imports this seed and answers one verb per
+// process (GH #1490). `hale dna <verb>` builds both once into the
+// toolchain cache and execs the one the verb belongs to, with the
+// project resolved:
 //
-//   host <verb> <root> <seed> <fleet> <plan> [args…]
+//   <program> <verb> <root> <seed> <fleet> <plan> [args…]
 //
 // with HALE_BIN (the toolchain) and HALE_DNA_TOOLCHAIN (its version) in
-// the environment. It prints what the verb answers and exits with its
-// status. It decides nothing. A one-shot verb never publishes: it
-// writes its row, and a node — `run` or `dev`, the program's `main
+// the environment. It decides nothing. A one-shot verb never publishes:
+// it writes its row, and a node — `run` or `dev`, this program's `main
 // locus` (`Host`) — relays it onto the nerves (GH #986).
 
 import "../core" as dna;
@@ -123,6 +128,14 @@ fn parse_args(raw: String, valued: String) -> Args {
     return a;
 }
 
+// The flags that take a value, for every verb of both programs.
+fn verb_args() -> Args {
+    return parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at --pack --steps --retire-pack ");
+}
+
+// The host's body: `run` and `dev` start the `main locus` (`Host`), `node`
+// starts it over a Node, and `body-fence` is the renewer a body starts
+// beside itself from this binary. Each runs until it is stopped.
 fn main() {
     let verb = arg(1);
     let root = arg(2);
@@ -132,37 +145,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at --pack --steps --retire-pack ");
-    if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
-        eprintln("hale dna: --request-id requires a nonempty value");
-        std::process::exit(1);
-    }
-    let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
-    if (verb == "board" || verb == "review") && !organism_here(root, memory) { let s = sync_record(root, memory); }
-    if verb == "fleet" { let s = sync_record(root, memory); }
-    if verb == "status" {
-        ans = status_verb(root, seed, toolchain, has_flag(a, "--json"), memory);
-    } else if verb == "history" {
-        ans = history_verb(root, word(a, 0), memory);
-    } else if verb == "review" {
-        let no_head = record_refusal(root);
-        if len(no_head) > 0 { ans = fail(no_head); }
-        else {
-            let p = open_projection(root, seed, toolchain, memory);
-            let id = word(a, 0);
-            if len(id) == 0 { ans = review_list(p); } else { ans = render_review(p, id, has_flag(a, "--iris")); }
-        }
-    } else if verb == "board" || verb == "report" || verb == "pressure" || verb == "fleet" {
-        let no_head = record_refusal(root);
-        if len(no_head) > 0 { ans = fail(no_head); }
-        else {
-            let p = open_projection(root, seed, toolchain, memory);
-            if verb == "board" { ans = board_verb(p); }
-            if verb == "report" { ans = report_verb(p, memory); }
-            if verb == "pressure" { ans = pressure_list(p); }
-            if verb == "fleet" { ans = fleet_list(p, fleet, plan); }
-        }
-    }
+    let a = verb_args();
     if verb == "body-fence" {
         fence_main(flag(a, "--holder"), std::str::parse_int(flag(a, "--token")) or 0, std::str::parse_int(flag(a, "--expires")) or 0, std::str::parse_int(flag(a, "--host-pid")) or 0, memory);
         return;
@@ -176,158 +159,6 @@ fn main() {
         node_main(word(a, 0), root, flag(a, "--fleet"), if len(tick) > 0 { std::str::parse_int(tick) or 1000 } else { 1000 });
         return;
     }
-    if verb == "verdict" && has_flag(a, "--evidence") {
-        // GH #1161: a gate's run is the forge's, observed by the host
-        ans = fail("review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)");
-    } else if verb == "verdict" {
-        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
-    } else if verb == "raise" {
-        ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)), memory);
-    } else if verb == "concern-raise" {
-        let sev = flag(a, "--severity");
-        ans = concern_raise(root, word(a, 0), join_words(drop_first_word(a.words)), if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 }, memory);
-    } else if verb == "task" {
-        // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
-        // the outcome is every word after the subverb (asking is one kind of task)
-        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"), has_flag(a, "--judgment"), flag(a, "--size"), memory); }
-        // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
-        else if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), flag(a, "--evidence"), flag(a, "--exception"), flag(a, "--authorized-by"), memory); }
-        else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as"), memory); }
-        // GH #667: `hale dna task accept <id> [--as <who>] [--note …]`
-        else if word(a, 0) == "accept" { ans = task_accept_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), memory); }
-        // GH #616: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>`
-        else if word(a, 0) == "authorize" { ans = task_authorize_verb(root, seed, word(a, 1), flag(a, "--exception"), flag(a, "--as"), memory); }
-        else if word(a, 0) == "decide" { ans = task_decide_verb(root, seed, word(a, 1), flag(a, "--decided-by"), flag(a, "--via"), flag(a, "--evidence"), flag(a, "--note"), flag(a, "--as"), memory); }
-        else { ans = fail("task: `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`, `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]`, `hale dna task accept <id> [--as <who>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`"); }
-    } else if verb == "effect" {
-        // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
-        if word(a, 0) == "resolve" { ans = effect_resolve_verb(root, seed, word(a, 1), flag(a, "--outcome"), flag(a, "--as"), flag(a, "--note"), memory); }
-        else { ans = fail("effect: `hale dna effect resolve <key> --outcome ok|failed [--as <who>] [--note …]`"); }
-    } else if verb == "retire" {
-        // GH #604 rule 5: `hale dna retire <who> [--to <successor>] [--as <by>]`
-        ans = retire_verb(root, seed, word(a, 0), flag(a, "--to"), flag(a, "--as"), memory);
-    } else if verb == "sync" {
-        ans = sync_verb(root, memory);
-    } else if verb == "candidates" {
-        // #649: the candidates the record keeps, whatever the review decided
-        ans = candidates_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--why"), flag(a, "--as"), memory);
-    } else if verb == "ledger" {
-        // GH #646 stage 1: the operational memory, adopted by an explicit step
-        ans = ledger_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--as"), memory);
-    } else if verb == "memory-migrate" {
-        // GH #985: memory's schema, applied with the owner's DSN
-        ans = memory_migrate_verb(root);
-    } else if verb == "nerves-migrate" {
-        // GH #986: the nerves' stream, created with the owner's URL
-        ans = nerves_migrate_verb(root);
-    } else if verb == "nerves-drop" {
-        ans = nerves_drop_verb(root);
-    } else if verb == "secrets-provision" {
-        // GH #989: the organism's secrets, provisioned (init, upgrade)
-        ans = secrets_provision_verb(root, has_flag(a, "--rotate"));
-    } else if verb == "application-remove" {
-        // GH #989: the attached application detached, its account revoked
-        ans = application_remove_verb(root, flag(a, "--as"));
-    } else if verb == "secrets" {
-        // GH #989: what the organism requires, and what the vault holds
-        ans = secrets_status_verb(root);
-    } else if verb == "senses-up" {
-        // GH #988: the senses' store, compose's `senses` service brought up
-        ans = senses_up_verb(root);
-    } else if verb == "record-head" {
-        ans = record_head_verb(root);
-    } else if verb == "record-seed" {
-        // `hale dna init` seeds the record through the host: its rows, one
-        // JSON object per line in a file, and the declared purpose (GH #995)
-        ans = record_seed_verb(root, word(a, 0), word(a, 1), memory);
-    } else if verb == "show" {
-        // GH #1086: `hale dna show org | processes [--json]`, queries over memory
-        ans = show_verb(root, word(a, 0), has_flag(a, "--json"));
-    } else if verb == "graph-reingest" {
-        // `hale dna ingest [--at <rev>]`: the CLI checks the commit out, the
-        // host diffs it against the record and proposes the difference
-        ans = graph_reingest_verb(root, word(a, 0), flag(a, "--at"), memory);
-    } else if verb == "position" {
-        // `hale dna position open <name> --mandate "<text>" [--text …] [--under …]`
-        if word(a, 0) == "open" { ans = position_open_verb(root, seed, word(a, 1), flag(a, "--mandate"), flag(a, "--text"), flag(a, "--under"), flag(a, "--as"), memory); }
-        else { ans = fail("position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`"); }
-    } else if verb == "apply" {
-        // `hale dna apply <file> [--dry-run] [--as <who>]`: a batch of changes to the structure, one Board Review
-        ans = apply_verb(root, seed, word(a, 0), flag(a, "--steps"), has_flag(a, "--dry-run"), flag(a, "--as"), flag(a, "--pack"), flag(a, "--retire-pack"), memory);
-    } else if verb == "nursery-sources" {
-        // the nurseries the Board trusts (`hale dna nursery list`, and the
-        // check `hale dna pack apply --from <git URL>` makes)
-        ans = nursery_sources_verb(root, memory);
-    } else if verb == "vacate" {
-        // `hale dna vacate <position> <holder>`: a one-step batch
-        ans = vacate_verb(root, seed, word(a, 0), word(a, 1), has_flag(a, "--dry-run"), flag(a, "--as"), memory);
-    } else if verb == "fill" {
-        // GH #1091: `hale dna fill <position> <holder>`, a holder proposed through the organization
-        ans = fill_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), memory);
-    } else if verb == "route" {
-        // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`
-        ans = route_verb(root, a);
-    } else if verb == "graph-ingest" {
-        // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
-        ans = graph_ingest_verb(root, word(a, 0), flag(a, "--rows"), flag(a, "--app"), flag(a, "--description"), memory);
-    } else if verb == "design-upgrade" {
-        // `hale dna init` / `upgrade`: the toolchain's design as proposals
-        ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);
-    } else if verb == "library-seed" {
-        // `hale dna init`: the toolchain's library, each idea bound to its node, as proposals
-        ans = library_seed_verb(root, word(a, 0), word(a, 1), has_flag(a, "--upgrade"), toolchain, memory);
-    } else if verb == "body" {
-        // GH #617: the body lease from the CLI; the body on a server
-        let sub = word(a, 0);
-        if sub == "provision" { ans = body_provision_verb(root, word(a, 1), flag(a, "--dsn"), flag(a, "--dir"), has_flag(a, "--dry-run"), flag(a, "--as"), memory); }
-        else if sub == "start" || sub == "stop" || sub == "logs" { ans = body_ctl_verb(root, sub, flag(a, "--body")); }
-        else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as"), memory); }
-    } else if verb == "practice" {
-        // GH #602: `hale dna practice [propose <name> --text <t> [--because …] [--supersedes <digest>]]`
-        ans = practice_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--text"), flag(a, "--because"), flag(a, "--supersedes"), flag(a, "--as"), flag(a, "--request-id"), has_flag(a, "--no-wait"), memory);
-    } else if verb == "connect" {
-        // GH #615: `hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <c,…>]`
-        ans = connect_verb(root, seed, word(a, 0), flag(a, "--name"), flag(a, "--as"), flag(a, "--purpose"), flag(a, "--classes"), flag(a, "--by"), memory);
-    } else if verb == "disconnect" {
-        ans = disconnect_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--by"), memory);
-    } else if verb == "handoff" {
-        let sub = word(a, 0);
-        if len(sub) == 0 { ans = handoff_list_verb(root, seed, memory); }
-        else if sub == "accept" { ans = handoff_accept_verb(root, seed, word(a, 1), flag(a, "--note"), flag(a, "--as"), memory); }
-        else if sub == "sync" { ans = handoff_sync_verb(root, seed, memory); }
-        else { ans = handoff_publish_verb(root, seed, sub, word(a, 1), word(a, 2), flag(a, "--note"), flag(a, "--as"), memory); }
-    } else if verb == "receipt" {
-        // GH #606: protected evidence
-        if word(a, 0) == "file" { ans = receipt_file_verb(root, word(a, 1), flag(a, "--class"), flag(a, "--as"), memory); }
-        else { ans = receipt_verb(root, word(a, 0), word(a, 1), flag(a, "--to"), flag(a, "--purpose"), flag(a, "--as"), flag(a, "--why"), flag(a, "--policy"), memory); }
-    } else if verb == "schedule" {
-        // GH #610, #1143: the schedules, declare, and pause/resume as rows
-        ans = schedule_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--every"), flag(a, "--cron"), flag(a, "--definition"), flag(a, "--args"), flag(a, "--convener"), memory);
-    } else if verb == "secret" {
-        ans = secret_verb(root, word(a, 0), word(a, 1), flag(a, "--body"), flag(a, "--as"), memory);
-    } else if verb == "profile" {
-        ans = profile_verb(root, memory);
-    } else if verb == "deploy" {
-        ans = deploy_verb(root, fleet, plan, word(a, 0), false, memory);
-    } else if verb == "rollback" {
-        ans = deploy_verb(root, fleet, plan, word(a, 0), true, memory);
-    } else if verb == "github" {
-        ans = github_verb(root, seed, word(a, 0), memory);
-    } else if verb == "models-map" {
-        // the model mapping's tables, as rows (dna/core/model_map.hl)
-        ans = model_map_verb(root, word(a, 0), word(a, 1), word(a, 2), flag(a, "--permit"), has_flag(a, "--tools"), flag(a, "--price-in"), flag(a, "--price-out"), flag(a, "--as"), memory);
-    } else if verb == "models" {
-        ans = models_verb(root, std::env::var("HALE_BIN"));
-    } else if verb == "work" {
-        ans = work_verb(root, std::env::var("HALE_BIN"));
-    } else if verb == "definitions" {
-        // GH #995: the workflow catalog, with revisions and each step's store
-        ans = definitions_verb(root, std::env::var("HALE_BIN"), has_flag(a, "--json"));
-    }
-    if ans.ok {
-        print(ans.text);
-        return;
-    }
-    eprintln("hale dna: ", ans.text);
+    eprintln("hale dna: `", verb, "` is a one-shot verb, which the host's verb program answers (dna/host/verb); this program is the host's body: run, dev, node and body-fence");
     std::process::exit(1);
 }
