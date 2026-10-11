@@ -203,13 +203,14 @@ locus App {
         std::test::assert(head.start("env\nHALE_DNA_RPC_SOCKET=" + sock + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
         std::test::assert(wait_socket(sock), "the head's surface is listening");
 
-        // Seated nowhere, a principal may raise work and look a command
-        // up — the ungated rows — and nothing else. The call reaches the
-        // handler: the standalone head composes no provider, and the
-        // handler answers the provider's refusal.
+        // Seated nowhere, a principal may raise work, look a command up and
+        // preview a batch — the ungated rows — and nothing else. The call
+        // reaches the handler: the standalone head composes no provider,
+        // and the handler answers the provider's refusal; a preview asks
+        // nothing of a provider, so even this head answers it.
         let none = hc::api_describe(sock, "");
         std::test::assert(has(none, "\"surface\":\"HeadCommands\""), "the head serves its description: " + none);
-        std::test::assert_eq_str(members_of(none), "Commands::create_task Commands::lookup Commands::lookup_knowledge", "seated nowhere: the ungated rows only");
+        std::test::assert_eq_str(members_of(none), "Commands::create_task Commands::lookup Commands::lookup_knowledge Commands::preview_batch", "seated nowhere: the ungated rows only");
         // the served description is the surface `hale check --api` printed:
         // one digest
         let at = std::str::index_of(emitted.stdout, "\"digest\": \"");
@@ -220,6 +221,13 @@ locus App {
         std::test::assert_eq_str(hc::SURFACE_DIGEST, checked_digest, "which is the digest the generated client names and sends");
         let looked = lookup_text(hc::commands_lookup(sock, "", hc::Lookup { request_id: "look-1" }));
         std::test::assert_eq_str(looked, "result:commands_unsupported", "lookup reaches the handler");
+        let planned = match hc::commands_preview_batch(sock, "", hc::BatchDraft { steps: "open web/dev | Decides: the web client.\n" }) {
+            hc::CommandsPreviewBatchOutcome::Result(r) -> if r.ok { r.added } else { "refused:" + r.code + r.why },
+            hc::CommandsPreviewBatchOutcome::Refusal(f) -> refused(f),
+            hc::CommandsPreviewBatchOutcome::ServerError -> "server_error",
+            hc::CommandsPreviewBatchOutcome::Lost(why) -> "lost:" + why,
+        };
+        std::test::assert_eq_str(planned, "position position:web/dev\nmandate position:web/dev\n", "a batch is previewed with no provider and no seat");
         let denied = friction(sock);
         std::test::assert(has(denied, "refusal:unauthorized:Commands::file_friction requires position") && has(denied, ":position"), "a friction entry needs a position: " + denied);
 
@@ -227,7 +235,7 @@ locus App {
         // row but the reviewer's, listed the moment the record says so.
         let ada_board = self.holds(j, "board", "ada");
         let seated = self.slice_with(sock, "Commands::reassign_task");
-        std::test::assert_eq_str(members_of(seated), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "the board's slice: the owner's and a position's rows, not the reviewer's");
+        std::test::assert_eq_str(members_of(seated), "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "the board's slice: the owner's and a position's rows, not the reviewer's");
         // The exposure follows the record: once ada holds a seat the role
         // source says so (it reads the record within its one-second bound)
         // and the friction entry reaches the handler.
@@ -248,7 +256,7 @@ locus App {
         // ada is seated as reviewer too: the verdict joins the slice.
         self.holds(j, "reviewer", "ada");
         let reviewing = self.slice_with(sock, "Commands::verdict");
-        std::test::assert_eq_str(members_of(reviewing), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "every row");
+        std::test::assert_eq_str(members_of(reviewing), "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "every row");
 
         // The record moves: the board's edge is taken out, and the source
         // reads it fresh — it asks the git record whether it moved at
@@ -262,7 +270,7 @@ locus App {
             gone = hc::api_describe(sock, "");
             tries = tries + 1;
         }
-        std::test::assert_eq_str(members_of(gone), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "the reviewer's seat still holds a position: the owner's three rows are gone, the rest stay");
+        std::test::assert_eq_str(members_of(gone), "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict", "the reviewer's seat still holds a position: the owner's three rows are gone, the rest stay");
         let not_owner = retire_person_text(hc::commands_retire_person(sock, "", hc::PersonRetirement { request_id: "p-1", person: "grace", subject_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", to: "" }));
         std::test::assert(has(not_owner, "refusal:unauthorized") && has(not_owner, ":owner"), "retiring a person is the board's: " + not_owner);
 

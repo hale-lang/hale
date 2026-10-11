@@ -895,6 +895,58 @@ fn batch_render(plan: BatchPlan) -> String {
     return out + to_string(added) + " line(s) added to the organization, " + to_string(gone) + " taken out, " + to_string(kept) + " unchanged\n";
 }
 
+// What a planned batch changes, as data: the lines of the after chart the
+// batch adds, the lines of the before chart it takes out, and the lines it
+// leaves alone, one a line (`batch_render` prints the same three).
+type BatchDiff {
+    added: String = "";
+    removed: String = "";
+    unchanged: String = "";
+}
+
+@unbounded
+fn batch_diff(plan: BatchPlan) -> BatchDiff {
+    let mut added = "";
+    let mut removed = "";
+    let mut unchanged = "";
+    let mut rest = plan.after;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::contains("\n" + plan.before, "\n" + line + "\n") { unchanged = unchanged + line + "\n"; } else { added = added + line + "\n"; }
+    }
+    rest = plan.before;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::contains("\n" + plan.after, "\n" + line + "\n") { removed = removed + line + "\n"; }
+    }
+    return BatchDiff { added: added, removed: removed, unchanged: unchanged };
+}
+
+// The Review of a batch with these normalized steps the Board has not
+// decided yet, "" when there is none: the same steps still pending are the
+// same proposal, asked once (`hale dna apply`, `Commands::apply_batch`).
+@unbounded
+fn batch_pending(j: Journal, steps: String) -> String {
+    let mut proposed = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "batch.proposed" && native_json_string(e.body, "steps") == steps { proposed = proposed + native_json_string(e.body, "review_id") + "\n"; }
+        i = i + 1;
+    }
+    while len(proposed) > 0 {
+        let nl = std::str::index_of(proposed, "\n");
+        let id = proposed[0..nl];
+        proposed = proposed[(nl + 1)..len(proposed)];
+        if len(first_row(j, "review.settled", id).kind) == 0 { return id; }
+    }
+    return "";
+}
+
 // One `{kind, entity, body}` row, as a line.
 fn batch_row(kind: String, entity: String, body: String) -> String {
     let b = std::json::Builder { };

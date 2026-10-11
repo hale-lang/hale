@@ -606,6 +606,17 @@ nursery is named with `--from`: a directory, or a git URL with `#<rev>`
 for the revision to read. The Review records which pack it was, its
 digest and where it came from.
 
+### From the head's API
+
+The same changes are commands of the head, for a UI or any program: every
+mutation is a head command, and the UI is a client of the generated
+surface. `Commands::open_position`, `Commands::fill` and
+`Commands::apply_batch` write the rows `position open`, `fill` and `apply`
+write, in the caller's name; `Commands::preview_batch` is the dry run, as
+data. They need a seat (any position), and the organization answers them
+as it answers the CLI. [The head](./head.md#commands-and-their-receipts)
+has the shapes.
+
 ## How the organization grows
 
 The org chart grows the way the code does: by a proposal the Board

@@ -1446,9 +1446,9 @@ record's.
 | `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as `GraphReviewRequested` (`dna.graph.requested`) |
 | `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
-| `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
-| `batch.proposed` | record | a batch of changes `hale dna apply` (or `vacate`, or `pack apply`) proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`, and `pack` for a pack: `<name>@<version> sha256:<digest> <source>`); its `graph.requested`, under the same id, asks the organization to open the Review |
-| `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`), relayed as `PositionOpenRequested` (`dna.position.requested`) |
+| `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`, or `Commands::fill`, whose row carries the command's fields after the CLI's) |
+| `batch.proposed` | record | a batch of changes `hale dna apply` (or `vacate`, or `pack apply`) proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`, and `pack` for a pack: `<name>@<version> sha256:<digest> <source>`; through `Commands::apply_batch`, the command's fields after those); its `graph.requested`, under the same id, asks the organization to open the Review |
+| `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`; `Commands::open_position` adds the command's fields after them), relayed as `PositionOpenRequested` (`dna.position.requested`) |
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
@@ -4713,7 +4713,8 @@ The live half is memory's, projected from the record by the spine
   leaves, the position stays. Every reader of holds takes a retirement
   carried by a ratified proposal as it takes a `graph.retired` row: the
   graph, memory's projection, the head's seats (`HoldsReader`) and the
-  CLI's (`held_state`). The org chart a batch is planned against also
+  CLI's and the head's structure commands' (`held_state_of`,
+  `dna/operations/structure_command.hl`). The org chart a batch is planned against also
   lists `practice <name>` for each named practice in force.
   **Packs and the nursery (`hale dna pack list | show <name> | apply
   <name> [--set <param>=<value>]… [--from <dir|git-url[#rev]>]
@@ -4734,6 +4735,50 @@ The live half is memory's, projected from the record by the spine
   version, `sha256:` of the pack's text, and its source (`toolchain
   <version>`, the directory, or `<url>@<commit>`). Adding a nursery as
   a source the Board ratifies, and retiring a pack, are not built yet.
+  **Every mutation is a head command; the UI is a client.** A change to
+  the structure asked of the head is not a second code path: the head's
+  surface `HeadCommands` carries `Commands::open_position`
+  (`PositionOpening { request_id, record_head, position, text, mandate,
+  under }`), `Commands::fill` (`HoldFill { request_id, record_head,
+  position, holder }`) and `Commands::apply_batch` (`BatchApplication {
+  request_id, record_head, steps, pack }`), each `requires: [position]`,
+  and the read `Commands::preview_batch` (`BatchDraft { steps }`,
+  ungated). The commands are operations of the composed head's governance
+  service (`dna.position.open@1`, `dna.hold.fill@1`, `dna.batch.apply@1`,
+  `dna/operations/structure_command.hl`), admitted and recovered by
+  request id as every command is, and their handlers write the rows the
+  CLI verbs write, in the caller's person's name: `position.requested`
+  and `hold.requested` with the CLI's keys in the CLI's order, and a
+  batch's receipts kept and its rows (members, `review.requested`,
+  `batch.proposed`, `graph.requested`) landed together by one ref move,
+  `batch_filing`'s bytes; each request row's id is the one the CLI mints
+  for the same ask by the same person at the same head (`p`, `h` or `b`
+  and twelve hex digits of the digest of the head and the ask), and the
+  command's fields (`command_format: dna.structure-command/1`,
+  `command_id`, `command_payload`, `command_fingerprint`,
+  `command_authority`, `command_authority_basis`, `command_record_head`)
+  follow the CLI's keys in the request row (`batch.proposed` for a
+  batch), so a relay and the organization read it as the CLI's. Before a
+  row the head checks what the CLI checks, over the same state: a
+  position the record states or proposes is not opened again, a fill
+  takes the CLI's `fill` refusals word for word, and a batch is planned
+  whole; a refusal is a receipt (`state: refused`, `structure.why`) and no
+  row, and the same steps still pending are answered `already_proposed`
+  with the Review they await. A command is conditioned on `record_head`
+  (`stale_subject` once the Record moved) and is `commands_unsupported`
+  once the Record's ledger is adopted. The receipt's `structure` branch
+  (`state`, `request_id`, `review_id`, `event_id`, `why`, `warning`)
+  reads `requested` until the organization answers the request row, then
+  `proposed` with its Review or `refused` with why; the Board decides
+  through `Commands::verdict`. `vacate` is a one-step batch through
+  `apply_batch`. `Commands::preview_batch` plans a batch against the
+  Record's head and writes nothing: `BatchPreview { ok, code, why,
+  application_id, head, revision, steps, before, after, added, removed,
+  unchanged, pending }`, the org chart's lines before and after and those
+  the batch adds, takes out and keeps, one a line, and `pending` the
+  Review the same steps await. The habitat UI is a client of the
+  generated surface (`hale api client --surface HeadCommands`), and wires
+  its affordances to these members.
   **Mandates (seed/structure).** Each position `init` proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
   knowledge idea of kind `mandate` (family `mandate`, `author: hale dna

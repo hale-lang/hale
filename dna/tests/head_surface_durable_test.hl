@@ -9,7 +9,8 @@
 // This fixture builds that head, gives it a record whose graph names the
 // positions and nobody holds one, and maps this process's uid to ada:
 //
-//   * unseated, ada is listed the read only, and a friction entry is refused
+//   * unseated, ada is listed the reads only (a lookup, a batch's preview)
+//     and raising work, and a friction entry is refused
 //     `unauthorized` naming `position`; nothing lands in the record;
 //   * once the record seats ada at `position:agent` the description follows
 //     (the exposure's roles read the record) and the same friction entry
@@ -203,7 +204,7 @@ locus App {
             probes = probes + 1;
         }
         std::test::assert(len(d0) > 0, "unseated: the surface answered a describe: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
-        std::test::assert_eq_str(members_of(d0), "Commands::create_task Commands::lookup Commands::lookup_knowledge", "unseated: the surface lists the ungated rows only: " + d0);
+        std::test::assert_eq_str(members_of(d0), "Commands::create_task Commands::lookup Commands::lookup_knowledge Commands::preview_batch", "unseated: the surface lists the ungated rows only: " + d0);
         // the calls below go over a connection made once the head answers
         let surface = Api { };
         std::test::assert(surface.connect(rpc), "connected to the answering surface");
@@ -224,7 +225,7 @@ locus App {
             listed = surface.ask("{\"describe\":true}");
             tries = tries + 1;
         }
-        std::test::assert_eq_str(members_of(listed), "Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::outcome Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "seated: the description follows the record");
+        std::test::assert_eq_str(members_of(listed), "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "seated: the description follows the record");
 
         // ---- seated: the durable command goes through the surface
         let filed = surface.ask(friction("s-1", "f-seated", "the hat named no tool grant"));

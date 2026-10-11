@@ -215,6 +215,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/organization_review_command.hl",
     "dna/operations/person_retirement.hl",
     "dna/operations/queries.hl",
+    "dna/operations/structure_command.hl",
     "dna/operations/task_command.hl",
     "dna/operations/task_create_command.hl",
     "dna/operations/task_policy.hl",
