@@ -45,9 +45,9 @@ fn dna_cli(app: String, args: String) -> String {
     return r.stdout + r.stderr;
 }
 
-@unbounded
+// The record's rows, one per line, as the chain holds them.
 fn journal(app: String) -> String {
-    return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
 }
 
 // The end of the line that starts at `from` in `v`: the index of its
@@ -80,8 +80,8 @@ fn count(app: String, kind: String, entity: String, needle: String) -> Int {
 
 // The body of the last row of `kind` about `entity`.
 // Every row about `entity`, with its sequence: what a failed state check
-// needs to say (GH #682).
-@unbounded
+// needs to say (GH #682). The record is read whole.
+@bounded_by(app)
 fn rows_about(app: String, entity: String) -> String {
     let mut out = "";
     let v = std::str::bytes_view(journal(app));
@@ -118,17 +118,18 @@ const ADOPT: Int = 300;
 // The case of the ask a bill became, "" until it is admitted (GH #995:
 // Task ids are minted for ratifications and concerns too, so an ask's id
 // is found, never assumed): its intent names the bill, and its admission
-// names the intent.
-@unbounded
+// names the intent. One read of the record per poll of the script.
+@bounded_by(script)
 fn case_of(app: String, bill: String) -> String {
     let v = std::str::bytes_view(journal(app));
+    let named = "bill " + bill + " ";
     let mut intent = "";
     let mut at = 0;
     while at < v.n && len(intent) == 0 {
         let end = line_end(v, at);
         let line = std::str::slice(v, at, end);
         at = end + 1;
-        if std::json::find_string_field(line, "kind") == "intent.offered" && std::str::contains(std::json::find_string_field(line, "body"), "bill " + bill + " ") { intent = std::json::find_string_field(line, "entity"); }
+        if std::json::find_string_field(line, "kind") == "intent.offered" && std::str::contains(std::json::find_string_field(line, "body"), named) { intent = std::json::find_string_field(line, "entity"); }
     }
     if len(intent) == 0 { return ""; }
     at = 0;

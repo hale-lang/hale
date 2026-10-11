@@ -18,24 +18,28 @@ main locus Projector {
         repo: String = ".";
         deadline: Int = 60;
         tail: ops::MemoryProjection = ops::MemoryProjection { };
+        failed: String = "";
     }
-    @unbounded
+    // One pass of the projection: the rows it applied (a row this
+    // projector won is applied whole, whether or not it later yielded to
+    // another), or -1 with `failed` saying why.
+    fn pass() -> Int {
+        let r = self.tail.apply();
+        if len(r.error) > 0 { self.failed = r.error + " (" + self.tail.last_error + ")"; return -1; }
+        return r.rows;
+    }
     run() {
         let until = std::time::now() + self.deadline;
         let mut applied = 0;
         let mut passes = 0;
         let mut done = false;
-        let mut failed = "";
-        while !done && len(failed) == 0 && std::time::now() < until {
-            let r = self.tail.apply();
+        while !done && len(self.failed) == 0 && std::time::now() < until {
+            let rows = self.pass();
             passes = passes + 1;
-            if len(r.error) > 0 { failed = r.error + " (" + self.tail.last_error + ")"; }
-            // a row this projector won is applied whole, whether or not
-            // it later yielded to another
-            applied = applied + r.rows;
+            if rows > 0 { applied = applied + rows; }
             done = self.tail.store.watermark() >= self.tail.j.revision();
         }
-        if len(failed) > 0 { println("projector: failed: ", failed); return; }
+        if len(self.failed) > 0 { println("projector: failed: ", self.failed); return; }
         println("projector: applied ", to_string(applied), " passes ", to_string(passes), " watermark ", to_string(self.tail.store.watermark()), " of ", to_string(self.tail.j.revision()));
     }
 }

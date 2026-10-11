@@ -88,7 +88,18 @@ main locus App {
     }
     placement { server: cooperative(pool = io); }
     dissolve() { if self.head.pid > 0 { std::process::kill(self.head) or discard; } }
-    @unbounded
+    // Whether the head is up: its reads answer, and its log has `announced`.
+    // One probe, its strings freed at this method's return; the head
+    // exiting instead fails.
+    fn head_up(api: String, repo: String, announced: String) -> Bool {
+        let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + api + "/api/hale/v1/applications");
+        if probe.code == 0 && dna::trim_nl(probe.stdout) != "000" && std::str::contains(std::io::fs::read_file(repo + "/.hale/head.log") or "", announced) { return true; }
+        let state = std::process::try_wait(self.head) or - 1;
+        std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
+        return false;
+    }
+    // `heard` below grows by the head's one reply line on the socket.
+    @bounded_by(stream)
     run() {
         let scratch = dna::scratch_root("oidc-head");
         let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + scratch + "\n" + toolchain());
@@ -130,13 +141,8 @@ main locus App {
         let announced = "hale dna api: commands http://127.0.0.1:" + to_string(commands_port) + "/";
         let mut up = false;
         while !up && std::time::now() < deadline {
-            let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + api + "/api/hale/v1/applications");
-            up = probe.code == 0 && dna::trim_nl(probe.stdout) != "000" && std::str::contains(std::io::fs::read_file(repo + "/.hale/head.log") or "", announced);
-            if !up {
-                let state = std::process::try_wait(self.head) or - 1;
-                std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
-                std::time::sleep(200ms);
-            }
+            up = self.head_up(api, repo, announced);
+            if !up { std::time::sleep(200ms); }
         }
         std::test::assert(up, "the head came up: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
         let head_row = git.head("journal").id;

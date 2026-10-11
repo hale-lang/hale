@@ -7,7 +7,7 @@ const STATIC_CONFIG_SCHEMA: String = "{\"type\": \"object\", \"required\": [\"te
 
 /// Why a capabilities file is not usable, or "" when it is. Runs once, at
 /// start, over the operator's own file.
-@unbounded
+@bounded_by(file)
 fn capabilities_problem(file: String) -> String {
     if !std::json::valid_object(file) { return "the capabilities file must be a JSON object"; }
     let cap = std::str::parse_int(top_value(file, "max_in_flight")) or 0;

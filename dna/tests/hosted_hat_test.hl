@@ -80,7 +80,16 @@ main locus App {
         return dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-H\nAuthorization: Bearer " + token + "\n" + self.api + "/api/hale/v1/applications/" + identity + "/dna/context?id=" + dna::url_encode(work));
     }
 
-    @unbounded
+    // Whether the head answers its well-known read: one probe, its strings
+    // freed at this method's return; the head exiting instead fails.
+    fn head_answers() -> Bool {
+        let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + self.api + "/.well-known/hale-dna");
+        if probe.code == 0 && dna::trim_nl(probe.stdout) == "200" { return true; }
+        let state = std::process::try_wait(self.head) or - 1;
+        std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
+        return false;
+    }
+
     run() {
         let scratch = dna::scratch_root("hosted-hat");
         let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + scratch + "\n" + toolchain());
@@ -135,13 +144,8 @@ main locus App {
         let deadline = std::time::now() + dna::wait_secs(30);
         let mut up = false;
         while !up && std::time::now() < deadline {
-            let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + self.api + "/.well-known/hale-dna");
-            up = probe.code == 0 && dna::trim_nl(probe.stdout) == "200";
-            if !up {
-                let state = std::process::try_wait(self.head) or - 1;
-                std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
-                std::time::sleep(200ms);
-            }
+            up = self.head_answers();
+            if !up { std::time::sleep(200ms); }
         }
         std::test::assert(up, "the head came up: " + (std::io::fs::read_file(self.app + "/.hale/head.log") or ""));
 

@@ -94,8 +94,8 @@ fn kind_count(proposals: String, kind: String) -> Int {
 }
 
 // The names of the rows of `kind` in the record at `repo`, one per line:
-// a graph row's entity, a proposal's name.
-@unbounded
+// a graph row's entity, a proposal's name. The record is read whole.
+@bounded_by(repo)
 fn record_names(repo: String, kind: String) -> String {
     let j = dna::GitJournal { repo: repo };
     let mut out = "";

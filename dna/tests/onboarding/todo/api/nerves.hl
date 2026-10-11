@@ -58,9 +58,9 @@ locus Nerves {
     }
 
     /// One message on `<org>.app.todo.<event>`; true once the server has it.
-    // @unbounded: one message per overdue item, told once when it becomes
-    // overdue: the rate is people adding items, not a loop.
-    @unbounded
+    // One message per overdue item, told once when it becomes overdue;
+    // `got` grows by the server's one reply, up to its PONG.
+    @bounded_by(stream)
     fn say(event: String, body: String) -> Bool {
         let rest = if std::str::starts_with(self.url, "nats://") { self.url[7..len(self.url)] } else { self.url };
         let colon = std::str::index_of(rest, ":");

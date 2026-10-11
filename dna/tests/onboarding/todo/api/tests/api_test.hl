@@ -15,8 +15,8 @@ import "../auth" as auth;
 locus Watcher {
     params { seen: String = ""; }
     bus { subscribe todo::TodoChanged as on_change; }
-    // @unbounded: a test's handful of events
-    @unbounded
+    // one entry per change the test's script makes
+    @bounded_by(script)
     fn on_change(c: todo::Change) {
         self.seen = self.seen + c.what + ":" + to_string(c.item.id) + " ";
     }

@@ -53,7 +53,9 @@ fn word_after(text: String, marker: String) -> String {
     return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
 }
 
-@unbounded
+// The rows of the record at `repo` of `kind` that mention `needle`. One
+// read of the record per call, as often as the script polls it.
+@bounded_by(script)
 fn rows(repo: String, kind: String, needle: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;
@@ -66,8 +68,9 @@ fn rows(repo: String, kind: String, needle: String) -> Int {
     return n;
 }
 
-// How many times the host said it relayed something onto the nerves.
-@unbounded
+// How many times the host said it relayed something onto the nerves. One
+// read of the log per call, as often as the script polls it.
+@bounded_by(script)
 fn relays(app: String) -> Int {
     let needle = "fact(s) from the record onto the nerves";
     let mut rest = std::io::fs::read_file(app + "/host.log") or "";
@@ -111,7 +114,7 @@ fn steal(c: nats::NatsClient, org: String) -> String {
 
 // Whether the node tells the heads, within `secs`, a row whose payload
 // carries `text`: the subjects it told meanwhile, and `+` once it has.
-@unbounded
+@bounded_by(secs)
 fn landed(c: nats::NatsClient, text: String, secs: Int) -> String {
     let mut told = "";
     let deadline = std::time::now() + dna::wait_secs(secs);

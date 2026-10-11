@@ -33,7 +33,9 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn dna_cli(repo: String, args: String) -> dna::RunResult { return in_dir(repo, toolchain() + "\ndna\n" + args); }
 
-@unbounded
+// The rows of the record at `repo` of `kind` that mention `needle`: one
+// pass over the record, read whole.
+@bounded_by(repo)
 fn count_rows(repo: String, kind: String, needle: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;

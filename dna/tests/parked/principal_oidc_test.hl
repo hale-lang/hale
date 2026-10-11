@@ -40,7 +40,6 @@ fn curl(method: String, url: String, cookie: String, body: String) -> Http {
     return Http { status: status, headers: head, body: rest };
 }
 
-@unbounded
 fn form_field(body: String, name: String) -> String {
     let mut rest = body + "&";
     while len(rest) > 0 {
@@ -73,7 +72,6 @@ locus FakeIssuer {
         exchanges: Int = 0;
         refused_secrets: Int = 0;
     }
-    @unbounded
     fn handle(req: std::http::Request) -> std::http::Response {
         let ctx = std::http::build_context(req);
         if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
