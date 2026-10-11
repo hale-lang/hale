@@ -408,8 +408,16 @@ The remaining verbs (#382 phases 2–5):
   statically known (`where key == self.id`) on a locus that has
   instances, a locus that can also be born outside the arrangement
   (an incomplete population), a hole hiding subscriptions, instance
-  counts or key filters on the topic, and a topic with no publish site
-  and no stated interval. Where the statement is malformed it is
+  counts or key filters on the topic, a topic with no publish site
+  and no stated interval, and — with no stated interval — a publisher
+  the model could not resolve that may send on the topic's wire (a
+  send to a computed subject whose locus declares a covering
+  `publish` pattern, an unanalyzed body, a stdlib interior; the
+  model records these at function grain, not on the topic, so they
+  are asked for by wire through `model_query::unresolved_publishers`):
+  such a publisher may send keys outside the domain its publish rows
+  give, and the diagnostic names it. A stated interval is the domain
+  whatever such a publisher sends. Where the statement is malformed it is
   `invalid`: an unkeyed topic, a key interval for a non-`Int` key, a
   group with no locus members. Never `holds`. **What it proves:** in
   the modeled arrangement, each permitted key selects exactly one

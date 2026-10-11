@@ -112,6 +112,47 @@ fn why(model: &ApplicationModel, u: &Unknowable) -> String {
     }
 }
 
+/// Each publisher the model could not resolve that may send on `wire`,
+/// named with why its keys are unknown.
+fn unresolved_text(
+    model: &ApplicationModel,
+    us: &[crate::model_query::UnresolvedPublisher],
+    wire: &str,
+) -> String {
+    use crate::model_query::UnresolvedPublish as U;
+    let e = &model.entities;
+    let mut parts: BTreeSet<String> = BTreeSet::new();
+    for u in us {
+        let f = &e.functions[u.function.index()].display;
+        parts.insert(match &u.kind {
+            U::Computed { patterns } if !patterns.is_empty() => format!(
+                "`{}` publishes to a subject computed at runtime under its \
+                 declared `{}`, which covers `{}`, with keys no publish row \
+                 records",
+                f,
+                patterns.join("`, `"),
+                wire
+            ),
+            U::Computed { .. } => format!(
+                "`{}` publishes to a subject computed at runtime that no \
+                 declared pattern bounds, so it may send any key on `{}`",
+                f, wire
+            ),
+            U::Unanalyzed { reason } => format!(
+                "`{}` holds a publish the model did not resolve ({}), so it \
+                 may send any key on `{}`",
+                f, reason, wire
+            ),
+            U::Absorbed => format!(
+                "`{}` calls into a stdlib interior that may publish on `{}` \
+                 with keys the model does not record",
+                f, wire
+            ),
+        });
+    }
+    parts.into_iter().collect::<Vec<_>>().join("; ")
+}
+
 /// Judge one claim row. `incomplete` is the caller's answer to "is
 /// the subscriber set of this topic fully modeled?" (holes on
 /// subscriptions, instance counts or key filters).
@@ -194,6 +235,23 @@ pub fn judge(
             domains.push(KeyDomain::IntRange { min: lo, max: hi });
         }
         None => {
+            // The publish rows on the topic's subject are the whole
+            // domain only if no publisher the model could not resolve
+            // may also send on that wire: a computed send declared
+            // under a covering pattern, an unanalyzed body, a stdlib
+            // interior. Any of those may send keys outside the rows'
+            // domains, so the permitted keys are not known.
+            let wire = &e.subjects[tp.subject.index()].pattern;
+            let unresolved =
+                crate::model_query::unresolved_publishers(model, wire);
+            if !unresolved.is_empty() {
+                return Outcome::Uncertified(format!(
+                    "the permitted keys of `{}` are not known: {} — state \
+                     them with `in LO..=HI`",
+                    tp.display,
+                    unresolved_text(model, &unresolved, wire)
+                ));
+            }
             for d in &site_domains {
                 let d = match d {
                     KeyDomain::Unknown => {

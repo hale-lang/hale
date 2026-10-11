@@ -411,3 +411,99 @@ fn a_subscriber_born_outside_the_arrangement_is_uncertified() {
     assert!(ds[0].contains("cannot be certified"), "{}", ds[0]);
     assert!(ds[0].contains("population"), "{}", ds[0]);
 }
+
+// ---- computed publishers widen the permitted keys -------------------
+
+/// A keyed `Payments` on `pay.event` whose `fallback` subscriber gives
+/// the group every key, beside a called `Sender::go` that publishes to
+/// a COMPUTED subject under its declared `PATTERN`. `GROUP` and
+/// `RANGE` are the claim's knobs.
+const COMPUTED: &str = r#"
+type Pay { id: Int = 0; }
+topic Payments { payload: Pay; subject: "pay.event"; keyed_by id; on_unmatched: fallback; }
+
+locus Ledger {
+    params { seen: Int = 0; }
+    bus { subscribe Payments as on_pay where key == 1; }
+    fn on_pay(p: Pay) { self.seen = self.seen + 1; }
+}
+locus Rest {
+    params { seen: Int = 0; }
+    bus { subscribe Payments as on_rest where key == _; }
+    fn on_rest(p: Pay) { self.seen = self.seen + 1; }
+}
+
+locus Sender {
+    params { subject: String = "pay.event"; }
+    bus { publish "PATTERN" of type Pay; }
+    fn go() { self.subject <- Pay { id: 1 }; }
+}
+
+group workers = { GROUP };
+
+main locus App {
+    params { l: Ledger = Ledger { }; r: Rest = Rest { }; s: Sender = Sender { }; }
+    bus { publish Payments; }
+    claims {
+        route: cover keys(topic Payments RANGE): delivered_to(exactly_one workers);
+    }
+    run() {
+        Payments <- Pay { id: 1 };
+        self.s.go();
+    }
+}
+fn main() { App { }; }
+"#;
+
+fn computed(pattern: &str, group: &str, range: &str) -> String {
+    let src = COMPUTED
+        .replace("PATTERN", pattern)
+        .replace("GROUP", group)
+        .replace("RANGE", range);
+    if pattern.starts_with("pay.") {
+        src
+    } else {
+        src.replace("\"pay.event\"; }\n    bus { publish \"", "\"audit.x\"; }\n    bus { publish \"")
+    }
+}
+
+#[test]
+fn a_computed_publisher_under_a_covering_pattern_withdraws_the_derived_domain() {
+    // The reviewer's control: without `in LO..=HI` the permitted keys
+    // came only from the publish rows on `pay.event`, and the computed
+    // send — a hole at the FUNCTION, which the subject/topic-grain
+    // holes never meet — could send any key there. The claim held.
+    let src = computed("pay.**", "Ledger, Rest", "");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("cannot be certified"), "{}", ds[0]);
+    assert!(
+        ds[0].contains(
+            "`Sender::go` publishes to a subject computed at runtime \
+             under its declared `pay.**`, which covers `pay.event`"
+        ),
+        "{}",
+        ds[0]
+    );
+    assert!(ds[0].contains("in LO..=HI"), "{}", ds[0]);
+}
+
+#[test]
+fn a_computed_publisher_whose_pattern_misses_the_wire_does_not_count() {
+    let src = computed("audit.**", "Ledger, Rest", "");
+    assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
+}
+
+#[test]
+fn a_stated_interval_judges_past_a_computed_publisher() {
+    // The interval IS the domain: what the computed send may produce
+    // does not enter it, so the claim holds and violates as before.
+    let src = computed("pay.**", "Ledger, Rest", "in 0..=5");
+    assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
+
+    let src = computed("pay.**", "Ledger", "in 0..=1");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("violated"), "{}", ds[0]);
+    assert!(ds[0].contains("no registration of `workers` receives key 0"), "{}", ds[0]);
+}

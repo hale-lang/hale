@@ -774,6 +774,16 @@ state the interval you mean, or give the group a `where key == _`
 fallback subscriber on an `on_unmatched: fallback` topic, which
 receives every key nothing else matched and covers the rest.
 
+That derived domain is only as complete as the publish sites the
+model can see. A publisher the model could not resolve that may send
+on the topic's wire — a send to a subject computed at runtime whose
+locus declares a covering pattern (`publish "pay.**" of type Pay`
+beside a topic on `pay.event`), a body the model did not walk, a
+stdlib interior — may send keys outside it, so without `in LO..=HI`
+the claim is `uncertified` and names that publisher. A stated
+interval is the domain whatever such a publisher sends, so with one
+the claim is judged as usual.
+
 **What counts as a registration.** One *instance* of a subscribing
 locus. Three arranged replicas of one `subscribe` are three
 registrations; two instances of a locus with `where key == 7` are two
@@ -792,6 +802,7 @@ where the statement itself is malformed, it is `invalid`:
 | a hole hides subscriptions, instance counts or key filters on the topic | uncertified | "the subscriber set of `T` is not fully modeled" |
 | the topic is not `keyed_by` | invalid | "topic `T` is not keyed" |
 | no publish site and no `in` interval | uncertified | "no publish site of `T` is known … state them with `in LO..=HI`" |
+| no `in` interval and a publisher the model could not resolve may send on `T`'s wire | uncertified | "the permitted keys of `T` are not known: `X::f` publishes to a subject computed at runtime under its declared `pay.**` … state them with `in LO..=HI`" |
 | `in` interval on a topic keyed by another type | invalid | "states integer keys, but …" |
 | a group with no locus members | invalid | "has no locus members" |
 
@@ -990,7 +1001,7 @@ result is `invalid`):
 | `no_silent_loss(all G)` over a group that publishes and subscribes nothing | "names no route" — it would hold while checking nothing |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
-| `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, no publish site and no interval) | `uncertified`: "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
+| `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, no publish site and no interval, an unresolved publisher on the wire and no interval) | `uncertified`: "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
 
 Violations (the claim's result is `violated`):
 
