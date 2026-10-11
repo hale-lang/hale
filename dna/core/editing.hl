@@ -57,6 +57,9 @@ locus WorktreeTools {
         if !self.inside(rel) { return false; }
         return !std::io::fs::file_exists(self.root + "/" + rel);
     }
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn read(rel: String) -> String {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
         self.reads = self.reads + 1;
@@ -78,6 +81,9 @@ locus WorktreeTools {
             std::io::fs::mkdir(self.root + "/" + rel[0..(at - 1)]) or discard;
         }
     }
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn edit(rel: String, content: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
         self.ensure_parents(rel);
@@ -99,6 +105,9 @@ locus WorktreeTools {
     // incomplete-import check could never catch a deletion that did not
     // happen: the candidate was proposed as if the file were gone while
     // it was still there (the review's second round, finding 5).
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn remove(rel: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
         let before = self.refused;

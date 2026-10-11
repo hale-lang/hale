@@ -489,6 +489,9 @@ locus Pq {
     // applied (there is nothing to apply); its first row moves it to
     // its own schema.
     fn schema() -> String { return schema_for(self.record_id); }
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -499,6 +502,9 @@ locus Pq {
     // statement timeout — reached a caller as "there is no knowledge
     // here" (the third-round review's finding 3). The caller compares
     // `last_error` around a read and refuses rather than answering.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn note(what: String, e: db::DbError) {
         self.error = what + ": " + e.kind + " " + e.detail;
     }
@@ -573,6 +579,9 @@ locus Pq {
     // The watermark's row is taken first: a second projector racing for the
     // same row blocks on it, and once the first commits, its compare finds
     // the watermark moved and it rolls back having written nothing.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn begin_row(seq: Int, prev: String, head: String) -> Int {
         if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection row: store is not idle and open"; return -1; }
         if seq < 0 || len(head) == 0 || len(head) > 4096 || (seq == 0) != (len(prev) == 0) { self.error = "projection row: invalid row " + to_string(seq); return -1; }

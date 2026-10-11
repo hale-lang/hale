@@ -122,6 +122,9 @@ locus PqLedger {
         self.opened = false;
     }
     fn schema() -> String { return schema_for(self.record_id); }
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;

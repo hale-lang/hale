@@ -448,6 +448,9 @@ locus MemoryKnowledge {
     // binding fenced to that head), -1 while memory does not hold it
     // ratified — not there, not yet projected, or not reachable, with
     // `last_error` saying which.
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn ratified_at(digest: String) -> Int {
         if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return -1; }
         if !self.ensure_open() { return -1; }

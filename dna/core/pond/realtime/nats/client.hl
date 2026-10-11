@@ -108,6 +108,9 @@ locus NatsClient {
     }
 
     // Record why the last operation failed, as "<kind>: <detail>".
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn note(kind: String, detail: String) { self.last_error = kind + ": " + detail; }
 
     fn fail_with(kind: String, detail: String) -> NatsError {
