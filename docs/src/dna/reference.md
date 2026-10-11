@@ -251,6 +251,10 @@ hale dna pack list [--from <dir|git-url[#rev]>]
 hale dna pack show <name> [--set <param>=<value>]… [--from …]
 hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]
 hale dna pack retire <name> [--dry-run] [--as <who>] [project]
+hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]
+hale dna nursery list [project]
+                             a nursery the Board trusts, proposed as one batch step; the ones it trusts (a git nursery's
+                             packs are adopted only once it is trusted)
                              packs from a nursery (the toolchain's, a directory, or a git repository at a revision): a batch
                              with blanks, adopted as one Board Review named for the pack (`review changes approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]

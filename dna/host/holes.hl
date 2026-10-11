@@ -238,6 +238,21 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
     return answer(chart + "proposed the batch as " + filing.review_id + " in the record; the organization opens its Review when it hears it\n");
 }
 
+// `hale dna nursery list`: the nurseries the Board trusts, one a line.
+@unbounded
+fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let mut out = "";
+    let mut rest = dna::org_chart(journal, dna::GitReceipts { repo: root });
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::starts_with(line, "nursery ") { out = out + line[8..len(line)] + "\n"; }
+    }
+    return answer(out);
+}
+
 // `hale dna fill <position> <holder>`: a holder proposed, through the
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the

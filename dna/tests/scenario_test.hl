@@ -190,6 +190,17 @@ practice ship-small | Proposed again while in force.
 }
 ";
 
+const NURSERY_TRUSTED: String = "# a nursery the Board trusts: its packs may be adopted
+apply {
+nursery https://github.com/hale-lang/nursery
+}
+ratify batch by riley
+expect nursery https://github.com/hale-lang/nursery
+refused apply {
+nursery https://github.com/hale-lang/nursery
+}
+";
+
 const PACK_RETIRED: String = "# a pack retired: what it opened closes, its practices retire, and the rest stays
 open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
 ratify by riley
@@ -459,7 +470,7 @@ main locus App {
             let what = std::str::trim(line[7..len(line)]);
             let org = self.org();
             if std::str::starts_with(what, "no ") && !std::str::starts_with(what, "no-") { return if std::str::contains(org, what[3..len(what)] + "\n") { "still stated: " + what[3..len(what)] + "\nin\n" + org } else { "" }; }
-            if std::str::starts_with(what, "reviews ") || std::str::starts_with(what, "serves ") || std::str::starts_with(what, "consumes ") || std::str::starts_with(what, "outside ") || std::str::starts_with(what, "part ") { return if std::str::contains(org, what + "\n") { "" } else { "not stated: " + what + "\nin\n" + org }; }
+            if std::str::starts_with(what, "nursery ") || std::str::starts_with(what, "reviews ") || std::str::starts_with(what, "serves ") || std::str::starts_with(what, "consumes ") || std::str::starts_with(what, "outside ") || std::str::starts_with(what, "part ") { return if std::str::contains(org, what + "\n") { "" } else { "not stated: " + what + "\nin\n" + org }; }
             if std::str::starts_with(what, "practice ") { return if std::str::contains(org, what + "\n") { "" } else { "not in force: " + what + "\nin\n" + org }; }
             if std::str::starts_with(what, "no-holds ") {
                 let tail = what[9..len(what)];
@@ -546,6 +557,7 @@ main locus App {
         std::test::assert_eq_str(self.scenario("exposed", EXPOSED), "", "a capability exposed as a contract, and a part depending on it");
         std::test::assert_eq_str(self.scenario("externalized", EXTERNALIZED), "", "a part externalized and internalized again");
         // the known-open table: each fails at the operation it names
+        std::test::assert_eq_str(self.scenario("nursery-trusted", NURSERY_TRUSTED), "", "a nursery is trusted by the Board, once");
         std::test::assert_eq_str(self.scenario("pack-retired", PACK_RETIRED), "", "a pack retired: what it brought leaves, what was there before stays");
     }
 }

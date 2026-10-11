@@ -4636,7 +4636,8 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name>
-  <holder>`, `practice <name> | <text>`, `retire-practice <name>`, `assign|unassign <name>
+  <holder>`, `practice <name> | <text>`, `retire-practice <name>`,
+  `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
   contract:<name>`, `depend <kind>:<node> on contract:<name>`,
@@ -4742,8 +4743,15 @@ The live half is memory's, projected from the record by the spine
   that is in force retires (`retire-practice <name>`, a member of kind
   `retirement` superseding the practice, which ratifying retires);
   whatever has gone since is passed over. A pack supersedes nothing, so
-  there is nothing to restore. Adding a nursery as a source the Board
-  ratifies is not built yet.
+  there is nothing to restore. **A git nursery is trusted by the
+  Board** before its packs are adopted: `hale dna nursery add
+  <source>` proposes the batch step `nursery <source>` (a knowledge idea
+  of kind `nursery`, named by the source, target `org`), and once it is
+  ratified the org chart lists `nursery <source>`; `hale dna nursery
+  list` prints the ones in force. `pack apply --from <git URL>` is
+  refused, before anything is fetched, while the URL is not one of
+  them; the toolchain's nursery and a directory need no trust, and
+  reading a nursery (`list`, `show`) needs none either.
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`
