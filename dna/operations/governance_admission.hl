@@ -50,6 +50,8 @@ type Landed { ok: Bool = false; id: String = ""; error: String = ""; }
 locus GovernanceJournal {
     params { snapshot: GovernanceSnapshot = GovernanceSnapshot { }; rows: dna::EventRows = dna::EventRows { }; authors: dna::Authors = dna::Authors { }; valid: Bool = false; }
     birth() { self.valid = self.load(); }
+    // One row per line of the pinned snapshot, read once, at birth.
+    @bounded_by(self.snapshot)
     fn load() -> Bool {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let fields = DefinitionCodec { };
         let mut text = self.snapshot.text; let mut ids = self.snapshot.ids; let mut seq = 0; let mut previous = "genesis";

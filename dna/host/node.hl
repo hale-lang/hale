@@ -286,7 +286,8 @@ fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
         eprintln("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
         std::process::exit(2);
     }
-    if !rec(root).is_repository() {
+    let record = dna::GitRecord { repo: root };
+    if !record.is_repository() {
         eprintln("hale node ", name, ": ", root, " is not a git clone of the governed repository");
         std::process::exit(2);
     }

@@ -123,7 +123,6 @@ fn body_scan() -> String {
 
 // Every process whose environment carries `HALE_DNA_BODY=<mark>`,
 // newline-separated ("" when none, or when this machine has no scan).
-@unbounded
 fn marked(mark: String) -> String {
     if len(mark) == 0 { return ""; }
     let needle = "HALE_DNA_BODY=" + mark;

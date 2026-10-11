@@ -12951,7 +12951,6 @@ shared	Host@literal2.memory	__lib_dna__core___memory_spine__Memory #3ef638b3
 shared	Host@literal2.nerves	__lib_dna__core__pond__realtime__nats___adapter__NatsConn #bc0bc370
 shared	Host@literal2.senses	__lib_dna__core___senses__Senses #7cd25e64
 shared	Host@literal2.vault	__lib_dna__core___memory_spine__MemoryVault #e64e4dab
-shared	__lib_dna__core___memory_spine__Memory@main1	__lib_dna__core___memory_spine__Memory #3ef638b3
 -- dynamic	sites in dna/core
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdHttpServer	on pool:senses
@@ -12975,6 +12974,7 @@ shared	dynamic	sites in dna/core/pond/pq #39e83e0a
 dynamic	__StdBytesBytesBuilder	on main|pinned:Host@literal1.nerves|pinned:Host@literal2.nerves
 dynamic	__StdJsonBuilder	on main|pinned:Host@literal1.nerves|pinned:Host@literal2.nerves|unknown (no caller)
 -- dynamic	sites in dna/host
+dynamic	BodyFence	on main
 dynamic	FileForge	on main
 dynamic	GitHubForge	on main
 dynamic	Node	on main

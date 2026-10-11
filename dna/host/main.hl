@@ -106,6 +106,8 @@ fn drop_first_word(words: String) -> String {
     return words[(nl + 1)..len(words)];
 }
 
+// Read once per process, from its command line.
+@bounded_by(argv)
 fn parse_args(raw: String, valued: String) -> Args {
     let mut a = Args { flags: "\n" };
     let mut rest = raw;
@@ -138,15 +140,13 @@ fn verb_args() -> Args {
 fn main() {
     let verb = arg(1);
     let root = arg(2);
-    // this process's one handle on memory (GH #985), closed when it exits
-    let memory = dna::Memory { repo: root, dsn_env: dna::own_dsn_env() };
     let seed = arg(3);
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
     let a = verb_args();
     if verb == "body-fence" {
-        fence_main(flag(a, "--holder"), std::str::parse_int(flag(a, "--token")) or 0, std::str::parse_int(flag(a, "--expires")) or 0, std::str::parse_int(flag(a, "--host-pid")) or 0, memory);
+        fence_main(flag(a, "--holder"), std::str::parse_int(flag(a, "--token")) or 0, std::str::parse_int(flag(a, "--expires")) or 0, std::str::parse_int(flag(a, "--host-pid")) or 0);
         return;
     }
     if verb == "run" || verb == "dev" {

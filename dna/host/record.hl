@@ -295,7 +295,9 @@ fn record_append(repo: String, kind: String, entity: String, body: String, autho
     return "";
 }
 
-// A receipt queued for `keeps_flush`: its digest, now.
+// A receipt queued for `keeps_flush`: its digest, now. The queue is the
+// caller's batch, a `Texts` it builds for one verb and flushes once.
+@bounded_by(keeps)
 fn keep_later(keeps: dna::Texts, text: String) -> String {
     keeps.push(text);
     return dna::hex_digest(text);
@@ -388,7 +390,6 @@ fn sync_failed(why: String) -> SyncResult {
 // on top of the remote's head, bodies and authors unchanged, then
 // shared. Redactions and dropped candidates are applied both here and
 // at the remote; the record's identity is published.
-@unbounded
 fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
     let s = sync_record_rows(repo);
     if s.ok {
@@ -442,7 +443,6 @@ fn publish_identity(repo: String) -> Bool {
 // (GH #646 stage 4: a redaction is a row of the ledger once the record is
 // adopted, and a body filed before adoption is still a blob here — so
 // the rows are read from both memories as one)
-@unbounded
 fn apply_redactions(repo: String, memory: dna::Memory) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
@@ -474,7 +474,6 @@ fn apply_redactions(repo: String, memory: dna::Memory) -> Int {
 // <mutation>`) is unpointed here and withdrawn from the remote, as a
 // redacted receipt is; its commits stay in the object store until git
 // collects them.
-@unbounded
 fn apply_drops(repo: String) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
@@ -511,7 +510,6 @@ const SYNC_RECEIVES: String = "journal,receipts,exchange,candidates";
 // moves: the row and its key are named, every local row and commit stays
 // where it is, and the way that keeps the work is said. "" when every
 // local-only row may be rebuilt.
-@unbounded
 fn provenance_refusal(r: dna::GitRecord, ids: String) -> String {
     let own = r.own_key();
     let mut rest = ids;
@@ -543,7 +541,6 @@ fn grew_from(r: dna::GitRecord, before: String, now: String) -> Bool {
 // journal was moved to the remote's head and every local-only row left
 // the chain, or a local chain was pushed as if the remote held nothing
 // (GH #961).
-@unbounded
 fn sync_record_rows(repo: String) -> SyncResult {
     let r = rec(repo);
     let remote = record_remote(repo);

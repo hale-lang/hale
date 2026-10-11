@@ -1059,8 +1059,8 @@ fn startable_moves(target: &str) -> Option<Vec<String>> {
 /// `std::http::Server`, stays long-lived). Among the targets only the
 /// host's verb program moves: it starts no locus with a hook or a
 /// handler, so it runs to exit, and every leak site of its fns goes —
-/// counted by the seed the fn is declared in (the host's 129, the core's
-/// 85, …). The correction only narrows: no target gains a site. The old
+/// counted by the seed the fn is declared in (the host's 565, the core's
+/// 145, …). The correction only narrows: no target gains a site. The old
 /// answer is the corrected summary with `startable` cleared.
 #[test]
 fn startable_only_the_verb_program_runs_to_exit() {
@@ -1076,11 +1076,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 146",
+                "dna__core: 145",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 556",
-                "dna__operations: 128",
+                "dna__host: 565",
+                "dna__operations: 121",
                 "the stdlib's copy: 1",
             ])
         )]

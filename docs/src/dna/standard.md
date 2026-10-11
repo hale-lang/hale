@@ -80,9 +80,11 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 
 ## Resources: bounded by design
 
-**Placement and capacity are declared, and a growing allocation says what bounds it.** A hot path declares its budget (`@budget`), a buffer its form (`@form(ring_buffer)`, a `capacity` slot), and `@unbounded` is written only where the allocation summary (`hale check --dump-alloc-summary`) shows a real site, with the input that bounds it named beside it.
-- *Why:* an annotation that silences nothing teaches nothing, and an organism's processes run for months.
-- *Today:* **goal.** DNA carries about 850 `@unbounded` outside its tests, and about two thirds of them suppress nothing: they were copied with refactored code because the verification gate fails on any advisory. The rest are mostly analysis imprecision (a string built in a loop and returned; a replaced `String` field); a few dozen mark real growth bounded by the record's length, which the language cannot yet say.
+**Placement and capacity are declared, and a growing allocation says what bounds it.** A hot path declares its budget (`@budget`), a buffer its form (`@form(ring_buffer)`, a `capacity` slot). A growth the memory-bound survey reports is answered at its cause: fixed where the allocation need not accumulate (the work of a long-lived loop moved into a method, whose per-call scratch frees it; a field mutated in place; a loop that ends on its condition rather than `while true`), or marked on its function. `@bounded_by(<input>)` states the input that bounds a real growth: the journal a load reads whole (`@bounded_by(self.j)`), one document's members (`@bounded_by(document)`), the command line (`@bounded_by(argv)`). `@unbounded` means the growth is not yet understood, and the comment above it names the issue that tracks it (`// GH #…`). A decorator that silences nothing is removed: `scripts/unbounded-unused.sh` lists every one in `dna/`, and lists none.
+- *Why:* an annotation that silences nothing teaches nothing, and an organism's processes run for months: a growth per tick of a long-lived loop is a leak, never a bound.
+- *Instead of:* `@unbounded` copied with refactored code to quiet the gate, and a bound kept in a comment, or nowhere.
+- *Enforced by:* `hale verify` (below), which fails on an unanswered growth; `scripts/unbounded-unused.sh`, which lists none.
+- *Today:* the decorators that silenced nothing are gone (GH #1490), and verifying the body found two real leaks: its supervision and its lease fence ran their loops in long-lived frames, each pass's reads kept for the life of the body; each pass is a method now. **Goal:** DNA still carries about 300 `@unbounded`, few with their issue; each becomes a fix, a `@bounded_by`, or a reference to the issue that tracks it.
 
 **A program says when it is healthy and how full it is.** The runtime serves liveness, readiness and capacity from what it already knows, with the application's own readings added, and the deployment backend maps them to the platform's probes and scaling (GH #1477). *Today:* not built.
 
@@ -92,7 +94,9 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 - *Instead of:* scraping text (a test count in prose) or deciding a topology change by file name.
 - *Today:* the gate is followed (`dna/core/verification.hl`); **goal:** reading `hale test --json`, and judging topology from the model diff's facets.
 
-**`hale verify` covers all of the organism's source.** *Today:* it covers `dna/core`; the rest is **goal.**
+**`hale verify` is a required gate on the organism's source.** It fails on any finding, the survey's advisories included, so a growth is answered when it is written, not found in production.
+- *Enforced by:* `dna_core_host_operations_api_verify_clean` (`crates/hale-cli/tests/dna_native_suite.rs`), in the `dna` jobs, which run on every change that can reach DNA and on every merge, behind the `required` check.
+- *Today:* followed by `dna/core` (with one deferral: `pq` does not take a `Credential` yet), the host's two programs (`dna/host`, its body, and `dna/host/verb`), `dna/operations` and `dna/api`. **Goal:** the head, the reflexes, the face and the rest of `dna/`.
 
 **A surface is tested through its fixture transport.** `std::api::test::Rpc` drives the surface as a caller would; a test never builds a call context by hand. *Today:* followed by the todo application; **goal** for the head's tests.
 
