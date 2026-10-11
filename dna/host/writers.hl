@@ -1027,7 +1027,13 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
                 let rid = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
                 let e = find_after(p, before, " review.settled review.refused review.signed ", rid);
-                if e.seq < 0 { still = still + rid + "\n"; }
+                // a knowledge Review is decided once its outcome lands, not when
+                // it settles: the organization writes `knowledge.ratified` (a
+                // family's `library.family.*`) as an execution after the
+                // settlement, and what the next command reads is that row
+                let digest = p.review_of(rid).subject_digest;
+                let landed = e.kind != "review.settled" || !std::str::starts_with(digest, "sha256:") || find_after(p, before, " knowledge.ratified knowledge.declined knowledge.refused library.family.ratified library.family.declined library.family.refused ", digest).seq >= 0;
+                if e.seq < 0 || !landed { still = still + rid + "\n"; }
                 else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
                 else if e.kind == "review.signed" { out = out + "review " + rid + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"; }
                 else { out = out + "review " + rid + " refused the verdict: " + e.body + "\n"; }
