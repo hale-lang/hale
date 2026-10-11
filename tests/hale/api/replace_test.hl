@@ -12,12 +12,17 @@
 //     generation, so they settle `unavailable`, and the replacement never
 //     runs them, whatever its address;
 //   * the next call runs on the replacement, in the next generation.
+//
+// The order is waited for, not timed: `poison` violates only once the test
+// has seen the exposure admit the two calls behind it (a call sent after
+// the failure reaches the exposure after the replacement, and the next
+// generation runs it).
 
 type Req { n: Int; }
 type Res { n: Int; }
 
 locus Svc {
-    params { births: Int = 0; ran_slow: Int = 0; ran_fast: Int = 0; }
+    params { births: Int = 0; released: Bool = false; ran_slow: Int = 0; ran_fast: Int = 0; }
     closure bad { captures: ran_fast; epoch inline; }
     birth() { self.births = self.births + 1; }
     fn slow(r: Req) -> Res {
@@ -29,8 +34,9 @@ locus Svc {
         return Res { n: ctx.generation };
     }
     fn poison(r: Req) -> Res fallible(ClosureViolation) {
-        // long enough for the calls behind it to be accepted and queued first
-        std::time::sleep(30ms);
+        // once the calls behind it are accepted and queued
+        let mut i = 0;
+        while !self.released && i < 5000 { std::time::sleep(1ms); i = i + 1; }
         violate bad;
     }
 }
@@ -67,6 +73,12 @@ main locus App {
         f.call_as_peer(2, "Svc::poison", "{\"n\":2}", 1000);
         f.call_as_peer(3, "Svc::slow", "{\"n\":3}", 1000);
         f.call_as_peer(4, "Svc::fast", "{\"n\":4}", 1000);
+        // the exposure handles what the fixture sends in order, so a line sent
+        // after the three is answered once they are admitted; only then may the
+        // receiver fail
+        f.send(-1, "probe");
+        std::test::assert_eq_str(f.await_outcome(-1, 3000), "refusal:malformed", "the three calls were admitted before the receiver failed");
+        self.svc.released = true;
         std::test::assert_eq_str(f.await_outcome(2, 3000), "server_error", "the violating call is the server error");
         std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
         std::test::assert_eq_int(self.answered_when_failed, 0, "before the caller was answered");

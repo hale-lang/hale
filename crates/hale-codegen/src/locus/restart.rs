@@ -278,7 +278,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// GH #1069: if `kept`, drop the child's bus subscriptions now — a
     /// failed child stops, whether or not its memory has to wait for
-    /// its owner. The same runtime walk `quarantine(c)` uses.
+    /// its owner. The walk `quarantine(c)` uses, except that it sets the
+    /// subjects aside: a handler's wrapper stops the child as the
+    /// handler returns, which can be before the owner's `on_failure` has
+    /// decided, and a restart it decides puts them back
+    /// (`lotus_bus_restart_self` in `__restart_<L>`).
     pub(crate) fn emit_stop_kept_child(
         &mut self,
         kept: IntValue<'ctx>,
@@ -299,8 +303,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(stop_bb);
         let unsub = self
             .module
-            .get_function("lotus_bus_quarantine_self")
-            .expect("lotus_bus_quarantine_self declared");
+            .get_function("lotus_bus_stop_failed_self")
+            .expect("lotus_bus_stop_failed_self declared");
         self.builder.build_call(unsub, &[self_ptr.into()], "kept.unsubscribe").map_err(e)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
@@ -622,7 +626,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                     // The failure raised the drain latch (`violate` sets
                     // it so the child stops); the restarted child is live
-                    // again.
+                    // again, and so are the subscriptions a stop set aside
+                    // while the owner was deciding (GH #1069's stop, from a
+                    // handler that returned in between).
                     self.builder.position_at_end(rerun_bb);
                     let dr_ptr = self
                         .builder
@@ -634,6 +640,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(e)?;
                     self.builder.build_store(dr_ptr, i64_t.const_zero()).map_err(e)?;
+                    if self.bus_state.is_some() {
+                        let resubscribe = self
+                            .module
+                            .get_function("lotus_bus_restart_self")
+                            .expect("lotus_bus_restart_self declared");
+                        self.builder.build_call(resubscribe, &[self_arg.into()], "restart.resubscribe").map_err(e)?;
+                    }
                 }
                 RecoveryStep::Birth => {
                     let birth_call =

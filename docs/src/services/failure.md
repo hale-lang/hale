@@ -147,7 +147,9 @@ The recovery primitives:
   binding holds) stays readable until the parent tears it down.
 - **`restart(child)`** — run it again: `birth()`, then `run()`,
   on the same instance. A child whose `run()` failed restarts once
-  that `run()` has returned — a pinned child on its own thread.
+  that `run()` has returned — a pinned child on its own thread. It
+  hears its subscriptions again, even when one of its handlers
+  returned while the parent was still deciding and stopped it.
 - **`restart_in_place(child)`** — the same, after putting every
   param back to the value this instance was built with (what its
   literal said, or its default as it evaluated then). A child held in

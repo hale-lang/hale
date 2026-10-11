@@ -2110,6 +2110,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_quarantine_ty,
             None,
         );
+        // A failed child's stop, which a restart undoes (GH #1069):
+        // declare void @lotus_bus_stop_failed_self(ptr self)
+        // declare void @lotus_bus_restart_self(ptr self)
+        self.module.add_function(
+            "lotus_bus_stop_failed_self",
+            bus_quarantine_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_restart_self",
+            bus_quarantine_ty,
+            None,
+        );
         let bus_router_destroy_ty = void_t.fn_type(&[], false);
         self.module.add_function(
             "lotus_bus_router_destroy",

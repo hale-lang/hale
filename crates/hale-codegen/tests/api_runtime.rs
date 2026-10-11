@@ -15,7 +15,8 @@
 //!   it was asked to deliver is its stdout.
 //! * The lifecycle programs of `tests/hale/api/` (a connection lost after
 //!   the handler started, `stop()` with queued and executing work, a
-//!   receiver restarted, a receiver replaced, a handle dissolved), built
+//!   receiver restarted, a receiver restarted only after the call it was
+//!   executing returned, a receiver replaced, a handle dissolved), built
 //!   under AddressSanitizer with the arena's chunk recycling off, run
 //!   clean: a reply that outlives its handler's scratch, a request that
 //!   outlives its connection and a pending record freed once are what the
@@ -139,6 +140,11 @@ fn the_disconnect_program_runs_clean_under_asan() {
 #[test]
 fn the_restart_program_runs_clean_under_asan() {
     run_asan("api_runtime_restart", include_str!("../../../tests/hale/api/restart_test.hl"));
+}
+
+#[test]
+fn the_restart_after_return_program_runs_clean_under_asan() {
+    run_asan("api_runtime_restart_after_return", include_str!("../../../tests/hale/api/restart_after_return_test.hl"));
 }
 
 #[test]
