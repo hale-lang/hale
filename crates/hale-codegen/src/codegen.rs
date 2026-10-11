@@ -1488,6 +1488,7 @@ pub fn build_resolved(
         current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
+        slot_field_clone: false,
         program: merged,
         topics: &resolved.top.topics,
         flows: &resolved.flows,
@@ -3336,6 +3337,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// single-owner rule (2026-07-18). False everywhere else, so
     /// returns and self-field stores keep their zero-copy skips.
     pub(crate) cell_owned_clone: bool,
+    /// GH #1490 (step 4): set around the anchor walk of a compound
+    /// `self.<field> = Struct { ... }` store, and taken by the walk's
+    /// outermost struct: its top-level String fields clone through
+    /// `lotus_str_clone_slot` (a field block, which the replace that
+    /// follows retires at its size class), the fields
+    /// `lotus_str_field_replace_fixup` retires. Nested structs keep
+    /// the plain clone.
+    pub(crate) slot_field_clone: bool,
     pub(crate) program: &'p Program,
     /// The topic rows over `program` (the lowering view's scope): what
     /// each topic is on the wire and the policies its sends and
@@ -14506,6 +14515,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ))
             })?;
         let src_ptr = value.into_pointer_value();
+        // GH #1490: the outermost struct of a compound self-field
+        // store takes the flag; a nested struct's walk sees it clear.
+        let slot_fields = std::mem::replace(&mut self.slot_field_clone, false);
         for fname in &info.field_order {
             let (idx, fty) = info
                 .fields
@@ -14566,12 +14578,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // focus→flush RMW pattern), full deep-copy on the
             // genuinely cross-arena write (first set, fresh-cell
             // promotion).
-            let anchored = self.emit_cross_arena_store_deep_copy_ptr(
-                field_val,
-                &fty,
-                dest_arena,
-                &format!("{}.anchor.{}.{}", site_name, type_name, fname),
-            )?;
+            let anchored = if slot_fields && matches!(fty, CodegenTy::String) {
+                let f = self
+                    .module
+                    .get_function("lotus_str_clone_slot")
+                    .expect("lotus_str_clone_slot declared");
+                self.builder
+                    .build_call(
+                        f,
+                        &[dest_arena.into(), field_val.into_pointer_value().into()],
+                        &format!("{}.anchor.{}.{}.slot", site_name, type_name, fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_clone_slot returns ptr")
+            } else {
+                self.emit_cross_arena_store_deep_copy_ptr(
+                    field_val,
+                    &fty,
+                    dest_arena,
+                    &format!("{}.anchor.{}.{}", site_name, type_name, fname),
+                )?
+            };
             self.builder
                 .build_store(field_slot, anchored)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

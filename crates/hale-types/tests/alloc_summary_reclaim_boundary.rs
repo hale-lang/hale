@@ -265,7 +265,9 @@ fn stores_and_bus_payloads() {
         fn_block(&dump, "App::keep"),
         [
             "fn App::keep [invoked-unboundedly]",
-            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve @155..162",
+            // GH #1490 (step 4): a concatenation stored whole into a
+            // field names the field, as a struct literal's store does.
+            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve @155..162 ->self.last",
         ]
     );
     assert_eq!(dump, old_model(&now).render(), "nothing here moves");
@@ -603,20 +605,20 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/74-effect-contracts: 0 go, 0 appear; dump 7 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
-    "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 12 verdicts",
+    "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 13 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/http-hello: 0 go, 0 appear; dump 0 tags, 0 reclaim, 7 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 0 go, 0 appear; dump 350 tags, 717 reclaim, 0 verdicts",
-    "dna/core: 0 go, 0 appear; dump 282 tags, 637 reclaim, 0 verdicts",
-    "dna/host: 1 go, 0 appear; dump 416 tags, 780 reclaim, 1 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 416 tags, 707 reclaim, 656 verdicts",
+    "dna/api: 0 go, 0 appear; dump 350 tags, 761 reclaim, 0 verdicts",
+    "dna/core: 0 go, 0 appear; dump 282 tags, 662 reclaim, 0 verdicts",
+    "dna/host: 2 go, 0 appear; dump 416 tags, 836 reclaim, 2 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 416 tags, 734 reclaim, 708 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
-    "dna/operations: 0 go, 0 appear; dump 340 tags, 709 reclaim, 0 verdicts",
-    "dna/organism: 0 go, 0 appear; dump 293 tags, 655 reclaim, 0 verdicts",
-    "dna/organization_runtime: 0 go, 0 appear; dump 340 tags, 709 reclaim, 0 verdicts",
-    "dna/organization_source: 0 go, 0 appear; dump 282 tags, 637 reclaim, 0 verdicts",
+    "dna/operations: 0 go, 0 appear; dump 340 tags, 752 reclaim, 0 verdicts",
+    "dna/organism: 0 go, 0 appear; dump 293 tags, 680 reclaim, 0 verdicts",
+    "dna/organization_runtime: 0 go, 0 appear; dump 340 tags, 752 reclaim, 0 verdicts",
+    "dna/organization_source: 0 go, 0 appear; dump 282 tags, 662 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 14 tags, 19 reclaim, 0 verdicts",
-    "dna/ui: 0 go, 0 appear; dump 284 tags, 637 reclaim, 0 verdicts",
+    "dna/ui: 0 go, 0 appear; dump 284 tags, 662 reclaim, 0 verdicts",
     "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 21 reclaim, 0 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 29 reclaim, 0 verdicts",

@@ -229,3 +229,100 @@ and 35.0 MB / 2M (lengths 7–8: 5.2 MB) — a known false negative of
 the flip, documented in spec/verification.md. The lever is the
 runtime's reuse (keep a block's true size across reuse, or bucket by
 size class), not the model.
+
+**Step 3, the spelling** (structure-and-bounds plan): the survey
+recorded a String `+` only where an operand was a literal or a name
+whose declared type was `String`, and the second never matched (the
+type parses as a primitive, which the name map does not hold), so a
+chain without a literal was no site at all — `out = out + piece(i)`,
+`self.buf = self.buf + chunk`, `acc = wrap(acc) + sep`. Recognition is
+now typed from declarations (`StrTy` in `alloc_summary.rs`: params,
+fields, annotated and initialized `let`s, `for` binders over String
+arrays, fns and methods declared `-> String`, `to_string`, scoped as
+written). This only adds sites, and C2's rule then judges the new
+accumulators like the old ones. Measured over every DNA program: 19
+warning lines more and none fewer — nine intermediate concatenations
+(`out + f(x)` inside `out + f(x) + " "`) in loops of frames with no
+boundary, beside the outer site already reported; four in the books
+acceptance's `hex_of` (`out + digits[..] + digits[..]`, no literal at
+all), a helper with no boundary of its own; four String field stores (`self.buf =
+self.buf + chunk` in a test; two replaces in the NATS adapter and one in
+a test, which step 4 makes store-latest); and `dna/host`'s
+`unescape_arg`, two sites of an accumulator whose result lands in
+`route_verb`'s frame once per argument word — real growth bounded by the
+command line, now `@bounded_by(argv)` beside `parse_args`. No decorator
+stopped silencing; three silence more (`GitJournal::landed`,
+`Review::consider`, `Host::fleet_window`).
+
+**Step 4, the replaced field — the runtime lever, then the model**
+(structure-and-bounds plan). C3's measurement named the lever; it is
+built. Once a locus replaces a `String` field, the field's values take
+blocks from size classes of their own (`lotus_slot_alloc` in
+`lotus_arena.c`: 16-byte steps to 128 bytes, then four classes per power
+of two, to 16 MiB), each its class's whole capacity. A per-arena
+capacity table (block -> class; allocated at the arena's first replace,
+one entry per field value it keeps) lets the retire
+(`lotus_slot_retire`) file the block at its real size whatever value it
+last held, on its class's own list, where the next value of that class
+takes it from the head — no probe window, no shrinking. The compound
+store's anchor walk clones a struct's top-level `String` fields into the
+same blocks (`lotus_str_clone_slot`), so Gap D is covered by the same
+fix, by measurement. Design notes: the table is the smallest correct
+record of a block's capacity — a String carries only its length, and a
+header would have to be readable on every block a slot can hold,
+including ones no field allocated (a field's first value, set at
+instantiation); a block the table does not know is retired at its
+length, as before. Nothing changes on the arena's fast path
+(`lotus_arena_alloc`), and the general freelist (map cells, vec
+elements, Bytes) is untouched. Cost: rounding a field value up to its
+class (under 16 bytes, or a quarter above 128), and ~200 bytes of
+malloc'd state per locus that replaces a String field.
+
+Measured (self-RSS / max RSS, release build): 1M replaces in a method at
+lengths 6–55, 35.5 MB -> 4.7 MB and 1.11 s -> 0.08 s; a one-String-field
+struct at lengths 6–55, 36 MB -> 4.7 MB and 0.62 s -> 0.08 s; a bus
+handler, 500k messages at lengths 6–55, 20.9 MB -> 5.1 MB; the steady
+length, a two-String struct churn, a hashmap value churn and the C2
+accumulator unchanged (4.7–5.1 MB, same times); all clean under
+AddressSanitizer with the chunk pool off. The model then moved: a
+concatenation that is the whole new value of a `String` field of `self`,
+or a whole field of a struct replaced whole, proven to carry nothing of
+the field it replaces, is `retired_store` (store-latest, judged as Gap
+D: not reported from a frame with an activation boundary; reported in a
+`run()` loop, a scratchless frame, or as an append). The proof is field
+provenance (`Taint` in `alloc_summary.rs`): which fields of `self` each
+binding may carry, joined over every write into it (a loop's writes
+replayed to a fixpoint), and what each parameter was passed by every
+call the survey sees (`resolve_param_provenance`: from a call on
+`self`, what the argument carries; from any other receiver, everything
+when the argument carries anything of the caller's `self`; nothing for
+a parameter no call passes, such as a handler's message); a method of
+`self` and the forms the walk does not follow may carry anything. Two
+review rounds of #1502 closed holes in this: a first cut excused any
+value that did not spell `self.<f>` (`let previous = self.log;
+self.log = previous + "x"`, `self.log = self.previous() + "x"`), a
+second took every parameter to carry nothing (`fn append(p: String) {
+self.log = p + "x"; }` called as `self.append(self.log)`); all append
+to the live value as `self.log = self.log + "x"` does; a third took a
+left parameter's default to read only `self` syntactically, where Hale
+evaluates it in the caller's scope (`fn append(p: String = old)` with
+the caller's `let old = self.log; self.append();`), now evaluated there
+as the call's argument, with struct-literal field defaults alike and a
+locus's publishes into its own handlers (a message from another locus
+stays fresh: provenance does not cross loci); a fourth matched a
+self-publish to a handler by literal subject equality, which `t.**`
+taking `t.next` defeats, and a fifth matched it by type name, which an
+alias (`type Message = Tick`) defeats: a self-publish carrying anything
+of the publisher's fields now reaches every handler of the locus, with
+no subject or type comparison. DNA, final:
+12 decorators silence nothing in any program (0 before; 29 under the
+first cut, 19 under the second; the difference is replaces whose value
+comes from a `self` method's result or a parameter some caller passes
+such a value, which the survey cannot prove independent, e.g.
+`self.error = what + ": " + e.kind` with `e` a database result);
+`hale check` warning lines over every DNA program 590 -> 587 (the NATS
+adapter's two replaces before, one now: `NatsConn::note` is passed
+`self.last_error` back and genuinely appends; one test's replace; and
+`Ui::discovered`); the survey sites the decorators silence fall from
+205 / 168 / 176 / 156 to 178 / 144 / 157 / 132 (host, operations, api,
+core).

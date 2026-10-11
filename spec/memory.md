@@ -1462,8 +1462,30 @@ reclaim on a real-world long-running workload:
      allocated afresh. A field alternating between a heap value
      and an empty one leaked a block per cycle (~32 bytes for a
      5-byte String, until the locus dissolved). Keeping the
-     record exact makes every retire reusable, so a field whose
-     length varies stays flat.
+     record exact makes every retire reusable.
+
+     That exact record was still only the VALUE's size: once the
+     general freelist handed a block to a shorter value (best fit
+     within `size + size/4 + 16`), the block's next retire recorded
+     the shorter length, so a block only ever shrank and a field
+     whose length varied kept bump-allocating (~31 B per replace at
+     lengths 6–55). Field blocks (GH #1490): once a locus replaces a
+     String field, the field's values take blocks of size classes of
+     their own (`lotus_slot_alloc`: 16-byte steps to 128 bytes, then
+     four classes per power of two, to 16 MiB), each its class's
+     whole capacity, recorded in the arena's capacity table (block →
+     class, allocated with the arena's first replace and freed with
+     the arena; one entry per field value it keeps). The retire
+     (`lotus_slot_retire`) takes the block's class from the table, so
+     the flush files it whole on that class's list, and the next
+     value of the class takes it from the head. A field's memory is
+     bounded by its largest value, however its length varies; a block
+     the table does not know (a field's first values, a value above
+     16 MiB) is retired at its strlen+1 through the general freelist,
+     as before. The compound store of #6 clones a struct's top-level
+     String fields into field blocks too (`lotus_str_clone_slot`), and
+     its fixup retires them the same way. Bytes fields keep the
+     general freelist.
 
   8. **m49 sret-pattern return-arena routing.** When a method-
      with-scratch is about to return a heap-typed value, the

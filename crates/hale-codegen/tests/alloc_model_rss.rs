@@ -657,20 +657,24 @@ fn a_returned_loop_accumulator_reclaims_with_its_activation() {
     );
 }
 
-// === GH #1490 (C3): a String field replaced whole still grows ===
+// === GH #1490 (step 4): a String field replaced whole is store-latest ===
 //
 // `self.last = <a fresh String>` in a method: the store retires the
 // replaced block (`lotus_str_assign_in_place`) and the activation
-// boundary makes it reusable, but reuse matches by size within a short
-// probe window, and a reused block is retired again at the new value's
-// length. A value whose length stays put recycles (flat); one whose
-// length walks through many sizes keeps bump-allocating into the locus
-// arena. The survey cannot see a length, so it keeps reporting the
-// replace — this pins the runtime half of that verdict: the day the
-// varying-length replace stays flat, store-latest can be excused. (The
-// instance is let-bound: one only ever written as a bare statement is
-// an eager-only locus, whose own stores the survey bounds by that
-// statement.)
+// boundary makes it reusable. A field's blocks come from size classes
+// of their own (`lotus_slot_alloc`): each is its class's whole
+// capacity, the retire files it on its class's list at that capacity
+// whatever value it last held, and the next value of the class takes
+// it. So the field's memory is bounded by its largest value, however
+// its length varies — before this, reuse matched by size in a short
+// probe window and a reused block was retired again at its new
+// value's length, so a block only shrank and lengths 6..55 grew
+// ~31 B per replace (35.7 MB over 1M against 4.6 MB). The survey
+// models the replace as store-latest (`retired_store`), as it does a
+// struct replaced whole (Gap D), whose String fields now clone into
+// the same field blocks. (The instance is let-bound: one only ever
+// written as a bare statement is an eager-only locus, whose own stores
+// the survey bounds by that statement.)
 
 const STRING_FIELD_REPLACE_VARYING: &str = r#"
     locus Rec {
@@ -700,30 +704,80 @@ const STRING_FIELD_REPLACE_STEADY: &str = r#"
     fn main() { let r = Rec { }; }
 "#;
 
+/// Lengths that climb: the i-th value is `i / 200` characters plus a
+/// jitter of up to 6, so nearly every few replaces brings a value
+/// longer than every one before it, up to ~1 KB over 200k replaces.
+/// Each new maximum takes a block once; nothing before it is lost.
+const STRING_FIELD_REPLACE_CLIMBING: &str = r#"
+    locus Rec {
+        params { last: String = ""; n: Int = 200000; sink: Int = 0; }
+        fn record(i: Int) { self.last = std::str::repeat("x", i / 200 + (i - (i / 7) * 7)); }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); self.sink = self.sink + len(self.last); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { let r = Rec { }; }
+"#;
+
+/// Gap D's shape at varying lengths: a one-String-field struct replaced
+/// whole, its field's lengths 6..55.
+const STRUCT_REPLACE_VARYING: &str = r#"
+    type Cell { s: String = ""; n: Int = 0; }
+    locus Rec {
+        params { st: Cell = Cell { }; n: Int = 1000000; sink: Int = 0; }
+        fn record(i: Int) { self.st = Cell { s: "value." + std::str::repeat("x", i - (i / 50) * 50), n: i }; }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); self.sink = self.sink + len(self.st.s); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { let r = Rec { }; }
+"#;
+
 #[test]
-fn a_string_field_replace_of_varying_length_grows() {
-    for src in [STRING_FIELD_REPLACE_VARYING, STRING_FIELD_REPLACE_STEADY] {
+fn a_string_field_replace_of_varying_length_stays_flat() {
+    for src in [STRING_FIELD_REPLACE_VARYING, STRING_FIELD_REPLACE_STEADY, STRUCT_REPLACE_VARYING] {
         let leaks = model_leaks(src);
         assert!(
-            leaks.iter().any(|l| l == "Rec::record InvokedUnboundedly"),
-            "the model keeps reporting a String field replaced whole: {leaks:?}"
+            leaks.is_empty(),
+            "a String field (or a struct of one) replaced whole in a method is \
+             store-latest: {leaks:?}"
         );
     }
-    // Measured self-RSS 2026-10-10 over 1M replaces: 35.7 MB with
-    // lengths 6..55 (the locus arena alone 15.6 MiB at 500k), 4.6 MB
-    // with lengths 7..8.
     let varying = build_and_rss("string_field_replace_varying", STRING_FIELD_REPLACE_VARYING);
     let steady = build_and_rss("string_field_replace_steady", STRING_FIELD_REPLACE_STEADY);
+    let structs = build_and_rss("struct_replace_varying", STRUCT_REPLACE_VARYING);
     assert!(
         steady < 30,
         "a String field replaced at a near-constant length should recycle: {steady}MB"
     );
     assert!(
-        varying >= steady + 15,
-        "a String field replaced at lengths 6..55 should grow >15MB over the \
-         steady-length one: varying={varying}MB, steady={steady}MB. If the gap \
-         collapsed, replaced String blocks now recycle whatever their length, \
-         and the survey's store-latest verdict for a String field can be \
-         revisited (GH #1490)."
+        varying <= steady + 4 && structs <= steady + 4,
+        "a String field replaced 1M times at lengths 6..55 must stay at the \
+         steady-length floor (bounded by its largest value): varying={varying}MB, \
+         struct={structs}MB, steady={steady}MB. A gap means a replaced field \
+         block is no longer retired at its size class's capacity \
+         (lotus_slot_alloc / lotus_slot_retire), and the survey's store-latest \
+         verdict for a String field (GH #1490) is unsound again."
+    );
+}
+
+#[test]
+fn a_string_field_replace_grows_only_to_its_largest_value() {
+    // Values longer than every one before keep arriving; the field's
+    // memory follows the largest (~1 KB), not the number of replaces:
+    // each new class takes one block (two while a retire is pending),
+    // and every block a class holds serves any later value of it.
+    let climbing = build_and_rss("string_field_replace_climbing", STRING_FIELD_REPLACE_CLIMBING);
+    let steady = build_and_rss("string_field_replace_steady_ref", STRING_FIELD_REPLACE_STEADY);
+    assert!(
+        climbing <= steady + 4,
+        "a String field whose values climb to ~1 KB must stay bounded by \
+         its largest value: climbing={climbing}MB, steady={steady}MB"
     );
 }

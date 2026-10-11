@@ -1118,12 +1118,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // identity for the common RMW + literal-field patterns.
         // For compound types, this rewrites rhs's struct fields
         // in place; the returned pointer is rhs's own pointer.
+        // GH #1490: the struct's top-level String fields — the ones
+        // the fixups below retire — clone into field blocks.
+        self.slot_field_clone = !retire_fields.is_empty();
         let anchored = self.emit_cross_arena_store_deep_copy(
             rhs,
             slot_ty,
             dest_arena,
             "self_field_inplace",
-        )?;
+        );
+        self.slot_field_clone = false;
+        let anchored = anchored?;
 
         let size = self.compound_storage_size(slot_ty)?;
 

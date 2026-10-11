@@ -193,7 +193,20 @@ reclaims it. A function that builds its result in a loop
 not one per iteration, wherever a per-call boundary frees the values
 each iteration replaces — its own (a method, a scratch-local helper)
 or its caller's; the result is then reported only where it lands in
-a long-lived frame, `main`'s or `run`'s loop. `--dump-alloc-summary` tags each scratch-local function,
+a long-lived frame, `main`'s or `run`'s loop. A String `+` counts
+however it is spelled: the survey types each operand from what you
+declared — a `String` parameter, field or annotated `let`, a `let`
+initialized from one, a function or method declared `-> String`,
+`to_string(x)` — so `out = out + piece(i)` is the same accumulator as
+`out = out + "x"`, and `i + 1` is never a concatenation. A
+`String` field replaced whole in a method or handler (`self.last =
+"seen " + id`) holds one value, its largest at most — the store
+retires what it replaces and the next value reuses the block — so it
+is not reported. An append is, however it reaches the old value:
+`self.log = self.log + line`, through a `let` bound to `self.log`, or
+through a method of `self` — the survey excuses only a value it can
+show carries nothing of the field.
+`--dump-alloc-summary` tags each scratch-local function,
 and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.
 `@unbounded fn` is the in-source carve-out for an acknowledged

@@ -172,7 +172,10 @@ These are advisory warnings, not build failures:
   flat. The same holds for a single `String` or `Bytes` field whose
   length changes from write to write — a message's payload one time,
   the empty value a control frame leaves the next: the old value is
-  retired whatever the new one is. **In-place mutation**
+  retired whatever the new one is. A `String` field's next values
+  reuse those blocks whatever their lengths (each is kept at its size
+  class's full capacity), so the field's memory stays bounded by its
+  largest value, and the survey does not report such a replace. **In-place mutation**
   (`self.latest.field = v`, `self.arr[i] = v`) is still the faster
   idiom — a same-length write skips the clone-and-retire cycle
   entirely — and remains the fix for what retirement doesn't yet

@@ -167,6 +167,166 @@ fn is_growing_insert(form_name: &str, method: &str) -> bool {
     form_grows(form_name) && is_insert_method(method)
 }
 
+/// What the survey knows of a value's String-ness (GH #1490, step 3):
+/// a `String` (or a view of one), an array of them, or anything else.
+/// A String `+` is a fresh concatenation however its operands are
+/// spelled, so the survey types the operand from what the program
+/// declares — a binding's annotation or initializer, a fn's or a
+/// method's declared return, a field's declared type, a builtin's
+/// signature — and never guesses: what it cannot type is `Other`, so
+/// `i + 1` is never read as a concatenation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrTy {
+    Str,
+    StrArray,
+    Other,
+}
+
+/// Is `te` a String type: `String` or `StringView`, as a primitive or
+/// written as the bare name.
+fn is_string_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Primitive(PrimType::String | PrimType::StringView, _) => true,
+        TypeExpr::Named { path, generic_args, .. } => {
+            generic_args.is_empty()
+                && path.segments.len() == 1
+                && matches!(path.segments[0].name.as_str(), "String" | "StringView")
+        }
+        _ => false,
+    }
+}
+
+/// GH #1490 (step 4): what a value may carry of `self` — the provenance
+/// a field replace's independence is judged by. A [`Src::Field`] is a
+/// field of the body's `self`; a [`Src::Param`] is whatever the body's
+/// parameter of that name was passed, which the callers decide
+/// ([`resolve_param_provenance`]). `Top` is a value the walk cannot
+/// trace (a method of `self`, `self` itself, a binding a loop rewrites,
+/// an expression form the walk does not follow): it may carry anything.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Src {
+    Field(String),
+    Param(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Taint {
+    Top,
+    Of(BTreeSet<Src>),
+}
+
+impl Taint {
+    fn none() -> Self {
+        Taint::Of(BTreeSet::new())
+    }
+
+    fn field(f: &str) -> Self {
+        Taint::Of(BTreeSet::from([Src::Field(f.to_string())]))
+    }
+
+    fn param(p: &str) -> Self {
+        Taint::Of(BTreeSet::from([Src::Param(p.to_string())]))
+    }
+
+    fn join(self, other: Taint) -> Taint {
+        match (self, other) {
+            (Taint::Of(mut a), Taint::Of(b)) => {
+                a.extend(b);
+                Taint::Of(a)
+            }
+            _ => Taint::Top,
+        }
+    }
+
+    /// Carries nothing at all.
+    fn is_none(&self) -> bool {
+        matches!(self, Taint::Of(s) if s.is_empty())
+    }
+
+    /// May the value carry `self.<field>` directly (a parameter is
+    /// answered once its callers are known)?
+    fn may_carry(&self, field: &str) -> bool {
+        match self {
+            Taint::Top => true,
+            Taint::Of(s) => s.contains(&Src::Field(field.to_string())),
+        }
+    }
+
+    /// The parameters it depends on.
+    fn params(&self) -> BTreeSet<String> {
+        match self {
+            Taint::Top => BTreeSet::new(),
+            Taint::Of(s) => s
+                .iter()
+                .filter_map(|x| match x {
+                    Src::Param(p) => Some(p.clone()),
+                    Src::Field(_) => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Replace each parameter by what it was passed (`of`).
+    fn substitute(&self, of: &dyn Fn(&str) -> Taint) -> Taint {
+        match self {
+            Taint::Top => Taint::Top,
+            Taint::Of(s) => s.iter().fold(Taint::none(), |t, x| match x {
+                Src::Field(f) => t.join(Taint::field(f)),
+                Src::Param(p) => t.join(of(p)),
+            }),
+        }
+    }
+}
+
+/// The String-ness a declared type gives a value of it.
+fn str_ty_of(te: &TypeExpr) -> StrTy {
+    match te {
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } if is_string_type(elem) => StrTy::StrArray,
+        _ if is_string_type(te) => StrTy::Str,
+        _ => StrTy::Other,
+    }
+}
+
+/// The String and String-array parameters of a signature.
+fn param_str_types(params: &[Param]) -> Vec<(String, StrTy)> {
+    params
+        .iter()
+        .map(|p| (p.name.name.clone(), str_ty_of(&p.ty)))
+        .filter(|(_, t)| *t != StrTy::Other)
+        .collect()
+}
+
+/// The String and String-array fields of a struct type, by name.
+fn struct_str_fields(fields: &[StructField]) -> BTreeMap<String, StrTy> {
+    fields
+        .iter()
+        .map(|f| (f.name.name.clone(), str_ty_of(&f.ty)))
+        .filter(|(_, t)| *t != StrTy::Other)
+        .collect()
+}
+
+/// The String and String-array fields of a locus's `params`: a
+/// declared type, or (a param written without one) a string-literal
+/// default.
+fn locus_str_fields(l: &LocusDecl) -> BTreeMap<String, StrTy> {
+    let mut m = BTreeMap::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                let t = match (&pd.ty, &pd.init) {
+                    (Some(te), _) => str_ty_of(te),
+                    (None, ParamInit::Value(Expr::Literal(Literal::String(_), _))) => StrTy::Str,
+                    _ => StrTy::Other,
+                };
+                if t != StrTy::Other {
+                    m.insert(pd.name.name.clone(), t);
+                }
+            }
+        }
+    }
+    m
+}
+
 /// The unqualified name of a `Named` type expression (`SegVec` from
 /// `path::to::SegVec`), or `None` for primitives / arrays / etc.
 fn type_expr_name(te: &TypeExpr) -> Option<String> {
@@ -403,6 +563,11 @@ pub struct AllocSite {
     /// A struct literal written as the whole right side of a
     /// `self.<field> = …` replace: the assignment statement's span.
     pub self_replace: Option<Span>,
+    /// GH #1490 (step 4): a field replace whose new value carries
+    /// nothing of the field but what the body's parameters were passed
+    /// (`(field, params)`): `retired_store` once every caller is shown
+    /// to pass none of it ([`resolve_param_provenance`]).
+    pub(crate) retire_if_params: Option<(String, BTreeSet<String>)>,
     pub span: Span,
 }
 
@@ -514,6 +679,12 @@ pub enum Callee {
 /// One call edge out of a body.
 #[derive(Debug, Clone)]
 pub struct CallEdge {
+    /// GH #1490 (step 4): what each argument may carry of the caller's
+    /// `self` and parameters ([`Taint`]).
+    pub(crate) arg_taints: Vec<Taint>,
+    /// GH #1490 (step 4): the call is a method of `self`, on the same
+    /// instance as the caller.
+    pub(crate) self_call: bool,
     pub callee: Callee,
     /// #341: the receiver's declared type name for a method call.
     ///
@@ -781,6 +952,8 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
+    /// GH #1490 (step 4): what each publish of the body carries.
+    pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
     /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
     /// `main` (lowered as the program's entry), and for a row the summary
@@ -2050,11 +2223,29 @@ pub fn summarize_identified(
     // is in, whether it is an `@hot` fn and a mode, and the declaration
     // it is a member of, and every param's name (the outermost of its
     // bindings). A body's place in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>);
+    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>, Vec<(String, StrTy)>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     // What a call spelling (locus, name) resolves to: the row of the last
     // declaration of the name.
     let mut known: Known = BTreeMap::new();
+    // GH #1490 (step 3): the fns and methods that return a String, and
+    // the String fields of every struct type and locus, so a `+` is
+    // read as a concatenation by its operands' declared types.
+    let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
+    // GH #1490 (step 4): every fn's and method's parameters with their
+    // defaults — a default is evaluated in the CALLER's scope, so a call
+    // that leaves a parameter passes what the default reads there — and
+    // every struct type's and locus's field defaults, evaluated where its
+    // literal is written.
+    let mut param_info: ParamInfo = BTreeMap::new();
+    let note_params = |key: &FnKey, params: &[Param], out: &mut ParamInfo| {
+        out.insert(key.clone(), params.iter().map(|p| (p.name.name.clone(), p.default.clone())).collect());
+    };
+    let mut field_defaults: FieldDefaults = BTreeMap::new();
+    // GH #1490 (step 4): each locus's handlers with the subject each
+    // subscribes to (`None` for a qualified topic, matched as anything).
+    let mut subscriptions: Subscriptions = BTreeMap::new();
+    let mut str_fields: BTreeMap<String, BTreeMap<String, StrTy>> = BTreeMap::new();
     let universe_of = |ids: &crate::snapshot::Snapshot| {
         if is_stdlib_copy(ids) {
             SiteUniverse::StdlibAnalysis
@@ -2307,10 +2498,25 @@ pub fn summarize_identified(
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
-                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
+                    if decl.ret.as_ref().is_some_and(is_string_type) {
+                        string_rets.insert(key.clone());
+                    }
+                    note_params(&key, &decl.params, &mut param_info);
+                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
+                        str_fields.insert(td.name.name.clone(), struct_str_fields(fields));
+                        // The stdlib's analysis copy is no declaration the
+                        // program alone has: its literals' defaults stay
+                        // unknown either way, so the copy beside the program
+                        // moves no answer of its own rows.
+                        if !is_stdlib_copy(ids) {
+                            field_defaults.insert(
+                                td.name.name.clone(),
+                                fields.iter().map(|f| (f.name.name.clone(), f.default.clone())).collect(),
+                            );
+                        }
                         let all_retirable = fields.iter().all(|f| {
                             matches!(
                                 &f.ty,
@@ -2348,6 +2554,10 @@ pub fn summarize_identified(
                         sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
+                    str_fields.insert(locus.clone(), locus_str_fields(l));
+                    if !is_stdlib_copy(ids) {
+                        field_defaults.insert(locus.clone(), locus_field_defaults(l));
+                    }
                     // GH #540: a stdlib locus is built by code the
                     // summary may not hold, so its slots keep every
                     // conformer.
@@ -2366,6 +2576,7 @@ pub fn summarize_identified(
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
+                    subscriptions.insert(locus.clone(), handlers.clone());
                     for member in &l.members {
                         match member {
                             // A `mode` body was never collected, so
@@ -2398,6 +2609,7 @@ pub fn summarize_identified(
                                     (false, true),
                                     l.id,
                                     param_names(&md.params),
+                                    param_str_types(&md.params),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -2414,6 +2626,10 @@ pub fn summarize_identified(
                                 };
                                 silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
+                                if decl.ret.as_ref().is_some_and(is_string_type) {
+                                    string_rets.insert(key.clone());
+                                }
+                                note_params(&key, &decl.params, &mut param_info);
                                 bodies.push((
                                     key,
                                     &decl.body,
@@ -2426,6 +2642,7 @@ pub fn summarize_identified(
                                     (decl.hot, false),
                                     l.id,
                                     param_names(&decl.params),
+                                    param_str_types(&decl.params),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -2449,6 +2666,7 @@ pub fn summarize_identified(
                                     (false, false),
                                     l.id,
                                     param_names(&lc.params),
+                                    param_str_types(&lc.params),
                                 ));
                             }
                             _ => {}
@@ -2667,6 +2885,7 @@ pub fn summarize_identified(
                 fn_params: &[String],
                 param_elems: &[(String, String)],
                 params: &[String],
+                str_params: &[(String, StrTy)],
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
@@ -2708,6 +2927,13 @@ pub fn summarize_identified(
             all_struct_fields: &struct_field_types,
             all_elem_types: &locus_elem_types,
             fn_ret_types: &fn_ret_types,
+            string_rets: &string_rets,
+            str_fields: &str_fields,
+            strs: vec![str_params.iter().cloned().collect()],
+            taints: vec![params.iter().map(|p| (p.clone(), Taint::param(p))).collect()],
+            param_info: &param_info,
+            field_defaults: &field_defaults,
+            expanding: std::cell::RefCell::new(Vec::new()),
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -2716,6 +2942,8 @@ pub fn summarize_identified(
             self_replace: None,
             let_call: None,
             in_place_sites: Vec::new(),
+            sends: Vec::new(),
+            retired_init: false,
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -2733,6 +2961,7 @@ pub fn summarize_identified(
                 mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
+                sends: w.sends,
                 frame: None,
             },
             starts,
@@ -2743,18 +2972,18 @@ pub fn summarize_identified(
     // no row, then every subexpression a walk skipped, under the key and
     // the parameters of the body it sits in.
     type Pending<'i> =
-        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>);
+        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>, Vec<(String, StrTy)>);
     let mut pending: Vec<Pending> = Vec::new();
     let skipped_block = |es: Vec<Expr>| Block {
         span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
         stmts: es.into_iter().map(Stmt::Expr).collect(),
         tail: None,
     };
-    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params)) in
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params, str_params)) in
         bodies.iter().enumerate()
     {
         let (row, starts, skipped) =
-            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, ids, (*hot, *mode, decl_index));
+            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts);
         if runtime_ids.contains(decl) {
             summary.appended_runtime.insert(key.clone());
@@ -2774,6 +3003,7 @@ pub fn summarize_identified(
                     param_elems.clone(),
                     ids,
                     params.clone(),
+                    str_params.clone(),
                 ));
             }
         }
@@ -2790,17 +3020,18 @@ pub fn summarize_identified(
             param_var_elem_types(m.params),
             ids,
             param_names(m.params),
+            param_str_types(m.params),
         ));
     }
     let mut next = 0;
     while next < pending.len() {
-        let (site, position, key, body, param_types, fn_params, param_elems, ids, params) = pending[next].clone();
+        let (site, position, key, body, param_types, fn_params, param_elems, ids, params, str_params) = pending[next].clone();
         next += 1;
         let (body_summary, _, skipped) =
-            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, ids, (false, false, usize::MAX));
+            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, (false, false, usize::MAX));
         summary.declaration_bodies.push(DeclarationBody { declaration: site, position, summary: body_summary });
         if !skipped.is_empty() {
-            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params));
+            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params, str_params));
         }
     }
     // GH #540: an expression evaluated outside any body above — a
@@ -2832,6 +3063,7 @@ pub fn summarize_identified(
                 &fn_typed_params(params),
                 &param_var_elem_types(params),
                 &param_names(params),
+                &param_str_types(params),
                 ids,
                 (false, false, usize::MAX),
             );
@@ -3116,7 +3348,219 @@ pub fn summarize_identified(
         summary.reached = Some(reached);
     }
     summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
+    let param_order: BTreeMap<FnKey, Vec<String>> =
+        bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
+    resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
     summary
+}
+
+/// GH #1490 (step 4): each locus's bus handlers.
+type Subscriptions = BTreeMap<String, BTreeSet<String>>;
+
+/// GH #1490 (step 4): each fn's and method's parameters, in order, with
+/// the default each has.
+type ParamInfo = BTreeMap<FnKey, Vec<(String, Option<Expr>)>>;
+
+/// GH #1490 (step 4): each struct type's and locus's fields, with the
+/// default each has.
+type FieldDefaults = BTreeMap<String, Vec<(String, Option<Expr>)>>;
+
+fn locus_field_defaults(l: &LocusDecl) -> Vec<(String, Option<Expr>)> {
+    let mut out = Vec::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                let d = match &pd.init {
+                    ParamInit::Value(e) => Some(e.clone()),
+                    ParamInit::Inferred => None,
+                };
+                out.push((pd.name.name.clone(), d));
+            }
+        }
+    }
+    out
+}
+
+/// GH #1490 (step 4): collect the names `e` reads; `false` when it holds
+/// a form this does not walk.
+fn idents_of(e: &Expr, out: &mut BTreeSet<String>) -> bool {
+    match e {
+        Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => true,
+        Expr::Ident(v) => {
+            out.insert(v.name.clone());
+            true
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => idents_of(receiver, out),
+        Expr::Binary { left, right, .. } => idents_of(left, out) & idents_of(right, out),
+        Expr::Unary { operand, .. } => idents_of(operand, out),
+        Expr::Index { receiver, index, .. } => idents_of(receiver, out) & idents_of(index, out),
+        Expr::Call { callee, args, .. } => args.iter().fold(idents_of(callee, out), |ok, a| idents_of(a, out) & ok),
+        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().fold(true, |ok, x| idents_of(x, out) & ok),
+        Expr::Struct { inits, .. } => inits.iter().fold(true, |ok, si| idents_of(&si.value, out) & ok),
+        _ => false,
+    }
+}
+
+/// GH #1490 (step 4): what each parameter of each body may have been
+/// passed, from every call the summary sees, and the field replaces that
+/// depended on it settled.
+///
+/// A parameter's provenance is the join, over every call of its fn, of
+/// what the argument carries with the caller's own parameters replaced
+/// by theirs (iterated to a fixpoint, so a value passed down a chain of
+/// calls keeps what it carries). A method called on `self` is the same
+/// instance: the argument's fields are the callee's. A method called on
+/// any other receiver may be the same instance or not: an argument
+/// carrying anything of the caller's `self` makes the parameter carry
+/// anything. A free fn has no `self`; what it is passed passes through
+/// to whatever it calls. A call the walk could not resolve passing such
+/// an argument makes every method of that name carry anything (a
+/// method call) or every free fn's parameters carry anything (a call
+/// through a function value). A parameter a call leaves takes its
+/// default, which Hale evaluates in the CALLER's scope: the walk records
+/// what the default reads there as that call's argument; an edge
+/// resolved after the walk (interface dispatch, a function value) has
+/// no such record, and a parameter it leaves that has a default carries
+/// anything. A parameter with no call — a bus handler's
+/// message, a hook's argument — carries nothing: the runtime passes a
+/// fresh value.
+///
+/// A field replace whose new value read only parameters then retires
+/// what it replaces when none of them may carry the field.
+fn resolve_param_provenance(
+    summary: &mut AllocSummary,
+    param_order: &BTreeMap<FnKey, Vec<String>>,
+    param_info: &ParamInfo,
+    subscriptions: &Subscriptions,
+) {
+    let mut val: BTreeMap<(FnKey, String), Taint> = BTreeMap::new();
+    let mut tainted_methods: BTreeSet<String> = BTreeSet::new();
+    let mut unknown_flow = false;
+    loop {
+        let mut changed = false;
+        fn contribute(val: &mut BTreeMap<(FnKey, String), Taint>, k: (FnKey, String), t: Taint) -> bool {
+            if t.is_none() {
+                return false;
+            }
+            let old = val.get(&k).cloned().unwrap_or_else(Taint::none);
+            let new = old.clone().join(t);
+            if new != old {
+                val.insert(k, new);
+                return true;
+            }
+            false
+        }
+        for f in summary.fns.values() {
+            for e in &f.calls {
+                let args: Vec<Taint> = e
+                    .arg_taints
+                    .iter()
+                    .map(|t| t.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none)))
+                    .collect();
+                match &e.callee {
+                    Callee::Resolved(ck) => {
+                        let Some(names) = param_order.get(ck) else { continue };
+                        // A parameter the edge has no argument for was left
+                        // to its default where the walk could not see the
+                        // callee (an edge resolved after the walk): what
+                        // the default read in the caller is not known.
+                        let defaults = param_info.get(ck);
+                        let mut args = args;
+                        while args.len() < names.len() {
+                            let i = args.len();
+                            let has_default = defaults.and_then(|d| d.get(i)).is_some_and(|(_, d)| d.is_some());
+                            args.push(if has_default { Taint::Top } else { Taint::none() });
+                        }
+                        for (a, pn) in args.into_iter().zip(names) {
+                            let t = if ck.locus.is_none() {
+                                a
+                            } else if e.self_call && f.key.locus == ck.locus {
+                                a
+                            } else if a.is_none() {
+                                Taint::none()
+                            } else {
+                                Taint::Top
+                            };
+                            changed |= contribute(&mut val, (ck.clone(), pn.clone()), t);
+                        }
+                    }
+                    Callee::Unresolved(name) => {
+                        if args.iter().all(Taint::is_none) {
+                            continue;
+                        }
+                        if e.indirect {
+                            unknown_flow = true;
+                        } else if e.receiver_present && tainted_methods.insert(name.clone()) {
+                            // Whatever the receiver's type (none the walk
+                            // could find, a generic parameter, a type whose
+                            // body is not here), the method may be any
+                            // locus's of that name.
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        // A locus that publishes what it carries of its own `self` may be
+        // its own subscriber: the message its handler receives carries it
+        // (the same instance, as a call on `self`). Which subscription a
+        // publish reaches is not judged — not by subject (wildcards, a
+        // transport's own pattern dialect, topics declared over subjects,
+        // computed subjects) nor by type (aliases): every handler of the
+        // locus receives what any of its publishes carries.
+        for f in summary.fns.values() {
+            let Some(locus) = &f.key.locus else { continue };
+            let Some(subs) = subscriptions.get(locus) else { continue };
+            for payload in &f.sends {
+                let t = payload.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none));
+                if t.is_none() {
+                    continue;
+                }
+                for handler in subs {
+                    let Some(hk) = param_order.keys().find(|k| k.locus.as_deref() == Some(locus.as_str()) && k.fn_name == *handler) else {
+                        continue;
+                    };
+                    if let Some(pn) = param_order.get(hk).and_then(|ns| ns.first()) {
+                        changed |= contribute(&mut val, (hk.clone(), pn.clone()), t.clone());
+                    }
+                }
+            }
+        }
+        for (k, names) in param_order {
+            let all = if k.locus.is_some() { tainted_methods.contains(&k.fn_name) } else { unknown_flow };
+            if all {
+                for pn in names {
+                    changed |= contribute(&mut val, (k.clone(), pn.clone()), Taint::Top);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // The provenance inputs are spent: what a reader sees is the answer
+    // (`retired_store`), never the walk's working rows, so two summaries
+    // that answer alike compare alike.
+    for f in summary.fns.values_mut() {
+        f.sends.clear();
+        for c in f.calls.iter_mut() {
+            c.arg_taints.clear();
+            c.self_call = false;
+        }
+    }
+    for f in summary.fns.values_mut() {
+        let key = f.key.clone();
+        for s in f.sites.iter_mut() {
+            if let Some((field, params)) = s.retire_if_params.take() {
+                if params
+                    .iter()
+                    .all(|p| !val.get(&(key.clone(), p.clone())).is_some_and(|t| t.may_carry(&field)))
+                {
+                    s.retired_store = true;
+                }
+            }
+        }
+    }
 }
 
 /// GH #1490: the loci a program with a `fn main` can start — `None` when
@@ -4614,6 +5058,29 @@ struct Walker<'a> {
     /// #382 receiver-typing: free-fn -> declared locus return type,
     /// for call-result receivers (`make_b().work()`).
     fn_ret_types: &'a BTreeMap<String, String>,
+    /// GH #1490 (step 3): the fns and methods whose declared return is a
+    /// String, by row.
+    string_rets: &'a BTreeSet<FnKey>,
+    /// GH #1490 (step 3): each struct type's and locus's String and
+    /// String-array fields.
+    str_fields: &'a BTreeMap<String, BTreeMap<String, StrTy>>,
+    /// GH #1490 (step 3): the String-ness of each binding in scope, one
+    /// map per scope beside `locals` (a param, a `let`, a `for` binder;
+    /// a match binding shadows as `Other`).
+    strs: Vec<BTreeMap<String, StrTy>>,
+    /// GH #1490 (step 4): the fields of `self` each binding in scope may
+    /// carry ([`Taint`]), one map per scope beside `strs`; a param
+    /// carries none.
+    taints: Vec<BTreeMap<String, Taint>>,
+    /// GH #1490 (step 4): every fn's parameters with their defaults, so
+    /// a call that leaves one passes what its default reads here.
+    param_info: &'a ParamInfo,
+    /// GH #1490 (step 4): every struct type's and locus's field
+    /// defaults, evaluated where a literal leaves the field.
+    field_defaults: &'a FieldDefaults,
+    /// The struct literals whose left fields' defaults `taint_of` is
+    /// expanding, outermost first.
+    expanding: std::cell::RefCell<Vec<String>>,
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
@@ -4642,6 +5109,11 @@ struct Walker<'a> {
     let_call: Option<(Span, Span)>,
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
+    /// `FnSummary::sends`.
+    sends: Vec<Taint>,
+    /// GH #1490 (step 4): the expression walked next is a whole field
+    /// of a retired struct replace (`AllocSite::retired_store`).
+    retired_init: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -4690,6 +5162,7 @@ impl<'a> Walker<'a> {
             in_loop: self.loops_as_written > 0,
             bare_stmt: false,
             self_replace: None,
+            retire_if_params: None,
             span,
         }
     }
@@ -4714,26 +5187,140 @@ impl<'a> Walker<'a> {
 
     /// Is this expression provably a String?
     ///
-    /// Deliberately narrow: a string literal, an f-string, or a name
-    /// whose declared type is `String`. Anything it cannot prove it
-    /// leaves alone, so `i + 1` is never mistaken for concatenation.
+    /// Typed from what the program declares, however the value is
+    /// spelled (GH #1490, step 3): a string literal (an f-string is one
+    /// by the time the survey walks it); a binding whose annotation,
+    /// initializer, parameter type or `for` iterable makes it a String;
+    /// a field whose declared type is `String`, on `self` or on a
+    /// receiver the walk types; a call of a fn or a method whose
+    /// declared return is `String`, or of a builtin whose signature
+    /// returns one (`to_string`); an element of a String array; and a
+    /// concatenation, an `or`, an `if` or a block whose value is one of
+    /// these. Anything it cannot prove it leaves alone, so `i + 1` is
+    /// never mistaken for concatenation.
     fn is_string_expr(&self, e: &Expr) -> bool {
         match e {
             Expr::Literal(Literal::String(_), _) => true,
             Expr::Ident(v) => {
-                self.var_types.get(&v.name).map(|t| t == "String").unwrap_or(false)
+                self.str_of(&v.name) == StrTy::Str
+                    || self.var_types.get(&v.name).map(|t| t == "String").unwrap_or(false)
             }
-            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
-                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-            {
-                self.field_types.get(&name.name).map(|t| t == "String").unwrap_or(false)
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                self.field_str(receiver, &name.name) == StrTy::Str
             }
             // `(a + b) + c` — a concat is itself a String.
             Expr::Binary { left, right, op: BinOp::Add, .. } => {
                 self.is_string_expr(left) || self.is_string_expr(right)
             }
+            Expr::Call { callee, .. } => self.call_returns_string(callee),
+            Expr::Index { receiver, .. } => self.str_iter(receiver) == StrTy::StrArray,
+            // `f(x) or ""` — the disposition unwraps the fallible; the
+            // value's type is the inner call's.
+            Expr::Or { inner, .. } => self.is_string_expr(inner),
+            // Every arm of an `if` value has the one type, so either
+            // arm's value answers.
+            Expr::If(ifs) => self.if_is_string(ifs),
+            Expr::Block(b) => b.tail.as_deref().is_some_and(|t| self.is_string_expr(t)),
             _ => false,
         }
+    }
+
+    fn if_is_string(&self, ifs: &IfStmt) -> bool {
+        ifs.then_block.tail.as_deref().is_some_and(|t| self.is_string_expr(t))
+            || match ifs.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(|t| self.is_string_expr(t)),
+                Some(ElseBranch::ElseIf(inner)) => self.if_is_string(inner),
+                None => false,
+            }
+    }
+
+    /// The String-ness of `receiver.name`: the field's declared type on
+    /// `self`'s locus or on the type the walk gives the receiver.
+    fn field_str(&self, receiver: &Expr, name: &str) -> StrTy {
+        let owner = match receiver {
+            Expr::KwSelf(_) => {
+                if self.field_types.get(name).is_some_and(|t| t == "String") {
+                    return StrTy::Str;
+                }
+                self.enclosing_locus.clone()
+            }
+            _ => self.receiver_type_name(receiver),
+        };
+        owner
+            .and_then(|o| self.str_fields.get(&o))
+            .and_then(|m| m.get(name).copied())
+            .unwrap_or(StrTy::Other)
+    }
+
+    /// The String-ness of the enclosing locus's field `name`.
+    fn self_field_str(&self, name: &str) -> StrTy {
+        if self.field_types.get(name).is_some_and(|t| t == "String") {
+            return StrTy::Str;
+        }
+        self.enclosing_locus
+            .as_ref()
+            .and_then(|l| self.str_fields.get(l))
+            .and_then(|m| m.get(name).copied())
+            .unwrap_or(StrTy::Other)
+    }
+
+    /// The String-ness of an iterable or an indexed base: a String-array
+    /// binding or field, or an array literal of Strings.
+    fn str_iter(&self, e: &Expr) -> StrTy {
+        match e {
+            Expr::Ident(v) => match self.str_of(&v.name) {
+                StrTy::StrArray => StrTy::StrArray,
+                _ => StrTy::Other,
+            },
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                match self.field_str(receiver, &name.name) {
+                    StrTy::StrArray => StrTy::StrArray,
+                    _ => StrTy::Other,
+                }
+            }
+            Expr::Array(xs, _) if xs.first().is_some_and(|x| self.is_string_expr(x)) => StrTy::StrArray,
+            _ => StrTy::Other,
+        }
+    }
+
+    /// The String-ness of a `let`'s value, for its binding.
+    fn str_value(&self, value: &Expr) -> StrTy {
+        if self.is_string_expr(value) {
+            StrTy::Str
+        } else {
+            self.str_iter(value)
+        }
+    }
+
+    /// Does this callee return a String: a fn or a method of the program
+    /// (or the stdlib's analysis copy) whose declared return is one, as
+    /// [`Walker::record_call`] resolves the callee, or a bare builtin
+    /// whose signature returns one.
+    fn call_returns_string(&self, callee: &Expr) -> bool {
+        let key = match callee {
+            Expr::Ident(id) => match self.own_fn(&id.name) {
+                Some(key) => Some(key),
+                None => {
+                    return self.local(&id.name).is_none()
+                        && crate::builtin_sigs::bare_builtin_sig(&id.name).is_some_and(|s| {
+                            s.returns == crate::builtin_sigs::Returns::Prim(PrimType::String)
+                        });
+                }
+            },
+            Expr::Path(qp) => match self.path_callee(qp) {
+                Callee::Resolved(key) => Some(key),
+                Callee::Unresolved(_) => None,
+            },
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                let owner = match receiver.as_ref() {
+                    Expr::KwSelf(_) => self.enclosing_locus.clone(),
+                    r => self.receiver_type_name(r),
+                };
+                owner.and_then(|o| self.known.get(&(Some(o), name.name.clone())).cloned())
+            }
+            _ => None,
+        };
+        key.is_some_and(|k| self.string_rets.contains(&k))
     }
 
     /// The declared/inferable LOCUS type of a receiver expression
@@ -4915,6 +5502,7 @@ impl<'a> Walker<'a> {
             in_loop: self.loops_as_written > 0,
             bare_stmt: false,
             self_replace: None,
+            retire_if_params: None,
             span,
         });
     }
@@ -4923,13 +5511,181 @@ impl<'a> Walker<'a> {
 impl<'a> Walker<'a> {
     fn walk_block(&mut self, b: &Block, depth: u32, tail_escape: Escape) {
         self.locals.push(BTreeMap::new());
+        self.strs.push(BTreeMap::new());
+        self.taints.push(BTreeMap::new());
         for s in &b.stmts {
             self.walk_stmt(s, depth);
         }
         if let Some(t) = &b.tail {
             self.walk_expr(t, depth, tail_escape);
         }
+        self.taints.pop();
+        self.strs.pop();
         self.locals.pop();
+    }
+
+    /// GH #1490 (step 4): bind `name`'s provenance in the innermost
+    /// scope.
+    fn bind_taint(&mut self, name: &str, t: Taint) {
+        self.taints.last_mut().expect("a body has a scope").insert(name.to_string(), t);
+    }
+
+    /// A write to the binding `name` (whole or through a field) joins
+    /// what it writes into what the binding may carry.
+    fn join_taint(&mut self, name: &str, t: Taint) {
+        if let Some(scope) = self.taints.iter_mut().rev().find(|s| s.contains_key(name)) {
+            let old = scope.remove(name).unwrap_or_else(Taint::none);
+            scope.insert(name.to_string(), old.join(t));
+        }
+    }
+
+    /// What the binding `name` may carry: an unbound name (a constant,
+    /// a fn) carries no field of `self`.
+    fn taint_of_name(&self, name: &str) -> Taint {
+        self.taints.iter().rev().find_map(|scope| scope.get(name).cloned()).unwrap_or_else(Taint::none)
+    }
+
+    /// GH #1490 (step 4): the fields of `self` the value of `e` may
+    /// carry. A read of `self.<f>` (through any further fields or
+    /// indexes) carries `f`; a binding, what it was bound and written
+    /// with; an operator, a free fn's or a builtin's call, an index, a
+    /// literal of a struct, array or tuple, what its operands carry (a
+    /// free fn reaches `self` only through its arguments); a method of
+    /// another receiver, its receiver's and its arguments'. A method
+    /// of `self`, `self` itself, a call through a local or a computed
+    /// callee, and every form this does not follow are `Top`.
+    fn taint_of(&self, e: &Expr) -> Taint {
+        let all = |es: &mut dyn Iterator<Item = &Expr>| es.fold(Taint::none(), |t, x| t.join(self.taint_of(x)));
+        match e {
+            Expr::Literal(..) | Expr::Path(_) => Taint::none(),
+            Expr::Ident(v) => self.taint_of_name(&v.name),
+            Expr::KwSelf(_) => Taint::Top,
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                    Taint::field(&name.name)
+                } else {
+                    self.taint_of(receiver)
+                }
+            }
+            Expr::Binary { left, right, .. } => self.taint_of(left).join(self.taint_of(right)),
+            Expr::Unary { operand, .. } => self.taint_of(operand),
+            Expr::Index { receiver, index, .. } => self.taint_of(receiver).join(self.taint_of(index)),
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => all(&mut xs.iter()),
+            // A field the literal leaves takes its default, evaluated
+            // here: what the default reads in this scope. A type whose
+            // fields the summary does not hold may default to anything.
+            Expr::Struct { path, inits, .. } => {
+                let given = all(&mut inits.iter().map(|si| &si.value));
+                let joined = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                let decl = self
+                    .field_defaults
+                    .get(&joined)
+                    .or_else(|| {
+                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                        crate::stdlib_bodies::mangled_locus_name(&segs).and_then(|m| self.field_defaults.get(m))
+                    })
+                    .or_else(|| self.rename_map.get(&joined).and_then(|m| self.field_defaults.get(m)))
+                    .or_else(|| path.segments.last().and_then(|l| self.field_defaults.get(&l.name)));
+                let Some(fields) = decl else { return Taint::Top };
+                let left: Vec<&Expr> = fields
+                    .iter()
+                    .filter(|(f, _)| !inits.iter().any(|si| si.name.name == *f))
+                    .filter_map(|(_, d)| d.as_ref())
+                    .collect();
+                if left.is_empty() {
+                    return given;
+                }
+                // A default may build the type it belongs to (or one
+                // that builds it back): past a type already being
+                // expanded, or a depth no real nesting reaches, the
+                // value may carry anything.
+                if self.expanding.borrow().contains(&joined) || self.expanding.borrow().len() > 16 {
+                    return Taint::Top;
+                }
+                self.expanding.borrow_mut().push(joined.clone());
+                let t = left.into_iter().fold(given, |t, d| t.join(self.taint_of(d)));
+                self.expanding.borrow_mut().pop();
+                t
+            }
+            Expr::Call { callee, args, .. } => {
+                let callee_t = match callee.as_ref() {
+                    // A bound local may be a fn value: nothing to trace.
+                    Expr::Ident(id) if self.local(&id.name).is_some() && self.own_fn(&id.name).is_none() => {
+                        return Taint::Top;
+                    }
+                    Expr::Ident(_) | Expr::Path(_) => Taint::none(),
+                    Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => match receiver.as_ref() {
+                        Expr::KwSelf(_) => return Taint::Top,
+                        // `alias::f(..)` spelled with a dot is a free fn.
+                        Expr::Ident(r)
+                            if self.local(&r.name).is_none()
+                                && self.rename_map.keys().any(|k| k.starts_with(&format!("{}::", r.name))) =>
+                        {
+                            Taint::none()
+                        }
+                        r => self.taint_of(r),
+                    },
+                    _ => return Taint::Top,
+                };
+                callee_t.join(all(&mut args.iter()))
+            }
+            Expr::Or { inner, disposition, .. } => {
+                let t = self.taint_of(inner);
+                match disposition {
+                    OrDisposition::Substitute(x) => t.join(self.taint_of(x)),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => t,
+                    _ => Taint::Top,
+                }
+            }
+            // A value-only `if` (`if c { a } else { b }`, no statements in
+            // its arms): one of its arms' values. Its condition chooses
+            // and is not in the value.
+            Expr::If(ifs) => self.if_taint(ifs),
+            Expr::Block(b) if b.stmts.is_empty() => b.tail.as_deref().map_or(Taint::none(), |t| self.taint_of(t)),
+            _ => Taint::Top,
+        }
+    }
+
+    /// What a parameter default evaluated at this call carries: what it
+    /// reads in the caller's scope, and — should it name one of the
+    /// callee's own parameters — what that argument carries.
+    fn default_taint(&self, d: &Expr, params: &[(String, Option<Expr>)], given: &[Taint]) -> Taint {
+        let mut names = BTreeSet::new();
+        let t = self.taint_of(d);
+        if !idents_of(d, &mut names) {
+            return Taint::Top;
+        }
+        params
+            .iter()
+            .zip(given)
+            .filter(|((n, _), _)| names.contains(n))
+            .fold(t, |t, (_, a)| t.join(a.clone()))
+    }
+
+    fn if_taint(&self, ifs: &IfStmt) -> Taint {
+        let arm = |b: &Block| -> Taint {
+            if !b.stmts.is_empty() {
+                return Taint::Top;
+            }
+            b.tail.as_deref().map_or(Taint::none(), |t| self.taint_of(t))
+        };
+        let then = arm(&ifs.then_block);
+        match ifs.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => then.join(arm(b)),
+            Some(ElseBranch::ElseIf(e)) => then.join(self.if_taint(e)),
+            None => then,
+        }
+    }
+
+    /// GH #1490 (step 3): bind `name`'s String-ness in the innermost
+    /// scope.
+    fn bind_str(&mut self, name: &str, t: StrTy) {
+        self.strs.last_mut().expect("a body has a scope").insert(name.to_string(), t);
+    }
+
+    /// The String-ness of the binding `name` names here.
+    fn str_of(&self, name: &str) -> StrTy {
+        self.strs.iter().rev().find_map(|scope| scope.get(name).copied()).unwrap_or(StrTy::Other)
     }
 
     fn bind(&mut self, name: &str, local: Local) {
@@ -4953,6 +5709,118 @@ impl<'a> Walker<'a> {
     fn enter_loop(&mut self, cond: Option<&Expr>, body: &Block) {
         for name in loop_reassigned(cond, body) {
             self.unresolve(&name);
+        }
+        // GH #1490 (step 4): a binding the loop writes may carry, at any
+        // point of the loop, what a later iteration wrote into it.
+        self.loop_taints(cond, body);
+    }
+
+    /// GH #1490 (step 4): join into each binding declared outside the
+    /// loop what any iteration writes into it, to a fixpoint: the body's
+    /// statements are replayed for provenance alone (its own `let`s bound
+    /// afresh each time) until no outside binding changes. A binding the
+    /// loop writes where the replay does not reach (inside an
+    /// expression's block) may carry anything.
+    fn loop_taints(&mut self, cond: Option<&Expr>, body: &Block) {
+        let heads = loop_assigned_heads(cond, body);
+        if heads.is_empty() {
+            return;
+        }
+        let base = self.taints.len();
+        let mut seen = BTreeMap::new();
+        let mut first = true;
+        loop {
+            let mut changed = false;
+            let mut pass = BTreeMap::new();
+            self.replay_block(body, base, &mut pass, &mut changed);
+            if first {
+                seen = pass;
+                first = false;
+            }
+            if !changed {
+                break;
+            }
+        }
+        // An assignment the replay did not reach (inside an expression's
+        // block): what it writes is not traced.
+        for (h, n) in &heads {
+            if seen.get(h) != Some(n) {
+                self.join_taint(h, Taint::Top);
+            }
+        }
+    }
+
+    fn replay_block(&mut self, b: &Block, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        self.taints.push(BTreeMap::new());
+        for st in &b.stmts {
+            self.replay_stmt(st, base, seen, changed);
+        }
+        self.taints.pop();
+    }
+
+    fn replay_stmt(&mut self, st: &Stmt, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        match st {
+            Stmt::Let { name, value, .. } => {
+                let t = self.taint_of(value);
+                self.bind_taint(&name.name, t);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let t = self.taint_of(value);
+                for n in names {
+                    self.bind_taint(&n.name, t.clone());
+                }
+            }
+            Stmt::Assign { target, value, .. } if target.head.name != "self" => {
+                let t = self.taint_of(value);
+                *seen.entry(target.head.name.clone()).or_default() += 1;
+                let name = &target.head.name;
+                if let Some(i) = self.taints.iter().rposition(|sc| sc.contains_key(name)) {
+                    let old = self.taints[i].get(name).cloned().unwrap_or_else(Taint::none);
+                    let new = old.clone().join(t);
+                    if new != old {
+                        self.taints[i].insert(name.clone(), new);
+                        if i < base {
+                            *changed = true;
+                        }
+                    }
+                }
+            }
+            Stmt::If(i) => self.replay_if(i, base, seen, changed),
+            Stmt::Match(m) => {
+                let t = self.taint_of(&m.scrutinee);
+                for arm in &m.arms {
+                    let mut bound = BTreeMap::new();
+                    pattern_bindings(&arm.pattern, &mut bound);
+                    self.taints.push(bound.keys().map(|n| (n.clone(), t.clone())).collect());
+                    if let MatchArmBody::Block(b) = &arm.body {
+                        self.replay_block(b, base, seen, changed);
+                    }
+                    self.taints.pop();
+                }
+            }
+            Stmt::For { name, iter, body, .. } => {
+                let t = self.taint_of(iter);
+                self.taints.push(BTreeMap::from([(name.name.clone(), t)]));
+                self.replay_block(body, base, seen, changed);
+                self.taints.pop();
+            }
+            Stmt::While { body, .. } => self.replay_block(body, base, seen, changed),
+            Stmt::Block(b) => self.replay_block(b, base, seen, changed),
+            Stmt::ShmWrite { binding, body, .. } => {
+                self.taints.push(BTreeMap::from([(binding.name.clone(), Taint::Top)]));
+                self.replay_block(body, base, seen, changed);
+                self.taints.pop();
+            }
+            _ => {}
+        }
+    }
+
+    fn replay_if(&mut self, i: &IfStmt, base: usize, seen: &mut BTreeMap<String, usize>, changed: &mut bool) {
+        self.replay_block(&i.then_block, base, seen, changed);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.replay_block(b, base, seen, changed),
+            Some(ElseBranch::ElseIf(e)) => self.replay_if(e, base, seen, changed),
+            None => {}
         }
     }
 
@@ -5043,15 +5911,27 @@ impl<'a> Walker<'a> {
                     // effect assertion and claim is blind to it.
                     self.var_types.insert(name.name.clone(), ty);
                 }
+                // GH #1490 (step 3): typed before the value is walked, so
+                // `let s = s + x` reads the outer `s`.
+                let str_ty = match ty {
+                    Some(t) => str_ty_of(t),
+                    None => self.str_value(value),
+                };
+                let taint = self.taint_of(value);
                 let esc = self.escaping.of_let(*id);
                 self.walk_let_value(value, *span, depth, esc);
                 let bound = self.bound_value(value);
                 self.bind(&name.name, bound);
+                self.bind_str(&name.name, str_ty);
+                self.bind_taint(&name.name, taint);
             }
             Stmt::LetTuple { names, value, span, .. } => {
+                let taint = self.taint_of(value);
                 self.walk_let_value(value, *span, depth, Escape::Local);
                 for n in names {
                     self.bind(&n.name, Local::Unresolved);
+                    self.bind_str(&n.name, StrTy::Other);
+                    self.bind_taint(&n.name, taint.clone());
                 }
             }
             Stmt::Assign { target, value, id, span, .. } => {
@@ -5107,6 +5987,12 @@ impl<'a> Walker<'a> {
                 if target.tail.is_empty() {
                     self.unresolve(&target.head.name);
                 }
+                // GH #1490 (step 4): a write through a binding (whole or
+                // into a field or element of it) joins what it writes.
+                if target.head.name != "self" {
+                    let t = self.taint_of(value);
+                    self.join_taint(&target.head.name, t);
+                }
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
             Stmt::Return(None, _) => {}
@@ -5152,6 +6038,8 @@ impl<'a> Walker<'a> {
                     }),
                     _ => None,
                 };
+                let payload = self.taint_of(value);
+                self.sends.push(payload);
                 self.push_effect_site(
                     EffectSiteKind::Publish(subj),
                     depth,
@@ -5181,7 +6069,16 @@ impl<'a> Walker<'a> {
                 self.loops_as_written += 1;
                 self.enter_loop(None, body);
                 self.locals.push(BTreeMap::from([(name.name.clone(), Local::Unresolved)]));
+                let binder = match self.str_iter(iter) {
+                    StrTy::StrArray => StrTy::Str,
+                    _ => StrTy::Other,
+                };
+                self.strs.push(BTreeMap::from([(name.name.clone(), binder)]));
+                let iter_t = self.taint_of(iter);
+                self.taints.push(BTreeMap::from([(name.name.clone(), iter_t)]));
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.taints.pop();
+                self.strs.pop();
                 self.locals.pop();
                 self.loops_as_written -= 1;
                 self.loop_stack.pop();
@@ -5226,7 +6123,11 @@ impl<'a> Walker<'a> {
                 // The body writes into the ring view, not the arena; treat
                 // its allocations as local for now.
                 self.locals.push(BTreeMap::from([(binding.name.clone(), Local::Unresolved)]));
+                self.strs.push(BTreeMap::from([(binding.name.clone(), StrTy::Other)]));
+                self.taints.push(BTreeMap::from([(binding.name.clone(), Taint::Top)]));
                 self.walk_block(body, depth, Escape::Local);
+                self.taints.pop();
+                self.strs.pop();
                 self.locals.pop();
             }
             Stmt::Expr(e) => {
@@ -5277,6 +6178,9 @@ impl<'a> Walker<'a> {
         for arm in &m.arms {
             let mut bound = BTreeMap::new();
             pattern_bindings(&arm.pattern, &mut bound);
+            self.strs.push(bound.keys().map(|n| (n.clone(), StrTy::Other)).collect());
+            let scrutinee_t = self.taint_of(&m.scrutinee);
+            self.taints.push(bound.keys().map(|n| (n.clone(), scrutinee_t.clone())).collect());
             self.locals.push(bound);
             if let Some(g) = &arm.guard {
                 self.walk_expr(g, depth, Escape::Local);
@@ -5286,6 +6190,8 @@ impl<'a> Walker<'a> {
                 MatchArmBody::Expr(e) => self.walk_expr(e, depth, escape),
             }
             self.locals.pop();
+            self.taints.pop();
+            self.strs.pop();
         }
     }
 
@@ -5344,13 +6250,20 @@ impl<'a> Walker<'a> {
                 let mut site = self.site(AllocKind::StructLit(name), escape, depth, *span);
                 site.bare_stmt = self.bare_stmt.take() == Some(*span);
                 site.self_replace = self.self_replace.take().filter(|(v, _)| v == span).map(|(_, s)| s);
+                let retired = site.retired_store;
                 if inplace_no_heap {
                     self.in_place_sites.push(site);
                 } else {
                     self.sites.push(site);
                 }
                 for si in inits {
+                    // GH #1490 (step 4): a concatenation that is a whole
+                    // field of a struct replaced whole into `self` is one
+                    // of the String fields the store retires
+                    // (`lotus_str_field_replace_fixup`).
+                    self.retired_init = retired && matches!(&si.value, Expr::Binary { op: BinOp::Add, .. });
                     self.walk_expr(&si.value, depth, escape);
+                    self.retired_init = false;
                 }
             }
             Expr::Array(xs, span) => {
@@ -5381,10 +6294,45 @@ impl<'a> Walker<'a> {
             // certificate that ignores the most common way Hale code
             // allocates is worse than no certificate — it reads as proof.
             Expr::Binary { left, right, op, .. } => {
+                let retired_init = std::mem::take(&mut self.retired_init);
                 if matches!(op, BinOp::Add)
                     && (self.is_string_expr(left) || self.is_string_expr(right))
                 {
                     let span = left.span().merge(right.span());
+                    // GH #1490 (step 4): the concatenation is the whole
+                    // new value of a String field of `self` (or a whole
+                    // field of a struct replaced whole into one), proven
+                    // to carry nothing of the field it replaces
+                    // ([`Walker::taint_of`]): a replace, not an append.
+                    // The store retires the value it replaces at the
+                    // field's size class (`lotus_str_assign_in_place`),
+                    // so the field holds one value of at most its
+                    // largest class: store-latest, judged as Gap D's
+                    // struct replace (`retired_store`). A value that
+                    // reads the field, through a binding, a method of
+                    // `self` or anything the walk cannot trace, keeps
+                    // the advisory.
+                    let target_field = if escape == Escape::StoredToSelf {
+                        self.store_target.clone()
+                    } else {
+                        None
+                    };
+                    // Independent of the field here; a parameter it reads is
+                    // answered by the callers, once all are known.
+                    let (retired_store, retire_if_params) = match target_field.as_deref() {
+                        Some(f) if retired_init || self.self_field_str(f) == StrTy::Str => {
+                            let t = self.taint_of(expr);
+                            let params = t.params();
+                            if t.may_carry(f) {
+                                (false, None)
+                            } else if params.is_empty() {
+                                (true, None)
+                            } else {
+                                (false, Some((f.to_string(), params)))
+                            }
+                        }
+                        _ => (false, None),
+                    };
                     self.sites.push(AllocSite {
                         kind: AllocKind::StringConcat,
                         escape,
@@ -5398,11 +6346,12 @@ impl<'a> Walker<'a> {
                             .iter()
                             .any(|i| *i),
                         reclaim: ReclaimScope::EnclosingLocus,
-                        target_field: None,
-                        retired_store: false,
+                        target_field,
+                        retired_store,
                         in_loop: self.loops_as_written > 0,
                         bare_stmt: false,
                         self_replace: None,
+                        retire_if_params,
                         span,
                     });
                 }
@@ -5411,7 +6360,7 @@ impl<'a> Walker<'a> {
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, args.len(), *span, depth, escape);
+                self.record_call(callee, args, *span, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -5479,7 +6428,13 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, arity: usize, span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, depth: u32, escape: Escape) {
+        let arity = args.len();
+        // GH #1490 (step 4): what each argument carries, for the callee's
+        // parameters' provenance, and whether the call is on `self`.
+        let mut arg_taints: Vec<Taint> = args.iter().map(|a| self.taint_of(a)).collect();
+        let self_call = matches!(callee, Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)));
         let mut recv_ty: Option<String> = None;
         let mut receiver_present = false;
         let mut via_local: Option<String> = None;
@@ -5575,6 +6530,19 @@ impl<'a> Walker<'a> {
             _ => false,
         };
         let indirect = through_param || unresolved_local || computed;
+        // GH #1490 (step 4): a parameter the call leaves takes its
+        // default, evaluated here, in the caller's scope.
+        if let Callee::Resolved(key) = &resolved {
+            if let Some(params) = self.param_info.get(key) {
+                for (_, default) in params.iter().skip(args.len()) {
+                    let t = match default {
+                        Some(d) => self.default_taint(d, params, &arg_taints),
+                        None => Taint::none(),
+                    };
+                    arg_taints.push(t);
+                }
+            }
+        }
         let spelling = CallSpelling::of(callee);
         self.calls.push(CallEdge {
             recv_ty,
@@ -5599,6 +6567,8 @@ impl<'a> Walker<'a> {
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),
             span,
             callee_span: callee.span(),
+            arg_taints,
+            self_call,
         });
     }
 }
@@ -5627,7 +6597,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
 /// assignment runs, on a later iteration, the value the assignment
 /// stored. Every walker that tracks bindings uses this one rule.
 pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new() };
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -5635,11 +6605,27 @@ pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<Str
     a.out
 }
 
+/// GH #1490 (step 4): every binding a loop writes, whole or through a
+/// field or an index (`x = …`, `x.f = …`), wherever it is declared — an
+/// over-approximation, which only makes a field-provenance answer more
+/// conservative.
+fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeMap<String, usize> {
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
+    if let Some(c) = cond {
+        a.expr(c);
+    }
+    a.block(body, Vec::new());
+    a.heads
+}
+
 /// [`loop_reassigned`]'s walk: the names bound inside the loop, innermost
 /// scope last.
 struct Reassigned {
     scopes: Vec<BTreeSet<String>>,
     out: BTreeSet<String>,
+    /// [`loop_assigned_heads`]: every assigned binding, with how many
+    /// assignments write it.
+    heads: BTreeMap<String, usize>,
 }
 
 impl Reassigned {
@@ -5678,6 +6664,9 @@ impl Reassigned {
                 }
                 self.expr(value);
                 let name = &target.head.name;
+                if name != "self" {
+                    *self.heads.entry(name.clone()).or_default() += 1;
+                }
                 if target.tail.is_empty() && !self.scopes.iter().any(|s| s.contains(name)) {
                     self.out.insert(name.clone());
                 }
@@ -6660,6 +7649,534 @@ mod tests {
             join_leaks(src),
             vec![(Escape::Returned, LeakReason::InUnboundedLoop)],
         );
+    }
+
+    // === GH #1490 (step 3): the accumulator however it is spelled =====
+
+    /// A method `join_n` builds its result in its own loop, spelled by
+    /// `init` and `step`; `consumer` is `run` (each result lands in the
+    /// locus arena: reported once per call) or a method (`record`: the
+    /// result dies with its scratch: not reported).
+    fn spelled_accumulator(init: &str, step: &str, consumer: &str) -> String {
+        let body = if consumer == "run" {
+            "run() { let mut i = 0; while i < self.n { self.sink = self.sink + len(self.join_n(20, \",\", [\"a\", \"b\", \"c\", \"d\"])); i = i + 1; } }"
+                .to_string()
+        } else {
+            "fn record(i: Int) { self.sink = self.sink + len(self.join_n(20, \",\", [\"a\", \"b\", \"c\", \"d\"])); }
+             run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }"
+                .to_string()
+        };
+        format!(
+            "type Row {{ text: String; }}
+             fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+             fn wrap(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; r: Row = Row {{ text: \"abc\" }}; label: String = \"x\"; }}
+                 fn part(i: Int) -> String {{ return self.label; }}
+                 fn join_n(k: Int, sep: String, names: [String; 4]) -> String {{
+                     {init}
+                     let mut i = 0;
+                     while i < k {{ {step} i = i + 1; }}
+                     return out;
+                 }}
+                 {body}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    /// Each spelling of `acc = acc + x` / `acc = g(acc) + h` the survey
+    /// types from declarations: a call of a fn or a method returning
+    /// String, a builtin returning one, a String field reached through
+    /// a typed receiver, a String param, an element of a String array,
+    /// an `if` value, a `for` binder over a String array, an annotated
+    /// `let`. None has a literal in the chain.
+    const SPELLINGS: &[(&str, &str)] = &[
+        ("let mut out = piece(0);", "out = out + piece(i);"),
+        ("let mut out = to_string(k);", "out = out + to_string(i);"),
+        ("let mut out = self.r.text;", "out = out + self.r.text;"),
+        ("let mut out = sep;", "out = out + sep;"),
+        ("let mut out = self.part(0);", "out = self.part(i) + out;"),
+        ("let mut out = sep;", "out = out + names[i - (i / 4) * 4];"),
+        ("let mut out: String = sep;", "out = wrap(out) + sep;"),
+        ("let mut out = sep;", "out = out + (if i > 2 { sep } else { piece(i) });"),
+        ("let mut out = sep;", "for s in names { out = out + s; }"),
+        ("let mut out = piece(0) or sep;", "out = out + self.label;"),
+    ];
+
+    fn join_concats(src: &str) -> usize {
+        summarize(src)
+            .fns
+            .values()
+            .filter(|f| f.key.fn_name == "join_n")
+            .flat_map(|f| f.sites.iter())
+            .filter(|s| s.kind == AllocKind::StringConcat)
+            .count()
+    }
+
+    #[test]
+    fn a_concatenation_is_recognized_however_spelled() {
+        for (init, step) in SPELLINGS {
+            let src = spelled_accumulator(init, step, "run");
+            assert!(join_concats(&src) >= 1, "`{step}` is a String concatenation: no site recorded");
+            // Consumed in run's loop, the accumulator's result lands in
+            // the locus arena once per call (GAP A), whatever the
+            // spelling — the same verdict a literal in the chain gets.
+            assert_eq!(
+                join_leaks(&src),
+                vec![(Escape::Returned, LeakReason::InvokedUnboundedly)],
+                "`{init} … {step}` consumed in run",
+            );
+            // Consumed in a method, its superseded values and its result
+            // die with an activation (C2): nothing to report.
+            let leaks = join_leaks(&spelled_accumulator(init, step, "method"));
+            assert!(leaks.is_empty(), "`{init} … {step}` consumed in a method: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn arithmetic_is_never_read_as_a_concatenation() {
+        // Int-returning calls, a String binding shadowed by an Int one in
+        // an inner scope, a match binding shadowing a String, a method
+        // returning Int: no `+` here is a concatenation.
+        let src = r#"
+            fn count(i: Int) -> Int { return i; }
+            locus App {
+                params { n: Int = 1000; sink: Int = 0; label: String = "x"; }
+                fn size(i: Int) -> Int { return i; }
+                fn sum_n(k: Int, sep: String) -> Int {
+                    let mut total = count(0);
+                    let x = sep;
+                    let mut i = 0;
+                    while i < k {
+                        total = total + count(i) + len(x) + self.size(i);
+                        { let x = 5; total = total + x; }
+                        match i { sep -> { total = total + sep; } }
+                        i = i + 1;
+                    }
+                    return total;
+                }
+                run() { let mut i = 0; while i < self.n { self.sink = self.sink + self.sum_n(20, ","); i = i + 1; } }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        let concats: Vec<_> = summarize(src)
+            .fns
+            .values()
+            .filter(|f| f.key.fn_name == "sum_n")
+            .flat_map(|f| f.sites.iter())
+            .filter(|s| s.kind == AllocKind::StringConcat)
+            .map(|s| s.span)
+            .collect();
+        assert!(concats.is_empty(), "integer `+` read as a concatenation at {concats:?}");
+    }
+
+    #[test]
+    fn an_append_to_a_string_field_is_reported_however_spelled() {
+        // `self.log = self.log + piece(m)` in a handler appends to a
+        // field the locus keeps: real growth, reported. Before the
+        // spelling was typed, no site was recorded without a literal.
+        let src = r#"
+            fn piece(i: Int) -> String { return "p" + to_string(i); }
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { self.log = self.log + piece(m); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        let leaks: Vec<_> = summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == "on_t")
+            .map(|l| l.escape)
+            .collect();
+        assert_eq!(leaks, vec![Escape::StoredToSelf]);
+    }
+
+    // === GH #1490 (step 4): a String field replaced whole =============
+
+    fn field_leaks(src: &str, owner: &str) -> Vec<Escape> {
+        summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == owner)
+            .map(|l| l.escape)
+            .collect()
+    }
+
+    #[test]
+    fn a_string_field_replaced_whole_is_store_latest() {
+        // The store retires the value it replaces at the field's size
+        // class, so the field holds one value however often a handler
+        // replaces it (alloc_model_rss.rs::
+        // a_string_field_replace_of_varying_length_stays_flat).
+        for value in ["\"v.\" + piece(m)", "piece(m) + \"!\"", "self.tag + to_string(m)"] {
+            let src = format!(
+                "fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+                 locus App {{
+                     params {{ last: String = \"\"; tag: String = \"t\"; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ self.last = {value}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            );
+            let leaks = field_leaks(&src, "on_t");
+            assert!(leaks.is_empty(), "`self.last = {value}` is store-latest: {leaks:?}");
+        }
+    }
+
+    /// A handler `on_t(m: Int)` whose body is `body`, on a locus with
+    /// String fields `log` and `tag`, a method `previous` reading `log`
+    /// and free fns `piece` (of an Int) and `wrap` (of a String).
+    fn field_store(body: &str) -> String {
+        format!(
+            "fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+             fn wrap(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ log: String = \"\"; tag: String = \"t\"; }}
+                 bus {{ subscribe \"t\" as on_t of type Int; }}
+                 fn previous() -> String {{ return self.log; }}
+                 fn on_t(m: Int) {{ {body} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_replace_that_carries_the_field_it_replaces_is_an_append() {
+        // Each new value here holds the old one however the read is
+        // spelled — through a binding, a chain of them, a method of
+        // `self`, a free fn's argument, a binding a loop carries, `self`
+        // itself — so the field grows by every store, as
+        // `self.log = self.log + "x"` does. Independence is proven or
+        // the advisory stays.
+        for body in [
+            "let previous = self.log; self.log = previous + \"x\";",
+            "self.log = self.previous() + \"x\";",
+            "let a = self.log; let b = a; self.log = b + \"x\";",
+            "self.log = wrap(self.log) + \"x\";",
+            // The store reads `p` before the loop's own write to it, which a
+            // later iteration's store sees (a bounded loop, so only the
+            // provenance rule can report it).
+            "let mut p = \"\"; let mut i = 0; while i < 2 { self.log = p + \"x\"; p = self.log; i = i + 1; }",
+            "let mut p = \"\"; p = self.log; self.log = p + to_string(m);",
+            "self.log = (if m > 0 { self.log } else { \"\" }) + \"x\";",
+        ] {
+            let leaks = field_leaks(&field_store(body), "on_t");
+            assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` appends to `self.log`: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn a_replace_proven_independent_of_its_field_is_store_latest() {
+        // Built from a param, another field, `to_string`, a free fn of a
+        // param, or a binding of one of those: nothing of `self.log`.
+        for body in [
+            "self.log = \"v.\" + to_string(m);",
+            "self.log = self.tag + \"!\";",
+            "self.log = piece(m) + \"!\";",
+            "let s = piece(m); self.log = s + self.tag;",
+            "let s = to_string(m); let t = s; self.log = t + \"x\";",
+            "let n = if m > 0 { m - 1 } else { m }; self.log = (if n > 2 { \"a\" } else { to_string(n) }) + \"x\";",
+        ] {
+            let leaks = field_leaks(&field_store(body), "on_t");
+            assert!(leaks.is_empty(), "`{body}` replaces `self.log` whole: {leaks:?}");
+        }
+        // A free fn of a String param, inside a method of its own.
+        let src = r#"
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type String; }
+                fn on_t(s: String) { self.log = s + "!"; }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(src, "on_t").is_empty());
+    }
+
+    /// `App` with a `log` field and the methods `methods`, a handler
+    /// `on_t` whose body is `on_t`; and a second locus `Peer` with a
+    /// `log` field and `put(p)` appending `p` to it.
+    fn caller_provenance(methods: &str, on_t: &str) -> String {
+        format!(
+            "locus Peer {{
+                 params {{ log: String = \"\"; }}
+                 fn put(p: String) {{ self.log = p + \"x\"; }}
+             }}
+             locus App {{
+                 params {{ log: String = \"\"; peer: Peer = Peer {{ }}; }}
+                 bus {{ subscribe \"t\" as on_t of type Int; }}
+                 {methods}
+                 fn on_t(m: Int) {{ {on_t} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_parameter_carries_what_its_callers_pass() {
+        let append = "fn append(previous: String) { self.log = previous + \"x\"; }";
+        // The review's control: the parameter is `self.log`, so the
+        // store appends to the live value.
+        let src = caller_provenance(append, "self.append(self.log);");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // Its twin: every caller passes a constant, so it replaces.
+        let src = caller_provenance(append, "self.append(\"fresh\");");
+        assert!(field_leaks(&src, "append").is_empty());
+        // Two hops: `a` passes its parameter on to `b`.
+        let chain = "fn a(q: String) { self.b(q); }
+                     fn b(p: String) { self.log = p + \"x\"; }";
+        let src = caller_provenance(chain, "self.a(self.log);");
+        assert_eq!(field_leaks(&src, "b"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance(chain, "self.a(to_string(m));");
+        assert!(field_leaks(&src, "b").is_empty());
+        // One tainted caller among clean ones is enough.
+        let src = caller_provenance(append, "self.append(\"fresh\"); self.append(self.log + \"!\");");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // Through another receiver the instance may be the same: an
+        // argument carrying anything of the caller's `self` is taken to
+        // carry the callee's field.
+        let src = caller_provenance("", "self.peer.put(self.log);");
+        assert_eq!(field_leaks(&src, "put"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance("", "self.peer.put(to_string(m));");
+        assert!(field_leaks(&src, "put").is_empty());
+        // A loop's bindings carry what any iteration writes into them: a
+        // counter carries nothing, a value a later iteration takes from
+        // the field carries it into the next call.
+        let src = caller_provenance(append, "let mut i = 0; while i < 2 { self.append(to_string(i)); i = i + 1; }");
+        assert!(field_leaks(&src, "append").is_empty());
+        let src = caller_provenance(
+            append,
+            "let mut q = to_string(m); let mut i = 0; while i < 2 { self.append(q); let t = self.log; q = t; i = i + 1; }",
+        );
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_left_parameter_carries_what_its_default_reads_at_the_call() {
+        // Hale evaluates a default in the caller's scope.
+        let with_default = |d: &str| format!("fn append(previous: String = {d}) {{ self.log = previous + \"x\"; }}");
+        // The review's control: the default names a local the caller
+        // bound to `self.log`.
+        let src = caller_provenance(&with_default("old"), "let old = self.log; self.append();");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // The default reads the caller's `self.log` itself.
+        let src = caller_provenance(&with_default("self.log"), "self.append();");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // A constant default, and a local the caller bound to a fresh
+        // value: a replace.
+        let src = caller_provenance(&with_default("\"fresh\""), "self.append();");
+        assert!(field_leaks(&src, "append").is_empty());
+        let src = caller_provenance(&with_default("old"), "let old = to_string(m); self.append();");
+        assert!(field_leaks(&src, "append").is_empty());
+        // Given explicitly, the default plays no part.
+        let src = caller_provenance(&with_default("self.log"), "self.append(\"fresh\");");
+        assert!(field_leaks(&src, "append").is_empty());
+    }
+
+    #[test]
+    fn a_struct_literal_carries_what_its_left_fields_default_to() {
+        // A struct field's default is evaluated where the literal is.
+        let src = |on_t: &str| {
+            format!(
+                "type Cell {{ s: String = old; n: Int = 0; }}
+                 locus App {{
+                     params {{ log: String = \"\"; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ {on_t} }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        let tainted = src("let old = self.log; let c = Cell { n: m }; self.log = c.s + \"x\";");
+        assert_eq!(field_leaks(&tainted, "on_t"), vec![Escape::StoredToSelf]);
+        let fresh = src("let old = to_string(m); let c = Cell { n: m }; self.log = c.s + \"x\";");
+        assert!(field_leaks(&fresh, "on_t").is_empty());
+        // Given, the field's default plays no part.
+        let given = src("let old = self.log; let c = Cell { s: to_string(m), n: m }; self.log = c.s + \"x\";");
+        assert!(field_leaks(&given, "on_t").is_empty());
+        // Defaults that build each other: the expansion stops, and what
+        // it cannot finish may carry anything.
+        let cyclic = src("let old = to_string(m); let c = A { }; self.log = c.s + \"x\";")
+            .replace("type Cell", "type A { s: String = \"\"; b: B = B { }; }\n type B { a: A = A { }; }\n type Cell");
+        assert_eq!(field_leaks(&cyclic, "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn an_or_substitute_carries_what_it_reads() {
+        let src = caller_provenance("", "self.log = (piece(m) or self.log) + \"x\";")
+            .replace("locus Peer", "fn piece(i: Int) -> String { return to_string(i); }\n locus Peer");
+        assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance("", "self.log = (piece(m) or \"\") + \"x\";")
+            .replace("locus Peer", "fn piece(i: Int) -> String { return to_string(i); }\n locus Peer");
+        assert!(field_leaks(&src, "on_t").is_empty());
+    }
+
+    #[test]
+    fn a_locus_that_publishes_its_field_to_itself_appends() {
+        // The handler's message is what the locus published: its own
+        // `self.log`, so the handler's store appends.
+        let src = |payload: &str| {
+            format!(
+                "type Tick {{ text: String; }}
+                 locus App {{
+                     params {{ log: String = \"\"; n: Int = 3; }}
+                     bus {{ subscribe \"t\" as on_t of type Tick; publish \"t\" of type Tick; }}
+                     fn on_t(t: Tick) {{ self.log = t.text + \"x\"; }}
+                     run() {{ let mut i = 0; while i < self.n {{ \"t\" <- Tick {{ text: {payload} }}; i = i + 1; }} }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        assert_eq!(field_leaks(&src("self.log"), "on_t"), vec![Escape::StoredToSelf]);
+        assert!(field_leaks(&src("to_string(i)"), "on_t").is_empty());
+    }
+
+    /// `App` subscribing `sub` with `on_t(t: Tick)` and publishing a
+    /// `ty` built from `self.log` to `publ` from the handler itself (the
+    /// review's shape).
+    fn self_publish(sub: &str, publ: &str, ty: &str) -> String {
+        let typed = |subject: &str, t: &str| {
+            if subject.starts_with('"') { format!("{subject} of type {t}") } else { subject.to_string() }
+        };
+        let sub_decl = if sub.starts_with('"') { format!("{sub} as on_t of type Tick") } else { format!("{sub} as on_t") };
+        let publ_decl = typed(publ, ty);
+        format!(
+            "type Tick {{ text: String; }}
+             type Note {{ text: String; }}
+             topic Ticks {{ payload: Tick; subject: \"t.ticks\"; }}
+             locus App {{
+                 params {{ log: String = \"\"; }}
+                 bus {{ subscribe {sub_decl}; publish {publ_decl}; }}
+                 fn on_t(t: Tick) {{ self.log = t.text + \"x\"; {publ} <- {ty} {{ text: self.log }}; }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_self_publish_reaches_every_handler_whatever_its_subject_or_type() {
+        // Neither subjects (`t.**` takes `t.next`, a transport's `t.*` one
+        // token, a topic its declared subject) nor types (aliases) are
+        // judged: a payload carrying `self.log` reaches every handler of
+        // the locus.
+        for (sub, publ) in [
+            ("\"t.**\"", "\"t.next\""),
+            ("\"t.*\"", "\"t.next\""),
+            ("\"t.*\"", "\"t.a.b\""),
+            ("Ticks", "\"t.next\""),
+            ("\"t\"", "Ticks"),
+        ] {
+            let src = self_publish(sub, publ, "Tick");
+            assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf], "subscribe {sub}, publish {publ}");
+        }
+        // Another payload type reaches it too (formerly exempt by type).
+        let src = self_publish("\"t.**\"", "\"t.next\"", "Note");
+        assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_self_publish_reaches_a_handler_typed_by_an_alias() {
+        // The review's control, and a chain of two aliases.
+        for aliases in ["type Message = Tick;", "type Inner = Tick; type Message = Inner;"] {
+            let src = format!(
+                "type Tick {{ text: String; }}
+                 {aliases}
+                 locus App {{
+                     params {{ log: String = \"\"; }}
+                     bus {{ subscribe \"t.**\" as on_t of type Message; publish \"t.next\" of type Tick; }}
+                     fn on_t(t: Message) {{ self.log = t.text + \"x\"; \"t.next\" <- Tick {{ text: self.log }}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            );
+            assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf], "{aliases}");
+        }
+    }
+
+    #[test]
+    fn a_locus_that_publishes_nothing_of_its_fields_keeps_its_messages_fresh() {
+        // It publishes, but nothing it publishes carries a field of it.
+        let src = self_publish("\"t.**\"", "\"t.next\"", "Tick").replace("{ text: self.log }", "{ text: to_string(1) }");
+        assert!(src.contains("to_string(1)"), "{src}");
+        assert!(field_leaks(&src, "on_t").is_empty());
+    }
+
+    #[test]
+    fn a_handlers_message_carries_nothing_of_self() {
+        // A bus handler's parameter is the message the runtime passes.
+        let src = r#"
+            type Tick { text: String; }
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Tick; }
+                fn on_t(t: Tick) { self.log = t.text + "!"; }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(src, "on_t").is_empty());
+    }
+
+    #[test]
+    fn a_concatenated_field_of_a_struct_replaced_whole_is_store_latest() {
+        // Gap D's struct replace retires its top-level String fields;
+        // a concatenation that is one of them is retired with it. One
+        // that reads the field it replaces is an append, and stays.
+        let src = |value: &str| {
+            format!(
+                "type Cell {{ s: String = \"\"; n: Int = 0; }}
+                 locus App {{
+                     params {{ st: Cell = Cell {{ }}; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ self.st = Cell {{ s: {value}, n: m }}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        assert!(field_leaks(&src("\"v.\" + to_string(m)"), "on_t").is_empty());
+        assert_eq!(field_leaks(&src("self.st.s + \"x\""), "on_t"), vec![Escape::StoredToSelf]);
+        // The same read through a binding.
+        let aliased = src("\"\" + \"y\"").replace(
+            "fn on_t(m: Int) { self.st = Cell { s: \"\" + \"y\", n: m }; }",
+            "fn on_t(m: Int) { let old = self.st.s; self.st = Cell { s: old + \"x\", n: m }; }",
+        );
+        assert!(aliased.contains("let old = self.st.s"), "{aliased}");
+        assert_eq!(field_leaks(&aliased, "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_string_field_append_and_a_boundaryless_replace_stay_reported() {
+        // An append keeps every value it was built from.
+        let append = r#"
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { self.log = self.log + "x" + to_string(m); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert_eq!(field_leaks(append, "on_t"), vec![Escape::StoredToSelf]);
+        // A replace directly in run's loop never reaches the activation
+        // boundary its retires wait for.
+        let in_run = r#"
+            locus App {
+                params { last: String = ""; n: Int = 10; }
+                run() { let mut i = 0; while i < self.n { self.last = "v." + to_string(i); i = i + 1; } }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert_eq!(field_leaks(in_run, "run"), vec![Escape::StoredToSelf]);
+        // A field that is not a String (an Int `+`) records no site, and
+        // a store into a local is no field replace.
+        let local = r#"
+            locus App {
+                params { sink: Int = 0; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { let mut s = ""; let mut i = 0; while i < m { s = s + "x"; i = i + 1; } self.sink = self.sink + len(s); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(local, "on_t").is_empty());
     }
 
     #[test]

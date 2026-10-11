@@ -1910,9 +1910,31 @@ assume the others in a build:
   backing buffer grows with population and frees only at dissolve. A
   `@form(ring_buffer)` / `@form(lru_cache)` is cap-bounded and excluded.
   (Detection reads *declared* receiver types — params, typed `let`s, locus
-  param fields — not inferred ones.) Zero corpus false positives. Type-aware
-  String-concat sites and untyped-receiver collection inserts remain
-  deferred. See `notes/memory-bound-proofs.md`.
+  param fields — not inferred ones.) Zero corpus false positives.
+  Untyped-receiver collection inserts remain deferred. See
+  `notes/memory-bound-proofs.md`.
+
+  **A String `+` is a site however it is spelled** (GH #1490). The survey
+  records a concatenation where an operand is a String by what the program
+  declares, never by guess: a string literal; a binding whose annotation,
+  initializer (`let out = piece(0)`, `let s = to_string(n)`), parameter type
+  or `for` iterable (`for s in names`, `names: [String; 4]`) makes it one; a
+  field declared `String` (a locus param, a struct field, or a locus param
+  written without a type whose default is a string literal), on `self` or on
+  a receiver the walk types (`r.text`, `self.r.text`); a call of a fn or a
+  locus method whose declared return is `String`, or of a builtin whose
+  signature returns one (`to_string`); an element of a String array; and a
+  concatenation, an `or`, an `if` or a block whose value is one of these. A
+  binding is scoped as written (an inner `let x = 5` or a match binding
+  shadows a String `x`), and what it cannot type stays unrecorded, so
+  `i + 1` is never a concatenation. So `out = out + piece(i)` and `out =
+  wrap(out) + sep` are the accumulator `out = out + "x"` is, judged by the
+  same rules (the returned-accumulator rule below included), and so is
+  `self.buf = self.buf + chunk`. Before, an operand counted only as a
+  literal or a name declared `String`, and a declared `String` never
+  matched (the type is a primitive), so a chain with no literal in it was
+  no site at all: an under-report, now closed. `@budget` and the hot-path
+  lint read the same sites.
 
   **The reclaim boundary.** Each site carries the boundary at which its
   memory is reclaimed (the dump's `reclaim@…` column): a bus payload at
@@ -2653,24 +2675,78 @@ assume the others in a build:
   `run()`-loop (no activation boundary — pending retires never
   flush), and scratchless owners.
 
-  **A `String` field replaced whole stays reported** (GH #1490). A
-  `self.<f> = <fresh String>` store retires the replaced block at the
-  activation boundary too (`lotus_str_assign_in_place`), but the
-  runtime reuses a retired block only when the next value's size fits
-  it within a short probe window, and a reused block is retired again
-  at its new value's length, so the slack of a longer block that took
-  a shorter value is lost. A value of near-constant length recycles; a
-  value whose length varies keeps bump-allocating into the locus
-  arena — measured over 1M replaces in a method, lengths 7–8 stay at
-  the 4.6 MB floor while lengths 6–55 reach 35.7 MB (the locus arena
-  alone 15.6 MiB after 500k; a bus handler, 500k messages: 24.5 MB
-  against 9.3 MB). The survey cannot see a value's length, so the
-  replace is reported as before
-  (`alloc_model_rss.rs::a_string_field_replace_of_varying_length_grows`).
-  The struct replace this flip excuses recycles its `String` fields
-  through the same reuse and has the same limit: its "flat" holds for
-  near-constant lengths (the measurement above used 7–8 characters);
-  with lengths 6–15 one `String` field grows ~15 B per replace.
+  **A `String` field replaced whole is store-latest** (GH #1490, step
+  4). A `self.<f> = <String>` store retires the value it replaces
+  (`lotus_str_assign_in_place`), and the field's next value reuses the
+  block whatever its length: once a locus replaces a String field, the
+  field's values take blocks from size classes of their own (16-byte
+  steps to 128 bytes, then four classes per power of two, to 16 MiB),
+  each block its class's whole capacity, recorded in the arena's
+  capacity table so the retire knows the block's real size whatever
+  value it last held; the activation-boundary flush files the block on
+  its class's list, and the next value of that class takes it. A
+  field's memory is bounded by its largest value (times the replaces one
+  activation leaves pending), however its length varies. A struct
+  replaced whole (the flip above) clones its top-level `String` fields
+  into the same field blocks, so its "flat" holds at any lengths too.
+  The survey models the store as it models that struct replace: a
+  concatenation that is the whole new value of a `String` field of
+  `self`, proven to carry nothing of that field (a replace, not an
+  append), is `retired_store`, so invoked unboundedly from a frame with
+  an activation boundary it is not reported; directly in a `run()` loop
+  or a scratchless frame, and as an append, it is. Independence is
+  proven by provenance, never assumed: the walk tracks which fields of
+  `self` every binding may carry — what it was bound with and every
+  write into it (whole, or through a field or an element), and, for a
+  binding a loop writes, what every iteration writes into it (replayed
+  to a fixpoint, since a later iteration's write reaches an earlier
+  read) — and a value carries what its operands carry: a read of
+  `self.<f>` carries `f`, a free fn's or a builtin's call what its
+  arguments carry (it reaches `self` only through them), a method of
+  another receiver its receiver's and arguments', an `if` whose arms
+  are values one of its arms'. A method of `self`, `self` itself, a
+  call through a local, a `match`, an arm or block with statements in
+  it, and any form the walk does not follow may carry every field.
+  A parameter carries what its callers pass, over every call the
+  survey sees, to a fixpoint (a value passed down a chain of calls
+  keeps what it carries): from a call on `self`, what the argument
+  carries (the same instance); from a call on any other receiver,
+  every field when the argument carries anything of the caller's
+  `self` (the receiver may be the same instance); a call the survey
+  cannot resolve passing such an argument makes every method of that
+  name, or (through a function value) every free fn, carry every
+  field. A parameter a call leaves takes its default, which Hale
+  evaluates in the caller's scope, so the call passes what the default
+  reads there (`= old` with the caller's `let old = self.log` carries
+  `log`); a call resolved only after the walk (an interface's
+  conformer, a function value) leaves its defaults unknown, and they
+  carry every field. A struct or locus literal's left fields likewise
+  take their defaults where the literal is written. A parameter no call
+  passes — a bus handler's message, a hook's argument — carries
+  nothing, except that a locus publishing what it carries of its own
+  `self` may be its own subscriber: every handler of that locus
+  receives what the payload carries. Which subscription a publish
+  reaches is not judged at all — not by subject (wildcards: `t.**`
+  takes `t.next`; a transport's own pattern dialect; topics declared
+  over subjects; computed subjects) and not by type (a transparent
+  alias, `type Message = Tick`, names the same type). A locus none of
+  whose publishes carries anything of its own fields keeps its
+  handlers' messages fresh, and a message from another locus is taken
+  as fresh. So `let previous = self.log; self.log = previous + "x"`,
+  `self.log = self.previous() + "x"`, `self.log = wrap(self.log) +
+  "x"` and `fn append(p: String) { self.log = p + "x"; }` called as
+  `self.append(self.log)` are appends and reported, as `self.log =
+  self.log + "x"` is; a value built from a handler's message, other
+  fields, `to_string`, a free fn of those, or a parameter every caller
+  passes such a value is a replace. The same rule judges a concatenation that is a whole field
+  of a struct replaced whole, against the struct's field of `self`. Measured (`alloc_model_rss.rs`): 1M replaces in a method at
+  lengths 6–55 stay at the 4.7 MB floor of near-constant lengths
+  (before: 35.7 MB), a one-`String`-field struct at lengths 6–55 the
+  same (before: 36 MB), values climbing to ~1 KB over 200k replaces the
+  same; a bus handler, 500k messages at lengths 6–55, 5.1 MB (before:
+  20.9 MB). A field's first values, before its locus's first replace,
+  and a value above 16 MiB take exact-size blocks through the general
+  freelist and are retired at their length, as before.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /
