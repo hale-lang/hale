@@ -304,15 +304,18 @@ pub(crate) fn load_for_check(
     adopt_env: &[String],
     env_label: Option<&str>,
 ) -> Result<Snapshot, u8> {
-    // F.18: a whole seed (a directory) is checked to what `build`
-    // accepts — a call to a bare name nothing binds is an error here;
-    // one file of a seed keeps the permissive reading for a sibling's fn
-    //
-    // GH #721: a bare IDENTIFIER nothing binds follows the same line.
-    // One file of a multi-file seed reads consts its siblings declare,
-    // so the leniency is load-bearing there and only there.
+    // F.18 / GH #721: the program is checked to what `build` accepts —
+    // a call to a bare name nothing binds, or a bare identifier nothing
+    // binds, is an error. A FILE target is held to it too: the load
+    // reads that file and what its imports reach, never its siblings,
+    // exactly as `hale build <file>` loads it, so a name only a sibling
+    // declares is unbound in the program both verbs see, and the build
+    // refuses it. (A file target used to keep a permissive reading for
+    // a sibling's fn, which made `hale check f.hl` accept a call to a
+    // fn nobody wrote that `hale build f.hl` refused.) A seed of many
+    // files is checked as a seed: `hale check <dir>`.
     let mut config = Config::check(
-        target.is_dir(),
+        true,
         std::env::args().any(|a| a == "--allow-unowned-subscriber"),
     );
     // `--target`: the target the program is checked for, parsed as
@@ -360,6 +363,46 @@ pub(crate) fn load_for_check(
             Err(2)
         }
     }
+}
+
+/// The refusals of a name nothing binds (F.18, GH #721, the unknown
+/// type and qualifier rules), by the wording each one ends in.
+const UNBOUND_NAME_REFUSALS: &[&str] = &[
+    "no free fn, generic fn or fn-pointer binding with that name is in scope",
+    "no binding, param, const or declaration with that name is in scope",
+    "no type, enum, locus, interface or alias with that name is declared",
+    "is not an import or a type of this seed",
+];
+
+/// A file target is checked alone, as `hale build <file>` builds it:
+/// the other `.hl` files of its directory are not loaded. When the
+/// check refused a name nothing binds and such files exist, the
+/// refusal may be a name one of them declares, so say how to check the
+/// seed instead.
+fn unloaded_siblings_note(target: &Path, diags: &[hale_syntax::Diag]) -> Option<String> {
+    if target.is_dir() {
+        return None;
+    }
+    if !diags.iter().any(|d| d.is_error() && UNBOUND_NAME_REFUSALS.iter().any(|r| d.message.contains(r))) {
+        return None;
+    }
+    let dir = crate::shared::frontend::seed_dir_of(target);
+    let own = target.file_name()?;
+    let others = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "hl") && e.file_name() != own)
+        .count();
+    if others == 0 {
+        return None;
+    }
+    Some(format!(
+        "note: `{}` was checked alone, as `hale build` builds it; the {} other .hl file(s) beside it \
+         are not loaded, so a name only they declare is unbound here — `hale check {}` checks the whole seed",
+        target.display(),
+        others,
+        dir.display()
+    ))
 }
 
 /// The check over the snapshot [`load_for_check`] loaded: its
@@ -1030,6 +1073,11 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
             return 1;
         }
         if diags.iter().any(|d| d.is_error()) {
+            if !json_mode {
+                if let Some(note) = unloaded_siblings_note(target, &diags) {
+                    eprintln!("{note}");
+                }
+            }
             return 1;
         }
     }

@@ -1,12 +1,11 @@
 //! GH #1139: `hale check <file>` and `hale check <seed>` report the
 //! same diagnostic for a read of a block's `let` after the block.
 //!
-//! One file of a multi-file seed checked alone keeps the permissive
-//! reading for a bare identifier nothing binds, since it may be a
-//! `const` a sibling declares (GH #721). A name a block of the same
-//! body bound and released is not that: the block's binding was the
-//! block's (GH #1132), so the single-file check refuses it as the seed
-//! check, `hale build` and `hale run` do.
+//! A name a block of the same body bound and released is the block's
+//! (GH #1132), so the single-file check refuses it as the seed check,
+//! `hale build` and `hale run` do, naming the ended block. A file target
+//! is held to the whole-program rules like a seed: it loads what `hale
+//! build <file>` loads, so a name nothing in it binds is refused too.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,15 +56,18 @@ fn the_single_file_check_refuses_it_as_the_seed_check_does() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The leniency itself stays: one file reading a name it never bound
-/// still checks clean alone, since a sibling may declare it.
+/// A file reading a name it never bound is refused alone, as its build
+/// refuses it: the file target loads no sibling that might declare it.
+/// The ended-block wording is the block's alone.
 #[test]
-fn a_name_the_file_never_bound_stays_lenient_alone() {
-    let d = scratch("lenient");
+fn a_name_the_file_never_bound_is_refused_alone() {
+    let d = scratch("unbound");
     let file = d.join("part.hl");
     std::fs::write(&file, "fn g() -> Int { return LIMIT; }\n").unwrap();
     let (ok, out) = hale(&["check", &file.to_string_lossy()]);
-    assert!(ok, "a sibling's const is not the file's to refuse: {out}");
+    assert!(!ok && out.contains("unknown identifier `LIMIT`") && !out.contains(ENDED), "{out}");
+    let (ok, out) = hale(&["build", &file.to_string_lossy(), "-o", &d.join("bin").to_string_lossy()]);
+    assert!(!ok && out.contains("unknown identifier `LIMIT`"), "the build refuses it alike: {out}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

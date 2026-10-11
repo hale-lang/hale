@@ -284,7 +284,7 @@ a rule — `hale check` will tell you in under a second, and its
 diagnostics name the rule and usually the fix.
 
 ```sh
-hale check <file-or-dir>     # the oracle: accepts, or says exactly why
+hale check <file-or-dir>     # the oracle: accepts, or says exactly why (a dir = the whole seed)
 hale build <dir>             # compile to a binary
 hale run <file-or-dir>       # compile + exec
 hale test <dir>              # run *_test.hl files

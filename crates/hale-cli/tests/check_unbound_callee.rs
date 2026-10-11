@@ -2,8 +2,8 @@
 //! to a bare name that nothing binds, the way `hale build` always did.
 //! An organization whose gate is `check` applied a candidate that named
 //! a router function nobody had written, and found out at expression.
-//! The rule is on for a whole seed (a directory) and off for one file,
-//! which may call what a sibling defines.
+//! The rule is on for a whole seed (a directory) and for one file, which
+//! is checked as `hale build <file>` builds it: alone, no sibling loaded.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,16 +43,83 @@ fn a_call_to_nothing_is_refused_in_a_body_a_default_and_an_override() {
     assert!(!ok && out.contains("call to `editor_model`: ") && out.contains("did you mean `editor_models`?"), "{out}");
 }
 
-/// One file of a seed may call what a sibling file defines: checked
-/// alone, it keeps the permissive reading (the organization's gate
-/// checks the seed, never one file).
+/// A FILE target is a whole program too: `hale check f.hl` loads that
+/// file and its imports, never its siblings, exactly as `hale build
+/// f.hl` does, so a fn only a sibling defines is unbound in both. It
+/// used to keep a permissive reading here, and accepted the call its
+/// build refused. The seed (the directory) binds it and checks clean,
+/// and the file's refusal says so.
 #[test]
-fn a_single_file_keeps_the_permissive_reading() {
+fn a_single_file_is_held_to_what_its_build_holds() {
     let src = "locus A { params { n: Int = 0; } fn go() -> Int { return sibling_helper(); } }\nmain locus M { params { a: A = A { }; } run() { println(self.a.go()); } }\nfn main() { M { }; }\n";
     let (ok, out) = check_as(src, "single", false);
-    assert!(ok, "a single file is not held to the whole-seed rule: {out}");
+    assert!(!ok && out.contains("call to `sibling_helper`: ") && out.contains(REFUSAL), "the file alone: {out}");
     let (ok, out) = check_as(src, "seed", true);
-    assert!(!ok && out.contains("call to `sibling_helper`: "), "the seed is: {out}");
+    assert!(!ok && out.contains("call to `sibling_helper`: "), "the seed: {out}");
+
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_unbound_{}_sibling", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("main.hl"), src).unwrap();
+    std::fs::write(d.join("helpers.hl"), "fn sibling_helper() -> Int { return 7; }\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(Path::new("/")).output().expect("hale");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let file = d.join("main.hl").to_string_lossy().to_string();
+    let (ok, out) = run(&["check", &file]);
+    assert!(!ok && out.contains("call to `sibling_helper`: ") && out.contains(REFUSAL), "{out}");
+    assert!(
+        out.contains("was checked alone, as `hale build` builds it; the 1 other .hl file(s) beside it are not loaded")
+            && out.contains(&format!("`hale check {}` checks the whole seed", d.display())),
+        "the file's refusal names the seed: {out}"
+    );
+    let (ok, out) = run(&["check", &file, "--json"]);
+    assert!(!ok && !out.contains("checked alone"), "`--json` carries the records alone: {out}");
+    let (built, out) = run(&["build", &file, "-o", &d.join("bin").to_string_lossy()]);
+    assert!(!built && out.contains("call to `sibling_helper`: "), "the build of the file refuses it alike: {out}");
+    let (ok, out) = run(&["check", &d.to_string_lossy()]);
+    assert!(ok, "the seed binds it: {out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Every place a call to a fn nobody wrote can stand: `hale check` on
+/// the file, `hale check` on its directory and `hale build` all refuse
+/// it, at the name, with the one wording (a fn VALUE is a bare
+/// identifier, and a qualified call's head is a qualifier, each with
+/// its own rule's wording). Each of these checked clean as a file
+/// target and failed its build.
+#[test]
+fn every_shape_of_a_call_to_nothing_is_refused_by_check_and_build() {
+    const LOCUS_M: &str = "main locus M { params { a: A = A { }; } run() { println(self.a.go()); } }\nfn main() { M { }; }\n";
+    let shapes: Vec<(&str, String, &str)> = vec![
+        ("statement", "fn main() { nope_fn(); }\n".into(), "call to `nope_fn`: "),
+        ("let", "fn main() { let x = text_of_nope(\"a\"); println(x); }\n".into(), "call to `text_of_nope`: "),
+        ("no_args", "fn main() { let x = nope_fn(); println(x); }\n".into(), "call to `nope_fn`: "),
+        ("operand", "fn main() { println(1 + nope_fn(2)); }\n".into(), "call to `nope_fn`: "),
+        ("condition", "fn main() { if nope_fn() { println(1); } }\n".into(), "call to `nope_fn`: "),
+        ("loop", "fn main() { let mut i = 0; while i < 2 { nope_fn(i); i = i + 1; } }\n".into(), "call to `nope_fn`: "),
+        ("free_fn", "fn helper() -> Int { return nope_fn(1); }\nfn main() { println(helper()); }\n".into(), "call to `nope_fn`: "),
+        ("generic_fn", "fn id<T>(x: T) -> T { return nope_fn(x); }\nfn main() { println(id(1)); }\n".into(), "call to `nope_fn`: "),
+        ("const", "const K: Int = nope_fn();\nfn main() { println(K); }\n".into(), "call to `nope_fn`: "),
+        ("method", format!("locus A {{ params {{ n: Int = 0; }} fn go() -> Int {{ return nope_fn(); }} }}\n{LOCUS_M}"), "call to `nope_fn`: "),
+        ("hook", "main locus M { params { n: Int = 0; } run() { nope_fn(self.n); } }\nfn main() { M { }; }\n".into(), "call to `nope_fn`: "),
+        ("default", "locus A { params { n: Int = nope_fn(); } }\nmain locus M { params { a: A = A { }; } run() { println(self.a.n); } }\nfn main() { M { }; }\n".into(), "call to `nope_fn`: "),
+        ("handler", "type Ping { seq: Int = 0; }\ntopic Tick { payload: Ping; subject: \"x.tick\"; }\nlocus Sub { params { n: Int = 0; } bus { subscribe Tick as on_tick; } fn on_tick(p: Ping) { nope_fn(p.seq); } }\nmain locus M { params { s: Sub = Sub { }; } bus { publish Tick; } run() { Tick <- Ping { seq: 1 }; } }\nfn main() { M { }; }\n".into(), "call to `nope_fn`: "),
+        ("fn_value", "fn main() { let f = nope_fn; println(f(1)); }\n".into(), "unknown identifier `nope_fn`: no binding, param, const or declaration with that name is in scope"),
+        ("fn_value_in_method", format!("locus A {{ params {{ n: Int = 0; }} fn go() -> Int {{ let g = nope_fn; return g(1); }} }}\n{LOCUS_M}"), "unknown identifier `nope_fn`: "),
+        ("qualified", "fn main() { let x = nomod::nope_fn(\"a\"); println(x); }\n".into(), "`nomod::nope_fn`: `nomod` is not an import or a type of this seed"),
+        ("typo", "fn text_of(s: String) -> String { return s; }\nfn main() { println(text_ofx(\"a\")); }\n".into(), "call to `text_ofx`: no free fn, generic fn or fn-pointer binding with that name is in scope — did you mean `text_of`?"),
+    ];
+    for (tag, src, want) in &shapes {
+        for whole_seed in [false, true] {
+            let (ok, out) = check_as(src, &format!("shape_{tag}_{whole_seed}"), whole_seed);
+            assert!(!ok && out.contains(want), "{tag} (dir: {whole_seed}) must be refused with {want:?}: {out}");
+            assert_eq!(out.matches(want).count(), 1, "{tag}: one mistake, one message: {out}");
+        }
+        let (built, out) = build(src, &format!("shape_{tag}"));
+        assert!(!built && out.contains(want), "{tag}: the build refuses it alike: {out}");
+    }
 }
 
 /// GH #779: the rule exempts the bare names codegen answers itself,

@@ -483,10 +483,10 @@ fn a_bus_subject_that_names_no_declaration_is_refused() {
         "build reports the same finding:\n{out}"
     );
 
-    // One file of a seed keeps the tolerance every qualified path has
-    // there; the build of that file refuses it with the finding.
+    // One file of a seed is held to it too: it loads what the build of
+    // that file loads, and both refuse it with the finding.
     let (ok, out) = hale(&app, &["check", "main.hl"]);
-    assert!(ok && !out.contains("unknown topic"), "a single file stays permissive:\n{out}");
+    assert!(!ok && out.contains("references unknown topic `zz::Ping`"), "a single file is checked as it builds:\n{out}");
     let (ok, out) = hale(&app, &["build", "main.hl"]);
     assert!(!ok && out.contains("references unknown topic `zz::Ping`"), "{out}");
 
@@ -554,20 +554,21 @@ fn a_close_spelling_is_suggested() {
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
-/// The permissive control. One FILE of a seed is not a whole program —
-/// its `import` line may live in a sibling — so `hale check <file>`
-/// keeps the tolerance, exactly as it does for a bare identifier
-/// (GH #721) and a bare type name (GH #877). `build`, which bundles
-/// what it compiles, refuses the same file.
+/// One FILE of a seed checked alone loads what `hale build <file>`
+/// loads — that file and its own imports, no sibling — so `hale check
+/// <file>` holds the rule `build` holds, as it does for a bare
+/// identifier (GH #721) and a bare type name (GH #877). It used to keep
+/// a tolerance here (an `import` line might live in a sibling), and so
+/// accepted the file its build refused.
 #[test]
-fn one_file_checked_alone_stays_permissive() {
+fn one_file_checked_alone_is_held_to_what_its_build_holds() {
     let app = app_seed("single", ONE_CALL);
 
     let (ok, out) = hale(&app, &["check", "main.hl"]);
-    assert!(ok, "a single file keeps the permissive reading:\n{out}");
+    assert!(!ok, "a single file is checked as its build is:\n{out}");
     assert!(
-        !out.contains("is not an import or a type of this seed"),
-        "and says nothing about the path:\n{out}"
+        out.contains("`zz` is not an import or a type of this seed"),
+        "with the located finding:\n{out}"
     );
 
     let (ok, out) = hale(&app, &["build", "main.hl"]);

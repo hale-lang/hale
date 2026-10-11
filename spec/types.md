@@ -1033,15 +1033,35 @@ parser gives them their own syntax rather than a call, so they are
 never a bare callee. `__fmt`, the desugaring of `f"{x:spec}"`, is
 the compiler's own and is not written by hand.)
 
-In a **whole program** — every import resolved, which is `hale check
-<directory>` (the seed, and what the organization's gate runs), every
-command that compiles (`hale build` / `hale run` / `hale test` /
-`hale replay` compile exactly what they bundle) and `hale lsp` — any
-other bare callee is a type error — `call to X: no free fn, generic
-fn or fn-pointer binding with that name is in scope`, with a
-did-you-mean over the program's fns. One file checked alone, or a
-partial program a harness assembles, keeps the permissive reading: it
-may call what a sibling file defines (dna/FRICTION.md F.18).
+In a **whole program** — every import resolved, which is every
+command's: `hale check` on a seed (`<directory>`, what the
+organization's gate runs) or on one file, every command that compiles
+(`hale build` / `hale run` / `hale test` / `hale replay` compile
+exactly what they bundle) and `hale lsp` — any other bare callee is a
+type error — `call to X: no free fn, generic fn or fn-pointer binding
+with that name is in scope`, with a did-you-mean over the program's
+fns. The rule holds wherever the call stands: a statement, an operand,
+a condition, a fn or method body, a lifecycle hook, a bus handler, a
+`params` default, a `const` initializer. Only a partial program a
+library caller assembles (a styleguide snippet, a test harness's
+fragment) keeps the permissive reading (dna/FRICTION.md F.18).
+
+`hale check <file>` loads that file and what its own imports reach,
+never the other files of its directory — exactly what `hale build
+<file>` loads — so a fn only a sibling file defines is unbound in the
+program both commands see, and both refuse the call. Until 2026-10-11
+the file target kept a permissive reading for a sibling's fn, so
+`hale check f.hl` accepted a call to a fn nobody wrote that `hale
+build f.hl` refused. A multi-file seed is checked as the seed: `hale
+check <directory>`. When a file target is refused for a name nothing
+binds and other `.hl` files sit beside it, the check says so after
+its diagnostics (not under `--json`, whose stream carries the records
+alone):
+
+```text
+main.hl:1:21: type error: call to `sib_helper`: no free fn, generic fn or fn-pointer binding with that name is in scope
+note: `main.hl` was checked alone, as `hale build` builds it; the 1 other .hl file(s) beside it are not loaded, so a name only they declare is unbound here — `hale check .` checks the whole seed
+```
 
 The rule was on for the seed check alone until GH #911 B1, so the
 build path let the call through to codegen, which refused it as
@@ -1094,7 +1114,7 @@ top-level `const`, or a top-level declaration (`fn`, `locus`,
 `type`, `perspective`, `interface`; a `topic` resolves and is then
 refused by its own rule — it addresses a channel, it is not a
 value). In a **whole program** — every import resolved, which is
-`hale check <directory>`, every build (`hale build` / `hale run` /
+`hale check` on a seed or a file, every build (`hale build` / `hale run` /
 `hale test` compile exactly what they bundle) and `hale lsp`, which
 loads the whole seed as `hale check <dir>` does, imports followed, and
 typechecks it only once every member has read and parsed — any other bare
@@ -1108,17 +1128,17 @@ which is permissive everywhere, so a one-character typo passed
 `check` and `verify` and failed in the backend as `unknown
 identifier` with no source location.
 
-One file of a multi-file seed, checked alone (`hale check
-<file>`), keeps the permissive reading: it legitimately reads a
-`const` a sibling file declares. Only the seed is held to the rule.
+One file of a multi-file seed, checked alone (`hale check <file>`),
+is held to the rule as its build is: a `const` only a sibling file
+declares is unbound in the program the file target loads, and the
+check refuses the read with the note above. (It kept a permissive
+reading until 2026-10-11, which `hale build <file>` never had.)
 
-That leniency covers a name the file never bound. A name a block of
-the same body bound and released — `if take { let x = 1; } return
-x;` — is the block's (§ "Dissolve timing rules" in spec/semantics.md), never a
-sibling's `const`, so `hale check <file>` refuses the read as the seed
-check and the build do: `unknown identifier `x`: … it was bound in a
-block that has ended, and a block's binding is the block's` (GH
-#1139).
+A name a block of the same body bound and released — `if take { let
+x = 1; } return x;` — is the block's (§ "Dissolve timing rules" in
+spec/semantics.md), so the refusal says so: `unknown identifier `x`:
+… it was bound in a block that has ended, and a block's binding is
+the block's` (GH #1139).
 
 A bare unknown CALLEE reports the call diagnostic above and not this
 one — one mistake, one message (GH #721).
@@ -1158,8 +1178,9 @@ A QUALIFIED name (`lib::Thing`, `std::text::Sink`) is NOT subject to
 this rule. It resolves against the bundle's import-rename table, which
 only a caller that merged the imported seeds has, so a tool holding
 one seed without them keeps the permissive reading for paths (GH
-#803 / #833). One file of a multi-file seed, checked alone, keeps it
-for bare names too: the sibling it did not see may declare the type.
+#803 / #833). One file of a multi-file seed, checked alone, does not:
+it loads what its build loads, so a type only a sibling declares is
+refused by both.
 
 ## Contract subsumption
 

@@ -406,20 +406,28 @@ fn two_aliases_for_one_library_are_one_type() {
 }
 
 #[test]
-fn a_single_file_of_a_multi_file_seed_stays_permissive() {
+fn a_single_file_of_a_multi_file_seed_is_checked_as_it_builds() {
     let d = app_seed("sibling", SIBLING_MAIN);
     std::fs::write(d.join("helper.hl"), SIBLING_HELPER)
         .expect("write helper");
 
-    // `helper.hl` alone: nothing here resolves `lib`, so the
-    // annotation is a path this bundle cannot see. Permissive, as it
-    // has always been — the rule is for WHOLE programs.
+    // `helper.hl` alone: nothing here resolves `lib`, and the file
+    // target loads no sibling, exactly as `hale build helper.hl` loads
+    // it — so the check refuses the path the build refuses, and says
+    // the seed is checked as a directory. (It used to stay permissive
+    // here, and accepted what its build refused.)
     let (out, code) = run("check", &d.join("helper.hl"), &[]);
-    assert_eq!(
-        code, 0,
-        "one file of a multi-file seed must stay permissive:\n{}",
+    assert_ne!(code, 0, "one file is checked as its build is:\n{}", out);
+    assert!(
+        out.contains("`lib` is not an import or a type of this seed")
+            && out.contains("other .hl file(s) beside it are not loaded"),
+        "expected the located refusal and the seed note:\n{}",
         out
     );
+    let bin = d.join("helper_bin");
+    let (out, code) = run("build", &d.join("helper.hl"), &["-o", &bin.to_string_lossy()]);
+    assert_ne!(code, 0, "the build of that file refuses it alike:\n{}", out);
+    assert!(out.contains("`lib` is not an import or a type of this seed"), "{}", out);
 
     // The whole seed: every import resolved, so the same annotation
     // is checked and the mismatch is located in `helper.hl`.

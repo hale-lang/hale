@@ -634,10 +634,11 @@ fn check_numbered_bundle(
 /// Two whole-program strictnesses, both off for a partial program.
 ///
 /// `strict_callees`: refuse a call to a bare name nothing binds
-/// (dna/FRICTION.md F.18) — the rule `hale build` holds. On only when
-/// the caller checked a WHOLE seed, so a single file of a multi-file
-/// seed, a styleguide snippet or a harness's partial program keeps the
-/// permissive `Unknown` it always had for a sibling's fn.
+/// (dna/FRICTION.md F.18) — the rule `hale build` holds. On for every
+/// command's program (`hale check`, a file target included, the build
+/// path and the editor); off only for a partial program a library
+/// caller assembles — a styleguide snippet, a harness's fragment —
+/// which keeps the permissive `Unknown` for a fn defined elsewhere.
 ///
 /// `strict_idents` (GH #721): the same rule for a bare identifier in
 /// VALUE position. Separate from the callee flag because the two have
@@ -6092,11 +6093,12 @@ struct Checker<'a> {
     /// `fn f() -> Int { return "s"; }` had no return check at all and
     /// surfaced at codegen as "unsupported in codegen v0".
     return_ctx: Option<Ty>,
-    strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
+    strict_callees: bool, // F.18: on for every command's program, off for a library caller's partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
-    /// sibling file supplies. `hale check <dir>` and the build path
-    /// both set it; one file checked alone does not.
+    /// sibling file supplies. Every command sets it, `hale check
+    /// <file>` included (it loads what `hale build <file>` loads); a
+    /// library caller's partial program does not.
     strict_idents: bool,
     /// M3 stage 2 (2026-07-02): true while checking an `or`
     /// expression whose value is discarded (statement position) —
@@ -12545,10 +12547,10 @@ impl<'a> Checker<'a> {
     /// the one place a located message costs nothing to produce. The
     /// checker holds codegen's rule now, whenever the program it was
     /// handed is WHOLE (`strict_idents`): every import is resolved, so
-    /// a name nothing binds is a typo, not a sibling file's const. One
-    /// file of a multi-file seed, a snippet or a harness's partial
-    /// program keeps the permissive `Unknown` — the corpus has seeds
-    /// whose every file reads a const another file declares.
+    /// a name nothing binds is a typo, not a sibling file's const. A
+    /// snippet or a harness's partial program keeps the permissive
+    /// `Unknown`; a seed whose files read each other's consts is
+    /// checked as the seed (`hale check <dir>`).
     ///
     /// `report_unknown` is false at a CALL's callee, where F.18's own
     /// diagnostic — which names fn-pointer bindings and generic fns,
@@ -13465,10 +13467,9 @@ impl<'a> Checker<'a> {
     /// a declaration in the bundle.
     ///
     /// Gated on `strict_idents` for the reason the bare-IDENTIFIER
-    /// rule is: one file of a multi-file seed, checked alone, reads
-    /// declarations its siblings make, and a type is no different
-    /// from a `const` there. `hale check <dir>` and every build path
-    /// hold the whole program and hold the rule.
+    /// rule is: a partial program may read declarations made outside
+    /// it, and a type is no different from a `const` there. Every
+    /// command holds the whole program it loaded and holds the rule.
     fn check_type_annotation(&mut self, te: &TypeExpr) {
         if self.specializing.is_some() {
             self.record_specialized_type(te);
@@ -13789,8 +13790,8 @@ impl<'a> Checker<'a> {
     /// topic and no payload, which the build refuses without a span.
     /// So in a whole program it is the located error a local unknown
     /// topic gets, worded alike. The tolerance is
-    /// [`Self::unresolved_qualified`]'s: one file of a multi-file seed,
-    /// and an import this bundle never resolved (GH #724), where the
+    /// [`Self::unresolved_qualified`]'s: a partial program, and an
+    /// import this bundle never resolved (GH #724), where the
     /// path stays a hole of the bus graph and rule 9 stays silent.
     fn unresolved_bus_subject(&self, verb: &str, path: &QualifiedName) -> Option<String> {
         if !self.strict_idents || path.segments.len() < 2 {
@@ -13866,9 +13867,9 @@ impl<'a> Checker<'a> {
     /// - a head that names a declaration: `Color::Red`, a wire
     ///   struct's `Frame::seq`, a `type C2 = Color;` alias, a generic
     ///   parameter. None of those is an import at all.
-    /// - one file of a multi-file seed (`strict_idents` off), whose
-    ///   `import` line may live in a sibling — #721's boundary, and
-    ///   the reason the flag rather than the CLI decides.
+    /// - a partial program (`strict_idents` off), whose `import` line
+    ///   may live outside it — #721's boundary, and the reason the
+    ///   flag rather than the CLI decides.
     ///
     /// Scoped per seed by GH #762 / #746 rather than here: a head
     /// another seed declares and this one does not is that rule's,
@@ -15096,12 +15097,13 @@ impl<'a> Checker<'a> {
                 // binding with that name is in scope". An organization
                 // whose gate is `check` applied a candidate that named a
                 // router function nobody had written, and found out at
-                // expression. The checker holds codegen's rule now, for a
-                // WHOLE seed (`strict_callees`); a partial program — one
-                // file of a seed, a snippet — legitimately calls what a
-                // sibling defines and keeps the permissive Unknown. The
-                // builtin list is the set of bare names codegen answers
-                // itself.
+                // expression. The checker holds codegen's rule now, for
+                // every command's program (`strict_callees`), a file
+                // target included: `hale check f.hl` loads what `hale
+                // build f.hl` does, so a fn only a sibling defines is
+                // unbound in both. A library caller's partial program —
+                // a snippet — keeps the permissive Unknown. The builtin
+                // list is the set of bare names codegen answers itself.
                 if let Expr::Ident(id) = callee.as_ref() {
                     let name = id.name.as_str();
                     let known = self.locals.lookup(name).is_some()
