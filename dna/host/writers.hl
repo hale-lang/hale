@@ -1015,7 +1015,10 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         }
         if len(asked) == 0 { return fail("no pending " + id + " Review"); }
         if no_wait { return answer(out); }
-        let deadline = std::time::now() + dna::wait_secs(60 + 5 * count);
+        // a knowledge Review is decided once the organization has executed its
+        // ratification, a workflow of its own: on a record where every row is
+        // a commit that takes a minute and more for one Review
+        let deadline = std::time::now() + dna::wait_secs(180 + 15 * count);
         let mut left = asked;
         while len(left) > 0 {
             if !local { let s = sync_record(root, memory); }
