@@ -3304,6 +3304,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // declare i64 @lotus_tcp_parks() — 1 on an async_io pool's
+        // coroutine, where a blocking socket call parks (std::http::Server).
+        self.module.add_function(
+            "lotus_tcp_parks",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        // declare i64 @lotus_tcp_on_pool()
+        self.module.add_function("lotus_tcp_on_pool", i64_t.fn_type(&[], false), None);
+        // declare i64 @lotus_tcp_listener_name(ptr name, i64 fd)
+        self.module.add_function(
+            "lotus_tcp_listener_name",
+            i64_t.fn_type(&[self.context.ptr_type(inkwell::AddressSpace::default()).into(), i64_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_tcp_local_port(i64 fd)
+        self.module.add_function("lotus_tcp_local_port", i64_t.fn_type(&[i64_t.into()], false), None);
+        // declare i64 @lotus_tcp_listener_stop(ptr name)
+        self.module.add_function(
+            "lotus_tcp_listener_stop",
+            i64_t.fn_type(&[self.context.ptr_type(inkwell::AddressSpace::default()).into()], false),
+            None,
+        );
         // #209 — errno-style status for the fallible Stream methods.
         // declare i64 @lotus_tcp_last_io_status()
         self.module.add_function(

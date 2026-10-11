@@ -544,15 +544,16 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 
 /// The stdlib file an offset of the appended runtime lies in: the file's
 /// name as `crates/hale-stdlib/hl/` spells it, its text, and the offset
-/// within it. Each of the runtime's four files parses in a window of its
+/// within it. Each of the runtime's five files parses in a window of its
 /// own ([`inject_runtime`], [`inject_hub`], [`inject_h2`],
-/// [`inject_grpc`]); `None` outside them.
+/// [`inject_grpc`], [`inject_tcp_serve`]); `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 4] = [
+    let windows: [(u32, &'static str, &'static str); 5] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
         (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
+        (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
@@ -711,12 +712,73 @@ topic __ApiHubUpT { payload: __StdApiHubUp; subject: \"__api.hub.up\"; keyed_by 
 topic __ApiHubOutT { payload: __StdApiHubOut; subject: \"__api.hub.out\"; keyed_by key; }
 ";
 
+/// The names of the TCP connection substrate a program may spell under
+/// `std::io::tcp`.
+const TCP_SERVE_NAMES: &[&str] = &["Acceptor", "Connections", "Accepted", "ConnHandler"];
+
+/// Whether the programs name the TCP connection substrate: `std::http::Server`
+/// (or `std::http::Responder`), or one of `std::io::tcp`'s substrate names.
+fn mentions_tcp_serve(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| {
+        (w[1] == "std" && w[2] == "http" && (w[3] == "Server" || w[3] == "Responder"))
+            || (w[0] == "std" && w[1] == "io" && w[2] == "tcp" && TCP_SERVE_NAMES.contains(&w[3]))
+    })
+}
+
+/// Where the substrate parses: the last window of the runtime's space.
+const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
+
+/// Whether an offset is in the TCP substrate's appended source.
+pub fn is_tcp_serve_pos(pos: u32) -> bool {
+    (TCP_SERVE_BASE..TCP_SERVE_BASE + hale_stdlib::TCP_SERVE_SOURCE.len() as u32).contains(&pos)
+}
+
+const TCP_TOPICS_SRC: &str = "topic __TcpAcceptedT { payload: __StdIoTcpAccepted; subject: \"__tcp.accepted\"; keyed_by route; on_unmatched: fallback; }
+";
+
+/// The TCP connection substrate and its topic, once, for a program that
+/// names it (`hale_stdlib::TCP_SERVE_SOURCE`). Independent of the api
+/// runtime: a program with a `std::http::Server` and no `api::serve`
+/// carries the substrate alone.
+fn inject_tcp_serve(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpRelay")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::TCP_SERVE_SOURCE, TCP_SERVE_BASE) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the TCP substrate did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+    match parse_source_at(TCP_TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000) {
+        Ok(t) => programs[0].items.extend(t.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the TCP substrate's topic did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
 /// Run the pass over a bundle's programs.
 pub fn expand(
     programs: &mut [&mut Program],
     renames: &[(Vec<String>, String)],
     default_surface: &str,
 ) -> Vec<Expansion> {
+    if mentions_tcp_serve(programs) {
+        inject_tcp_serve(programs);
+    }
     let hubs = crate::hub_expand::binds_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {
         return Vec::new();

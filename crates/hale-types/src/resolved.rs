@@ -607,12 +607,14 @@ pub fn resolve_rewritten(
         crate::handler_routing::stdlib_handler_rows(&merged, &merged.items[user_items..], import_renames, &snapshot),
         &correspondence,
     )?;
-    // The flow rows are the snapshot's (F.40 phase 4, Q1): lowering reads
-    // them by locus name (`is_flow`, `specialize`), the stdlib declares no
-    // `release` clause and no type alias, and `DeclaredNames` holds the
-    // stdlib's loci over either program, so the merged program's survey
-    // is the checked one's in every row lowering reads.
-    let flows = flows.clone();
+    // The flow rows are the snapshot's (F.40 phase 4, Q1), and after them
+    // the flows the stdlib's own `release` clauses make, surveyed over the
+    // merged program's tail (`std::http::Server`'s connections on an
+    // `async_io` pool are flow children of a stdlib owner). Lowering reads
+    // them by locus name (`is_flow`, `specialize`); the stdlib declares no
+    // type alias, and `DeclaredNames` holds the stdlib's loci over either
+    // program, so a stdlib clause resolves as a user one does.
+    let flows = flows.clone().with_stdlib(&merged.items[user_items..]);
     // The allocation-routing rows over the same merged program, cross-seed
     // calls resolved through the same renames: lowering reads them. Their
     // scratch-local set is the allocation summary's (F.40 phase 4, Q1).

@@ -157,6 +157,16 @@ fn __std_io_tcp_send_fd(fd: Int, b: Bytes) -> () fallible(IoError) {
     }
 }
 
+/// Stop the listener named `name` (a `std::io::tcp::Acceptor`'s or a
+/// `std::http::Server`'s): its listening socket is shut down, its accept
+/// returns and its loop ends; connections it already handed over are
+/// served to the end. Callable from any thread — a checked program stops
+/// a listener on another pool through it, where a method call across
+/// pools is refused. `true` when a listener had the name.
+fn __std_io_tcp_stop(name: String) -> Bool {
+    return std::io::tcp::__stop_listener(name) == 1;
+}
+
 // Default on_connection callback. Logs the fd and returns —
 // the per-connection Stream dissolves once `__handle_one_
 // connection` returns, closing the fd. Users who want real

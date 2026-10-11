@@ -1,0 +1,571 @@
+// The TCP connection substrate (spec/stdlib.md § "The TCP connection
+// substrate"), and `std::http::Server` built on it.
+//
+// One shape for every server: a listener binds and accepts, and relays
+// each connection over the bus as an owned handle (`std::io::tcp::Accepted`,
+// on the keyed topic `__TcpAcceptedT`); a consumer subscribed to the
+// listener's route takes the handle and serves the connection in a child
+// of its own. The syscalls are stitched by placement: a listener placed
+// `pinned` blocks in accept(2) on its own thread, one placed
+// `cooperative(pool = X) where async_io` parks there; a consumer on an
+// async_io pool serves every connection on a coroutine of its own, and
+// anywhere else one at a time.
+//
+// The fd belongs to whoever takes the handle. A handle no consumer's
+// route matches reaches the listener's own catch-unmatched subscription,
+// which closes it: an accepted connection is served or closed, never
+// leaked and never dropped in silence (the topic is `on_unmatched:
+// fallback`, so `require no_silent_loss` holds over it).
+//
+// This file is appended to a program that names `std::http::Server` or
+// one of `std::io::tcp::{Acceptor, Connections, Accepted, ConnHandler}`
+// (`hale_stdlib::TCP_SERVE_SOURCE`); `__TcpAcceptedT` is declared beside
+// it by the pass that appends it.
+
+/// A connection a listener accepted, handed over the bus to the consumer
+/// that serves it. Whoever takes it owns `fd` and closes it (a
+/// `std::io::tcp::Stream { conn_fd: fd }` does at its scope exit).
+/// `listener` is the listener's name, `route` the consumers' key
+/// (`<listener>#<shard>`), `seq` its count from 1.
+type __StdIoTcpAccepted {
+    listener: String;
+    route: String;
+    fd: Int;
+    seq: Int;
+}
+
+/// What serves one connection: `fn serve(c: std::io::tcp::Accepted)`, on
+/// the consumer's thread; it owns `c.fd`. `std::http::Responder` is the
+/// HTTP one.
+interface __StdIoTcpConnHandler {
+    fn serve(c: std::io::tcp::Accepted);
+}
+
+// The route a consumer subscribes to and a listener sends on: the
+// listener's name and the consumer's shard.
+fn __tcp_route(listener: String, shard: Int) -> String {
+    return listener + "#" + to_string(shard);
+}
+
+// The name a listener goes by: the one it was given, or its host and the
+// port its socket is bound to — the one a port-0 bind was given — so two
+// listeners never share a default name (two on one explicit host:port
+// cannot both bind).
+fn __tcp_listener_name(name: String, host: String, port: Int, listen_fd: Int) -> String {
+    if len(name) > 0 {
+        return name;
+    }
+    let bound = std::io::tcp::__local_port(listen_fd);
+    if bound < 0 {
+        return host + ":" + to_string(port);
+    }
+    return host + ":" + to_string(bound);
+}
+
+// A listener's socket, bound at each birth: a restart binds afresh (a
+// supervisor that corrected the host, or a port that came free), closing
+// the socket a previous birth left (its name leaves with it). -1 when it
+// cannot bind.
+fn __tcp_rebind(old_fd: Int, host: String, port: Int) -> Int {
+    if old_fd >= 0 {
+        std::io::tcp::__close_fd(old_fd);
+    }
+    return std::io::tcp::__listen_socket(host, port);
+}
+
+// The listener's end of the bus: it relays each connection and closes the
+// ones no consumer's route matched. Held by every listener (an Acceptor, a
+// Server) as a param, so the accept loop is written once.
+locus __StdIoTcpRelay {
+    params {
+        name: String = "";
+        shards: Int = 1;
+        sent: Int = 0;
+        closed: Int = 0;
+        // set by its listener once the name is the listener's: a relay
+        // whose listener failed at birth closes nothing
+        armed: Bool = false;
+    }
+    bus {
+        publish __TcpAcceptedT;
+        subscribe __TcpAcceptedT as on_unclaimed where key == _;
+    }
+    // Accept until the socket is shut (`std::io::tcp::stop`, `shutdown()`)
+    // or `max_accepts` is reached, relaying each connection. Where a yield
+    // runs this thread's queued deliveries (main, a pinned thread) the
+    // yield lets a consumer on the same thread serve before the next
+    // accept: one connection at a time, as a blocking call there must be.
+    // On an async_io pool the accept parks instead, and the consumer's
+    // deliveries run then.
+    fn accept_all(listen_fd: Int, max_accepts: Int) {
+        while max_accepts < 0 || self.sent < max_accepts {
+            let conn = std::io::tcp::__accept_one(listen_fd);
+            if conn < 0 {
+                break;
+            }
+            self.relay(conn);
+            yield;
+        }
+    }
+    // One connection onto the bus: a method of its own, so what the handle
+    // takes to build dies with the call and not in the loop above.
+    fn relay(conn: Int) {
+        let shard = self.sent % self.shards;
+        self.sent = self.sent + 1;
+        __TcpAcceptedT <- __StdIoTcpAccepted {
+            listener: self.name,
+            route: __tcp_route(self.name, shard),
+            fd: conn,
+            seq: self.sent
+        };
+    }
+    // A handle no consumer's route matched: if it is this listener's,
+    // close it (every relay hears every unmatched handle).
+    fn on_unclaimed(a: __StdIoTcpAccepted) {
+        if self.armed && a.listener == self.name {
+            std::io::tcp::__close_fd(a.fd);
+            self.closed = self.closed + 1;
+        }
+    }
+}
+
+/// A listener: binds `host:port` at birth, accepts, and relays each
+/// connection as a `std::io::tcp::Accepted` to the consumers subscribed to
+/// its route (`std::io::tcp::Connections { listener: <name> }`). It serves
+/// nothing itself. Its name is its address in the process: the consumers'
+/// key and `std::io::tcp::stop(name)`'s argument. `name` gives it; left
+/// empty, the name is the host and the port the socket is bound to
+/// (`127.0.0.1:<port>`, the kernel's pick for `port: 0`), so default names
+/// never collide. The name it goes by is `listener`, set at birth. An
+/// explicit name another live listener holds is the `name_taken` violation
+/// at birth, with the socket closed before anything runs. Birth binds, so
+/// `restart(acceptor)` binds afresh.
+/// `shards: K` deals connections round-robin over K consumers (`shard: 0`
+/// .. `K - 1`). Place it `pinned` (a blocking accept on a thread of its
+/// own) or on a `where async_io` pool (a parked one); on a classic pool its
+/// accept holds the pool, and consumers on that pool are never served.
+locus __StdIoTcpAcceptor {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 0;
+        // "" = the bound address
+        name: String = "";
+        shards: Int = 1;
+        // -1 = until stopped; >= 0 caps the accepts (tests)
+        max_accepts: Int = -1;
+        ready_signal: String = "";
+        // the name it goes by, and its socket: both set at birth
+        listener: String = "";
+        listen_fd: Int = -1;
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { shards: self.shards };
+    }
+    closure listen_failed {
+        captures: host, port;
+        epoch inline;
+    }
+    // An explicit `name` another live listener holds: two listeners would
+    // relay on one route and close each other's unclaimed connections.
+    closure name_taken {
+        captures: name;
+        epoch inline;
+    }
+    birth() {
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.relay.armed = false;
+        if self.listen_fd < 0 {
+            violate listen_failed;
+        }
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
+            std::io::tcp::__close_fd(self.listen_fd);
+            self.listen_fd = -1;
+            violate name_taken;
+        }
+        self.relay.name = self.listener;
+        self.relay.sent = 0;
+        self.relay.armed = true;
+        if len(self.ready_signal) > 0 {
+            println(self.ready_signal);
+        }
+    }
+    run() {
+        // a listener whose birth failed and was absorbed by its supervisor
+        // has no socket: it accepts nothing
+        if self.listen_fd >= 0 {
+            self.relay.accept_all(self.listen_fd, self.max_accepts);
+        }
+    }
+    dissolve() {
+        std::io::tcp::__close_fd(self.listen_fd);
+    }
+}
+
+// One connection served inline, in birth(), on the consumer's thread: the
+// shape where a blocking call holds the thread (main, a pinned thread, a
+// classic pool), so nothing else could run meanwhile anyway. Born per
+// connection and dissolved when it is served, it takes the connection's
+// region with it (GH #578: a response used to stay in the server's region
+// for the life of the process).
+locus __StdIoTcpConnInline {
+    params {
+        c: __StdIoTcpAccepted = __StdIoTcpAccepted { listener: "", route: "", fd: -1, seq: 0 };
+        handler: __StdIoTcpConnHandler;
+    }
+    birth() {
+        self.handler.serve(self.c);
+    }
+}
+
+// One connection on a coroutine of its own: the shape on an async_io pool.
+// Its run() is the connection's flow; a park in it (the request's read, a
+// `sleep` or an outbound call in the handler, a send to a slow client)
+// yields the worker to the other connections. Its owner declares
+// `release`, so it is reclaimed, region and all, when run() returns.
+locus __StdIoTcpConnFlow {
+    params {
+        c: __StdIoTcpAccepted = __StdIoTcpAccepted { listener: "", route: "", fd: -1, seq: 0 };
+        handler: __StdIoTcpConnHandler;
+    }
+    run() {
+        self.handler.serve(self.c);
+    }
+}
+
+// The flows in flight, and their owner. A child of the consumer rather than
+// the consumer itself, so the consumer declares no `accept()` and may be
+// placed `pinned`.
+locus __StdIoTcpFlows {
+    params {
+        active: Int = 0;
+    }
+    fn serve(c: __StdIoTcpAccepted, h: __StdIoTcpConnHandler) {
+        __StdIoTcpConnFlow { c: c, handler: h };
+    }
+    accept(f: __StdIoTcpConnFlow) {
+        self.active = self.active + 1;
+    }
+    release (f: __StdIoTcpConnFlow) {
+        self.active = self.active - 1;
+    }
+}
+
+/// A consumer: takes the connections relayed on its listener's route
+/// (`listener`, and `shard` of the listener's `shards`) and serves each
+/// with `handler`. On an async_io pool every connection is a coroutine of
+/// its own, at most `max_connections` at once; the next waits for a slot
+/// (as many again may wait, and past that a connection is closed unserved
+/// and counted in `refused`). Anywhere else it serves one at a time. Calls
+/// to `handler.serve` never run in parallel: they share this consumer's
+/// thread and interleave only where one parks.
+locus __StdIoTcpConnections {
+    params {
+        listener: String = "";
+        shard: Int = 0;
+        route: String = __tcp_route(self.listener, self.shard);
+        handler: __StdIoTcpConnHandler;
+        max_connections: Int = 256;
+        taken: Int = 0;
+        waiting: Int = 0;
+        refused: Int = 0;
+        // a consumer a listener holds is armed by it once its name is its
+        // own: until then it takes nothing from the route (another
+        // listener's consumer is the one on it)
+        armed: Bool = true;
+        flows: __StdIoTcpFlows = __StdIoTcpFlows { };
+    }
+    bus {
+        subscribe __TcpAcceptedT as on_conn where key == self.route;
+    }
+    fn on_conn(a: __StdIoTcpAccepted) {
+        if self.armed {
+            self.take(a);
+        }
+    }
+    /// Serve one connection this consumer now owns.
+    fn take(a: __StdIoTcpAccepted) {
+        self.taken = self.taken + 1;
+        if std::io::tcp::__parks() == 1 {
+            if self.flows.active >= self.max_connections {
+                if self.waiting >= self.max_connections {
+                    std::io::tcp::__close_fd(a.fd);
+                    self.refused = self.refused + 1;
+                    return;
+                }
+                self.waiting = self.waiting + 1;
+                while self.flows.active >= self.max_connections {
+                    std::time::sleep(1ms);
+                }
+                self.waiting = self.waiting - 1;
+            }
+            self.flows.serve(a, self.handler);
+        } else {
+            __StdIoTcpConnInline { c: a, handler: self.handler };
+        }
+    }
+    /// The connections taken and not yet served to the end.
+    fn active() -> Int {
+        return self.flows.active + self.waiting;
+    }
+}
+
+// Per-connection helper. Reassembles one full request before
+// dispatch: accumulate recv(8192) chunks until the `\r\n\r\n`
+// header terminator arrives, then until `Content-Length` body
+// bytes follow it. Clients that write headers and body in
+// separate TCP segments (python urllib, some Go/Node clients)
+// land as multiple recvs — the downstream handoff's single-recv
+// truncation bug (2026-07-14). Then parse, dispatch to the
+// user's handler via interface vtable, ship the response.
+// The Stream locus dissolves at fn-exit per the m82
+// scope-flush mechanism, which closes the conn fd.
+//
+// Guards: a 5s recv timeout bounds a stalled (slowloris-style)
+// client. Where a blocking call holds the thread (main, a pinned
+// thread, a classic pool) the Server serves one connection at a
+// time, so a stalled client holds the whole server for up to that
+// long; on an async_io pool each connection is a coroutine of its
+// own (`__StdIoTcpConnFlow`), the recv parks only that one, and the
+// deadline still ends it. A 1 MiB cap bounds
+// total request bytes: a declared Content-Length over the cap
+// answers 413 before buffering; overflow without a complete
+// header block closes without a response (the framing can't be
+// trusted). Keep-alive stays unsupported (Connection: close);
+// Transfer-Encoding: chunked is not parsed.
+fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
+    let _ = std::io::tcp::__set_recv_timeout_ns(conn_fd, 5000000000);
+    let s = std::io::tcp::Stream { conn_fd: conn_fd };
+    let max_request = 1048576;
+    let mut raw = "";
+    let mut header_end = 0 - 1;
+    let mut need = 0;
+    let mut too_large = false;
+    // Each pass ends the loop or appends at least one byte, and
+    // `max_request` bytes end it: at most max_request + 1 reads. The
+    // ceiling says so where the memory survey reads it (a const-bounded
+    // `while` counter), so what a connection reads is known bounded and
+    // a connection served on a coroutine of its own (__StdIoTcpConnFlow)
+    // is one activation, not a long-lived frame.
+    let mut reads = 0;
+    while reads < 1048578 {
+        if header_end >= 0 && len(raw) - (header_end + 4) >= need {
+            break;
+        }
+        if len(raw) >= max_request || (header_end >= 0 && need > max_request) {
+            too_large = true;
+            break;
+        }
+        // #209: recv is fallible(IoError); a genuine read error
+        // is folded into the same "stop reading, serve what we
+        // have" shape as EOF/timeout (empty chunk).
+        let chunk = s.recv(8192) or "";
+        if len(chunk) == 0 {
+            // EOF or recv timeout: serve what we have.
+            break;
+        }
+        raw = raw + chunk;
+        if header_end < 0 {
+            header_end = std::str::index_of(raw, "\r\n\r\n");
+            if header_end >= 0 {
+                let partial = std::http::parse_request(raw);
+                need = std::str::parse_int(
+                    std::http::header(partial, "Content-Length")) or 0;
+            }
+        }
+        reads = reads + 1;
+    }
+    if header_end < 0 {
+        // Never saw a complete header block: close without a
+        // response (Stream scope-exit closes the fd).
+        return;
+    }
+    if too_large {
+        std::http::write_response(s, std::http::Response {
+            status: 413,
+            body: "payload too large"
+        });
+        return;
+    }
+    let mut req = std::http::parse_request(raw);
+    req.conn_fd = conn_fd;
+    let resp = h.handle(req);
+    if resp.takeover_raw {
+        // Raw takeover: NOTHING is written — the fd leaves this
+        // Stream's ownership with the wire untouched, and the
+        // handler (which stashed req.conn_fd) writes the whole
+        // response later, status line included. The deferred-
+        // response / CONNECT-tunnel shape.
+        let _ = s.release_fd();
+        return;
+    }
+    if resp.takeover {
+        // Upgrade/takeover: status line + user headers only, then
+        // the fd leaves this Stream's ownership — its scope-exit
+        // dissolve becomes a no-op and the handler (which stashed
+        // req.conn_fd) drives the connection from here.
+        let phrase = __status_phrase(resp.status);
+        let status_line = "HTTP/1.1 " + to_string(resp.status) + " " + phrase + "\r\n";
+        let extra = if len(resp.headers) > 0 {
+            resp.headers + "\r\n"
+        } else {
+            ""
+        };
+        s.send(status_line + extra + "\r\n") or discard;
+        let _ = s.release_fd();
+        return;
+    }
+    std::http::write_response(s, resp);
+}
+
+/// The HTTP connection handler: reads one request (reassembled, 1 MiB cap,
+/// 5 s recv timeout), asks `handler`, writes the response.
+locus __StdHttpResponder {
+    params {
+        handler: std::http::Handler;
+    }
+    fn serve(c: __StdIoTcpAccepted) {
+        __http_handle_one_conn(c.fd, self.handler);
+    }
+}
+
+/// The HTTP/1.1 server: a listener on `host:port` and a consumer that
+/// serves its connections with `handler` (`Connection: close`; no
+/// keep-alive). Placed on a `where async_io` pool it serves connections
+/// concurrently, a coroutine each (at most `max_connections` at once);
+/// anywhere else one at a time. Calls to `handler.handle` never run in
+/// parallel: they share the server's thread and interleave only where a
+/// handler parks. Its name (`name`, or left empty `host:<bound port>`,
+/// unique; the name it goes by is `listener`; an explicit one another
+/// listener holds is `name_taken` at birth) is its address for
+/// `std::io::tcp::stop(name)`. Birth binds, so `restart(server)` binds
+/// afresh; `max_accepts` bounds the loop for tests;
+/// `ready_signal` prints when the socket is up; `shutdown()` / `stop` end
+/// the accept, and run() returns once the connections in flight are
+/// answered (a drain, never a cut).
+locus __StdHttpServer {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 8080;
+        // -1 = run forever (canonical server shape); >= 0 caps
+        // the loop for tests + bounded workloads.
+        max_accepts: Int = -1;
+        // The user-supplied handler-locus, typed by the Handler
+        // interface. Required: `Server { port: 8080 }` with no handler
+        // is a compile error, so "I forgot to wire up routes" surfaces
+        // at once.
+        handler: std::http::Handler;
+        // When non-empty, birth() prints it once the socket is bound,
+        // for oracles and supervisors. Canonical value: "READY".
+        ready_signal: String = "";
+        // On an async_io pool, the most connections served at once.
+        max_connections: Int = 256;
+        // "" = the bound address (unique even for `port: 0`)
+        name: String = "";
+        // the name it goes by, and its socket: both set at birth
+        listener: String = "";
+        listen_fd: Int = -1;
+        // the listener's end of the bus, named and armed by birth(); the
+        // consumer is built by birth() on the route of the final name —
+        // until then an inert one on no route, so a server whose birth
+        // failed holds no subscription that matches a live listener's
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections {
+            handler: __StdHttpResponder { handler: self.handler },
+            armed: false
+        };
+    }
+    // A socket that cannot be bound is the Server's violation at birth
+    // (a supervisor's `on_failure(s: std::http::Server, …)` addresses it;
+    // unaddressed it bubbles to the root). Before, birth() went on with
+    // listen_fd = -1 and run() spun on `accept: Bad file descriptor`.
+    closure listen_failed {
+        captures: host, port;
+        epoch inline;
+    }
+    // An explicit `name` another live listener holds: this server's
+    // consumer would take the other's connections from the shared route.
+    closure name_taken {
+        captures: name;
+        epoch inline;
+    }
+    birth() {
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.relay.armed = false;
+        if self.conns.armed {
+            // a rebirth: the consumer a previous birth built leaves its
+            // route before this birth can fail
+            self.conns = __StdIoTcpConnections {
+                handler: __StdHttpResponder { handler: self.handler },
+                armed: false
+            };
+        }
+        if self.listen_fd < 0 {
+            violate listen_failed;
+        }
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
+            std::io::tcp::__close_fd(self.listen_fd);
+            self.listen_fd = -1;
+            violate name_taken;
+        }
+        self.relay.name = self.listener;
+        self.relay.sent = 0;
+        self.relay.armed = true;
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdHttpResponder { handler: self.handler },
+            max_connections: self.max_connections
+        };
+        if len(self.ready_signal) > 0 {
+            println(self.ready_signal);
+        }
+    }
+    run() {
+        // a server whose birth failed and was absorbed by its supervisor
+        // has no socket: it accepts nothing, and nothing is in flight
+        if self.listen_fd < 0 {
+            // nothing to serve
+        } else if std::io::tcp::__on_pool() == 1 && std::io::tcp::__parks() == 0 {
+            // A classic pool runs its queued cells only between cells, and
+            // this loop never returns: the consumer is handed each
+            // connection directly, and serves it before the next accept.
+            self.accept_direct();
+        } else {
+            self.relay.accept_all(self.listen_fd, self.max_accepts);
+        }
+        // The drain: every connection accepted is answered before run()
+        // returns and dissolve() runs, so no connection's coroutine is torn
+        // down mid-request.
+        while self.conns.taken < self.relay.sent || self.conns.active() > 0 {
+            std::time::sleep(1ms);
+        }
+    }
+    fn accept_direct() {
+        while self.max_accepts < 0 || self.relay.sent < self.max_accepts {
+            let conn = std::io::tcp::__accept_one(self.listen_fd);
+            if conn < 0 {
+                break;
+            }
+            self.hand_over(conn);
+        }
+    }
+    // One connection to the consumer: a method of its own, so the handle
+    // dies with the call and not in the loop above.
+    fn hand_over(conn: Int) {
+        self.relay.sent = self.relay.sent + 1;
+        self.conns.take(__StdIoTcpAccepted {
+            listener: self.listener,
+            route: self.conns.route,
+            fd: conn,
+            seq: self.relay.sent
+        });
+    }
+    // Shut the listening socket down from the Server's own pool (another
+    // pool stops it with `std::io::tcp::stop(name)`): the accept returns,
+    // the loop ends, and dissolve() does the close.
+    fn shutdown() {
+        std::io::tcp::__shutdown_listen_socket(self.listen_fd);
+    }
+    dissolve() {
+        std::io::tcp::__close_fd(self.listen_fd);
+    }
+}

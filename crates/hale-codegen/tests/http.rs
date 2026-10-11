@@ -1,4 +1,4 @@
-//! The `http` integration-test binary: 12 test files of this area, kept
+//! The `http` integration-test binary: 13 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -21,6 +21,8 @@ mod http_route_matching;
 mod http_router;
 #[path = "http_server_bind_failure.rs"]
 mod http_server_bind_failure;
+#[path = "http_server_concurrent.rs"]
+mod http_server_concurrent;
 #[path = "http_server_classic_pool_shutdown.rs"]
 mod http_server_classic_pool_shutdown;
 #[path = "http_server_memory.rs"]

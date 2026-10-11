@@ -91,7 +91,12 @@ const EMPTY: &str = "fn main() { }\n";
 // Measured 2026-10-05 on F.40 phase 4's main. Each program's share above
 // the floor, the second band: 73-bounded-bus 3473 lines, 41 defines,
 // 602 calls; 89-nested-locus-teardown 4716, 50, 478; 69-http-router
-// 2948, 30, 278.
+// 2948, 30, 278. 69-http-router re-measured 2026-10-12 at 3572, 30, 594
+// above the floor: std::http::Server carries its connection owner and
+// flow child (#1506, served concurrently on an async_io pool) beside the
+// inline child, so every program using the Server compiles both. Back to
+// 2948, 30, 278 once the Server moved into the TCP substrate, which joins
+// only a program that names it (69-http-router routes without a socket).
 const FLOOR: IrSize = IrSize { lines: 64421, defines: 709, calls: 7111 };
 const BOUNDED_BUS: IrSize = IrSize { lines: 67894, defines: 750, calls: 7713 };
 const NESTED_TEARDOWN: IrSize = IrSize { lines: 69137, defines: 759, calls: 7589 };

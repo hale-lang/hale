@@ -1,4 +1,4 @@
-//! The `tcp_io` integration-test binary: 12 test files of this area, kept
+//! The `tcp_io` integration-test binary: 13 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -25,6 +25,8 @@ mod tcp_listener_exclusive_bind;
 mod tcp_raw_fd_freefns;
 #[path = "tcp_recv_bytes.rs"]
 mod tcp_recv_bytes;
+#[path = "tcp_substrate.rs"]
+mod tcp_substrate;
 #[path = "tcp_set_nodelay.rs"]
 mod tcp_set_nodelay;
 #[path = "tls_fast_io.rs"]

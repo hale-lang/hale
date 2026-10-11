@@ -79,6 +79,19 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         c_fn: &str,
         label: &str,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_named_listener(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        c_fn: &str,
+        label: &str,
+        with_fd: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_local_port(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_io_tcp_io_error_kind(
         &mut self,
         args: &[Expr],
@@ -734,6 +747,82 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let v = self
             .builder
             .build_call(f, &[], &format!("tcp.{}.ret", label))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// `std::io::tcp::__name_listener(name, fd) -> Int` and
+    /// `__stop_listener(name) -> Int`: the process's listeners by name
+    /// (`lotus_tcp_listener_name` / `_stop`).
+    fn lower_std_io_tcp_named_listener(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        c_fn: &str,
+        label: &str,
+        with_fd: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let want = if with_fd { 2 } else { 1 };
+        if args.len() != want {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::{label} takes {want} args, got {}",
+                args.len()
+            )));
+        }
+        let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::{label}: name must be String, got {name_ty:?}"
+            )));
+        }
+        let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![name_val.into()];
+        if with_fd {
+            let (fd_val, fd_ty) = self.lower_expr(&args[1], scope)?;
+            if fd_ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::io::tcp::{label}: fd must be Int, got {fd_ty:?}"
+                )));
+            }
+            call_args.push(fd_val.into());
+        }
+        let f = self.module.get_function(c_fn).expect("named-listener fn declared");
+        let v = self
+            .builder
+            .build_call(f, &call_args, &format!("tcp.{label}"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// `std::io::tcp::__local_port(fd) -> Int`: the bound port
+    /// (`lotus_tcp_local_port`, getsockname), -1 for none.
+    fn lower_std_io_tcp_local_port(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__local_port takes 1 arg, got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__local_port: fd must be Int, got {fd_ty:?}"
+            )));
+        }
+        let f = self.module.get_function("lotus_tcp_local_port").expect("lotus_tcp_local_port declared");
+        let v = self
+            .builder
+            .build_call(f, &[fd_val.into()], "tcp.local_port")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()

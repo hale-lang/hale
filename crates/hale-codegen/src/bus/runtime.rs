@@ -381,9 +381,38 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             Some(crate::codegen::AnchorRoute::Pool(p)) => Some(p.clone()),
             _ => None,
         };
-        let mailbox_val = mailbox_or_null
-            .or(anchor_mailbox)
-            .unwrap_or_else(|| ptr_t.const_null());
+        // A locus constructed at run time (in a hook or a method, owned
+        // beyond the constructing scope) on a pinned thread takes that
+        // thread's mailbox, which the thread made current before its
+        // params and its `birth()` ran: its handlers run where the locus
+        // runs, as a locus built in the anchor's params does (U-6). No
+        // pinned thread, no mailbox: a pool worker's subscription is
+        // tagged with its pool below, main's goes to the global queue.
+        // (`std::http::Server` builds its consumer in `birth()`, once its
+        // name is its own; pinned, the consumer's deliveries went to the
+        // global queue and were served by main.)
+        let dynamic_on_pinned = mailbox_or_null.is_none()
+            && anchor_mailbox.is_none()
+            && owned_beyond_scope
+            && self.current_cooperative_pool.is_none()
+            && anchor_pool.is_none();
+        let mailbox_val = match mailbox_or_null.or(anchor_mailbox) {
+            Some(mb) => mb,
+            None if dynamic_on_pinned => {
+                let get_current_fn = self
+                    .module
+                    .get_function("lotus_mailbox_get_current")
+                    .expect("lotus_mailbox_get_current declared in declare_builtins");
+                self.builder
+                    .build_call(get_current_fn, &[], "mailbox.current")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_mailbox_get_current returns ptr")
+                    .into_pointer_value()
+            }
+            None => ptr_t.const_null(),
+        };
         // F.36 Slice 3b: subscribe-side codec substitution. When
         // main has a `codec(L { ... })` clause for this subject,
         // the synthesized decode thunk replaces the default m70

@@ -271,10 +271,15 @@ fn own_scope_let_block_scope_test() {
             ]
         );
         assert_eq!(
+            // the whole summary's header counts the copy's fns: 435 since
+            // the HTTP server and its connection helper left the bundled
+            // stdlib for the TCP substrate (10 fns, 7 of them hooks, one
+            // of them invoked unboundedly) and `std::io::tcp::stop`'s body
+            // joined it
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 440 fns, 34 entry points, 117 invoked-unboundedly",
-                "+ # 440 fns, 34 entry points, 116 invoked-unboundedly",
+                "- # 435 fns, 30 entry points, 116 invoked-unboundedly",
+                "+ # 435 fns, 30 entry points, 115 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -413,7 +418,9 @@ fn reached_no_other_target_changes() {
 /// `invoked` counts the copy's fns too: two more since F.40 E5, which
 /// resolves the copy's indirect calls to the function values of their
 /// type, so the router's fn-route dispatch reaches `__http_fn_unset` and
-/// the listener's `on_conn` reaches `__default_on_connection`.
+/// the listener's `on_conn` reaches `__default_on_connection`. One fewer
+/// since the HTTP server left the copy for the TCP substrate, appended to
+/// a program that names it: its accept loop's hand-off is no copy fn.
 fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
     let u = unreached(target, &stdlib_fns()).expect("the target loads");
     let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
@@ -439,7 +446,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (118, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (117, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -449,7 +456,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (118, 0),
+        (117, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -469,7 +476,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (140, 2),
+        (139, 2),
         &[
             "b64",
             "decode",
@@ -533,7 +540,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (120, 0),
+        (119, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -570,7 +577,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (117, 0),
+        (116, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],

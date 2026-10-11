@@ -187,6 +187,11 @@ ns std::io::tcp open_prefixes=[]
   __io_error_kind pure
   __last_io_status pure
   __listen_socket syscall
+  __parks pure
+  __on_pool pure
+  __name_listener syscall
+  __local_port syscall
+  __stop_listener syscall
   __recv syscall|block
   __recv_bytes syscall|block
   __send syscall
@@ -207,6 +212,7 @@ ns std::io::tcp open_prefixes=[]
   set_recv_timeout syscall
   set_rx_timestamps syscall
   set_send_timeout syscall
+  stop syscall
 ns std::io::h2 open_prefixes=[]
   __alive alloc
   __close alloc
@@ -632,6 +638,7 @@ std::http::HttpError | lookup=http@2 | locus=true | effects=- | sig=- | parks=fa
 std::http::Middleware | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::NotFound404 | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Request | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=request
+std::http::Responder | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Response | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::RouteEntry | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::RouteHandler | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -748,6 +755,10 @@ std::io::stdin::read_line_status | lookup=io::stdin@3 | locus=false | effects=sy
 std::io::stdout::print | lookup=io::stdout@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::stdout::print` is not a stdlib function; writing to stdout is the builtin `print(x)` | suggest=-
 std::io::stdout::println | lookup=io::stdout@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::stdout::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)` | suggest=-
 std::io::stdout::write_bytes | lookup=io::stdout@3 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=write_bytes
+std::io::tcp::Accepted | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::tcp::Acceptor | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::tcp::ConnHandler | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::io::tcp::Connections | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::Listener | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::LogEvent | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -757,12 +768,17 @@ std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block
 std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
 std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
 std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
+std::io::tcp::__local_port | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__local_port
+std::io::tcp::__name_listener | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__name_listener
+std::io::tcp::__on_pool | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__on_pool
+std::io::tcp::__parks | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__parks
 std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=true | holds=true | unknown=- | suggest=__recv
 std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
 std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send
 std::io::tcp::__send_bytes | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send_bytes
 std::io::tcp::__set_recv_timeout_ns | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__set_recv_timeout_ns
 std::io::tcp::__shutdown_listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shutdown_listen_socket
+std::io::tcp::__stop_listener | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__stop_listener
 std::io::tcp::accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=accept_one
 std::io::tcp::close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close_fd
 std::io::tcp::conect | lookup=io::tcp@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::tcp::conect` — did you mean `std::io::tcp::connect`? | suggest=connect
@@ -778,6 +794,7 @@ std::io::tcp::set_nodelay | lookup=io::tcp@3 | locus=false | effects=syscall | s
 std::io::tcp::set_recv_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
 std::io::tcp::set_rx_timestamps | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Bool) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_rx_timestamps
 std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
+std::io::tcp::stop | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=stop
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
 std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns

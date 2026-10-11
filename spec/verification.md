@@ -1989,6 +1989,30 @@ assume the others in a build:
   called 10k times adds nothing over the runtime floor consumed in a
   method (4.6 MB), and ~96 MB consumed directly in `run`'s loop
   (`alloc_model_rss.rs::a_returned_loop_accumulator_reclaims_with_its_activation`).
+
+  **A flow's `run()` is one activation when nothing in it repeats
+  without a bound.** A flow child's arena is reclaimed when its `run()`
+  returns (`spec/semantics.md` § "`release(c)` and flow children"), so a
+  flow `run()` is not a long-lived frame when no frame that allocates
+  into its arena — the `run()` itself and the free fns it reaches that
+  land in their caller's arena — holds an unbounded loop (any loop but a
+  const-bounded `for`-range or `while` counter). What it and those fns
+  allocate is then the activation's, as a method's scratch is; a flow
+  whose `run()` loops, itself or through such a fn (a connection serving
+  many messages), stays long-lived, and what the loop allocates
+  accumulates for the connection's life. A method or handler it calls
+  stops the walk: its own scratch takes what its loops allocate.
+
+  **A locus started unboundedly often asks unboundedly often.** A fn
+  invoked unboundedly that starts a locus (a literal of it in its body)
+  starts it once per invocation, and each start runs the locus's
+  `birth` and `run` once. Each start is an instance of its own, so the
+  hooks' own sites — their frame, their `self` — are not judged as
+  growing; what the hooks call on another locus is shared by every
+  start, and those callees are invoked unboundedly. A TCP consumer's bus
+  handler handing each connection to a child that asks the program's
+  HTTP handler is the case: the handler's `handle` is invoked once per
+  connection.
 - **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
   The dual of `@unbounded`: where `@unbounded` acknowledges intentional
   unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and

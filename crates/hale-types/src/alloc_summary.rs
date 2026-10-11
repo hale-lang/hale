@@ -1071,6 +1071,16 @@ pub struct FormShape {
 pub struct AllocSummary {
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
+    /// Flow loci: the types some `release(c: T)` clause names, the
+    /// stdlib's included. A flow's arena is reclaimed the moment its
+    /// `run()` returns (spec/semantics.md § "`release(c)` and flow
+    /// children"), so a flow `run()` in which nothing repeats without a
+    /// bound is one activation, not a long-lived frame
+    /// ([`AllocSummary::flow_run_is_activation`]). A flow whose `run()`
+    /// loops, itself or in a free fn it calls (a connection serving many
+    /// messages), stays long-lived: what the loop allocates accumulates
+    /// for the connection's life.
+    pub flow_loci: BTreeSet<String>,
     /// One row per fn-like declaration, keyed by its identity.
     pub fns: BTreeMap<FnKey, FnSummary>,
     /// The row a call that spells `(locus, name)` reaches: the walk's
@@ -1126,6 +1136,10 @@ pub struct AllocSummary {
     /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
     /// every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
+    /// The loci each body starts (a literal of the locus in it): what
+    /// [`AllocSummary::unbounded_invoked`] follows from an unboundedly
+    /// invoked fn to the `birth` and `run` hooks each start runs once.
+    pub starts: BTreeMap<FnKey, BTreeSet<String>>,
     /// GH #1490: the loci a program with a `fn main` can start, when the
     /// walk can say ([`loci_started_from_main`]): its own seed's, and the
     /// imported ones its code names. The run-to-exit rule
@@ -1416,6 +1430,7 @@ impl AllocSummary {
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
             by_name: self.by_name.iter().filter(|(_, k)| own_key(k)).map(|(n, k)| (n.clone(), k.clone())).collect(),
             bounded_loci: self.bounded_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
@@ -1426,6 +1441,7 @@ impl AllocSummary {
             bounded_by: self.bounded_by.iter().filter(|(k, _)| own_key(k)).map(|(k, b)| (k.clone(), b.clone())).collect(),
             locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
             reached: None,
+            starts: self.starts.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             startable: self.startable.clone(),
             analysis_copy: BTreeSet::new(),
             analysis_copy_loci: BTreeSet::new(),
@@ -1474,6 +1490,16 @@ impl AllocSummary {
     /// caller is, or the call edge is inside an unbounded loop. Only the
     /// fns the program reaches ([`AllocSummary::reached`]) seed it or
     /// call: a stdlib loop the program never starts invokes nothing.
+    ///
+    /// A locus an unboundedly invoked fn starts is started unboundedly
+    /// often, and each start runs its `birth` and its `run` once
+    /// ([`AllocSummary::starts`]). Each start is an instance of its own, so
+    /// what a hook allocates in its own frame and on `self` is the
+    /// instance's, not a growth: the hooks join no set. What they call on
+    /// another locus is shared by every start, so those calls are
+    /// unbounded: the connection a TCP consumer's bus handler hands to a
+    /// child of its own is the case, and the handler the child asks is
+    /// asked once per connection, unboundedly often.
     pub fn unbounded_invoked(&self) -> BTreeSet<FnKey> {
         let runs = |f: &&FnSummary| self.reached.as_ref().is_none_or(|r| r.contains(&f.key));
         let mut set: BTreeSet<FnKey> = self
@@ -1498,12 +1524,65 @@ impl AllocSummary {
                         }
                     }
                 }
+                if caller_unbounded {
+                    for l in self.starts.get(&f.key).into_iter().flatten() {
+                        for hook in self.fns.values().filter(runs).filter(|g| {
+                            g.key.locus.as_ref() == Some(l) && matches!(g.entry, Some(EntryKind::Birth) | Some(EntryKind::Run))
+                        }) {
+                            for c in &hook.calls {
+                                let Callee::Resolved(callee) = &c.callee else { continue };
+                                let shared = callee.locus.as_ref().is_some_and(|cl| cl != l);
+                                if shared && self.fns.contains_key(callee) && set.insert(callee.clone()) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if !changed {
                 break;
             }
         }
         set
+    }
+
+    /// Whether `f` is a flow's `run()` that is ONE activation: no frame
+    /// whose allocations land in its arena repeats without a bound. Those
+    /// frames are the run itself and, transitively, the free fns it calls
+    /// that allocate into their caller's arena — the edges
+    /// [`AllocSummary::scratchless_longlived`] propagates along. If one of
+    /// them holds an unbounded loop (any loop but a const-bounded
+    /// `for`-range or `while` counter), what that loop allocates
+    /// accumulates in the flow's arena for as long as the activation
+    /// lasts, which a `while true` makes forever: the run stays a
+    /// long-lived frame. A method or bus handler it calls stops the walk,
+    /// as it stops the propagation: its own per-call scratch takes what
+    /// its loops allocate, and the verdicts of its sites are its own.
+    fn flow_run_is_activation(&self, f: &FnSummary) -> bool {
+        if f.entry != Some(EntryKind::Run) || !f.key.locus.as_ref().is_some_and(|l| self.flow_loci.contains(l)) {
+            return false;
+        }
+        let unbounded_loop =
+            |g: &FnSummary| g.loops.iter().any(|l| !matches!(l.kind, LoopKind::ForRange { bounded: Some(_) } | LoopKind::WhileCounter));
+        let mut seen: BTreeSet<&FnKey> = BTreeSet::new();
+        let mut work: Vec<&FnSummary> = vec![f];
+        while let Some(g) = work.pop() {
+            if !seen.insert(&g.key) {
+                continue;
+            }
+            if unbounded_loop(g) {
+                return false;
+            }
+            for c in &g.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    if let Some(h) = self.fns.get(callee).filter(|h| callee.locus.is_none() && !h.frees_at_return()) {
+                        work.push(h);
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// M3 stage 5 gap A/B (2026-07-02, audit notes/unbounded-alloc-
@@ -1515,13 +1594,17 @@ impl AllocSummary {
     /// lifetime arena. Member fns and bus handlers open a per-call
     /// method scratch, and a scratch-local free fn its own subregion
     /// ([`FnSummary::frees_at_return`]), so they STOP the propagation
-    /// — a value consumed there dies at its exit.
+    /// — a value consumed there dies at its exit. A flow's `run()` that
+    /// is one activation ([`AllocSummary::flow_run_is_activation`]) is
+    /// not long-lived either: it runs once per flow instance and the
+    /// flow's arena is reclaimed when it returns, so it seeds nothing.
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
+        let flow_run = |f: &FnSummary| self.flow_run_is_activation(f);
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
             .filter(|f| {
-                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run))
+                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f)
             })
             .map(|f| f.key.clone())
             .collect();
@@ -2337,6 +2420,22 @@ pub fn summarize_identified(
     // appearance as an accept() param type, or `main` status
     // disqualifies.
     let mut eager_only_loci: BTreeSet<String> = BTreeSet::new();
+    // The flow loci: every type a `release(c: T)` clause names.
+    let mut flow_loci: BTreeSet<String> = BTreeSet::new();
+    for program in programs {
+        for item in flat_decls(&program.items) {
+            let TopDecl::Locus(l) = item else { continue };
+            for member in &l.members {
+                if let LocusMember::Lifecycle(lc) = member {
+                    if lc.kind == LifecycleKind::Release {
+                        if let Some(n) = lc.params.first().and_then(|p| single_named_type_name(&p.ty)) {
+                            flow_loci.insert(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
     {
         let mut all: BTreeSet<String> = BTreeSet::new();
         let mut deferred: BTreeSet<String> = BTreeSet::new();
@@ -2870,6 +2969,7 @@ pub fn summarize_identified(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
+    summary.flow_loci = flow_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
     summary.appended_runtime_loci = runtime_loci;
     // What each body starts, and whose it is, for `reached`.
@@ -2984,7 +3084,10 @@ pub fn summarize_identified(
     {
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
-        starts_of.insert(key.clone(), starts);
+        starts_of.insert(key.clone(), starts.clone());
+        if !starts.is_empty() {
+            summary.starts.insert(key.clone(), starts);
+        }
         if runtime_ids.contains(decl) {
             summary.appended_runtime.insert(key.clone());
         }
@@ -3656,7 +3759,13 @@ fn loci_started_from_main(
                 }
                 TopDecl::Locus(l) => {
                     locus_names.entry(l.name.name.clone()).or_default().extend(named_in(item));
-                    if !copy && !l.imported {
+                    // The TCP substrate is appended to the program's own
+                    // seed (`rpc_expand::inject_tcp_serve`) but is stdlib
+                    // source: its loci start where the program names them
+                    // (`std::http::Server`), as the stdlib's do — a one-shot
+                    // program over a seed that names a server it never
+                    // starts is no daemon for it.
+                    if !copy && !l.imported && !crate::rpc_expand::is_tcp_serve_pos(l.name.span.start.0) {
                         pending.push(l.name.name.clone());
                     }
                 }
@@ -8404,6 +8513,96 @@ mod tests {
     }
 
     // ---- step 3: call-graph propagation + the bound solver ----
+
+    /// A child a bus handler starts runs its hooks once per start: what it
+    /// asks of a shared locus is asked once per message, unboundedly often,
+    /// while its own hooks (each start an instance of its own) join no set.
+    #[test]
+    fn a_child_started_per_message_asks_its_shared_locus_unboundedly() {
+        let src = r#"
+            type Msg { n: Int; }
+            topic Msgs { payload: Msg; subject: "m"; }
+            type Out { s: String; }
+            locus Shared { fn answer(n: Int) -> Out { return Out { s: to_string(n) }; } }
+            interface Asks { fn answer(n: Int) -> Out; }
+            locus Child {
+                params { n: Int = 0; with: Asks; }
+                birth() { let o = self.with.answer(self.n); }
+            }
+            locus Taker {
+                params { shared: Shared = Shared { }; }
+                bus { subscribe Msgs as on_msg; }
+                fn on_msg(m: Msg) { Child { n: m.n, with: self.shared }; }
+            }
+            fn main() { Taker { }; }
+        "#;
+        let s = summarize(src);
+        let set = s.unbounded_invoked();
+        assert!(set.contains(&named(&s, Some("Shared"), "answer")), "{set:?}");
+        assert!(!set.contains(&named(&s, Some("Child"), "birth")), "the child's own hook is per instance: {set:?}");
+    }
+
+    /// A flow's `run()` is one activation only when nothing that
+    /// allocates into its arena repeats without a bound: a loop in a free
+    /// fn it calls counts as one in its own body (review of #1506). The
+    /// control: the loop sits in `serve_loop`, a helper of the flow's
+    /// `run()`, and its concat accumulates for the flow's life.
+    #[test]
+    fn a_flow_run_whose_helper_loops_forever_stays_long_lived() {
+        let src = r#"
+            fn payload(s: String) -> String { return s + "hello"; }
+            fn serve_loop() { while true { println(payload("x")); std::time::sleep(1ms); } }
+            locus Work { run() { serve_loop(); } }
+            locus Holder { accept(c: Work) { } release(c: Work) { } }
+            main locus App {
+                params { work: Work = Work { }; }
+                placement { work: cooperative(pool = worker); }
+                run() { while !self.draining { std::time::sleep(20ms); } }
+            }
+            fn main() { App { }; }
+        "#;
+        let s = summarize(src);
+        assert!(s.flow_loci.contains("Work"));
+        assert!(s.scratchless_longlived().contains(&named(&s, Some("Work"), "run")), "the flow's run stays long-lived");
+        assert!(
+            s.leak_sites().iter().any(|l| l.owner == named(&s, None, "payload")),
+            "payload's concat accumulates in the flow's arena: {:?}",
+            s.leak_sites()
+        );
+    }
+
+    /// The HTTP server's shape: a flow per connection whose `run()` calls
+    /// a free fn that reads with a const-bounded loop and asks a handler
+    /// through an interface. Nothing repeats without a bound, so the run
+    /// is one activation and the handler's returned struct is not an
+    /// accumulation; the same helper looping `while true` makes it one.
+    #[test]
+    fn a_flow_run_whose_helpers_loop_finitely_is_one_activation() {
+        let shape = |looping: &str| {
+            format!(
+                r#"
+                type Resp {{ body: String; }}
+                interface H {{ fn handle(n: Int) -> Resp; }}
+                locus Api {{ fn handle(n: Int) -> Resp {{ return Resp {{ body: "x" + to_string(n) }}; }} }}
+                fn serve_one(h: H, n: Int) {{ let mut i = 0; {looping} {{ let r = h.handle(n); i = i + 1; }} }}
+                locus Conn {{ params {{ h: H; n: Int = 0; }} run() {{ serve_one(self.h, self.n); }} }}
+                locus Conns {{ fn serve(h: H, n: Int) {{ Conn {{ h: h, n: n }}; }} accept(c: Conn) {{ }} release(c: Conn) {{ }} }}
+                locus Srv {{ params {{ h: H; conns: Conns = Conns {{ }}; }} run() {{ let mut n = 0; while true {{ self.conns.serve(self.h, n); n = n + 1; }} }} }}
+                fn main() {{ Srv {{ h: Api {{ }} }}; }}
+            "#
+            )
+        };
+        let bounded = summarize(&shape("while i < 4"));
+        let run = named(&bounded, Some("Conn"), "run");
+        assert!(!bounded.scratchless_longlived().contains(&run), "a finite helper keeps the run one activation");
+        assert!(
+            !bounded.leak_sites().iter().any(|l| l.owner.locus.as_deref() == Some("Api")),
+            "the handler's struct is not an accumulation: {:?}",
+            bounded.leak_sites()
+        );
+        let forever = summarize(&shape("while true"));
+        assert!(forever.scratchless_longlived().contains(&named(&forever, Some("Conn"), "run")));
+    }
 
     #[test]
     fn alloc_in_fn_called_in_unbounded_loop_is_flagged() {
