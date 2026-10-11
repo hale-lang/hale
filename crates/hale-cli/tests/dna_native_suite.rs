@@ -461,18 +461,27 @@ fn report_timings(slice: usize, timings: &mut Vec<FixtureTiming>) {
 /// A directory holding a `timeout` for the fixtures, on a machine that has
 /// none (a stock Mac: `timeout` is GNU coreutils), `None` where one is on
 /// PATH. The fixtures cap every host they start in the background with
-/// `timeout <secs> …`, sixteen sites in all; without it on PATH each one
+/// `timeout [--foreground] <secs> …`, sixteen sites in all; without it on PATH each one
 /// failed to start its host at all (GH #970).
 ///
 /// The stand-in has GNU's semantics, not merely its name, because the
 /// fixtures lean on them: `timeout` puts itself and the command in a
-/// process group of their own, and when it is signalled — a fixture
-/// stopping the host it started — or its time runs out, it signals that
-/// whole GROUP, so what the command started stops with it; 124 on expiry,
-/// 128+n when the command died of signal n. A first stand-in that merely
-/// exec'd the command under an alarm let a host's children outlive it,
-/// and two fixtures read their record still moving after "the organism is
-/// down". Perl, which every Mac ships. One per process, made once.
+/// process group of their own, and when it is signalled or its time runs
+/// out, it signals that whole GROUP, so what the command started stops
+/// with it; 124 on expiry, 128+n when the command died of signal n. A
+/// first stand-in that merely exec'd the command under an alarm let a
+/// host's children outlive it, and two fixtures read their record still
+/// moving after "the organism is down". Perl, which every Mac ships. One
+/// per process, made once.
+///
+/// `--foreground` too, which is how a fixture launches a program it
+/// stops with a signal: the command stays in the caller's group, and a
+/// signal — or the expiry's TERM — goes to the command alone, once. A
+/// Hale program that reads `draining` ends at once on a SECOND TERM
+/// (semantics.md, "Drain cascade"), and the group signal GNU sends after
+/// the one to its child is that second TERM whenever the child has
+/// already taken the first: a host ended so skipped its drain and left
+/// its organization running (dna_fixtures_slice_08, 2026-10).
 fn timeout_shim_dir() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -499,15 +508,18 @@ fn timeout_shim_dir() -> Option<PathBuf> {
 const TIMEOUT_SHIM: &str = r#"#!/usr/bin/env perl
 # GNU timeout, for a machine without coreutils (dna_native_suite.rs).
 use strict;
+my $fg = 0;
+if (@ARGV && $ARGV[0] eq '--foreground') { $fg = 1; shift @ARGV; }
 my $secs = shift @ARGV;
-setpgrp(0, 0);                        # a group of our own, as GNU does
+setpgrp(0, 0) unless $fg;             # a group of our own, as GNU does
 my $pid = fork();
 die "timeout: fork: $!
 " unless defined $pid;
 if ($pid == 0) { exec { $ARGV[0] } @ARGV; exit 127; }
 my $expired = 0;
-# signal the whole group once, never ourselves again
-sub group { my ($sig) = @_; $SIG{$_} = 'IGNORE' for qw(TERM INT HUP QUIT); kill $sig, -$$; }
+# signal the whole group once, never ourselves again; under --foreground,
+# the command alone
+sub group { my ($sig) = @_; $SIG{$_} = 'IGNORE' for qw(TERM INT HUP QUIT); kill $sig, ($fg ? $pid : -$$); }
 for my $s (qw(TERM INT HUP QUIT)) { $SIG{$s} = sub { group($s) }; }
 $SIG{ALRM} = sub { $expired = 1; group('TERM') };
 alarm $secs;
@@ -999,6 +1011,7 @@ fn dna_fixture_set_is_complete() {
             "projection_fence_test.hl",
             "projectors_test.hl",
             "prompt_receipt_test.hl",
+            "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
             "record_batch_test.hl",

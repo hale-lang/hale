@@ -22,16 +22,44 @@
 
 // ---- running a tool -----------------------------------------------
 
-// Once this process is gone, every process whose command line names a path
-// under `dir` is killed: whatever a fixture (or a tool) started under `dir`
-// — hosts, bodies, services, the tools they run — stops, whether it ended
-// passing, failing an assertion or killed (#637). A watcher in the
-// background, which names `dir` without the trailing `/` and so is not its
-// own target; returns at once.
-fn reap_on_exit(dir: String) {
-    let me = to_string(std::process::pid());
-    let r = run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + me + "\n" + dir);
+// Once this process is gone, every process under `dir` is killed: whatever
+// a fixture (or a tool) started under `dir` — hosts, bodies, services, the
+// tools they run — stops, whether it ended passing, failing an assertion
+// or killed (#637). A watcher in the background; returns at once.
+fn reap_on_exit(dir: String) { reap_after(to_string(std::process::pid()), dir); }
+
+// `reap_on_exit` for the process `pid`: once it is gone, what `reap_targets`
+// names under `dir` is killed. The root's physical spelling is taken now,
+// while it exists: by the time the watcher fires, `scratch_done` has
+// removed it and there is nothing left to resolve.
+fn reap_after(pid: String, dir: String) {
+    let r = run_tool("sh\n-c\n" + REAP_ROOTS + " (while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; " + REAP_MATCH + " | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + pid + "\n" + dir);
 }
+
+// The processes under `dir`, one pid a line: those whose command line names
+// a path under it, and those whose working directory is it or lies under
+// it. The second is the one a process whose program lives elsewhere — an
+// organization started from the build cache, in its root — is found by:
+// its command line names no scratch path, and the reaper missed it, so the
+// suite's guard found it running after its fixture had gone. `dir` is the
+// fixture's own (`scratch_root` names it by the fixture's pid), so only what
+// that fixture started is among them (GH #872). The watcher itself names
+// `dir` without the trailing `/` and runs elsewhere, so it is not.
+fn reap_targets(dir: String) -> String {
+    return trim_nl(run_tool("sh\n-c\n" + REAP_ROOTS + " " + REAP_MATCH + "\nsh\n-\n" + dir).stdout);
+}
+
+// The root two ways, as `sh` from `$2`: `d` as given, which is what a
+// command line names, and `r` as the kernel reports a working directory —
+// physical, every symlink resolved (macOS's `/tmp` is `/private/tmp`, and a
+// TMPDIR may be a link anywhere). `r` is `d` when the root cannot be
+// resolved.
+const REAP_ROOTS: String = "d=$2; r=$(cd \"$d\" 2>/dev/null && pwd -P); [ -n \"$r\" ] || r=$d;";
+
+// `reap_targets` as `sh`, over `d` and `r`: a command line is matched by
+// `d`, a working directory by either. Linux reads it from /proc (a removed
+// one reads `<path> (deleted)`); elsewhere `lsof` names it.
+const REAP_MATCH: String = "{ ps -eo pid=,args= | awk -v d=\"$d/\" '$2 != \"awk\" && index($0, d) {print $1}'; if [ -d /proc/self ]; then for c in /proc/[0-9]*/cwd; do l=$(readlink \"$c\" 2>/dev/null) || continue; case \"$l\" in \"$d\" | \"$d\"/* | \"$d (deleted)\" | \"$r\" | \"$r\"/* | \"$r (deleted)\") q=${c#/proc/}; echo \"${q%/cwd}\" ;; esac; done; else lsof -a -d cwd -Fpn 2>/dev/null | awk -v d=\"$d\" -v r=\"$r\" '/^p/ {q = substr($0, 2)} /^n/ {n = substr($0, 2); if (n == d || n == r || index(n, d \"/\") == 1 || index(n, r \"/\") == 1) print q}'; fi; } | sort -u";
 
 // ---- a body's processes, by the session they were born in -----------
 //
