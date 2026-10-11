@@ -148,6 +148,67 @@ fn paths_outside(names: String, seed: String, fenced: String) -> String {
     return out;
 }
 
+// Whether `dir` holds a `.hl` file of its own — what `hale check <dir>`
+// reads; a manifest alone (a repository's DNA configuration) is not source.
+fn holds_source(dir: String) -> Bool {
+    let n = std::io::fs::list_dir_count(dir) or 0;
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(dir, i) or "";
+        if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Whether `root` is itself a seed: it holds a `.hl` file of its own (an
+// application's organization). `hale dna init` writes a root `hale.toml`
+// in repository mode too, so the manifest does not decide it.
+fn root_is_seed(root: String) -> Bool {
+    return holds_source(root);
+}
+
+// The directory part of a root-relative path ("" for a file at the root).
+fn parent_dir(rel: String) -> String {
+    let mut cut = -1;
+    let mut i = 0;
+    while i < len(rel) {
+        if rel[i..(i + 1)] == "/" { cut = i; }
+        i = i + 1;
+    }
+    if cut < 0 { return ""; }
+    return rel[0..cut];
+}
+
+// The seeds that hold the files (root-relative, `sep`-separated), one per
+// line, each once, in order of first file. A root that is itself a seed
+// is the one seed, "." (an application's organization). Otherwise a
+// file's seed is its nearest ancestor under the root holding a
+// `hale.toml` and a `.hl` of its own, else its own directory — a repository's code sits under
+// its seeds (`api/todo.hl`), and `hale check <repository>` finds no `.hl`.
+@unbounded
+fn seeds_of_files(root: String, files: String, sep: String) -> String {
+    if root_is_seed(root) { return ".\n"; }
+    let mut out = "";
+    let mut rest = files + sep;
+    while len(rest) > 0 {
+        let at = std::str::index_of(rest, sep);
+        let file = rest[0..at];
+        rest = rest[(at + len(sep))..len(rest)];
+        if len(file) == 0 { continue; }
+        let own = parent_dir(file);
+        let mut dir = own;
+        let mut seed = "";
+        let mut found = false;
+        while !found && len(dir) > 0 {
+            if std::io::fs::file_exists(root + "/" + dir + "/hale.toml") && holds_source(root + "/" + dir) { found = true; seed = dir; } else { dir = parent_dir(dir); }
+        }
+        if !found { seed = if len(own) > 0 { own } else { "." }; }
+        if !std::str::contains("\n" + out, "\n" + seed + "\n") { out = out + seed + "\n"; }
+    }
+    return out;
+}
+
 // Whether the tree at `rev` holds a `.hl` file in the seed directory
 // itself — what `hale check <seed>` reads (GH #1156).
 fn has_hale_source(worktree: String, rev: String, seed: String) -> Bool {
@@ -251,7 +312,16 @@ locus HaleVerification {
         std::io::fs::mkdir(self.scratch) or discard;
         // the seed the mutation edits (GH #566 F3): the genome's, or the
         // organization's own
-        let seed = if len(m.seed) > 0 { m.seed } else { self.seed };
+        let mut seed = if len(m.seed) > 0 { m.seed } else { self.seed };
+        // a repository's seed is "." and its root holds no `.hl`: the
+        // candidate is judged in the seed that holds the files it changed
+        // (the first, when it changed several)
+        if (seed == "." || seed == "") && len(m.base_commit) > 0 && !root_is_seed(m.worktree) {
+            let changed = run_tool("git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + m.candidate_commit);
+            let seeds = seeds_of_files(m.worktree, trim_nl(changed.stdout), "\n");
+            let at = std::str::index_of(seeds, "\n");
+            if at > 0 { seed = seeds[0..at]; }
+        }
         let wt = self.seed_of(m.worktree, seed);
         let cand = m.candidate_commit;
         let topo = self.scratch + "/" + m.id + ".candidate.topology.json";

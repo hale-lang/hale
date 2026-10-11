@@ -165,10 +165,13 @@ hale dna secrets [dir]       every secret the organism requires, and whether the
 [Legs, hands and voice](./legs.md).
 
 ```text
-hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,
-                             renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);
+hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,
+                             renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);
                              loop --parallel N is a worker: N children, each its own holder; loop --drain ends one
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each
+hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+                             which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs
+                             (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it
 ```
 
 ### Schedules
@@ -198,6 +201,8 @@ hale dna ui [project] [--port N]
 hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)
+hale dna review <family> approve|reject
+                             decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]
                              write a verdict into the record, which a node relays; the Review decides
 hale dna route [--json] (<path>… | --diff <range>)
@@ -212,8 +217,8 @@ hale dna report [project]    file a report from the record since the last one (r
 [One task, end to end](./workflow.md).
 
 ```text
-hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>
-                             ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal
+hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>
+                             ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal
                              (on an adopted ledger it prints the request's digest: see `hale dna ledger`)
 hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`
                              under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>
@@ -229,6 +234,11 @@ hale dna retire <who>        a person retires: the handed Tasks they hold move t
 ```text
 hale dna fill <position> <holder> [project] [--as <who>]
                              ask the organization to propose who holds a position, for the Board
+hale dna ingest [project] [--at <rev>]
+                             read the repository's graph again at a commit (HEAD): what differs from the record, tools
+                             for every served operation included, proposed as one Board Review (`review ingest approve`)
+hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
+                             open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
                              propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
 ```
@@ -289,7 +299,11 @@ kind it does not know keeps walking.
 | kind | memory | what it is |
 |---|---|---|
 | `structure.observed` | record | the compiler's model of one of the application's parts, at `init` |
-| `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it |
+| `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it (also inside a ratified graph proposal's receipt) |
+| `graph.ingested` | record | `hale dna ingest` read the repository at a commit (`added`, `changed`, `retired`, the `review_id` of its proposal) |
+| `graph.requested` / `graph.proposed` / `graph.refused` | record | `hale dna ingest` asks the running organization to open its Review; opened, or not |
+| `model.rule` | record | the size a selector's Work needs, and the sizes a more specific selector may move it to (`hale dna models rule`, `task create --size`) |
+| `model.category` | record | which model fills `<mode>.<size>`, whether it returns tool calls, and its price (`hale dna models category`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
 | `ledger.adopting` / `ledger.adopted` | record | the move of the day's work into the ledger asked for, and done at a checkpoint |
@@ -425,6 +439,7 @@ kind it does not know keeps walking.
 | `decision.reported` | ledger | a decision someone else made, reported by the assignee |
 | `person.retired` | record | someone left, and who took their work |
 | `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
+| `position.requested` / `position.proposed` / `position.refused` | record | a position asked at run time (`hale dna position open`), proposed with its mandate as one Board Review, or refused |
 | `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |
 | `knowledge.retired` | record | a practice superseded by a later version |
@@ -549,7 +564,7 @@ around an application you already have.
 | `refs/dna/exchange/<identity>` | a connected record's mailbox in this one |
 | `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`, `genome`) |
 | `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
-| `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/` |
+| `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/`, a person's kept worktrees `work/<attempt>`, an ingest's checkout `ingest/<sha>/` (removed after) |
 | `.hale/node/<name>/` | on a node: its instances' pid files and artifacts |
 | memory | Postgres, schema `dna_<record identity>`: the ledger, the graph and protected evidence, under the spine's and the head's roles |
 | the nerves | one JetStream stream per organization, named after its token in capitals |

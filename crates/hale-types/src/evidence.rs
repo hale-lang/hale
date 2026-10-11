@@ -87,7 +87,12 @@ use crate::symbol::Bundle;
 // slots and interface-typed fn params already followed. Reachability
 // results moved in both directions, so v6 evidence must not be
 // replayed.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 7;
+// 8 (GH #540): an interface-typed slot's callee set narrows from every
+// conformer to the impls the program stores into it (the default and
+// every constructor literal), and stays at every conformer when a
+// write is one the walk cannot name. Reachability results move toward
+// fewer callees, so v7 evidence must not be replayed.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 8;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

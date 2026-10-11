@@ -185,6 +185,8 @@ and the rows that answer it:
 | `pressure.requested` | `PressureRaised` (`dna.pressure.raised`) | `pressure.raised`, `pressure.refused` |
 | `practice.requested` | `PracticeRequested` (`dna.practice.requested`) | `practice.proposed`, `practice.refused` |
 | `hold.requested` | `HoldRequested` (`dna.hold.requested`) | `hold.proposed`, `hold.refused` |
+| `position.requested` | `PositionOpenRequested` (`dna.position.requested`) | `position.proposed`, `position.refused` |
+| `graph.requested` | `GraphReviewRequested` (`dna.graph.requested`) | `graph.proposed`, `graph.refused` |
 | `schedule.requested` | `ScheduleRequested` (`dna.schedule.requested`) | `schedule.answered` |
 | `knowledge.node.requested`, `.binding.`, `.edge.` | `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | the matching `.proposed` or `.refused` |
 | `observation.requested` | `ExpressionObserved` (`dna.expression.observed`) | `expression.observed`, `observation.refused` |

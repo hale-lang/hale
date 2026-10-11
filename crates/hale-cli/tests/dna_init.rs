@@ -76,9 +76,12 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     ] {
         assert!(app.join(f).exists(), "init creates {f}: {out}");
     }
-    // GH #1091: the structure policy is a repository's; an application's
-    // record is not born with holes
-    assert!(!app.join("dna/org/structure.hl").exists(), "no structure policy for an application: {out}");
+    // GH #1091, seed/structure: an application's record is born with the
+    // holes its graph implies (the board, its dev and reviewer, each with a
+    // mandate: six proposals, 2 nodes and no edge for an application that
+    // serves no surface), under the one structure policy
+    assert!(app.join("dna/org/structure.hl").exists(), "the structure policy, for an application too: {out}");
+    assert!(out.contains("graph   2 node(s), 0 edge(s):") && out.contains("1 seed") && out.contains("6 proposal(s)"), "the application's graph and holes: {out}");
     let lock = std::fs::read_to_string(app.join("hale.lock")).unwrap();
     assert!(lock.contains("[dna]") && lock.contains("toolchain = "), "hale.lock pins the toolchain: {lock}");
 

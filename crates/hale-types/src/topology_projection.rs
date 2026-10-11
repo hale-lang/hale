@@ -289,6 +289,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         let display = match &sel.selector {
             SelectorForm::Named { display, .. } => display.clone(),
             SelectorForm::SeedGlob { display, .. } => display.clone(),
+            SelectorForm::Role { display, .. } => display.clone(),
         };
         group_rows
             .entry(g.display.clone())

@@ -389,6 +389,26 @@ behind the record they say how far on stderr (`memory has projected N
 of the record's M rows`) and show the graph as of that row. How positions are filled and routed is [The head and the
 face](./head.md) and [Shaping and governing it](./shaping.md).
 
+### Reading the repository again
+
+`hale dna init` reads the repository once. `hale dna ingest [--at
+<rev>]` reads it again at a commit (`HEAD` by default) with the same
+ingest, and files what differs from the graph the record states as one
+Board Review, listed under `ingest`: nodes and edges added, bodies
+changed, and what is gone as retirements.
+
+```text
+ingested 3f2a…c1: 6 added, 0 changed, 3 retired; the Board ratifies it as k:… (`hale dna review` lists it under `ingest`)
+```
+
+Every operation of a surface the repository serves is a node of kind
+`tool`, `tool:<Surface>::<op>`, naming its contract and the roles it
+requires: the tools an organization's positions may come to use, found
+in the graph. A `graph.ingested` row names the commit either way. The
+same difference at the same commit is proposed once, and once the
+Board ratifies it, reading that commit again says
+`the graph the record states is the repository's; nothing to review`.
+
 ### What a Work is told, and by which node
 
 An idea is bound to a **target**, and a target is a locus path or a node

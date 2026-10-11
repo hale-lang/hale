@@ -668,38 +668,37 @@ pub fn judge_forbid_reaches(
         if let Some(a) = avoiding {
             ok &= check_group(a, &mut diags);
             if let Some(av_gid) = a.group {
-                let members = |g: GroupId| -> BTreeSet<&EntityRef> {
-                    r.group_members
-                        .iter()
-                        .filter(|gm| gm.group == g)
-                        .filter(|gm| {
-                            matches!(
-                                gm.member,
-                                EntityRef::LocusDecl(_)
-                                    | EntityRef::Function(_)
-                            )
-                        })
-                        .map(|gm| &gm.member)
-                        .collect()
-                };
-                let av_members = members(av_gid);
+                // Overlap is judged on the executable function
+                // projections the walk uses, so a handler (a role
+                // group's `Function` member) and its enclosing locus
+                // (a named group's `LocusDecl`) are seen to share it.
+                let av_fns = &group_fns[&av_gid];
                 for set in [src, dst] {
                     let SetIr::Group(n) = set else { continue };
                     let Some(gid) = n.group else { continue };
-                    if !av_members.is_disjoint(&members(gid)) {
+                    let shared: Vec<String> = av_fns
+                        .intersection(&group_fns[&gid])
+                        .map(|f| e.functions[f.index()].name.clone())
+                        .collect();
+                    if !shared.is_empty() {
                         diags.push(Diag::ty(
                             claim_span(a.provenance),
                             format!(
                                 "claim `{}`: `avoiding {}` overlaps \
-                                 `{}` — masking an endpoint makes \
-                                 the claim weaker than it reads (a \
-                                 masked target holds vacuously; a \
-                                 masked source drops roots). Make \
-                                 the gate disjoint from the \
-                                 endpoints",
+                                 `{}` (shared: {}) — masking an \
+                                 endpoint makes the claim weaker than \
+                                 it reads (a masked target holds \
+                                 vacuously; a masked source drops \
+                                 roots). Make the gate disjoint from \
+                                 the endpoints",
                                 row.name,
                                 a.name.display,
-                                n.name.display
+                                n.name.display,
+                                shared
+                                    .iter()
+                                    .map(|n| format!("`{}`", n))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             ),
                         ));
                         ok = false;
@@ -2189,7 +2188,9 @@ pub fn judge_only_edges(
                     let Some(hl) = locus_of.get(&handler) else {
                         continue;
                     };
-                    if !dst_loci.contains(hl) {
+                    if !dst_loci.contains(hl)
+                        && !dst_fn_set.contains(&handler)
+                    {
                         continue;
                     }
                     if granted.contains(written.as_str()) {

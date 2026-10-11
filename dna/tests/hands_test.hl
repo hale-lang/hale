@@ -1,0 +1,77 @@
+// dna/tests/hands_test.hl — the hat comes with its hands.
+//
+// Every hat is composed in one place (`dna::hat_compose`), and the Work's
+// output contract decides the hands it carries: a `Patch` gives the
+// workspace tools, three of which validate the outcome; an `Assessment`
+// gives the read-only infrastructure tools and no way to change a file; a
+// contract the toolchain does not describe yet gives nothing. The hands
+// are part of the hat's body, so they move its digest, and the agent's
+// rendering names each one and says which to run before handing back.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn worn(j: dna::Journal, kind: String, owed: String, requires: String) -> dna::Hat {
+    return dna::hat_compose(j, dna::HatInputs {
+        work_id: "t1/wf1/s0/w0", task_id: "t1", step_id: "t1/wf1/s0", attempt_id: "t1/wf1/s0/w0/a0", performer_kind: kind,
+        objective: "slow the sweep to every two seconds", target: "org/api", targets: "org/api position:" + kind,
+        output_contract: owed, requires: requires, cost_ceiling: 50000, head: "abc123"
+    }, dna::ContextPackage { }, false);
+}
+
+@unbounded
+fn names(hands: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(hands);
+    while !it.done {
+        out = out + (if len(out) > 0 { " " } else { "" }) + std::json::find_string_field(it.element, "name");
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+@unbounded
+fn role_of(hands: String, name: String) -> String {
+    let mut it = std::json::array_first(hands);
+    while !it.done {
+        if std::json::find_string_field(it.element, "name") == name { return std::json::find_string_field(it.element, "role"); }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+fn check() {
+    let j = dna::MemJournal { };
+
+    let patch = worn(j, "edit", "Patch", "edit");
+    std::test::assert(patch.ok, "a Patch hat composes");
+    std::test::assert_eq_str(patch.position_id, "position:editor", "an edit is the editor's");
+    std::test::assert_eq_str(patch.effects, "idempotent uncertain", "an edit admits no effect_free performer");
+    std::test::assert_eq_str(names(patch.hands), "read edit check test fmt patch", "a Patch gives the workspace hands, in order");
+    std::test::assert_eq_str(patch.tool_grant, "read edit check test fmt patch", "the grant is the hands' names");
+    std::test::assert_eq_str(patch.validators, "check test fmt", "check, test and fmt validate a Patch");
+    std::test::assert_eq_str(role_of(patch.hands, "check"), "validate", "a validator says so");
+    std::test::assert_eq_str(role_of(patch.hands, "edit"), "act", "a hand that changes the worktree acts");
+    std::test::assert(std::str::contains(dna::hat_json(patch), "\"input_schema\": {\"type\": \"object\""), "each hand carries its arguments' schema on the wire: " + dna::hat_json(patch));
+
+    let judged = worn(j, "agent", "Assessment", "judgment");
+    std::test::assert_eq_str(names(judged.hands), "record_status record_history org_chart", "an Assessment gives the read-only infrastructure");
+    std::test::assert(!dna::word_in("edit", judged.tool_grant) && !dna::word_in("patch", judged.tool_grant), "an Assessment cannot change a file");
+    std::test::assert_eq_str(judged.validators, "", "an Assessment has no tool validators yet");
+
+    let other = worn(j, "agent", "MonthlyReport", "judgment");
+    std::test::assert_eq_str(other.hands, "[]", "an undescribed contract gives no hands");
+    std::test::assert_eq_str(other.tool_grant, "", "and grants nothing");
+
+    let same_but_judged = worn(j, "edit", "Assessment", "edit");
+    std::test::assert(patch.digest != same_but_judged.digest, "the hands are in the body: another contract is another hat");
+    std::test::assert_eq_str(worn(j, "edit", "Patch", "edit").digest, patch.digest, "composed twice at one head, one digest");
+
+    let agent = legs::render(dna::hat_json(patch), "agent");
+    std::test::assert(std::str::contains(agent, "- edit: ") && std::str::contains(agent, "- check: ") && std::str::contains(agent, "(validates the outcome)"), "the agent's brief names each hand and the validators: " + agent);
+    std::test::assert(std::str::contains(agent, "Run check test fmt before you hand the outcome back"), "and says to run them before handing back");
+    let thinking = legs::render(dna::hat_json(other), "agent");
+    std::test::assert(std::str::contains(thinking, "Hands you may use: none"), "no hands: the brief says to answer from it alone: " + thinking);
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

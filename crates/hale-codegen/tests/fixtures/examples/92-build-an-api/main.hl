@@ -4,13 +4,13 @@
 // gates what only staff may do, and answers over HTTP as well as on its
 // socket.
 
-type Order { item: String; qty: Int; }
-type Placed { order_id: Int; on_hand: Int; by: String; via: String; }
+type OrderRequest { item: String; qty: Int; }
+type OrderResponse { order_id: Int; on_hand: Int; by: String; via: String; }
 type Shipment { order_id: Int; item: String; qty: Int; }
 type Stock { on_hand: Int; orders: Int; }
-type StockQuery { item: String = ""; }
-type Restock { qty: Int; }
-type Restocked { on_hand: Int; by: String; role: String; }
+type StockRequest { item: String = ""; }
+type RestockRequest { qty: Int; }
+type RestockResponse { on_hand: Int; by: String; role: String; }
 
 topic Shipments { payload: Shipment; subject: "shop.shipment"; }
 
@@ -21,23 +21,23 @@ locus Shop {
     params { stock: Stock = Stock { on_hand: 10, orders: 0 }; }
     bus { publish Shipments; }
 
-    fn on_order(o: Order, ctx: std::api::Context) -> Placed {
-        if o.qty <= 0 || o.qty > self.stock.on_hand {
-            return Placed { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+    fn on_order(req: OrderRequest, ctx: std::api::Context) -> OrderResponse {
+        if req.qty <= 0 || req.qty > self.stock.on_hand {
+            return OrderResponse { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
         }
-        self.stock.on_hand = self.stock.on_hand - o.qty;
+        self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(o.qty) + " " + o.item + " for " + ctx.caller.name + " via " + ctx.via);
-        Shipments <- Shipment { order_id: self.stock.orders, item: o.item, qty: o.qty };
-        return Placed { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item + " for " + ctx.caller.name + " via " + ctx.via);
+        Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
+        return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
     }
 
-    fn on_restock(r: Restock, ctx: std::api::Context) -> Restocked {
-        self.stock.on_hand = self.stock.on_hand + r.qty;
-        return Restocked { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
+    fn on_restock(req: RestockRequest, ctx: std::api::Context) -> RestockResponse {
+        self.stock.on_hand = self.stock.on_hand + req.qty;
+        return RestockResponse { on_hand: self.stock.on_hand, by: ctx.caller.name, role: ctx.role };
     }
 
-    fn stock_now(q: StockQuery) -> Stock { return self.stock; }
+    fn stock_now(req: StockRequest) -> Stock { return self.stock; }
 }
 
 // The shop's operations: who may call each is the row's `requires`.

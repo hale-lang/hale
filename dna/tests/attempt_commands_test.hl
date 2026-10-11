@@ -211,6 +211,19 @@ locus App {
             std::test::assert_eq_str(hat.practices_status, "no memory", "without memory the hat says so");
         }
         std::test::assert(std::str::starts_with(hat.practices, "["), "practices are structure: " + hat.practices);
+        // a record with a long history still serves the hat: its bounds are
+        // the Work's own execution's, not the record's (the same rows behind
+        // 2100 rows of other business)
+        if !self.with_memory {
+            let long = dna::MemJournal { };
+            let mut k = 0;
+            while k < 2100 { let pad = long.append(long.revision(), "note.filed", "n" + to_string(k), "{}"); k = k + 1; }
+            k = 0;
+            while k < head_journal.revision() { let e = head_journal.read(k); let copied = long.append(long.revision(), e.kind, e.entity, e.body); k = k + 1; }
+            let aged = ops::HatReader { j: long, receipts: dna::GitReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: false };
+            let again = aged.read(ops::usage_work_of(attempt));
+            std::test::assert(again.ok && again.attempt_id == attempt, "the hat reads past 2048 rows: " + again.code + " " + again.why);
+        }
         return hat;
     }
     // ---- the whole of it, over the journal as it stands (routing 0, or adopted)

@@ -29,10 +29,10 @@ unit cent;
 type Money = quantity Int in cent;
 type OrderId = distinct Int;
 
-type PlaceOrder { symbol: String; qty: Int; limit: Money; }
-type OrderReceipt { order: OrderId; notional: Money; }
-type CancelOrder { order: OrderId; }
-type Cancelled { order: OrderId; was_open: Bool; }
+type OrderRequest { symbol: String; qty: Int; limit: Money; }
+type OrderResponse { order: OrderId; notional: Money; }
+type CancelRequest { order: OrderId; }
+type CancelResponse { order: OrderId; was_open: Bool; }
 type OrderError { code: String; reason: String; }
 
 api Public {
@@ -47,20 +47,20 @@ locus Orders {
     }
     closure position_limit { captures: open; epoch inline; }
 
-    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) {
-        if o.qty > 10000 { violate position_limit; }
+    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) {
+        if req.qty > 10000 { violate position_limit; }
         let id = OrderId(self.next);
         self.next = self.next + 1;
         self.open = self.open + 1;
-        return OrderReceipt { order: id, notional: o.limit * o.qty };
+        return OrderResponse { order: id, notional: req.limit * req.qty };
     }
 
-    fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) {
-        let n = Int(c.order);
+    fn cancel(req: CancelRequest, ctx: std::api::Context) -> CancelResponse fallible(OrderError) {
+        let n = Int(req.order);
         if n < 41 || n >= self.next {
             fail OrderError { code: "unknown_order", reason: "no order " + to_string(n) };
         }
-        return Cancelled { order: c.order, was_open: true };
+        return CancelResponse { order: req.order, was_open: true };
     }
 }
 
@@ -82,9 +82,9 @@ it to the seed's **default surface**, named after the seed:
 ```hale,fragment
 locus Orders {
     @rpc
-    fn place(o: PlaceOrder) -> OrderReceipt fallible(ClosureViolation) { … }
+    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) { … }
     @rpc(requires: [trader])
-    fn cancel(c: CancelOrder) -> Cancelled fallible(OrderError) { … }
+    fn cancel(req: CancelRequest) -> CancelResponse fallible(OrderError) { … }
 }
 ```
 
@@ -404,8 +404,8 @@ message {"order":41,"notional":125000}
 trailers grpc-status 0
 ```
 
-The same call as protobuf is the message `PlaceOrder` of the generated file
-(`symbol = 1`, `qty = 2`, `limit = 3`) and answers an `OrderReceipt`.
+The same call as protobuf is the message `OrderRequest` of the generated file
+(`symbol = 1`, `qty = 2`, `limit = 3`) and answers an `OrderResponse`.
 
 #### The `.proto`, and finding the surface
 
@@ -427,10 +427,10 @@ service Public {
   // rpc Orders::place
   // requires no role
   // a violation is the server error (ClosureViolation): status 13, no handler error
-  rpc Orders__place(PlaceOrder) returns (OrderReceipt);
+  rpc Orders__place(OrderRequest) returns (OrderResponse);
 }
 
-message PlaceOrder {
+message OrderRequest {
   optional string symbol = 1;
   optional int64 qty = 2;
   optional int64 limit = 3; // Hale: Money, q(cent)
@@ -605,8 +605,8 @@ desk of this chapter:
 $ hale api describe http://127.0.0.1:8080 --bearer t-alice
 Public@fnv1a64:a8930d6e7998e986/public  [http 127.0.0.1:8080]
 caller: bearer alice; roles: trader
-  Orders::cancel(order: Int (OrderId)) -> Cancelled, error OrderError  requires: trader
-  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderReceipt, error ClosureViolation  requires: -
+  Orders::cancel(order: Int (OrderId)) -> CancelResponse, error OrderError  requires: trader
+  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderResponse, error ClosureViolation  requires: -
 
 $ hale api call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 3 --limit 125 --bearer t-alice
 {"order":41,"notional":375}
@@ -712,14 +712,14 @@ them; over HTTP it is the name the bearer source gave the token.
 A handler that wants the caller declares a second parameter:
 
 ```hale
-type Refund { order_id: Int; amount: Int; }
-type RefundResult { ok: Bool; by: String; }
+type RefundRequest { order_id: Int; amount: Int; }
+type RefundResponse { ok: Bool; by: String; }
 
 locus Billing {
-    fn refund(r: Refund, ctx: std::api::Context) -> RefundResult {
+    fn refund(req: RefundRequest, ctx: std::api::Context) -> RefundResponse {
         // ctx.caller is who; ctx.via is the door: "unix", "http", "ws" or
         // "mcp" through a transport, "local" for a call that never crossed one
-        return RefundResult { ok: true, by: ctx.caller.name };
+        return RefundResponse { ok: true, by: ctx.caller.name };
     }
 }
 
@@ -758,7 +758,11 @@ an error at the row. What `requires` means is exactly one thing: a call
 role, and the refusal names it. It is a gate at the boundary, not a proof
 about the program's insides; a handler that calls `refund` from some other
 path is not stopped by it, and the description says so in its notes, so no
-client presents the check as more than it is. The requirement is a
+client presents the check as more than it is. A program that wants the
+inside proved states it as a claim: `group read_side = { role reader };`
+names the handlers a `reader` may call, and `forbid reaches(read_side, …)`
+is checked over the paths behind them
+([claims](../claims.md#group--the-vocabulary)). The requirement is a
 property of the row, never of the handler, so one handler shared by two
 surfaces meets each surface's own.
 

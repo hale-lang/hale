@@ -224,7 +224,10 @@ Three properties are the contract:
   `GET /.description` answer it whole).
 - **Boundary honesty.** The document carries its notes in its own
   text: `requires` is a boundary check at the serve site, never a proof
-  over internal call paths, and a request accepted runs to completion
+  over internal call paths (unless the program states one: a group
+  `{ role R }` names the handlers a holder of `R` may call, and a claim
+  over it is checked over the call and bus paths; docs/src/claims.md §
+  `group`), and a request accepted runs to completion
   whatever becomes of the caller's wait. A client renders the notes;
   it does not present a check as a certificate.
 
