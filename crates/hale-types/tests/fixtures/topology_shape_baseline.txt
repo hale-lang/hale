@@ -1577,6 +1577,7 @@ crates/hale-types/tests/claim_lowering.rs#3 5b19cc4370a72a2f
 crates/hale-types/tests/claim_lowering.rs#5 5b19cc4370a72a2f
 crates/hale-types/tests/claim_lowering.rs#6 682fe3e4b4732f10
 crates/hale-types/tests/claim_lowering.rs#7 9987dee9f11ab32a
+crates/hale-types/tests/claim_no_silent_loss.rs#2 e979b789edbd1617
 crates/hale-types/tests/claims.rs#3 f4ba76eddb2d96a0
 crates/hale-types/tests/claims.rs#7 4a1a06feb78b1e1b
 crates/hale-types/tests/claims_edges.rs#0 590768d388f3558f

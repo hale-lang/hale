@@ -83,6 +83,16 @@ pub fn require_sealed(group: &str) -> String {
     format!("require sealed(all {})", group)
 }
 
+/// `require no_silent_loss(topic T)`.
+pub fn require_no_silent_loss_topic(topic: &str) -> String {
+    format!("require no_silent_loss(topic {})", topic)
+}
+
+/// `require no_silent_loss(all G)`.
+pub fn require_no_silent_loss_group(group: &str) -> String {
+    format!("require no_silent_loss(all {})", group)
+}
+
 /// `require attributed(all C)`.
 pub fn require_attributed(class: &str) -> String {
     format!("require attributed(all {})", class)

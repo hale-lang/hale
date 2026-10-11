@@ -679,8 +679,10 @@ pub(crate) fn enumerate_clauses<'a>(
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
+                | ClaimForm::RequireNoSilentLossGroup { group }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
-                ClaimForm::Count { topic, .. } => {
+                ClaimForm::Count { topic, .. }
+                | ClaimForm::RequireNoSilentLossTopic { topic } => {
                     topic.segments.first().map(|s| &s.name)
                 }
                 // Names no group: a universal over the whole world.
@@ -721,6 +723,16 @@ fn render_form(f: &ClaimForm) -> String {
         }
         ClaimForm::RequireAttributed { class_name } => {
             format!("require attributed(all {})", class_name.name)
+        }
+        ClaimForm::RequireNoSilentLossTopic { topic } => {
+            hale_model::claim_form::require_no_silent_loss_topic(
+                &topic.display(),
+            )
+        }
+        ClaimForm::RequireNoSilentLossGroup { group } => {
+            hale_model::claim_form::require_no_silent_loss_group(
+                &group.name,
+            )
         }
         ClaimForm::ForbidReaches {
             src,
