@@ -340,10 +340,14 @@ the [Knowledge commands](#knowledge-commands).
 | `AttemptAllowance` | `Commands::ask_allowance` | `Allowance { request_id, attempt_id, holder, token: Int }` | `position` |
 | `FrictionFile` | `Commands::file_friction` | `Friction { request_id, record_head, position, attempt_id, text }` | `position` |
 | `CommandLookup` | `Commands::lookup` | `Lookup { request_id }` | any authenticated peer |
+| `PositionOpen` | `Commands::open_position` | `PositionOpening { request_id, record_head, position, text, mandate, under }` | `position` |
+| `HoldFill` | `Commands::fill` | `HoldFill { request_id, record_head, position, holder }` | `position` |
+| `BatchApply` | `Commands::apply_batch` | `BatchApplication { request_id, record_head, steps, pack }` (a batch's text, one step a line) | `position` |
+| `BatchPreview` | `Commands::preview_batch` | `BatchDraft { steps }`, answered `BatchPreview` (below) | any authenticated peer |
 
 The caller is the socket peer: `dna.unix.member` maps its uid to a
-person, and rows record `local/<person>`. `TaskCreate` and
-`CommandLookup` need no role — any authenticated peer may call them;
+person, and rows record `local/<person>`. `TaskCreate`,
+`CommandLookup` and `BatchPreview` need no role — any authenticated peer may call them;
 the other calls are refused `unauthorized` (naming what the row requires)
 unless the mapped person holds the named role. Every reply is a `CommandReply { ok, code, application_id, head,
 revision, receipt }`, its receipt exactly what an HTTP command receipt
@@ -355,6 +359,47 @@ to the surface's HTTP exposure, on its own port (below).
 command profile, and `read_only` is always `true` (HTTP itself writes
 nothing); it carries `api{transport,socket,http}` instead, and what a
 session may send is its describe slice.
+
+**Every mutation is a head command; the UI is a client** of the generated
+surface. A change to the organization's structure is not a second code
+path: `Commands::open_position`, `Commands::fill` and `Commands::apply_batch`
+write the rows `hale dna position open`, `hale dna fill` and `hale dna apply`
+write (`dna/operations/structure_command.hl`) — `position.requested`,
+`hold.requested`, and a batch's receipts and rows (its members'
+`knowledge.proposed`, the family's `review.requested`, `batch.proposed`,
+`graph.requested`) — in the caller's person's name, under the row id the CLI
+mints for the same ask at the same head, the command's fields after the
+CLI's in the request row (`batch.proposed` for a batch). The organization
+answers them whoever sent them, and the Board decides through
+`Commands::verdict`. The head checks first what the CLI checks first: a
+position the record states or proposes is not opened again, a fill names a
+position the record states or proposes and a person it knows (the CLI's
+`fill` refusals, same words), and a batch is planned whole
+(`dna::batch_plan`). A refusal there is a receipt (`state: "refused"`,
+`receipt.structure.why`) and no row; the same batch still pending is
+answered `already_proposed` with the Review it awaits. A command is
+conditioned on `record_head` (`stale_subject` once the Record moved) and
+refused `commands_unsupported` once the Record's ledger is adopted, as
+raising work is. The receipt's `structure` branch reads back `{ state,
+request_id, review_id, event_id, why, warning }`: `requested` until the
+organization answers the request row, then `proposed` (with the Review) or
+`refused` (with why). `vacate` has no command of its own: it is a one-step
+batch, `vacate <position> <holder>`, through `Commands::apply_batch`.
+
+`Commands::preview_batch` is a read, ungated like `Commands::lookup`: the
+batch planned against the Record's head and not proposed, as data — `{ ok,
+code, why, application_id, head, revision, steps, before, after, added,
+removed, unchanged, pending }`. `ok` is whether `apply_batch` would propose
+it there (else `why`), `code` is `""` when the Record was read; `before` and
+`after` are the org chart's lines (`position <id>`, `mandate <id>`,
+`holds <id> <holder>`, `practice <name>`), `added`/`removed`/`unchanged`
+the lines it changes and keeps, and `pending` the Review the same steps
+still await. It writes nothing and asks nothing of a provider, so the
+standalone head answers it too; a UI previews, then applies with the
+`head` the preview names as `record_head`. It lives on `HeadCommands`
+rather than the HTTP reads because a client of the generated surface — a
+leg, `hale dna work`, the habitat UI — reaches it as it reaches every
+command, with the same generated types.
 
 `hale dna work`, the legs client, speaks this socket: every verb a
 `call` on its topic, the reads (`/applications`, `/capabilities`,

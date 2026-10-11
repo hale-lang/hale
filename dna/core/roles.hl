@@ -228,6 +228,8 @@ locus HoldsReader {
                 rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
                 let body = std::json::find_string_field(row, "body");
                 if std::json::find_string_field(row, "kind") == "graph.edge" && std::json::find_string_field(body, "kind") == "holds" { self.add(std::json::find_string_field(row, "entity"), body); }
+                // a hold left (a batch's `vacate`, a re-ingest's retirement)
+                if std::json::find_string_field(row, "kind") == "graph.retired" { self.drop(std::json::find_string_field(row, "entity"), false); }
             }
             return;
         }

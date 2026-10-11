@@ -17,10 +17,10 @@ directory as an optional argument and default to the current one.
 [DNA, the building block](./dna.md).
 
 ```text
-hale dna init [app-dir] [--no-library]
+hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]
                              attach the DNA to an existing application; the record starts with the language and system
                              nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the
-                             library, not the practices)
+                             library, not the practices); --with proposes a pack from the toolchain's nursery as one batch beside them
 hale dna new <name> [--no-library]
                              a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
@@ -202,7 +202,9 @@ hale dna board [project]     the Board's queue: what needs its verdict, escalati
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)
 hale dna review <family> approve|reject
-                             decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)
+                             decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, changes, ingest (a library family is one Review for all its ideas)
+hale dna review all approve|reject
+                             every group with a pending Review, in the order a new organization is ratified, each waited for before the next
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]
                              write a verdict into the record, which a node relays; the Review decides
 hale dna route [--json] (<path>… | --diff <range>)
@@ -239,6 +241,22 @@ hale dna ingest [project] [--at <rev>]
                              for every served operation included, proposed as one Board Review (`review ingest approve`)
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
+hale dna apply <file> [--dry-run] [--as <who>]
+                             several changes to the structure (`open`, `fill`, `vacate`, `practice`, `assign`, `unassign`, `close`, `merge`, `split`,
+                             `expose`, `depend`, `externalize`, `internalize`, `retire-practice`) as one Board Review, applied all or nothing
+                             (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing
+hale dna vacate <position> <holder> [--dry-run] [--as <who>]
+                             a holder leaves a position: a one-step batch, one Board Review (`review changes approve`)
+hale dna pack list [--from <dir|git-url[#rev]>]
+hale dna pack show <name> [--set <param>=<value>]… [--from …]
+hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]
+hale dna pack retire <name> [--dry-run] [--as <who>] [project]
+hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]
+hale dna nursery list [project]
+                             a nursery the Board trusts, proposed as one batch step; the ones it trusts (a git nursery's
+                             packs are adopted only once it is trusted)
+                             packs from a nursery (the toolchain's, a directory, or a git repository at a revision): a batch
+                             with blanks, adopted as one Board Review named for the pack (`review changes approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
                              propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
 ```
@@ -439,6 +457,7 @@ kind it does not know keeps walking.
 | `decision.reported` | ledger | a decision someone else made, reported by the assignee |
 | `person.retired` | record | someone left, and who took their work |
 | `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
+| `batch.proposed` | record | a batch `hale dna apply` proposed as one Review in `changes`, with its steps; `graph.requested` under the same id asks the organization to open it |
 | `position.requested` / `position.proposed` / `position.refused` | record | a position asked at run time (`hale dna position open`), proposed with its mandate as one Board Review, or refused |
 | `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |

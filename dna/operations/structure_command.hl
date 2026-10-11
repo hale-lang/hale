@@ -1,0 +1,393 @@
+// dna/operations/structure_command.hl — a change to the organization's
+// structure through the head's commands: `dna.position.open@1`,
+// `dna.hold.fill@1` and `dna.batch.apply@1`.
+//
+// Every mutation is a head command, and the UI is a client: a structural
+// change asked of the head is not a second code path. Each command's effect
+// fact is the row its CLI verb writes — `position.requested` as `hale dna
+// position open` writes it, `hold.requested` as `hale dna fill` does, and a
+// batch's receipts and rows as `hale dna apply` files them (the members'
+// `knowledge.proposed`, the family's `review.requested`, `batch.proposed`
+// and `graph.requested`) — in the proposer's name, so the host beside the
+// organization relays it and the organization answers it exactly as it
+// answers the CLI's. The command fields ride in the same flat object of the
+// request row (`batch.proposed` for a batch) and are the command's durable
+// admission; the organization's answer (`position.proposed`,
+// `hold.proposed`, `graph.proposed`, or their `.refused`) is a separate
+// fact, re-derived from the Record on every read. The row's own request id
+// is the one the CLI mints, from the head the command was prepared against
+// and what it asks, so the same ask at the same head is the same row.
+//
+// What the head checks first is what the CLI checks first, over the same
+// state (`held_state_of`, moved here from the host so both read it one way):
+// a position the record already states or proposes is not opened again, a
+// hold is filled only on a position the record states or proposes by a
+// person it knows, and a batch is planned whole (`dna::batch_plan`) and
+// refused with its why. A refusal is a receipt with the reason and no row.
+import "../core" as dna;
+
+// ---- what the record says of positions and holders ---------------------
+
+// The rows a hold's state is read from, with who wrote each: a git journal,
+// or the head's pinned snapshot (`GovernanceJournal`).
+interface AuthoredRows {
+    fn revision() -> Int;
+    fn read(i: Int) -> dna::Event;
+    fn author_of(i: Int) -> String;
+}
+
+// What the record says of positions and holders, in its order: every
+// position a graph row or a pending or ratified proposal names, less those
+// retired; every holds edge the same way, `<position>\t<holder>` per line;
+// the persons it knows — who wrote a row in their own name, and the owners
+// map's members — and those it retired.
+// `equipment` is `<position>\t<role>, <role>` per position the record or a
+// proposal states with API roles (the standard equipment of its node).
+type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String = "\n"; retired: String = "\n"; equipment: String = ""; }
+
+// A name the organism writes as, never a person.
+fn held_machine(who: String) -> Bool { return len(who) == 0 || dna::word_in(who, "dna host spine org ledger board hale") || std::str::starts_with(who, "hale dna"); }
+
+@unbounded
+fn held_row(kind: String, entity: String, body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+@unbounded
+fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
+    let out = HeldState { };
+    let mut refused = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.declined" || e.kind == "knowledge.refused" || e.kind == "knowledge.retired" { refused = refused + e.entity + "\n"; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        let who = j.author_of(i);
+        if !held_machine(who) && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
+        if e.kind == "person.retired" { out.retired = out.retired + e.entity + "\n"; }
+        if e.kind == "graph.retired" {
+            out.positions = std::str::replace(out.positions, "\n" + e.entity + "\n", "\n");
+            if std::str::starts_with(e.entity, "holds:") {
+                let bar = std::str::index_of(e.entity, "|");
+                if bar > 0 { out.holds = std::str::replace(out.holds, "\n" + e.entity[6..bar] + "\t" + e.entity[(bar + 1)..len(e.entity)] + "\n", "\n"); }
+            }
+        }
+        let mut rows = "";
+        if e.kind == "graph.node" || e.kind == "graph.edge" { rows = held_row(e.kind, e.entity, e.body); }
+        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" && !std::str::contains(refused, "\n" + e.entity + "\n") {
+            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            rows = rows + dna::proposal_rows(receipts.read(raw));
+        }
+        let mut rest = rows;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let row = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let entity = std::json::find_string_field(row, "entity");
+            if std::json::find_string_field(row, "kind") == "graph.retired" { out.positions = std::str::replace(out.positions, "\n" + entity + "\n", "\n"); }
+            if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") {
+                out.positions = out.positions + entity + "\n";
+                let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(std::json::find_field_raw(std::json::find_string_field(row, "body"), "equipment"), "roles")), false);
+                if len(fitted) > 0 { out.equipment = out.equipment + entity + "\t" + fitted + "\n"; }
+            }
+            if std::str::starts_with(entity, "holds:") {
+                let bar = std::str::index_of(entity, "|");
+                let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
+                // a hold left (a vacate) takes the pair out; any other row states it
+                if std::json::find_string_field(row, "kind") == "graph.retired" { out.holds = std::str::replace(out.holds, "\n" + pair + "\n", "\n"); }
+                else if !std::str::contains(out.holds, "\n" + pair + "\n") { out.holds = out.holds + pair + "\n"; }
+            }
+        }
+        i = i + 1;
+    }
+    // an organization's members are persons the record knows too (GH #1123)
+    let mut pairs = out.holds;
+    while len(pairs) > 0 {
+        let nl = std::str::index_of(pairs, "\n");
+        let pair = pairs[0..nl];
+        pairs = pairs[(nl + 1)..len(pairs)];
+        let tab = std::str::index_of(pair, "\t");
+        let who = pair[(tab + 1)..len(pair)];
+        if tab > 0 && std::str::starts_with(pair, "organization:") && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
+    }
+    return out;
+}
+
+// The position a process's other seat is: `api/dev` for `api/reviewer`,
+// and the reverse; "" for any other position. Asked once a fill, and once
+// per admission attempt of `Commands::fill` (at most eight).
+@unbounded
+fn hold_sibling(position: String) -> String {
+    if std::str::ends_with(position, "/dev") { return position[0..(len(position) - 4)] + "/reviewer"; }
+    if std::str::ends_with(position, "/reviewer") { return position[0..(len(position) - 9)] + "/dev"; }
+    return "";
+}
+
+// Why `holder` may not hold `position` over what the record holds ("" when
+// they may); `warning` set when it is only a warning — the same holder as
+// the process's other seat, under `dna.trust = local`.
+type FillCheck { why: String = ""; warning: String = ""; }
+
+// Once a fill, and once per admission attempt of `Commands::fill` (at most
+// eight).
+@unbounded
+fn fill_check_of(st: HeldState, trust: String, position: String, holder: String) -> FillCheck {
+    if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position or organization the record states or proposes" }; }
+    if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name or an organization, with no `|`" }; }
+    // GH #1123: an organization owns a position; a person joins an
+    // organization, known to the record by that membership
+    if std::str::starts_with(holder, "organization:") {
+        if !std::str::starts_with(position, "position:") { return FillCheck { why: "an organization holds a position, not another organization" }; }
+        if !std::str::contains(st.positions, "\n" + holder + "\n") { return FillCheck { why: "`" + holder + "` is no organization the record states or proposes" }; }
+        let at = std::str::index_of(st.holds, "\n" + position + "\torganization:");
+        if at >= 0 {
+            let line = st.holds[(at + 1)..len(st.holds)];
+            let owner = line[(len(position) + 1)..std::str::index_of(line, "\n")];
+            if owner != holder { return FillCheck { why: position + " is owned by " + owner[13..len(owner)] + " already; a position has one owning organization" }; }
+        }
+        return FillCheck { };
+    }
+    let joining = std::str::starts_with(position, "organization:");
+    if held_machine(holder) { return FillCheck { why: holder + " is a name the organism writes as, not a person" }; }
+    if !joining && !std::str::contains(st.persons, "\n" + holder + "\n") { return FillCheck { why: holder + " is no person this record knows (no row in their name, and no organization's member)" }; }
+    if std::str::contains(st.retired, "\n" + holder + "\n") { return FillCheck { why: holder + " retired from this organism (person.retired)" }; }
+    let sibling = hold_sibling(position);
+    if len(sibling) > 0 && std::str::contains(st.holds, "\n" + sibling + "\t" + holder + "\n") {
+        let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
+        if trust != "local" { return FillCheck { why: "refused: " + why + " (dna.trust = " + trust + ")" }; }
+        return FillCheck { warning: why + " — allowed under dna.trust = local, where one person holds every role" };
+    }
+    return FillCheck { };
+}
+
+// The node an opening's `under` names: a node id as given, or a bare name
+// as the graph states it (a seed, a work part, a position, a process, in
+// that order); a name the graph does not state goes as given, for the
+// organization to refuse.
+@unbounded
+fn under_node_of(j: dna::Journal, receipts: dna::Receipts, positions: String, under: String) -> String {
+    if len(under) == 0 || std::str::contains(under, ":") { return under; }
+    let nodes = dna::record_graph(j, receipts).nodes;
+    let mut kinds = "seed work position process ";
+    while len(kinds) > 0 {
+        let sp = std::str::index_of(kinds, " ");
+        let id = graph_node_id(kinds[0..sp], under);
+        kinds = kinds[(sp + 1)..len(kinds)];
+        if dna::record_graph_has(nodes, id) || std::str::contains(positions, "\n" + id + "\n") { return id; }
+    }
+    return under;
+}
+
+// The id a request row is filed under, as the CLI mints it
+// (`request_digest_id`): the prefix and twelve hex digits of the digest of
+// the head it is asked at and what it asks.
+fn structure_request_id(prefix: String, head: String, request: String) -> String {
+    return prefix + dna::digest_of(head + "\n" + request)[7..19];
+}
+
+// The trust a record declares (`dna.trust`), `local` when it declares none.
+fn record_trust_of(location: String) -> String {
+    if len(location) == 0 { return "local"; }
+    let t = dna::GitRecord { repo: location }.setting("trust");
+    return if len(t) == 0 { "local" } else { t };
+}
+
+// ---- the commands --------------------------------------------------------
+
+// What a structure command reads back: the request row's own id (which the
+// organization answers), where it landed, and the answer — `requested`
+// until the organization proposes it (`proposed`, with the Review the Board
+// decides) or refuses it (`refused`, with why); `refused` too, with no row,
+// when the head refused it, and `already_proposed` when the same batch
+// still awaits the Board (`review_id` names that Review). `warning` is what
+// the CLI prints on stderr for the same fill.
+type StructureCommandOutcome { state: String = ""; request_id: String = ""; review_id: String = ""; event_id: String = ""; why: String = ""; warning: String = ""; }
+type StructureFact { valid: Bool = false; context: GovernanceContext = GovernanceContext { }; command: GovernanceCommand = GovernanceCommand { }; grant: GovernanceGrant = GovernanceGrant { }; head: String = ""; request_id: String = ""; }
+
+const STRUCTURE_FORMAT: String = "dna.structure-command/1";
+
+locus StructureCommandCodec {
+    params { }
+    fn known(operation: String, version: String) -> Bool { return version == "1" && (operation == "dna.position.open" || operation == "dna.hold.fill" || operation == "dna.batch.apply"); }
+    // Every other variant leaves the structure fields empty.
+    fn absent(c: GovernanceCommand) -> Bool { return c.mandate == "" && c.under == "" && c.steps == "" && c.pack == ""; }
+    // A seat named as the CLI names it: `position:<name>` (or, for a fill,
+    // `organization:<name>`), one word with no `|`.
+    fn seat(id: String, organizations: Bool) -> Bool {
+        let common = GovernanceCommandCodec { };
+        let prefixed = std::str::starts_with(id, "position:") || (organizations && std::str::starts_with(id, "organization:"));
+        return prefixed && common.bounded(id, 256, true, false) && !std::str::contains(id, " ") && !std::str::contains(id, "|") && !std::str::contains(id, "\t");
+    }
+    fn valid(context: GovernanceContext, c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        if !self.known(c.operation, c.operation_version) || !common.context_valid(context) || c.application_id != context.application_id || c.position_id != "org" { return false; }
+        if !common.bounded(c.request_id, 128, true, false) || !common.bounded(c.record_head, 256, true, false) || c.subject_digest != c.record_head { return false; }
+        if c.rationale != "" || c.expected_review_state != "" || c.verdict != "" || c.comment != "" || c.expected_assignee != "" || c.source_head != "" || c.dependency_source != ""
+            || c.dependency_digest != "" || c.source_text != "" || c.outcome != "" || c.to != "" || c.ask_kind != "" { return false; }
+        if c.operation == "dna.position.open" {
+            return c.target_kind == "dna.position" && self.seat(c.target_id, false) && common.bounded(c.text, 2048, false, false)
+                && common.bounded(c.mandate, 8192, true, true) && len(std::str::trim(c.mandate)) > 0 && common.bounded(c.under, 256, false, false) && !std::str::contains(c.under, " ")
+                && c.new_assignee == "" && c.steps == "" && c.pack == "";
+        }
+        if c.operation == "dna.hold.fill" {
+            return c.target_kind == "dna.position" && self.seat(c.target_id, true) && common.bounded(c.new_assignee, 256, true, false) && !std::str::contains(c.new_assignee, "|")
+                && c.text == "" && c.mandate == "" && c.under == "" && c.steps == "" && c.pack == "";
+        }
+        return c.target_kind == "dna.record" && c.target_id == context.application_id && common.bounded(c.steps, 65536, true, true) && common.bounded(c.pack, 1024, false, false)
+            && c.text == "" && c.mandate == "" && c.under == "" && c.new_assignee == "";
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
+    fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
+        if !self.valid(context, c) { return ""; }
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"" + STRUCTURE_FORMAT + "\"");
+        self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
+        self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id); self.field(b, "record_head", c.record_head);
+        self.field(b, "text", c.text); self.field(b, "mandate", c.mandate); self.field(b, "under", c.under); self.field(b, "holder", c.new_assignee);
+        self.field(b, "steps", c.steps); self.field(b, "pack", c.pack);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
+    }
+    fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        // A 64 KiB batch can expand sixfold as JSON escapes.
+        if len(document) > 524288 || !syntax.valid(document) || !fields.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_kind target_id record_head text mandate under holder steps pack", "")
+            || common.string(document, "format") != STRUCTURE_FORMAT || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let head = common.string(document, "record_head");
+        let c = GovernanceCommand { application_id: common.string(document, "application_id"), request_id: common.string(document, "request_id"), operation: common.string(document, "operation"),
+            operation_version: common.string(document, "operation_version"), position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"),
+            target_id: common.string(document, "target_id"), subject_digest: head, record_head: head, text: common.string(document, "text"), mandate: common.string(document, "mandate"),
+            under: common.string(document, "under"), new_assignee: common.string(document, "holder"), steps: common.string(document, "steps"), pack: common.string(document, "pack") };
+        return if self.valid(context, c) && self.canonical(context, c) == document { c } else { GovernanceCommand { } };
+    }
+    // No grant key: the surface's `requires: [position]` is the gate (the
+    // exposure holds the caller to it), as a leg's verbs are gated; what the
+    // change may be is the organization's to propose and the Board's to
+    // decide.
+    fn grant(context: GovernanceContext) -> GovernanceGrant {
+        let common = GovernanceCommandCodec { };
+        if !common.context_valid(context) { return GovernanceGrant { }; }
+        return GovernanceGrant { allowed: true, authority: context.principal_name, basis: "dna.structure/1:position-holder:" + context.principal_mode };
+    }
+    // The request row's kind, and the kinds that answer it.
+    fn row_kind(operation: String) -> String { return if operation == "dna.position.open" { "position.requested" } else if operation == "dna.hold.fill" { "hold.requested" } else { "batch.proposed" }; }
+    fn proposed_kind(operation: String) -> String { return if operation == "dna.position.open" { "position.proposed" } else if operation == "dna.hold.fill" { "hold.proposed" } else { "graph.proposed" }; }
+    fn refused_kind(operation: String) -> String { return if operation == "dna.position.open" { "position.refused" } else if operation == "dna.hold.fill" { "hold.refused" } else { "graph.refused" }; }
+    // The row's own id, as the CLI mints it for the same ask by the same
+    // person at the same head (a batch's from its normalized steps).
+    fn request_id_of(c: GovernanceCommand, head: String, by: String) -> String {
+        if c.operation == "dna.position.open" { return structure_request_id("p", head, c.target_id + "\n" + c.mandate + "\n" + by); }
+        if c.operation == "dna.hold.fill" { return structure_request_id("h", head, c.target_id + "\n" + c.new_assignee + "\n" + by); }
+        return structure_request_id("b", head, dna::batch_steps(c.steps).steps + by);
+    }
+    // The command's own fields, after the CLI's in the same flat object.
+    fn command_fields(b: std::json::Builder, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) {
+        let common = GovernanceCommandCodec { };
+        b.string_field("command_format", STRUCTURE_FORMAT); b.string_field("command_id", common.identity(context, c.request_id));
+        b.string_field("command_payload", self.canonical(context, c)); b.string_field("command_fingerprint", self.fingerprint(context, c));
+        b.string_field("command_authority", grant.authority); b.string_field("command_authority_basis", grant.basis); b.string_field("command_record_head", head);
+    }
+    fn grant_ok(grant: GovernanceGrant) -> Bool { let common = GovernanceCommandCodec { }; return grant.allowed && common.bounded(grant.authority, 256, true, false) && common.bounded(grant.basis, 2048, true, false); }
+    // `position.requested` with the keys `hale dna position open` writes, in
+    // its order and spelling, then the command's.
+    fn open_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, request_id: String, under: String) -> String {
+        if !self.valid(context, c) || c.operation != "dna.position.open" || !self.grant_ok(grant) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", request_id); b.string_field("position", c.target_id); b.string_field("text", c.text); b.string_field("mandate", c.mandate);
+        b.string_field("under", under); b.string_field("by", context.principal_name);
+        self.command_fields(b, context, c, grant, head);
+        b.end_object(); return b.result();
+    }
+    // `hold.requested` with the keys `hale dna fill` writes, then the command's.
+    fn fill_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, request_id: String) -> String {
+        if !self.valid(context, c) || c.operation != "dna.hold.fill" || !self.grant_ok(grant) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", request_id); b.string_field("position", c.target_id); b.string_field("holder", c.new_assignee); b.string_field("by", context.principal_name);
+        self.command_fields(b, context, c, grant, head);
+        b.end_object(); return b.result();
+    }
+    // `batch.proposed` as `dna::batch_filing` writes it (`cli`), the
+    // command's keys spliced in before its last brace.
+    fn batch_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, cli: String) -> String {
+        if !self.valid(context, c) || c.operation != "dna.batch.apply" || !self.grant_ok(grant) || len(cli) < 2 || !std::str::ends_with(cli, "}") { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        self.command_fields(b, context, c, grant, head);
+        b.end_object();
+        let extra = b.result();
+        return cli[0..(len(cli) - 1)] + ", " + extra[1..len(extra)];
+    }
+    // A request row this head wrote, verified: the command it carries, its
+    // keys exactly the CLI's and the command's, the row's own id the one the
+    // CLI mints for that ask at that head, and every byte rebuilt.
+    fn decode_fact(e: dna::Event) -> StructureFact {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        let commanded = "command_format command_id command_payload command_fingerprint command_authority command_authority_basis command_record_head";
+        if len(e.body) > 1048576 || !syntax.valid(e.body) || common.string(e.body, "command_format") != STRUCTURE_FORMAT { return StructureFact { }; }
+        let payload = common.string(e.body, "command_payload"); if len(payload) > 524288 || !syntax.valid(payload) { return StructureFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let grant = GovernanceGrant { allowed: true, authority: common.string(e.body, "command_authority"), basis: common.string(e.body, "command_authority_basis") };
+        let head = common.string(e.body, "command_record_head");
+        if !self.valid(context, c) || !self.grant_ok(grant) || e.kind != self.row_kind(c.operation) || head != c.record_head { return StructureFact { }; }
+        let request_id = self.request_id_of(c, head, context.principal_name);
+        if e.entity != request_id { return StructureFact { }; }
+        if c.operation == "dna.position.open" {
+            if !fields.fields(e.body, "request_id position text mandate under by " + commanded, "") || head != e.prev || e.body != self.open_fact(context, c, grant, head, request_id, common.string(e.body, "under")) { return StructureFact { }; }
+        } else if c.operation == "dna.hold.fill" {
+            if !fields.fields(e.body, "request_id position holder by " + commanded, "") || head != e.prev || e.body != self.fill_fact(context, c, grant, head, request_id) { return StructureFact { }; }
+        } else {
+            // the batch's members land first, so the row is after its head
+            let cut = std::str::index_of(e.body, ", \"command_format\": ");
+            if cut < 0 { return StructureFact { }; }
+            let cli = e.body[0..cut] + "}";
+            let pack = len(std::json::find_field_raw(cli, "pack")) > 0;
+            if !fields.fields(e.body, "digest review_id by steps " + (if pack { "pack " } else { "" }) + commanded, "") || dna::native_json_string(cli, "by") != context.principal_name
+                || dna::native_json_string(cli, "steps") != dna::batch_steps(c.steps).steps || dna::native_json_string(cli, "pack") != c.pack
+                || dna::native_json_string(cli, "review_id") != dna::knowledge_review_id(dna::native_json_string(cli, "digest")) || e.body != self.batch_fact(context, c, grant, head, cli) { return StructureFact { }; }
+        }
+        return StructureFact { valid: true, context: context, command: c, grant: grant, head: head, request_id: request_id };
+    }
+    fn receipt_of(context: GovernanceContext, c: GovernanceCommand, command_id: String, fingerprint: String, state: String, reason: String, o: StructureCommandOutcome) -> GovernanceReceipt {
+        return GovernanceReceipt { command_id: command_id, request_id: c.request_id, application_id: context.application_id, operation: c.operation, operation_version: c.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind, target_id: c.target_id,
+            subject_digest: c.subject_digest, fingerprint: fingerprint, proposal_state: "", state: state, reason: reason, review_id: o.review_id, structure: o };
+    }
+    // A refusal at the head: a receipt with the reason, and no row.
+    // `already_proposed` names the Review the same batch still awaits.
+    fn refused(context: GovernanceContext, c: GovernanceCommand, state: String, why: String, review_id: String) -> GovernanceReceipt {
+        let common = GovernanceCommandCodec { };
+        return self.receipt_of(context, c, common.identity(context, c.request_id), self.fingerprint(context, c), "refused", why, StructureCommandOutcome { state: state, review_id: review_id, why: why });
+    }
+    // The recorded command, re-derived from the record on every read: the
+    // organization's answer to the request row, if any (`a.entity` is the
+    // row's own id).
+    @unbounded
+    fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let c = a.command; let context = a.context;
+        let mut state = if a.unknown { "unknown" } else { "requested" };
+        // a batch names its Review as it is proposed
+        let mut review = if c.operation == "dna.batch.apply" && !a.unknown { dna::native_json_string(a.native_body, "review_id") } else { "" };
+        let mut why = "";
+        if !a.unknown {
+            let proposed = self.proposed_kind(c.operation); let refused = self.refused_kind(c.operation);
+            let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };
+            while i < j.revision() {
+                let e = j.read(i);
+                if e.entity == a.entity && e.kind == proposed && state == "requested" { state = "proposed"; review = dna::native_json_string(e.body, "review_id"); }
+                else if e.entity == a.entity && e.kind == refused && state == "requested" { state = "refused"; why = if std::str::starts_with(e.body, "{") { dna::native_json_string(e.body, "why") } else { e.body }; }
+                i = i + 1;
+            }
+        }
+        return self.receipt_of(context, c, a.command_id, a.fingerprint, if a.unknown { "outcome_unknown" } else { "succeeded" }, "",
+            StructureCommandOutcome { state: state, request_id: if a.unknown { "" } else { a.entity }, review_id: review, event_id: if a.unknown { "" } else { a.event_id }, why: why });
+    }
+}

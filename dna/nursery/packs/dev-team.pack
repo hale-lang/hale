@@ -1,0 +1,8 @@
+# dev-team: a dev and a reviewer for one part.
+#   hale dna pack apply dev-team --set part=api [--set dev=<who>] [--set reviewer=<who>]
+open {part}/dev | Decides: how {part} is built, within its contracts and the practices in force. May not: approve its own changes, or change a contract it does not own. Cites: the contracts {part} serves and consumes, and the practices in force. Escalates: a contract change, or a disagreement with its reviewer, to the Board.
+open {part}/reviewer | Decides: whether a change to {part} is ready to merge. May not: write the change it reviews. Cites: the change, its tests and evidence, and the practices in force. Escalates: a change it cannot judge, or one that crosses a contract, to the Board.
+practice {part}/reviewed-before-merge | Every change to {part} is approved by {part}/reviewer before it merges; the dev who wrote it never approves it.
+practice {part}/tests-with-the-change | A change to {part} carries the tests that show it does what it says, and runs green before review.
+? fill {part}/dev {dev}
+? fill {part}/reviewer {reviewer}

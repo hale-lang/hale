@@ -66,6 +66,14 @@ type GovernanceCommand {
     hat_watermark: Int = -1;
     prompt_digest: String = "";
     renderer: String = "";
+    // A change to the organization's structure (structure_command.hl): a
+    // position opened with its mandate under a part, or a batch's steps
+    // and the pack it came from; a hold's holder is `new_assignee`. Every
+    // other variant requires all four empty.
+    mandate: String = "";
+    under: String = "";
+    steps: String = "";
+    pack: String = "";
 }
 
 // What a claim or an outcome command reads back (GH #946): the attempt

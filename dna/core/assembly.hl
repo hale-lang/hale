@@ -1919,6 +1919,11 @@ locus Dna {
         b.end_object();
         if !append_once(self.journal, "graph.proposed", r.request_id, b.result()) { return; }
         self.tell_routes(r.review_id + "\n");
+        // a batch (`hale dna apply`) asks the same way a re-ingest does
+        if native_json_string(self.knowledge_record.request_of(r.review_id), "group") == "changes" {
+            self.board.notify("changes", r.by + " proposes a batch of changes to the organization: the Board's to ratify whole as " + r.review_id);
+            return;
+        }
         self.board.notify("ingest", r.by + " filed the repository's graph again: the Board's to ratify as " + r.review_id);
     }
     // A generic knowledge command carries the exact native document it means
