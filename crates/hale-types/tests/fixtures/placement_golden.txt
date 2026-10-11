@@ -690,7 +690,7 @@ row	~.conns.handler	__StdHttpResponder	pool:web	inherited
 row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Api	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
-shared	dynamic	sites in the seed #6247a882
+shared	dynamic	sites in the seed #a47be89d
 
 == crates/hale-cli/tests/claims_artifact_unknowns.rs#255ad151
 root	App	the entry
@@ -2803,8 +2803,10 @@ row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Routes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in the seed
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
 == crates/hale-codegen/tests/http_server_concurrent.rs#a34912ce
@@ -2814,7 +2816,7 @@ hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
 hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 shared	App@literal1.web	__StdHttpServer #c2faedd3
-shared	dynamic	sites in the seed #6247a882
+shared	dynamic	sites in the seed #a47be89d
 
 == crates/hale-codegen/tests/http_server_concurrent.rs#d69c042a
 root	App	the entry
@@ -2823,7 +2825,7 @@ hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
 hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 shared	App@literal1.web	__StdHttpServer #c2faedd3
-shared	dynamic	sites in the seed #6247a882
+shared	dynamic	sites in the seed #a47be89d
 
 == crates/hale-codegen/tests/http_server_memory.rs#b0d4feca
 hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
@@ -2836,7 +2838,7 @@ row	~.conns.handler	__StdHttpResponder	main	inherited
 row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Big	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
-shared	dynamic	sites in the seed #a7b2491b
+shared	dynamic	sites in the seed #90ace0ba
 
 == crates/hale-codegen/tests/http_server_memory.rs#cc9dbddc
 root	App	the entry
@@ -2852,7 +2854,7 @@ row	~.conns.handler	__StdHttpResponder	pool:web	inherited
 row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Big	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
-shared	dynamic	sites in the seed #6247a882
+shared	dynamic	sites in the seed #a47be89d
 
 == crates/hale-codegen/tests/http_split_write.rs#74f0dac9
 hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
@@ -2865,7 +2867,7 @@ row	~.conns.handler	__StdHttpResponder	main	inherited
 row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Echo	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
-shared	dynamic	sites in the seed #a7b2491b
+shared	dynamic	sites in the seed #90ace0ba
 
 == crates/hale-codegen/tests/interface_dispatch.rs#16afad7a
 row	Hello@main1	Hello	main	default
@@ -2979,7 +2981,7 @@ row	~.conns.handler	__StdHttpResponder	main	inherited
 row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Routes	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
-shared	dynamic	sites in the seed #a7b2491b
+shared	dynamic	sites in the seed #90ace0ba
 
 == crates/hale-codegen/tests/library_shape_http_json.rs#17880498
 row	Counter@main1	Counter	main	default
@@ -4133,6 +4135,63 @@ shared	App@literal1.zero	__StdIoTcpConnections #7f78c9f3
 dynamic	__StdIoTcpConnFlow	on pool:zero
 dynamic	__StdIoTcpConnInline	on pool:zero
 dynamic	__StdIoTcpStream	on pool:zero
+
+== crates/hale-codegen/tests/tcp_substrate.rs#32b14019
+root	App	the entry
+domain	pinned:App@literal1.acc
+domain	pinned:App@literal1.web
+hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	App@literal1	App	main	default
+shared	App@literal1.acc	__StdIoTcpAcceptor #1ef3cccf
+-- App@literal1.web	__StdHttpServer
+row	~	__StdHttpServer	pinned:~	entry	off owner
+row	~.conns	__StdIoTcpConnections	pinned:~	inherited
+row	~.conns.flows	__StdIoTcpFlows	pinned:~	inherited
+row	~.conns.handler	__StdHttpResponder	pinned:~	inherited
+row	~.conns.handler.handler	<hole>	pinned:~	inherited
+row	~.handler	Tag	pinned:~	inherited
+row	~.relay	__StdIoTcpRelay	pinned:~	inherited
+-- dynamic	sites in the seed
+dynamic	__StdHttpResponder	on pinned:App@literal1.web
+dynamic	__StdIoTcpConnFlow	on pinned:App@literal1.web
+dynamic	__StdIoTcpConnInline	on pinned:App@literal1.web
+dynamic	__StdIoTcpConnections	on pinned:App@literal1.web
+dynamic	__StdIoTcpStream	on pinned:App@literal1.web
+
+== crates/hale-codegen/tests/tcp_substrate.rs#de4e80a1
+root	App	the entry
+domain	pool:web	async_io
+hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	App@literal1	App	main	default
+-- App@literal1.web	__StdHttpServer
+row	~	__StdHttpServer	pool:web	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:web	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
+row	~.conns.handler	__StdHttpResponder	pool:web	inherited
+row	~.conns.handler.handler	<hole>	pool:web	inherited
+row	~.handler	Tag	pool:web	inherited
+row	~.relay	__StdIoTcpRelay	pool:web	inherited
+shared	dynamic	sites in the seed #a47be89d
+
+== crates/hale-codegen/tests/tcp_substrate.rs#d6900579
+root	App	the entry
+domain	pool:c	async_io
+domain	pool:a	async_io
+row	App@literal1	App	main	default
+-- App@literal1.acc	__StdIoTcpAcceptor
+row	~	__StdIoTcpAcceptor	pool:a	entry	off owner
+row	~.relay	__StdIoTcpRelay	pool:a	inherited
+-- App@literal1.conns	__StdIoTcpConnections
+row	~	__StdIoTcpConnections	pool:c	entry	off owner
+row	~.flows	__StdIoTcpFlows	pool:c	inherited
+row	~.handler	__StdHttpResponder	pool:c	inherited
+row	~.handler.handler	Tag	pool:c	inherited
+-- dynamic	sites in the seed
+dynamic	__StdIoTcpConnFlow	on pool:c
+dynamic	__StdIoTcpConnInline	on pool:c
+dynamic	__StdIoTcpStream	on pool:c
 
 == crates/hale-codegen/tests/term_primitives.rs#3ddf52f2
 row	__StdTermRawMode@main1	__StdTermRawMode	main	default
@@ -7862,8 +7921,10 @@ dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unr
 shared	App@literal1.server	__StdHttpServer #ca00e9fa
 -- dynamic	sites in api/tests
 dynamic	Cases	on main
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api__tests__fixture___main__Fixture	on main
@@ -8694,7 +8755,7 @@ row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	App@literal1.wrong_scheme	__lib_dna__core___models__AnthropicMessages #d1670536
 shared	dynamic	sites in core #1c221828
 shared	dynamic	sites in core/pond/pq #39e83e0a
-shared	dynamic	sites in tests #29d9a907
+shared	dynamic	sites in tests #b738f58e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/apply_test.hl
@@ -9642,8 +9703,10 @@ shared	dynamic	sites in core #e174c0d1
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in oidc #f5f825c3
 -- dynamic	sites in tests
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
@@ -10330,8 +10393,10 @@ shared	App@literal1.server	__StdHttpServer #ca00e9fa
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in oidc #f5f825c3
 -- dynamic	sites in tests
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on main|pool:io|unknown (no instance)
 dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -10406,7 +10471,7 @@ row	~.handler	FakeOpenAi	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	dynamic	sites in core #1c221828
 shared	dynamic	sites in core/pond/pq #39e83e0a
-shared	dynamic	sites in tests #29d9a907
+shared	dynamic	sites in tests #b738f58e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/optimize_test.hl
@@ -12175,8 +12240,10 @@ dynamic	WorkflowWire	on pool:io
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
@@ -12488,8 +12555,10 @@ dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declarati
 dynamic	PracticeReviewCommands	on main
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__lib_dna__api___knowledge_memory__LocalKnowledgeCommands	on main
 dynamic	__lib_dna__api___organization_status__NoOrganizationRuntime	on main
@@ -12852,9 +12921,11 @@ dynamic	HeadJournal	on main|pool:io|unknown (`body_alive` passed as a value)
 dynamic	HeadOutcomes	on main|pool:io
 dynamic	PushSlots	on main
 dynamic	Registry	on main|pinned:HeadMain@literal1.watch|pool:io
+dynamic	__StdHttpResponder	on pool:io|pool:senses
 dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpStream	on pinned:HeadMain@literal1.watch|pool:io|unknown (no instance)
+dynamic	__StdIoTcpConnInline	on pool:io|pool:senses
+dynamic	__StdIoTcpConnections	on pool:io|pool:senses
+dynamic	__StdIoTcpStream	on pinned:HeadMain@literal1.watch|pool:io|pool:senses|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (`body_alive` passed as a value)
 dynamic	__StdSecretCredential	on pinned:HeadMain@literal1.watch|pool:io
 dynamic	__lib_dna__api___commands__CommandWire	on main|pool:io
@@ -12932,8 +13003,10 @@ shared	dynamic	sites in api #567e099a
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 -- dynamic	sites in core
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
@@ -12986,8 +13059,10 @@ shared	dynamic	sites in api #567e099a
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdJsonBuilder	on main
 -- dynamic	sites in core
@@ -13132,6 +13207,10 @@ dynamic	GitHubForge	on main
 dynamic	Node	on main
 dynamic	OrganizationRollbackCodec	on main
 dynamic	Projection	on main
+dynamic	__StdHttpResponder	on pool:senses
+dynamic	__StdIoTcpConnInline	on pool:senses
+dynamic	__StdIoTcpConnections	on pool:senses
+dynamic	__StdIoTcpStream	on pool:senses
 dynamic	__StdJsonBuilder	on main|unknown (no caller)
 dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___forge__NoForge	on main
@@ -13678,7 +13757,11 @@ row	Node@literal1.admin	Admin	pinned:Node@literal1.admin	entry	off owner
 row	Node@literal1.session	Session	pinned:Node@literal1.session	entry	off owner
 -- dynamic	sites in the seed
 dynamic	AdminApi	on pinned:Node@literal1.admin
+dynamic	__StdHttpResponder	on pinned:Node@literal1.admin
 dynamic	__StdHttpServer	on pinned:Node@literal1.admin
+dynamic	__StdIoTcpConnInline	on pinned:Node@literal1.admin
+dynamic	__StdIoTcpConnections	on pinned:Node@literal1.admin
+dynamic	__StdIoTcpStream	on pinned:Node@literal1.admin
 
 == dna/tests/projectors
 root	Projector	the entry
@@ -16208,11 +16291,6 @@ dynamic	__StdSecretCredential	on main
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`rows` passed as a value)
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 
-== shared sites in tests #29d9a907
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpStream	on pool:io
-
 == shared sites in tests #513052a6
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -16255,6 +16333,13 @@ dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 
+== shared sites in tests #b738f58e
+dynamic	__StdHttpResponder	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+
 == shared sites in the seed #16819ea8
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiUnixPeer	on pool:__api_unix
@@ -16264,11 +16349,6 @@ dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
 dynamic	__StdIoTcpConnInline	on pool:one|pool:zero
 dynamic	__StdIoTcpStream	on pool:one|pool:zero
-
-== shared sites in the seed #6247a882
-dynamic	__StdIoTcpConnFlow	on pool:web
-dynamic	__StdIoTcpConnInline	on pool:web
-dynamic	__StdIoTcpStream	on pool:web
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
@@ -16280,6 +16360,13 @@ dynamic	Shared	on main
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdProcessChild	on main
 
+== shared sites in the seed #90ace0ba
+dynamic	__StdHttpResponder	on main
+dynamic	__StdIoTcpConnFlow	on main
+dynamic	__StdIoTcpConnInline	on main
+dynamic	__StdIoTcpConnections	on main
+dynamic	__StdIoTcpStream	on main
+
 == shared sites in the seed #90d92044
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
@@ -16289,10 +16376,12 @@ dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 dynamic	B	on main
 dynamic	I	on main
 
-== shared sites in the seed #a7b2491b
-dynamic	__StdIoTcpConnFlow	on main
-dynamic	__StdIoTcpConnInline	on main
-dynamic	__StdIoTcpStream	on main
+== shared sites in the seed #a47be89d
+dynamic	__StdHttpResponder	on pool:web
+dynamic	__StdIoTcpConnFlow	on pool:web
+dynamic	__StdIoTcpConnInline	on pool:web
+dynamic	__StdIoTcpConnections	on pool:web
+dynamic	__StdIoTcpStream	on pool:web
 
 == shared sites in the stdlib #017b2abb
 dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)

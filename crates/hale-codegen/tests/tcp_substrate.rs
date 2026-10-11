@@ -249,8 +249,15 @@ const TWO_SERVERS: &str = r#"
             println("refused " + err.closure);
         }
         run() {
+            // the pinned servers bind in their births, on their own threads:
+            // wait for both (or for two seconds, when one is refused)
+            let mut waited = 0;
+            while (self.a.listen_fd < 0 || self.b.listen_fd < 0) && waited < 200 {
+                std::time::sleep(10ms);
+                waited = waited + 1;
+            }
             println("ports " + to_string(std::io::tcp::__local_port(self.a.listen_fd)) + " " + to_string(std::io::tcp::__local_port(self.b.listen_fd)));
-            println("names " + self.a.name + " " + self.b.name);
+            println("names " + self.a.listener + " " + self.b.listener);
             while !self.draining { std::time::sleep(20ms); }
         }
     }
@@ -370,4 +377,170 @@ fn distinct_explicit_names_both_serve() {
     answered_by(p.ports.0, "a", 3);
     answered_by(p.ports.1, "b", 3);
     assert_eq!(listening(p.child.id()), 2);
+}
+
+// A live Acceptor named "web" with no consumer, and a Server on the same
+// port, named NAME, whose bind fails and whose supervisor absorbs it
+// (review of #1508, round 2). The failed server holds no subscription on
+// any route, so the acceptor's catch-unmatched closes every connection:
+// with NAME "web" its consumer used to sit on web#0 unarmed, shadow the
+// fallback, and leave every accepted descriptor open.
+const SHADOW: &str = r#"
+    locus Tag {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: "served" };
+        }
+    }
+    main locus App {
+        params {
+            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            acc: std::io::tcp::Acceptor = std::io::tcp::Acceptor { port: self.port, name: "web", ready_signal: "ready" };
+            web: std::http::Server = std::http::Server { port: self.port, name: "NAME", handler: Tag { } };
+        }
+        placement { acc: pinned; web: pinned; }
+        on_failure(s: std::http::Server, err: ClosureViolation) {
+            println("refused " + err.closure);
+        }
+        run() {
+            while !self.draining { std::time::sleep(20ms); }
+            std::io::tcp::stop("web");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+/// Read `child`'s stdout until `want` (or 20 s).
+fn wait_line(lines: &std::sync::mpsc::Receiver<String>, want: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Ok(l) = lines.recv_timeout(Duration::from_millis(100)) {
+            if l.trim() == want {
+                return;
+            }
+        }
+    }
+    panic!("never printed `{want}`");
+}
+
+fn spawn_lines(bin: &Path, port: u16) -> (Child, std::sync::mpsc::Receiver<String>) {
+    let mut child = Command::new(bin).arg(port.to_string()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    (child, rx)
+}
+
+fn shadow_case(name: &str) {
+    let bin = build(&format!("tcp_substrate_shadow_{name}"), &SHADOW.replace("NAME", name));
+    let port = ports::free_port();
+    let (child, lines) = spawn_lines(&bin, port);
+    let running = Running { child, port };
+    wait_line(&lines, "ready");
+    wait_line(&lines, "refused listen_failed");
+    let fds = || std::fs::read_dir(format!("/proc/{}/fd", running.child.id())).map(|d| d.count()).unwrap_or(0);
+    let before = fds();
+    for _ in 0..40 {
+        let t0 = Instant::now();
+        assert_eq!(get(port), None, "no consumer: the acceptor closes the connection");
+        assert!(t0.elapsed() < Duration::from_secs(2), "closed at once, not left open");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let after = fds();
+    assert!(after <= before + 2, "{name}: unclaimed connections leak no descriptor: {before} -> {after}");
+    let _ = std::fs::remove_file(&bin);
+    let (status, stderr) = running.term();
+    assert!(status.success(), "{name}: {status:?}\n{stderr}");
+}
+
+#[test]
+fn a_server_whose_birth_failed_leaves_no_subscription_on_a_live_route() {
+    // the shadowing case: the failed server would have taken the live
+    // acceptor's route; and the control, on a route of its own
+    shadow_case("web");
+    shadow_case("other");
+}
+
+// A server or an acceptor whose bind fails on a bad host; the supervisor
+// corrects the host and restarts it, and the restart binds afresh.
+const RESTART_SERVER: &str = r#"
+    locus Tag {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: "served" };
+        }
+    }
+    main locus App {
+        params {
+            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            web: std::http::Server = std::http::Server { host: "256.0.0.1", port: self.port, name: "web", handler: Tag { }, ready_signal: "ready" };
+        }
+        placement { web: cooperative(pool = web) where async_io; }
+        on_failure(s: std::http::Server, err: ClosureViolation) {
+            println("refused " + err.closure);
+            s.host = "127.0.0.1";
+            restart(s) for 1;
+        }
+        run() {
+            while !self.draining { std::time::sleep(20ms); }
+            std::io::tcp::stop("web");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+const RESTART_ACCEPTOR: &str = r#"
+    locus Tag {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: "served" };
+        }
+    }
+    main locus App {
+        params {
+            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            conns: std::io::tcp::Connections = std::io::tcp::Connections { listener: "acc", handler: std::http::Responder { handler: Tag { } } };
+            acc: std::io::tcp::Acceptor = std::io::tcp::Acceptor { host: "256.0.0.1", port: self.port, name: "acc", ready_signal: "ready" };
+        }
+        placement { conns: cooperative(pool = c) where async_io; acc: cooperative(pool = a) where async_io; }
+        on_failure(a: std::io::tcp::Acceptor, err: ClosureViolation) {
+            println("refused " + err.closure);
+            a.host = "127.0.0.1";
+            restart(a) for 1;
+        }
+        run() {
+            while !self.draining { std::time::sleep(20ms); }
+            std::io::tcp::stop("acc");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn restart_case(tag: &str, source: &str) {
+    let bin = build(tag, source);
+    let port = ports::free_port();
+    let (child, lines) = spawn_lines(&bin, port);
+    let running = Running { child, port };
+    wait_line(&lines, "refused listen_failed");
+    wait_line(&lines, "ready");
+    for _ in 0..3 {
+        assert_eq!(get(port), Some((200, "served".to_string())), "{tag}: the restart bound the corrected host and serves");
+    }
+    // Not a SIGTERM exit: the restart runs the listener's `run()` on the
+    // supervisor's thread, so the main locus's `run()` (which would stop
+    // it) does not start — the runtime's restart placement, not the
+    // substrate's; the harness kills the process.
+    drop(running);
+    let _ = std::fs::remove_file(&bin);
+}
+
+#[test]
+fn a_restarted_server_binds_afresh() {
+    restart_case("tcp_substrate_restart_server", RESTART_SERVER);
+}
+
+#[test]
+fn a_restarted_acceptor_binds_afresh() {
+    restart_case("tcp_substrate_restart_acceptor", RESTART_ACCEPTOR);
 }

@@ -47,15 +47,30 @@ fn __tcp_route(listener: String, shard: Int) -> String {
     return listener + "#" + to_string(shard);
 }
 
-// A listener's default name: its host and the port its socket is bound
-// to — the one a port-0 bind was given — so two listeners never share a
-// default name (two on one explicit host:port cannot both bind).
-fn __tcp_bound_name(host: String, port: Int, listen_fd: Int) -> String {
+// The name a listener goes by: the one it was given, or its host and the
+// port its socket is bound to — the one a port-0 bind was given — so two
+// listeners never share a default name (two on one explicit host:port
+// cannot both bind).
+fn __tcp_listener_name(name: String, host: String, port: Int, listen_fd: Int) -> String {
+    if len(name) > 0 {
+        return name;
+    }
     let bound = std::io::tcp::__local_port(listen_fd);
     if bound < 0 {
         return host + ":" + to_string(port);
     }
     return host + ":" + to_string(bound);
+}
+
+// A listener's socket, bound at each birth: a restart binds afresh (a
+// supervisor that corrected the host, or a port that came free), closing
+// the socket a previous birth left (its name leaves with it). -1 when it
+// cannot bind.
+fn __tcp_rebind(old_fd: Int, host: String, port: Int) -> Int {
+    if old_fd >= 0 {
+        std::io::tcp::__close_fd(old_fd);
+    }
+    return std::io::tcp::__listen_socket(host, port);
 }
 
 // The listener's end of the bus: it relays each connection and closes the
@@ -117,12 +132,14 @@ locus __StdIoTcpRelay {
 /// A listener: binds `host:port` at birth, accepts, and relays each
 /// connection as a `std::io::tcp::Accepted` to the consumers subscribed to
 /// its route (`std::io::tcp::Connections { listener: <name> }`). It serves
-/// nothing itself. `name` is its address in the process: the consumers'
-/// key and `std::io::tcp::stop(name)`'s argument. Its default is the host
-/// and the port the socket is bound to (`127.0.0.1:<port>`, the kernel's
-/// pick for `port: 0`), so default names never collide; an explicit name
-/// another live listener holds is the `name_taken` violation at birth,
-/// with the socket closed before anything runs.
+/// nothing itself. Its name is its address in the process: the consumers'
+/// key and `std::io::tcp::stop(name)`'s argument. `name` gives it; left
+/// empty, the name is the host and the port the socket is bound to
+/// (`127.0.0.1:<port>`, the kernel's pick for `port: 0`), so default names
+/// never collide. The name it goes by is `listener`, set at birth. An
+/// explicit name another live listener holds is the `name_taken` violation
+/// at birth, with the socket closed before anything runs. Birth binds, so
+/// `restart(acceptor)` binds afresh.
 /// `shards: K` deals connections round-robin over K consumers (`shard: 0`
 /// .. `K - 1`). Place it `pinned` (a blocking accept on a thread of its
 /// own) or on a `where async_io` pool (a parked one); on a classic pool its
@@ -131,15 +148,16 @@ locus __StdIoTcpAcceptor {
     params {
         host: String = "127.0.0.1";
         port: Int = 0;
-        // bound here, before the name, so the default name is the bound
-        // address; -1 when it cannot bind (`listen_failed` at birth)
-        listen_fd: Int = std::io::tcp::__listen_socket(self.host, self.port);
-        name: String = __tcp_bound_name(self.host, self.port, self.listen_fd);
+        // "" = the bound address
+        name: String = "";
         shards: Int = 1;
         // -1 = until stopped; >= 0 caps the accepts (tests)
         max_accepts: Int = -1;
         ready_signal: String = "";
-        relay: __StdIoTcpRelay = __StdIoTcpRelay { name: self.name, shards: self.shards };
+        // the name it goes by, and its socket: both set at birth
+        listener: String = "";
+        listen_fd: Int = -1;
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { shards: self.shards };
     }
     closure listen_failed {
         captures: host, port;
@@ -152,14 +170,19 @@ locus __StdIoTcpAcceptor {
         epoch inline;
     }
     birth() {
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.relay.armed = false;
         if self.listen_fd < 0 {
             violate listen_failed;
         }
-        if std::io::tcp::__name_listener(self.name, self.listen_fd) == 0 {
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
             std::io::tcp::__close_fd(self.listen_fd);
             self.listen_fd = -1;
             violate name_taken;
         }
+        self.relay.name = self.listener;
+        self.relay.sent = 0;
         self.relay.armed = true;
         if len(self.ready_signal) > 0 {
             println(self.ready_signal);
@@ -410,9 +433,11 @@ locus __StdHttpResponder {
 /// concurrently, a coroutine each (at most `max_connections` at once);
 /// anywhere else one at a time. Calls to `handler.handle` never run in
 /// parallel: they share the server's thread and interleave only where a
-/// handler parks. `name` (default `host:<bound port>`, unique; an
-/// explicit one another listener holds is `name_taken` at birth) is its
-/// address for `std::io::tcp::stop(name)`; `max_accepts` bounds the loop for tests;
+/// handler parks. Its name (`name`, or left empty `host:<bound port>`,
+/// unique; the name it goes by is `listener`; an explicit one another
+/// listener holds is `name_taken` at birth) is its address for
+/// `std::io::tcp::stop(name)`. Birth binds, so `restart(server)` binds
+/// afresh; `max_accepts` bounds the loop for tests;
 /// `ready_signal` prints when the socket is up; `shutdown()` / `stop` end
 /// the accept, and run() returns once the connections in flight are
 /// answered (a drain, never a cut).
@@ -433,18 +458,18 @@ locus __StdHttpServer {
         ready_signal: String = "";
         // On an async_io pool, the most connections served at once.
         max_connections: Int = 256;
-        // bound here, before the name, so the default name is the bound
-        // address (unique even for `port: 0`); -1 when it cannot bind
-        // (`listen_failed` at birth)
-        listen_fd: Int = std::io::tcp::__listen_socket(self.host, self.port);
-        name: String = __tcp_bound_name(self.host, self.port, self.listen_fd);
-        // the listener's end of the bus, and the consumer on its route,
-        // both armed by birth() once the name is this server's
-        relay: __StdIoTcpRelay = __StdIoTcpRelay { name: self.name };
+        // "" = the bound address (unique even for `port: 0`)
+        name: String = "";
+        // the name it goes by, and its socket: both set at birth
+        listener: String = "";
+        listen_fd: Int = -1;
+        // the listener's end of the bus, named and armed by birth(); the
+        // consumer is built by birth() on the route of the final name —
+        // until then an inert one on no route, so a server whose birth
+        // failed holds no subscription that matches a live listener's
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
         conns: __StdIoTcpConnections = __StdIoTcpConnections {
-            listener: self.name,
             handler: __StdHttpResponder { handler: self.handler },
-            max_connections: self.max_connections,
             armed: false
         };
     }
@@ -463,16 +488,33 @@ locus __StdHttpServer {
         epoch inline;
     }
     birth() {
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.relay.armed = false;
+        if self.conns.armed {
+            // a rebirth: the consumer a previous birth built leaves its
+            // route before this birth can fail
+            self.conns = __StdIoTcpConnections {
+                handler: __StdHttpResponder { handler: self.handler },
+                armed: false
+            };
+        }
         if self.listen_fd < 0 {
             violate listen_failed;
         }
-        if std::io::tcp::__name_listener(self.name, self.listen_fd) == 0 {
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
             std::io::tcp::__close_fd(self.listen_fd);
             self.listen_fd = -1;
             violate name_taken;
         }
+        self.relay.name = self.listener;
+        self.relay.sent = 0;
         self.relay.armed = true;
-        self.conns.armed = true;
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdHttpResponder { handler: self.handler },
+            max_connections: self.max_connections
+        };
         if len(self.ready_signal) > 0 {
             println(self.ready_signal);
         }
@@ -511,7 +553,7 @@ locus __StdHttpServer {
     fn hand_over(conn: Int) {
         self.relay.sent = self.relay.sent + 1;
         self.conns.take(__StdIoTcpAccepted {
-            listener: self.name,
+            listener: self.listener,
             route: self.conns.route,
             fd: conn,
             seq: self.relay.sent
