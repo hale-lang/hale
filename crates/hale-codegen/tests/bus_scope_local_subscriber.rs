@@ -289,3 +289,132 @@ fn scope_local_subscribers_churn_clean_under_asan() {
     assert!(got(&stdout, "async_a") > 0 && got(&stdout, "async_b") > 0, "{stdout}");
     assert_eq!(got(&stdout, "classic"), 0, "{stdout}");
 }
+
+// A queued cell belongs to the subscriber incarnation it was posted for,
+// not to its address (review of #1510). `once(1)` publishes to its
+// scope-local subscriber and returns without parking, so the cell is
+// still queued when the subscriber dissolves; `once(2)` builds the next
+// one in the same stack slot, registers it and parks. The address used
+// to be forgotten from the dead set at that registration, so the key-1
+// cell ran on the key-2 instance, past its key filter.
+const REUSED_SLOT: &str = r#"
+    type Task { key: Int = 0; n: Int = 0; }
+    topic Tasks { payload: Task; subject: "slot.tasks"; keyed_by key; }
+    locus Peer {
+        params { key: Int = 0; got: Int = 0; }
+        bus { subscribe Tasks as on_msg where key == self.key; }
+        fn on_msg(t: Task) {
+            self.got = self.got + 1;
+            println("peer key=" + to_string(self.key) + " saw n=" + to_string(t.n));
+        }
+    }
+    locus Host {
+        bus { publish Tasks; }
+        fn once(k: Int) {
+            let p = Peer { key: k };
+            Tasks <- Task { key: k, n: k };
+            if k == 2 { std::time::sleep(50ms); }
+            println("once " + to_string(k) + " got=" + to_string(p.got));
+        }
+        run() {
+            self.once(1);
+            self.once(2);
+        }
+    }
+    main locus App {
+        params { h: Host = Host { }; }
+        placement { h: PLACEMENT; }
+        run() { std::time::sleep(300ms); println("main done"); }
+    }
+    fn main() { App { }; }
+"#;
+
+/// Build `src` placed as `placement` and run it twice, with the arena's
+/// chunk recycling on (the default) and off: each output.
+fn run_placed(tag: &str, src: &str, placement: &str) -> Vec<String> {
+    let bin = harness::unique_bin(tag);
+    build_opts::build_source(&src.replace("PLACEMENT", placement), &bin, &build_opts::options())
+        .expect("build");
+    let mut outs = Vec::new();
+    for no_chunk_pool in ["0", "1"] {
+        let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", no_chunk_pool).output().expect("run");
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            out.status.success(),
+            "{tag} (LOTUS_NO_CHUNK_POOL={no_chunk_pool}): {:?}\nstdout:\n{stdout}\nstderr:\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("main done"), "{tag}: {stdout}");
+        outs.push(stdout);
+    }
+    let _ = std::fs::remove_file(&bin);
+    outs
+}
+
+#[test]
+fn a_reused_stack_slot_never_runs_its_predecessor_s_cells() {
+    for out in run_placed("scope_local_sub_reused_async", REUSED_SLOT, "cooperative(pool = aio) where async_io") {
+        assert!(!out.contains("peer key=2 saw n=1"), "the key-1 cell ran on the key-2 subscriber:\n{out}");
+        assert!(out.contains("peer key=2 saw n=2"), "{out}");
+        assert!(out.contains("once 2 got=1"), "{out}");
+    }
+    for out in run_placed("scope_local_sub_reused_classic", REUSED_SLOT, "cooperative(pool = cls)") {
+        assert!(!out.contains("saw"), "{out}");
+    }
+}
+
+// The same through recycled heap storage: a recognition parent with one
+// fixed cell hands a terminated child's cell to the next child it
+// accepts. The first child terminates on its first task; a "go" cell
+// queued behind that task accepts the second child into the freed cell,
+// and a second task for key 1, queued behind the "go", reaches the
+// address the second child (key 2) now holds.
+const RECYCLED_CELL: &str = r#"
+    type Task { key: Int = 0; n: Int = 0; }
+    type Go { k: Int = 0; }
+    topic Tasks { payload: Task; subject: "cell.tasks"; keyed_by key; }
+    locus Peer {
+        params { key: Int = 0; }
+        bus { subscribe Tasks as on_msg where key == self.key; }
+        fn on_msg(t: Task) {
+            println("peer key=" + to_string(self.key) + " saw key=" + to_string(t.key) + " n=" + to_string(t.n));
+            if t.n < 0 { terminate; }
+        }
+    }
+    locus Host : projection recognition(cap=1, fixed_cell) {
+        bus {
+            publish Tasks;
+            publish "cell.go" of type Go;
+            subscribe "cell.go" as on_go of type Go;
+        }
+        accept(c: Peer) { }
+        @unbounded
+        fn on_go(g: Go) { Peer { key: g.k }; }
+        run() {
+            Peer { key: 1 };
+            Tasks <- Task { key: 1, n: -1 };
+            "cell.go" <- Go { k: 2 };
+            Tasks <- Task { key: 1, n: 7 };
+        }
+    }
+    main locus App {
+        params { h: Host = Host { }; }
+        placement { h: PLACEMENT; }
+        run() { std::time::sleep(300ms); println("main done"); }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_recycled_child_cell_never_runs_its_predecessor_s_cells() {
+    for (tag, placement) in [
+        ("recycled_cell_async", "cooperative(pool = aio) where async_io"),
+        ("recycled_cell_classic", "cooperative(pool = cls)"),
+    ] {
+        for out in run_placed(tag, RECYCLED_CELL, placement) {
+            assert!(out.contains("peer key=1 saw key=1 n=-1"), "{tag}:\n{out}");
+            assert!(!out.contains("peer key=2"), "{tag}: a key-1 cell ran on the key-2 child:\n{out}");
+        }
+    }
+}

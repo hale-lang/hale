@@ -307,11 +307,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
-    // A registration at a reused address takes the address out of the
-    // dead set, so a cell queued for the quarantined subscriber that
-    // lived there runs on the new one. Deferred: a queued cell has to
-    // name the registration it was posted for, not only its address.
-    ("l19_reused_address_queued_cell.hl", "R33", "heard-by-new"),
     // A yield inside a handler on a pinned thread runs the owner's
     // handler that reclaims the suspended one's subscriber, which no hold
     // keeps. Deferred: a pinned handler holds its subscriber (or the

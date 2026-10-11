@@ -6870,6 +6870,13 @@ typedef struct lotus_bus_cell {
      * post; it sits in the padding before
      * `payload_inline`, so the cell's size is unchanged. */
     void  *run_ticket;
+    /* GH #703: the generation of the subscriber incarnation the cell was
+     * built for (`lotus_bus_entry_t.gen`, through `g_bus_pending_gen`);
+     * 0 for a cell built for no registration. Materialization drops the
+     * cell unless that incarnation is the live one at `self_ptr`
+     * (`bus_cell_stale`): storage is reused, and a later subscriber at
+     * the same address must never run the old one's cells. */
+    uint64_t sub_gen;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
      * bus payload struct, which may carry an i128 / Decimal (align-16)
      * field. A subscriber handler reads such a field with an aligned
@@ -6947,13 +6954,20 @@ static __thread void *g_bus_pending_wire_deser = NULL;
  * recording, or a structural cell) stamps 0 = unidentified. */
 static __thread uint64_t g_bus_pending_rec_pub = 0;
 
+/* GH #703: TLS side-channel feeding lotus_bus_cell_t.sub_gen, the
+ * rec_pub pattern again: every per-entry post sets it to the entry's
+ * incarnation generation around its post and puts back what it found
+ * (a post can drain inline, and a handler then publish), and every
+ * cell builder copies it. 0 outside a post: a structural cell. */
+static __thread uint64_t g_bus_pending_gen = 0;
+
 /* Materialize a wire cell on its OWNER thread: deserialize the wire
  * payload into the subscriber's arena and replace the cell payload
  * with the handler-ready struct bytes. Defined after the TLS wire
  * buffers below; declared here for the drain paths. Returns 0 when
  * the cell must be dropped (deserialize failure). */
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c);
-static void bus_dead_remove(void *p); /* GH #703 */
+static uint64_t bus_incarnation_register(void *p); /* GH #703 */
 
 /* Single-thread fast path. Set to non-zero before any thread
  * beyond main can touch the bus queue. Set by:
@@ -7529,6 +7543,9 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
                                     size_t payload_size,
                                     int locked) {
     if (!q) return;
+    /* Read before an at-cap inline drain below can run a handler that
+     * publishes (and so sets and restores the TLS) on this thread. */
+    uint64_t sub_gen = g_bus_pending_gen;
     /* Two-tier payload storage. Small payloads land in the
      * cell's inline buffer (no malloc on the hot path); large
      * ones spill to a per-cell malloc that the drain path
@@ -7613,6 +7630,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->deserialize  = g_bus_pending_wire_deser;
     slot->rec_pub_id   = g_bus_pending_rec_pub;
     slot->run_ticket   = NULL;
+    slot->sub_gen      = sub_gen;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
@@ -7733,7 +7751,14 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     }
     g_bus_inline_drain_depth++;
     lotus_bus_note_consume(handler_self, rec_pub_id);
+    /* GH #703: this runs inside an enqueue, within a post that set the
+     * incarnation TLS for ITS cell: a cell the handler builds outside a
+     * post of its own (a cross-pool create, a failure) is for no
+     * registration. */
+    uint64_t outer_gen = g_bus_pending_gen;
+    g_bus_pending_gen = 0;
     ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+    g_bus_pending_gen = outer_gen;
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
     if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
@@ -8664,6 +8689,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     cell.deserialize  = g_bus_pending_wire_deser;
     cell.rec_pub_id   = g_bus_pending_rec_pub;
     cell.run_ticket   = NULL;
+    cell.sub_gen      = g_bus_pending_gen;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -10200,6 +10226,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
     cell.deserialize  = g_bus_pending_wire_deser;
     cell.rec_pub_id   = g_bus_pending_rec_pub;
     cell.run_ticket   = ticket;
+    cell.sub_gen      = run ? 0 : g_bus_pending_gen;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -13094,6 +13121,9 @@ typedef struct lotus_bus_entry {
     int64_t               refuse_bound;
     volatile int64_t      in_flight;
     uint64_t              ctr_dropped_full;
+    /* GH #703: the subscriber incarnation this registration belongs to
+     * (`bus_incarnation_register`); every cell built for it carries it. */
+    uint64_t              gen;
 } lotus_bus_entry_t;
 
 /* ---- The registration table (F.40 phase 3, L5 4 of 4; inventory R50)
@@ -13549,8 +13579,9 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
                                     uint8_t key_filter_kind, uint64_t key_lo,
                                     uint64_t key_hi, const char *key_str,
                                     uint32_t static_id) {
-    /* GH #703: this address is a live subscriber (again). */
-    bus_dead_remove(self_ptr);
+    /* GH #703: the incarnation this registration belongs to, new when
+     * no live one is at the address (again). */
+    uint64_t gen = bus_incarnation_register(self_ptr);
     pthread_mutex_lock(&g_bus_reg_lock);
     lotus_bus_entry_t *e = lotus_bus_entry_new_locked();
     if (!e) {
@@ -13567,6 +13598,7 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
     e->key_lo      = key_lo;
     e->key_hi      = key_hi;
     e->key_str     = key_str;
+    e->gen         = gen;
     if (!lotus_pub_append_locked(&g_bus_table, e)) {
         /* The chunk slot stays unused; nothing points at it. */
         memset(e, 0, sizeof *e);
@@ -13911,6 +13943,7 @@ typedef struct lotus_bus_parked {
     size_t size;
     uint64_t rec_pub;
     void *wire_deser;
+    uint64_t gen;      /* GH #703: the incarnation it was parked for */
 } lotus_bus_parked_t;
 
 typedef struct {
@@ -14074,7 +14107,8 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
     }
     if (size > 0 && payload) memcpy(copy, payload, size);
     *p = (lotus_bus_parked_t){ NULL, handler, self, mailbox, coop_pool, queue,
-                               copy, size, rec_pub, g_bus_pending_wire_deser };
+                               copy, size, rec_pub, g_bus_pending_wire_deser,
+                               g_bus_pending_gen };
     if (u->tail) u->tail->next = p; else u->head = p;
     u->tail = p;
     u->parked++;
@@ -14124,6 +14158,8 @@ void lotus_bus_ready(void *self) {
         for (lotus_bus_parked_t *c = p; c; c = c->next) {
             g_bus_pending_wire_deser = c->wire_deser;
             if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
+            uint64_t prev_gen = g_bus_pending_gen;
+            g_bus_pending_gen = c->gen;
             if (c->mailbox) {
                 lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
             } else if (c->coop_pool) {
@@ -14131,6 +14167,7 @@ void lotus_bus_ready(void *self) {
             } else {
                 lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
             }
+            g_bus_pending_gen = prev_gen;
             g_bus_pending_wire_deser = NULL;
             g_bus_pending_rec_pub = 0;
             if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
@@ -14201,11 +14238,11 @@ static void lotus_bus_ready_forget(void *self) {
  * a drop worth logging). The static-devirt _st enqueue variant
  * (build #3 no-pinned fast path) is the one deliberate exception —
  * it stays open-coded at its single site with a pointer here. */
-static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
-                                       lotus_bus_queue_t *queue,
-                                       const void *payload,
-                                       size_t size,
-                                       uint64_t rec_pub) {
+static inline int lotus_bus_post_entry_gen(lotus_bus_entry_t *e,
+                                           lotus_bus_queue_t *queue,
+                                           const void *payload,
+                                           size_t size,
+                                           uint64_t rec_pub) {
     /* Decision line 6: a subscriber whose birth has not completed. */
     if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
                                   queue, payload, size, rec_pub))
@@ -14235,6 +14272,21 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
         lotus_obs_record_enqueue(rec_pub, e->self_ptr);
     }
     return 1;
+}
+
+/* GH #703: every cell the post builds, or parks, carries the entry's
+ * incarnation (`g_bus_pending_gen`), restored after: a post can drain
+ * inline, and a handler then publish. */
+static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
+                                       lotus_bus_queue_t *queue,
+                                       const void *payload,
+                                       size_t size,
+                                       uint64_t rec_pub) {
+    uint64_t prev_gen = g_bus_pending_gen;
+    g_bus_pending_gen = e->gen;
+    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub);
+    g_bus_pending_gen = prev_gen;
+    return posted;
 }
 
 LOTUS_HOT_ALIGN
@@ -14505,31 +14557,57 @@ extern __thread lotus_arena_t *lotus_current_caller_arena;
  * aligned-move contract). Runs to completion without parking
  * (deserializers do no I/O), so the shared TLS struct buffer is
  * safe even on async-pool workers. */
-/* GH #703: the set of subscriber selves that were quarantined — a
- * locus that ended (`terminate;` from a handler, or a parent's dissolve
- * cascade) — whose cells may still sit in a queue, a coop-pool ring or
- * a pinned mailbox. A queued cell carries the handler and self pointer
- * resolved at enqueue, and `lotus_bus_quarantine_self` only nulls the
- * REGISTRY entry, so a cell posted before the quarantine was dispatched
- * after the arena was freed (#595's class, through `terminate`). Every
- * consumer materializes a cell through `lotus_bus_cell_materialize`
- * right before running its handler, so that is where a dead self is
- * dropped — uniformly, on the consumer's own thread.
+/* GH #703, and the incarnation a cell was posted for. A queued cell
+ * carries the handler and the self pointer resolved at enqueue, and a
+ * quarantine only nulls the REGISTRY entry, so a cell posted before a
+ * subscriber ended (`terminate;` from a handler, a parent's dissolve
+ * cascade, a scope-local subscriber's scope exit) must not run once it
+ * has. Every consumer materializes a cell through
+ * `lotus_bus_cell_materialize` right before running its handler, so
+ * that is where a stale cell is dropped — uniformly, on the consumer's
+ * own thread.
  *
- * An arena address is reused; a later locus at the same address that
- * registers a subscription removes itself from the set (a non-
- * subscribing locus at that address never has a cell queued, so a
- * stale entry for it is harmless). Open addressing on the pointer,
- * grown at half load; a mutex, because the consumers are on their own
- * threads. `g_bus_dead_count` is the lock-free fast path: a program
- * in which no subscriber ever ended never touches the lock. */
-static void          **g_bus_dead       = NULL;
-static size_t          g_bus_dead_cap   = 0;
-static size_t          g_bus_dead_len   = 0;
-static size_t          g_bus_dead_count = 0; /* atomic; == len */
-static pthread_mutex_t g_bus_dead_lock  = PTHREAD_MUTEX_INITIALIZER;
+ * An address alone does not say which subscriber a cell was for: a
+ * subscriber's storage is reused (a scope-local one's stack slot, a
+ * recognition parent's recycled cell, a recycled arena chunk), and a
+ * later subscriber at the same address is live. The address used to be
+ * forgotten from a dead set when the new one registered, which revived
+ * the old one's queued cells: they ran the old registration's handler
+ * on the new instance, past its key filter. So each subscriber
+ * INCARNATION has a generation, minted when the first registration at
+ * an address with no live incarnation is made and shared by that
+ * incarnation's other registrations; the entry records it, every cell
+ * built for the entry carries it (`lotus_bus_cell_t.sub_gen`, through
+ * `g_bus_pending_gen`), and a cell is delivered only when the
+ * incarnation now at its address is live and is the cell's. A cell
+ * built for no registration (a run, a posted failure, a pool start job)
+ * carries 0 and is checked by its address's state only, as before.
+ *
+ * One row per address that ever subscribed, never removed: a removed
+ * row would make an old cell for it look like a never-registered
+ * self's. Open addressing on the pointer, grown at half load; a mutex,
+ * because the consumers are on their own threads. `g_bus_inc_ended` is
+ * the lock-free fast path: until some incarnation ends, every cell is
+ * its incarnation's, and a program in which no subscriber ever ended
+ * never takes the lock at materialization. */
+#define BUS_INC_LIVE    0
+#define BUS_INC_STOPPED 1   /* a failed child's stop; a restart revives it */
+#define BUS_INC_DEAD    2
 
-static inline size_t bus_dead_slot(void *p, size_t cap) {
+typedef struct {
+    void    *self;
+    uint64_t gen;
+    int      state;
+} bus_inc_t;
+
+static bus_inc_t      *g_bus_inc       = NULL;
+static size_t          g_bus_inc_cap   = 0;
+static size_t          g_bus_inc_len   = 0;
+static uint64_t        g_bus_inc_next  = 0;   /* under the lock */
+static size_t          g_bus_inc_ended = 0;   /* atomic; monotone */
+static pthread_mutex_t g_bus_inc_lock  = PTHREAD_MUTEX_INITIALIZER;
+
+static inline size_t bus_inc_slot(void *p, size_t cap) {
     uint64_t x = (uint64_t)(uintptr_t)p;
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
@@ -14537,92 +14615,109 @@ static inline size_t bus_dead_slot(void *p, size_t cap) {
     return (size_t)(x & (cap - 1));
 }
 
-/* Locked. */
-static void bus_dead_insert_raw(void **tab, size_t cap, void *p) {
-    size_t i = bus_dead_slot(p, cap);
-    while (tab[i] && tab[i] != p) i = (i + 1) & (cap - 1);
-    tab[i] = p;
-}
-
-/* Locked: rebuild without `skip` (NULL: a plain rehash into `cap`). */
-static void bus_dead_rebuild(size_t cap, void *skip) {
-    void **fresh = (void **)calloc(cap, sizeof(void *));
-    if (!fresh) return;
-    size_t n = 0;
-    for (size_t i = 0; i < g_bus_dead_cap; i++) {
-        void *p = g_bus_dead[i];
-        if (!p || p == skip) continue;
-        bus_dead_insert_raw(fresh, cap, p);
-        n++;
+/* Locked. The row for `p`, or NULL when it has none. */
+static bus_inc_t *bus_inc_find(void *p) {
+    if (!g_bus_inc) return NULL;
+    size_t i = bus_inc_slot(p, g_bus_inc_cap);
+    while (g_bus_inc[i].self) {
+        if (g_bus_inc[i].self == p) return &g_bus_inc[i];
+        i = (i + 1) & (g_bus_inc_cap - 1);
     }
-    free(g_bus_dead);
-    g_bus_dead     = fresh;
-    g_bus_dead_cap = cap;
-    g_bus_dead_len = n;
-    __atomic_store_n(&g_bus_dead_count, n, __ATOMIC_RELEASE);
+    return NULL;
 }
 
-static void bus_dead_add(void *p) {
+/* Locked. The row for `p`, made (state DEAD, generation 0) when it has
+ * none; NULL on OOM. */
+static bus_inc_t *bus_inc_find_or_add(void *p) {
+    bus_inc_t *r = bus_inc_find(p);
+    if (r) return r;
+    if (g_bus_inc_cap == 0 || (g_bus_inc_len + 1) * 2 > g_bus_inc_cap) {
+        size_t cap = g_bus_inc_cap ? g_bus_inc_cap * 2 : 64;
+        bus_inc_t *fresh = (bus_inc_t *)calloc(cap, sizeof(bus_inc_t));
+        if (!fresh) return NULL;
+        for (size_t i = 0; i < g_bus_inc_cap; i++) {
+            if (!g_bus_inc[i].self) continue;
+            size_t j = bus_inc_slot(g_bus_inc[i].self, cap);
+            while (fresh[j].self) j = (j + 1) & (cap - 1);
+            fresh[j] = g_bus_inc[i];
+        }
+        free(g_bus_inc);
+        g_bus_inc = fresh;
+        g_bus_inc_cap = cap;
+    }
+    size_t i = bus_inc_slot(p, g_bus_inc_cap);
+    while (g_bus_inc[i].self) i = (i + 1) & (g_bus_inc_cap - 1);
+    g_bus_inc[i] = (bus_inc_t){ p, 0, BUS_INC_DEAD };
+    g_bus_inc_len++;
+    return &g_bus_inc[i];
+}
+
+/* A registration at `p`: the generation of the incarnation it belongs
+ * to — the live one at `p` (a further subscription of it), else a new
+ * one. 0 only on OOM, which leaves the registration's cells checked by
+ * address. */
+static uint64_t bus_incarnation_register(void *p) {
+    if (!p) return 0;
+    pthread_mutex_lock(&g_bus_inc_lock);
+    bus_inc_t *r = bus_inc_find_or_add(p);
+    uint64_t gen = 0;
+    if (r) {
+        if (r->state == BUS_INC_DEAD) {
+            r->gen = ++g_bus_inc_next;
+            r->state = BUS_INC_LIVE;
+        }
+        gen = r->gen;
+    }
+    pthread_mutex_unlock(&g_bus_inc_lock);
+    return gen;
+}
+
+/* The incarnation at `p` ended (`stopped`: a failed child's stop, which
+ * a restart may undo); its queued cells are dropped from here on. */
+static void bus_incarnation_end(void *p, int stopped) {
     if (!p) return;
-    pthread_mutex_lock(&g_bus_dead_lock);
-    if (g_bus_dead_cap == 0 || (g_bus_dead_len + 1) * 2 > g_bus_dead_cap) {
-        bus_dead_rebuild(g_bus_dead_cap ? g_bus_dead_cap * 2 : 64, NULL);
+    pthread_mutex_lock(&g_bus_inc_lock);
+    bus_inc_t *r = bus_inc_find_or_add(p);
+    if (r && r->state != BUS_INC_DEAD) {
+        r->state = stopped ? BUS_INC_STOPPED : BUS_INC_DEAD;
+        __atomic_add_fetch(&g_bus_inc_ended, 1, __ATOMIC_RELEASE);
     }
-    if (g_bus_dead) {
-        size_t i = bus_dead_slot(p, g_bus_dead_cap);
-        while (g_bus_dead[i] && g_bus_dead[i] != p) {
-            i = (i + 1) & (g_bus_dead_cap - 1);
-        }
-        if (!g_bus_dead[i]) {
-            g_bus_dead[i] = p;
-            g_bus_dead_len++;
-            __atomic_store_n(&g_bus_dead_count, g_bus_dead_len,
-                             __ATOMIC_RELEASE);
-        }
-    }
-    pthread_mutex_unlock(&g_bus_dead_lock);
+    pthread_mutex_unlock(&g_bus_inc_lock);
 }
 
-/* The address lives again as a subscriber: forget it. Rare (only a
- * reused address that was once a quarantined subscriber), so the
- * rebuild-without is fine. */
-static void bus_dead_remove(void *p) {
-    if (!p || __atomic_load_n(&g_bus_dead_count, __ATOMIC_ACQUIRE) == 0) {
-        return;
-    }
-    pthread_mutex_lock(&g_bus_dead_lock);
-    if (g_bus_dead) {
-        size_t i = bus_dead_slot(p, g_bus_dead_cap);
-        while (g_bus_dead[i] && g_bus_dead[i] != p) {
-            i = (i + 1) & (g_bus_dead_cap - 1);
-        }
-        if (g_bus_dead[i] == p) bus_dead_rebuild(g_bus_dead_cap, p);
-    }
-    pthread_mutex_unlock(&g_bus_dead_lock);
+/* A restart: the stopped incarnation at `p` is live again, its
+ * generation unchanged, so a cell queued before the stop is still its. */
+static void bus_incarnation_revive(void *p) {
+    if (!p) return;
+    pthread_mutex_lock(&g_bus_inc_lock);
+    bus_inc_t *r = bus_inc_find(p);
+    if (r && r->state == BUS_INC_STOPPED) r->state = BUS_INC_LIVE;
+    pthread_mutex_unlock(&g_bus_inc_lock);
 }
 
-static int bus_self_dead(void *p) {
-    if (!p || __atomic_load_n(&g_bus_dead_count, __ATOMIC_ACQUIRE) == 0) {
+/* Is `c` for an incarnation that is no longer live? */
+static int bus_cell_stale(const lotus_bus_cell_t *c) {
+    if (!c->self_ptr || __atomic_load_n(&g_bus_inc_ended, __ATOMIC_ACQUIRE) == 0) {
         return 0;
     }
-    int dead = 0;
-    pthread_mutex_lock(&g_bus_dead_lock);
-    if (g_bus_dead) {
-        size_t i = bus_dead_slot(p, g_bus_dead_cap);
-        while (g_bus_dead[i]) {
-            if (g_bus_dead[i] == p) { dead = 1; break; }
-            i = (i + 1) & (g_bus_dead_cap - 1);
-        }
+    int stale = 0;
+    pthread_mutex_lock(&g_bus_inc_lock);
+    bus_inc_t *r = bus_inc_find(c->self_ptr);
+    if (r) {
+        stale = r->state != BUS_INC_LIVE
+             || (c->sub_gen != 0 && c->sub_gen != r->gen);
     }
-    pthread_mutex_unlock(&g_bus_dead_lock);
-    return dead;
+    pthread_mutex_unlock(&g_bus_inc_lock);
+    return stale;
 }
 
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
-    /* GH #703: a cell for a subscriber that ended after the cell was
-     * posted is dropped here, whole, before anything is deserialized
-     * into its (freed) arena or its handler runs on it. */
-    if (bus_self_dead(c->self_ptr)) {
+    /* GH #703: a cell for a subscriber incarnation that ended after the
+     * cell was posted is dropped here, whole, before anything is
+     * deserialized into its (freed or reused) storage or its handler
+     * runs on it — whether or not a later subscriber lives at the
+     * address now. */
+    if (bus_cell_stale(c)) {
         if (c->payload_heap) {
             free(c->payload_heap);
             c->payload_heap = NULL;
@@ -15163,8 +15258,8 @@ static void lotus_bus_retire_self(void *self_ptr, int keep) {
     }
     /* GH #703: cells already queued for this self are dropped at
      * materialization, on their consumer's thread — see
-     * `bus_self_dead`. Only a self that ever subscribed can have one. */
-    if (subscribed) bus_dead_add(self_ptr);
+     * `bus_cell_stale`. Only a self that ever subscribed can have one. */
+    if (subscribed) bus_incarnation_end(self_ptr, keep);
     /* R52: the reclaim reads the run tickets past this point (its
      * guards, the hold wait), and a pool worker takes its handler's
      * hold before it reads the dead set: with a fence on each side,
@@ -15205,7 +15300,7 @@ void lotus_bus_restart_self(void *self_ptr) {
         }
     }
     if (!stopped) return;
-    bus_dead_remove(self_ptr);
+    bus_incarnation_revive(self_ptr);
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (e->self_ptr == self_ptr && e->stopped_subject) {
@@ -15247,7 +15342,7 @@ void lotus_bus_retire_mailbox(void *mb) {
         lotus_bus_entry_t *e = bv.at[i];
         if (e->mailbox == mb && e->subject) {
             e->subject = NULL;
-            bus_dead_add(e->self_ptr);
+            bus_incarnation_end(e->self_ptr, 0);
         }
     }
 }
@@ -23086,6 +23181,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
+                /* GH #703: the cell, parked or queued, carries the
+                 * entry's incarnation. */
+                uint64_t prev_gen = g_bus_pending_gen;
+                g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
                                                  struct_payload, (size_t)struct_size, rec_pub)) {
@@ -23106,6 +23205,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                         e, queue, struct_payload, (size_t)struct_size,
                         rec_pub);
                 }
+                g_bus_pending_gen = prev_gen;
             }
         }
         if (delivered == 0 && lotus_bus_log_drop_enabled()) {
@@ -23177,6 +23277,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
+                /* GH #703: the cell, parked or queued, carries the
+                 * entry's incarnation. */
+                uint64_t prev_gen = g_bus_pending_gen;
+                g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
                                                  struct_payload, (size_t)struct_size, rec_pub)) {
@@ -23197,6 +23301,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                         e, queue, struct_payload, (size_t)struct_size,
                         rec_pub);
                 }
+                g_bus_pending_gen = prev_gen;
             }
         }
         if (delivered == 0 && lotus_bus_log_drop_enabled()) {
@@ -23264,6 +23369,10 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             if (ssz <= 0) continue;
             /* R4 exception: build #3 no-pinned _st fast path; the
              * rest routes through lotus_bus_post_entry. */
+            /* GH #703: the cell, parked or queued, carries the entry's
+             * incarnation. */
+            uint64_t prev_gen = g_bus_pending_gen;
+            g_bus_pending_gen = e->gen;
             if (no_pinned && !e->mailbox && !e->coop_pool && g_bus_queue_for_remote
                 && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, g_bus_queue_for_remote,
                                              struct_buf, (size_t)ssz, rec_pub)) {
@@ -23285,6 +23394,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                     e, g_bus_queue_for_remote, struct_buf, (size_t)ssz,
                     rec_pub);
             }
+            g_bus_pending_gen = prev_gen;
         }
     }
     lotus_current_caller_arena = prev_tls;
@@ -23373,6 +23483,10 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
              * direct flavor's identity is the same-thread handler
              * CALL in the else branch (no queue). Off-thread targets
              * (defensive; the gate excludes them) still enqueue. */
+            /* GH #703: a parked or queued cell carries the entry's
+             * incarnation. */
+            uint64_t prev_gen = g_bus_pending_gen;
+            g_bus_pending_gen = e->gen;
             if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
                                           g_bus_queue_for_remote, payload, (size_t)size, 0)) {
                 /* Decision line 6: its birth has not completed; the
@@ -23386,8 +23500,10 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                                      payload, (size_t)size);
             } else {
                 /* same-thread: the whole point — run it now. */
+                g_bus_pending_gen = prev_gen;
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
             }
+            g_bus_pending_gen = prev_gen;
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
             }

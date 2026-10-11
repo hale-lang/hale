@@ -2561,9 +2561,17 @@ its `KNOWN_OPEN` table, which is empty today.
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
   drops the cell or the reclaim waits for its handler. A subscriber
-  registered later at the same address departs from this today: its
-  registration takes the address out of the dead set, and the cell
-  runs on it (`l19_reused_address_queued_cell.hl`, known open, R33).
+  registered later at the same address (a scope-local one's stack
+  slot, a recognition parent's recycled cell, a recycled arena chunk)
+  never runs it: each subscriber incarnation has a generation, minted
+  at the first registration made at an address with no live
+  incarnation and shared by that incarnation's other registrations;
+  every cell built for a registration carries its generation, and a
+  cell is delivered only when the incarnation now at its address is
+  live and is the cell's (`l19_reused_address_queued_cell.hl`, R33).
+  A stopped failed child keeps its generation, so a restart delivers
+  what was queued before the stop. A cell built for no registration (a
+  run, a posted failure) is checked by its address's state only.
   Before the
   hold, replacing the child while its handler ran freed the storage
   under it, a heap-use-after-free under AddressSanitizer in both

@@ -1,28 +1,27 @@
 // Decision line 19, a cell still queued for a subscriber its reclaim
-// quarantined (Reclaim, inventory row R33, known open): the cell ends
-// unrun, and never reaches a later subscriber at the same address.
+// quarantined (Reclaim, inventory row R33): the cell ends unrun, and
+// never reaches a later subscriber at the same address.
 //
 // Host, pinned, handles `Start` by calling `visit(1)` and then
 // `visit(2)`. Each call let-binds a `Kid` that subscribes to `Gos`, in
 // the one slot of the one frame, so the second Kid is built at the
 // first one's address. The first publishes `Gos` and returns: its cell
-// waits in main's queue (a let-bound literal in a method registers on
-// main's queue), and main is blocked in `usleep`, which drains nothing,
-// until the second Kid says through a gate file that it is born. The
-// first Kid's reclaim quarantines it: its registry entry loses its
-// subject and its address joins the dead set
-// (`lotus_bus_quarantine_self`). The second Kid's registration removes
-// that address from the dead set (`lotus_bus_register_entry`,
-// `bus_dead_remove`), so when main drains, the first Kid's cell passes
-// the dead-self check (`lotus_bus_cell_materialize`) and its handler
-// runs on the second Kid, which was born after the publish. The second
-// Kid waits for main's drain to finish (a second gate) before it
-// returns, so the drain always finds it registered.
+// waits in the pinned thread's mailbox (a let-bound literal in a method
+// registers with the constructing thread's route). The first Kid's
+// reclaim quarantines it, ending its incarnation. The second Kid
+// registers at the same address as a new incarnation, and its wait
+// (`std::time::sleep`, which drains the thread's mailbox) reaches the
+// first Kid's cell while the second Kid is live there: the cell names
+// the first Kid's incarnation, not only its address
+// (`lotus_bus_cell_materialize`, `bus_cell_stale`), so it is dropped.
+// The gates keep the run's shape from when the cell waited in main's
+// queue: main blocks in `usleep`, which drains nothing, until the
+// second Kid says it is born, and the second Kid waits for main's
+// drain before it returns.
 //
 // Expected terminal outcome: no Kid hears the cell, judged by the
-// harness from the `tag` the handler reads: `dropped`. Today the second
-// Kid hears it: `heard-by-new`. Under ASan the run is the same and
-// clean, since the second Kid is live when its handler runs.
+// harness from the `tag` the handler reads: `dropped`. Before the
+// incarnation check the second Kid heard it: `heard-by-new`.
 
 @ffi("c") fn usleep(us: Int) -> Int;
 
