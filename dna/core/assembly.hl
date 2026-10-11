@@ -484,6 +484,8 @@ locus Dna {
         subscribe ConcernRaised as on_concern;
         subscribe PracticeRequested as on_practice_requested;
         subscribe HoldRequested as on_hold_requested;
+        subscribe PositionOpenRequested as on_position_requested;
+        subscribe GraphReviewRequested as on_graph_requested;
         subscribe ScheduleRequested as on_schedule_requested;
         subscribe KnowledgeNodeRequested as on_knowledge_node_requested;
         subscribe KnowledgeBindingRequested as on_knowledge_binding_requested;
@@ -571,7 +573,7 @@ locus Dna {
             question: native_json_string(req, "question"),
             subject_digest: native_json_string(req, "subject_digest"),
             required_authority: native_json_string(req, "required_authority"),
-            author: native_json_string(req, "author"),
+            author: native_json_string(req, "author"), governance: true,
             signers: need.signers, gates: need.gates, fallback: need.fallback,
             settled: len(settlement.kind) > 0, outcome: outcome
         };
@@ -1725,7 +1727,7 @@ locus Dna {
         // Intent through the Board asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind });
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind, position: o.position });
     }
     // An uncertain exact append may have landed. Only its exact slot and
     // bytes establish that outcome; absence never becomes success.
@@ -1875,7 +1877,8 @@ locus Dna {
     // GH #1091: a holder proposed for a position, as the organization
     // proposes any hole — a graph proposal whose receipt carries the
     // `holds` edge, one Board Review of its own in the name of whoever
-    // asked (who therefore may not ratify it). What a hold may be is the
+    // asked (who may ratify it as the Board: a governance Review requiring
+    // the Board admits its author). What a hold may be is the
     // projection's to check when it is ratified (the store is the gate);
     // here only its shape is. Answered once, however often it is relayed.
     @unbounded
@@ -1887,6 +1890,36 @@ locus Dna {
         if !self.ensure_knowledge_review(review_id) { return; }
         if !self.positions.proposed(r, digest) { return; }
         self.board.notify("holds", r.by + " proposes " + r.holder + " for " + hold_name(r) + ": the Board's to ratify as " + review_id);
+    }
+    // A position opened at run time: its node and mandate proposed as one
+    // family, the Board's one Review.
+    fn on_position_requested(r: PositionOpenRequest) {
+        let moved = self.journal.refresh();
+        let family = self.positions.open_asked(r);
+        if len(family) == 0 { return; }
+        let review_id = knowledge_review_id(family);
+        if !self.ensure_knowledge_review(review_id) { return; }
+        if !self.positions.open_proposed(r, family) { return; }
+        self.board.notify("positions", r.by + " proposes opening " + r.position + ": the Board's to ratify as " + review_id);
+    }
+    // A graph proposal the host filed (`hale dna ingest`): its Review routed
+    // and opened here, once; a Review the record does not hold yet is
+    // answered on redelivery. A verdict may already be in the record (a
+    // person decides as soon as the verb returns, and the host relays a
+    // verdict once): the Review restores it at birth and, told its route,
+    // weighs it and settles.
+    fn on_graph_requested(r: GraphReviewRequest) {
+        let moved = self.journal.refresh();
+        if len(first_row(self.journal, "graph.proposed", r.request_id).kind) > 0 { return; }
+        if !self.ensure_knowledge_review(r.review_id) { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("review_id", r.review_id);
+        b.string_field("by", r.by);
+        b.end_object();
+        if !append_once(self.journal, "graph.proposed", r.request_id, b.result()) { return; }
+        self.tell_routes(r.review_id + "\n");
+        self.board.notify("ingest", r.by + " filed the repository's graph again: the Board's to ratify as " + r.review_id);
     }
     // A generic knowledge command carries the exact native document it means
     // to propose. Delivery is the host's trust boundary; the started row is
@@ -1923,7 +1956,7 @@ locus Dna {
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
     @unbounded
@@ -1955,7 +1988,7 @@ locus Dna {
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
     @unbounded
@@ -2346,6 +2379,9 @@ locus Dna {
         // an ask for a judgment is the asker's word: no plan is asked, the
         // assessment is admitted as one judgment leaf, a leg's to perform
         if i.kind == "judgment" { return self.admit_ask(i, Plan { kind: "judgment", change_class: "application" }, false); }
+        // a change routed to a position is the asker's word too: no plan
+        // is asked, one Work is admitted for a leg holding that position
+        if len(i.position) > 0 { return self.admit_ask(i, Plan { kind: "position", change_class: "application" }, false); }
         if self.planned {
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
@@ -2388,7 +2424,8 @@ locus Dna {
         b.begin_object();
         b.string_field("objective", i.outcome);
         b.string_field("from", i.from);
-        b.string_field("kind", if i.kind == "judgment" { "judgment" } else if planned { p.kind } else { "app" });
+        b.string_field("kind", if i.kind == "judgment" { "judgment" } else if len(i.position) > 0 { "position" } else if planned { p.kind } else { "app" });
+        if len(i.position) > 0 { b.string_field("position", i.position); }
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
@@ -2399,7 +2436,7 @@ locus Dna {
         b.bool_field("planned", planned);
         b.bool_field("parsed", planned && p.parsed);
         b.end_object();
-        let definition = if i.kind == "judgment" { "ask-judge" } else if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
+        let definition = if i.kind == "judgment" { "ask-judge" } else if len(i.position) > 0 { "ask-position" } else if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
         return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: self.catalog.latest(definition), inputs: b.result(), from: i.from, to: i.to });
     }
     // The authored-definition API (card 18): a workflow the application
@@ -2437,7 +2474,10 @@ locus Dna {
             let n = self.catalog.bound.get(i) or BoundNode { };
             if n.kind == "work" {
                 let req = bound_request(n, self.task_of_bound(n), n.parent);
-                let kind = if std::str::contains(n.requires, "organism") { "organism" }
+                // a Work routed to a position is a leg's, as an agent's: the
+                // position's own word decides before any substring of it can
+                let kind = if word_in("position", n.requires) { "agent" }
+                else if std::str::contains(n.requires, "organism") { "organism" }
                 else if std::str::contains(n.requires, "edit") { "edit" }
                 else if std::str::contains(n.requires, "human") || std::str::contains(n.requires, "person") { "human" }
                 else { self.work.selection.select(req, 0, "") };
@@ -2811,6 +2851,9 @@ locus Dna {
             // ask's, from the inputs, before the recipe is bound
             let objective = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "objective") } else { "" };
             if len(objective) > 0 { self.catalog.bind_objective(objective); }
+            // a change routed to a position: that position joins its Work's requirement
+            let routed = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "position") } else { "" };
+            if len(routed) > 0 { self.catalog.bind_position(routed); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
                 inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id, convener: a.convener,
@@ -3342,12 +3385,11 @@ locus Dna {
         // the contract, the class, the head and watermark — by its digest;
         // the body is kept in memory under that digest, so replay renders
         // from the recorded hat and never the live graph.
-        let hat = hat_sealed(hat_with_package(Hat {
-            ok: true, work_id: id, task_id: task_id, step_id: req.step_id, attempt_id: attempt_id_of(id, req.attempt_no), performer_kind: "edit",
-            position_id: hat_position_of("edit"), charter: hat_node_text(self.journal, hat_position_of("edit")),
+        let hat = hat_compose(self.journal, HatInputs {
+            work_id: id, task_id: task_id, step_id: req.step_id, attempt_id: attempt_id_of(id, req.attempt_no), performer_kind: "edit",
             objective: objective, target: req.target, targets: targets, output_contract: req.output_contract, data_class: req.data_class, requires: req.requires,
-            cost_ceiling: req.cost_ceiling, tool_grant: hat_tool_grant("edit"), knowledge_bindings: bindings_of(pkg), head: self.journal.head()
-        }, pkg, self.knowledge_client.ready()));
+            cost_ceiling: req.cost_ceiling, knowledge_bindings: bindings_of(pkg), head: self.journal.head()
+        }, pkg, self.knowledge_client.ready());
         if self.knowledge_client.ready() { let kept = self.knowledge_client.keep_hat(hat.digest, hat.head, hat.watermark, hat_body(hat)); }
         self.editor.brief(objective_with("", pkg));
         if self.knowledge_client.ready() {

@@ -157,6 +157,23 @@ locus Projection {
         }
         return ids;
     }
+    // The same Reviews in the order the record requested them: a seeded
+    // group is listed, and decided by its name, in the order it was
+    // proposed (a position, then its mandate), not by digest.
+    @unbounded
+    fn review_ids_in_order() -> String {
+        let mut ids = "\n";
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "review.requested" {
+                let id = self.review_id_of(e);
+                if !std::str::contains(ids, "\n" + id + "\n") { ids = ids + id + "\n"; }
+            }
+            i = i + 1;
+        }
+        return ids;
+    }
     @unbounded
     fn mutation_ids() -> String {
         let mut ids = "\n";

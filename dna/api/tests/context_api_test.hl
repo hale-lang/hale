@@ -87,7 +87,9 @@ locus HatCases {
         self.json.eq(hat, "output_contract", "Assessment");
         self.json.eq(hat, "data_class", "internal");
         self.json.eq(hat, "requires", "judgment");
-        self.json.eq(hat, "tool_grant", "");
+        // an Assessment's hands are the read-only infrastructure (dna/core/contracts.hl)
+        self.json.eq(hat, "tool_grant", "record_status record_history org_chart");
+        self.json.eq(hat, "validators", "");
         self.json.eq(hat, "knowledge_bindings", "package:sha256:none");
         self.json.eq(hat, "head", self.json.string(self.json.raw(first, "source"), "record_head"));
         // the targets the package is drawn for (seed/pull): the Work's path, the

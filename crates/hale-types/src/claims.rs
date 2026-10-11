@@ -680,8 +680,10 @@ pub(crate) fn enumerate_clauses<'a>(
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
                 | ClaimForm::RouteCoverage { group, .. }
+                | ClaimForm::RequireNoSilentLossGroup { group }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
-                ClaimForm::Count { topic, .. } => {
+                ClaimForm::Count { topic, .. }
+                | ClaimForm::RequireNoSilentLossTopic { topic } => {
                     topic.segments.first().map(|s| &s.name)
                 }
                 // Names no group: a universal over the whole world.
@@ -722,6 +724,16 @@ fn render_form(f: &ClaimForm) -> String {
         }
         ClaimForm::RequireAttributed { class_name } => {
             format!("require attributed(all {})", class_name.name)
+        }
+        ClaimForm::RequireNoSilentLossTopic { topic } => {
+            hale_model::claim_form::require_no_silent_loss_topic(
+                &topic.display(),
+            )
+        }
+        ClaimForm::RequireNoSilentLossGroup { group } => {
+            hale_model::claim_form::require_no_silent_loss_group(
+                &group.name,
+            )
         }
         ClaimForm::ForbidReaches {
             src,
@@ -820,12 +832,48 @@ fn render_form(f: &ClaimForm) -> String {
 /// selection decides which laws exist over which entities.
 fn resolve_member(
     m: &GroupMember,
+    programs: &[&Program],
+    may_be_empty: bool,
     locus_names: &BTreeSet<String>,
     free_fn_names: &BTreeSet<String>,
     import_renames: &[(Vec<String>, String)],
     rg: &mut ResolvedGroup,
     diags: &mut Vec<Diag>,
 ) {
+    if m.role {
+        // `role R`: the handlers a holder of R may call, one decl each.
+        let role = &m.segments[0].name;
+        let sel = crate::surfaces::role_handlers(programs, import_renames, role);
+        if !sel.is_declared {
+            let near = sel.declared.iter().find(|n| close(n, role));
+            let hint = match near {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}` names no declared role. Unknown \
+                     names are errors, never empty sets.{}",
+                    m.display(),
+                    hint
+                ),
+            ));
+        } else if !sel.required && !may_be_empty {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}`: no surface row requires role \
+                     `{role}`, so it names no handler. If that is \
+                     intended, say `may_be_empty`",
+                    m.display()
+                ),
+            ));
+        } else {
+            rg.decl_count += sel.handlers.len();
+        }
+        return;
+    }
     if m.glob {
         // `alias::*` — enumeration over the imported seed's declared
         // decls, via the same rename table codegen resolves
@@ -1049,6 +1097,8 @@ fn claims_report_inner(
             let before = diags.len();
             resolve_member(
                 m,
+                programs,
+                g.may_be_empty,
                 &locus_names,
                 &free_fn_names,
                 import_renames,

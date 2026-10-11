@@ -71,12 +71,17 @@ main locus App {
         std::test::assert_eq_int(self.play.hits, 1, "a hit");
         std::test::assert_eq_str(self.play.last.adapter, "recorded", "the evidence says it was replayed");
         std::test::assert(std::str::contains(self.play.last.params, "mode=replay"), self.play.last.params);
+        // a request for another model — the mapping resolved a different one
+        // on the same gateway — is another call: a miss, never this answer
+        let other = self.play.complete(dna::ModelRequest { attempt_id: "w/a0", role: "edit", prompt: "rewrite it", context: "the file", data_class: "internal", tool_grant: "read edit fmt check @/elsewhere/m9", model: "coder-l" });
+        std::test::assert(!other.ok && std::str::contains(other.refused, "model coder-l"), "a model-only change misses the tape: " + other.refused);
+        std::test::assert(self.play.hits == 1 && self.play.misses == 1, "and is no hit");
         // ---- 2. a miss names the request and the nearest entry
         let m = self.play.complete(dna::ModelRequest { attempt_id: "w/a1", role: "edit", prompt: "rewrite it", context: "another file", data_class: "internal", tool_grant: "read edit fmt check @/elsewhere/m9" });
         std::test::assert(!m.ok && std::str::starts_with(m.refused, "tape miss "), m.refused);
         std::test::assert(std::str::contains(m.refused, "role edit, backend quick, model quick-1"), "the request named: " + m.refused);
         std::test::assert(std::str::contains(m.refused, "differs in: context_digest"), "the nearest entry's differing field: " + m.refused);
-        std::test::assert_eq_int(self.play.misses, 1, "a miss");
+        std::test::assert_eq_int(self.play.misses, 2, "a miss");
         let m2 = self.play.complete(dna::ModelRequest { attempt_id: "w/a2", role: "edit", prompt: "something else entirely" });
         std::test::assert(std::str::contains(m2.refused, "no entry shares this prompt digest"), m2.refused);
 
@@ -121,7 +126,7 @@ main locus App {
             if e.kind == "model.called" && std::str::contains(e.body, "\"adapter\": \"recorded\"") { n = n + 1; }
             i = i + 1;
         }
-        std::test::assert_eq_int(n, 5, "five replayed calls (two hits, three misses), five evidence rows");
+        std::test::assert_eq_int(n, 6, "six replayed calls (two hits, four misses), six evidence rows");
         // ---- the FIRST entry of a fresh tape is an in-place edit
         //      (the shakeout's finding 10): the patch used to be written
         //      before anything created the directory, so it was lost

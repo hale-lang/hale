@@ -69,6 +69,9 @@ crates/hale-types/tests/claim_lowering.rs#0	spendcap	bound money <= 2 on paths f
 crates/hale-types/tests/claim_lowering.rs#0	tagged	require attributed(all syscall)	Violated	None
 crates/hale-types/tests/claim_lowering.rs#0	vault	require sealed(all gates)	Violated	None
 crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) == 0	Violated	Some("Core")
+crates/hale-types/tests/claim_no_silent_loss.rs#2	loss	require no_silent_loss(topic Payments)	Holds	None
+crates/hale-types/tests/claim_no_silent_loss.rs#3	loss	require no_silent_loss(topic Payments)	Violated	None
+crates/hale-types/tests/claim_no_silent_loss.rs#6	loss	require no_silent_loss(all quiet)	Invalid	None
 crates/hale-types/tests/claim_route_coverage.rs#1	route	cover keys(topic Orders in 0..=1): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#2	route	cover keys(topic Orders in 7..=7): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#3	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Uncertified	None
@@ -137,7 +140,7 @@ crates/hale-types/tests/interface_dispatch.rs#11	one_call	bound llm <= 1 on path
 crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#6	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-types/tests/interface_slot_override.rs#1	gated	forbid reaches(organism, effects(apply_it))	Holds	None
+crates/hale-types/tests/interface_slot_override.rs#2	gated	forbid reaches(organism, effects(apply_it))	Holds	None
 crates/hale-types/tests/judgment_reachability.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/judgment_reachability.rs#1	iso	forbid reaches(a_side, b_side)	Uncertified	None
 crates/hale-types/tests/judgment_reachability.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None

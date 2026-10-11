@@ -97,6 +97,81 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
 /// Run a host verb to completion and return what it printed; its
 /// complaint when it failed. For the verbs the driver itself needs
 /// (`init` seeding the record, `ui` syncing before it serves).
+/// `hale dna ingest [project] [--at <rev>]`: the repository at a commit
+/// (HEAD by default), checked out beside the record under `.hale/dna/ingest/`
+/// with the repository's own directory name (the ingest names its purpose
+/// after it when the README does not), read by the same ingest `init`
+/// runs, and its difference from the graph the record states proposed to
+/// the Board (`graph-reingest`); the checkout is removed after.
+fn ingest_cmd(rest: &[String]) -> ExitCode {
+    let mut at = "HEAD".to_string();
+    let mut dir = PathBuf::from(".");
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--at" => {
+                let Some(v) = rest.get(i + 1) else {
+                    eprintln!("usage: hale dna ingest [project] [--at <rev>]");
+                    return ExitCode::from(2);
+                };
+                at = v.clone();
+                i += 2;
+            }
+            a if !a.starts_with("--") => {
+                dir = PathBuf::from(a);
+                i += 1;
+            }
+            a => {
+                eprintln!("hale dna ingest: `{a}` is not a flag of ingest (--at)\nusage: hale dna ingest [project] [--at <rev>]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
+    let sha = match git(&["rev-parse", "--verify", &format!("{at}^{{commit}}")]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            eprintln!("hale dna ingest: `{at}` names no commit of {}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = match dir.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hale dna ingest: {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let base = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repository".to_string());
+    let holder = root.join(".hale/dna/ingest").join(&sha);
+    let tree = holder.join(&base);
+    let _ = fs::remove_dir_all(&holder);
+    let _ = git(&["worktree", "prune"]);
+    if let Err(e) = fs::create_dir_all(&holder) {
+        eprintln!("hale dna ingest: {}: {e}", holder.display());
+        return ExitCode::FAILURE;
+    }
+    let added = git(&["worktree", "add", "--quiet", "--detach", &tree.display().to_string(), &sha]);
+    if !matches!(&added, Ok(o) if o.status.success()) {
+        let why = added.map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string()).unwrap_or_else(|e| e.to_string());
+        eprintln!("hale dna ingest: the commit could not be checked out: {why}");
+        return ExitCode::FAILURE;
+    }
+    let answered = host_run("graph-reingest", &root, &[tree.display().to_string(), "--at".to_string(), sha.clone()]);
+    let _ = git(&["worktree", "remove", "--force", &tree.display().to_string()]);
+    let _ = fs::remove_dir_all(&holder);
+    match answered {
+        Ok(out) => {
+            print!("{out}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("hale dna ingest: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     let (mut cmd, _) = host_command(verb, dir)?;
     let out = cmd.args(args).output().map_err(|e| format!("hale dna {verb}: {e}"))?;
@@ -509,7 +584,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        // `hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>`
+        // `hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>`
         // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -581,6 +656,10 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
+        // the repository's graph read again at a commit, its difference proposed
+        Some("ingest") => ingest_cmd(&args[1..]),
+        // a position opened at run time: `hale dna position open <name> --mandate "…"`
+        Some("position") => host_exec("position", Path::new("."), &args[1..]),
         Some("fill") => {
             let mut words = Vec::new();
             let mut forwarded = Vec::new();
@@ -665,6 +744,10 @@ pub fn run(args: &[String]) -> ExitCode {
             host_exec("fleet", &dir, &rest)
         }
         Some("ui") => ui_cmd(&args[1..]),
+        // the model mapping's tables, as rows: `models rule|category|map …`
+        Some("models") if matches!(args.get(1).map(String::as_str), Some("rule" | "category" | "map")) => {
+            host_exec("models-map", Path::new("."), &args[1..])
+        }
         Some("models") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("models", &dir, &rest)
@@ -826,8 +909,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
-    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,");
-    eprintln!("                                    renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
+    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]");
+    eprintln!("                                    which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs");
+    eprintln!("                                    (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it");
+    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,");
+    eprintln!("                                    renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);");
     eprintln!("                                    loop --parallel N is a worker: N children, each its own holder; loop --drain ends one");
     eprintln!("       hale dna definitions [project] [--json]");
     eprintln!("                                    the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store");
@@ -842,6 +928,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
+    eprintln!("       hale dna ingest [project] [--at <rev>]");
+    eprintln!("                                    read the repository's graph again at a commit (HEAD): what differs from the record, tools");
+    eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
+    eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
@@ -884,8 +975,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
@@ -922,7 +1013,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
     eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
     eprintln!("       hale dna review <family> approve|reject");
-    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, using, library (a library family is one Review for all its ideas)");
+    eprintln!("                                    decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -1250,11 +1341,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("own_workflows.hl"), OWN_WORKFLOWS_HL)?;
     // GH #1091 (B): the one structure policy — the operational roles the
     // project opts into, none by default; the holes follow the graph's
-    // edges. A repository's alone: its record is born with the holes. One
-    // written before `init` is kept, and is what the holes read.
-    if app.is_none() {
-        created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
-    }
+    // edges. A repository's record and an application's are both born with
+    // the holes. One written before `init` is kept, and is what they read.
+    created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
@@ -1292,8 +1381,9 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
-                let n = seed_journal(&app.root, app, art, &purpose_text)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, the purpose proposed)"));
+                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
+                out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
                 out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
@@ -2669,6 +2759,7 @@ main locus Org {{
         dna::ConcernRaised: nats::NatsAdapter {{ }};
         dna::PracticeRequested: nats::NatsAdapter {{ }};
         dna::HoldRequested: nats::NatsAdapter {{ }};
+        dna::PositionOpenRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
@@ -2896,7 +2987,29 @@ fn app_account_name(project: &str) -> String {
     project.chars().take(32).map(|c| c.to_ascii_lowercase()).map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '_' }).collect()
 }
 
-fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<usize, String> {
+/// What `hale check --api` exports for the application: the surfaces it
+/// serves and the streams over a hub, as the document the graph ingest reads.
+/// None when the toolchain cannot describe it (the graph then holds no
+/// surface contract, and the artifact's rows are unchanged).
+fn api_description(app: &App) -> Option<String> {
+    let me = std::env::current_exe().ok()?;
+    let out = Command::new(me).arg("check").arg("--api").arg(&app.seed).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() && text.trim_start().starts_with('{') { Some(text) } else { None }
+}
+
+/// The application's root seed in the graph: its project directory, or the
+/// directory it sits in when the application is not the repository's root.
+fn app_seed_name(app: &App) -> String {
+    if app.seed_rel == "." { app.project.clone() } else { app.seed_rel.clone() }
+}
+
+/// An application's record, seeded in one checked call: the artifact's rows
+/// (what it observed), the purpose's proposal, then the graph its directory
+/// holds and the holes that graph implies (as for a repository, with the
+/// application as the root seed and its API surfaces as contracts). Returns
+/// the artifact's row count and what the ingest read.
+fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(usize, String), String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -2997,14 +3110,18 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<us
     // knowledge proposal and the Board's Review: two rows)
     let purpose_path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
     fs::write(&purpose_path, purpose).map_err(|e| e.to_string())?;
-    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string(), purpose_path.to_string_lossy().to_string()]);
+    let mut args = vec![purpose_path.to_string_lossy().to_string(), "--rows".to_string(), path.to_string_lossy().to_string(), "--app".to_string(), app_seed_name(app)];
+    let description_path = dna_dir.join(format!("api.{}.json", std::process::id()));
+    if let Some(d) = api_description(app) {
+        fs::write(&description_path, d).map_err(|e| e.to_string())?;
+        args.push("--description".to_string());
+        args.push(description_path.to_string_lossy().to_string());
+    }
+    let out = host_run("graph-ingest", root, &args);
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&purpose_path);
-    let n: usize = out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
-    if n != c.lines.len() + 2 {
-        return Err(format!("record-seed appended {n} of {} rows", c.lines.len() + 2));
-    }
-    Ok(n)
+    let _ = fs::remove_file(&description_path);
+    Ok((c.lines.len(), out?))
 }
 
 /// GH #1090: a repository's record — the declared purpose's proposal
@@ -3039,7 +3156,7 @@ fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usiz
     let path = dna_dir.join(format!("design.{}.jsonl", std::process::id()));
     let mut text = String::new();
     for p in family {
-        text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p), "schedule": p.schedule}).to_string());
+        text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p), "schedule": p.schedule, "target": p.target}).to_string());
         text.push('\n');
     }
     fs::write(&path, text).map_err(|e| e.to_string())?;
@@ -3132,20 +3249,27 @@ struct SeededPractice {
     /// it — `{id, every_ms | cron, definition, args, convener}` as JSON —
     /// or "" for none.
     schedule: &'static str,
+    /// A mandate: the graph node (`position:leader`) the text is bound to,
+    /// or "" for a practice, which binds to the organization. A practice
+    /// with a target is proposed as a `mandate` bound to it.
+    target: &'static str,
 }
 
 /// The design: how a DNA organization works, as practices bound to
 /// `org` — brained's structural knowledge adapted to DNA. Proposed at
 /// `init`, one Board Review each; never ratified by the toolchain.
 const DESIGN: &[SeededPractice] = &[
-    SeededPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it.", schedule: "" },
-    SeededPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history.", schedule: "" },
-    SeededPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes.", schedule: "" },
-    SeededPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect.", schedule: "" },
-    SeededPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean.", schedule: "" },
-    SeededPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored.", schedule: "" },
-    SeededPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity.", schedule: "" },
-    SeededPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic.", schedule: "" },
+    SeededPractice { name: "design/mandate-leader", text: "The Leader: the organization's architect. Decides: what an ask is (its kind, class and count) and the plan that splits and classifies it, and every change inside its grant whose class is not the Board's and that touches no law, widens no effects and crosses no ownership; it proposes its own team when asks keep falling through to it. May not: widen what was asked, ratify a change of class `organization`, `constitutional`, `process-policy` or `topology` (or one that touches law, widens effects or crosses ownership: those are the Board's), write source, or hold a repository or a worktree itself. Cites: the charter, the purpose, the law and the ratified practices; a plan names the rows it stands on. Writes: a plan that only splits and classifies, and a verdict with its reason. Escalates: to the Board whatever the grant does not cover, and any proposal for structure the purpose does not yet ground.", schedule: "", target: "position:leader" },
+    SeededPractice { name: "design/mandate-editor", text: "The editor: the performer of an `edit` Work. Decides: how the Work's objective is met inside its target: the change itself, its size and its order. May not: commit, apply, touch a worktree outside its grant or read the knowledge store directly (the law forbids each); ratify, review or sign anything. Cites: the Work's objective and target, the contracts the target serves or consumes, and the knowledge its package carries. Writes: a small change with its evidence first (what was run, against what, what it printed), naming what it did not run. Escalates: back to the Leader, with the row that shows why, an objective the target cannot meet or a change that must cross a contract or another part.", schedule: "", target: "position:editor" },
+    SeededPractice { name: "design/mandate-agent", text: "The agent: the performer of a Work that names no kind. Decides: how it carries out the Work's objective with the tools its hat grants, which are none beyond reading until the Board grants more. May not: act outside its grant, ratify or sign anything, or remember anything between tasks (the hat is read per task). Cites: the Work's objective and the knowledge its package carries. Writes: what it did and what it found as rows a reviewer can read, evidence before the claim. Escalates: to the Leader anything the objective did not foresee.", schedule: "", target: "position:agent" },
+    SeededPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it.", schedule: "", target: "" },
+    SeededPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history.", schedule: "", target: "" },
+    SeededPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes.", schedule: "", target: "" },
+    SeededPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect. A position is fitted on fill with its equipment: the API roles its surface's `requires` names (the broker account and the vault names join them when an application attaches in repository mode); the equipment informs what a holder is fitted with and never what it may decide.", schedule: "", target: "" },
+    SeededPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean.", schedule: "", target: "" },
+    SeededPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored.", schedule: "", target: "" },
+    SeededPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity.", schedule: "", target: "" },
+    SeededPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic.", schedule: "", target: "" },
 ];
 
 /// The operating practices (GH #994): how the organism runs, which is what
@@ -3154,13 +3278,13 @@ const DESIGN: &[SeededPractice] = &[
 /// each, superseded on `upgrade` the same way; never ratified by the
 /// toolchain.
 const OPERATING: &[SeededPractice] = &[
-    SeededPractice { name: "operating/one-store-per-step", text: "a workflow step writes to exactly one store, by that store's one writer, and the next step reads what the previous one made durable. The record numbers the steps. A step whose subject moved is refused and asked again on the new subject; nothing is half-written. There is no distributed transaction anywhere, and a plan that needs one is wrong.", schedule: "" },
-    SeededPractice { name: "operating/row-first", text: "every live signal is a record row before it is sent. An event names a row by id, is delivered at least once, and is consumed idempotently by that id. A message never admits anything. An event from outside (the heart) is a signal, not a fact: it becomes a row before anything acts on it.", schedule: "" },
-    SeededPractice { name: "operating/readings-never-act", text: "a reading from the senses never acts. It is kept for a window; what matters crosses into the record as a pressure or concern row, and that row is what a workflow answers to. The organism never believes the heart is healthy without the heart's own pulse.", schedule: "" },
-    SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records.", schedule: "" },
-    SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record.", schedule: "" },
-    SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "" },
-    SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
+    SeededPractice { name: "operating/one-store-per-step", text: "a workflow step writes to exactly one store, by that store's one writer, and the next step reads what the previous one made durable. The record numbers the steps. A step whose subject moved is refused and asked again on the new subject; nothing is half-written. There is no distributed transaction anywhere, and a plan that needs one is wrong.", schedule: "", target: "" },
+    SeededPractice { name: "operating/row-first", text: "every live signal is a record row before it is sent. An event names a row by id, is delivered at least once, and is consumed idempotently by that id. A message never admits anything. An event from outside (the heart) is a signal, not a fact: it becomes a row before anything acts on it.", schedule: "", target: "" },
+    SeededPractice { name: "operating/readings-never-act", text: "a reading from the senses never acts. It is kept for a window; what matters crosses into the record as a pressure or concern row, and that row is what a workflow answers to. The organism never believes the heart is healthy without the heart's own pulse.", schedule: "", target: "" },
+    SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records.", schedule: "", target: "" },
+    SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record.", schedule: "", target: "" },
+    SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "", target: "" },
+    SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"#, target: "" },
 ];
 
 /// The using practices: how a person or an agent works with the organism,
@@ -3170,13 +3294,13 @@ const OPERATING: &[SeededPractice] = &[
 /// `upgrade` the same way, and kept by `--no-library` (they are practices,
 /// not the library); never ratified by the toolchain.
 const USING: &[SeededPractice] = &[
-    SeededPractice { name: "using/propose-review-ratify", text: "nothing is in force until the Board says so. A change to the organization is a proposal, then a Review, then a ratification, in that order: a proposal states what changes and why, and names who decides; one that states only what changes cannot be judged. An unratified proposal binds nobody, and a decision is a row in the record, never a conversation.", schedule: "" },
-    SeededPractice { name: "using/change-classes", text: "name the class and the magnitude of a change before the work starts. The class decides who signs: an organization, constitutional, process-policy or topology change is the Board's; a change that touches law, widens effects or crosses ownership is the Board's whatever its class; the rest, inside the grant, is the Leader's. Work begun without a class is classified afterwards by the reviewer, and may be sent back whole.", schedule: "" },
-    SeededPractice { name: "using/ask-the-leader", text: "the Leader plans the work and you carry it out: ask it what it plans for you before you start, and take its plan as the frame. What lies inside your grant and your position's identity you decide alone and record; what changes the plan, the grant or another position's work is the Leader's to decide, and you ask it again, with the row that shows why.", schedule: "" },
-    SeededPractice { name: "using/cut-structure", text: "a position or a part goes when the record says it is not carrying its weight: no work over a window, or concerns pooling at a child that it cannot solve alone. Propose the cut with the rows that show it, and say what takes over its responsibilities; a part is not removed on a feeling, and it is not kept out of habit.", schedule: "" },
-    SeededPractice { name: "using/read-the-record", text: "the record is the organization's memory; a brief is only a view of it. Before acting on what you were told, read the rows it rests on, and when you report, cite rows, not recollection. A statement that no row supports is an opinion, and the organism acts on rows.", schedule: "" },
-    SeededPractice { name: "using/evidence-first", text: "a candidate's evidence is what a reviewer reads, so it comes before the claim. Say what was run, against what, and what it printed; a check that was not run is named as not run, never described as passing. Evidence a reviewer cannot reproduce is a request to be trusted, and the Board does not ratify on trust.", schedule: "" },
-    SeededPractice { name: "using/bind-knowledge", text: "knowledge applies where it is bound. Bind a chapter or a practice to the node it is about (the language, the system, a part of the organization), not to everyone: a package for a target carries the ideas bound to it and no others, and an idea bound too widely crowds out what the work needs.", schedule: "" },
+    SeededPractice { name: "using/propose-review-ratify", text: "nothing is in force until the Board says so. A change to the organization is a proposal, then a Review, then a ratification, in that order: a proposal states what changes and why, and names who decides; one that states only what changes cannot be judged. An unratified proposal binds nobody, and a decision is a row in the record, never a conversation.", schedule: "", target: "" },
+    SeededPractice { name: "using/change-classes", text: "name the class and the magnitude of a change before the work starts. The class decides who signs: an organization, constitutional, process-policy or topology change is the Board's; a change that touches law, widens effects or crosses ownership is the Board's whatever its class; the rest, inside the grant, is the Leader's. Work begun without a class is classified afterwards by the reviewer, and may be sent back whole.", schedule: "", target: "" },
+    SeededPractice { name: "using/ask-the-leader", text: "the Leader plans the work and you carry it out: ask it what it plans for you before you start, and take its plan as the frame. What lies inside your grant and your position's identity you decide alone and record; what changes the plan, the grant or another position's work is the Leader's to decide, and you ask it again, with the row that shows why.", schedule: "", target: "" },
+    SeededPractice { name: "using/cut-structure", text: "a position or a part goes when the record says it is not carrying its weight: no work over a window, or concerns pooling at a child that it cannot solve alone. Propose the cut with the rows that show it, and say what takes over its responsibilities; a part is not removed on a feeling, and it is not kept out of habit.", schedule: "", target: "" },
+    SeededPractice { name: "using/read-the-record", text: "the record is the organization's memory; a brief is only a view of it. Before acting on what you were told, read the rows it rests on, and when you report, cite rows, not recollection. A statement that no row supports is an opinion, and the organism acts on rows.", schedule: "", target: "" },
+    SeededPractice { name: "using/evidence-first", text: "a candidate's evidence is what a reviewer reads, so it comes before the claim. Say what was run, against what, and what it printed; a check that was not run is named as not run, never described as passing. Evidence a reviewer cannot reproduce is a request to be trusted, and the Board does not ratify on trust.", schedule: "", target: "" },
+    SeededPractice { name: "using/bind-knowledge", text: "knowledge applies where it is bound. Bind a chapter or a practice to the node it is about (the language, the system, a part of the organization), not to everyone: a package for a target carries the ideas bound to it and no others, and an idea bound too widely crowds out what the work needs.", schedule: "", target: "" },
 ];
 
 // The toolchain's library: the book per chapter and the spec per section,

@@ -306,11 +306,15 @@ jobs:
           HALE_DNA_WAIT_SCALE: "3"
           # as on Linux (tests.yml): no test repo needs gc, and a detached
           # auto-gc writes into scratch directories while they are removed
-          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_COUNT: "3"
           GIT_CONFIG_KEY_0: gc.auto
           GIT_CONFIG_VALUE_0: "0"
           GIT_CONFIG_KEY_1: receive.autogc
           GIT_CONFIG_VALUE_1: "false"
+          # git also runs `maintenance --auto` after commits and fetches: its
+          # maintenance.lock in a test repository has failed a clone copying it
+          GIT_CONFIG_KEY_2: maintenance.auto
+          GIT_CONFIG_VALUE_2: "false"
         run: |
           # Every fourth fixture slice belongs to this part; every other
           # test in the binary (coverage, guards, the spelling checks) rides

@@ -437,12 +437,19 @@ pub struct GroupMember {
     pub segments: Vec<Ident>,
     /// True when the member ends in `::*`.
     pub glob: bool,
+    /// True for `role NAME`: `segments` is the one role name, and the
+    /// member is the handlers of the surface rows a holder of the role
+    /// may call (docs/src/claims.md § `group`).
+    pub role: bool,
     pub span: Span,
 }
 
 impl GroupMember {
     /// The member as written, for diagnostics.
     pub fn display(&self) -> String {
+        if self.role {
+            return format!("role {}", self.segments[0].name);
+        }
         let mut s = self
             .segments
             .iter()
@@ -608,6 +615,15 @@ pub enum ClaimForm {
         range: Option<(i64, i64)>,
         group: Ident,
     },
+    /// `require no_silent_loss(topic T);` — no boundary on the route
+    /// `T` is configured to discard silently: no `on_unmatched:
+    /// swallow`, no shedding subscriber queue, no `or discard` send,
+    /// no lossy binding. A refusal the sender observes is not a
+    /// silent discard; a custom refusal handler is unproven.
+    RequireNoSilentLossTopic { topic: TopicRef },
+    /// `require no_silent_loss(all G);` — the same policy over every
+    /// route a member of G publishes or subscribes.
+    RequireNoSilentLossGroup { group: Ident },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.

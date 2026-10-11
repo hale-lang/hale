@@ -121,6 +121,15 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     let (ok, out) = hale(&["dna", "new", "knowing"], &d, &[]);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("knowing");
+    // the toolchain's library is one idea per chapter or spec section,
+    // generated from the tree: read its size from what init seeded, so a
+    // new chapter does not move this test
+    let library: usize = out
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("seeded  library ("))
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("init seeded no library:\n{out}"));
     // init wrote the compose file, a named volume per repository
     let compose = std::fs::read_to_string(app.join("dna/compose.yaml")).expect("dna/compose.yaml");
     assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("name: hale-dna-knowing-knowledge") && compose.contains("127.0.0.1:54"), "{compose}");
@@ -162,14 +171,14 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // the declared purpose (GH #995), the eight seeded design practices
     // and the seven operating ones (the optimize cadence among them, GH
     // #1143) and the seven using ones are ideas too (GH #596 C, #994),
-    // plus this proposal and the toolchain's library (one idea per
-    // chapter or spec section, 405 of them); wait for the nerves as well
+    // plus this proposal and the toolchain's library; wait for the
+    // nerves as well
     let nerves_up = || std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let tailed = trace::wait_until("dna dev: the spine projected the record and the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(500), || {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "429" && nerves_up()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == (33 + library).to_string() && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();

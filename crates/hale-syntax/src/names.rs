@@ -158,7 +158,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             let GroupDecl { name: n, members, may_be_empty: _, span: _, id: _ } = g;
             name(n, f);
             for m in members {
-                let GroupMember { segments, glob: _, span: _ } = m;
+                let GroupMember { segments, glob: _, role: _, span: _ } = m;
                 names(segments, f);
             }
         }
@@ -243,6 +243,8 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
         }
         ClaimForm::RequireSealed { group } => name(group, f),
         ClaimForm::RequireAttributed { class_name } => name(class_name, f),
+        ClaimForm::RequireNoSilentLossTopic { topic } => topic_ref(topic, f),
+        ClaimForm::RequireNoSilentLossGroup { group } => name(group, f),
         ClaimForm::Cover { alias, group } => {
             name(alias, f);
             name(group, f);

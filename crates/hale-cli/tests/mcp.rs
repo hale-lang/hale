@@ -108,7 +108,7 @@ fn main() { App { }; }
     for expect in [
         "hale_check", "hale_verify", "hale_fmt", "hale_test",
         "hale_bench", "hale_doc", "hale_docs_search",
-        "hale_bus_graph", "hale_enforcement",
+        "hale_bus_graph", "hale_enforcement", "hale_dna_work", "hale_dna_hand",
     ] {
         assert!(names.contains(&expect), "missing tool {}", expect);
     }

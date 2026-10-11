@@ -194,7 +194,7 @@ shift_struct!(UnitDecl { name, equation, span, id });
 shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });
 shift_struct!(ConstitutionDecl { name, extends, entries, span });
-shift_struct!(GroupMember { segments, glob, span });
+shift_struct!(GroupMember { segments, glob, role, span });
 shift_struct!(ClaimsBlock { entries, adopts, lib_tier, span });
 shift_struct!(ClaimDecl { name, form, span });
 
@@ -211,6 +211,8 @@ impl Shift for ClaimForm {
             ClaimForm::Require { publishers, group, topic } => sh!(d; publishers, group, topic),
             ClaimForm::RequireSealed { group } => sh!(d; group),
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
+            ClaimForm::RequireNoSilentLossTopic { topic } => sh!(d; topic),
+            ClaimForm::RequireNoSilentLossGroup { group } => sh!(d; group),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
             ClaimForm::RouteCoverage { topic, range, group } => sh!(d; topic, range, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),

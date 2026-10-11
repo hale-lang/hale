@@ -51,7 +51,15 @@ fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
             if len(doc) > 0 && native_json_string(doc, "kind") == "graph" {
                 let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
                 while !it.done {
-                    g = record_graph_put(g, std::json::find_string_field(it.element, "kind"), std::json::find_string_field(it.element, "entity"));
+                    let k = std::json::find_string_field(it.element, "kind");
+                    let id = std::json::find_string_field(it.element, "entity");
+                    // a reviewed retirement (`hale dna ingest`) takes the id back
+                    if k == "graph.retired" {
+                        g.nodes = std::str::replace(g.nodes, "\n" + id + "\n", "\n");
+                        g.edges = std::str::replace(g.edges, "\n" + id + "\n", "\n");
+                    } else {
+                        g = record_graph_put(g, k, id);
+                    }
                     it = std::json::array_next(it);
                 }
             }
@@ -62,6 +70,58 @@ fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
 }
 
 fn record_graph_has(ids: String, id: String) -> Bool { return std::str::contains(ids, "\n" + id + "\n"); }
+
+// The graph the record states with each live row's body: `<id>\t<body>`
+// a line, the latest body of every node and edge (a row, or a ratified
+// graph proposal's), none for an id retired since. What a re-ingest is
+// diffed against.
+@unbounded
+fn record_graph_bodies(j: Journal, receipts: Receipts) -> String {
+    let mut out = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "graph.node" || e.kind == "graph.edge" { out = graph_body_put(out, e.entity, e.body); }
+        if e.kind == "graph.retired" { out = graph_body_drop(out, e.entity); }
+        if e.kind == "knowledge.ratified" {
+            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            let doc = receipts.read(raw);
+            if len(doc) > 0 && native_json_string(doc, "kind") == "graph" {
+                let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+                while !it.done {
+                    let k = std::json::find_string_field(it.element, "kind");
+                    let id = std::json::find_string_field(it.element, "entity");
+                    if k == "graph.retired" { out = graph_body_drop(out, id); }
+                    else if k == "graph.node" || k == "graph.edge" { out = graph_body_put(out, id, std::json::find_string_field(it.element, "body")); }
+                    it = std::json::array_next(it);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn graph_body_drop(lines: String, id: String) -> String {
+    let at = std::str::index_of(lines, "\n" + id + "\t");
+    if at < 0 { return lines; }
+    let rest = lines[(at + 1)..len(lines)];
+    let nl = std::str::index_of(rest, "\n");
+    return lines[0..(at + 1)] + rest[(nl + 1)..len(rest)];
+}
+
+fn graph_body_put(lines: String, id: String, body: String) -> String {
+    return graph_body_drop(lines, id) + id + "\t" + body + "\n";
+}
+
+// The live body of `id` in `record_graph_bodies`' lines, "" when none.
+fn graph_body_of(lines: String, id: String) -> String {
+    let at = std::str::index_of(lines, "\n" + id + "\t");
+    if at < 0 { return ""; }
+    let rest = lines[(at + len(id) + 2)..len(lines)];
+    let nl = std::str::index_of(rest, "\n");
+    return rest[0..nl];
+}
 
 // Whether the record can resolve a binding target: a locus path always,
 // a node id (`language:hale`) when the graph the record states holds it

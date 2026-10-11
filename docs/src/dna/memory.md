@@ -374,6 +374,14 @@ over one record converge on one graph with each row applied once, and
 a projection interrupted mid-row leaves nothing of it. Nothing else
 writes the graph.
 
+A graph row memory will not take, malformed or naming nodes of the
+wrong kind, whether written straight to the record or carried by a
+proposal the Board ratified, is refused as a row of its own:
+`graph.refused` with the row it was at and why, `by: memory`. The
+projection goes on past it, so one bad row never holds back the reads
+that wait for memory to catch up. Only the database failing stops the
+projection, at that row, until it answers.
+
 There is one org chart, and it is this graph: its positions, the
 organizations that own them, and who holds them, all `holds` edges.
 Read its two perspectives with:
@@ -388,6 +396,26 @@ without it they refuse and say so) and take `--json`. When memory is
 behind the record they say how far on stderr (`memory has projected N
 of the record's M rows`) and show the graph as of that row. How positions are filled and routed is [The head and the
 face](./head.md) and [Shaping and governing it](./shaping.md).
+
+### Reading the repository again
+
+`hale dna init` reads the repository once. `hale dna ingest [--at
+<rev>]` reads it again at a commit (`HEAD` by default) with the same
+ingest, and files what differs from the graph the record states as one
+Board Review, listed under `ingest`: nodes and edges added, bodies
+changed, and what is gone as retirements.
+
+```text
+ingested 3f2a…c1: 6 added, 0 changed, 3 retired; the Board ratifies it as k:… (`hale dna review` lists it under `ingest`)
+```
+
+Every operation of a surface the repository serves is a node of kind
+`tool`, `tool:<Surface>::<op>`, naming its contract and the roles it
+requires: the tools an organization's positions may come to use, found
+in the graph. A `graph.ingested` row names the commit either way. The
+same difference at the same commit is proposed once, and once the
+Board ratifies it, reading that commit again says
+`the graph the record states is the repository's; nothing to review`.
 
 ### What a Work is told, and by which node
 

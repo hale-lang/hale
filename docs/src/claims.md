@@ -75,7 +75,8 @@ The complete surface, as it appears in
 group_decl        = "group" , IDENTIFIER , "=" , "{" ,
                     [ group_member , { "," , group_member } , [ "," ] ] ,
                     "}" , [ "may_be_empty" ] , ";" ;
-group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
+group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ]
+                  | "role" , IDENTIFIER ;
 
 domain_decl       = "domain" , IDENTIFIER , "=" , "{" ,
                     IDENTIFIER , { "," , IDENTIFIER } , [ "," ] ,
@@ -109,7 +110,7 @@ bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 
 require_form      = require_endpoint | require_sealed
-                  | require_attributed ;
+                  | require_attributed | require_no_silent_loss ;
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
                     topic_ref , ")" ;
@@ -117,6 +118,10 @@ require_sealed    = "require" , "sealed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
 require_attributed = "require" , "attributed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+require_no_silent_loss
+                  = "require" , "no_silent_loss" , "(" ,
+                    ( ( "topic" , topic_ref ) | ( "all" , IDENTIFIER ) ) ,
+                    ")" ;
 
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
@@ -164,6 +169,7 @@ pattern-matched.
 | `Name` | a locus or free fn declared in the bundle. If both a locus and a fn share the name, both join. |
 | `alias::Name` | an imported declaration. Canonicalized to the merged declaration at the mangle stage — the same path qualified topic references take — never by name-suffix matching. |
 | `alias::*` | every locus and free fn the seed imported as `alias` declares, enumerated through the same rename table `alias::Name` resolves through. Trailing-only, single level: `a::*::b` and `a::b::*` (nested) are rejected. |
+| `role R` | the handler of every surface row a caller holding `R` may call — see [Role groups](#role-groups). |
 
 Types, topics, and constants matched by a glob are silently skipped
 — they are not path vertices, so they contribute nothing a
@@ -179,6 +185,10 @@ degradation:
 - a glob over an alias this bundle never imports;
 - a nested glob (parse error: the glob is trailing-only, like `**`
   in bus subjects);
+- a `role` member naming a role nothing declares — with a did-you-mean
+  over the declared roles;
+- a `role` member whose role no surface row requires, unless the group
+  says `may_be_empty`;
 - a group declared twice;
 - a group that resolves to **zero declarations**, unless it says
   `may_be_empty` — a claim quantifying over an empty group holds
@@ -194,6 +204,72 @@ group projects to **all** of its methods, lifecycle hooks
 (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`), and
 modes. Projection only ever *adds* sources and sinks — the
 conservative direction. A free fn projects to itself.
+
+### Role groups
+
+`requires` on a surface row is a check at the serve site; it says
+nothing about what the handler reaches. A `role` member makes the
+claim you actually mean statable: which code can a caller with this
+role set in motion?
+
+```hale
+role reader;
+role editor includes reader;
+
+type Change { what: String; }
+type Query { n: Int; }
+topic TodoChanged { payload: Change; }
+
+locus Todos {
+    params { n: Int = 0; }
+    bus { publish TodoChanged; }
+    fn add(q: Query) -> Int {
+        self.n = self.n + q.n;
+        TodoChanged <- Change { what: "added" };
+        return self.n;
+    }
+    fn list(q: Query) -> Int { return self.n; }
+}
+
+locus Feed {
+    params { seen: Int = 0; }
+    bus { subscribe TodoChanged as on_change; }
+    fn on_change(c: Change) { self.seen = self.seen + 1; }
+}
+
+api Todo {
+    rpc Todos::add requires: [editor];
+    rpc Todos::list requires: [reader];
+}
+
+group read_side = { role reader };
+group changes   = { Feed };
+
+main locus App {
+    params { todos: Todos = Todos { }; feed: Feed = Feed { }; }
+    claims {
+        a_reader_publishes_nothing: forbid reaches(read_side, changes);
+    }
+}
+fn main() { App { }; }
+```
+
+`role reader` resolves, through the same selection the surfaces use
+(`surfaces::select_members`, over every surface of the program), to
+the handler of every member a caller holding `reader` may call. A
+caller holds the role and every role it `includes`, so `role editor`
+names `Todos::add` **and** `Todos::list`, while `role reader` names
+`Todos::list` alone. A member that requires nothing is callable by
+anyone, so it is in every role's group. A handler that is a locus
+method resolves to that one method — not the whole locus, whose other
+methods other roles reach — and a handler shared by two surfaces is
+in a group once. Every verb then works over it unchanged. Make
+`list` publish `TodoChanged` and the claim above is `violated`, the
+witness naming `Todos::list → TodoChanged → Feed::on_change`.
+
+This is a proof over the program, about the roles the program states:
+who actually holds `reader` is still the role source's business at
+the serve site.
 
 ## `domain` and effect families — the data-plane vocabulary
 
@@ -458,6 +534,146 @@ violation names the group and the topic. The topic reference must
 resolve to a declared topic (qualified refs canonicalize at the
 mangle stage; unknown names error with a did-you-mean).
 
+## `require no_silent_loss` — no configured silent discard
+
+```hale,fragment
+payments_arrive: require no_silent_loss(topic Payments);
+money_is_safe:   require no_silent_loss(all money);
+```
+
+A **route** is a wire subject: a topic's, or the subject a literal
+endpoint names. `topic T` claims one route; `all G` claims every
+route a member of `G` publishes or subscribes — through its sends,
+its declared `publish` ends and its subscription handlers (a group
+that touches no route is an error, not a vacuous truth). The claim
+is that **no boundary on the route is configured to discard
+silently**. It reads the settings the model records, at every
+boundary on the route, whoever owns it — a subscriber outside the
+group still sits on the route.
+
+A **wildcard endpoint** is a route for every wire it covers. A group
+member subscribing `"pay.**"` (or declaring `publish "pay.**"`)
+brings in each modeled address the pattern matches — `pay.event`'s
+topic policy, its sends and its bindings are judged as if the member
+had named it — and the pattern itself, for the remainder no modeled
+endpoint names. Addresses match the way the bus matches them: an
+address is the literal text a send carries, so a topic whose own
+subject is spelled `"pay.inner.**"` is a wire under `"pay.**"` and is
+judged like any other.
+
+| boundary | setting read | silent when |
+|---|---|---|
+| unmatched key | the topic's `on_unmatched:` | `swallow` (the default for a keyed topic) |
+| subscriber queue | the subscription's `bounded(N, …)` | `drop_old` or `drop_new` |
+| send | the send's `or` clause | `or discard` |
+| binding | the transport's loss behavior | `drop` |
+
+`on_unmatched: fail` and `fallback` are not silent: the first makes
+the send fallible, the second delivers the unmatched message to the
+`where key == _` subscriber. A **refusal the caller can see is not a
+silent discard** — `or raise`, `or wait`, or a plain send on a topic
+that can refuse nothing. A violation lists *every* silent setting,
+naming the boundary and what it is set to.
+
+What the claim does **not** prove, and says so rather than holding:
+
+- A send that routes its refusal into a **custom handler**
+  (`or println("…")`, `or fail …` on an `on_unmatched: fail` topic)
+  is reported `uncertified`, naming the send. The model records that
+  a handler exists, not what it does with the refusal, and the mere
+  presence of a handler proves little.
+- A `connect` binding drops the publishes of a window in which its
+  link is lost, and whether that is handled is supervision policy
+  (`on_failure` on the main locus). The route is `uncertified`
+  unless every send on it is `or wait`. A `listen` binding fails the
+  binding instead, and holds.
+- A hole that hides the route's subscribers, publishers or delivery
+  (an adapter transport, an unanalyzed publisher) leaves the route
+  `uncertified`.
+- A **publisher the model cannot resolve** is route evidence it does
+  not have. A send to a computed subject (`self.subject <- v`) is
+  admitted only under its locus's declared `publish` patterns, so it
+  may reach every route one of those patterns covers, with a subject
+  and a refusal policy the model does not know: the route is
+  `uncertified`, naming the function. The declaration bounds it — the
+  publish site enforces the pattern — so a send declared under
+  `"audit.**"` says nothing about `pay.event`. A body the analysis did
+  not walk, or a stdlib interior that may publish on the route, is
+  unproven the same way.
+
+A silent setting always beats an unproven one: a route that is
+configured to discard is `violated` however many handlers it also
+has.
+
+This is a **configuration** claim. It says no modeled boundary is
+*set* to lose; it does not account for an accepted message through
+to its processing, and it promises nothing across a process
+failure or from a dependency that is down — those need durability
+and acknowledgement semantics the model does not have.
+
+Here is a route that fails the claim, then the same route configured
+so it holds:
+
+```hale,refused
+type Payment { account: Int = 0; cents: Int = 0; }
+
+topic Payments {
+    payload: Payment;
+    subject: "payments";
+    keyed_by account;
+}
+
+locus Ledger {
+    params { booked: Int = 0; }
+    bus { subscribe Payments as on_payment bounded(64, drop_old) where key == 1; }
+    fn on_payment(p: Payment) { self.booked = self.booked + p.cents; }
+}
+
+locus Gateway {
+    bus { publish Payments; }
+    fn pay(account: Int, cents: Int) {
+        Payments <- Payment { account: account, cents: cents };
+    }
+}
+
+group money = { Ledger, Gateway };
+
+main locus App {
+    params { ledger: Ledger = Ledger { }; gate: Gateway = Gateway { }; }
+    claims {
+        payments_arrive: require no_silent_loss(topic Payments);
+        money_is_safe:   require no_silent_loss(all money);
+    }
+    run() { self.gate.pay(1, 500); }
+}
+fn main() { App { }; }
+```
+
+```text
+claim `payments_arrive` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `account` is `on_unmatched: swallow`; subscriber `Ledger::on_payment` on `Payments` is `bounded(64), on_full: drop_old`
+claim `money_is_safe` violated: a route of `money` is configured to discard silently — topic `Payments` keyed by `account` is `on_unmatched: swallow`; subscriber `Ledger::on_payment` on `Payments` is `bounded(64), on_full: drop_old`
+```
+
+The repair is in the configuration, not the claim. An unmatched
+payment now fails the send, the sender raises it, and the ledger's
+queue is unbounded:
+
+```hale,fragment
+topic Payments {
+    payload: Payment;
+    subject: "payments";
+    keyed_by account;
+    on_unmatched: fail;
+}
+// Ledger:  subscribe Payments as on_payment where key == 1;
+// Gateway: Payments <- Payment { account: account, cents: cents } or raise;
+```
+
+Replace `or raise` with `or println("dropped")` and both claims turn
+`uncertified` — "the send in `Gateway::pay` on `Payments` routes its
+refusal into a custom handler" — until the handler is replaced by
+something the claim can read.
+
 ## `cover` — bounded universals
 
 ```hale,fragment
@@ -704,6 +920,26 @@ quantitative dims) take the **max** over one dispatch site's
 alternatives, because an invocation dispatches to exactly one
 target — a sum would count phantom calls no execution performs.
 
+**An interface-typed field narrows to what is stored in it.** A
+call through a *field* of interface type (`self.h.dep.apply(x)`)
+fans out to the loci the program stores into that field, not to
+every conformer: every `Locus { field:
+Impl { } }` literal at any instantiation site (a parameter
+default is one: `fn take(h: Holder = Holder { dep: Real { } })` stores
+`Real` whenever `take()` omits the argument), and the declaration's
+default when some literal of the locus omits the field (or none is
+seen), intersected with the interface's conformers. Only a struct
+literal of a locus narrows. A field the program also writes from somewhere the
+pre-pass cannot name — a literal whose value is a parameter,
+a call result, an `if`/`match` value or a local (`Holder { dep: g }`
+with `g: Gate`), a default that is not a literal, any assignment
+`place.dep = g` — keeps every conformer: the set is closed only when
+every write is seen, and a write that is not seen puts the whole
+conformer set back. An assignment's receiver is not typed, so it is
+read as a write to the `dep` of every locus that has one. A literal of an imported seed's locus (`lib::Holder { dep: lib::Real { } }`) counts like any other. A seed with no `main locus` closes no world, so none of its slots narrow: its loci are built by whoever imports it. Slots of standard-library loci are never narrowed. A
+parameter, a local or a function result of interface type is not a
+field and always fans to every conformer.
+
 An interface *no* locus conforms to is different again: an
 interface value only ever arises by coercing a conforming locus,
 so in a closed world an uninhabited interface has no values and
@@ -738,6 +974,8 @@ result is `invalid`):
 | condition | shape |
 |---|---|
 | unknown group member | "names no declared locus or fn" + did-you-mean |
+| `role R` naming an undeclared role | "names no declared role" + did-you-mean over declared roles |
+| `role R` no surface row requires, without `may_be_empty` | "no surface row requires role `R`" |
 | unresolved qualified member / topic ref | "does not resolve — no imported declaration matches" |
 | glob over an unknown alias | "names no import alias" |
 | duplicate group / duplicate claim name | "declared more than once" |
@@ -749,6 +987,7 @@ result is `invalid`):
 | built-in class in `bound` | points at the `@budget` spellings |
 | unknown topic in a grant / `require` / `count` | + did-you-mean over declared topics |
 | `cover` over an alias with no topics | "the coverage domain would be empty" |
+| `no_silent_loss(all G)` over a group that publishes and subscribes nothing | "names no route" — it would hold while checking nothing |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
 | `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, no publish site and no interval) | `uncertified`: "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
@@ -763,6 +1002,7 @@ Violations (the claim's result is `violated`):
 | `require` | the group and the missing declaration |
 | `cover` | every uncovered topic |
 | `cover keys` | every uncovered key or interval, or the registrations that overlap on a key |
+| `no_silent_loss` | every silent setting: the boundary (topic, subscriber, send, binding) and what it is set to |
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 
@@ -779,18 +1019,18 @@ A **constitution** is a named claimset declared once, outside any
 main, and adopted by each entrypoint:
 
 ```hale
-type Settle { n: Int; }
-topic Settled { payload: Settle; }
+type Settlement { n: Int; }
+topic Settled { payload: Settlement; }
 
 locus Billing {
     bus { publish Settled; }
-    fn settle(n: Int) { Settled <- Settle { n: n }; }
+    fn settle(n: Int) { Settled <- Settlement { n: n }; }
 }
 
 locus Ledger {
     params { total: Int = 0; }
     bus { subscribe Settled as on_settled; }
-    fn on_settled(s: Settle) { self.total = self.total + s.n; }
+    fn on_settled(s: Settlement) { self.total = self.total + s.n; }
 }
 
 locus Research {

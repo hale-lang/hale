@@ -228,41 +228,65 @@ fn parse_row(line: String, id: String) -> Row {
     };
 }
 
+// The end of the line that starts at `from` in `v`: the index of its
+// newline, or the text's end. Text that grows with the record (the journal,
+// its shas) is walked by offset, never by re-slicing its tail: `rest =
+// rest[(nl + 1)..len(rest)]` copies the whole remainder into the arena once
+// per row, and the arena keeps every copy until the program ends (rows x
+// size per scan: gigabytes for a record of a few thousand rows).
+fn line_end(v: std::str::ByteView, from: Int) -> Int {
+    let mut i = from;
+    while i < v.n && std::str::byte_at(v, i) != 10 { i = i + 1; }
+    return i;
+}
+
+// Whether the bytes `[at, end)` of `v` are all what `trim_nl` strips.
+fn blank_span(v: std::str::ByteView, at: Int, end: Int) -> Bool {
+    let mut j = at;
+    while j < end {
+        let b = std::str::byte_at(v, j);
+        if b != 13 && b != 32 { return false; }
+        j = j + 1;
+    }
+    return true;
+}
+
 // The last non-empty line of a text.
 fn last_line(text: String) -> String {
-    let mut rest = text;
-    let mut last = "";
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        if len(trim_nl(line)) > 0 { last = line; }
-        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    let v = std::str::bytes_view(text);
+    let mut at = 0;
+    let mut from = 0;
+    let mut to = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        if !blank_span(v, at, end) { from = at; to = end; }
+        at = end + 1;
     }
-    return last;
+    return std::str::slice(v, from, to);
 }
 
 fn count_lines(text: String) -> Int {
-    let mut rest = text;
+    let v = std::str::bytes_view(text);
+    let mut at = 0;
     let mut n = 0;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        if len(trim_nl(line)) > 0 { n = n + 1; }
-        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    while at < v.n {
+        let end = line_end(v, at);
+        if !blank_span(v, at, end) { n = n + 1; }
+        at = end + 1;
     }
     return n;
 }
 
 // The k-th line (0-based) of a newline-separated list, "" past the end.
 fn line_at(list: String, k: Int) -> String {
-    let mut rest = list;
+    let v = std::str::bytes_view(list);
+    let mut at = 0;
     let mut i = 0;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        if i == k { return line; }
+    while at < v.n {
+        let end = line_end(v, at);
+        if i == k { return std::str::slice(v, at, end); }
         i = i + 1;
-        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        at = end + 1;
     }
     return "";
 }
@@ -1235,14 +1259,16 @@ locus GitJournal {
         self.text = text;
         let first_nl = std::str::index_of(shas, "\n");
         self.root_sha = if first_nl < 0 { shas } else { shas[0..first_nl] };
-        let mut rest = self.text;
-        let mut srest = shas;
+        let tv = std::str::bytes_view(text);
+        let sv = std::str::bytes_view(shas);
+        let mut at = 0;
+        let mut sat = 0;
         let mut prev = "genesis";
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = if nl < 0 { rest } else { rest[0..nl] };
-            let snl = std::str::index_of(srest, "\n");
-            let sha = if snl < 0 { srest } else { srest[0..snl] };
+        while at < tv.n {
+            let end = line_end(tv, at);
+            let line = std::str::slice(tv, at, end);
+            let send = line_end(sv, sat);
+            let sha = std::str::slice(sv, sat, send);
             if len(line) > 0 {
                 self.rows.push(Event {
                     seq: std::json::find_int_field(line, "seq"),
@@ -1256,8 +1282,8 @@ locus GitJournal {
                 self.loaded = self.loaded + 1;
                 prev = sha;
             }
-            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-            if snl < 0 { srest = ""; } else { srest = srest[(snl + 1)..len(srest)]; }
+            at = end + 1;
+            sat = send + 1;
         }
         return true;
     }

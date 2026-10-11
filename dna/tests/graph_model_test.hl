@@ -10,8 +10,8 @@
 // and memory answers with GRAPH.md's counts and both perspectives: the
 // org chart and the process model. A row re-put replaces its edge's
 // members, a retired one leaves (a retired node leaves the perspectives),
-// a rebuild reproduces both perspectives, and a malformed one stops the projection
-// at its row with the reason. The checks on rows run without memory;
+// a rebuild reproduces both perspectives, and a malformed one is refused as a
+// row with the reason while the projection goes on. The checks on rows run without memory;
 // memory is Postgres, and without the owner's DSN in
 // HALE_DNA_MEMORY_DSN_OWNER the projection half is not exercised.
 
@@ -426,11 +426,11 @@ locus App {
         // ---- the org chart, as GRAPH.md renders it: the board, a dev and a
         // reviewer under every process, an operator under every deployment
         let org = compact(store.graph_perspective("org"));
-        std::test::assert(std::str::starts_with(org, "[{\"id\":\"position:board\",\"name\":\"board\",\"under\":\"purpose:voice\",\"holders\":[\"ada\"],\"reviews\":[]},{\"id\":\"position:postgres/dev\",\"name\":\"postgres/dev\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:postgres/reviewer\",\"name\":\"postgres/reviewer\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[\"contract:spec/store.md\"]},{\"id\":\"position:nats/dev\""), "the board, then postgres's dev and reviewer, then nats's: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:nats/reviewer\",\"name\":\"nats/reviewer\",\"under\":\"process:nats\",\"holders\":[],\"reviews\":[]}"), "nats's reviewer signs nothing: nats serves no contract: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:api/reviewer\",\"name\":\"api/reviewer\",\"under\":\"process:api\",\"holders\":[\"grace\"],\"reviews\":[\"contract:spec/openapi.yaml\"]}"), "api's reviewer signs openapi.yaml: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:node/reviewer\",\"name\":\"node/reviewer\",\"under\":\"process:node\",\"holders\":[],\"reviews\":[\"contract:spec/node.yaml\",\"contract:spec/protocol.yaml\"]}"), "node's reviewer signs node.yaml and protocol.yaml: " + org);
-        std::test::assert(std::str::ends_with(org, "{\"id\":\"position:compose/operator\",\"name\":\"compose/operator\",\"under\":\"deployment:compose\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:personal/operator\",\"name\":\"personal/operator\",\"under\":\"deployment:personal\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:scaled-out/operator\",\"name\":\"scaled-out/operator\",\"under\":\"deployment:scaled-out\",\"holders\":[],\"reviews\":[]}]"), "an operator under every deployment, last: " + org);
+        std::test::assert(std::str::starts_with(org, "[{\"id\":\"position:board\",\"name\":\"board\",\"under\":\"purpose:voice\",\"holders\":[\"ada\"],\"reviews\":[],\"roles\":[],\"mandate\":\"\"},{\"id\":\"position:postgres/dev\",\"name\":\"postgres/dev\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[],\"roles\":[],\"mandate\":\"\"},{\"id\":\"position:postgres/reviewer\",\"name\":\"postgres/reviewer\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[\"contract:spec/store.md\"],\"roles\":[],\"mandate\":\"\"},{\"id\":\"position:nats/dev\""), "the board, then postgres's dev and reviewer, then nats's: " + org);
+        std::test::assert(std::str::contains(org, "{\"id\":\"position:nats/reviewer\",\"name\":\"nats/reviewer\",\"under\":\"process:nats\",\"holders\":[],\"reviews\":[],\"roles\":[],\"mandate\":\"\"}"), "nats's reviewer signs nothing: nats serves no contract: " + org);
+        std::test::assert(std::str::contains(org, "{\"id\":\"position:api/reviewer\",\"name\":\"api/reviewer\",\"under\":\"process:api\",\"holders\":[\"grace\"],\"reviews\":[\"contract:spec/openapi.yaml\"],\"roles\":[],\"mandate\":\"\"}"), "api's reviewer signs openapi.yaml: " + org);
+        std::test::assert(std::str::contains(org, "{\"id\":\"position:node/reviewer\",\"name\":\"node/reviewer\",\"under\":\"process:node\",\"holders\":[],\"reviews\":[\"contract:spec/node.yaml\",\"contract:spec/protocol.yaml\"],\"roles\":[],\"mandate\":\"\"}"), "node's reviewer signs node.yaml and protocol.yaml: " + org);
+        std::test::assert(std::str::ends_with(org, "{\"id\":\"position:compose/operator\",\"name\":\"compose/operator\",\"under\":\"deployment:compose\",\"holders\":[],\"reviews\":[],\"roles\":[],\"mandate\":\"\"},{\"id\":\"position:personal/operator\",\"name\":\"personal/operator\",\"under\":\"deployment:personal\",\"holders\":[],\"reviews\":[],\"roles\":[],\"mandate\":\"\"},{\"id\":\"position:scaled-out/operator\",\"name\":\"scaled-out/operator\",\"under\":\"deployment:scaled-out\",\"holders\":[],\"reviews\":[],\"roles\":[],\"mandate\":\"\"}]"), "an operator under every deployment, last: " + org);
         std::test::assert_eq_str(store.graph_perspective("nobody"), "", "a perspective no query answers is empty");
 
         // ---- a change moves through the edges: a meets re-observed with a
@@ -496,12 +496,70 @@ locus App {
         std::test::assert_eq_str(after.error, "", "the retirement projects");
         std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("bob")), "", "bob retired, and holds node/dev no more");
 
-        // ---- a malformed row stops the projection at its row, with why
+        // ---- a malformed row is refused as a row, with why, and the
+        // projection goes on past it: the row after it lands
         let at = self.j.revision();
         self.append("graph.edge", "meets:contract:spec/node.yaml", "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}");
-        let refused = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
-        std::test::assert(std::str::contains(refused.error, "invalid graph.edge (row " + to_string(at) + "): a meets edge joins two or more members"), "the reason, at its row: " + refused.error);
-        std::test::assert_eq_int(store.watermark(), at, "nothing of the refused row landed");
+        self.append("graph.node", "axiom:Refusals are rows", "{\"kind\": \"axiom\", \"name\": \"Refusals are rows\"}");
+        let end = self.j.revision();
+        let refused = ops::apply_record_to(store, self.j, self.receipts, end, "", "local", KnownAuthors { });
+        std::test::assert_eq_str(refused.error, "", "a malformed row stops nothing");
+        std::test::assert_eq_int(refused.graph, 1, "the row after it projected");
+        std::test::assert_eq_int(store.watermark(), end, "the projection reached the end it was given");
+        std::test::assert_eq_int(self.j.revision(), end + 1, "and the refusal is the row after it");
+        std::test::assert_eq_int(store.graph_edges_count("meets"), 6, "nothing of the refused row landed");
+        let why = self.last("graph.refused", "meets:contract:spec/node.yaml");
+        std::test::assert(std::str::contains(std::json::find_string_field(why, "why"), "a meets edge joins two or more members") && std::json::find_int_field(why, "row") == at && std::json::find_string_field(why, "by") == "memory" && std::json::find_string_field(why, "kind") == "graph.edge", "the refusal is a row, at its row, by memory: " + why);
+        // replayed, the refusal is not written twice
+        let rows = self.j.revision();
+        std::test::assert(store.rebuild(store.projection_basis().watermark, store.projection_basis().head), "the projection emptied");
+        let replayed = ops::apply_record_to(store, self.j, self.receipts, rows, "", "local", KnownAuthors { });
+        std::test::assert_eq_str(replayed.error, "", "the replay projects clean");
+        std::test::assert_eq_int(self.j.revision(), rows, "one refusal row, however often the row is read");
+
+        // ---- a refusal the record cannot take stops the projection at its
+        // row, and is retried: the row is never passed without its refusal
+        let at_broken = self.j.revision();
+        self.append("graph.edge", "meets:contract:spec/node.yaml|broken", "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}");
+        let broken = BrokenJournal { inner: self.j };
+        let halted = ops::apply_record_to(store, broken, self.receipts, broken.revision(), "", "local", KnownAuthors { });
+        std::test::assert(std::str::contains(halted.error, "did not take the graph.refused row") && std::str::contains(halted.error, "(io)"), "the failed refusal is the projection's error: " + halted.error);
+        std::test::assert_eq_int(store.watermark(), at_broken, "and the projection stays at the row");
+        broken.down = false;
+        let healed = ops::apply_record_to(store, broken, self.receipts, at_broken + 1, "", "local", KnownAuthors { });
+        std::test::assert_eq_str(healed.error, "", "once the record takes rows again, the refusal is written");
+        std::test::assert_eq_int(store.watermark(), at_broken + 1, "and the projection passes the row");
+        std::test::assert(len(self.last("graph.refused", "meets:contract:spec/node.yaml|broken")) > 0, "with its refusal in the record");
+
+        // ---- a ratified proposal's malformed row is refused the same way:
+        // its other rows land, and so does the record after it
+        let bad = "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}";
+        let good = "{\"kind\": \"axiom\", \"name\": \"A batch is ratified whole\"}";
+        let d = std::json::Builder { };
+        d.begin_object();
+        d.string_field("author", "ada");
+        d.string_field("kind", "graph");
+        d.string_field("name", "two rows, one malformed");
+        d.begin_array_field("rows");
+        d.begin_object(); d.string_field("kind", "graph.edge"); d.string_field("entity", "meets:contract:spec/node.yaml|proposed"); d.string_field("body", bad); d.end_object();
+        d.begin_object(); d.string_field("kind", "graph.node"); d.string_field("entity", "axiom:A batch is ratified whole"); d.string_field("body", good); d.end_object();
+        d.end_array();
+        d.string_field("target", "purpose:voice");
+        d.string_field("text", "two rows, one malformed.");
+        d.end_object();
+        let proposal = "sha256:" + self.receipts.store(d.result());
+        self.append("knowledge.proposed", proposal, "{\"kind\": \"graph\", \"class\": \"initiative\", \"target\": \"purpose:voice\"}");
+        let ratified_at = self.j.revision();
+        self.append("knowledge.ratified", proposal, "{\"kind\": \"graph\", \"class\": \"initiative\", \"target\": \"purpose:voice\", \"decided_by\": \"ada\"}");
+        self.append("graph.node", "axiom:The record goes on", "{\"kind\": \"axiom\", \"name\": \"The record goes on\"}");
+        let axioms = store.graph_nodes_count("axiom");
+        let tail = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
+        std::test::assert_eq_str(tail.error, "", "a ratified proposal's malformed row stops nothing");
+        std::test::assert_eq_int(tail.graph, 2, "its good row and the record's next row projected");
+        std::test::assert_eq_int(store.graph_nodes_count("axiom"), axioms + 2, "both new axioms are in the graph");
+        let in_proposal = self.last("graph.refused", "meets:contract:spec/node.yaml|proposed");
+        std::test::assert(std::str::contains(std::json::find_string_field(in_proposal, "why"), "the edge's entity") || std::str::contains(std::json::find_string_field(in_proposal, "why"), "two or more members"), "the proposal's bad row is refused as a row: " + in_proposal);
+        std::test::assert_eq_int(std::json::find_int_field(in_proposal, "row"), ratified_at, "at the row that ratified it");
 
         // ---- a memory migrated before the graph is refused at open, never
         // left to stall: version 3 has no graph tables
@@ -515,6 +573,29 @@ locus App {
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }
+}
+
+// A record that refuses every append while `down` (an I/O failure), over a
+// memory journal it reads through.
+locus BrokenJournal {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        down: Bool = true;
+    }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn refresh() -> Bool { return false; }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.down { return dna::AppendResult { error: "io" }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        if self.down { return dna::AppendResult { error: "io" }; }
+        return self.inner.append_batch(expected, rows);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
 // Who wrote the fixture's first rows: ada, grace, bob and carol are persons

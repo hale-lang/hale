@@ -1348,6 +1348,7 @@ impl Parser {
     ///                  [ group_member { ',' group_member } [ ',' ] ] ,
     ///                  '}' , [ 'may_be_empty' ] , ';'
     ///   group_member = IDENT { '::' IDENT } [ '::' '*' ]
+    ///                | 'role' IDENT
     ///
     /// `group` and `may_be_empty` are contextual keywords. The glob
     /// is trailing-only and single-`*` — enumeration over a closed
@@ -1601,6 +1602,11 @@ impl Parser {
     /// One group member: `Name`, `alias::Name`, or `alias::*`.
     fn parse_group_member(&mut self) -> Result<GroupMember, Diag> {
         let head = self.expect_ident("group member name")?;
+        if head.name == "role" && matches!(self.peek(), TokenKind::Ident(_)) {
+            let role = self.expect_ident("role name after `role`")?;
+            let span = head.span.merge(role.span);
+            return Ok(GroupMember { segments: vec![role], glob: false, role: true, span });
+        }
         let mut segments = vec![head.clone()];
         let mut glob = false;
         let mut end_span = head.span;
@@ -1633,6 +1639,7 @@ impl Parser {
         Ok(GroupMember {
             segments,
             glob,
+            role: false,
             span: head.span.merge(end_span),
         })
     }
@@ -2101,6 +2108,42 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireAttributed { class_name });
         }
+        // `require no_silent_loss(topic T);` / `(all G);` — the route
+        // loss policy. One predicate, two scopes: a single named
+        // route, or every route a group's members publish or
+        // subscribe.
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "no_silent_loss")
+        {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let q = self.peek_token().clone();
+            match &q.kind {
+                TokenKind::Ident(s) if s == "all" => {
+                    self.bump();
+                    let group = self.expect_ident("group name")?;
+                    self.expect(TokenKind::RParen, ")")?;
+                    return Ok(ClaimForm::RequireNoSilentLossGroup { group });
+                }
+                TokenKind::Ident(s) if s == "topic" => {
+                    self.bump();
+                    let topic = self.parse_topic_ref()?;
+                    self.expect(TokenKind::RParen, ")")?;
+                    return Ok(ClaimForm::RequireNoSilentLossTopic { topic });
+                }
+                other => {
+                    return Err(Diag::parse(
+                        q.span,
+                        format!(
+                            "expected `topic T` or `all G` in \
+                             `require no_silent_loss(…)` — one named \
+                             route, or every route a group's members \
+                             publish or subscribe. Got {:?}",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
         let publishers = match &pred_tok.kind {
             TokenKind::Ident(s) if s == "subscribes" => false,
             TokenKind::Ident(s) if s == "publishes" => true,
@@ -2109,7 +2152,7 @@ impl Parser {
                     pred_tok.span,
                     format!(
                         "expected `subscribes`, `publishes`, \
-                         `sealed`, or `attributed` after `require`, \
+                         `sealed`, `attributed`, or `no_silent_loss` after `require`, \
                          got {:?}",
                         other
                     ),

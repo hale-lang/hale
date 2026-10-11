@@ -181,6 +181,12 @@ pub enum Law {
     RequireSealed {
         group: Ref,
     },
+    RequireNoSilentLossTopic {
+        topic: Ref,
+    },
+    RequireNoSilentLossGroup {
+        group: Ref,
+    },
     RequireAttributed {
         class: ClassRef,
     },
@@ -1805,6 +1811,8 @@ pub fn has_unresolved(law: &Law) -> bool {
             r(group) || r(topic)
         }
         Law::RequireSealed { group } => r(group),
+        Law::RequireNoSilentLossTopic { topic } => r(topic),
+        Law::RequireNoSilentLossGroup { group } => r(group),
         Law::RequireAttributed { class } => c(class),
         Law::Cover { seed, group } => r(seed) || r(group),
         Law::RouteCoverage { topic, group, .. } => r(topic) || r(group),
@@ -2004,6 +2012,28 @@ pub fn decode_law(
                 &[],
             )?;
             Ok(Law::RequireSealed {
+                group: cx.group(&law["group"], "group")?,
+            })
+        }
+        Some("require_no_silent_loss_topic") => {
+            only_keys(
+                law,
+                "require_no_silent_loss_topic",
+                &["kind", "topic"],
+                &[],
+            )?;
+            Ok(Law::RequireNoSilentLossTopic {
+                topic: cx.topic(&law["topic"], "topic")?,
+            })
+        }
+        Some("require_no_silent_loss_group") => {
+            only_keys(
+                law,
+                "require_no_silent_loss_group",
+                &["kind", "group"],
+                &[],
+            )?;
+            Ok(Law::RequireNoSilentLossGroup {
                 group: cx.group(&law["group"], "group")?,
             })
         }
@@ -2254,6 +2284,8 @@ pub fn family_of(law: &Law) -> JudgmentFamily {
         Law::OnlyEdges { .. } => JudgmentFamily::Boundary,
         Law::RequireEndpoint { .. }
         | Law::RequireSealed { .. }
+        | Law::RequireNoSilentLossTopic { .. }
+        | Law::RequireNoSilentLossGroup { .. }
         | Law::RequireAttributed { .. }
         | Law::Cover { .. }
         | Law::RouteCoverage { .. }
@@ -2313,6 +2345,12 @@ pub fn render_claims_form(law: &Law) -> Option<String> {
             form::require_endpoint(*publishers, &group.display, &topic.display)
         }
         Law::RequireSealed { group } => form::require_sealed(&group.display),
+        Law::RequireNoSilentLossTopic { topic } => {
+            form::require_no_silent_loss_topic(&topic.display)
+        }
+        Law::RequireNoSilentLossGroup { group } => {
+            form::require_no_silent_loss_group(&group.display)
+        }
         Law::RequireAttributed { class } => {
             form::require_attributed(&class.class)
         }

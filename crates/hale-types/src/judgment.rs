@@ -177,6 +177,15 @@ impl BusHoles {
             })
         })
     }
+
+    /// Does a subject-grain hole share any subject with `wire`, which
+    /// may itself be a pattern? ([`Self::blocks`] asks whether a hole
+    /// covers one concrete wire.)
+    fn overlaps(&self, mask: hale_model::RelationSet, wire: &str) -> bool {
+        self.subject_pats.iter().any(|(pat, m)| {
+            m.intersects(mask) && hale_model::subjects_can_overlap(pat, wire)
+        })
+    }
 }
 
 fn span_of(
@@ -668,38 +677,37 @@ pub fn judge_forbid_reaches(
         if let Some(a) = avoiding {
             ok &= check_group(a, &mut diags);
             if let Some(av_gid) = a.group {
-                let members = |g: GroupId| -> BTreeSet<&EntityRef> {
-                    r.group_members
-                        .iter()
-                        .filter(|gm| gm.group == g)
-                        .filter(|gm| {
-                            matches!(
-                                gm.member,
-                                EntityRef::LocusDecl(_)
-                                    | EntityRef::Function(_)
-                            )
-                        })
-                        .map(|gm| &gm.member)
-                        .collect()
-                };
-                let av_members = members(av_gid);
+                // Overlap is judged on the executable function
+                // projections the walk uses, so a handler (a role
+                // group's `Function` member) and its enclosing locus
+                // (a named group's `LocusDecl`) are seen to share it.
+                let av_fns = &group_fns[&av_gid];
                 for set in [src, dst] {
                     let SetIr::Group(n) = set else { continue };
                     let Some(gid) = n.group else { continue };
-                    if !av_members.is_disjoint(&members(gid)) {
+                    let shared: Vec<String> = av_fns
+                        .intersection(&group_fns[&gid])
+                        .map(|f| e.functions[f.index()].name.clone())
+                        .collect();
+                    if !shared.is_empty() {
                         diags.push(Diag::ty(
                             claim_span(a.provenance),
                             format!(
                                 "claim `{}`: `avoiding {}` overlaps \
-                                 `{}` — masking an endpoint makes \
-                                 the claim weaker than it reads (a \
-                                 masked target holds vacuously; a \
-                                 masked source drops roots). Make \
-                                 the gate disjoint from the \
-                                 endpoints",
+                                 `{}` (shared: {}) — masking an \
+                                 endpoint makes the claim weaker than \
+                                 it reads (a masked target holds \
+                                 vacuously; a masked source drops \
+                                 roots). Make the gate disjoint from \
+                                 the endpoints",
                                 row.name,
                                 a.name.display,
-                                n.name.display
+                                n.name.display,
+                                shared
+                                    .iter()
+                                    .map(|n| format!("`{}`", n))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             ),
                         ));
                         ok = false;
@@ -2189,7 +2197,9 @@ pub fn judge_only_edges(
                     let Some(hl) = locus_of.get(&handler) else {
                         continue;
                     };
-                    if !dst_loci.contains(hl) {
+                    if !dst_loci.contains(hl)
+                        && !dst_fn_set.contains(&handler)
+                    {
                         continue;
                     }
                     if granted.contains(written.as_str()) {
@@ -2429,6 +2439,7 @@ pub fn judge_endpoints(
             ClaimIr::RequireEndpoint { group, .. }
             | ClaimIr::RequireSealed { group }
             | ClaimIr::RouteCoverage { group, .. }
+            | ClaimIr::RequireNoSilentLossGroup { group }
             | ClaimIr::Cover { group, .. } => {
                 !domain_is_judgable(table, group)
             }
@@ -3163,6 +3174,148 @@ pub fn judge_endpoints(
                 out.push(Judged {
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
+                    diags,
+                    foreign: Vec::new(),
+                });
+            }
+            ClaimIr::RequireNoSilentLossTopic { .. }
+            | ClaimIr::RequireNoSilentLossGroup { .. } => {
+                // One predicate over a set of routes: the named
+                // topic's, or every route the group's members
+                // publish or subscribe.
+                let mut ok = true;
+                let (routes, scope): (
+                    BTreeSet<hale_model::SubjectId>,
+                    String,
+                ) = match &row.law {
+                    ClaimIr::RequireNoSilentLossTopic { topic } => {
+                        if !check_topic(topic, &mut diags) {
+                            ok = false;
+                        }
+                        let routes = if ok {
+                            let tix = topic_by_name[topic.name.raw.as_str()];
+                            [e.topics[tix as usize].subject]
+                                .into_iter()
+                                .collect()
+                        } else {
+                            BTreeSet::new()
+                        };
+                        (routes, format!("route `{}`", topic.name.display))
+                    }
+                    ClaimIr::RequireNoSilentLossGroup { group } => {
+                        if !check_group(group, &mut diags) {
+                            ok = false;
+                        }
+                        let routes = if ok {
+                            let gid = group.group.unwrap();
+                            let fns: BTreeSet<FunctionId> = r
+                                .group_members
+                                .iter()
+                                .filter(|gm| gm.group == gid)
+                                .filter_map(|gm| match gm.member {
+                                    EntityRef::Function(f) => Some(f),
+                                    _ => None,
+                                })
+                                .collect();
+                            crate::route_loss::group_routes(
+                                model,
+                                &group_loci(gid),
+                                &fns,
+                            )
+                        } else {
+                            BTreeSet::new()
+                        };
+                        (routes, format!("the routes of `{}`", group.name.display))
+                    }
+                    _ => unreachable!("matched above"),
+                };
+                if ok && routes.is_empty() {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}`: {} names no route — no member \
+                             publishes or subscribes anything, so \
+                             `require no_silent_loss` would quantify over \
+                             an empty set and hold while checking \
+                             nothing. Name a topic, or a group whose \
+                             members use the bus.",
+                            row.name, scope
+                        ),
+                    ));
+                    ok = false;
+                }
+                if !ok {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                        foreign: Vec::new(),
+                    });
+                    continue;
+                }
+                let mask = hale_model::RelationSet::SUBSCRIBES
+                    .union(hale_model::RelationSet::PUBLISHES)
+                    .union(hale_model::RelationSet::DELIVERY);
+                let incomplete = |s: hale_model::SubjectId| -> bool {
+                    let wire = e.subjects[s.index()].pattern.as_str();
+                    let topics: Vec<u32> = e
+                        .topics
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| t.subject == s)
+                        .map(|(i, _)| i as u32)
+                        .collect();
+                    // A route may itself be a pattern (a wildcard
+                    // endpoint's remainder): a subject hole is
+                    // relevant when the two subject SETS meet, which
+                    // for a concrete wire is the hole covering it.
+                    bus_holes.overlaps(mask, wire)
+                        || topics.iter().any(|t| {
+                            bus_holes.blocks(mask, Some(*t), None)
+                        })
+                };
+                let verdict = match crate::route_loss::judge(
+                    model, &routes, &incomplete,
+                ) {
+                    crate::route_loss::Outcome::Holds => Verdict::Holds,
+                    crate::route_loss::Outcome::Violated(found) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` violated: {} configured to \
+                                 discard silently — {}",
+                                row.name,
+                                match scope.strip_prefix("the routes of ") {
+                                    Some(g) => format!("a route of {} is", g),
+                                    None => format!("{} is", scope),
+                                },
+                                found
+                                    .iter()
+                                    .map(|f| f.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            ),
+                        ));
+                        Verdict::Violated
+                    }
+                    crate::route_loss::Outcome::Uncertified(why) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` uncertified: no boundary of \
+                                 {} is configured to discard silently, but \
+                                 {}",
+                                row.name,
+                                scope,
+                                why.join("; and ")
+                            ),
+                        ));
+                        Verdict::Uncertified
+                    }
+                };
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict,
                     diags,
                     foreign: Vec::new(),
                 });
