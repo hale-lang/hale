@@ -188,11 +188,41 @@ iteration of an unbounded loop in `main` or `run`, even a temporary it
 never returns piles up there until the locus dissolves, and the survey
 says it "lands in its caller's arena". Make such a helper
 scratch-local, or move the work into a method, whose per-call scratch
-reclaims it. `--dump-alloc-summary` tags each scratch-local function,
+reclaims it. A function that builds its result in a loop
+(`out = out + x`, then `return out`) is charged one value per call,
+not one per iteration, wherever a per-call boundary frees the values
+each iteration replaces — its own (a method, a scratch-local helper)
+or its caller's; the result is then reported only where it lands in
+a long-lived frame, `main`'s or `run`'s loop. `--dump-alloc-summary` tags each scratch-local function,
 and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.
 `@unbounded fn` is the in-source carve-out for an acknowledged
-site; `--no-warn-unbounded-alloc` opts a run out. A site in code
+site. It says the growth is *not yet understood*. When it is
+understood — the growth is real but bounded by an input outside the
+code — say what bounds it instead:
+
+```hale
+type Row { id: Int; name: String; }
+
+locus Mirror {
+    // One entry per row of the record: as large as the record, no larger.
+    @bounded_by(record)
+    fn on_row(r: Row) {
+        // ... keep `r` in the in-memory mirror ...
+    }
+}
+```
+
+`@bounded_by(<name>)` goes wherever `@unbounded` goes (a fn, a method,
+a lifecycle hook) and silences exactly what it silences; the name — an
+identifier or dotted name, `open_requests`, `self.fan` — is
+documentation the compiler keeps but never resolves. A fn carries one
+or the other, not both. `--dump-alloc-summary` shows the bound beside
+the fn. `--no-warn-unbounded-alloc` opts a run out, and
+`--report-unbounded-use` lists each `@unbounded` and `@bounded_by` with
+the sites and hot-path warnings it silences (and the bound, for
+`@bounded_by`), so one that silences nothing can be found and
+removed. A site in code
 the compiler generated (a serve site's exposure, a `json:` parser) has no
 place in your source to report it, so it is left out; a site in
 your own code is reported wherever it is called from. It is advisory:

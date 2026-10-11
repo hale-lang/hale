@@ -432,7 +432,7 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 require_form      = require_endpoint | require_sealed
-                  | require_attributed ;
+                  | require_attributed | require_no_silent_loss ;
 
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
@@ -454,6 +454,13 @@ require_sealed    = "require" , "sealed" ,
    See `spec/verification.md`. *)
 require_attributed = "require" , "attributed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+(* GH #1327 section 2: no boundary on a named route is CONFIGURED to
+   discard silently. `topic T` names one route; `all G` quantifies over
+   every route a member of G publishes or subscribes. *)
+require_no_silent_loss
+                  = "require" , "no_silent_loss" , "(" ,
+                    ( ( "topic" , topic_ref ) | ( "all" , IDENTIFIER ) ) ,
+                    ")" ;
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
                     "(" , "some" , IDENTIFIER , ")" ;
@@ -805,13 +812,15 @@ slot_kind         = "pool" | "heap" ;
    compiler-supplied defaults. *)
 
 (* The optional `@unbounded` prefix (unbounded_annotation, § 13) is
-   the memory-bound-proof carve-out on a `run`-loop accumulation. It
-   is the ONLY decorator a hook takes, and only once: a hook is
-   one-shot (so a per-call ceiling has no calls to divide by) and it
-   is not a fn a caller asserts over, so the other contract
-   decorators — which stack freely on a `fn`, see
+   the memory-bound-proof carve-out on a `run`-loop accumulation, and
+   `@bounded_by(<name>)` (bounded_by_annotation) the same carve-out
+   naming the input that bounds it. One of the two is the ONLY
+   decorator a hook takes, and only once (the parser refuses a repeat
+   and the pair): a hook is one-shot (so a per-call ceiling has no
+   calls to divide by) and it is not a fn a caller asserts over, so
+   the other contract decorators — which stack freely on a `fn`, see
    `contract_decorator` — belong on a `fn` the hook calls. *)
-lifecycle_decl    = [ unbounded_annotation ] ,
+lifecycle_decl    = [ unbounded_annotation | bounded_by_annotation ] ,
                     lifecycle_keyword , [ "(" , [ param_list ] , ")" ] ,
                     [ "->" , type_expr ] , block ;
 lifecycle_keyword = "birth"
@@ -1107,6 +1116,18 @@ function_decl     = [ ffi_annotation | export_annotation
    body; `unbounded` is contextual, recognized only after `@`. See
    `spec/verification.md`.
 
+   `@bounded_by(<name>)` (GH #1490) stands where `@unbounded` stands
+   and silences exactly what it silences, and says what bounds the
+   growth: `@unbounded` means the growth is not yet understood,
+   `@bounded_by(record)` that it is bounded by the named input (an
+   in-memory mirror of the record, a queue of open requests). The
+   argument is one identifier or dotted name, kept as written and
+   never resolved (a keyword is admitted as a segment:
+   `@bounded_by(self.open_requests)`); a missing, empty or second
+   argument is a parse error. `@bounded_by` and `@unbounded` on one fn
+   is a check-time error, as is a second `@bounded_by`.
+   `bounded_by` is contextual, recognized only after `@`.
+
    `@budget(alloc_per_call = N)` (2026-07-16) is `@unbounded`'s dual:
    an opt-in per-call allocation ceiling on a `fn` (free or method).
    The compiler counts the arena allocations it can see — literals /
@@ -1127,12 +1148,15 @@ function_decl     = [ ffi_annotation | export_annotation
    general `@effects(...)` and its `@no_*` sugar. See
    `spec/verification.md` § Effect assertions for the clause forms
    inside `@effects(...)`. *)
-contract_decorator = unbounded_annotation | budget_annotation
+contract_decorator = unbounded_annotation | bounded_by_annotation
+                   | budget_annotation
                    | hot_annotation | effect_annotation
                    | rpc_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
+bounded_by_annotation = "@" , "bounded_by" , "(" , IDENTIFIER ,
+                        { "." , IDENTIFIER } , ")" ;
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;

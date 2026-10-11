@@ -171,6 +171,113 @@ pub fn endpoint_incomplete(
     })
 }
 
+/// A publisher the model could not resolve, found by
+/// [`unresolved_publishers`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnresolvedPublisher {
+    /// The user function holding the send — or, for stdlib residue,
+    /// the call that enters the interior holding it.
+    pub function: FunctionId,
+    pub kind: UnresolvedPublish,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnresolvedPublish {
+    /// A send to a subject computed at runtime (`subj <- v`), bounded
+    /// by the publish patterns its locus declares. Empty when nothing
+    /// bounds it (no locus, or a locus declaring nothing).
+    Computed { patterns: Vec<String> },
+    /// Any other function-grain hole hiding PUBLISHES (an unanalyzed
+    /// body): no pattern bounds what it sends.
+    Unanalyzed { reason: String },
+    /// A stdlib interior the function calls into: its sends carry no
+    /// recorded subject bound or refusal policy the model can join.
+    Absorbed,
+}
+
+/// Which publishers the model could NOT resolve may address
+/// `subject` (a wire, or a pattern — the test is set overlap)?
+///
+/// The model records a computed send as a `ComputedSubject` hole at
+/// its FUNCTION, hiding PUBLISHES, so a question asked at subject or
+/// topic grain ([`endpoint_incomplete`], the judgment's bus-hole
+/// index) never meets it. This is the function-grain half. A
+/// computed send is admitted only under its locus's declared
+/// `publish` patterns, and the publish site enforces them, so the
+/// patterns bound which wires it can reach; residue with no pattern
+/// addresses every subject.
+pub fn unresolved_publishers(
+    model: &ApplicationModel,
+    subject: &str,
+) -> Vec<UnresolvedPublisher> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let mut out: Vec<UnresolvedPublisher> = Vec::new();
+    for h in &model.holes {
+        let EntityRef::Function(f) = h.at else { continue };
+        if !h.hides.intersects(RelationSet::PUBLISHES) {
+            continue;
+        }
+        let kind = match h.kind {
+            hale_model::HoleKind::ComputedSubject => {
+                let mut patterns: Vec<String> = r
+                    .member_of
+                    .iter()
+                    .filter(|m| m.function == f)
+                    .flat_map(|m| {
+                        r.declares_publish
+                            .iter()
+                            .filter(move |d| d.locus == m.locus)
+                    })
+                    .map(|d| e.subjects[d.subject.index()].pattern.clone())
+                    .collect();
+                patterns.sort();
+                patterns.dedup();
+                if !patterns.is_empty()
+                    && !patterns.iter().any(|p| {
+                        hale_model::subjects_can_overlap(p, subject)
+                    })
+                {
+                    continue;
+                }
+                UnresolvedPublish::Computed { patterns }
+            }
+            _ => UnresolvedPublish::Unanalyzed {
+                reason: h.reason.clone(),
+            },
+        };
+        out.push(UnresolvedPublisher { function: f, kind });
+    }
+    for a in &model.analyses.stdlib_absorption {
+        // The model's own residue test, plus an interior send that
+        // speaks a declared topic: the absorption spells that one by
+        // the topic's NAME, which is not its wire.
+        let speaks_topic = a.nodes.iter().flat_map(|n| &n.events).any(|ev| {
+            matches!(
+                ev,
+                hale_model::AbsorbedEvent::Publish {
+                    declared_topic: Some(t),
+                    ..
+                } if e.topics.get(t.index()).is_some_and(|tp| {
+                    hale_model::subjects_can_overlap(
+                        &e.subjects[tp.subject.index()].pattern,
+                        subject,
+                    )
+                })
+            )
+        });
+        if speaks_topic || model.absorbed_publish_can_address(a, subject) {
+            out.push(UnresolvedPublisher {
+                function: a.from,
+                kind: UnresolvedPublish::Absorbed,
+            });
+        }
+    }
+    out.sort_by_key(|u| u.function);
+    out.dedup();
+    out
+}
+
 /// What a function is KNOWN to do, and whether that is all of it.
 ///
 /// Never read `Function::effects` for a judgment: it is the

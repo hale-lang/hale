@@ -174,7 +174,10 @@ fn both_caller_loop_shapes() {
 
 /// The fn's own loop: a scratch-local fn's in-loop local accumulates
 /// until the fn returns, bounded by the activation, as a method's is
-/// (it goes); the value it returns escapes the fn and keeps its verdict.
+/// (it goes). So does the value it returns, built in that loop (GH
+/// #1490, C2): each iteration's value supersedes the last and dies with
+/// the subregion, and the one returned leaves the fn once per call —
+/// here once, from `run`'s body outside its loop (it goes too).
 #[test]
 fn the_fns_own_loop() {
     let src = r#"
@@ -193,14 +196,14 @@ fn the_fns_own_loop() {
         [
             "fn pad [scratch-local]",
             "loop while depth=0 @103..158",
-            "alloc string-concat escaping=return ACCUMULATES-UNBOUNDED reclaim@locus-dissolve @121..144 <-- LEAK",
+            "alloc string-concat escaping=return once-per-invocation reclaim@locus-dissolve @121..144",
             "alloc string-concat local per-iteration-reclaim reclaim@fn-return @121..129",
             "call <unresolved: to_string> loop_depth=1 result=local",
         ]
     );
     let (was, is) = leaks(&now);
     assert_eq!(was, ["pad StringConcat @121..144 InUnboundedLoop", "pad StringConcat @121..129 InUnboundedLoop"]);
-    assert_eq!(is, ["pad StringConcat @121..144 InUnboundedLoop"]);
+    assert!(is.is_empty(), "{is:?}");
 }
 
 /// Escaping returns: a scratch-local fn's return value is deep-copied
@@ -474,12 +477,18 @@ fn the_frame_is_lowerings_row() {
 /// Per target, what the correction moves in the program's own fns: the
 /// leak sites that go (each a site of a fn that frees at return, or a
 /// value returned into one), the ones that appear (each in a caller's
-/// arena), and the dump's lines that move: a fn's tag (`scratch-local`),
-/// a site's reclaim column alone (`reclaim@fn-return`), a site's verdict.
+/// arena), the ones whose reason moves (a value a fn that frees at
+/// return builds in its own loop and returns: its superseded values die
+/// with the subregion, so it stays a leak only as the one value per call
+/// a long-lived caller keeps — `InUnboundedLoop` to `InvokedUnboundedly`,
+/// GH #1490 C2), and the dump's lines that move: a fn's tag
+/// (`scratch-local`), a site's reclaim column alone (`reclaim@fn-return`),
+/// a site's verdict.
 #[derive(Debug, Default, PartialEq)]
 struct Moved {
     gone: usize,
     appear: usize,
+    reasons: usize,
     tags: usize,
     reclaim: usize,
     verdicts: usize,
@@ -511,12 +520,23 @@ fn moved(target: &str) -> Option<Moved> {
     over_target(target, |_, now| {
         let (tags, reclaim, verdicts) = dump_moves(&old_model(now).render(), &now.render());
         let (was, is) = leaks(now);
-        let gone: Vec<&String> = was.iter().filter(|s| !is.contains(s)).collect();
-        let appear: Vec<&String> = is.iter().filter(|s| !was.contains(s)).collect();
+        let frees: BTreeSet<String> = now.fns.values().filter(|f| f.frees_at_return()).map(|f| f.key.display()).collect();
+        // A reason move: the same site, in-loop before, once per call now.
+        let moved_reason = |s: &String| {
+            s.strip_suffix(" InvokedUnboundedly")
+                .is_some_and(|k| was.contains(&format!("{k} InUnboundedLoop")) && !is.contains(&format!("{k} InUnboundedLoop")))
+        };
+        let reasons: Vec<&String> = is.iter().filter(|s| !was.contains(s) && moved_reason(s)).collect();
+        for s in &reasons {
+            let owner = s.split_whitespace().next().unwrap();
+            assert!(frees.contains(owner), "{target}: {s} moves its reason, and its fn does not free at return");
+        }
+        let reason_was = |s: &String| reasons.iter().any(|r| r.strip_suffix(" InvokedUnboundedly").is_some_and(|k| *s == format!("{k} InUnboundedLoop")));
+        let gone: Vec<&String> = was.iter().filter(|s| !is.contains(s) && !reason_was(s)).collect();
+        let appear: Vec<&String> = is.iter().filter(|s| !was.contains(s) && !moved_reason(s)).collect();
         for s in &appear {
             assert!(s.ends_with("InCallersArena"), "{target}: {s} appears for another reason");
         }
-        let frees: BTreeSet<String> = now.fns.values().filter(|f| f.frees_at_return()).map(|f| f.key.display()).collect();
         let callers: BTreeMap<String, BTreeSet<String>> = now.fns.values().fold(BTreeMap::new(), |mut m, f| {
             for c in &f.calls {
                 if let hale_types::alloc_summary::Callee::Resolved(k) = &c.callee {
@@ -532,7 +552,7 @@ fn moved(target: &str) -> Option<Moved> {
                 "{target}: {s} goes, and neither it nor a caller frees at return"
             );
         }
-        Moved { gone: gone.len(), appear: appear.len(), tags, reclaim, verdicts }
+        Moved { gone: gone.len(), appear: appear.len(), reasons: reasons.len(), tags, reclaim, verdicts }
     })
 }
 
@@ -544,7 +564,11 @@ fn per_target_moves() {
     for t in targets() {
         let Some(m) = moved(&t) else { continue };
         if m != Moved::default() {
-            moves.push(format!("{t}: {} go, {} appear; dump {} tags, {} reclaim, {} verdicts", m.gone, m.appear, m.tags, m.reclaim, m.verdicts));
+            let reasons = if m.reasons > 0 { format!(", {} move their reason", m.reasons) } else { String::new() };
+            moves.push(format!(
+                "{t}: {} go, {} appear{reasons}; dump {} tags, {} reclaim, {} verdicts",
+                m.gone, m.appear, m.tags, m.reclaim, m.verdicts
+            ));
         }
     }
     assert_eq!(moves, PINNED);
@@ -557,6 +581,16 @@ fn per_target_moves() {
 /// program's since GH #1490 (`dna/host/verb`), which runs to exit and
 /// has no leak site on either side: it moves its dump alone. Every other
 /// target moves its dump's tags and reclaim columns alone.
+///
+/// GH #1490 (C2) adds the scratch-local accumulators — a value built in
+/// the fn's own loop and returned — to what the frame decides:
+/// `factory_field_owner_test`'s `churn` result also goes (its caller's
+/// loop is const-bounded), and in `dna/host` one more goes (dna/core's
+/// `words_in_both`) and one moves its reason (`env_words`' result, kept
+/// once per call by a long-lived caller; `magnitude_facets`', the other
+/// before the split, is verb code the body no longer reaches, and the
+/// verb program has no leak site to move); one more of the body's dump
+/// verdicts and nine of the verb program's move with them.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -574,8 +608,8 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
     "dna/api: 0 go, 0 appear; dump 347 tags, 710 reclaim, 0 verdicts",
     "dna/core: 0 go, 0 appear; dump 279 tags, 630 reclaim, 0 verdicts",
-    "dna/host: 1 go, 31 appear; dump 413 tags, 773 reclaim, 43 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 413 tags, 700 reclaim, 658 verdicts",
+    "dna/host: 2 go, 31 appear, 1 move their reason; dump 413 tags, 773 reclaim, 44 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 413 tags, 700 reclaim, 667 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "dna/operations: 0 go, 0 appear; dump 337 tags, 702 reclaim, 0 verdicts",
     "dna/organism: 0 go, 0 appear; dump 290 tags, 648 reclaim, 0 verdicts",
@@ -593,7 +627,7 @@ const PINNED: &[&str] = &[
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
-    "tests/hale/factory_field_owner_test.hl: 1 go, 0 appear; dump 1 tags, 0 reclaim, 1 verdicts",
+    "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/identities_and_ranges_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/imported_fn_value_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",

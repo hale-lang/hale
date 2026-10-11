@@ -417,7 +417,11 @@ Beyond the effect assertions above, all opt-in:
 - `@supervised` on a **locus** — every locus in its subtree must have a
   failure policy in scope.
 - `@unbounded` on a fn or hook — acknowledges an intentional
-  accumulation and silences the unbounded-allocation advisory.
+  accumulation and silences the unbounded-allocation advisory; the
+  growth is not yet understood. `@bounded_by(<name>)` silences the same
+  and names the input that bounds it (`@bounded_by(record)`,
+  `@bounded_by(open_requests)`); prefer it when you know. One or the
+  other, not both.
 - `@form(lru_cache)` joins `vec` / `hashmap` / `ring_buffer` as a
   cap-bounded collection shape.
 

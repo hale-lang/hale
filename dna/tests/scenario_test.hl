@@ -201,6 +201,35 @@ nursery https://github.com/hale-lang/nursery
 }
 ";
 
+const REASSIGNED: String = "# an assignment taken back and given again in one batch stands
+state seed:api
+open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+ratify by riley
+assign api/reviewer reviews seed:api
+ratify batch by riley
+apply {
+unassign api/reviewer reviews seed:api
+assign api/reviewer reviews seed:api
+}
+ratify batch by riley
+expect reviews position:api/reviewer seed:api
+";
+
+const EFFECTS_MOVED: String = "# a batch whose effects changed under it is refused whole: a consumer added meanwhile is kept
+state seed:api
+state seed:web
+state seed:mobile
+expose seed:api as contract:spec/api.md
+ratify batch by riley
+depend seed:web on contract:spec/api.md
+depend seed:mobile on contract:spec/api.md
+ratify batch by riley
+ratify earlier batch by riley
+expect stale
+expect consumes seed:mobile contract:spec/api.md
+expect no consumes seed:web contract:spec/api.md
+";
+
 const PACK_RETIRED: String = "# a pack retired: what it opened closes, its practices retire, and the rest stays
 open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
 ratify by riley
@@ -269,6 +298,7 @@ main locus App {
         last: String = ""; // the last proposal's digest
         last_batch: String = ""; // the last batch's family digest
         last_steps: String = ""; // and its steps
+        prev_batch: String = ""; // the batch proposed before it
     }
     bus { publish dna::ReviewVerdict; }
 
@@ -357,6 +387,7 @@ main locus App {
         self.body.on_graph_requested(dna::GraphReviewRequest { request_id: id, review_id: filing.review_id, by: "grace" });
         if len(self.row_body("graph.proposed", id)) == 0 { return "the organization opened no Review for the batch"; }
         self.last = filing.digest;
+        self.prev_batch = self.last_batch;
         self.last_batch = filing.digest;
         self.last_steps = plan.steps;
         return "";
@@ -427,6 +458,13 @@ main locus App {
             // vacate` proposes it
             let why = self.apply(line + "\n");
             return why;
+        }
+        if std::str::starts_with(line, "ratify earlier batch by ") {
+            // the batch proposed before the last: decided now, it is the one
+            // `expect stale` reads
+            if len(self.prev_batch) == 0 { return "no earlier batch"; }
+            self.last_batch = self.prev_batch;
+            return self.step("ratify batch by " + std::str::trim(line[24..len(line)]));
         }
         if std::str::starts_with(line, "ratify batch by ") {
             if len(self.last_batch) == 0 { return "no batch to ratify"; }
@@ -557,6 +595,8 @@ main locus App {
         std::test::assert_eq_str(self.scenario("exposed", EXPOSED), "", "a capability exposed as a contract, and a part depending on it");
         std::test::assert_eq_str(self.scenario("externalized", EXTERNALIZED), "", "a part externalized and internalized again");
         // the known-open table: each fails at the operation it names
+        std::test::assert_eq_str(self.scenario("reassigned", REASSIGNED), "", "unassign then assign in one batch leaves the assignment");
+        std::test::assert_eq_str(self.scenario("effects-moved", EFFECTS_MOVED), "", "a batch whose effects moved is refused whole, the newer consumer kept");
         std::test::assert_eq_str(self.scenario("nursery-trusted", NURSERY_TRUSTED), "", "a nursery is trusted by the Board, once");
         std::test::assert_eq_str(self.scenario("pack-retired", PACK_RETIRED), "", "a pack retired: what it brought leaves, what was there before stays");
     }

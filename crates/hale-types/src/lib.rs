@@ -54,6 +54,7 @@ pub mod judgment;
 pub mod mangle;
 pub mod model_builder;
 pub mod model_query;
+pub mod route_loss;
 pub mod topic_identity;
 pub mod topology;
 pub mod topology_diff;
@@ -152,6 +153,21 @@ pub fn unbounded_alloc_warnings(
 ) -> Vec<Diag> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     alloc_summary::unbounded_alloc_diags(summary, &progs, &bundle.snapshot, &bundle.sources, include_all)
+}
+
+/// What each `@unbounded` or `@bounded_by` decorator of the program silences: the
+/// survey's sites and the hot-path lint's warnings it drops
+/// ([`alloc_summary::unbounded_uses`]). `summary` and `top` are the
+/// bundle's snapshot's (`demand_alloc_summary`, `demand_scope`). Drives
+/// `hale check --report-unbounded-use`.
+pub fn unbounded_use_report(
+    bundle: &Bundle<'_>,
+    summary: &alloc_summary::AllocSummary,
+    top: &resolve::TopScope,
+) -> Vec<alloc_summary::UnboundedUse> {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let hot = check::hot_path_silenced(summary, top);
+    alloc_summary::unbounded_uses(summary, &progs, &bundle.snapshot, &bundle.sources, &hot)
 }
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored

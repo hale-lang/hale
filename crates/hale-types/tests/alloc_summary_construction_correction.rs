@@ -49,7 +49,10 @@
 //! the copy's). 77 targets are run-to-exit programs: each loses the 21
 //! leak sites of the copy's own fns, and two lose two of `main`'s own.
 //! No site is added and no other target moves. The old answer is the
-//! corrected summary with `analysis_copy` cleared.
+//! corrected summary with `analysis_copy` cleared. (Since GH #1490 the
+//! copy's 21 are no leak sites to begin with — each is a value a copy fn
+//! builds in its own loop and returns, judged once per call — so only
+//! the programs that lose a site of their own still move.)
 //!
 //! **A program's declaration is the row where the copy declares the
 //! same name.** The summary keys a fn by its name, and the copy's body
@@ -607,11 +610,16 @@ fn run_to_exit(target: &str) -> Option<(usize, Vec<String>)> {
     .flatten()
 }
 
-/// Every run-to-exit program loses the copy's 21 sites (more where the
-/// program reaches more of the copy: since F.40 E5 the listener's
-/// `on_conn` call resolves to the program's handler, which can make more
-/// of the copy invoked unboundedly); two also lose their own `main`'s
-/// in-loop sites, and docs-server its handler's; no other target moves.
+/// A run-to-exit program loses the copy's leak sites and its own. The
+/// copy's used to be 21 in every one: each a value a copy fn builds in
+/// its own loop and returns (`__md_to_html`, the YAML reader's
+/// `list_item`, …), which GH #1490 (C2) judges once per call, so in a
+/// program that reaches none of them from a long-lived frame they are no
+/// leak sites at all, and the 84 programs that lost only those no longer
+/// move. What is left is the copy's one site the listener's `on_conn`
+/// call reaches (since F.40 E5 it resolves to the program's handler,
+/// which makes more of the copy invoked unboundedly), and the own `main`
+/// in-loop sites, and docs-server's handler's; no other target moves.
 #[test]
 fn own_entries_run_to_exit_programs() {
     let mut moved = 0;
@@ -620,7 +628,7 @@ fn own_entries_run_to_exit_programs() {
     for t in targets() {
         let Some((copy, mine)) = run_to_exit(&t) else { continue };
         moved += 1;
-        if copy != 21 {
+        if copy != 0 {
             more.push((t.clone(), copy));
         }
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
@@ -632,13 +640,14 @@ fn own_entries_run_to_exit_programs() {
     // programs, `tests/hale/units_{identities,money,temperature,ticks,time}_test.hl`;
     // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
     // `tests/hale/time_return_test.hl`; 89: `dna/api`, whose `Head::run` serves a
-    // surface and is no longer a run-to-exit program (R4 B).
-    assert_eq!(moved, 89, "the run-to-exit programs among the targets");
+    // surface and is no longer a run-to-exit program (R4 B); 5: GH #1490
+    // (C2), the copy's 21 returned loop accumulators no longer leak.
+    assert_eq!(moved, 5, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(
         more,
         [
-            ("crates/hale-codegen/tests/fixtures/examples/docs-server".to_string(), 22),
-            ("crates/hale-codegen/tests/fixtures/examples/http-hello".to_string(), 22),
+            ("crates/hale-codegen/tests/fixtures/examples/docs-server".to_string(), 1),
+            ("crates/hale-codegen/tests/fixtures/examples/http-hello".to_string(), 1),
         ],
         "the copy's leak sites"
     );
@@ -1050,7 +1059,7 @@ fn startable_moves(target: &str) -> Option<Vec<String>> {
 /// `std::http::Server`, stays long-lived). Among the targets only the
 /// host's verb program moves: it starts no locus with a hook or a
 /// handler, so it runs to exit, and every leak site of its fns goes —
-/// counted by the seed the fn is declared in (the host's 131, the core's
+/// counted by the seed the fn is declared in (the host's 129, the core's
 /// 85, …). The correction only narrows: no target gains a site. The old
 /// answer is the corrected summary with `startable` cleared.
 #[test]
@@ -1070,9 +1079,9 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "dna__core: 85",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 131",
-                "dna__operations: 30",
-                "the stdlib's copy: 22",
+                "dna__host: 129",
+                "dna__operations: 20",
+                "the stdlib's copy: 1",
             ])
         )]
     );

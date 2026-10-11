@@ -350,6 +350,30 @@ The remaining verbs (#382 phases 2–5):
   the reader wants the whole list. Without it, sealing is per-locus
   discipline, and one unsealed member of a vault group is the whole
   hole.
+- **`require no_silent_loss(topic T | all G)`** (GH #1327 § 2) — no
+  modeled boundary on a named route is configured to discard
+  silently. A route is a wire subject; `all G` takes every route a
+  member publishes or subscribes (a group touching none is an error);
+  a wildcard endpoint contributes every modeled address its pattern
+  matches (`wildcard_match`, the address read as literal send text —
+  a topic, send or binding address spelled with `**` included) plus
+  the pattern itself for the unmodeled remainder, and on a pattern route endpoints and holes
+  are matched by subject-set overlap. Read from the model at every boundary on the route: the topic's
+  `on_unmatched: swallow`, a subscription's `drop_old` / `drop_new`
+  shed policy, a send's `or discard`, a binding whose loss behavior
+  is `drop`. A refusal the caller observes (`on_unmatched: fail` or
+  `on_full: fail` with `or raise` / `or wait`) is not a silent
+  discard. `violated` lists every silent setting; `uncertified` (never
+  `holds`) when a send routes its refusal into a custom handler, when a
+  connect-side binding's link loss is supervision policy and not every
+  send waits, when a hole hides the route's endpoints, or when an
+  unresolved publisher may reach the route — a function-grain
+  `ComputedSubject` hole whose locus's declared publish patterns
+  overlap it (no declared pattern: every route), any other
+  function-grain hole hiding PUBLISHES, or stdlib absorption residue
+  that can address it. A silent
+  setting outranks an unproven one. Policy only: accepted-message
+  accounting and durability across process failure are out of scope.
 - **`cover topic in seed(a): subscribed_by(some G)`** — bounded
   universal: every topic the seed imported as `a` declares has a
   subscriber in G. Every uncovered topic is named. A seed with no
@@ -1683,7 +1707,7 @@ state), and zeroization.
 | **Acyclic role includes** | a role reachable from its own `includes` chain: composition is grant-only and union-only, so a cycle says nothing | error | `role_cycle` (roles) |
 | **Pool starvation** | two or more `run()` bodies that statically never return sharing one cooperative pool of the deployed root (the main locus's own `run()` counts on pool `main`): the pool runs each `run()` to completion in birth order, so the later ones never start (`spec/semantics.md` rules 7 and 8). Read from the placement table's rows and the flow rows' "never returns" column; not reported on a pool where the dead-receiver error fired | warning | `check_pool_starvation` |
 | **Birth-order trap** | a params field of the deployed root whose `run()` runs inline on the main thread and statically never returns, with params declared after it, which are then never born. Reported once, at the first such field, listing the fields it starves; read from the placement table's rows and the flow rows | warning | `check_birth_order` |
-| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound, an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` silences | warning / error | `check_hot_path_alloc` |
+| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound, an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` or `@bounded_by(<name>)` silences | warning / error | `check_hot_path_alloc` |
 | **Unit declared once** | a `unit` declared twice (`spec/units.md` § "Declarations"): a unit is one node of the catalogue. Reported at the second declaration's name, with the first as its witness; a unit of a name the stdlib's time catalogue declares (`ms`, U4) is that unit declared again, the message naming the catalogue | error | `declared_twice` (units) |
 | **Declared unit** | an equation's target, a denomination or an origin that names no declared unit, at the name, suggesting the nearest declared one, a program's own before the stdlib's; a retired time unit (`m`) says what it is now instead (minutes are `min`) | error | `undeclared_units` (units) |
 | **Unit cycles multiply to one** | a cycle of unit equations whose product is not one, at the equation the closure found inconsistent, stating what it claims and what the other equations imply; the witness is the other path, each step at its declaration | error | `inconsistent_cycles` (units) |
@@ -1722,12 +1746,34 @@ assume the others in a build:
     **error** contract once the precision refinements — store-latest vs.
     append, `@form(cap)` composition — drive in-scope false positives to
     zero.)*
+  - **`@bounded_by(<name>)`** (GH #1490) stands wherever `@unbounded`
+    stands — a free fn, a locus method, a lifecycle hook — and
+    silences exactly what it silences: the survey's sites in that body
+    and the hot-path lint's warnings for it (one rule: both put the fn
+    in the summary's silenced set). The two say different things.
+    **`@unbounded` means the growth is not yet understood**;
+    **`@bounded_by(<name>)` states the input that bounds it** — real
+    growth, bounded by something outside the code: an in-memory mirror
+    of the record (`@bounded_by(record)`), a queue of open requests
+    (`@bounded_by(open_requests)`). The argument is one identifier or
+    dotted name (`@bounded_by(self.fan)`), kept as written; it is
+    documentation and is never resolved. A missing or empty argument,
+    or more than one, is a parse error. A fn carries at most one of the
+    two: `@bounded_by` beside `@unbounded` is refused at the
+    `@bounded_by`, saying to keep it when the bound is known and
+    `@unbounded` while it is not; a second `@bounded_by` is a duplicate
+    (§ Decorator stacks), and on a hook both are refused where it
+    parses. It meets `@unbounded`'s contradictions under its own
+    spelling: with `@hot`, with an effect assertion that forbids
+    `alloc`, and with `@budget(alloc_per_call = 0)`.
+    `--dump-alloc-summary` shows the bound beside the fn
+    (`bounded_by(record)`), and `--report-unbounded-use` reports it.
   - **The whole-program advisory survey — DEFAULT-ON since 2026-07-02**
     (the M3 stage-5 flip, after a full-corpus audit triaged all 402
     warnings: every true positive preserved, every residual false positive
     in a documented accepted class — see
     notes/unbounded-alloc-audit-2026-07-02.md). Flags every site
-    regardless of `@bounded` (a `@unbounded` fn is still suppressed, and
+    regardless of `@bounded` (a `@unbounded` or `@bounded_by` fn is still suppressed, and
     so is a site with **no author position**: one whose span lies in
     source a desugar generated — at or beyond
     `API_SYNTH_BASE` (the window of source the serve expansion generates), or in a declaration the snapshot's origin rows
@@ -1756,6 +1802,34 @@ assume the others in a build:
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).
+    **`--report-unbounded-use`** says which `@unbounded` and
+    `@bounded_by` decorators silence anything (GH #1490). It prints one
+    line on stdout per decorated fn or lifecycle hook of the program,
+    its imported seeds' included (the stdlib's analysis copy and the
+    appended api runtime are not the program's, so their decorators are
+    not listed):
+    `unbounded-use<TAB><path>:<line><TAB><fn><TAB><survey><TAB><hot-path><TAB><decorator>`.
+    `<path>` is relative to the working directory, `<line>` is the
+    decorator's (a hook takes no other decorator, so its declaration
+    opens with it), and `<fn>` is spelled as the program spells it.
+    `<survey>` counts the fn's sites this survey would report were the
+    decorator removed: final verdict unbounded accumulation, the
+    program's own, at an author position — the same filter as the
+    warnings — and 0 in a run-to-exit program. `<hot-path>` counts the
+    hot-path allocation warnings the lint drops for the fn (0 for a
+    `@hot` fn, whose findings are errors either way). `<decorator>` is
+    `unbounded`, or `bounded_by(<name>)` with the name as written. The carve-out
+    drops a fn's own sites and findings and nothing else — no verdict
+    reads it — so each count is exactly what removing that one
+    decorator would add. Each count is the analysis's, before the
+    check drops advisories in files the target does not own: a seed's
+    decorator is counted in a consumer's context, where its fn may be
+    invoked unboundedly though the consumer's check would not print the
+    warning. Lines are sorted by path and line; the diagnostics and
+    the exit code are the check's. `scripts/unbounded-unused.sh`
+    aggregates the report over every DNA program and lists the
+    decorators of either kind that silence nothing in any program that
+    contains them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
   a method, an authored hook, a mode), keyed by its site and printed
@@ -1810,6 +1884,30 @@ assume the others in a build:
   locus instantiation is not a value in its caller's arena (the
   instance's arena is its own). `--dump-alloc-summary` tags a
   scratch-local fn `[scratch-local]`, or `[scratch-local, recursive]`.
+
+  **A returned accumulator is one value per call** (GH #1490). A value
+  a fn builds in an unbounded loop of its own body and returns — the
+  `let mut out = ""; while … { out = out + x; } return out;` shape, or
+  a `found = Row { … }` the loop replaces — is not judged as growing
+  with the loop when the fn's activation has a boundary: a method's or
+  handler's per-call scratch, a scratch-local fn's subregion, or, for a
+  free fn that lands in its caller's arena, a caller that has one (the
+  fn is reached from no `main` / `run` body, nor from a free fn of
+  theirs, without a scratch on the way). Each iteration's value
+  supersedes the last, and the superseded ones die at that boundary
+  with the call's other temporaries, so the site counts once per
+  invocation; whether the value returned accumulates is then the
+  caller's question, as for any returned value — reported when a direct
+  caller is a `main` / `run` body or a free fn reached from one (its
+  result lands there each call: "in a fn invoked unboundedly"), not
+  when the caller is a method or handler, whose scratch frees it. The
+  in-loop verdict stays where there is no boundary — the fn's frame is
+  such a long-lived frame's arena, so every iteration's value stays
+  until the locus dissolves — and inside a literal `while true`, which
+  never reaches it. RSS-validated: an accumulator of 20 iterations
+  called 10k times adds nothing over the runtime floor consumed in a
+  method (4.6 MB), and ~96 MB consumed directly in `run`'s loop
+  (`alloc_model_rss.rs::a_returned_loop_accumulator_reclaims_with_its_activation`).
 - **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
   The dual of `@unbounded`: where `@unbounded` acknowledges intentional
   unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and
@@ -2495,6 +2593,25 @@ assume the others in a build:
   fields (those leaves don't retire yet), stores directly inside a
   `run()`-loop (no activation boundary — pending retires never
   flush), and scratchless owners.
+
+  **A `String` field replaced whole stays reported** (GH #1490). A
+  `self.<f> = <fresh String>` store retires the replaced block at the
+  activation boundary too (`lotus_str_assign_in_place`), but the
+  runtime reuses a retired block only when the next value's size fits
+  it within a short probe window, and a reused block is retired again
+  at its new value's length, so the slack of a longer block that took
+  a shorter value is lost. A value of near-constant length recycles; a
+  value whose length varies keeps bump-allocating into the locus
+  arena — measured over 1M replaces in a method, lengths 7–8 stay at
+  the 4.6 MB floor while lengths 6–55 reach 35.7 MB (the locus arena
+  alone 15.6 MiB after 500k; a bus handler, 500k messages: 24.5 MB
+  against 9.3 MB). The survey cannot see a value's length, so the
+  replace is reported as before
+  (`alloc_model_rss.rs::a_string_field_replace_of_varying_length_grows`).
+  The struct replace this flip excuses recycles its `String` fields
+  through the same reuse and has the same limit: its "flat" holds for
+  near-constant lengths (the measurement above used 7–8 characters);
+  with lengths 6–15 one `String` field grows ~15 B per replace.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /
@@ -2581,7 +2698,7 @@ subregion-slot freelist lock. (The per-thread chunk pool needs no model
 A fn's decorators are a LIST, not a slot. The **identity** decorators —
 `@ffi(...)`, `@export` — say what the declaration is, and each is
 exclusive with the other. The **contract** decorators — `@unbounded`,
-`@hot`, `@budget(...)`, and the effect assertions (`@effects(...)` and
+`@bounded_by(<name>)`, `@hot`, `@budget(...)`, and the effect assertions (`@effects(...)` and
 its `@no_*` sugar) — say what it promises, and *all of them stack, in
 any order*:
 
@@ -2602,12 +2719,13 @@ a *syntax* error — which forced the workaround of wrapping
 `@unbounded` methods in a free `@no_syscall` fn purely to carry the
 second contract.)
 
-A **lifecycle hook** is the exception: `@unbounded run { … }` and
-nothing else. A hook is one-shot, so a per-call ceiling has no calls to
+A **lifecycle hook** is the exception: `@unbounded run { … }` or
+`@bounded_by(<name>) run { … }`, once, and nothing else (a repeat or
+the pair is a parse error there, since a hook keeps no decorator list). A hook is one-shot, so a per-call ceiling has no calls to
 divide by, and it is not a fn a caller asserts over. Put the other
 contracts on a `fn` the hook calls.
 
-What a stack cannot do is contradict itself. Two shapes are **errors at
+What a stack cannot do is contradict itself. These shapes are **errors at
 check time, reported at the decorator** (not parse errors — the
 declaration is well-formed, its meaning is not):
 
@@ -2626,7 +2744,14 @@ declaration is well-formed, its meaning is not):
   zero-allocation certificate. Each says there is no allocation to
   acknowledge; `@unbounded` says there is one and it is deliberate. A
   decorator that contradicts its neighbour cannot be enforced, and both
-  together describe no program.
+  together describe no program. `@bounded_by(<name>)` silences what
+  `@unbounded` silences, so it meets the same three, reported under its
+  own spelling.
+- **`@bounded_by(<name>)` beside `@unbounded`** (GH #1490). Both silence
+  the same warnings and they say opposite things about the growth: the
+  one names the input that bounds it, the other says it is not yet
+  understood. Reported at the `@bounded_by`: keep it when the bound is
+  known, `@unbounded` while it is not.
 
 A per-call ceiling **above** zero is not a contradiction:
 `@budget(alloc_per_call = 2) @unbounded` reads "at most two allocations

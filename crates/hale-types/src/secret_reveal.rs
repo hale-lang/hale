@@ -630,6 +630,9 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
         // absence says nothing about the body, so it goes as well (an
         // `@rpc` on the fn stays in the text, and is a change).
         text = text.replace("rpc: None, ", "");
+        // GH #1490: the same for `@bounded_by(<name>)` (a fn with one
+        // keeps it in the text, and it is a change).
+        text = text.replace("bounded_by: None, ", "");
         text
     });
     let mut text = text;

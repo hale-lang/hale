@@ -248,6 +248,8 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
         }
         ClaimForm::RequireSealed { group } => name(group, f),
         ClaimForm::RequireAttributed { class_name } => name(class_name, f),
+        ClaimForm::RequireNoSilentLossTopic { topic } => topic_ref(topic, f),
+        ClaimForm::RequireNoSilentLossGroup { group } => name(group, f),
         ClaimForm::Cover { alias, group } => {
             name(alias, f);
             name(group, f);
@@ -337,7 +339,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
         }
         LocusMember::Bus(bb) => bus(bb, f),
         LocusMember::Lifecycle(ld) => {
-            let LifecycleDecl { kind: _, params: ps, ret, unbounded: _, body, span: _, id: _, synthesized: _ } = ld;
+            let LifecycleDecl { kind: _, params: ps, ret, unbounded: _, bounded_by: _, body, span: _, id: _, synthesized: _ } = ld;
             params(ps, f);
             opt_ty(ret, f);
             block(body, f);
@@ -526,6 +528,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         ffi,
         export: _,
         unbounded: _,
+        bounded_by: _,
         budget: _,
         hot: _,
         effects,

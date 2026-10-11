@@ -211,6 +211,8 @@ impl Shift for ClaimForm {
             ClaimForm::Require { publishers, group, topic } => sh!(d; publishers, group, topic),
             ClaimForm::RequireSealed { group } => sh!(d; group),
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
+            ClaimForm::RequireNoSilentLossTopic { topic } => sh!(d; topic),
+            ClaimForm::RequireNoSilentLossGroup { group } => sh!(d; group),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),
         }
@@ -501,7 +503,7 @@ impl Shift for KeyFilter {
 
 // Lifecycle, modes, failure, closures.
 
-shift_struct!(LifecycleDecl { kind, params, ret, unbounded, body, span, id, synthesized });
+shift_struct!(LifecycleDecl { kind, params, ret, unbounded, bounded_by, body, span, id, synthesized });
 shift_unit_enum!(LifecycleKind { Birth, Accept, Release, Run, Drain, Dissolve });
 shift_struct!(ModeDecl { kind, params, ret, body, span, id });
 shift_unit_enum!(ModeKind { Bulk, Harmonic, Resolution });
@@ -641,6 +643,7 @@ shift_struct!(FnDecl {
     ffi,
     export,
     unbounded,
+    bounded_by,
     budget,
     hot,
     effects,

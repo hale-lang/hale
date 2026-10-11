@@ -1,0 +1,62 @@
+// GH #1490: `unbounded-use.hl` with each `@unbounded` stating its bound
+// instead: `@bounded_by(<name>)` silences the same things.
+type Sample { value: Int; }
+type Holder { items: [Int; 4]; }
+
+locus Conn { run() { } }
+
+locus Acc {
+    params {
+        cache: Holder = Holder { items: [0, 0, 0, 0] };
+        seen: Int = 0;
+    }
+    bus {
+        subscribe "sample" as on_sample of type Sample;
+        subscribe "quiet" as on_quiet of type Sample;
+    }
+    // Silences a survey site: a whole-value replace per message.
+    @bounded_by(record)
+    fn on_sample(s: Sample) {
+        self.cache = Holder { items: [s.value, s.value, s.value, s.value] };
+    }
+    // Silences nothing: no allocation at all.
+    @bounded_by(quiet.rate)
+    fn on_quiet(s: Sample) {
+        self.seen = self.seen + s.value;
+    }
+}
+
+// Silences a hot-path warning: a locus instantiated per iteration.
+@bounded_by(n)
+fn spawn_many(n: Int) {
+    let mut i = 0;
+    while i < n {
+        let c = Conn { };
+        i = i + 1;
+    }
+}
+
+// A hook's decorator: the line reported is the `@bounded_by`'s.
+locus Fan {
+    params { fan: Int = 4; }
+    @bounded_by(self.fan)
+    run() {
+        let mut n = 0;
+        while n < self.fan {
+            let c = Conn { };
+            n = n + 1;
+        }
+    }
+}
+
+locus Src {
+    bus { publish "sample" of type Sample; publish "quiet" of type Sample; }
+    birth() { "sample" <- Sample { value: 1 }; "quiet" <- Sample { value: 2 }; }
+}
+
+fn main() {
+    spawn_many(3);
+    Acc { };
+    Fan { };
+    Src { };
+}

@@ -604,6 +604,15 @@ pub enum ClaimForm {
     /// has a subscriber in G. A seed with no topics is a vacuity
     /// error.
     Cover { alias: Ident, group: Ident },
+    /// `require no_silent_loss(topic T);` — no boundary on the route
+    /// `T` is configured to discard silently: no `on_unmatched:
+    /// swallow`, no shedding subscriber queue, no `or discard` send,
+    /// no lossy binding. A refusal the sender observes is not a
+    /// silent discard; a custom refusal handler is unproven.
+    RequireNoSilentLossTopic { topic: TopicRef },
+    /// `require no_silent_loss(all G);` — the same policy over every
+    /// route a member of G publishes or subscribes.
+    RequireNoSilentLossGroup { group: Ident },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.
@@ -2082,6 +2091,10 @@ pub struct LifecycleDecl {
     /// body — the carve-out for a `run`-loop accumulation inside a
     /// `@bounded` locus, paralleling `@unbounded fn`.
     pub unbounded: bool,
+    /// GH #1490: `@bounded_by(<name>) run { ... }` — the hook's growth is
+    /// bounded by the named input (see [`FnDecl::bounded_by`]). Silences
+    /// what `unbounded` silences; a hook carries at most one of the two.
+    pub bounded_by: Option<String>,
     pub body: Block,
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
@@ -2683,6 +2696,16 @@ pub struct FnDecl {
     /// silence under `--warn-unbounded-alloc`. Applies to free fns and
     /// locus methods alike.
     pub unbounded: bool,
+    /// GH #1490: `@bounded_by(<name>) fn` — the fn's growth is real but
+    /// bounded by an input, and `<name>` (an identifier or dotted name,
+    /// as written; documentation, never resolved) says which: an
+    /// in-memory mirror of the record, a queue of open requests. It
+    /// silences exactly what `@unbounded` silences (the survey's sites
+    /// in the fn and the hot-path lint's warnings), and is shown by
+    /// `--dump-alloc-summary` and `--report-unbounded-use`. `@unbounded`
+    /// says the growth is not yet understood; this states what bounds
+    /// it. A fn carries at most one of the two (a check-time rule).
+    pub bounded_by: Option<String>,
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     /// hot-path contract asserting this fn performs at most `N` arena
     /// allocations per call (counting the literals/collection inserts the
