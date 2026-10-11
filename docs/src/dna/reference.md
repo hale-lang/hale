@@ -17,10 +17,12 @@ directory as an optional argument and default to the current one.
 [DNA, the building block](./dna.md).
 
 ```text
-hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]
+hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]… [--as <who>]]
                              attach the DNA to an existing application; the record starts with the language and system
                              nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the
-                             library, not the practices); --with proposes a pack from the toolchain's nursery as one batch beside them
+                             library, not the practices); --with proposes a pack from the toolchain's nursery as one batch beside them,
+                             planned on the holes init opens so it may fill them (`--with founder --set founder=<you>` seats you in
+                             every one): one `review all approve` ratifies the starting organization, seats included
 hale dna new <name> [--no-library]
                              a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
@@ -246,15 +248,16 @@ hale dna ingest [project] [--at <rev>]
                              for every served operation included, proposed as one Board Review (`review ingest approve`)
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
-hale dna apply <file> [--dry-run] [--as <who>]
-                             several changes to the structure (`open`, `fill`, `vacate`, `practice`, `assign`, `unassign`, `close`, `merge`, `split`,
-                             `expose`, `depend`, `externalize`, `internalize`, `retire-practice`) as one Board Review, applied all or nothing
-                             (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing
+hale dna apply <file> [--dry-run] [--as <who>] [--on-holes]
+                             several changes to the structure (`open`, `fill`, `fill *`, `vacate`, `practice`, `assign`, `unassign`, `close`, `merge`,
+                             `split`, `expose`, `depend`, `externalize`, `internalize`, `retire-practice`) as one Board Review, applied all or nothing
+                             (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing; --on-holes
+                             plans it on the holes init proposed that the Board has not decided, and ratifies it after them
 hale dna vacate <position> <holder> [--dry-run] [--as <who>]
                              a holder leaves a position: a one-step batch, one Board Review (`review changes approve`)
 hale dna pack list [--from <dir|git-url[#rev]>]
 hale dna pack show <name> [--set <param>=<value>]… [--from …]
-hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]
+hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [--on-holes] [project]
 hale dna pack retire <name> [--dry-run] [--as <who>] [project]
 hale dna nursery add <dir|git-url> [--dry-run] [--as <who>] [project]
 hale dna nursery list [project]
@@ -462,7 +465,7 @@ kind it does not know keeps walking.
 | `decision.reported` | ledger | a decision someone else made, reported by the assignee |
 | `person.retired` | record | someone left, and who took their work |
 | `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
-| `batch.proposed` | record | a batch `hale dna apply` proposed as one Review in `changes`, with its steps; `graph.requested` under the same id asks the organization to open it |
+| `batch.proposed` | record | a batch `hale dna apply` proposed as one Review in `changes`, with its steps (and `planned_on`, the pending Reviews it was planned on); `graph.requested` under the same id asks the organization to open it |
 | `position.requested` / `position.proposed` / `position.refused` | record | a position asked at run time (`hale dna position open`), proposed with its mandate as one Board Review, or refused |
 | `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |

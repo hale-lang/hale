@@ -5,7 +5,7 @@
 // reads (dna/tests/scenario_test.hl):
 //
 //   open <name> [under <node>] | <mandate>
-//   fill <name> <holder>
+//   fill <name> <holder>                fill * <holder>   (every vacant seat)
 //   vacate <name> <holder>
 //   practice <name> | <text>
 //   assign <name> reviews <node>        unassign <name> reviews <node>
@@ -35,6 +35,13 @@
 // in one append (`KnowledgeRecord.resume_family`), after the batch is planned
 // again against the record as it then stands: a batch whose ground moved is
 // refused whole as stale, never half applied.
+//
+// A batch may be planned on proposals still pending (`batch_plan_on`, what
+// `hale dna init --with <pack>` does with the holes init just proposed):
+// planned as though they were ratified, it names those it stands on
+// (`planned_on`), and its ratification waits until each of them is decided —
+// ratified, it is planned again against the record and applied; one of them
+// declined or refused, it is refused whole as stale.
 
 // A planned batch. `steps` are the normalized steps, one a line:
 // `open\t<position>\t<under>\t<mandate>`, `fill\t<position>\t<holder>` or
@@ -61,6 +68,9 @@ type BatchPlan {
     // retirements and nurseries. The family carries it, and ratifying
     // plans the batch again and refuses it when this moved
     effects: String = "";
+    // the pending proposals it was planned on (`batch_plan_on`), one
+    // `<review id> <digest>` a line: ratified after them, refused with any
+    planned_on: String = "";
 }
 
 // What a plan has made of the steps so far: the org chart after them, the
@@ -77,6 +87,7 @@ type PlanState {
     restated: String = "\n";
     retirements: String = ""; // `<name>\t<digest>` of each practice it retires
     nurseries: String = ""; // each nursery it trusts, one a line
+    steps: String = ""; // the steps with each `fill *` written as its fills
 }
 
 // A planned batch, filed: the receipts to keep (one document a line) and the
@@ -202,7 +213,9 @@ fn batch_steps(text: String) -> BatchPlan {
             let name = args[0..sp];
             let holder = std::str::trim(args[(sp + 1)..len(args)]);
             if !batch_word(name) || !batch_word(holder) { out.why = at + "a " + verb + " names the position and its holder, one word each"; return out; }
-            out.steps = out.steps + verb + "\t" + batch_position(name) + "\t" + holder + "\n";
+            // `fill * <holder>`: every seat the batch leaves vacant (`batch_plan`)
+            if name == "*" && verb == "vacate" { out.why = at + "a vacate names the position it empties"; return out; }
+            out.steps = out.steps + verb + "\t" + (if name == "*" { name } else { batch_position(name) }) + "\t" + holder + "\n";
             continue;
         }
         let words = batch_words(line);
@@ -436,6 +449,8 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         if verb == "open" || verb == "practice" { continue; }
         let p = batch_field(step, 1);
         let q = batch_field(step, 2);
+        // every vacant seat is known once every other step is taken
+        if verb == "fill" && p == "*" { continue; }
         if verb == "fill" {
             let stated = chart_has(out.before, "position " + p);
             if !chart_has(st.after, "position " + p) { st.why = "`fill " + p + " " + q + "`: no position the graph states or the batch opens"; }
@@ -556,6 +571,13 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         }
         if len(st.why) > 0 { out.why = st.why; return out; }
     }
+    // `fill * <holder>`: every position the batch leaves vacant, mandated and
+    // not vacated by it, filled by the holder, and written as the fills it
+    // stands for: the Board reads, and ratification plans again, each seat
+    let wild = batch_fill_vacant(st, out.steps);
+    if len(wild.why) > 0 { out.why = wild.why; return out; }
+    st = wild;
+    out.steps = st.steps;
     out.after = st.after;
     out.mandates = st.mandates;
     out.retirements = st.retirements;
@@ -573,6 +595,38 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
     out.graph = batch_rows(st.order, restated, g);
     out.effects = digest_of(out.graph + "\n" + out.mandates + "\n" + out.retirements + "\n" + out.nurseries);
     out.ok = true;
+    return out;
+}
+
+// The plan with every `fill * <holder>` of `steps` taken: each position
+// the organization would then state with a mandate, no holder, and no
+// `vacate` in the batch, filled by the holder in the chart's order; its
+// `steps` are `steps` with each wildcard replaced by the fills it made.
+// A wildcard that finds no seat is refused, as a fill of nothing.
+fn batch_fill_vacant(st: PlanState, steps: String) -> PlanState {
+    let mut out = st;
+    let mut kept = "";
+    let mut seated = "";
+    let mut rest = steps;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let step = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if batch_field(step, 0) != "fill" || batch_field(step, 1) != "*" { kept = kept + step + "\n"; continue; }
+        let h = batch_field(step, 2);
+        let before = len(seated);
+        let mut ps = chart_with(out.after, "position ");
+        while len(ps) > 0 {
+            let pn = std::str::index_of(ps, "\n");
+            let p = ps[0..pn];
+            ps = ps[(pn + 1)..len(ps)];
+            if len(chart_with(out.after, "holds " + p + " ")) > 0 || !chart_has(out.after, "mandate " + p) || std::str::contains(steps, "vacate\t" + p + "\t") { continue; }
+            out = plan_fill(out, p, h);
+            seated = seated + "fill\t" + p + "\t" + h + "\n";
+        }
+        if len(seated) == before { out.why = "`fill * " + h + "`: no position is left vacant to fill"; return out; }
+    }
+    out.steps = kept + seated;
     return out;
 }
 
@@ -962,7 +1016,24 @@ fn batch_render(plan: BatchPlan) -> String {
             out = out + "- " + line + "\n";
         }
     }
-    return out + to_string(added) + " line(s) added to the organization, " + to_string(gone) + " taken out, " + to_string(kept) + " unchanged\n";
+    out = out + to_string(added) + " line(s) added to the organization, " + to_string(gone) + " taken out, " + to_string(kept) + " unchanged\n";
+    if len(plan.planned_on) == 0 { return out; }
+    // the chart before counts the pending proposals the batch stands on
+    return out + "planned on " + to_string(batch_count(plan.planned_on)) + " pending Review(s) (" + batch_review_ids(plan.planned_on) + "): ratified after them, refused whole if any is not\n";
+}
+
+// The review ids of `<review id> <digest>` lines, comma-separated.
+fn batch_review_ids(lines: String) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let sp = std::str::index_of(line, " ");
+        out = out + (if len(out) > 0 { ", " } else { "" }) + (if sp < 0 { line } else { line[0..sp] });
+    }
+    return out;
 }
 
 // What a planned batch changes, as data: the lines of the after chart the
@@ -1085,7 +1156,8 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     }
     g.end_array();
     let what = if len(pack) > 0 { "adopting the pack " + pack_id } else { "the batch " + request_id };
-    let question = "ratify " + what + " as " + by + " proposes it: " + batch_summary(plan.steps);
+    let ground = if len(plan.planned_on) > 0 { "; planned on " + to_string(batch_count(plan.planned_on)) + " pending Review(s), it is ratified after them" } else { "" };
+    let question = "ratify " + what + " as " + by + " proposes it: " + batch_summary(plan.steps) + ground;
     g.string_field("question", question);
     g.string_field("target", "org");
     g.string_field("text", question + ".");
@@ -1171,6 +1243,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     f.string_field("ideas", ideas);
     f.string_field("kind", "family");
     f.string_field("name", name);
+    if len(plan.planned_on) > 0 { f.string_field("planned_on", plan.planned_on); }
     f.string_field("provenance", "proposed by " + by);
     f.end_object();
     let family_doc = f.result();
@@ -1198,6 +1271,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     a.string_field("by", by);
     a.string_field("steps", plan.steps);
     if len(pack) > 0 { a.string_field("pack", pack); }
+    if len(plan.planned_on) > 0 { a.string_field("planned_on", plan.planned_on); }
     a.end_object();
     let rq = std::json::Builder { };
     rq.begin_object();
@@ -1346,4 +1420,153 @@ fn batch_text(steps: String) -> String {
         }
     }
     return out;
+}
+
+// ---- a batch planned on pending proposals ---------------------------------
+//
+// `hale dna init --with <pack>` proposes the pack in the same breath as the
+// holes init opens: the Board, each part's dev and reviewer, each operator.
+// Planned against the record alone, a pack that fills one of those seats is
+// refused (no position the graph states), since a hole is a proposal until
+// the Board ratifies it. So the pack is planned on them: the record read as
+// though those proposals were ratified (`PlannedOn`), the plan naming those
+// it stands on (`planned_on`), and its ratification waiting on theirs
+// (`batch_ground`). `hale dna review all` decides `holes` before `changes`,
+// so one verdict ratifies the starting organization, seats included.
+
+// The record with `assumed` (digests, one a line) read as ratified: a
+// `knowledge.ratified` row for each after the record's own, in that order.
+// Read only; an append is refused.
+locus PlannedOn {
+    params {
+        record: Journal = MemJournal { };
+        assumed: String = "";
+        count: Int = 0;
+    }
+    fn revision() -> Int { return self.record.revision() + self.count; }
+    fn head() -> String { return self.record.head(); }
+    fn refresh() -> Bool { return self.record.refresh(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return AppendResult { error: "io", expected: expected, actual: self.revision() }; }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.append(expected, "", "", ""); }
+    fn read(i: Int) -> Event {
+        let n = self.record.revision();
+        if i < n { return self.record.read(i); }
+        return Event { seq: i, kind: "knowledge.ratified", entity: batch_nth(self.assumed, i - n), body: "{\"planned_on\": true}" };
+    }
+    fn verify_chain() -> Bool { return self.record.verify_chain(); }
+}
+
+// The holes `hale dna init` proposed that are not decided yet, one
+// `<review id> <digest>` a line in the record's order: what `init --with`
+// plans its pack on.
+fn batch_init_holes(j: Journal) -> String {
+    let mut asked = "";
+    let mut decided = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.requested" && native_json_string(e.body, "group") == "holes" && native_json_string(e.body, "author") == "hale dna init" && std::str::starts_with(e.entity, "review:") {
+            asked = asked + e.entity[7..len(e.entity)] + " " + native_json_string(e.body, "knowledge_digest") + "\n";
+        }
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" { decided = decided + e.entity + "\n"; }
+        i = i + 1;
+    }
+    let mut out = "";
+    while len(asked) > 0 {
+        let nl = std::str::index_of(asked, "\n");
+        let line = asked[0..nl];
+        asked = asked[(nl + 1)..len(asked)];
+        let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
+        if len(d) > 0 && !std::str::contains(decided, "\n" + d + "\n") { out = out + line + "\n"; }
+    }
+    return out;
+}
+
+// The batch planned against the record and `pending` (`<review id>
+// <digest>` a line) as though each were ratified, and `planned_on` the
+// pending proposals the plan stands on: a graph proposal one of whose rows
+// the batch's rows or steps name, and a mandate on a node they name. A
+// pending proposal the batch does not touch is no ground of it.
+fn batch_plan_on(j: Journal, receipts: Receipts, text: String, pending: String) -> BatchPlan {
+    if len(pending) == 0 { return batch_plan(j, receipts, text); }
+    let mut digests = "";
+    let mut n = 0;
+    let mut rest = pending;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        digests = digests + line[(std::str::index_of(line, " ") + 1)..len(line)] + "\n";
+        n = n + 1;
+    }
+    let planned = PlannedOn { record: j, assumed: digests, count: n };
+    let mut plan = batch_plan(planned, receipts, text);
+    if !plan.ok { return plan; }
+    let named = plan.graph + plan.steps;
+    rest = pending;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
+        let doc = receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+        if batch_stands_on(named, doc) { plan.planned_on = plan.planned_on + line + "\n"; }
+    }
+    return plan;
+}
+
+// Whether a plan whose rows and steps are `named` stands on the proposal
+// `doc`: a mandate on a node it names, or a graph proposal one of whose
+// rows it names.
+fn batch_stands_on(named: String, doc: String) -> Bool {
+    let kind = native_json_string(doc, "kind");
+    if kind == "mandate" { return batch_names(named, native_json_string(doc, "target")); }
+    if kind != "graph" { return false; }
+    let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+    while !it.done {
+        if batch_names(named, std::json::find_string_field(it.element, "entity")) { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// Whether `text` names the id `id` whole: an occurrence of it bounded on
+// each side by the start or end, a tab, a newline, a space, `"` or `|`
+// (and `:` before it, as in `holds:<position>|<holder>`).
+fn batch_names(text: String, id: String) -> Bool {
+    if len(id) == 0 { return false; }
+    let mut rest = text;
+    let mut prev = "\n";
+    while len(rest) > 0 {
+        let at = std::str::index_of(rest, id);
+        if at < 0 { return false; }
+        let before = if at > 0 { rest[(at - 1)..at] } else { prev };
+        let end = at + len(id);
+        let after = if end < len(rest) { rest[end..(end + 1)] } else { "\n" };
+        if std::str::contains("\t\n \"|:", before) && std::str::contains("\t\n \"|", after) { return true; }
+        prev = rest[at..(at + 1)];
+        rest = rest[(at + 1)..len(rest)];
+    }
+    return false;
+}
+
+// Where a batch planned on pending proposals stands at its ratification:
+// "" when every one of `planned_on` is ratified, "wait" while one is not
+// decided yet, else why the batch cannot be ratified. `ratified` and
+// `declined` hold digests one a line, `refused` `<digest> <why>` lines,
+// each led by a newline.
+fn batch_ground(planned_on: String, ratified: String, refused: String, declined: String) -> String {
+    let mut waits = false;
+    let mut rest = planned_on;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let sp = std::str::index_of(line, " ");
+        let d = line[(sp + 1)..len(line)];
+        if std::str::contains(declined, "\n" + d + "\n") || std::str::contains(refused, "\n" + d + " ") { return "the proposal it was planned on, " + line[0..sp] + ", was not ratified"; }
+        if !std::str::contains(ratified, "\n" + d + "\n") { waits = true; }
+    }
+    return if waits { "wait" } else { "" };
 }

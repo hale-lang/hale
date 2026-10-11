@@ -26,8 +26,13 @@ import "../core" as dna;
 // comment. `apply {` … `}` proposes the steps between as ONE batch, one
 // Board Review (`refused apply {` when the batch must be refused before it
 // is proposed); `ratify batch by <reviewer>` decides the last batch, and
-// `expect stale` that it was refused whole because its ground moved. Steps
-// are proposed by `grace`, who may not ratify them.
+// `expect stale` that it was refused whole because its ground moved.
+// `apply on pending {` … `}` plans the batch on the last proposal while it
+// is still pending (`batch_plan_on`, as `hale dna init --with` plans a pack
+// on init's holes); `ratify ground by` / `reject ground by` decide that
+// proposal, `decide batch by` approves the batch without waiting, `expect
+// undecided` that it is not decided yet, and `await batch` waits until it
+// is. Steps are proposed by `grace`, who may not ratify them.
 const DEV_TEAM: String = "# a small dev team for a CRUD application
 open api/dev | Decides: how the api is built, within its contract. May not: sign its own changes. Cites: the contract and the practices in force. Escalates: contract changes to the Board.
 ratify by riley
@@ -288,6 +293,45 @@ expect serves seed:billing contract:spec/billing.md
 expect no outside contract:spec/billing.md billing
 ";
 
+const PLANNED_ON: String = "# a batch planned on an opening still pending: ratified after it, whole
+open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
+apply on pending {
+fill ops/lead ada
+}
+expect no-position ops/lead
+ratify ground by riley
+ratify batch by riley
+expect holds ops/lead ada
+refused apply {
+fill * bo
+}
+";
+
+const PLANNED_ON_EARLY: String = "# approved before the opening it stands on, the batch waits for it; `fill *` takes every vacant seat
+open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
+apply on pending {
+fill * ada
+}
+decide batch by riley
+expect undecided
+ratify ground by riley
+await batch
+expect holds ops/lead ada
+";
+
+const PLANNED_ON_DECLINED: String = "# the opening it stands on declined, the batch is refused whole
+open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
+apply on pending {
+fill ops/lead ada
+practice ops/write-it-down | A decision that will be asked about again is written into the record.
+}
+reject ground by riley
+ratify batch by riley
+expect stale
+expect no-position ops/lead
+expect no practice ops/write-it-down
+";
+
 const KNOWN_OPEN: String = "";
 
 main locus App {
@@ -299,6 +343,7 @@ main locus App {
         last_batch: String = ""; // the last batch's family digest
         last_steps: String = ""; // and its steps
         prev_batch: String = ""; // the batch proposed before it
+        ground: String = ""; // the pending proposal the last batch was planned on
     }
     bus { publish dna::ReviewVerdict; }
 
@@ -329,6 +374,17 @@ main locus App {
         }
         return out;
     }
+    // Whether every digest of `digests` has a `kind` row.
+    fn rows_for(kind: String, digests: String) -> Bool {
+        let mut rest = digests;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let d = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if len(self.row_body(kind, d)) == 0 { return false; }
+        }
+        return true;
+    }
     fn ratified_all(digests: String) -> Bool {
         let mut rest = digests;
         while len(rest) > 0 {
@@ -357,9 +413,12 @@ main locus App {
     // A batch proposed as the host proposes one (`hale dna apply`): planned,
     // its receipts kept, its rows appended, and its Review opened as a
     // running organization opens it when `graph.requested` is relayed.
-    fn apply(text: String) -> String {
+    fn apply(text: String) -> String { return self.apply_on(text, ""); }
+    // The batch planned on `pending` (`<review id> <digest>` a line) as
+    // though each were ratified.
+    fn apply_on(text: String, pending: String) -> String {
         let receipts = dna::GitReceipts { repo: self.repo };
-        let plan = dna::batch_plan(self.body.journal, receipts, text);
+        let plan = dna::batch_plan_on(self.body.journal, receipts, text, pending);
         if !plan.ok { return "refused: " + plan.why; }
         self.asks = self.asks + 1;
         let id = "b" + to_string(self.asks);
@@ -473,6 +532,63 @@ main locus App {
             }
             return if self.settled_all(wanted) { "" } else { "not settled within the deadline" };
         }
+        if std::str::starts_with(line, "ratify ground by ") || std::str::starts_with(line, "reject ground by ") {
+            if len(self.ground) == 0 { return "no ground"; }
+            let verdict = if std::str::starts_with(line, "ratify") { "approve" } else { "reject" };
+            let reviewer = std::str::trim(line[17..len(line)]);
+            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.ground), subject_digest: self.ground, verdict: verdict, reviewer: reviewer, authority: "board" };
+            let landed = if verdict == "approve" { "knowledge.ratified" } else { "knowledge.declined" };
+            let wanted = self.members(self.ground);
+            let mut tries = 0;
+            while tries < 400 * dna::wait_scale() && !self.rows_for(landed, wanted) {
+                std::time::sleep(25ms);
+                let moved = self.body.journal.refresh();
+                tries = tries + 1;
+            }
+            return if self.rows_for(landed, wanted) { "" } else { "the ground was not decided within the deadline" };
+        }
+        if std::str::starts_with(line, "decide batch by ") {
+            if len(self.last_batch) == 0 { return "no batch to decide"; }
+            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.last_batch), subject_digest: self.last_batch, verdict: "approve", reviewer: std::str::trim(line[16..len(line)]), authority: "board" };
+            // the verdict settles; the batch's ratification is what waits
+            let mut tries = 0;
+            while tries < 400 * dna::wait_scale() && len(self.row_body("review.settled", dna::knowledge_review_id(self.last_batch))) == 0 {
+                std::time::sleep(25ms);
+                let moved = self.body.journal.refresh();
+                tries = tries + 1;
+            }
+            return if len(self.row_body("review.settled", dna::knowledge_review_id(self.last_batch))) > 0 { "" } else { "the verdict did not settle within the deadline" };
+        }
+        if line == "expect undecided" {
+            // given a moment, and a tick, to decide what it should not
+            let mut tries = 0;
+            while tries < 40 {
+                self.body.request_tick(std::time::now() * 1000);
+                std::time::sleep(25ms);
+                let moved = self.body.journal.refresh();
+                tries = tries + 1;
+            }
+            let mut rest = self.members(self.last_batch);
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let d = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                if len(self.row_body("knowledge.ratified", d)) > 0 || len(self.row_body("knowledge.refused", d)) > 0 { return "a member was decided before its ground: " + d; }
+            }
+            return "";
+        }
+        if line == "await batch" {
+            // a waiting ratification is revisited on the tick (every 5 s)
+            let wanted = self.members(self.last_batch);
+            let mut tries = 0;
+            while tries < 800 * dna::wait_scale() && !self.settled_all(wanted) {
+                self.body.request_tick(std::time::now() * 1000);
+                std::time::sleep(25ms);
+                let moved = self.body.journal.refresh();
+                tries = tries + 1;
+            }
+            return if self.ratified_all(wanted) { "" } else { "the batch was not ratified within the deadline" };
+        }
         if line == "expect stale" {
             if len(self.last_batch) == 0 { return "no batch"; }
             let mut rest = self.members(self.last_batch);
@@ -547,6 +663,31 @@ main locus App {
             let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             if len(line) == 0 || std::str::starts_with(line, "#") { continue; }
+            if line == "apply on pending {" {
+                // the last proposal, pending: the batch is planned on its members
+                let close = std::str::index_of(rest, "\n}");
+                if close < 0 { return line + ": no closing `}`"; }
+                let block = rest[0..(close + 1)];
+                rest = rest[(close + 2)..len(rest)];
+                if std::str::starts_with(rest, "\n") { rest = rest[1..len(rest)]; }
+                if len(self.last) == 0 { return line + ": no pending proposal"; }
+                self.ground = self.last;
+                let rid = dna::knowledge_review_id(self.ground);
+                let mut pending = "";
+                let mut ms = self.members(self.ground);
+                while len(ms) > 0 {
+                    let nl = std::str::index_of(ms, "\n");
+                    pending = pending + rid + " " + ms[0..nl] + "\n";
+                    ms = ms[(nl + 1)..len(ms)];
+                }
+                let applied = self.apply_on(block, pending);
+                if len(applied) > 0 { return line + " " + block + ": " + applied; }
+                let fdoc = dna::GitReceipts { repo: self.repo }.read(self.last_batch[7..len(self.last_batch)]);
+                if dna::native_json_string(fdoc, "planned_on") != pending { return line + ": the batch does not name its ground: " + fdoc; }
+                let broken_p = self.broken(self.org());
+                if len(broken_p) > 0 { return "after the batch:\n" + block + broken_p; }
+                continue;
+            }
             if line == "apply {" || line == "refused apply {" {
                 let close = std::str::index_of(rest, "\n}");
                 if close < 0 && !std::str::starts_with(rest, "}") { return line + ": no closing `}`"; }
@@ -592,6 +733,9 @@ main locus App {
         std::test::assert_eq_str(self.scenario("effects-moved", EFFECTS_MOVED), "", "a batch whose effects moved is refused whole, the newer consumer kept");
         std::test::assert_eq_str(self.scenario("nursery-trusted", NURSERY_TRUSTED), "", "a nursery is trusted by the Board, once");
         std::test::assert_eq_str(self.scenario("pack-retired", PACK_RETIRED), "", "a pack retired: what it brought leaves, what was there before stays");
+        std::test::assert_eq_str(self.scenario("planned-on", PLANNED_ON), "", "a batch planned on a pending opening is ratified after it, whole");
+        std::test::assert_eq_str(self.scenario("planned-on-early", PLANNED_ON_EARLY), "", "approved before its ground, a batch waits for it");
+        std::test::assert_eq_str(self.scenario("planned-on-declined", PLANNED_ON_DECLINED), "", "a batch whose ground is declined is refused whole");
     }
 }
 fn main() { App { }; }

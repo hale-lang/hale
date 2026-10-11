@@ -59,7 +59,7 @@ From about fifteen commands to about five: `init --with <pack>`, one verdict, `d
 
 - **`hale dna head`**, a toolchain verb: the head's sources are embedded in the toolchain as the host's are and built from the vendored copy, so no checkout and no `dna/face/start.sh`.
 - **The head derives its memory DSN** from what `memory migrate` records, instead of an operator copying it.
-- **`hale dna init --with <pack>`** files init's seeded proposals and the pack as one Review, "ratify the starting organization"; plain `init` is unchanged.
+- **`hale dna init --with <pack>`** proposes the pack planned on the holes init opens (they count as ratified for the plan, and the pack's ratification waits for theirs), so the pack may fill them and one `review all approve` ratifies the starting organization; plain `init` is unchanged. The `founder` pack (`fill * <founder>`) seats one person everywhere.
 - **A starter model mapping** from what `init` discovers: a default rule and a category for each discovered backend, so a leg has a model without hand configuration.
 - **The cycle is rewritten onto this path** and stays green three times running, printing how many commands it took.
 - A hosted head's `record_status` and `record_history` need an owning-service visibility provider; that is its own design and waits.
@@ -109,7 +109,7 @@ At most one change in CI and one more beside it; a compiler change pairs with a 
 Each was taken by recommendation and stands until overruled:
 
 - the batch grammar is the scenario runner's step language;
-- `init --with` folds init's seeded proposals and the pack into one Review;
+- `init --with` plans the pack on init's pending holes rather than folding them into one Review: a hole's graph rows are not steps a batch writes, and each hole stays decidable on its own (taken when it was built, spec/dna.md);
 - batches land before the onboarding changes, which build on them;
 - the first packs are a dev team, a small startup and a team that ships no code;
 - a nursery is a git repository indexed by `nursery.toml`; the official one is `hale-lang/nursery`;

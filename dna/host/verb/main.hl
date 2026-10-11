@@ -133,8 +133,8 @@ fn main() {
         if host::word(a, 0) == "open" { ans = host::position_open_verb(root, seed, host::word(a, 1), host::flag(a, "--mandate"), host::flag(a, "--text"), host::flag(a, "--under"), host::flag(a, "--as"), memory); }
         else { ans = host::fail("position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`"); }
     } else if verb == "apply" {
-        // `hale dna apply <file> [--dry-run] [--as <who>]`: a batch of changes to the structure, one Board Review
-        ans = host::apply_verb(root, seed, host::word(a, 0), host::flag(a, "--steps"), host::has_flag(a, "--dry-run"), host::flag(a, "--as"), host::flag(a, "--pack"), host::flag(a, "--retire-pack"), memory);
+        // `hale dna apply <file> [--dry-run] [--as <who>] [--on-holes]`: a batch of changes to the structure, one Board Review
+        ans = host::apply_verb(root, seed, host::word(a, 0), host::flag(a, "--steps"), host::has_flag(a, "--dry-run"), host::flag(a, "--as"), host::flag(a, "--pack"), host::flag(a, "--retire-pack"), host::has_flag(a, "--on-holes"), memory);
     } else if verb == "nursery-sources" {
         // the nurseries the Board trusts (`hale dna nursery list`, and the
         // check `hale dna pack apply --from <git URL>` makes)
