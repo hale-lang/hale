@@ -26735,6 +26735,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     "lotus_tcp_parks",
                     "__parks",
                 ),
+            Id::IoTcpOnPoolRaw => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_on_pool",
+                    "__on_pool",
+                ),
+            Id::IoTcpNameListenerRaw => {
+                self.lower_std_io_tcp_named_listener(args, scope, "lotus_tcp_listener_name", "__name_listener", true)
+            }
+            Id::IoTcpStopListenerRaw => {
+                self.lower_std_io_tcp_named_listener(args, scope, "lotus_tcp_listener_stop", "__stop_listener", false)
+            }
             Id::IoTcpIoErrorKindRaw => {
                 self.lower_std_io_tcp_io_error_kind(args, scope)
             }
@@ -27644,6 +27656,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpLastRecvUserNs
             | Id::IoTcpListenSocketRaw
             | Id::IoTcpParksRaw
+            | Id::IoTcpOnPoolRaw
+            | Id::IoTcpNameListenerRaw
+            | Id::IoTcpStopListenerRaw
             | Id::IoTcpRecvBytesRaw
             | Id::IoTcpRecvInto
             | Id::IoTcpRecvRaw

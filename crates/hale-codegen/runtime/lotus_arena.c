@@ -17383,6 +17383,15 @@ int64_t lotus_tcp_parks(void) {
     return lotus_io_on_async_io_pool() ? 1 : 0;
 }
 
+/* `std::io::tcp::__on_pool()`: 1 on a cooperative pool's worker (classic
+ * or async_io), 0 on the main thread or a pinned thread. A classic pool
+ * runs its queued cells only between cells, so a `yield` in a loop that
+ * never returns runs none of them; main and a pinned thread drain their
+ * queue or mailbox at a yield. */
+int64_t lotus_tcp_on_pool(void) {
+    return g_current_pool_tls ? 1 : 0;
+}
+
 /* F.35 Slice 3: idempotent O_NONBLOCK toggle. Called by the
  * I/O wrappers on async_io pools before the first syscall on
  * each fd. The fcntl(F_GETFL) round-trip costs ~1us; we do it
@@ -17821,9 +17830,75 @@ int lotus_unix_connect(const char *path) {
     return lotus_unix_connect_wait(path, 0);
 }
 
+/* The listeners of the process by name (spec/stdlib.md § "The TCP
+ * connection substrate"): `std::io::tcp::stop(name)` shuts a listening
+ * socket down from any thread, and a checked program can call it where
+ * a method call on the listener across pools is refused (F.31). The
+ * wake has to be the syscall: a pinned listener blocked in accept(2)
+ * services no mailbox, so a stop delivered over the bus would wait for
+ * the next connection. A name is entered at bind and leaves when its fd
+ * is closed, so a reused fd number is never shut by a stale name. */
+#define LOTUS_TCP_NAMED_MAX 64
+#define LOTUS_TCP_NAME_LEN 128
+static struct { int fd; char name[LOTUS_TCP_NAME_LEN]; } g_tcp_named[LOTUS_TCP_NAMED_MAX];
+static int g_tcp_named_len = 0;
+static pthread_mutex_t g_tcp_named_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void lotus_tcp_listener_forget(int fd) {
+    pthread_mutex_lock(&g_tcp_named_lock);
+    for (int i = 0; i < g_tcp_named_len; i++) {
+        if (g_tcp_named[i].fd == fd) {
+            g_tcp_named[i] = g_tcp_named[--g_tcp_named_len];
+            i--;
+        }
+    }
+    pthread_mutex_unlock(&g_tcp_named_lock);
+}
+
+/* `std::io::tcp::__name_listener(name, fd)`: 1 when entered, 0 when the
+ * name is held by another live listener, too long, or the table is full
+ * (64 listeners a process). */
+int64_t lotus_tcp_listener_name(const char *name, int64_t fd) {
+    if (!name || fd < 0 || strlen(name) >= LOTUS_TCP_NAME_LEN) return 0;
+    int64_t ok = 0;
+    pthread_mutex_lock(&g_tcp_named_lock);
+    int taken = 0;
+    for (int i = 0; i < g_tcp_named_len; i++) {
+        if (strcmp(g_tcp_named[i].name, name) == 0) taken = 1;
+    }
+    if (!taken && g_tcp_named_len < LOTUS_TCP_NAMED_MAX) {
+        g_tcp_named[g_tcp_named_len].fd = (int)fd;
+        memcpy(g_tcp_named[g_tcp_named_len].name, name, strlen(name) + 1);
+        g_tcp_named_len++;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g_tcp_named_lock);
+    return ok;
+}
+
+int lotus_tcp_shutdown_listen_socket(int fd);
+
+/* `std::io::tcp::stop(name)`: shut the named listener's socket down (its
+ * accept returns, its loop ends). 1 when a listener had the name. */
+int64_t lotus_tcp_listener_stop(const char *name) {
+    if (!name) return 0;
+    int fd = -1;
+    pthread_mutex_lock(&g_tcp_named_lock);
+    for (int i = 0; i < g_tcp_named_len; i++) {
+        if (strcmp(g_tcp_named[i].name, name) == 0) fd = g_tcp_named[i].fd;
+    }
+    /* shut while holding the lock, so a concurrent close of this fd
+     * (which forgets it under the same lock) cannot hand the number to
+     * a new socket in between */
+    if (fd >= 0) lotus_tcp_shutdown_listen_socket(fd);
+    pthread_mutex_unlock(&g_tcp_named_lock);
+    return fd >= 0 ? 1 : 0;
+}
+
 int lotus_tcp_close_fd(int fd) {
     if (fd < 0) return 0;
     lotus_shut_listen_mark(fd, 0);
+    lotus_tcp_listener_forget(fd);
     return close(fd);
 }
 

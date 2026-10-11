@@ -57,13 +57,10 @@ const SERVE: &str = r#"
     fn main() { App { }; }
 "#;
 
-// The same server, shut down half a second in (with the slow requests in
-// flight); the program ends two seconds later. The main locus calls
-// `shutdown()` across pools, the shape `accept_shutdown_silent.rs` and
-// spec/stdlib.md § "Server.shutdown()" use: the harness build runs no
-// checker, and `hale check` refuses that call today (F.31's
-// single-threaded-method invariant), so this program is the runtime's
-// oracle for a drain, not a pattern to copy.
+// The same server, stopped half a second in (with the slow requests in
+// flight); the program ends two seconds later. The main locus stops the
+// server on another pool by its name, `std::io::tcp::stop(name)`, which a
+// checked program may call (a method call across pools is refused, F.31).
 const STOP: &str = r#"
     // a second on `/slow`; `/health` at once
     locus Slow {
@@ -80,12 +77,12 @@ const STOP: &str = r#"
     main locus App {
         params {
             port: Int = std::str::parse_int(std::env::arg(1)) or 0;
-            web: std::http::Server = std::http::Server { host: "127.0.0.1", port: self.port, handler: Slow { }, ready_signal: "ready" };
+            web: std::http::Server = std::http::Server { host: "127.0.0.1", port: self.port, handler: Slow { }, ready_signal: "ready", name: "web" };
         }
         placement { web: cooperative(pool = web) where async_io; }
         run() {
             std::time::sleep(500ms);
-            self.web.shutdown();
+            std::io::tcp::stop("web");
             println("shutdown");
             std::time::sleep(2s);
             println("done");

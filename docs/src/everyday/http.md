@@ -101,7 +101,8 @@ connection runs on a coroutine of its own: when a handler parks — a
 on the write — the pool runs the other requests and keeps accepting.
 Five concurrent requests to `/slow` take one second instead of five.
 At most `max_connections` (256 by default) are in flight at once;
-the rest wait in the kernel's queue until one finishes. Anywhere
+the next ones wait for a slot (as many again), and past that a
+connection is closed unserved. Anywhere
 else — `fn main()`, the main pool, `pinned`, a plain
 `cooperative(pool = io)` — the server stays one-at-a-time, because a
 blocking call there holds the whole thread. (macOS has no `async_io`
@@ -120,8 +121,72 @@ https requests, `std::process::run`, file reads hold the pool's one
 thread, and with it every request. `hale check` warns about a
 blocking call reachable from an `async_io` locus.
 
-`shutdown()` stops accepting and lets the requests already accepted
-finish: the server's `run()` returns once each has been answered.
+To stop the server from another locus, give it a `name` and call
+`std::io::tcp::stop(name)` — a plain function, so it works from any
+pool (calling `self.web.shutdown()` from `App`'s pool is refused: a
+method call may not cross pools). Stopping ends the accept and lets
+the requests already accepted finish: the server's `run()` returns once
+each has been answered.
+
+```hale,fragment
+// in App: `web: std::http::Server = std::http::Server { port: 8080, name: "web", handler: Api { } };`
+std::io::tcp::stop("web");
+```
+
+### The listener and the serving, placed apart
+
+`std::http::Server` is two pieces in one locus: a *listener* that
+accepts connections and hands each one over the bus, and a *consumer*
+that serves what it is handed. You can place the two yourself — the
+listener `pinned` on a thread of its own, the serving on `async_io`
+pools — and put more than one consumer behind one listener:
+
+```hale
+locus Api {
+    params { tag: String = ""; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: self.tag };
+    }
+}
+
+main locus App {
+    params {
+        // consumers first: they are listening before the listener accepts
+        zero: std::io::tcp::Connections = std::io::tcp::Connections {
+            listener: "web", shard: 0,
+            handler: std::http::Responder { handler: Api { tag: "zero" } }
+        };
+        one: std::io::tcp::Connections = std::io::tcp::Connections {
+            listener: "web", shard: 1,
+            handler: std::http::Responder { handler: Api { tag: "one" } }
+        };
+        acceptor: std::io::tcp::Acceptor = std::io::tcp::Acceptor {
+            port: 8080, name: "web", shards: 2
+        };
+    }
+    placement {
+        zero: cooperative(pool = zero) where async_io;
+        one: cooperative(pool = one) where async_io;
+        acceptor: pinned;
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+        std::io::tcp::stop("web");
+    }
+}
+
+fn main() {
+    App { };
+}
+```
+
+The listener deals its connections round-robin over its `shards`; each
+`Connections` takes the shard it names and serves it with its
+`handler` — `std::http::Responder` turns an HTTP `handle` into one, and
+any locus with `fn serve(c: std::io::tcp::Accepted)` is one too (it
+owns `c.fd`). A connection no consumer takes is closed by its listener,
+never leaked, so `require no_silent_loss(topic __TcpAcceptedT)` holds
+in a program's `claims`.
 
 ## Routing
 

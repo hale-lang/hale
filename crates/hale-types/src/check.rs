@@ -1606,6 +1606,7 @@ struct UnownedSubscriberRows<'r, 'b> {
 /// stdlib bodies, so the list is maintained explicitly.
 const KNOWN_LONG_RUNNING_STDLIB_LOCI: &[&[&str]] = &[
     &["std", "http", "Server"],
+    &["std", "io", "tcp", "Acceptor"],
 ];
 
 fn is_known_long_running_stdlib(path_segments: &[&str]) -> bool {
@@ -2634,6 +2635,14 @@ fn check_cooperative_pool_blocking<'r>(
             Runs::Main => None,
         };
         for decl in &fp.decls {
+            // A runtime appended to the program (the api runtime, the TCP
+            // substrate: `rpc_expand`) is stdlib source in this judgment as
+            // in the effects': `std::http::Server` on a classic pool
+            // serves inline by design, and was never reported when its
+            // body sat in the bundled stdlib.
+            if crate::rpc_expand::is_runtime_pos(decl.name.span.start.0) {
+                continue;
+            }
             let locus_name = decl.name.name.as_str();
             let Some(run_body) = decl.members.iter().find_map(|m| match m {
                 LocusMember::Lifecycle(LifecycleDecl {

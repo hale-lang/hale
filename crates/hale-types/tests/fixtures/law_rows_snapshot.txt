@@ -1,3 +1,4 @@
+crates/hale-cli/tests/check_tcp_substrate.rs#0	handed_over	require no_silent_loss(topic __TcpAcceptedT)	Holds	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Holds	None

@@ -309,6 +309,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "Middleware"],
     &["std", "http", "NotFound404"],
     &["std", "http", "Request"],
+    &["std", "http", "Responder"],
     &["std", "http", "Response"],
     &["std", "http", "RouteEntry"],
     &["std", "http", "RouteHandler"],
@@ -322,6 +323,10 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "io", "h2", "Conn"],
     &["std", "io", "h2", "Event"],
     &["std", "io", "h2", "Listener"],
+    &["std", "io", "tcp", "Acceptor"],
+    &["std", "io", "tcp", "Accepted"],
+    &["std", "io", "tcp", "ConnHandler"],
+    &["std", "io", "tcp", "Connections"],
     &["std", "io", "tcp", "Listener"],
     &["std", "io", "tcp", "LogEvent"],
     &["std", "io", "tcp", "Stream"],
@@ -858,6 +863,14 @@ pub const SURFACES: &[NsSurface] = &[
             // `std::http::Server` serves a connection per coroutine only
             // where one parks (spec/stdlib.md § std::http::Server).
             row!("__parks", PURE, [] -> Int, Intrinsic(IoTcpParksRaw)),
+            // 1 on a cooperative pool's worker, 0 on main or a pinned
+            // thread: where a `yield` in a loop that never returns runs
+            // the thread's queued cells (spec/stdlib.md § "The TCP
+            // connection substrate").
+            row!("__on_pool", PURE, [] -> Int, Intrinsic(IoTcpOnPoolRaw)),
+            // A listener's name, its address in the process for `stop`.
+            row!("__name_listener", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpNameListenerRaw)),
+            row!("__stop_listener", SYSCALL, [Str] -> Int, Intrinsic(IoTcpStopListenerRaw)),
             row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Str, Intrinsic(IoTcpRecvRaw)),
             row!("__recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTcpRecvBytesRaw)),
             row!("__send", SYSCALL, [Int, Str] -> Int, Intrinsic(IoTcpSendRaw)),
@@ -886,6 +899,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetRecvTimeout)),
             row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTcpSetRxTimestamps)),
             row!("set_send_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTcpSetSendTimeout)),
+            row!("stop", SYSCALL, _, Renamed),
         ],
         open_prefixes: &[],
     },
@@ -1550,6 +1564,9 @@ pub enum IntrinsicId {
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
     IoTcpParksRaw,
+    IoTcpOnPoolRaw,
+    IoTcpNameListenerRaw,
+    IoTcpStopListenerRaw,
     IoTcpRecvRaw,
     IoTcpRecvBytesRaw,
     IoTcpSendRaw,

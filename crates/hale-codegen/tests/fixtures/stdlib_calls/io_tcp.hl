@@ -25,5 +25,8 @@ fn main() {
     let closed = std::io::tcp::__close_fd(fd);
     let waited = std::io::tcp::connect_wait("127.0.0.1", 1, 10ms) or - 1;
     let parks = std::io::tcp::__parks();
-    println(got, len(raw), sent + status + shut + closed + waited, kind, parks);
+    let on_pool = std::io::tcp::__on_pool();
+    let named = std::io::tcp::__name_listener("calls", -1);
+    let stopped = std::io::tcp::__stop_listener("calls");
+    println(got, len(raw), sent + status + shut + closed + waited, kind, parks + on_pool + named + stopped);
 }

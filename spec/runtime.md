@@ -843,7 +843,9 @@ substrate picks the right lowering at the syscall boundary.
 `std::http::Server` is the stdlib's case of it: placed on an
 `async_io` pool it serves each connection on a coroutine of its own,
 and anywhere else one connection at a time (`spec/stdlib.md` §
-"Server concurrency").
+"Server concurrency"); the TCP connection substrate it is built on
+places its listener and its consumers apart (`pinned` accept, `async_io`
+serving: `spec/stdlib.md` § "The TCP connection substrate").
 
 **One worker thread per named cooperative pool — a promise, not
 an implementation detail** (Crumb batch-3, 2026-07-28). Every

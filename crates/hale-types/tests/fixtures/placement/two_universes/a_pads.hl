@@ -1,7 +1,7 @@
 // Two universes, one numeric id (the placement correspondence, § 3
 // case 12). Each `PadN` is two sites (the declaration and the `run`
-// the omitted-run desugar adds), so the 106 pads put `Collider` at
-// seed 0, index 212: the id the stdlib analysis copy, minted alone
+// the omitted-run desugar adds), so the 108 pads put `Collider` at
+// seed 0, index 216: the id the stdlib analysis copy, minted alone
 // from seed 0 and index 0, gives `__StdIoUdpReader`. The test asserts
 // the collision before anything else, so a stdlib edit that moves the
 // reader is a red test and a new padding count, never a vacuous pass.
@@ -111,6 +111,8 @@ locus Pad102 { }
 locus Pad103 { }
 locus Pad104 { }
 locus Pad105 { }
+locus Pad106 { }
+locus Pad107 { }
 
 locus Collider {
     params {

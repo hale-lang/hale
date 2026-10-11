@@ -792,7 +792,7 @@ no bookend called.
 
 Whether `T` is a flow is decided over the whole program, imported
 seeds and the standard library's own loci included (a stdlib owner's
-`release`, `std::http::Server`'s connections on an `async_io` pool,
+`release`, the TCP substrate's connections on an `async_io` pool,
 reclaims its children as a user owner's does), and a clause on a locus
 that is never instantiated counts all the same. `hale check --flows` reports every flow type with
 each `release(c: T)` clause that makes it one, by its declaring locus,

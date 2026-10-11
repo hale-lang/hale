@@ -1136,6 +1136,10 @@ pub struct AllocSummary {
     /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
     /// every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
+    /// The loci each body starts (a literal of the locus in it): what
+    /// [`AllocSummary::unbounded_invoked`] follows from an unboundedly
+    /// invoked fn to the `birth` and `run` hooks each start runs once.
+    pub starts: BTreeMap<FnKey, BTreeSet<String>>,
     /// GH #1490: the loci a program with a `fn main` can start, when the
     /// walk can say ([`loci_started_from_main`]): its own seed's, and the
     /// imported ones its code names. The run-to-exit rule
@@ -1437,6 +1441,7 @@ impl AllocSummary {
             bounded_by: self.bounded_by.iter().filter(|(k, _)| own_key(k)).map(|(k, b)| (k.clone(), b.clone())).collect(),
             locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
             reached: None,
+            starts: self.starts.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             startable: self.startable.clone(),
             analysis_copy: BTreeSet::new(),
             analysis_copy_loci: BTreeSet::new(),
@@ -1485,6 +1490,16 @@ impl AllocSummary {
     /// caller is, or the call edge is inside an unbounded loop. Only the
     /// fns the program reaches ([`AllocSummary::reached`]) seed it or
     /// call: a stdlib loop the program never starts invokes nothing.
+    ///
+    /// A locus an unboundedly invoked fn starts is started unboundedly
+    /// often, and each start runs its `birth` and its `run` once
+    /// ([`AllocSummary::starts`]). Each start is an instance of its own, so
+    /// what a hook allocates in its own frame and on `self` is the
+    /// instance's, not a growth: the hooks join no set. What they call on
+    /// another locus is shared by every start, so those calls are
+    /// unbounded: the connection a TCP consumer's bus handler hands to a
+    /// child of its own is the case, and the handler the child asks is
+    /// asked once per connection, unboundedly often.
     pub fn unbounded_invoked(&self) -> BTreeSet<FnKey> {
         let runs = |f: &&FnSummary| self.reached.as_ref().is_none_or(|r| r.contains(&f.key));
         let mut set: BTreeSet<FnKey> = self
@@ -1506,6 +1521,21 @@ impl AllocSummary {
                             && set.insert(callee.clone())
                         {
                             changed = true;
+                        }
+                    }
+                }
+                if caller_unbounded {
+                    for l in self.starts.get(&f.key).into_iter().flatten() {
+                        for hook in self.fns.values().filter(runs).filter(|g| {
+                            g.key.locus.as_ref() == Some(l) && matches!(g.entry, Some(EntryKind::Birth) | Some(EntryKind::Run))
+                        }) {
+                            for c in &hook.calls {
+                                let Callee::Resolved(callee) = &c.callee else { continue };
+                                let shared = callee.locus.as_ref().is_some_and(|cl| cl != l);
+                                if shared && self.fns.contains_key(callee) && set.insert(callee.clone()) {
+                                    changed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -3054,7 +3084,10 @@ pub fn summarize_identified(
     {
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
-        starts_of.insert(key.clone(), starts);
+        starts_of.insert(key.clone(), starts.clone());
+        if !starts.is_empty() {
+            summary.starts.insert(key.clone(), starts);
+        }
         if runtime_ids.contains(decl) {
             summary.appended_runtime.insert(key.clone());
         }
@@ -3726,7 +3759,13 @@ fn loci_started_from_main(
                 }
                 TopDecl::Locus(l) => {
                     locus_names.entry(l.name.name.clone()).or_default().extend(named_in(item));
-                    if !copy && !l.imported {
+                    // The TCP substrate is appended to the program's own
+                    // seed (`rpc_expand::inject_tcp_serve`) but is stdlib
+                    // source: its loci start where the program names them
+                    // (`std::http::Server`), as the stdlib's do — a one-shot
+                    // program over a seed that names a server it never
+                    // starts is no daemon for it.
+                    if !copy && !l.imported && !crate::rpc_expand::is_tcp_serve_pos(l.name.span.start.0) {
                         pending.push(l.name.name.clone());
                     }
                 }
@@ -8474,6 +8513,34 @@ mod tests {
     }
 
     // ---- step 3: call-graph propagation + the bound solver ----
+
+    /// A child a bus handler starts runs its hooks once per start: what it
+    /// asks of a shared locus is asked once per message, unboundedly often,
+    /// while its own hooks (each start an instance of its own) join no set.
+    #[test]
+    fn a_child_started_per_message_asks_its_shared_locus_unboundedly() {
+        let src = r#"
+            type Msg { n: Int; }
+            topic Msgs { payload: Msg; subject: "m"; }
+            type Out { s: String; }
+            locus Shared { fn answer(n: Int) -> Out { return Out { s: to_string(n) }; } }
+            interface Asks { fn answer(n: Int) -> Out; }
+            locus Child {
+                params { n: Int = 0; with: Asks; }
+                birth() { let o = self.with.answer(self.n); }
+            }
+            locus Taker {
+                params { shared: Shared = Shared { }; }
+                bus { subscribe Msgs as on_msg; }
+                fn on_msg(m: Msg) { Child { n: m.n, with: self.shared }; }
+            }
+            fn main() { Taker { }; }
+        "#;
+        let s = summarize(src);
+        let set = s.unbounded_invoked();
+        assert!(set.contains(&named(&s, Some("Shared"), "answer")), "{set:?}");
+        assert!(!set.contains(&named(&s, Some("Child"), "birth")), "the child's own hook is per instance: {set:?}");
+    }
 
     /// A flow's `run()` is one activation only when nothing that
     /// allocates into its arena repeats without a bound: a loop in a free

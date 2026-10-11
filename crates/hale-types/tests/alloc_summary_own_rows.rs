@@ -220,7 +220,9 @@ fn the_resource_budget_counts_the_programs_own_fd_sites() {
     whole.analysis_copy_loci.clear();
     whole.analysis_copy_interfaces.clear();
     let read_whole = hale_types::resource_budget::budget_for_programs(&bundle, table, &whole);
-    assert_eq!(read_whole.fd_open_sites, 9, "the copy's bodies hold 8 more, which are not the program's");
+    // 5 since the HTTP server's three fd-acquiring sites left the bundled
+    // stdlib for the TCP substrate, which joins only a program that names it
+    assert_eq!(read_whole.fd_open_sites, 6, "the copy's bodies hold 5 more, which are not the program's");
     assert!(hale_types::resource_budget::resource_leak_diags(summary).is_empty(), "no fd leak");
 }
 

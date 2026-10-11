@@ -48,6 +48,16 @@ pub const API_HUB_SOURCE: &str = include_str!("../hl/api_hub.hl");
 /// program, and a program with no server carries no HTTP/2.
 pub const API_H2_SOURCE: &str = include_str!("../hl/io_h2.hl");
 
+/// The TCP connection substrate (`io_tcp_serve.hl`): the acceptor that
+/// binds and accepts and relays each connection over the bus, the
+/// consumer that serves what it is handed, and `std::http::Server` built
+/// on the two. It declares a topic (`__TcpAcceptedT`, appended beside
+/// it), and every stdlib declaration is lowered into every program, so it
+/// is appended only to a program that names `std::http::Server` or one of
+/// `std::io::tcp::{Acceptor, Connections, Accepted, ConnHandler}`
+/// (`hale_types::rpc_expand`), as the api runtime is.
+pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
+
 /// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
 /// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
 /// to a program that names `grpc::Rpc`.
@@ -353,6 +363,14 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // hale-bun upstream item 4b: public raw-fd send for takeover
     // consumers (the write-side companion to `close_fd`).
     (&["std", "io", "tcp", "send_fd"], "__std_io_tcp_send_fd"),
+    (&["std", "io", "tcp", "stop"], "__std_io_tcp_stop"),
+    // the connection substrate (`io_tcp_serve.hl`, appended to a program
+    // that names one of these: `TCP_SERVE_SOURCE`)
+    (&["std", "io", "tcp", "Acceptor"], "__StdIoTcpAcceptor"),
+    (&["std", "io", "tcp", "Accepted"], "__StdIoTcpAccepted"),
+    (&["std", "io", "tcp", "ConnHandler"], "__StdIoTcpConnHandler"),
+    (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
+    (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
