@@ -382,9 +382,54 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     match args.first().map(String::as_str) {
         Some("init") => {
-            // the directory is the first argument that is not a flag
-            let dir = args[1..].iter().find(|a| !a.starts_with("--")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-            report(init(&dir, !args.iter().any(|a| a == "--no-library")))
+            // the directory is the first argument that is neither a flag nor
+            // a flag's value; `--with <pack> [--set <param>=<value>]…` then
+            // proposes a pack from the toolchain's nursery as one batch
+            let mut dir = None;
+            let mut with = None;
+            let mut sets = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--with" | "--set" => {
+                        let Some(v) = args.get(i + 1) else {
+                            eprintln!("hale dna init: `{}` takes a value\nusage: hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]", args[i]);
+                            return ExitCode::from(2);
+                        };
+                        if args[i] == "--with" { with = Some(v.clone()) } else { sets.push(v.clone()) }
+                        i += 2;
+                    }
+                    a if a.starts_with("--") => i += 1,
+                    a => {
+                        dir.get_or_insert_with(|| PathBuf::from(a));
+                        i += 1;
+                    }
+                }
+            }
+            if with.is_none() && !sets.is_empty() {
+                eprintln!("hale dna init: `--set` sets a pack's parameter; name the pack with `--with <pack>`");
+                return ExitCode::from(2);
+            }
+            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+            match init(&dir, !args.iter().any(|a| a == "--no-library")) {
+                Ok(lines) => {
+                    for l in lines {
+                        println!("{l}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("hale dna: {e}");
+                    return ExitCode::from(1);
+                }
+            }
+            let Some(pack) = with else { return ExitCode::SUCCESS };
+            let mut pack_args = vec!["apply".to_string(), pack];
+            for v in sets {
+                pack_args.push("--set".to_string());
+                pack_args.push(v);
+            }
+            pack_args.push(dir.to_string_lossy().to_string());
+            pack::pack_cmd(&pack_args)
         }
         Some("new") => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
@@ -930,7 +975,7 @@ fn print_embedded_provenance(dir: &Path) {
 }
 
 fn usage(code: u8) -> ExitCode {
-    eprintln!("usage: hale dna init [app-dir] [--no-library]");
+    eprintln!("usage: hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]");
     eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
     eprintln!("                                    nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the library, not the practices)");
     eprintln!("       hale dna new <name> [--no-library]");

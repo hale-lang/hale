@@ -17,10 +17,10 @@ directory as an optional argument and default to the current one.
 [DNA, the building block](./dna.md).
 
 ```text
-hale dna init [app-dir] [--no-library]
+hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]…]
                              attach the DNA to an existing application; the record starts with the language and system
                              nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the
-                             library, not the practices)
+                             library, not the practices); --with proposes a pack from the toolchain's nursery as one batch beside them
 hale dna new <name> [--no-library]
                              a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
@@ -202,7 +202,9 @@ hale dna board [project]     the Board's queue: what needs its verdict, escalati
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)
 hale dna review <family> approve|reject
-                             decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)
+                             decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, changes, ingest (a library family is one Review for all its ideas)
+hale dna review all approve|reject
+                             every group with a pending Review, in the order a new organization is ratified, each waited for before the next
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]
                              write a verdict into the record, which a node relays; the Review decides
 hale dna route [--json] (<path>… | --diff <range>)

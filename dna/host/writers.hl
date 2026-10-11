@@ -926,7 +926,7 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
 }
 
 fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
-    if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) {
+    if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) && id != "all" {
         let cli = GovernanceCli { root: root, memory: memory };
         let selected = cli.review_profile(id);
         if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
@@ -936,6 +936,20 @@ fn verdict_command_verb(root: String, seed: String, id: String, verdict: String,
     }
     if len(request_id) > 0 { return fail("--request-id requires a configured native Practice Review command; design batches and unrelated Reviews keep their existing paths"); }
     return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, no_wait, memory);
+}
+
+// Whether `group` has a pending Review.
+@unbounded
+fn pending_in(p: Projection, group: String) -> Bool {
+    let ids = p.review_ids_in_order();
+    let n = list_len(ids);
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" && r.group == group { return true; }
+        i = i + 1;
+    }
+    return false;
 }
 
 // ---- a verdict ------------------------------------------------------
@@ -950,6 +964,29 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
+    // `all`: every pending group, in the order a new organization is
+    // ratified — what it is for, the practices it ships with, its library,
+    // the repository's holes and marked practices, positions, batches,
+    // holders, re-ingests — each group decided and waited for before the
+    // next, since a hold waits on its position
+    if id == "all" {
+        let mut out = "";
+        let mut decided = 0;
+        let mut order = "purpose design operating using library holes practices positions changes holds ingest ";
+        while len(order) > 0 {
+            let sp = std::str::index_of(order, " ");
+            let group = order[0..sp];
+            order = order[(sp + 1)..len(order)];
+            let fresh = watch(p);
+            if !pending_in(p, group) { continue; }
+            let one = verdict_verb(root, seed, group, verdict, reviewer_flag, authority_flag, comment, "", no_wait, memory);
+            if !one.ok { return fail(out + one.text); }
+            out = out + group + ":\n" + one.text;
+            decided = decided + 1;
+        }
+        if decided == 0 { return fail("no pending Review in any group (" + pending_ids(p) + ")"); }
+        return answer(out);
+    }
     // GH #596 C, #994: a group (`design`, `operating`, `purpose`, a
     // repository's holes…) names every pending Review in it; each is
     // decided by its own verdict — a convenience over the individual

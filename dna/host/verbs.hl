@@ -383,7 +383,7 @@ fn review_list(p: Projection) -> Answer {
     // each listed under its own heading so the Board can read it as a set
     let ordered = p.review_ids_in_order();
     out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds") + seeded_listing(p, ordered, "positions") + seeded_listing(p, ordered, "changes") + seeded_listing(p, ordered, "ingest");
-    return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
+    return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`, or every group above in turn with `hale dna review all approve`\n");
 }
 
 // The groups whose Reviews are listed together and may be decided in turn

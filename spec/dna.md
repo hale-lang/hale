@@ -1755,7 +1755,15 @@ memory takes the same rows in about a second. A git-backed record is what one pe
 alone starts on; an organization runs with its ledger adopted.
 `hale dna review <group> approve|reject` writes every verdict of the
 group first and then waits for the answers once, bounded by the group's
-size.
+size. `hale dna review all approve|reject` decides every group with a
+pending Review in the order a new organization is ratified (`purpose`,
+`design`, `operating`, `using`, `library`, `holes`, `practices`,
+`positions`, `changes`, `holds`, `ingest`), each group waited for before
+the next, since a hold waits on the position it sits on. `hale dna init
+--with <pack> [--set <param>=<value>]…` runs `init`, then `hale dna pack
+apply` on the toolchain's nursery: the pack proposed as one batch beside
+init's own proposals, so `review all approve` ratifies the starting
+organization with the pack in it.
 
 **The declared purpose is a proposal like any other.** `hale dna init`
 proposes it in the record's one seed call (host verb `graph-ingest`, a repository's
