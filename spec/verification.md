@@ -2534,6 +2534,25 @@ assume the others in a build:
   fields (those leaves don't retire yet), stores directly inside a
   `run()`-loop (no activation boundary — pending retires never
   flush), and scratchless owners.
+
+  **A `String` field replaced whole stays reported** (GH #1490). A
+  `self.<f> = <fresh String>` store retires the replaced block at the
+  activation boundary too (`lotus_str_assign_in_place`), but the
+  runtime reuses a retired block only when the next value's size fits
+  it within a short probe window, and a reused block is retired again
+  at its new value's length, so the slack of a longer block that took
+  a shorter value is lost. A value of near-constant length recycles; a
+  value whose length varies keeps bump-allocating into the locus
+  arena — measured over 1M replaces in a method, lengths 7–8 stay at
+  the 4.6 MB floor while lengths 6–55 reach 35.7 MB (the locus arena
+  alone 15.6 MiB after 500k; a bus handler, 500k messages: 24.5 MB
+  against 9.3 MB). The survey cannot see a value's length, so the
+  replace is reported as before
+  (`alloc_model_rss.rs::a_string_field_replace_of_varying_length_grows`).
+  The struct replace this flip excuses recycles its `String` fields
+  through the same reuse and has the same limit: its "flat" holds for
+  near-constant lengths (the measurement above used 7–8 characters);
+  with lengths 6–15 one `String` field grows ~15 B per replace.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /

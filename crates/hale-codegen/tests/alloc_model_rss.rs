@@ -656,3 +656,74 @@ fn a_returned_loop_accumulator_reclaims_with_its_activation() {
          run={run_rss}MB, method={method_rss}MB."
     );
 }
+
+// === GH #1490 (C3): a String field replaced whole still grows ===
+//
+// `self.last = <a fresh String>` in a method: the store retires the
+// replaced block (`lotus_str_assign_in_place`) and the activation
+// boundary makes it reusable, but reuse matches by size within a short
+// probe window, and a reused block is retired again at the new value's
+// length. A value whose length stays put recycles (flat); one whose
+// length walks through many sizes keeps bump-allocating into the locus
+// arena. The survey cannot see a length, so it keeps reporting the
+// replace — this pins the runtime half of that verdict: the day the
+// varying-length replace stays flat, store-latest can be excused. (The
+// instance is let-bound: one only ever written as a bare statement is
+// an eager-only locus, whose own stores the survey bounds by that
+// statement.)
+
+const STRING_FIELD_REPLACE_VARYING: &str = r#"
+    locus Rec {
+        params { last: String = ""; n: Int = 1000000; sink: Int = 0; }
+        fn record(i: Int) { self.last = "value." + std::str::repeat("x", i - (i / 50) * 50); }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); self.sink = self.sink + len(self.last); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { let r = Rec { }; }
+"#;
+
+const STRING_FIELD_REPLACE_STEADY: &str = r#"
+    locus Rec {
+        params { last: String = ""; n: Int = 1000000; sink: Int = 0; }
+        fn record(i: Int) { self.last = "value." + (i - (i / 100) * 100); }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); self.sink = self.sink + len(self.last); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+    }
+    fn main() { let r = Rec { }; }
+"#;
+
+#[test]
+fn a_string_field_replace_of_varying_length_grows() {
+    for src in [STRING_FIELD_REPLACE_VARYING, STRING_FIELD_REPLACE_STEADY] {
+        let leaks = model_leaks(src);
+        assert!(
+            leaks.iter().any(|l| l == "Rec::record InvokedUnboundedly"),
+            "the model keeps reporting a String field replaced whole: {leaks:?}"
+        );
+    }
+    // Measured self-RSS 2026-10-10 over 1M replaces: 35.7 MB with
+    // lengths 6..55 (the locus arena alone 15.6 MiB at 500k), 4.6 MB
+    // with lengths 7..8.
+    let varying = build_and_rss("string_field_replace_varying", STRING_FIELD_REPLACE_VARYING);
+    let steady = build_and_rss("string_field_replace_steady", STRING_FIELD_REPLACE_STEADY);
+    assert!(
+        steady < 30,
+        "a String field replaced at a near-constant length should recycle: {steady}MB"
+    );
+    assert!(
+        varying >= steady + 15,
+        "a String field replaced at lengths 6..55 should grow >15MB over the \
+         steady-length one: varying={varying}MB, steady={steady}MB. If the gap \
+         collapsed, replaced String blocks now recycle whatever their length, \
+         and the survey's store-latest verdict for a String field can be \
+         revisited (GH #1490)."
+    );
+}
