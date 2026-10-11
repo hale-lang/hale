@@ -17442,6 +17442,62 @@ static int lotus_shut_listen_marked(int fd) {
     return hit;
 }
 
+/* Whether a failed accept(2) ended one connection rather than the
+ * listening socket (lotus_tcp_accept_one's -2). */
+static int lotus_accept_err_transient(int err) {
+    /* Each name only where the platform's errno.h declares it (the
+     * wasm32 build's declares few of them). */
+    static const int transient[] = {
+#ifdef EMFILE
+        EMFILE,
+#endif
+#ifdef ENFILE
+        ENFILE,
+#endif
+#ifdef ENOBUFS
+        ENOBUFS,
+#endif
+#ifdef ENOMEM
+        ENOMEM,
+#endif
+#ifdef ECONNABORTED
+        ECONNABORTED,
+#endif
+#ifdef EPROTO
+        EPROTO,
+#endif
+#ifdef EPERM
+        EPERM,
+#endif
+#ifdef ENETDOWN
+        ENETDOWN,
+#endif
+#ifdef ENOPROTOOPT
+        ENOPROTOOPT,
+#endif
+#ifdef EHOSTDOWN
+        EHOSTDOWN,
+#endif
+#ifdef ENONET
+        ENONET,
+#endif
+#ifdef EHOSTUNREACH
+        EHOSTUNREACH,
+#endif
+#ifdef ENETUNREACH
+        ENETUNREACH,
+#endif
+#ifdef ETIMEDOUT
+        ETIMEDOUT,
+#endif
+        -1,
+    };
+    for (size_t i = 0; transient[i] != -1; i++) {
+        if (transient[i] == err) return 1;
+    }
+    return 0;
+}
+
 int lotus_tcp_accept_one(int listen_fd) {
     /* F.35 Slice 3: on async_io pools, accept(2) is non-blocking +
      * park on EAGAIN. Classic blocking accept on every other path. */
@@ -17501,6 +17557,13 @@ int lotus_tcp_accept_one(int listen_fd) {
         }
         if (errno == EINTR) continue;
         if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            /* A listening socket shut down on purpose answers a
+             * non-blocking accept with EAGAIN for a Unix socket (only a
+             * blocking one sees the shutdown and fails EINVAL, as a TCP
+             * one always does), while epoll reports it readable for
+             * good: the wake that was asked for, so the loop ends here
+             * rather than parking (or spinning) on it. */
+            if (lotus_shut_listen_marked(listen_fd)) return -1;
             /* Park the calling coro on `listen_fd`-readable. When
              * a connection arrives, epoll fires and the worker
              * resumes us; retry the accept. */
@@ -17527,6 +17590,14 @@ int lotus_tcp_accept_one(int listen_fd) {
                 perror("lotus_tcp_accept_one: accept");
             }
             errno = err;
+            /* -2: a failure that ends this one connection and not the
+             * listener — out of descriptors or buffers, or a connection
+             * that failed between the handshake and the accept (accept(2)
+             * passes a pending network error up; the man page asks a
+             * server to treat those as EAGAIN). The stdlib's accept loops
+             * back off and accept again; anything else (a requested wake,
+             * a socket that is not listening) is -1 and ends the loop. */
+            if (!requested && lotus_accept_err_transient(err)) return -2;
         }
         return -1;
     }
@@ -17697,7 +17768,10 @@ int lotus_unix_listen_socket(const char *path) {
         errno = err;
         return -1;
     }
-    if (listen(sock, 16) < 0) {
+    /* The kernel's largest backlog, as a TCP listener's (it was 16: a
+     * burst of clients larger than that waited in connect(2) for the
+     * accept loop to catch up). */
+    if (listen(sock, SOMAXCONN) < 0) {
         int err = errno;
         perror("lotus_unix_listen_socket: listen");
         close(sock);

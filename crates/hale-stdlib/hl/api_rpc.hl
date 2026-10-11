@@ -1450,9 +1450,36 @@ locus __StdApiUnixPeer {
     }
 }
 
+/// The Unix transport's connections: what the substrate's consumer serves
+/// each accepted connection with (a `std::io::tcp::ConnHandler`). Each is a
+/// peer of its own, numbered by the listener's count; the peer owns the
+/// descriptor and closes it. The peer is this locus's flow child (accepted
+/// and released, a coroutine of its own, reclaimed when its run() returns),
+/// not a local of `serve`: a locus born in a method body and gone at its
+/// end has its deliveries queued for the main thread, which would answer a
+/// connection on another thread than the one reading it. A flow child's are
+/// delivered on the pool it was born on.
+locus __StdApiUnixConns {
+    params {
+        tid: Int = 0;
+    }
+    fn serve(c: __StdIoTcpAccepted) {
+        __StdApiUnixPeer { conn: c.seq, tid: self.tid, route: self.tid * 4294967296 + c.seq, fd: c.fd };
+    }
+    accept(p: __StdApiUnixPeer) { }
+    release (p: __StdApiUnixPeer) { }
+}
+
 /// The listening socket, on its own pool (`std::api::unix::Listener`; the
 /// compiler adds one to the main locus per `unix::Rpc` serve site, carrying
-/// the transport's `path` and the exposure's number).
+/// the transport's `path` and the exposure's number). A listener of the TCP
+/// connection substrate (spec/stdlib.md § "The TCP connection substrate"),
+/// as `std::http::Server` is: `relay`, the listener's end of the bus,
+/// accepts and relays each connection as a `std::io::tcp::Accepted`, and
+/// `conns`, the consumer on its route, serves each on a coroutine of its
+/// own with `__StdApiUnixConns`. What is the api's own is the policy around
+/// them: the bind's structural failure, and no connection taken before the
+/// exposure is subscribed.
 locus __StdApiUnixListener {
     params {
         path: String = "";
@@ -1460,7 +1487,12 @@ locus __StdApiUnixListener {
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
-        next_conn: Int = 1;
+        // the name it goes by in the process (`unix:<path>`): the route its
+        // connections are relayed on. Set at birth, with the consumer on it
+        // (an inert one on no route until then)
+        listener: String = "";
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiUnixConns { tid: self.tid }, armed: false };
     }
     bus {
         subscribe __ApiUnixOutT as on_ctl where key == self.tid;
@@ -1470,15 +1502,18 @@ locus __StdApiUnixListener {
         // no path, no socket: a program that finds the path is another
         // process's to hold hands the transport none, and serves nowhere
         if len(self.path) == 0 { return; }
-        self.fd = std::io::unix::listen_socket(self.path) or - 1;
-        if self.fd < 0 {
+        self.fd = __tcp_rebind(-1, "", 0, self.path);
+        self.listener = __tcp_listener_name("", "", 0, self.path, self.fd);
+        if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
             eprintln("api: unix::Rpc could not listen on " + self.path);
             std::process::exit(2);
         }
+        self.relay.name = self.listener;
+        self.relay.armed = true;
+        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiUnixConns { tid: self.tid } };
     }
-    @unbounded
     run() {
         if self.fd < 0 { return; }
         // The path is held from birth, and a client that connects before the
@@ -1492,32 +1527,21 @@ locus __StdApiUnixListener {
             __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 4, seq: 0, request_id: 0, answer: "", caller: "" };
             std::time::sleep(2ms);
         }
-        while !self.stopped && !self.draining {
-            let conn = std::io::tcp::__accept_one(self.fd);
-            if conn < 0 {
-                if self.stopped || self.draining { break; }
-                // a failed accept (out of descriptors, an aborted
-                // connection) ends one connection, never the listener
-                std::time::sleep(20ms);
-                continue;
-            }
-            let n = self.next_conn;
-            self.next_conn = n + 1;
-            __StdApiUnixPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        if !self.stopped && !self.draining {
+            self.relay.accept_all(self.fd, -1);
         }
+        self.release_socket();
     }
-    accept(c: __StdApiUnixPeer) { }
-    release (c: __StdApiUnixPeer) { }
     fn on_ctl(o: __StdApiUnixOut) {
         if o.kind == 3 { self.started = true; }
         if o.kind == 1 {
+            // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
-            self.release_socket();
+            if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
         }
     }
     fn release_socket() {
         if self.fd < 0 { return; }
-        std::io::tcp::__shutdown_listen_socket(self.fd);
         std::io::tcp::__close_fd(self.fd);
         self.fd = -1;
         std::io::fs::unlink(self.path) or discard;
@@ -1762,9 +1786,57 @@ locus __StdApiHttpPeer {
     }
 }
 
+/// The HTTP transport's connections: what the substrate's consumer serves
+/// each accepted connection with (a `std::io::tcp::ConnHandler`). Each is a
+/// peer of its own, numbered by the listener's count (from 1, wrapping below
+/// 2^24 so a number is a correlation), a flow child of this locus as the
+/// Unix transport's are; the peer owns the descriptor and closes it.
+locus __StdApiHttpConns {
+    params {
+        tid: Int = 0;
+    }
+    fn serve(c: __StdIoTcpAccepted) {
+        let n = ((c.seq - 1) % 16777215) + 1;
+        __StdApiHttpPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: c.fd };
+    }
+    accept(p: __StdApiHttpPeer) { }
+    release (p: __StdApiHttpPeer) { }
+}
+
+// An HTTP listener's `bind` is `host:port`: the port is what follows the
+// last colon (-1 when there is none, or it is no port), the host what
+// precedes it (`127.0.0.1` when nothing does).
+fn __api_bind_colon(bind: String) -> Int {
+    let mut colon = -1;
+    let mut k = 0;
+    while k < len(bind) {
+        if bind[k..(k + 1)] == ":" { colon = k; }
+        k = k + 1;
+    }
+    return colon;
+}
+
+fn __api_bind_host(bind: String) -> String {
+    let colon = __api_bind_colon(bind);
+    if colon > 0 { return bind[0..colon]; }
+    return "127.0.0.1";
+}
+
+fn __api_bind_port(bind: String) -> Int {
+    let colon = __api_bind_colon(bind);
+    if colon < 0 { return -1; }
+    let port = std::str::parse_int(bind[(colon + 1)..len(bind)]) or - 1;
+    if port > 65535 { return -1; }
+    return port;
+}
+
 /// The listening socket, on its own pool (`std::api::http::Listener`; the
-/// compiler adds one to the main locus per `http::Rpc` serve site, carrying
-/// the transport's `bind` and the exposure's number).
+/// compiler adds one to the main locus per `http::Rpc` or `mcp::Rpc` serve
+/// site, carrying the transport's `bind` and the exposure's number). A
+/// listener of the TCP connection substrate, as the Unix one is: `relay`
+/// accepts and relays, `conns` serves each connection on a coroutine of its
+/// own with `__StdApiHttpConns`, and the api's policy is the bind's
+/// structural failure and nothing taken before the exposure is subscribed.
 locus __StdApiHttpListener {
     params {
         bind: String = "";
@@ -1773,37 +1845,34 @@ locus __StdApiHttpListener {
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
-        next_conn: Int = 1;
+        // the name it goes by in the process (`host:<bound port>`): the
+        // route its connections are relayed on. Set at birth, with the
+        // consumer on it (an inert one on no route until then)
+        listener: String = "";
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiHttpConns { tid: self.tid }, armed: false };
     }
     bus {
         subscribe __ApiHttpOutT as on_ctl where key == self.tid;
         publish __ApiHttpOutT;
     }
     birth() {
-        // `host:port`; the port is what follows the last colon
-        let mut colon = -1;
-        let mut k = 0;
-        while k < len(self.bind) {
-            if self.bind[k..(k + 1)] == ":" { colon = k; }
-            k = k + 1;
+        let host = __api_bind_host(self.bind);
+        let port = __api_bind_port(self.bind);
+        if port >= 0 {
+            self.fd = __tcp_rebind(-1, host, port, "");
         }
-        let mut host = "127.0.0.1";
-        let mut port = -1;
-        if colon >= 0 {
-            if colon > 0 { host = self.bind[0..colon]; }
-            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or - 1;
-        }
-        if port >= 0 && port <= 65535 {
-            self.fd = std::io::tcp::__listen_socket(host, port);
-        }
-        if self.fd < 0 {
+        self.listener = __tcp_listener_name("", host, port, "", self.fd);
+        if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
             eprintln("api: " + self.what + " could not listen on " + self.bind);
             std::process::exit(2);
         }
+        self.relay.name = self.listener;
+        self.relay.armed = true;
+        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiHttpConns { tid: self.tid } };
     }
-    @unbounded
     run() {
         // see the Unix listener: nothing is accepted before the exposure is
         // subscribed, and the asking repeats until the transport answers
@@ -1811,32 +1880,21 @@ locus __StdApiHttpListener {
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 4, status: 0, body: "" };
             std::time::sleep(2ms);
         }
-        while !self.stopped && !self.draining {
-            let conn = std::io::tcp::__accept_one(self.fd);
-            if conn < 0 {
-                if self.stopped || self.draining { break; }
-                // a failed accept (out of descriptors, an aborted
-                // connection) ends one connection, never the listener
-                std::time::sleep(20ms);
-                continue;
-            }
-            let n = self.next_conn;
-            self.next_conn = (n % 16777215) + 1;
-            __StdApiHttpPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        if !self.stopped && !self.draining {
+            self.relay.accept_all(self.fd, -1);
         }
+        self.release_socket();
     }
-    accept(c: __StdApiHttpPeer) { }
-    release (c: __StdApiHttpPeer) { }
     fn on_ctl(o: __StdApiHttpOut) {
         if o.kind == 3 { self.started = true; }
         if o.kind == 1 {
+            // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
-            self.release_socket();
+            if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
         }
     }
     fn release_socket() {
         if self.fd < 0 { return; }
-        std::io::tcp::__shutdown_listen_socket(self.fd);
         std::io::tcp::__close_fd(self.fd);
         self.fd = -1;
     }

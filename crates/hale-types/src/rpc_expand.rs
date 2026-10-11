@@ -785,6 +785,9 @@ pub fn expand(
     }
     inject_runtime(programs);
     inject_topics(programs);
+    // the runtime's socket listeners (`http::Rpc`, `mcp::Rpc`, `unix::Rpc`)
+    // are listeners of the TCP connection substrate: the runtime carries it
+    inject_tcp_serve(programs);
     if mentions_h2(programs) {
         inject_h2(programs);
     }

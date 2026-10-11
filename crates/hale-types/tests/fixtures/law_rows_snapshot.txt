@@ -53,6 +53,7 @@ crates/hale-codegen/tests/fixtures/examples/constitutions.hl	quiet	count subscri
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl	tenant_iso	forbid reaches(billing, research)	Holds	Some("Core")
 crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl	no_plugin_secrets	forbid reaches(plugins, effects(secret_use))	Holds	None
 crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl	one_op_per_request	bound secret_use <= 1 on paths from handlers	Holds	None
+crates/hale-codegen/tests/tcp_substrate.rs#7	handed_over	require no_silent_loss(topic __TcpAcceptedT)	Holds	None
 crates/hale-types/tests/artifact_integrity.rs#1	iso	forbid reaches(srcs, sinks)	Uncertified	None
 crates/hale-types/tests/artifact_integrity.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	Some("Core")
 crates/hale-types/tests/artifact_law_projection.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None

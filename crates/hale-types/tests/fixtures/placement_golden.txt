@@ -399,20 +399,25 @@ domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 row	App@literal1	App	main	default
-row	App@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	App@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	App@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
 row	App@literal1.shop	Shop	pool:work	entry	off owner
 row	App@literal1.staff	__StdApiStaticRoles	main	default
 row	App@literal1.tokens	Tokens	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no caller)
 
 == crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#c12c5daf
 row	Book@main1	Book	main	default
@@ -475,9 +480,6 @@ domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 row	Desk@literal1	Desk	main	default
-row	Desk@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	Desk@literal1.__rpc_h_3	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	Desk@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Desk@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.counter	Counter	pool:desk	entry	off owner
@@ -485,23 +487,31 @@ row	Desk@literal1.http_roles	Grants	main	default
 row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.unix_roles	Grants	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+shared	Desk@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	Desk@literal1.__rpc_h_3	__StdApiHttpListener #6e12d80d
+shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no caller)
 
 == crates/hale-cli/tests/fixtures/api_description/main.hl#d536b3f3
 root	Shop	the entry
 domain	pool:work	async_io
 domain	pool:__api_unix	async_io
 row	Shop@literal1	Shop	main	default
-row	Shop@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Shop@literal1.billing	Billing	pool:work	entry	off owner
 row	Shop@literal1.staff	__StdApiStaticRoles	main	default
-shared	dynamic	sites in the seed #16819ea8
+shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
+shared	dynamic	sites in the seed #a058d397
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
@@ -524,9 +534,9 @@ row	Acc@main1	Acc	main	default
 root	App	the entry
 domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
-row	App@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	App@literal1.echo	Echo	main	default
-shared	dynamic	sites in the seed #16819ea8
+shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
+shared	dynamic	sites in the seed #a058d397
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3
 row	Acc@main1	Acc	main	default
@@ -640,7 +650,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#f69c381f
+== crates/hale-stdlib/hl/api_rpc.hl#acd51881
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1296,14 +1306,18 @@ row	Rec@main1	Rec	main	default
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default
-row	Desk@literal1.__rpc_h_1	__StdApiHttpListener	pool:__api_http	entry	off owner
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
+shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no caller)|unknown (no instance)
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
 root	Desk	the entry
@@ -1315,7 +1329,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.maker	Maker	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
-shared	dynamic	sites in the seed #90d92044
+shared	dynamic	sites in the seed #5eb7d4fd
 
 == crates/hale-codegen/tests/api_hub_desk.rs#b1c8875a
 root	Desk	the entry
@@ -1335,20 +1349,24 @@ row	__StdApiHubStream@binding2	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no caller)|unknown (no instance)
 
 == crates/hale-codegen/tests/api_mcp.rs#206f7719
 root	D	the entry
 domain	pool:__api_http	async_io
 row	D@literal1	D	main	default
-row	D@literal1.__rpc_h_1	__StdApiHttpListener	pool:__api_http	entry	off owner
 row	D@literal1.a	A	main	default
 row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
+shared	D@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `mcp::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no caller)|unknown (no instance)
 
 == crates/hale-codegen/tests/api_runtime.rs#9876407f
 root	App	the entry
@@ -1375,9 +1393,6 @@ domain	pool:work	async_io
 domain	pool:work2	async_io
 domain	pool:__api_unix	async_io
 row	Desk@literal1	Desk	main	default
-row	Desk@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
-row	Desk@literal1.__rpc_u_2	__StdApiUnixListener	pool:__api_unix	entry	off owner
-row	Desk@literal1.__rpc_u_3	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Desk@literal1.audit	Audit	main	default
 row	Desk@literal1.ledger	Ledger	pool:desk	entry	off owner
 row	Desk@literal1.orders	Orders	pool:desk	entry	off owner
@@ -1386,11 +1401,18 @@ row	Desk@literal1.partner_roles	Grants	main	default
 row	Desk@literal1.poisoned	Poisoned	pool:work2	entry	off owner
 row	Desk@literal1.public_roles	Grants	main	default
 row	Desk@literal1.svc	Restarter	pool:work	entry	off owner
+shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
+shared	Desk@literal1.__rpc_u_2	__StdApiUnixListener #e8cfe0e1
+shared	Desk@literal1.__rpc_u_3	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	Poisoned	on main
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
 
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
@@ -2944,7 +2966,7 @@ row	App@literal1.server	__StdIoH2Listener	pool:h2	entry	off owner
 -- dynamic	sites in the seed
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIoH2Conn	on pool:h2
-dynamic	__StdIoTcpStream	on pool:h2|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:h2|unknown (no caller)|unknown (no instance)
 
 == crates/hale-codegen/tests/io_tcp_recv_timeout.rs#52b73291
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
@@ -4111,7 +4133,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.maker	Maker	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
-shared	dynamic	sites in the seed #90d92044
+shared	dynamic	sites in the seed #5eb7d4fd
 
 == crates/hale-codegen/tests/tcp_substrate.rs#142fa461
 root	App	the entry
@@ -4192,6 +4214,22 @@ row	~.handler.handler	Tag	pool:c	inherited
 dynamic	__StdIoTcpConnFlow	on pool:c
 dynamic	__StdIoTcpConnInline	on pool:c
 dynamic	__StdIoTcpStream	on pool:c
+
+== crates/hale-codegen/tests/tcp_substrate.rs#db8c3ffa
+root	App	the entry
+domain	pool:web	async_io
+domain	pinned:App@literal1.acceptor
+row	App@literal1	App	main	default
+shared	App@literal1.acceptor	__StdIoTcpAcceptor #1ef3cccf
+-- App@literal1.conns	__StdIoTcpConnections
+row	~	__StdIoTcpConnections	pool:web	entry	off owner
+row	~.flows	__StdIoTcpFlows	pool:web	inherited
+row	~.handler	__StdHttpResponder	pool:web	inherited
+row	~.handler.handler	Api	pool:web	inherited
+-- dynamic	sites in the seed
+dynamic	__StdIoTcpConnFlow	on pool:web
+dynamic	__StdIoTcpConnInline	on pool:web
+dynamic	__StdIoTcpStream	on pool:web
 
 == crates/hale-codegen/tests/term_primitives.rs#3ddf52f2
 row	__StdTermRawMode@main1	__StdTermRawMode	main	default
@@ -6084,13 +6122,17 @@ dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved decla
 root	App	the entry
 domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
-row	App@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	App@literal1.echo	Echo	main	default
+shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	Table	on main
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
 
 == crates/hale-types/tests/stdlib_name_check.rs#445e7d87
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -6272,7 +6314,7 @@ row	Desk@literal1.probe	Probe	main	default
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
 dynamic	__StdIoH2Conn	on pool:__api_grpc
-dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no caller)|unknown (no instance)
 
 == tests/hale/api/pending_test.hl
 root	Desk	the entry
@@ -6408,16 +6450,21 @@ domain	pool:work	async_io
 domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 row	App@literal1	App	main	default
-row	App@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	App@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	App@literal1.echo	Echo	pool:work	entry	off owner
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	Table	on main
 dynamic	Tokens	on main
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on main|pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on main|pool:__api_http|pool:__api_unix|unknown (no caller)
 
 == tests/hale/api_binding_test.hl
 shared	Api@main2	Api #a23e2495
@@ -7924,7 +7971,7 @@ dynamic	Cases	on main
 dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api__tests__fixture___main__Fixture	on main
@@ -10396,7 +10443,7 @@ shared	dynamic	sites in oidc #f5f825c3
 dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io|unknown (no instance)
 dynamic	__StdIoTcpStream	on main|pool:io|unknown (no instance)
 dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -12147,15 +12194,13 @@ hole	Head@literal2.commands.knowledge.provider	reuse `knowledge_commands`
 hole	Head@literal2.commands.knowledge.provider	unresolved declaration `KnowledgeCommandProvider`
 row	Head@literal1	Head	main	default
 row	Head@literal2	Head	main	default
-row	Head@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	Head@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
-row	Head@literal2.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	Head@literal2.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Head@literal2.bearer	LaunchBearer	main	default
 row	Http@main1	Http	main	default
 row	WebAssets@main2	WebAssets	main	default
 row	__lib_dna__operations___definitions__ProjectWorkflowCatalog@main3	__lib_dna__operations___definitions__ProjectWorkflowCatalog	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
+shared	Head@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	Head@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- Head@literal1.bearer	OidcBearer
 row	~	OidcBearer	main	default
 row	~.auth	__lib_dna__ui___main__Ui	main	inherited
@@ -12184,6 +12229,8 @@ row	~.handler.roles.rows	__lib_dna__core___journal__EventRows	pool:io	inherited
 row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
+shared	Head@literal2.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	Head@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Head@literal2.commands	Commands #7834e7ec
 shared	Head@literal2.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- Head@literal2.srv	__StdHttpServer
@@ -12237,13 +12284,15 @@ dynamic	TaskWire	on pool:io
 dynamic	Wire	on pool:io
 dynamic	WorkflowRead	on pool:io
 dynamic	WorkflowWire	on pool:io
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdHttpResponder	on pool:io
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
@@ -12395,14 +12444,12 @@ hole	PracticeReviewHead@literal2.commands.knowledge.provider	reuse `knowledge_co
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	unresolved declaration `__lib_dna__api___knowledge_commands__KnowledgeCommandProvider`
 row	PracticeReviewHead@literal1	PracticeReviewHead	main	default
 row	PracticeReviewHead@literal2	PracticeReviewHead	main	default
-row	PracticeReviewHead@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	PracticeReviewHead@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
-row	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	PracticeReviewHead@literal2.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	PracticeReviewHead@literal2.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
 row	__lib_dna__api___http__Http@main1	__lib_dna__api___http__Http	main	default
 dynamic	__StdSecretCredential	on pool:io	in dna/ui
 dynamic	__StdBytesBytesBuilder	on main	in iris/process_identity
+shared	PracticeReviewHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	PracticeReviewHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- PracticeReviewHead@literal1.bearer	__lib_dna__api___bearer__OidcBearer
 row	~	__lib_dna__api___bearer__OidcBearer	main	default
 row	~.auth	__lib_dna__ui___main__Ui	main	inherited
@@ -12450,6 +12497,8 @@ row	~.handler.roles.rows	__lib_dna__core___journal__EventRows	pool:io	inherited
 row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
+shared	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	PracticeReviewHead@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands #e75b0ea7
 shared	PracticeReviewHead@literal2.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- PracticeReviewHead@literal2.srv	__StdHttpServer
@@ -12553,12 +12602,14 @@ dynamic	__lib_dna__operations___usage__Usage	on pool:io
 -- dynamic	sites in dna/api/practice_review
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	PracticeReviewCommands	on main
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdHttpResponder	on pool:io
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__lib_dna__api___knowledge_memory__LocalKnowledgeCommands	on main
 dynamic	__lib_dna__api___organization_status__NoOrganizationRuntime	on main
@@ -12924,7 +12975,7 @@ dynamic	Registry	on main|pinned:HeadMain@literal1.watch|pool:io
 dynamic	__StdHttpResponder	on pool:io|pool:senses
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io|pool:senses
-dynamic	__StdIoTcpConnections	on pool:io|pool:senses
+dynamic	__StdIoTcpConnections	on pool:io|pool:senses|unknown (no instance)
 dynamic	__StdIoTcpStream	on pinned:HeadMain@literal1.watch|pool:io|pool:senses|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (`body_alive` passed as a value)
 dynamic	__StdSecretCredential	on pinned:HeadMain@literal1.watch|pool:io
@@ -12973,12 +13024,12 @@ hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__
 hole	FixtureProvider@main4.original.catalog	reuse `original`
 hole	FixtureProvider@main4.updated.catalog	reuse `updated`
 row	FixtureHead@literal1	FixtureHead	main	default
-row	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	FixtureHead@literal1.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
 row	__lib_dna__api___commands__NoCommands@main5	__lib_dna__api___commands__NoCommands	main	default
 row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
+shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #9a3e4d3c
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
 shared	FixtureHead@literal1.srv	__StdHttpServer #05866f9a
@@ -13001,12 +13052,14 @@ shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main3	__lib_dna__c
 shared	dynamic	sites in api #567e099a
 -- dynamic	sites in api/tests/catalog
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdHttpResponder	on pool:io
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 -- dynamic	sites in core
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
@@ -13044,25 +13097,27 @@ hole	FixtureHead@literal1.srv.conns.handler.handler	unresolved declaration `std:
 hole	FixtureHead@literal1.commands.admission.provider	reuse `provider`
 hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 row	FixtureHead@literal1	FixtureHead	main	default
-row	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	FixtureHead@literal1.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
 row	ScriptedCommands@main2	ScriptedCommands	main	default
 row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	default
 row	__lib_dna__operations___definitions__NoWorkflowCatalog@main3	__lib_dna__operations___definitions__NoWorkflowCatalog	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
+shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
+shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #9a3e4d3c
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
 shared	FixtureHead@literal1.srv	__StdHttpServer #05866f9a
 shared	dynamic	sites in api #567e099a
 -- dynamic	sites in api/tests/commands
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdHttpResponder	on pool:io
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdJsonBuilder	on main
 -- dynamic	sites in core
@@ -13730,23 +13785,27 @@ domain	pool:__api_ws	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 row	App@literal1	App	main	default
-row	App@literal1.__rpc_h_1	__StdApiHttpListener	pool:__api_http	entry	off owner
-row	App@literal1.__rpc_h_2	__StdApiHttpListener	pool:__api_http	entry	off owner
 row	App@literal1.__rpc_w_1	__StdApiWsListener	pool:__api_ws	entry	off owner
 row	App@literal1.list	Todos	pool:work	entry	off owner
 row	App@literal1.roles	Grants	main	default
 row	App@literal1.tokens	Tokens	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+shared	App@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 -- App@literal1.sense	Sense
 row	~	Sense	pinned:~	entry	off owner
 row	~.nerves	Nerves	pinned:~	inherited
 row	~.nerves.credential	__StdSecretCredential	pinned:~	inherited
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no instance)
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no caller)|unknown (no instance)
 
 == dna/tests/onboarding/voice/node
 root	Node	the entry
@@ -14532,6 +14591,20 @@ row	~.inner.slot	Leaf	pinned:~	inherited
 == shared Worker #f0ba3524
 row	~	Worker	pinned:~	entry	off owner
 row	~.leaf	Leaf	pinned:~	inherited
+
+== shared __StdApiHttpListener #6e12d80d
+row	~	__StdApiHttpListener	pool:__api_http	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:__api_http	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:__api_http	inherited
+row	~.conns.handler	__StdApiHttpConns	pool:__api_http	inherited
+row	~.relay	__StdIoTcpRelay	pool:__api_http	inherited
+
+== shared __StdApiUnixListener #e8cfe0e1
+row	~	__StdApiUnixListener	pool:__api_unix	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:__api_unix	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:__api_unix	inherited
+row	~.conns.handler	__StdApiUnixConns	pool:__api_unix	inherited
+row	~.relay	__StdIoTcpRelay	pool:__api_unix	inherited
 
 == shared __StdHttpRouter #a16e8e74
 row	~	__StdHttpRouter	main	default
@@ -16340,15 +16413,15 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
-== shared sites in the seed #16819ea8
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
-
 == shared sites in the seed #3837ddcb
 dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
 dynamic	__StdIoTcpConnInline	on pool:one|pool:zero
 dynamic	__StdIoTcpStream	on pool:one|pool:zero
+
+== shared sites in the seed #5eb7d4fd
+dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no caller)|unknown (no instance)
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
@@ -16367,10 +16440,14 @@ dynamic	__StdIoTcpConnInline	on main
 dynamic	__StdIoTcpConnections	on main
 dynamic	__StdIoTcpStream	on main
 
-== shared sites in the seed #90d92044
-dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
-dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
+== shared sites in the seed #a058d397
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiUnixConns	on pool:__api_unix
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main

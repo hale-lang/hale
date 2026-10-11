@@ -558,7 +558,11 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   park a coroutine, so they need an `async_io` pool, and only the main
   locus places: the serve expansion adds the listener to the serving main
   locus as a param, placed on the pool `__api_unix`, which every Unix
-  exposure of the program shares. A serve over `unix::Rpc` from a locus
+  exposure of the program shares. The listener is one of the TCP
+  connection substrate's (spec/stdlib.md § The TCP connection substrate),
+  named `unix:<path>`: it relays each accepted connection as a
+  `std::io::tcp::Accepted` to the consumer on its route, whose handler
+  starts the connection's locus as a flow child on the same pool. A serve over `unix::Rpc` from a locus
   that is not the main locus is refused, whether the transport is written at
   the serve site or held as a param of that locus. The transport itself, and the
   exposure, stay on the serving locus's pool; the two meet on the bus
@@ -626,7 +630,8 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   (a client that connects earlier waits in the listen backlog). The
   listener runs on the `async_io` pool `__api_http`, which every HTTP
   exposure of the program shares, and each connection is a locus of that
-  pool; only the main locus places, so a serve over `http::Rpc` from a
+  pool (the listener is a TCP connection substrate listener named
+  `host:<bound port>`, as the Unix one is); only the main locus places, so a serve over `http::Rpc` from a
   locus that is not the main locus is refused, written at the site or held
   as a param. The transport and the
   exposure stay on the serving locus's pool; the two meet on the bus
@@ -987,7 +992,10 @@ transport, the five topics) is not part of the bundled stdlib. The
 compiler appends it to a program that serves a surface (`api::serve`) or
 spells one of its names (`std::api::Request`, `std::api::test::Rpc`,
 `std::api::ServedContext`, …), before the check; a program that does
-neither lowers as it did before R2a, byte for byte.
+neither lowers as it did before R2a, byte for byte. The runtime carries
+the TCP connection substrate (`io_tcp_serve.hl` and its topic,
+spec/stdlib.md § The TCP connection substrate), since its socket
+transports' listeners are built on it.
 
 ```hale,fragment
 // The framed request: what Rpc.frame returns.
@@ -1059,6 +1067,20 @@ own queue, in the order accepted: a call is *queued* until the receiver
 is free and *executing* from the moment it is on the receiver's pool, so
 that what `stop()` and a receiver's failure refuse is exactly what has
 not been handed over, and what has been handed over runs.
+
+A receiver is therefore an actor: its calls run one at a time, in the
+order accepted, whatever the transport and wherever it is placed. The
+transports read and write connections concurrently and the exposure
+admits concurrently, but fifty one-second calls to one receiver take
+fifty seconds, on an `async_io` pool as anywhere. Calls to different
+receivers run at once: each receiver is a slot of its own in the
+exposure, and the handlers of receivers on one `async_io` pool interleave
+where they park. A program that wants a surface's work answered
+concurrently binds its members to several receivers (members of
+different receiver types, each instance placed where its work belongs),
+or serves the surface through several exposures, each with a receiver
+instance of its own; a window wider than one call per receiver is § Not
+yet.
 
 **Completion** has one owner, the exposure's pending table: a record
 per accepted request keyed by the request id, holding the request (its
