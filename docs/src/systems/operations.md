@@ -132,7 +132,9 @@ For a long-lived service, the surface is:
 - **`--no-warn-unbounded-alloc`** — opts a whole run out.
 - **`--report-unbounded-use`** — prints one line per `@unbounded` or
   `@bounded_by` fn or hook, with how many survey sites and hot-path
-  warnings it silences in this program, and the bound. A decorator whose counts are 0 in every
+  warnings it silences in this program, and the bound; the stdlib's
+  own decorators the program reaches are listed too, at
+  `crates/hale-stdlib/hl/<file>:<line>`. A decorator whose counts are 0 in every
   program that compiles it acknowledges nothing and can go.
 - `@bounded locus L { … }` is now redundant with the default and
   still accepted.

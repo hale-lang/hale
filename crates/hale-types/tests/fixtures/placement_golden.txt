@@ -501,10 +501,7 @@ row	Shop@literal1	Shop	main	default
 row	Shop@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
 row	Shop@literal1.billing	Billing	pool:work	entry	off owner
 row	Shop@literal1.staff	__StdApiStaticRoles	main	default
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+shared	dynamic	sites in the seed #16819ea8
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
@@ -522,6 +519,14 @@ row	Src@main2	Src	main	default
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl#0217e859
 row	Acc@main1	Acc	main	default
+
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#420761ce
+root	App	the entry
+domain	pool:__api_unix	async_io
+row	App@entry	App	main	default
+row	App@entry.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
+row	App@entry.echo	Echo	main	default
+shared	dynamic	sites in the seed #16819ea8
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3
 row	Acc@main1	Acc	main	default
@@ -16064,6 +16069,11 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
+
+== shared sites in the seed #16819ea8
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w

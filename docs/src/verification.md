@@ -222,7 +222,9 @@ the fn. `--no-warn-unbounded-alloc` opts a run out, and
 `--report-unbounded-use` lists each `@unbounded` and `@bounded_by` with
 the sites and hot-path warnings it silences (and the bound, for
 `@bounded_by`), so one that silences nothing can be found and
-removed. A site in code
+removed. It lists the stdlib's own decorators your program reaches as
+well, at their place in `crates/hale-stdlib/hl/`, counted as though
+the stdlib's sites were yours (the warnings never show them). A site in code
 the compiler generated (a serve site's exposure, a `json:` parser) has no
 place in your source to report it, so it is left out; a site in
 your own code is reported wherever it is called from. It is advisory:

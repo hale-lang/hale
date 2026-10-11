@@ -532,7 +532,7 @@ fn mentions_h2(programs: &[&mut Program]) -> bool {
 
 /// Where the appended runtime parses: its own window of the generated
 /// space, from here up to the topics'.
-const RUNTIME_BASE: u32 = API_SYNTH_BASE + 0x0400_0000;
+pub(crate) const RUNTIME_BASE: u32 = API_SYNTH_BASE + 0x0400_0000;
 
 /// Whether an offset is in the appended runtime's source. The runtime is
 /// stdlib source in every judgment (the analysis copy's rows are not the
@@ -540,6 +540,24 @@ const RUNTIME_BASE: u32 = API_SYNTH_BASE + 0x0400_0000;
 /// knows it.
 pub fn is_runtime_pos(pos: u32) -> bool {
     (RUNTIME_BASE..API_SYNTH_BASE + 0x0500_0000).contains(&pos)
+}
+
+/// The stdlib file an offset of the appended runtime lies in: the file's
+/// name as `crates/hale-stdlib/hl/` spells it, its text, and the offset
+/// within it. Each of the runtime's four files parses in a window of its
+/// own ([`inject_runtime`], [`inject_hub`], [`inject_h2`],
+/// [`inject_grpc`]); `None` outside them.
+pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
+    let windows: [(u32, &'static str, &'static str); 4] = [
+        (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
+        (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
+        (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
+        (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
+    ];
+    windows.iter().find_map(|(base, name, src)| {
+        let local = pos.checked_sub(*base)? as usize;
+        (local < src.len()).then_some((*name, *src, local))
+    })
 }
 
 /// Append the runtime to the first program, once.

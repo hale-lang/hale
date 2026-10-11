@@ -1855,11 +1855,13 @@ assume the others in a build:
     **`--report-unbounded-use`** says which `@unbounded` and
     `@bounded_by` decorators silence anything (GH #1490). It prints one
     line on stdout per decorated fn or lifecycle hook of the program,
-    its imported seeds' included (the stdlib's analysis copy and the
-    appended api runtime are not the program's, so their decorators are
-    not listed):
+    its imported seeds' included, and of the stdlib source it reaches:
+    the appended api runtime's, and the analysis copy's fns and hooks
+    the program reaches:
     `unbounded-use<TAB><path>:<line><TAB><fn><TAB><survey><TAB><hot-path><TAB><decorator>`.
-    `<path>` is relative to the working directory, `<line>` is the
+    `<path>` is relative to the working directory (a stdlib decorator's
+    is `crates/hale-stdlib/hl/<file>`, as the repository spells it,
+    whatever the working directory), `<line>` is the
     decorator's (a hook takes no other decorator, so its declaration
     opens with it), and `<fn>` is spelled as the program spells it.
     `<survey>` counts the fn's sites this survey would report were the
@@ -1875,11 +1877,18 @@ assume the others in a build:
     check drops advisories in files the target does not own: a seed's
     decorator is counted in a consumer's context, where its fn may be
     invoked unboundedly though the consumer's check would not print the
-    warning. Lines are sorted by path and line; the diagnostics and
-    the exit code are the check's. `scripts/unbounded-unused.sh`
-    aggregates the report over every DNA program and lists the
-    decorators of either kind that silence nothing in any program that
-    contains them.
+    warning. A stdlib decorator is counted the same way, its fn's sites
+    and findings judged in this program as though the stdlib's rows
+    were the program's own, with no author-position filter (the
+    stdlib's source is real, if not the bundle's): the advisory reports
+    the program's own sites alone, so removing a stdlib decorator
+    changes no warning, and the count says what it would surface were
+    the stdlib's sites reported. Lines are sorted by path and line; the
+    diagnostics and the exit code are the check's.
+    `scripts/unbounded-unused.sh` aggregates the report over every DNA
+    program, the in-tree corpus and `tests/hale`'s tests, and lists the
+    decorators of either kind, in `dna/` and in the stdlib, that
+    silence nothing in any program that reaches them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
   a method, an authored hook, a mode), keyed by its site and printed

@@ -1019,7 +1019,7 @@ pub fn check_bundle_by_declaration(
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    let rows = HotPathRows { summary: inputs.alloc_summary, top };
+    let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
@@ -2226,12 +2226,16 @@ fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
 /// A `@hot` fn's findings are errors either way, so it silences none of
 /// them. Keyed by the fn; a fn the lint finds nothing in has no entry.
 /// `summary` and `top` are the ones the check reads (a snapshot's
-/// `demand_alloc_summary` and `demand_scope`).
+/// `demand_alloc_summary` and `demand_scope`). With `stdlib`, the rows
+/// are the stdlib's instead of the program's own (the analysis copy's and
+/// the appended api runtime's): what the lint would find in a stdlib fn,
+/// judged in this program, were the stdlib's rows its own (GH #1490).
 pub fn hot_path_silenced(
     summary: &crate::alloc_summary::AllocSummary,
     top: &TopScope,
+    stdlib: bool,
 ) -> BTreeMap<crate::alloc_summary::FnKey, usize> {
-    hot_path_findings(&HotPathRows { summary, top })
+    hot_path_findings(&HotPathRows { summary, top, stdlib })
         .into_iter()
         .filter(|(f, found)| !f.hot && !found.is_empty() && summary.unbounded_fns.contains(&f.key))
         .map(|(f, found)| (f.key.clone(), found.len()))
@@ -2244,9 +2248,9 @@ fn hot_path_findings<'s>(
     rows: &HotPathRows<'s>,
 ) -> Vec<(&'s crate::alloc_summary::FnSummary, Vec<(Span, String)>)> {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
-    let (summary, top) = (rows.summary, rows.top);
+    let (summary, top, stdlib) = (rows.summary, rows.top, rows.stdlib);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
-        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+        summary.fns.values().filter(|f| summary.is_own(&f.key) != stdlib && !f.mode).collect();
     rows.sort_by_key(|f| f.decl_index);
     let mut out = Vec::new();
     for f in rows {
@@ -2304,6 +2308,10 @@ const HOT_PATH: RuleId = RuleId::registered("verification/structural", "hot-path
 struct HotPathRows<'r> {
     summary: &'r crate::alloc_summary::AllocSummary,
     top: &'r TopScope,
+    /// The stdlib's rows instead of the program's own: only
+    /// [`hot_path_silenced`] asks, for `--report-unbounded-use`; the lint
+    /// reports the program's own.
+    stdlib: bool,
 }
 
 // === GH #723: decorator stacks =====================================
