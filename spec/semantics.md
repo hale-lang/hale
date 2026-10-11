@@ -742,6 +742,15 @@ reclaims tears itself down when it fails: an `accept`'d child (its
 owner's tracker expects it gone) and a bare statement literal (its
 statement's own teardown then steps over it, on the same latch).
 
+A handler of the failed child can return before the supervisor has
+decided — the failure is delivered on the owner's thread, and the
+child's thread runs its other work while it waits — and the child
+stops there, its subscriptions dropped. A restart the supervisor then
+decides takes that stop back: the restarted child has every
+subscription it had before it failed, so a bound receiver restarted
+after the call it was executing returned is served again (spec/api.md
+§ Receiver failure and generations).
+
 ### `release(c)` and flow children
 
 `release(c: Child) { ... }` is the death-side

@@ -6124,6 +6124,13 @@ row	App@literal1.svc	Svc	pool:work	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
 dynamic	Svc	on main
 
+== tests/hale/api/restart_after_return_test.hl
+root	App	the entry
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.svc	Svc	pool:work	entry	off owner
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/restart_test.hl
 root	App	the entry
 domain	pool:work	async_io

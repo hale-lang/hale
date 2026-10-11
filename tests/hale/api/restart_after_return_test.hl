@@ -1,0 +1,94 @@
+// GH #1417 (R2a, spec/api.md § Receiver failure and generations;
+// spec/semantics.md § "A failed child its owner holds is kept") — a bound
+// receiver whose owner restarts it only after the call it was executing has
+// returned.
+//
+// `run()` violates while `arm` executes; `arm` returns before the owner's
+// `on_failure` decides, so the receiver's handler ends on a child that has
+// failed and is held by its owner, and the child stops: its subscriptions
+// are dropped. The owner then restarts it, and a restarted child is live
+// again, subscriptions and all: the exposure serves the next generation.
+// (Before, the restart re-ran `birth()` on a child the stop had left with
+// no subscription, so every later call was refused `unavailable`.)
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+locus Svc {
+    params {
+        births: Int = 0;
+        runs: Int = 0;
+        armed: Bool = false;
+        violated: Bool = false;
+        returned: Bool = false;
+        ran_fast: Int = 0;
+    }
+    closure fuse { captures: runs; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs == 1 {
+            let mut i = 0;
+            while !self.armed && i < 5000 { std::time::sleep(1ms); i = i + 1; }
+            self.violated = true;
+            violate fuse;
+        }
+    }
+    // executing when the receiver fails; returns before the owner decides
+    fn arm(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.armed = true;
+        let mut i = 0;
+        while !self.violated && i < 5000 { std::time::sleep(1ms); i = i + 1; }
+        self.returned = true;
+        return Res { n: ctx.generation };
+    }
+    fn fast(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.ran_fast = self.ran_fast + 1;
+        return Res { n: ctx.generation };
+    }
+}
+
+api S {
+    rpc Svc::arm;
+    rpc Svc::fast;
+}
+
+main locus App {
+    params {
+        svc: Svc = Svc { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        failures: Int = 0;
+        returned_when_decided: Bool = false;
+    }
+    placement { svc: cooperative(pool = work) where async_io; }
+    on_failure(c: Svc, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        // the decision waits for the executing call to return
+        let mut i = 0;
+        while !c.returned && i < 5000 { std::time::sleep(1ms); i = i + 1; }
+        self.returned_when_decided = c.returned;
+        restart (c) for 3;
+    }
+
+    run() {
+        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        let f = self.fixture;
+
+        f.call_as_peer(1, "Svc::arm", "{\"n\":1}", 1000);
+        std::test::assert_eq_str(f.await_outcome(1, 3000), "result", "the call executing when the receiver failed is answered");
+        std::test::assert(std::str::contains(f.line(1), "\"value\":{\"n\":1}"), "by the generation that ran it");
+        let mut i = 0;
+        while i < 3000 && self.svc.births < 2 { std::time::sleep(1ms); i = i + 1; }
+        std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
+        std::test::assert(self.returned_when_decided, "after the executing call had returned");
+        std::test::assert_eq_int(self.svc.births, 2, "the receiver restarted");
+
+        f.call_as_peer(2, "Svc::fast", "{\"n\":2}", 1000);
+        std::test::assert_eq_str(f.await_outcome(2, 3000), "result", "the restarted receiver serves: the stop did not outlive the restart");
+        std::test::assert(std::str::contains(f.line(2), "\"value\":{\"n\":2}"), "in the second generation");
+        std::test::assert_eq_int(self.svc.ran_fast, 1, "it ran once");
+        h.stop();
+    }
+}
+
+fn main() { App { }; }

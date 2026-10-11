@@ -12795,6 +12795,13 @@ typedef struct lotus_bus_entry {
      * (a concurrent dispatch walk past the subject gate may still
      * read it). */
     const char           *key_str;
+    /* A failed child its owner holds stops (GH #1069), but its owner's
+     * handler may yet restart it: the stop sets the entry's subject
+     * aside here rather than dropping it (`lotus_bus_stop_failed_self`),
+     * and a restart puts it back (`lotus_bus_restart_self`). A
+     * quarantine, or the reclaim's deregistration, clears it: those are
+     * final. */
+    const char           *stopped_subject;
     /* GH #255 phase 2: per-registration capacity on MAIN-queue
      * deliveries. `shed_bound` (>0) with `shed_policy` (1 =
      * drop_new, 2 = drop_old) is the subscriber's private cap;
@@ -14862,12 +14869,18 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
 /* m41b semantic: null-out subject for any entry whose self
  * matches `self_ptr`. Subsequent `lotus_bus_dispatch` calls skip
  * those slots — quarantined subscribers stop receiving messages. */
-void lotus_bus_quarantine_self(void *self_ptr) {
+/* `keep`: set each subject aside for a restart to put back (a failed
+ * child's stop) rather than dropping it for good (a quarantine, a
+ * reclaim). */
+static void lotus_bus_retire_self(void *self_ptr, int keep) {
     int subscribed = 0;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        if (bv.at[i]->self_ptr == self_ptr) {
-            bv.at[i]->subject = NULL;
+        lotus_bus_entry_t *e = bv.at[i];
+        if (e->self_ptr == self_ptr) {
+            if (keep && e->subject) e->stopped_subject = e->subject;
+            if (!keep) e->stopped_subject = NULL;
+            e->subject = NULL;
             subscribed = 1;
         }
     }
@@ -14883,6 +14896,46 @@ void lotus_bus_quarantine_self(void *self_ptr) {
     atomic_thread_fence(memory_order_seq_cst);
     /* Decision line 6: and the cells it parked before it was ready. */
     lotus_bus_ready_forget(self_ptr);
+}
+
+void lotus_bus_quarantine_self(void *self_ptr) {
+    lotus_bus_retire_self(self_ptr, 0);
+}
+
+/* GH #1069: a failed child its owner holds stops — no delivery reaches
+ * it. Its handler's wrapper stops it as the handler returns with the
+ * failure latch up, which can be before the owner's `on_failure` has
+ * decided (the failure is posted to the owner's thread, and the child's
+ * worker runs its other cells while it waits): the stop is undone by a
+ * restart, never by anything else. */
+void lotus_bus_stop_failed_self(void *self_ptr) {
+    lotus_bus_retire_self(self_ptr, 1);
+}
+
+/* A restart (`__restart_<L>`): the child is live again, so the
+ * subscriptions a failed child's stop set aside are its own again. Its
+ * address leaves the dead set first, so a delivery that finds a
+ * restored subject is not then dropped at materialization; a cell
+ * queued before the stop and not yet run is delivered to the restarted
+ * child, as it would have been had the stop not come between. */
+void lotus_bus_restart_self(void *self_ptr) {
+    int stopped = 0;
+    lotus_bus_view_t bv = lotus_bus_view();
+    for (size_t i = 0; i < bv.n; i++) {
+        if (bv.at[i]->self_ptr == self_ptr && bv.at[i]->stopped_subject) {
+            stopped = 1;
+            break;
+        }
+    }
+    if (!stopped) return;
+    bus_dead_remove(self_ptr);
+    for (size_t i = 0; i < bv.n; i++) {
+        lotus_bus_entry_t *e = bv.at[i];
+        if (e->self_ptr == self_ptr && e->stopped_subject) {
+            e->subject = e->stopped_subject;
+            e->stopped_subject = NULL;
+        }
+    }
 }
 
 /* U-1 (F.40 phase 3, P1): the process's main thread, captured by a
