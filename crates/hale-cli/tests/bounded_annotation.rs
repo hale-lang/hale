@@ -234,3 +234,57 @@ fn dump_shows_the_bound_beside_the_fn() {
     let (_, plain, plain_err) = run_in_fixtures("unbounded-use.hl", &["--dump-alloc-summary"]);
     assert!(!format!("{plain}{plain_err}").contains("bounded_by("), "`@unbounded` states no bound");
 }
+
+// ---- GH #1490: the stdlib's own decorators -------------------------------
+//
+// A program that serves over the api runtime reaches the stdlib's
+// `@unbounded` decorators: the appended runtime's (`api_rpc.hl`), and any
+// of the analysis copy's fns it reaches. The report lists each at its place
+// in `crates/hale-stdlib/hl/`, as the repository spells it, with what it
+// silences judged in this program (the advisory reports the program's own
+// sites alone; `a_stdlib_decorator_counts_what_its_removal_adds` in
+// `hale-types` holds the count to what removing the decorator adds). A
+// program that reaches none lists none (the fixtures above).
+
+#[test]
+fn report_places_the_stdlib_decorators_a_program_reaches() {
+    let (code, stdout, _) = report("unbounded-use-stdlib.hl");
+    assert_eq!(code, Some(0));
+    let stdlib_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hale-stdlib/hl");
+    let rows: Vec<Vec<&str>> = stdout.lines().map(|l| l.split('\t').collect()).collect();
+    let stdlib: Vec<&Vec<&str>> = rows.iter().filter(|r| r[1].starts_with("crates/hale-stdlib/hl/")).collect();
+    assert_eq!(stdlib.len(), rows.len(), "the fixture declares no decorator of its own:\n{stdout}");
+    for r in &stdlib {
+        let (file, line) = r[1].trim_start_matches("crates/hale-stdlib/hl/").split_once(':').unwrap();
+        let src = std::fs::read_to_string(stdlib_dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let line: usize = line.parse().unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        assert_eq!(lines[line - 1].trim(), format!("@{}", r[5]), "{} is the decorator's line", r[1]);
+        let name = r[2].rsplit("::").next().unwrap();
+        assert!(
+            lines[line].trim_start().starts_with(&format!("fn {name}(")) || lines[line].trim_start().starts_with(&format!("{name}(")),
+            "{} decorates `{}`: {:?}",
+            r[1],
+            r[2],
+            lines[line]
+        );
+    }
+    // The analysis copy's (`AP_SOURCE`'s files) and the runtime the program
+    // carries (`api_rpc.hl`); never the hub's, HTTP/2's or gRPC's, which a
+    // program serving over `unix::Rpc` is not given.
+    for r in &stdlib {
+        let file = r[1].split(':').next().unwrap();
+        assert!(
+            !["api_hub.hl", "io_h2.hl", "api_grpc.hl"].iter().any(|f| file.ends_with(f)),
+            "{file} is no source this program carries:\n{stdout}"
+        );
+    }
+    assert!(stdlib.iter().any(|r| r[1].starts_with("crates/hale-stdlib/hl/api_rpc.hl:")), "{stdout}");
+    assert!(
+        stdlib.iter().any(|r| r[2] == "std::api::unix::Listener::run" && r[3] != "0"),
+        "the unix listener's loop silences a survey site in a program that serves:\n{stdout}"
+    );
+    let (code_without, _, without) = run_in_fixtures("unbounded-use-stdlib.hl", &[]);
+    let (_, _, with) = report("unbounded-use-stdlib.hl");
+    assert_eq!((code, with), (code_without, without), "the diagnostics and the exit code are the check's");
+}

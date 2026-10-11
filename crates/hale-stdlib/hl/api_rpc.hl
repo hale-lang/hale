@@ -1358,7 +1358,6 @@ locus __StdApiUnixPeer {
         self.lose_all();
         self.release_fd();
     }
-    @unbounded
     fn drain_lines() {
         let mut nl = std::str::index_of(self.buf, "\n");
         while nl >= 0 && self.open {
@@ -1674,7 +1673,6 @@ locus __StdApiHttpPeer {
         let _ = std::io::tcp::__set_recv_timeout_ns(self.fd, 5000000000);
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
-    @unbounded
     run() {
         // the whole request within 10 s, however slowly it trickles
         let deadline = std::time::monotonic_ns() + 10000000000;

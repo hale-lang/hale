@@ -215,11 +215,12 @@ fn unit_report_place(
 }
 
 /// `--report-unbounded-use`'s lines: `unbounded-use`, the decorator's
-/// `path:line` (the path relative to the working directory), the fn's
-/// name as the program spells it, the survey sites and the hot-path
-/// warnings it silences, and the decorator (`unbounded`, or
-/// `bounded_by(<name>)` with the name as written, GH #1490),
-/// tab-separated, sorted by path and line.
+/// `path:line` (the path relative to the working directory; a stdlib
+/// decorator's, `crates/hale-stdlib/hl/<file>`, as the repository spells
+/// it, whatever the working directory), the fn's name as the program
+/// spells it, the survey sites and the hot-path warnings it silences, and
+/// the decorator (`unbounded`, or `bounded_by(<name>)` with the name as
+/// written, GH #1490), tab-separated, sorted by path and line.
 fn render_unbounded_use(
     rows: &[hale_types::alloc_summary::UnboundedUse],
     file_bases: &[(u32, std::path::PathBuf, u32)],
@@ -232,15 +233,21 @@ fn render_unbounded_use(
         .iter()
         .map(|u| {
             let off = u.at.start.as_usize() as u32;
-            let (path, line) = file_bases
-                .iter()
-                .find(|(base, _, len)| hale_syntax::file_owns_offset(*base, *len, off))
-                .and_then(|(base, path, _)| {
-                    let src = sources.get(path)?;
-                    let (line, _) = u.at.shifted(base.wrapping_neg()).line_col(src);
-                    Some((hale_frontend::diag::display_relative(&cwd, path), line))
-                })
-                .unwrap_or_else(|| ("<unknown>".to_string(), 0));
+            let own = || {
+                file_bases
+                    .iter()
+                    .find(|(base, _, len)| hale_syntax::file_owns_offset(*base, *len, off))
+                    .and_then(|(base, path, _)| {
+                        let src = sources.get(path)?;
+                        let (line, _) = u.at.shifted(base.wrapping_neg()).line_col(src);
+                        Some((hale_frontend::diag::display_relative(&cwd, path), line))
+                    })
+            };
+            let (path, line) = match u.stdlib {
+                Some((file, line)) => Some((format!("crates/hale-stdlib/hl/{file}"), line)),
+                None => own(),
+            }
+            .unwrap_or_else(|| ("<unknown>".to_string(), 0));
             let name = demangler.demangle(&u.key.display());
             let deco = match &u.bounded_by {
                 Some(bound) => format!("bounded_by({bound})"),

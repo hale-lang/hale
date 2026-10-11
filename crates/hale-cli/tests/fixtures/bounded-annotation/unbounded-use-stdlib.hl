@@ -1,0 +1,23 @@
+// GH #1490: a program that serves over the in-process api runtime reaches
+// the stdlib's own `@unbounded` decorators (the appended runtime's, and
+// any of the analysis copy's it reaches); `--report-unbounded-use` lists them at
+// their place in `crates/hale-stdlib/hl/`, judged in this program.
+type Ping { n: Int; }
+type Pong { n: Int; }
+
+locus Echo {
+    fn on_ping(req: Ping) -> Pong { return Pong { n: req.n }; }
+}
+
+api Pinger { rpc Echo::on_ping; }
+
+main locus App {
+    params { echo: Echo = Echo { }; }
+    run() {
+        let sock = api::serve(Pinger, unix::Rpc { path: "/tmp/hale-1490-ping.sock" }, as: "ping", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+        while !self.draining { std::time::sleep(100ms); }
+        sock.stop();
+    }
+}
+
+fn main() { App { }; }

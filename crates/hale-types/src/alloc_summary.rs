@@ -3776,50 +3776,98 @@ pub fn silenced_advisory_leak_sites(
 }
 
 /// One `@unbounded` or `@bounded_by(<name>)` decorator of the program,
-/// and what it silences (`hale check --report-unbounded-use`).
+/// or of the stdlib source it reaches, and what it silences (`hale check
+/// --report-unbounded-use`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnboundedUse {
     /// The decorated fn or lifecycle hook.
     pub key: FnKey,
     /// Where the decorator is written: the `@unbounded` or `@bounded_by`
     /// of a fn, or the start of a hook's declaration, which a hook's
-    /// decorator opens (a hook takes no other).
+    /// decorator opens (a hook takes no other). A bundle offset for the
+    /// program's own; for a stdlib decorator, an offset of the source it
+    /// was parsed from, which [`UnboundedUse::stdlib`] names.
     pub at: Span,
     /// GH #1490: `Some(name)` for `@bounded_by(<name>)`, `None` for
     /// `@unbounded`.
     pub bounded_by: Option<String>,
-    /// The survey's sites it silences ([`silenced_advisory_leak_sites`]):
-    /// what the default whole-program survey would warn in the fn were
-    /// the decorator removed.
+    /// GH #1490: a stdlib decorator's place, the file's name as
+    /// `crates/hale-stdlib/hl/` spells it and the decorator's 1-based
+    /// line there; `None` for the program's own (its imported seeds'
+    /// included).
+    pub stdlib: Option<(&'static str, usize)>,
+    /// The survey's sites it silences: what the default whole-program
+    /// survey would warn in the fn were the decorator removed
+    /// ([`silenced_advisory_leak_sites`]). For a stdlib fn, the sites the
+    /// survey finds in it judged in this program, were the stdlib's rows
+    /// the program's own (the advisory reports the program's own alone).
     pub survey: usize,
     /// The hot-path lint's warnings it silences
-    /// ([`crate::check::hot_path_silenced`]).
+    /// ([`crate::check::hot_path_silenced`]), a stdlib fn's likewise.
     pub hot_path: usize,
 }
 
 /// Every `@unbounded` and `@bounded_by(<name>)` fn and lifecycle hook the
-/// program's own source declares (its imported seeds' included, the
-/// stdlib's analysis copy and the appended api runtime aside,
-/// [`AllocSummary::is_own`]), with the survey sites it silences and `hot_path`'s count for it, in the
-/// order the declarations are written.
+/// program's own source declares (its imported seeds' included,
+/// [`AllocSummary::is_own`]), with the survey sites it silences and
+/// `hot_path`'s count for it, in the order the declarations are written;
+/// then, GH #1490, every one of the stdlib source the program reaches:
+/// the appended api runtime's, and the analysis copy's fns and hooks the
+/// program reaches ([`AllocSummary::reached`]), with what each silences
+/// judged in this program (`hot_path_stdlib`'s count, and the silenced
+/// sites of its fn, which no author-position filter drops: the stdlib's
+/// source is real, if not the bundle's).
 pub fn unbounded_uses(
     summary: &AllocSummary,
     programs: &[&Program],
     ids: &crate::snapshot::Snapshot,
     sources: &[crate::symbol::SourceFile],
     hot_path: &BTreeMap<FnKey, usize>,
+    hot_path_stdlib: &BTreeMap<FnKey, usize>,
 ) -> Vec<UnboundedUse> {
     let mut survey: BTreeMap<FnKey, usize> = BTreeMap::new();
     for ls in silenced_advisory_leak_sites(summary, programs, ids, sources) {
         *survey.entry(ls.owner).or_default() += 1;
     }
-    let mut out = Vec::new();
-    let mut push = |key: FnKey, at: Span, bounded_by: &Option<String>| {
-        if summary.is_own(&key) {
-            let (survey, hot_path) =
-                (survey.get(&key).copied().unwrap_or(0), hot_path.get(&key).copied().unwrap_or(0));
-            out.push(UnboundedUse { key, at, bounded_by: bounded_by.clone(), survey, hot_path });
+    let mut survey_stdlib: BTreeMap<FnKey, usize> = BTreeMap::new();
+    for ls in summary.silenced_leak_sites() {
+        if !summary.is_own(&ls.owner) {
+            *survey_stdlib.entry(ls.owner).or_default() += 1;
         }
+    }
+    // A stdlib decorator's place: an offset of the appended runtime's
+    // window, or of the analysis copy's source (`AP_SOURCE`).
+    let line_of = |src: &str, local: usize| src[..local.min(src.len())].matches('\n').count() + 1;
+    let place = |at: Span, copy: bool| -> Option<(&'static str, usize)> {
+        let off = at.start.as_usize();
+        let (name, src, local) = if copy {
+            hale_stdlib::ap_file_at(off)?
+        } else {
+            crate::rpc_expand::runtime_source_at(off as u32)?
+        };
+        Some((name, line_of(src, local)))
+    };
+    let reached = |key: &FnKey| summary.reached.as_ref().is_none_or(|r| r.contains(key));
+    let mut out = Vec::new();
+    let mut push = |key: FnKey, at: Span, bounded_by: &Option<String>, copy: bool| {
+        let count = |m: &BTreeMap<FnKey, usize>| m.get(&key).copied().unwrap_or(0);
+        let stdlib = if copy {
+            if !summary.analysis_copy.contains(&key) || !reached(&key) {
+                return;
+            }
+            place(at, true)
+        } else if summary.appended_runtime.contains(&key) {
+            place(at, false)
+        } else if summary.is_own(&key) {
+            None
+        } else {
+            return;
+        };
+        let (survey, hot_path) = match stdlib {
+            None => (count(&survey), count(hot_path)),
+            Some(_) => (count(&survey_stdlib), count(hot_path_stdlib)),
+        };
+        out.push(UnboundedUse { key, at, bounded_by: bounded_by.clone(), stdlib, survey, hot_path });
     };
     // A fn's decorator: the one `@unbounded` or `@bounded_by` written
     // (the check refuses both together).
@@ -3827,22 +3875,25 @@ pub fn unbounded_uses(
         f.decorators.iter().find(|d| d.name == "unbounded" || d.name == "bounded_by").map_or(f.span, |d| d.span)
     };
     let silenced = |f: &FnDecl| f.unbounded || f.bounded_by.is_some();
-    for p in programs {
+    let copy = crate::stdlib_bodies::program().filter(|_| !summary.analysis_copy.is_empty());
+    let universes = programs.iter().map(|p| (*p, false)).chain(copy.map(|p| (p, true)));
+    for (p, copy) in universes {
+        let decl = |id| if copy { DeclId::stdlib(id) } else { DeclId::user(id) };
         for item in flat_decls(&p.items) {
             match item {
                 TopDecl::Fn(f) if silenced(f) => {
-                    push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), written(f), &f.bounded_by);
+                    push(FnKey::free_fn(decl(f.id), f.name.name.clone()), written(f), &f.bounded_by, copy);
                 }
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(f) if silenced(f) => {
-                                let key = FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone());
-                                push(key, written(f), &f.bounded_by);
+                                let key = FnKey::method(decl(f.id), l.name.name.clone(), f.name.name.clone());
+                                push(key, written(f), &f.bounded_by, copy);
                             }
                             LocusMember::Lifecycle(lc) if lc.unbounded || lc.bounded_by.is_some() => {
-                                let key = FnKey::method(DeclId::user(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
-                                push(key, lc.span, &lc.bounded_by);
+                                let key = FnKey::method(decl(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
+                                push(key, lc.span, &lc.bounded_by, copy);
                             }
                             _ => {}
                         }
@@ -6137,7 +6188,13 @@ mod tests {
 
     /// A parsed program and the identities minted over it.
     fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
+        minted_with(src, |_| {})
+    }
+
+    /// [`minted`], the parsed program handed to `edit` before the mint.
+    fn minted_with(src: &str, edit: impl FnOnce(&mut Program)) -> (Program, crate::snapshot::Snapshot) {
         let mut program = parse_source(src).expect("parse");
+        edit(&mut program);
         let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
         (program, ids)
     }
@@ -6156,7 +6213,18 @@ mod tests {
                 l.imported = l.name.name.starts_with("__lib_");
             }
         }
-        summarize_identified(&[(&program, &ids)], renames)
+        plain_summary(&[&program], &ids, renames)
+    }
+
+    /// The summary of `programs` alone, every one minted with `ids`: no
+    /// stdlib copy beside them.
+    fn plain_summary(
+        programs: &[&Program],
+        ids: &crate::snapshot::Snapshot,
+        renames: &[(Vec<String>, String)],
+    ) -> AllocSummary {
+        let identified: Vec<_> = programs.iter().map(|p| (*p, ids)).collect();
+        summarize_identified(&identified, renames)
     }
 
     /// The advisory over `programs` alone, every one minted with `ids`:
@@ -6904,6 +6972,38 @@ mod tests {
             "a sent allocation in a handler reclaims per dispatch: {:?}",
             s.leak_sites()
         );
+    }
+
+    /// GH #1490: a decorator of stdlib source the program carries (here a
+    /// locus parsed in the appended api runtime's window, as `rpc_expand`
+    /// appends one) is reported at its stdlib file, and its survey count
+    /// is exactly the leak sites its fn gains, judged in this program,
+    /// when the decorator is removed: the advisory reports the program's
+    /// own sites alone, so what the stdlib decorator silences is counted
+    /// before that filter.
+    #[test]
+    fn a_stdlib_decorator_counts_what_its_removal_adds() {
+        let judged = |deco: &str| {
+            let runtime = format!(
+                "type __StdTestQ {{ a: Int; }}\nlocus __StdTestLoop {{\n    {deco}\n    run {{ while true {{ let q = __StdTestQ {{ a: 1 }}; }} }}\n}}\n"
+            );
+            let rt = hale_syntax::parse_source_at(&runtime, crate::rpc_expand::RUNTIME_BASE).expect("parse");
+            let (program, ids) = minted_with("locus Mine { run { } }", |p| p.items.extend(rt.items));
+            let summary = plain_summary(&[&program], &ids, &[]);
+            let uses = unbounded_uses(&summary, &[&program], &ids, &[], &BTreeMap::new(), &BTreeMap::new());
+            let gained = summary.leak_sites().iter().filter(|ls| ls.owner.display() == "__StdTestLoop::run").count();
+            assert!(!summary.is_own(&named(&summary, Some("__StdTestLoop"), "run")), "the runtime's fn is stdlib's");
+            (uses, gained)
+        };
+        let (uses, silent) = judged("@unbounded");
+        assert_eq!(silent, 0, "the decorator silences its sites");
+        let [u] = uses.as_slice() else { panic!("one stdlib decorator: {uses:?}") };
+        assert_eq!(u.key.display(), "__StdTestLoop::run");
+        assert_eq!(u.stdlib.map(|(file, _)| file), Some("api_rpc.hl"), "placed in the runtime's file");
+        let (bare, gained) = judged("");
+        assert!(bare.is_empty(), "no decorator, no line: {bare:?}");
+        assert!(gained > 0, "the loop's site accumulates");
+        assert_eq!(u.survey, gained, "the count is what removing the decorator adds");
     }
 
     #[test]

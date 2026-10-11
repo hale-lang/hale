@@ -88,7 +88,6 @@ locus __StdIoH2Conn {
         self.session = std::io::h2::__open();
         if self.session == 0 { self.open = false; }
     }
-    @unbounded
     run() {
         // the session's SETTINGS go out before anything is read
         if self.open { self.settle(); }
@@ -127,7 +126,6 @@ locus __StdIoH2Conn {
         if used < 0 { self.hangup(); }
     }
     // The session's events, raised for the transport.
-    @unbounded
     fn pump() {
         if self.session == 0 { return; }
         let mut k = std::io::h2::__poll(self.session);
@@ -156,7 +154,6 @@ locus __StdIoH2Conn {
     // wholly sent. The session is drained only between sends, so the bytes of
     // two units (a response's frames come out of the session together) never
     // meet on the wire, and nothing else on the connection calls `send`.
-    @unbounded
     fn flush() {
         if self.flushing || self.fd < 0 || self.session == 0 { return; }
         self.flushing = true;

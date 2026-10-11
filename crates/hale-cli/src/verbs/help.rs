@@ -487,7 +487,9 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 unbounded-use<TAB>path:line<TAB>fn<TAB>survey");
     println!("                                 sites<TAB>hot-path warnings it silences<TAB>");
     println!("                                 `unbounded` or `bounded_by(<name>)`");
-    println!("                                 (line = the decorator's; a hook's opens it)");
+    println!("                                 (line = the decorator's; a hook's opens it;");
+    println!("                                 the stdlib's the program reaches included,");
+    println!("                                 at crates/hale-stdlib/hl/<file>:<line>)");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
 }
