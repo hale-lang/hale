@@ -1,0 +1,381 @@
+// dna/tests/head_structure_test.hl — every structural mutation is a head
+// command, and the UI is a client of the generated surface.
+//
+// The composed head (dna/api/practice_review) serves `HeadCommands`, whose
+// structure rows write what the CLI verbs write: `Commands::apply_batch`
+// files a batch as `hale dna apply` files it (the members'
+// `knowledge.proposed`, the family's `review.requested`, `batch.proposed`
+// and `graph.requested`, the receipts kept first), `Commands::open_position`
+// writes `position.requested` as `hale dna position open` does and
+// `Commands::fill` writes `hold.requested` as `hale dna fill` does — each in
+// the caller's person's name, the command's fields after the CLI's in the
+// request row. `Commands::preview_batch` plans a batch and writes nothing.
+//
+// The fixture is a client of the surface through the generated one
+// (`dna/core/legs/head_commands`, `hale api client --lang hale`), over the
+// head's socket, on the todo repository `hale dna init` reads:
+//
+//   * unseated, the caller is listed the preview and the ungated rows only,
+//     and a batch, an opening and a fill are refused `unauthorized`, naming
+//     `position`; nothing lands;
+//   * a batch the plan refuses is answered with its why and writes nothing,
+//     and the preview of a batch returns the org chart before and after, as
+//     lines, and writes nothing;
+//   * seated, a batch lands the rows `hale dna apply` writes for it, the
+//     same steps again are answered with the Review they await, and lookup
+//     recovers the command;
+//   * an opening and a fill write their request rows, beginning with the
+//     bytes the CLI writes for the same ask at the same head; a fill the
+//     CLI would refuse and an opening of a position the record proposes
+//     already are refused with the CLI's why, and write nothing.
+
+import "../core" as dna;
+import "../core/legs/head_commands" as hc;
+import "../operations" as ops;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The composed head's binary: the one the suite names, else built from the
+// source tree here, out of the tree, into the fixture's scratch.
+fn head_binary(scratch: String) -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
+    let out = scratch + "/practice_review";
+    let built = dna::run_tool_timeout(600, toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out);
+    std::test::assert_eq_int(built.code, 0, "the composed head builds: " + built.stderr);
+    return out;
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+fn has(s: String, needle: String) -> Bool {
+    return std::str::contains(s, needle);
+}
+
+// The member names a surface's served description lists, space-separated.
+@unbounded
+fn members_of(description: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(description, "members"));
+    while !it.done {
+        let name = std::json::find_string_field(it.element, "name");
+        out = out + (if len(out) > 0 { " " } else { "" }) + name;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn refused(f: hc::ApiRefusal) -> String {
+    return "refusal:" + f.kind + ":" + f.reason + ":" + f.requires;
+}
+
+// A reply that is not the handler's: its code says what came instead.
+fn not_a_result(what: String) -> hc::CommandReply {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("code", what);
+    b.end_object();
+    return hc::api_dec_CommandReply(b.result());
+}
+
+fn apply_reply(o: hc::CommandsApplyBatchOutcome) -> hc::CommandReply {
+    return match o {
+        hc::CommandsApplyBatchOutcome::Result(r) -> r,
+        hc::CommandsApplyBatchOutcome::Refusal(f) -> not_a_result(refused(f)),
+        hc::CommandsApplyBatchOutcome::ServerError -> not_a_result("server_error"),
+        hc::CommandsApplyBatchOutcome::Lost(why) -> not_a_result("lost:" + why),
+    };
+}
+
+fn open_reply(o: hc::CommandsOpenPositionOutcome) -> hc::CommandReply {
+    return match o {
+        hc::CommandsOpenPositionOutcome::Result(r) -> r,
+        hc::CommandsOpenPositionOutcome::Refusal(f) -> not_a_result(refused(f)),
+        hc::CommandsOpenPositionOutcome::ServerError -> not_a_result("server_error"),
+        hc::CommandsOpenPositionOutcome::Lost(why) -> not_a_result("lost:" + why),
+    };
+}
+
+fn fill_reply(o: hc::CommandsFillOutcome) -> hc::CommandReply {
+    return match o {
+        hc::CommandsFillOutcome::Result(r) -> r,
+        hc::CommandsFillOutcome::Refusal(f) -> not_a_result(refused(f)),
+        hc::CommandsFillOutcome::ServerError -> not_a_result("server_error"),
+        hc::CommandsFillOutcome::Lost(why) -> not_a_result("lost:" + why),
+    };
+}
+
+fn lookup_reply(o: hc::CommandsLookupOutcome) -> hc::CommandReply {
+    return match o {
+        hc::CommandsLookupOutcome::Result(r) -> r,
+        hc::CommandsLookupOutcome::Refusal(f) -> not_a_result(refused(f)),
+        hc::CommandsLookupOutcome::ServerError -> not_a_result("server_error"),
+        hc::CommandsLookupOutcome::Lost(why) -> not_a_result("lost:" + why),
+    };
+}
+
+fn preview(sock: String, steps: String) -> hc::BatchPreview {
+    return match hc::commands_preview_batch(sock, "", hc::BatchDraft { steps: steps }) {
+        hc::CommandsPreviewBatchOutcome::Result(r) -> r,
+        hc::CommandsPreviewBatchOutcome::Refusal(f) -> hc::api_dec_BatchPreview("{\"code\":\"refusal:" + f.kind + "\"}"),
+        hc::CommandsPreviewBatchOutcome::ServerError -> hc::api_dec_BatchPreview("{\"code\":\"server_error\"}"),
+        hc::CommandsPreviewBatchOutcome::Lost(why) -> hc::api_dec_BatchPreview("{\"code\":\"lost\"}"),
+    };
+}
+
+// The body up to the field `key` (the bytes before `, "<key>": `), the
+// whole body when it has none.
+fn before_field(body: String, key: String) -> String {
+    let at = std::str::index_of(body, ", \"" + key + "\": ");
+    return if at < 0 { body } else { body[0..at] };
+}
+
+const TEAM: String = "# a dev team, one Review
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/dev ada
+fill api/reviewer bo
+";
+
+const MANDATE: String = "Decides: what the web client shows. May not: change the api. Cites: the screens. Escalates: to the Board.";
+
+locus App {
+    params { repo: String = ""; sock: String = ""; }
+    fn head() -> String { return dna::GitRecord { repo: self.repo }.head("journal").id; }
+    fn rows() -> Int { return dna::GitJournal { repo: self.repo }.revision(); }
+    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+        std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
+    }
+    fn apply(id: String, at: String, steps: String) -> hc::CommandReply {
+        return apply_reply(hc::commands_apply_batch(self.sock, "", hc::BatchApplication { request_id: id, record_head: at, steps: steps, pack: "" }));
+    }
+    fn open(id: String, at: String, position: String, mandate: String) -> hc::CommandReply {
+        return open_reply(hc::commands_open_position(self.sock, "", hc::PositionOpening { request_id: id, record_head: at, position: position, text: "The web client.", mandate: mandate, under: "" }));
+    }
+    fn fill(id: String, at: String, position: String, holder: String) -> hc::CommandReply {
+        return fill_reply(hc::commands_fill(self.sock, "", hc::HoldFill { request_id: id, record_head: at, position: position, holder: holder }));
+    }
+    // The description once it lists `name`: the record moved, and the
+    // exposure's roles read it within their one-second bound.
+    fn slice_with(name: String) -> String {
+        let mut d = hc::api_describe(self.sock, "");
+        let mut tries = 0;
+        while tries < 60 && !has(d, "\"name\":\"" + name + "\"") {
+            std::time::sleep(200ms);
+            d = hc::api_describe(self.sock, "");
+            tries = tries + 1;
+        }
+        return d;
+    }
+    run() {
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let scratch = dna::scratch_root("head-structure");
+        dna::reap_on_exit(scratch);
+        let binary = head_binary(scratch);
+
+        // The todo repository, read into a record by `hale dna init`; the
+        // graph's `holds` edges say who holds what (init's local trust is
+        // taken out); this uid is ada (init mapped it to whoever ran it),
+        // who holds nothing yet.
+        self.repo = scratch + "/todo";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + self.repo + "\n" + source());
+        std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+        let init = in_dir(self.repo, toolchain() + "\ndna\ninit\n.\n--no-library");
+        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        let configured = dna::run_tool("sh\n-c\ncd \"$1\" && mkdir -p .hale/dna && (git config --unset-all dna.trust || true) && git config --replace-all dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
+        std::test::assert_eq_int(configured.code, 0, "ada is this uid, and the graph decides who holds what: " + configured.stderr);
+        let j = dna::GitJournal { repo: self.repo };
+        self.append(j, "graph.node", ops::graph_node_id("position", "agent"), ops::graph_node_body("position", "agent", "", ""));
+        let record = dna::GitRecord { repo: self.repo };
+        let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+        std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
+
+        self.sock = scratch + "/head.sock";
+        let port = dna::free_port(0);
+        let head = Proc { };
+        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_RPC_SOCKET=\"$4\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + self.sock;
+        std::test::assert(head.start(argv), "the composed head started");
+        let fd = std::io::unix::connect_wait(self.sock, 30s) or - 1;
+        std::test::assert(fd >= 0, "the head's surface is listening: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
+        std::io::tcp::__close_fd(fd);
+        let mut unseated = hc::api_describe(self.sock, "");
+        let mut probes = 0;
+        while probes < 50 && !has(unseated, "\"surface\":\"HeadCommands\"") {
+            std::time::sleep(200ms);
+            unseated = hc::api_describe(self.sock, "");
+            probes = probes + 1;
+        }
+
+        // ---- unseated: the preview and the ungated rows only
+        std::test::assert_eq_str(members_of(unseated), "Commands::create_task Commands::lookup Commands::lookup_knowledge Commands::preview_batch", "unseated: the ungated rows, the preview among them: " + unseated);
+        let rows0 = self.rows();
+        let at0 = self.head();
+        let denied = self.apply("u-1", at0, TEAM);
+        std::test::assert(has(denied.code, "refusal:unauthorized:Commands::apply_batch requires position") && has(denied.code, ":position"), "a batch needs a position: " + denied.code);
+        std::test::assert(has(self.open("u-2", at0, "web/dev", MANDATE).code, "refusal:unauthorized:Commands::open_position requires position"), "an opening needs a position");
+        std::test::assert(has(self.fill("u-3", at0, "agent", "ada").code, "refusal:unauthorized:Commands::fill requires position"), "a fill needs a position");
+        std::test::assert_eq_int(self.rows(), rows0, "nothing an unauthorized caller asked landed");
+
+        // ---- the preview: the plan as data, nothing written
+        let seen = preview(self.sock, TEAM);
+        std::test::assert(seen.ok && seen.code == "" && seen.head == at0 && seen.why == "", "the batch is planned: " + seen.code + " " + seen.why);
+        std::test::assert(has(seen.added, "position position:api/reviewer\nmandate position:api/reviewer\n") && has(seen.added, "holds position:api/dev ada\n") && has(seen.added, "holds position:api/reviewer bo\n"), "the lines it adds: " + seen.added);
+        std::test::assert(seen.removed == "" && has(seen.after, "position position:api/dev\n") && !has(seen.before, "position:api/dev"), "before and after: " + seen.before + " / " + seen.after);
+        std::test::assert(has(seen.steps, "fill\tposition:api/reviewer\tbo\n") && seen.pending == "", "the steps, normalized; nothing pending: " + seen.steps);
+        let wrong = preview(self.sock, "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n");
+        std::test::assert(!wrong.ok && wrong.code == "" && has(wrong.why, "`fill position:nowhere ada`: no position the graph states or the batch opens"), "a refused plan says why: " + wrong.why);
+        std::test::assert_eq_int(self.rows(), rows0, "a preview writes nothing");
+
+        // ---- ada takes a seat: the structure rows join her slice
+        let e = ops::GraphEdge { kind: "holds" };
+        e.member("position", ops::graph_node_id("position", "agent"));
+        e.member("holder", "ada");
+        self.append(j, "graph.edge", e.id(), e.body());
+        let seated = self.slice_with("Commands::apply_batch");
+        std::test::assert(has(seated, "\"name\":\"Commands::open_position\"") && has(seated, "\"name\":\"Commands::fill\"") && has(seated, "\"name\":\"Commands::preview_batch\""), "seated: the structure rows are listed: " + members_of(seated));
+
+        // ---- a batch the plan refuses: its why, and no row
+        let at1 = self.head();
+        let rows1 = self.rows();
+        let bad = self.apply("b-0", at1, "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n");
+        std::test::assert(bad.ok && bad.receipt.state == "refused" && bad.receipt.structure.state == "refused" && has(bad.receipt.structure.why, "`fill position:nowhere ada`: no position the graph states or the batch opens"), "refused with the plan's why: " + bad.code + " " + bad.receipt.structure.why);
+        std::test::assert_eq_int(self.rows(), rows1, "nothing of a refused batch is written");
+
+        // ---- the batch: the rows `hale dna apply` writes for it
+        // what the CLI files for these steps, by ada, at this head
+        let plan = dna::batch_plan(dna::GitJournal { repo: self.repo }, dna::GitReceipts { repo: self.repo }, TEAM);
+        let rid = "b" + dna::digest_of(at1 + "\n" + plan.steps + "ada")[7..19];
+        let filing = dna::batch_filing(plan, "ada", rid, 0, "");
+        std::test::assert(plan.ok && filing.ok, "the CLI's filing: " + plan.why + filing.why);
+        let applied = self.apply("b-1", at1, TEAM);
+        std::test::assert(applied.ok && applied.code == "" && applied.receipt.state == "succeeded", "the batch is proposed: " + applied.code + " " + applied.receipt.reason);
+        let st = applied.receipt.structure;
+        std::test::assert(st.state == "requested" && st.request_id == rid && st.review_id == filing.review_id && applied.receipt.review_id == filing.review_id, "as the Review the CLI's filing names: " + st.state + " " + st.request_id + " " + st.review_id);
+        let after = dna::GitJournal { repo: self.repo };
+        let mut expected = filing.rows;
+        let mut i = rows1;
+        while len(expected) > 0 {
+            let nl = std::str::index_of(expected, "\n");
+            let line = expected[0..nl];
+            expected = expected[(nl + 1)..len(expected)];
+            let row = after.read(i);
+            let kind = std::json::find_string_field(line, "kind");
+            let body = std::json::find_string_field(line, "body");
+            std::test::assert(row.kind == kind && row.entity == std::json::find_string_field(line, "entity"), "row " + to_string(i) + " is the CLI's " + kind + ": " + row.kind + " " + row.entity);
+            std::test::assert_eq_str(after.author_of(i), "ada", "in the proposer's name");
+            if kind == "knowledge.proposed" { std::test::assert_eq_str(before_field(row.body, "at"), before_field(body, "at"), "a member as the CLI proposes it"); }
+            else if kind == "batch.proposed" {
+                std::test::assert(std::str::starts_with(row.body, body[0..(len(body) - 1)] + ", \"command_format\": \"dna.structure-command/1\""), "batch.proposed begins with the CLI's bytes, the command after: " + row.body);
+                std::test::assert(row.digest == st.event_id, "the reply names the batch.proposed row");
+            } else { std::test::assert_eq_str(row.body, body, kind + " is the CLI's, byte for byte"); }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(after.revision(), i, "and nothing else");
+        let receipts = dna::GitReceipts { repo: self.repo };
+        std::test::assert(len(receipts.read(filing.digest[7..len(filing.digest)])) > 0, "the family's receipt is kept");
+        let mut rest = filing.docs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            std::test::assert(len(receipts.read(dna::hex_digest(rest[0..nl]))) > 0, "every receipt the batch files is kept");
+            rest = rest[(nl + 1)..len(rest)];
+        }
+
+        // ---- the same steps again: the Review they await, and no row
+        let at2 = self.head();
+        let rows2 = self.rows();
+        let again = self.apply("b-2", at2, TEAM);
+        std::test::assert(again.ok && again.receipt.structure.state == "already_proposed" && again.receipt.structure.review_id == filing.review_id, "the same batch is answered with its Review: " + again.receipt.structure.state + " " + again.receipt.structure.why);
+        std::test::assert(preview(self.sock, TEAM).pending == filing.review_id, "and the preview names it pending");
+        let retried = self.apply("b-1", at1, TEAM);
+        std::test::assert(retried.ok && retried.receipt.command_id == applied.receipt.command_id && retried.receipt.structure.request_id == rid, "an identical retry is the same command: " + retried.code);
+        let looked = lookup_reply(hc::commands_lookup(self.sock, "", hc::Lookup { request_id: "b-1" }));
+        std::test::assert(looked.ok && looked.receipt.operation == "dna.batch.apply" && looked.receipt.structure.request_id == rid && looked.receipt.structure.review_id == filing.review_id, "lookup recovers the batch: " + looked.code);
+        std::test::assert_eq_int(self.rows(), rows2, "and none of these writes");
+
+        // ---- an opening: `position.requested` as the CLI writes it
+        let at3 = self.head();
+        let opened = self.open("p-1", at3, "web/dev", MANDATE);
+        std::test::assert(opened.ok && opened.receipt.state == "succeeded" && opened.receipt.structure.state == "requested" && opened.receipt.target_id == "position:web/dev", "the opening is asked: " + opened.code + " " + opened.receipt.reason);
+        let opening = dna::GitJournal { repo: self.repo }.read(rows2);
+        let pid = "p" + dna::digest_of(at3 + "\nposition:web/dev\n" + MANDATE + "\nada")[7..19];
+        let ob = std::json::Builder { };
+        ob.begin_object();
+        ob.string_field("request_id", pid);
+        ob.string_field("position", "position:web/dev");
+        ob.string_field("text", "The web client.");
+        ob.string_field("mandate", MANDATE);
+        ob.string_field("under", "");
+        ob.string_field("by", "ada");
+        ob.end_object();
+        let cli_open = ob.result();
+        std::test::assert(opening.kind == "position.requested" && opening.entity == pid && opened.receipt.structure.request_id == pid, "one position.requested row under the CLI's request id: " + opening.kind + " " + opening.entity);
+        std::test::assert(std::str::starts_with(opening.body, cli_open[0..(len(cli_open) - 1)] + ", \"command_format\""), "beginning with the bytes `hale dna position open` writes: " + opening.body);
+        std::test::assert_eq_int(self.rows(), rows2 + 1, "one row");
+        let twice = self.open("p-2", self.head(), "api/dev", MANDATE);
+        std::test::assert(twice.ok && twice.receipt.structure.state == "refused" && has(twice.receipt.structure.why, "`position:api/dev` is already a position the record states or proposes"), "a position the batch proposes is not opened again: " + twice.receipt.structure.why);
+
+        // ---- a fill: `hold.requested` as the CLI writes it
+        let at4 = self.head();
+        let rows4 = self.rows();
+        let stranger = self.fill("h-0", at4, "api/dev", "zed");
+        std::test::assert(stranger.ok && stranger.receipt.structure.state == "refused" && has(stranger.receipt.structure.why, "zed is no person this record knows"), "a holder the record does not know is refused as the CLI refuses it: " + stranger.receipt.structure.why);
+        std::test::assert_eq_int(self.rows(), rows4, "and writes nothing");
+        std::test::assert_eq_str(self.fill("h-stale", at3, "api/dev", "ada").code, "stale_subject", "a fill prepared against an old head is stale");
+        let filled = self.fill("h-1", at4, "api/dev", "ada");
+        std::test::assert(filled.ok && filled.receipt.state == "succeeded" && filled.receipt.structure.state == "requested", "the fill is asked: " + filled.code + " " + filled.receipt.reason);
+        let hold = dna::GitJournal { repo: self.repo }.read(rows4);
+        let hid = "h" + dna::digest_of(at4 + "\nposition:api/dev\nada\nada")[7..19];
+        let hb = std::json::Builder { };
+        hb.begin_object();
+        hb.string_field("request_id", hid);
+        hb.string_field("position", "position:api/dev");
+        hb.string_field("holder", "ada");
+        hb.string_field("by", "ada");
+        hb.end_object();
+        let cli_fill = hb.result();
+        std::test::assert(hold.kind == "hold.requested" && hold.entity == hid && std::str::starts_with(hold.body, cli_fill[0..(len(cli_fill) - 1)] + ", \"command_format\""), "one hold.requested row, beginning with the bytes `hale dna fill` writes: " + hold.body);
+        let found = lookup_reply(hc::commands_lookup(self.sock, "", hc::Lookup { request_id: "h-1" }));
+        std::test::assert(found.ok && found.receipt.operation == "dna.hold.fill" && found.receipt.structure.request_id == hid && found.receipt.structure.state == "requested", "lookup recovers the fill: " + found.code);
+
+        head.stop();
+        std::io::fs::unlink(self.sock) or discard;
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() {
+    App { };
+}

@@ -176,12 +176,14 @@ fn the_replay_gate_refuses_what_it_refused() {
 fn api() {
     pinned(
         "api",
-        287,
-        289,
+        308,
+        310,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,journal_io}
+        CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
@@ -195,8 +197,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        469,
-        476,
+        468,
+        474,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -250,6 +252,8 @@ fn host() {
         edge_admits_here  does={syscall,block,time,env,alloc}
         exit_code  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
+        fill_check  does={syscall,block,time,entropy,env,alloc,secret_use}
+        fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
         genome_changed  does={syscall,block,alloc}
@@ -262,7 +266,7 @@ fn host() {
         genome_push_branch  does={syscall,block,alloc}
         genome_reset  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
-        held_machine  does={alloc}
+        held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
         host_main  does={syscall,block,time,entropy,env,alloc,secret_use}
         include_names  does={syscall,block,alloc}
         input_digests  does={syscall,block,alloc}
@@ -300,8 +304,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        471,
-        490,
+        496,
+        516,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -325,9 +329,11 @@ fn operations() {
         hat_digest  does={alloc}
         hat_json  does={alloc}
         hat_position_of  does={alloc}
+        held_machine  does={alloc}
         hold_person  does={alloc}
         hole_role_position  does={alloc}
         ingest_ext  does={alloc}
+        under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use}
         ",
     );
 }

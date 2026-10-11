@@ -48,7 +48,7 @@ type Landed { ok: Bool = false; id: String = ""; error: String = ""; }
 // A pinned, read-only Journal. Queries and authority see the same rows used by
 // admission. No refresh can silently replace their decision basis.
 locus GovernanceJournal {
-    params { snapshot: GovernanceSnapshot = GovernanceSnapshot { }; rows: dna::EventRows = dna::EventRows { }; valid: Bool = false; }
+    params { snapshot: GovernanceSnapshot = GovernanceSnapshot { }; rows: dna::EventRows = dna::EventRows { }; authors: dna::Authors = dna::Authors { }; valid: Bool = false; }
     birth() { self.valid = self.load(); }
     fn load() -> Bool {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let fields = DefinitionCodec { };
@@ -65,6 +65,7 @@ locus GovernanceJournal {
                 if !std::str::starts_with(body, "{") || !syntax.valid(body) { return false; }
             }
             self.rows.push(dna::Event { seq: seq, kind: kind, entity: codec.string(line, "entity"), body: body, prev: previous, digest: id });
+            self.authors.push(codec.string(line, "author"));
             previous = id; seq = seq + 1;
             text = if split < 0 { "" } else { text[(split + 1)..len(text)] };
             ids = if id_split < 0 { "" } else { ids[(id_split + 1)..len(ids)] };
@@ -75,6 +76,8 @@ locus GovernanceJournal {
     fn head() -> String { return self.snapshot.head; }
     fn refresh() -> Bool { return false; }
     fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
+    // who a row names as its author (the line's `author`)
+    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
     fn verify_chain() -> Bool { return self.valid; }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
     fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
@@ -125,7 +128,13 @@ type GovernanceReceipt {
     organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
     task_create: TaskCreateOutcome = TaskCreateOutcome { };
     attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
+    structure: StructureCommandOutcome = StructureCommandOutcome { };
 }
+// Where a batch's rows landed (`publish_batch`): the `batch.proposed`
+// row's id and index among them, the new head and how many rows, or why
+// not (`stale` when the record moved first; `unknown` once the ref move was
+// attempted).
+type StructureLanded { ok: Bool = false; code: String = ""; unknown: Bool = false; id: String = ""; head: String = ""; index: Int = -1; count: Int = 0; body: String = ""; }
 type GovernanceResult {
     ok: Bool = false; code: String = "commands_unavailable"; why: String = "";
     application_id: String = ""; head: String = ""; revision: Int = 0;
@@ -156,6 +165,8 @@ locus GovernanceCommands {
         organization_owner: String = "";
         organization_authority: GovernanceAuthority = NoGovernanceAuthority { };
         organization_inputs: OrganizationAdmissionInputs = NoOrganizationAdmissionInputs { };
+        // a batch's rows land together, as a retirement's do (structure_command.hl)
+        structure_record: GovernanceBatchRecord = NoGovernanceBatchRecord { };
     }
     // Raising work needs no policy: any authenticated principal may ask, as
     // with `hale dna ask`, so the composed service is the enablement.
@@ -164,8 +175,8 @@ locus GovernanceCommands {
         let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
         let source_enabled = self.organization_enabled;
-        let attempts = AttemptCommandCodec { };
-        return codec.known(operation, version) || create.known(operation, version) || attempts.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
+        let attempts = AttemptCommandCodec { }; let structure = StructureCommandCodec { };
+        return codec.known(operation, version) || create.known(operation, version) || attempts.known(operation, version) || structure.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
     }
     fn command_valid(context: GovernanceContext, command: GovernanceCommand) -> Bool {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
@@ -176,6 +187,10 @@ locus GovernanceCommands {
         let attempts = AttemptCommandCodec { };
         if attempts.known(command.operation, command.operation_version) { return attempts.valid(context, command); }
         if !attempts.absent(command) { return false; }
+        // a change to the structure carries fields of its own too
+        let structure = StructureCommandCodec { };
+        if structure.known(command.operation, command.operation_version) { return structure.valid(context, command); }
+        if !structure.absent(command) { return false; }
         if person.known(command.operation, command.operation_version) { return person.valid(context, command); }
         if create.known(command.operation, command.operation_version) { return create.valid(context, command); }
         if task.known(command.operation, command.operation_version) { return task.valid(context, command); }
@@ -187,6 +202,8 @@ locus GovernanceCommands {
         let person = PersonRetirementCodec { };
         let attempts = AttemptCommandCodec { };
         if attempts.known(command.operation, command.operation_version) { return attempts.fingerprint(context, command); }
+        let structure = StructureCommandCodec { };
+        if structure.known(command.operation, command.operation_version) { return structure.fingerprint(context, command); }
         if person.known(command.operation, command.operation_version) { return person.fingerprint(context, command); }
         if create.known(command.operation, command.operation_version) { return create.fingerprint(context, command); }
         if task.known(command.operation, command.operation_version) { return task.fingerprint(context, command); }
@@ -196,6 +213,8 @@ locus GovernanceCommands {
         if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
         if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" || operation == "dna.attempt.renew" || operation == "dna.attempt.release" || operation == "dna.attempt.allowance" || operation == "dna.friction.file" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
+        let structure = StructureCommandCodec { };
+        if structure.known(operation, "1") { return structure.grant(context); }
         if operation == "dna.organization.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
         if operation == "" && recovery && !self.grant_valid(grant) {
@@ -374,6 +393,7 @@ locus GovernanceCommands {
         let org_codec = OrganizationCommandCodec { }; let organization = OrganizationAdmission { }; let source_review = OrganizationReviewCommandCodec { };
         // the codecs, built once: a locus built inside the loop is an arena per row
         let person = PersonRetirementCodec { }; let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { }; let attempts = AttemptCommandCodec { };
+        let structure = StructureCommandCodec { };
         let id = codec.identity(context, request_id); let mut found = GovernanceAdmission { };
         let mut i = 0;
         while i < j.revision() {
@@ -419,6 +439,16 @@ locus GovernanceCommands {
                         || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: attempts.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
+                }
+            } else if e.kind == "position.requested" || e.kind == "hold.requested" || e.kind == "batch.proposed" {
+                // a change to the structure: the CLI's rows carry no command
+                // fields; only a row naming this command id is ours to verify
+                if std::str::starts_with(e.body, "{") && len(e.body) <= 1048576 && syntax.valid(e.body) && codec.string(e.body, "command_id") == id {
+                    let fact = structure.decode_fact(e); let c = fact.command;
+                    if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id
+                        || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
+                        || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                    found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: structure.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
             } else if e.kind == "organization.source.requested" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
@@ -582,6 +612,10 @@ locus GovernanceCommands {
         if admission.command.operation == "dna.task.create" {
             let create = TaskCreateCommandCodec { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: create.project(j, admission) };
+        }
+        let structure = StructureCommandCodec { };
+        if structure.known(admission.command.operation, admission.command.operation_version) {
+            return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: structure.project(j, admission) };
         }
         if std::str::starts_with(admission.command.operation, "dna.attempt.") || admission.command.operation == "dna.friction.file" {
             let attempts = AttemptCommandCodec { };
@@ -872,6 +906,79 @@ locus GovernanceCommands {
                 uncertain = true;
                 continue;
             }
+            let structure = StructureCommandCodec { };
+            if structure.known(command.operation, command.operation_version) {
+                // A change to the structure (structure_command.hl): the CLI's
+                // checks over the record as captured, then the rows the CLI
+                // writes, landing at exactly the head the command was
+                // prepared against or not at all.
+                let location = self.record.location();
+                if !self.source_supported(j) || len(location) == 0 { return GovernanceResult { code: "commands_unsupported" }; }
+                if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
+                let receipts = GovernanceReceipts { record: dna::GitRecord { repo: location } };
+                let who = context.principal_name;
+                let row_id = structure.request_id_of(command, s.head, who);
+                if command.operation == "dna.batch.apply" {
+                    if self.structure_record.identity() != s.application_id { return GovernanceResult { code: "commands_unsupported" }; }
+                    let plan = dna::batch_plan(j, receipts, command.steps);
+                    if !plan.ok { return self.refusal(s, structure.refused(context, command, "refused", plan.why, "")); }
+                    // the same steps still pending are the same proposal: asked once
+                    let pending = dna::batch_pending(j, plan.steps);
+                    if len(pending) > 0 { return self.refusal(s, structure.refused(context, command, "already_proposed", "already proposed as " + pending + ", not yet decided", pending)); }
+                    let filing = dna::batch_filing(plan, who, row_id, std::time::now(), command.pack);
+                    if !filing.ok { return self.refusal(s, structure.refused(context, command, "refused", filing.why, "")); }
+                    if len(dna::first_row(j, "knowledge.proposed", filing.digest).kind) > 0 { return self.refusal(s, structure.refused(context, command, "already_proposed", "already proposed as " + filing.review_id, filing.review_id)); }
+                    // the receipts kept before the rows, as the CLI keeps them
+                    let keeps = dna::Texts { };
+                    let mut docs = filing.docs;
+                    while len(docs) > 0 {
+                        let nl = std::str::index_of(docs, "\n");
+                        keeps.push(docs[0..nl]);
+                        docs = docs[(nl + 1)..len(docs)];
+                    }
+                    let keeper = dna::GitRecord { repo: location };
+                    if !keeper.keep_batch(keeps) { return GovernanceResult { code: "record_unavailable" }; }
+                    if !self.unchanged(s) { continue; }
+                    let landed = self.publish_batch(s, context, command, grant, filing.rows);
+                    if landed.ok {
+                        let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: landed.head, revision: s.revision + landed.count };
+                        return self.result(after, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: structure.fingerprint(context, command), context: context, command: command, sequence: s.revision + landed.index, event_id: landed.id, native_body: landed.body, entity: row_id });
+                    }
+                    if landed.code == "stale" { continue; }
+                    if !landed.unknown { return GovernanceResult { code: landed.code }; }
+                    // the ref move was attempted: recover the exact rows, never resubmit
+                    uncertain = true;
+                    continue;
+                }
+                let st = held_state_of(j, receipts);
+                let mut fact = "";
+                let mut warning = "";
+                if command.operation == "dna.position.open" {
+                    if std::str::contains(st.positions, "\n" + command.target_id + "\n") { return self.refusal(s, structure.refused(context, command, "refused", "`" + command.target_id + "` is already a position the record states or proposes", "")); }
+                    fact = structure.open_fact(context, command, grant, s.head, row_id, under_node_of(j, receipts, st.positions, command.under));
+                } else {
+                    let check = fill_check_of(st, record_trust_of(location), command.target_id, command.new_assignee);
+                    if len(check.why) > 0 { return self.refusal(s, structure.refused(context, command, "refused", check.why, "")); }
+                    warning = check.warning;
+                    fact = structure.fill_fact(context, command, grant, s.head, row_id);
+                }
+                if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                if !self.unchanged(s) { continue; }
+                let row = dna::Row { kind: structure.row_kind(command.operation), entity: row_id, author: who, body: fact };
+                let appended = self.record.append("journal", s.head, row, self.sign, "");
+                if appended.ok && len(appended.id) > 0 {
+                    let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: appended.id, revision: s.revision + 1 };
+                    let answered = self.result(after, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: structure.fingerprint(context, command), context: context, command: command, sequence: s.revision, event_id: appended.id, native_body: fact, entity: row_id });
+                    // what the CLI warns on stderr, the fresh answer says
+                    let mut receipt = answered.receipt;
+                    let mut outcome = receipt.structure;
+                    outcome.warning = warning;
+                    receipt.structure = outcome;
+                    return GovernanceResult { ok: answered.ok, code: answered.code, why: answered.why, application_id: answered.application_id, head: answered.head, revision: answered.revision, receipt: receipt };
+                }
+                if appended.error != "stale" { uncertain = true; }
+                continue;
+            }
             if command.operation == "dna.person.retire" {
                 if !self.source_supported(j) || self.retirement_record.identity() != s.application_id { return GovernanceResult { code: "commands_unsupported" }; }
                 if !self.task_authority.eligible(context, command.target_id, j)
@@ -977,6 +1084,46 @@ locus GovernanceCommands {
         return GovernanceResult { code: if uncertain { "command_outcome_unknown" } else { "command_busy" } };
     }
     fn submit(context: GovernanceContext, command: GovernanceCommand) -> GovernanceResult { return self.execute(context, command, false); }
+    // A batch's rows as `hale dna apply` writes them, in its order and in
+    // the proposer's name — `batch.proposed` carrying the command — built on
+    // the captured head and made visible together through one ref move, as
+    // a retirement's are.
+    @unbounded
+    fn publish_batch(s: GovernanceSnapshot, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, rows: String) -> StructureLanded {
+        let structure = StructureCommandCodec { };
+        let before = self.structure_record.head("journal");
+        if !before.ok { return StructureLanded { code: "record_unavailable" }; }
+        if before.id != s.head { return StructureLanded { code: "stale" }; }
+        let mut parent = std::str::clone(s.head);
+        let mut index = 0;
+        let mut at = -1;
+        let mut event = "";
+        let mut body = "";
+        let mut rest = rows;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let kind = std::json::find_string_field(line, "kind");
+            let mut text = std::json::find_string_field(line, "body");
+            if kind == "batch.proposed" {
+                text = structure.batch_fact(context, c, grant, s.head, text);
+                if text == "" { return StructureLanded { code: "invalid_command" }; }
+                body = text;
+            }
+            let built = self.structure_record.build(parent, dna::Row { kind: kind, entity: std::json::find_string_field(line, "entity"), body: text, author: context.principal_name }, self.sign, "");
+            if built == "" { return StructureLanded { code: "record_unavailable" }; }
+            if kind == "batch.proposed" { at = index; event = built; }
+            parent = built;
+            index = index + 1;
+        }
+        if at < 0 { return StructureLanded { code: "invalid_command" }; }
+        let now = self.structure_record.head("journal");
+        if !now.ok { return StructureLanded { code: "record_unavailable" }; }
+        if now.id != s.head || self.structure_record.identity() != s.application_id { return StructureLanded { code: "stale" }; }
+        if !self.structure_record.move_chain("journal", parent, s.head) { return StructureLanded { unknown: true }; }
+        return StructureLanded { ok: true, id: event, head: parent, index: at, count: index, body: body };
+    }
     // GH #946: a refusal at the head is a receipt with its reason, over
     // the snapshot it was decided on, and no row.
     fn refusal(s: GovernanceSnapshot, receipt: GovernanceReceipt) -> GovernanceResult {

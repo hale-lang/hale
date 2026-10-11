@@ -170,7 +170,8 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     let task_authority = ops::FixedTaskAuthority { policy: task_policy };
     let native = ops::GovernanceCommands { record: record, authority: authority, sign: policy.sign,
         organization_authority: source_authority, organization_enabled: false, organization_reviews_enabled: false,
-        tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record };
+        tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record,
+        structure_record: record };
     let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, people: native, organization_configured: source_policy.valid };
     println("hale dna practice-review api: authority basis ", policy.basis);
     // GH #995: the organization's catalog, as the organization admits it

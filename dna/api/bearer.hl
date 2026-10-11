@@ -85,7 +85,7 @@ fn command_guard(req: std::http::Request, origin: String) -> String {
 }
 
 // The face's call names, and the members of `HeadCommands` they stand for.
-const COMMAND_CALLS: String = "PracticePropose ReviewVerdict OrganizationPropose TaskCreate TaskReassign PersonRetire AttemptClaim AttemptOutcome AttemptRenew AttemptRelease AttemptAllowance FrictionFile CommandLookup KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeNodePropose KnowledgeNodeRevise KnowledgeNodeRetire KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeLookup";
+const COMMAND_CALLS: String = "PracticePropose ReviewVerdict OrganizationPropose TaskCreate TaskReassign PersonRetire AttemptClaim AttemptOutcome AttemptRenew AttemptRelease AttemptAllowance FrictionFile CommandLookup PositionOpen HoldFill BatchApply BatchPreview KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeNodePropose KnowledgeNodeRevise KnowledgeNodeRetire KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeLookup";
 
 fn command_member(call: String) -> String {
     if call == "PracticePropose" { return "Commands::propose"; }
@@ -101,6 +101,10 @@ fn command_member(call: String) -> String {
     if call == "AttemptAllowance" { return "Commands::ask_allowance"; }
     if call == "FrictionFile" { return "Commands::file_friction"; }
     if call == "CommandLookup" { return "Commands::lookup"; }
+    if call == "PositionOpen" { return "Commands::open_position"; }
+    if call == "HoldFill" { return "Commands::fill"; }
+    if call == "BatchApply" { return "Commands::apply_batch"; }
+    if call == "BatchPreview" { return "Commands::preview_batch"; }
     if call == "KnowledgeEdgeLink" { return "Commands::link_knowledge"; }
     if call == "KnowledgeEdgeUnlink" { return "Commands::unlink_knowledge"; }
     if call == "KnowledgeNodePropose" { return "Commands::propose_knowledge"; }

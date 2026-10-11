@@ -62,7 +62,7 @@ export function describeLine(names) {
 
 // A CommandReceipt with every typed branch present, as the head writes it.
 export function commandReceipt(fields = {}) {
-  const { organization = {}, task = {}, person = {}, task_create = {}, attempt = {}, ...flat } = fields;
+  const { organization = {}, task = {}, person = {}, task_create = {}, attempt = {}, structure = {}, ...flat } = fields;
   return {
     command_id: '', request_id: '', application_id: '', operation: 'dna.practice.propose', operation_version: '1',
     principal_mode: '', principal_name: '', principal_positions: '', position_id: 'org', target_kind: 'dna.practice', target_id: '',
@@ -74,6 +74,7 @@ export function commandReceipt(fields = {}) {
     person: { state: '', from: '', to: '', event_id: '', transferred: -1, ...person },
     task_create: { intent_id: '', intent_state: '', task_id: '', event_id: '', kind: '', ...task_create },
     attempt: { state: '', attempt_id: '', work_id: '', task_id: '', performer_kind: '', holder: '', token: -1, until: 0, disposition: '', reason: '', event_id: '', allowance_micros: -1, ...attempt },
+    structure: { state: '', request_id: '', review_id: '', event_id: '', why: '', warning: '', ...structure },
   };
 }
 // The provider's answer around a receipt: `source` is a Record envelope's

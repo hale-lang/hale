@@ -6,8 +6,11 @@
 // board) for organization and person commands, `reviewer`
 // (`position:reviewer`) for verdicts, `position` (any live position) for a
 // leg's verbs and a practice proposal and a Knowledge change
-// (knowledge_commands.hl); raising work and looking a command up need only
-// an authenticated peer. The exposure authenticates (the peer's
+// (knowledge_commands.hl) and a change to the structure; raising work,
+// looking a command up and previewing a batch need only an authenticated
+// peer. Every mutation is a head command and the UI is a client of this
+// surface: a structural change (`open_position`, `fill`, `apply_batch`)
+// writes the rows its CLI verb writes (dna/operations/structure_command.hl). The exposure authenticates (the peer's
 // credentials on the socket, the bearer on HTTP) and the row's `requires`
 // gates; `dna.unix.member` maps the peer to a person; the composed
 // provider (`ops::GovernanceCommands` behind `CommandProvider`) admits,
@@ -78,6 +81,13 @@ type CommandRequest {
     narrative: String = "";
     evidence: String = "";
     receipts: String = "";
+    // A change to the structure (ops::StructureCommandCodec): a position's
+    // mandate and the part it is under, or a batch's steps and its pack; a
+    // hold's holder is `new_assignee`.
+    mandate: String = "";
+    under: String = "";
+    steps: String = "";
+    pack: String = "";
 }
 type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
@@ -89,6 +99,12 @@ type AttemptCommandOutcome {
     holder: String = ""; token: Int = -1; until: Int = 0; disposition: String = ""; reason: String = ""; event_id: String = "";
     allowance_micros: Int = -1; // GH #1131: an ask for spend the spine granted, what the attempt may cost (-1: nothing bounds it)
 }
+// A change to the structure as it reads back: the request row's own id
+// (the one the CLI mints, which the organization answers), where it
+// landed, and the answer — `requested`, `proposed` (with the Review the
+// Board decides), `refused` (with why; also a refusal at the head, with no
+// row), or `already_proposed` (the same batch still awaits that Review).
+type StructureCommandOutcome { state: String = ""; request_id: String = ""; review_id: String = ""; event_id: String = ""; why: String = ""; warning: String = ""; }
 type OrganizationCommandOutcome {
     proposal_state: String = "pending";
     source_head: String = "";
@@ -133,6 +149,7 @@ type CommandReceipt {
     person: PersonRetirementOutcome = PersonRetirementOutcome { };
     task_create: TaskCreateOutcome = TaskCreateOutcome { };
     attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
+    structure: StructureCommandOutcome = StructureCommandOutcome { };
 }
 type CommandResult {
     ok: Bool = false;
@@ -333,6 +350,42 @@ type Release { request_id: String = ""; attempt_id: String = ""; holder: String 
 type Allowance { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; }
 type Friction { request_id: String = ""; record_head: String = ""; position: String = ""; attempt_id: String = ""; text: String = ""; }
 type Lookup { request_id: String = ""; }
+// A change to the organization's structure, asked of the head as its CLI
+// verb asks it (structure_command.hl in dna/operations): the head the
+// caller prepared it against (`record_head`, the Record's head as a read
+// or a preview gave it), and what the verb takes. A name is a position's
+// with or without its `position:` prefix (`organization:<name>` for a
+// fill's position or holder too). The proposer is the caller's person.
+type PositionOpening { request_id: String = ""; record_head: String = ""; position: String = ""; text: String = ""; mandate: String = ""; under: String = ""; }
+type HoldFill { request_id: String = ""; record_head: String = ""; position: String = ""; holder: String = ""; }
+// A batch's text, one step a line (dna/core/batch.hl): `open <name> [under
+// <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name> <holder>`,
+// `practice <name> | <text>`. `pack` is a pack's provenance as `hale dna
+// pack apply` records it (`<name>@<version> <digest> <source>`), "" for none.
+type BatchApplication { request_id: String = ""; record_head: String = ""; steps: String = ""; pack: String = ""; }
+type BatchDraft { steps: String = ""; }
+// A batch planned against the Record's head and not proposed: `ok` when
+// `Commands::apply_batch` would propose it there, else `why` the plan
+// refuses it; `code` is "" when the Record was read, else why it was not.
+// The org chart before and after, one line each (`position <id>`,
+// `mandate <id>`, `holds <id> <holder>`, `practice <name>`), and the lines
+// the batch adds, takes out and leaves alone; `steps` normalized, one a
+// line; `pending` the Review the same steps still await, "" for none.
+type BatchPreview {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    application_id: String = "";
+    head: String = "";
+    revision: Int = 0;
+    steps: String = "";
+    before: String = "";
+    after: String = "";
+    added: String = "";
+    removed: String = "";
+    unchanged: String = "";
+    pending: String = "";
+}
 // Every command's answer: the provider's result and the receipt as the
 // record wrote it (the per-operation branch filled, the rest empty).
 type CommandReply {
@@ -360,7 +413,8 @@ fn native_of(command: CommandRequest) -> ops::GovernanceCommand {
         organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
         disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
         evidence: command.evidence, receipts: command.receipts,
-        hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer
+        hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer,
+        mandate: command.mandate, under: command.under, steps: command.steps, pack: command.pack
     };
 }
 
@@ -382,6 +436,7 @@ locus CommandAdmission {
         create_codec: ops::TaskCreateCommandCodec = ops::TaskCreateCommandCodec { };
         task_codec: ops::TaskCommandCodec = ops::TaskCommandCodec { };
         organization_codec: ops::OrganizationCommandCodec = ops::OrganizationCommandCodec { };
+        structure_codec: ops::StructureCommandCodec = ops::StructureCommandCodec { };
         codec: ops::GovernanceCommandCodec = ops::GovernanceCommandCodec { };
     }
     birth() { self.reader.root = self.root; }
@@ -419,6 +474,8 @@ locus CommandAdmission {
         let native = native_of(command);
         if self.attempts.known(command.operation, "1") { return self.attempts.valid(native_context, native); }
         if !self.attempts.absent(native) { return false; }
+        if self.structure_codec.known(command.operation, "1") { return self.structure_codec.valid(native_context, native); }
+        if !self.structure_codec.absent(native) { return false; }
         if self.person_codec.known(command.operation, "1") { return self.person_codec.valid(native_context, native); }
         if self.create_codec.known(command.operation, "1") { return self.create_codec.valid(native_context, native); }
         if self.task_codec.known(command.operation, "1") { return self.task_codec.valid(native_context, native); }
@@ -480,6 +537,38 @@ locus CommandAdmission {
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: f.request_id, operation: "dna.friction.file", target_kind: "dna.friction", subject_digest: f.record_head, record_head: f.record_head, performer: f.position, attempt_id: f.attempt_id, result: f.text });
     }
+    // A change to the structure (ops::StructureCommandCodec): the rows its
+    // CLI verb writes, admitted as every command is.
+    fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply {
+        return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.position.open", target_kind: "dna.position", target_id: seat_named(p.position, false), subject_digest: p.record_head, record_head: p.record_head,
+            text: p.text, mandate: p.mandate, under: p.under });
+    }
+    fn fill(h: HoldFill, ctx: std::api::Context) -> CommandReply {
+        return self.submit(ctx, CommandRequest { request_id: h.request_id, operation: "dna.hold.fill", target_kind: "dna.position", target_id: seat_named(h.position, true), subject_digest: h.record_head, record_head: h.record_head, new_assignee: h.holder });
+    }
+    fn apply_batch(b: BatchApplication, ctx: std::api::Context) -> CommandReply {
+        return self.submit(ctx, CommandRequest { request_id: b.request_id, operation: "dna.batch.apply", target_kind: "dna.record", subject_digest: b.record_head, record_head: b.record_head, steps: b.steps, pack: b.pack });
+    }
+    // A batch planned, not proposed: what `apply_batch` would propose at the
+    // Record's head, as data. A read — it writes nothing, and asks nothing of
+    // the provider — so any authenticated caller may ask, and a head that
+    // composes no provider answers it too. The plan is the one `apply_batch`
+    // makes (`dna::batch_plan` over the captured Record), and a Record whose
+    // ledger is adopted is refused as `apply_batch` refuses it.
+    fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview {
+        if len(d.steps) == 0 || len(d.steps) > 65536 { return BatchPreview { code: "invalid_command" }; }
+        let capture = ops::GovernanceCommands { record: dna::GitRecord { repo: self.root } };
+        let s = capture.capture();
+        if !s.ok { return BatchPreview { code: s.code }; }
+        let j = ops::GovernanceJournal { snapshot: s };
+        if !j.valid { return BatchPreview { code: "command_history_invalid" }; }
+        if !capture.source_supported(j) { return BatchPreview { code: "commands_unsupported", application_id: s.application_id, head: s.head, revision: s.revision }; }
+        let receipts = ops::GovernanceReceipts { record: dna::GitRecord { repo: self.root } };
+        let plan = dna::batch_plan(j, receipts, d.steps);
+        let diff = dna::batch_diff(plan);
+        return BatchPreview { ok: plan.ok, code: "", why: plan.why, application_id: s.application_id, head: s.head, revision: s.revision, steps: plan.steps,
+            before: plan.before, after: plan.after, added: diff.added, removed: diff.removed, unchanged: diff.unchanged, pending: if plan.ok { dna::batch_pending(j, plan.steps) } else { "" } };
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -514,6 +603,12 @@ locus Commands {
     fn ask_allowance(a: Allowance, ctx: std::api::Context) -> CommandReply { return self.admission.allowance(a, ctx); }
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply { return self.admission.file_friction(f, ctx); }
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply { return self.admission.lookup(l, ctx); }
+    // The structure (ops::StructureCommandCodec): every change the CLI's
+    // `position open`, `fill` and `apply` make, and the batch's preview
+    fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply { return self.admission.open_position(p, ctx); }
+    fn fill(h: HoldFill, ctx: std::api::Context) -> CommandReply { return self.admission.fill(h, ctx); }
+    fn apply_batch(b: BatchApplication, ctx: std::api::Context) -> CommandReply { return self.admission.apply_batch(b, ctx); }
+    fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview { return self.admission.preview_batch(d, ctx); }
     // Knowledge (knowledge_commands.hl): a person of the record may ask;
     // the Knowledge policy decides what that person may change.
     fn link_knowledge(l: KnowledgeLink, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.link(l, ctx); }
@@ -545,6 +640,13 @@ api HeadCommands {
     rpc Commands::ask_allowance requires: [position];
     rpc Commands::file_friction requires: [position];
     rpc Commands::lookup;
+    // The structure: every mutation is a head command whose handler writes
+    // the rows its CLI verb writes, and the UI is a client of this surface.
+    // `vacate` is a one-step batch (`vacate <position> <holder>`).
+    rpc Commands::open_position requires: [position];
+    rpc Commands::fill requires: [position];
+    rpc Commands::apply_batch requires: [position];
+    rpc Commands::preview_batch;
     // Knowledge (knowledge_commands.hl): a person of the record may ask;
     // the Knowledge policy decides what that person may change.
     rpc Commands::link_knowledge requires: [position];
@@ -555,6 +657,14 @@ api HeadCommands {
     rpc Commands::bind_knowledge requires: [position];
     rpc Commands::unbind_knowledge requires: [position];
     rpc Commands::lookup_knowledge;
+}
+
+// A seat as a structure command names it: `position:<name>` from a name
+// written either way, or `organization:<name>` as given where an
+// organization may be named.
+fn seat_named(name: String, organizations: Bool) -> String {
+    if len(name) == 0 || std::str::starts_with(name, "position:") || (organizations && std::str::starts_with(name, "organization:")) { return name; }
+    return "position:" + name;
 }
 
 // A leased command's subject: the lease it settles under.
