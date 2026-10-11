@@ -416,6 +416,24 @@ fn wait_line(lines: &std::sync::mpsc::Receiver<String>, err: &Stderr, want: &str
     panic!("never printed `{want}`; stdout so far: {seen:?}; stderr:\n{}", err.text());
 }
 
+/// Read `child`'s stdout until every line of `wants` has come, in whatever
+/// order (or 20 s): markers printed by births on different threads have no
+/// order between them.
+fn wait_lines(lines: &std::sync::mpsc::Receiver<String>, err: &Stderr, wants: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut missing: Vec<&str> = wants.to_vec();
+    let mut seen = Vec::new();
+    while !missing.is_empty() && Instant::now() < deadline {
+        if let Ok(l) = lines.recv_timeout(Duration::from_millis(100)) {
+            missing.retain(|w| l.trim() != *w);
+            seen.push(l);
+        }
+    }
+    if !missing.is_empty() {
+        panic!("never printed {missing:?}; stdout so far: {seen:?}; stderr:\n{}", err.text());
+    }
+}
+
 /// `bin` on port 0, its stdout as lines and its stderr.
 fn spawn_lines(bin: &Path) -> (Child, std::sync::mpsc::Receiver<String>, Stderr) {
     let mut child = Command::new(bin).arg("0").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
@@ -433,11 +451,12 @@ fn spawn_lines(bin: &Path) -> (Child, std::sync::mpsc::Receiver<String>, Stderr)
 fn shadow_case(name: &str) {
     let bin = build(&format!("tcp_substrate_shadow_{name}"), &SHADOW.replace("NAME", name));
     let (child, lines, err) = spawn_lines(&bin);
-    wait_line(&lines, &err, "ready");
+    // the Acceptor's readiness and the Server's refusal come from two pinned
+    // births, in either order
+    wait_lines(&lines, &err, &["ready", "refused listen_failed"]);
     let port = bound_port(child.id(), &err);
     let running = Running { child, port, err };
-    wait_line(&lines, &running.err, "refused listen_failed");
-    let fds = || std::fs::read_dir(format!("/proc/{}/fd", running.child.id())).map(|d| d.count()).unwrap_or(0);
+    let fds =|| std::fs::read_dir(format!("/proc/{}/fd", running.child.id())).map(|d| d.count()).unwrap_or(0);
     let before = fds();
     for _ in 0..40 {
         let t0 = Instant::now();
