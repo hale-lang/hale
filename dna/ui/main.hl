@@ -264,7 +264,9 @@ locus Ui {
         }
         return "";
     }
-    @unbounded
+    // A session takes the slot of one expired or signed out, so the list
+    // grows only to the most sessions live at once (eight hours each).
+    @bounded_by(self.sessions)
     fn finish_sign_in(code: String, state: String, binding: String) -> std::http::Response {
         let nonce = self.take_pending(state, binding);
         if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
@@ -281,7 +283,15 @@ locus Ui {
         if len(name) == 0 { return page(403, "not a member: subject `" + c.sub + "` of " + c.iss + " maps to no one (`git config --add dna.oidc.member \"" + c.sub + "=<name>\"`)"); }
         let id = dna::hex(std::os::getrandom(32) or b"");
         if len(id) < 64 { return page(503, "no randomness for a session"); }
-        self.sessions.push(Session { id: id, name: name, subject: c.sub, expires: if c.exp < std::time::now() + 28800 { c.exp } else { std::time::now() + 28800 }, id_token: token });
+        let session = Session { id: id, name: name, subject: c.sub, expires: if c.exp < std::time::now() + 28800 { c.exp } else { std::time::now() + 28800 }, id_token: token };
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if s.expires <= now { break; }
+            i = i + 1;
+        }
+        if i < self.sessions.len() { self.sessions.set(i, session) or discard; } else { self.sessions.push(session); }
         let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
         return redirect("/", "dna_session=" + id + "; HttpOnly; SameSite=Lax; Path=/" + secure);
     }
