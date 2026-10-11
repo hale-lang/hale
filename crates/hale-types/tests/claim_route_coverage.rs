@@ -559,3 +559,115 @@ fn an_interval_on_an_int_key_with_no_publisher_holds() {
     let src = NO_PUBLISHER.replace("KEY", "Int = 0");
     assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
 }
+
+// ---- a transparent alias is the type it names -----------------------
+
+fn model_of(src: &str) -> hale_model::ApplicationModel {
+    use hale_types::symbol::SourceFile;
+    let program = parse_source(src).expect("parse");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("app.hl".to_string(), &program);
+    let mut b = hale_types::Bundle::new(programs);
+    b.sources = vec![SourceFile {
+        id: 0,
+        path: "app.hl".to_string(),
+        digest: "0".to_string(),
+        base: 0,
+        len: src.len() as u32,
+    }];
+    entries::derive_application_model(&b)
+}
+
+/// The reviewer's control, with the key field spelled through `DECLS`
+/// and a publisher so the publish domain is read too.
+const ALIASED: &str = r#"
+DECLS
+type Msg { key: KEY; }
+topic Events { payload: Msg; subject: "events"; keyed_by key; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Events as on_event; }
+    fn on_event(m: Msg) { self.seen = self.seen + 1; }
+}
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    bus { publish Events; }
+    claims { route: cover keys(topic Events in 0..=3): delivered_to(exactly_one workers); }
+    run() { Events <- Msg { }; }
+}
+fn main() { App { }; }
+"#;
+
+fn aliased(decls: &str, key: &str) -> String {
+    ALIASED.replace("DECLS", decls).replace("KEY", key)
+}
+
+/// The key type the model records, on the topic and on the publish
+/// site's domain — one resolver feeds both.
+fn key_types(src: &str) -> (String, Vec<String>) {
+    let m = model_of(src);
+    let topic = m.entities.topics[0].key.as_ref().expect("keyed").ty.clone();
+    let sites = m
+        .relations
+        .publishes
+        .iter()
+        .filter_map(|p| match &p.key_domain {
+            Some(hale_model::KeyDomain::AnyOfType(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    (topic, sites)
+}
+
+#[test]
+fn an_alias_of_int_is_an_int_key() {
+    // The reviewer's control: `type Key = Int` stored `Key` as the key
+    // type, and the interval guard refused a valid claim.
+    let src = aliased("type Key = Int;", "Key = 0");
+    assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
+    assert_eq!(key_types(&src), ("Int".to_string(), vec!["Int".to_string()]));
+}
+
+#[test]
+fn an_alias_chain_of_int_is_an_int_key() {
+    let src = aliased("type Inner = Int;\ntype Key = Inner;", "Key = 0");
+    assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
+    assert_eq!(key_types(&src), ("Int".to_string(), vec!["Int".to_string()]));
+}
+
+#[test]
+fn an_alias_of_string_is_still_refused() {
+    let src = aliased("type Inner = String;\ntype Key = Inner;", "Key = \"\"");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("is malformed"), "{}", ds[0]);
+    assert!(ds[0].contains("keyed by `key`, a `String` field"), "{}", ds[0]);
+    assert_eq!(
+        key_types(&src),
+        ("String".to_string(), vec!["String".to_string()])
+    );
+}
+
+#[test]
+fn an_enum_key_keeps_its_identity() {
+    // An enum is a type of its own, not an alias: its name is the key
+    // type, and an integer interval is refused naming it.
+    let src = aliased("type Status = enum { Up, Down };", "Status = Status::Up");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("keyed by `key`, a `Status` field"), "{}", ds[0]);
+    assert_eq!(
+        key_types(&src),
+        ("Status".to_string(), vec!["Status".to_string()])
+    );
+    // …through an alias too.
+    let src = aliased(
+        "type Status = enum { Up, Down };\ntype Key = Status;",
+        "Key = Status::Up",
+    );
+    assert_eq!(
+        key_types(&src),
+        ("Status".to_string(), vec!["Status".to_string()])
+    );
+}

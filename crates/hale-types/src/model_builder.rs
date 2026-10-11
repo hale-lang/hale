@@ -389,10 +389,56 @@ pub fn derive_application_model_over(
     // name), never the field. "?" when unresolvable (a hole-free
     // fallback would be a lie; the differential pins the resolved
     // cases and "?" only appears on programs the checker refuses).
+    //
+    // A transparent alias (`type Key = Int`, chains included) is the
+    // type it names, so it is followed to the end before naming —
+    // for the key field and for the payload type alike. An enum, a
+    // struct or a unit-dialect scalar is a type of its own and keeps
+    // its name.
+    fn through_aliases<'a>(
+        mut te: &'a TypeExpr,
+        decls: &BTreeMap<&str, &'a hale_syntax::ast::TypeDecl>,
+    ) -> Option<&'a TypeExpr> {
+        // A chain longer than the declarations is a cycle the checker
+        // refuses; stop rather than loop.
+        for _ in 0..=decls.len() {
+            let TypeExpr::Named { path, .. } = te else {
+                return Some(te);
+            };
+            if path.segments.len() != 1 {
+                return Some(te);
+            }
+            let Some(td) = decls.get(path.segments[0].name.as_str()) else {
+                return Some(te);
+            };
+            match &td.body {
+                hale_syntax::ast::TypeDeclBody::Alias(target)
+                    if td.generics.is_empty() =>
+                {
+                    te = target;
+                }
+                _ => return Some(te),
+            }
+        }
+        None
+    }
     let key_type_of = |raw_ty: &str, field: &str| -> String {
-        let Some(td) = type_decl_by_raw.get(raw_ty) else {
+        let Some(mut td) = type_decl_by_raw.get(raw_ty).copied() else {
             return "?".to_string();
         };
+        if let hale_syntax::ast::TypeDeclBody::Alias(target) = &td.body {
+            let resolved = through_aliases(target, &type_decl_by_raw);
+            let Some(TypeExpr::Named { path, .. }) = resolved else {
+                return "?".to_string();
+            };
+            let Some(next) = (path.segments.len() == 1)
+                .then(|| type_decl_by_raw.get(path.segments[0].name.as_str()))
+                .flatten()
+            else {
+                return "?".to_string();
+            };
+            td = next;
+        }
         let hale_syntax::ast::TypeDeclBody::Struct(fields) = &td.body
         else {
             return "?".to_string();
@@ -401,7 +447,10 @@ pub fn derive_application_model_over(
         else {
             return "?".to_string();
         };
-        match &f.ty {
+        let Some(fty) = through_aliases(&f.ty, &type_decl_by_raw) else {
+            return "?".to_string();
+        };
+        match fty {
             TypeExpr::Primitive(prim, _) => {
                 use hale_syntax::ast::PrimType;
                 match prim {
