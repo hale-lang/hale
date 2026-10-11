@@ -2507,10 +2507,16 @@ pub fn summarize_identified(
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
                         str_fields.insert(td.name.name.clone(), struct_str_fields(fields));
-                        field_defaults.insert(
-                            td.name.name.clone(),
-                            fields.iter().map(|f| (f.name.name.clone(), f.default.clone())).collect(),
-                        );
+                        // The stdlib's analysis copy is no declaration the
+                        // program alone has: its literals' defaults stay
+                        // unknown either way, so the copy beside the program
+                        // moves no answer of its own rows.
+                        if !is_stdlib_copy(ids) {
+                            field_defaults.insert(
+                                td.name.name.clone(),
+                                fields.iter().map(|f| (f.name.name.clone(), f.default.clone())).collect(),
+                            );
+                        }
                         let all_retirable = fields.iter().all(|f| {
                             matches!(
                                 &f.ty,
@@ -2549,7 +2555,9 @@ pub fn summarize_identified(
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     str_fields.insert(locus.clone(), locus_str_fields(l));
-                    field_defaults.insert(locus.clone(), locus_field_defaults(l));
+                    if !is_stdlib_copy(ids) {
+                        field_defaults.insert(locus.clone(), locus_field_defaults(l));
+                    }
                     // GH #540: a stdlib locus is built by code the
                     // summary may not hold, so its slots keep every
                     // conformer.
@@ -3530,13 +3538,23 @@ fn resolve_param_provenance(
             break;
         }
     }
+    // The provenance inputs are spent: what a reader sees is the answer
+    // (`retired_store`), never the walk's working rows, so two summaries
+    // that answer alike compare alike.
+    for f in summary.fns.values_mut() {
+        f.sends.clear();
+        for c in f.calls.iter_mut() {
+            c.arg_taints.clear();
+            c.self_call = false;
+        }
+    }
     for f in summary.fns.values_mut() {
         let key = f.key.clone();
         for s in f.sites.iter_mut() {
-            if let Some((field, params)) = &s.retire_if_params {
+            if let Some((field, params)) = s.retire_if_params.take() {
                 if params
                     .iter()
-                    .all(|p| !val.get(&(key.clone(), p.clone())).is_some_and(|t| t.may_carry(field)))
+                    .all(|p| !val.get(&(key.clone(), p.clone())).is_some_and(|t| t.may_carry(&field)))
                 {
                     s.retired_store = true;
                 }
