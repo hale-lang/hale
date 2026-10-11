@@ -65,16 +65,17 @@ param, const or declaration with that name is in scope — did you
 mean `total`?
 ```
 
-This is a whole-program rule, so it wants the whole program:
-`hale check <directory>` (the seed) and every build. Checking one
-file of a multi-file seed on its own stays permissive — that file
-legitimately reads a `const` its sibling declares, and the checker
-cannot see the sibling.
+`hale check app.hl` checks that file the way `hale build app.hl`
+builds it: the file and what it imports, nothing else. So if your
+program is several files in one directory and `main.hl` reads a
+`const` that `limits.hl` declares, check the directory — `hale check
+.` — not the one file; checked alone, the file is refused exactly as
+its build would be, and the check adds a note saying the other files
+beside it were not loaded.
 
-That leniency is for names the file never bound. A name a block bound
-and released (`if take { let x = 1; } return x;`) is the block's, so
-checking the file alone refuses the read as the seed check and the
-build do, and says the block has ended.
+A name a block bound and released (`if take { let x = 1; } return
+x;`) is the block's, so reading it after the block is refused too,
+and the message says the block has ended.
 
 ## A type name that isn't declared is an error too
 

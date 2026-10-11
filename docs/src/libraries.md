@@ -48,12 +48,11 @@ something the checker shrugs at. Import the same library under two
 aliases and you still have one type: what `a::Row` builds fits
 where `b::Row` is wanted.
 
-The one thing to know is *when*: this needs the whole program, so
-run `hale check` on the seed (`hale check .`) rather than on a
-single file. Checking one file of a multi-file seed leaves an
-imported type opaque, because the `import` line it needs may be in
-a file you did not hand it. `build`, `run` and `test` always see
-the whole thing.
+The one thing to know is *what* you hand it: run `hale check` on the
+seed (`hale check .`) rather than on a single file. One file of a
+multi-file seed is checked the way `hale build` builds that file —
+alone — so an `import` line that lives in a sibling is not there, and
+the path is refused as unresolved, by the check and the build alike.
 
 `hale fetch` clones each dependency into `vendor/<name>/` and
 pins the resolved commit in `hale.lock`. Hale resolves no
@@ -223,10 +222,10 @@ a build. (`time::sleep` and `time::monotonic` are the exception the
 compiler still answers unprefixed; they are old spellings, and
 `std::time::` is the one to write.)
 
-The *when* is the one above again: this needs the whole program.
-`hale check <one file>` stays quiet about a qualified path, because
-the `import` line that would answer it may be in a file you did not
-hand it. `hale check .` and every build path see the whole seed.
+The *what* is the one above again: `hale check .` and every build
+path see the whole seed; `hale check <one file>` sees that file and
+its own imports, as `hale build <one file>` does, so a path whose
+`import` line is in a sibling file is refused by both.
 
 ## The catalog
 

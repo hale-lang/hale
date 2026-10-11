@@ -338,8 +338,9 @@ Nor, finally, is the **rule set**. The checks that need the whole
 program — the F.18 bare-callee rule and the bare-identifier and
 bare-type-name rules that follow it (`spec/types.md` § *Calls to bare
 names*) — are on for every command that HAS the whole program:
-`check` and `verify` on a seed, `build`, `run`, `test`, `replay` and
-`bench`, which compile exactly what they bundle, and `hale lsp`, which
+`check` and `verify` on a seed or a file, `build`, `run`, `test`,
+`replay` and `bench`, which compile exactly what they bundle, and
+`hale lsp`, which
 loads the whole seed as `hale check <dir>` does, imports followed, and
 typechecks it only once every member has read and parsed. A call to a name
 nothing declares is therefore `path:line:col: type error: call to X:
@@ -350,9 +351,10 @@ backend answered `codegen error: unsupported in codegen v0: call to
 X: …` — no file, no line, no caret, and a did-you-mean over
 compiler-internal symbols. Two answers to one question, and the
 useful one was the one the build did not give). `hale check <file>`
-keeps the permissive reading, because the sibling it was not handed
-may declare the name: the line is drawn by what the command was
-given, not by which command it is.
+is given what `hale build <file>` is given — the file and its own
+imports, no sibling — so it answers as the build does (2026-10-11;
+it kept a permissive reading for a sibling's name until then, and
+accepted the file its build refused).
 
 Every command that compiles checks what it compiles the same way,
 from one load: the seed and its imports, shaped by one sequence (the
