@@ -664,6 +664,10 @@ fn own_entries_run_to_exit_programs() {
             "crates/hale-codegen/tests/fixtures/examples/docs-server: __wrap_html_page StringConcat @3012..3462 InvokedUnboundedly",
             "tests/hale/api_context_test.hl: main StringConcat @12899..12990 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12899..12982 InUnboundedLoop",
+            // GH #1490 (step 3): `self.buf = self.buf + chunk`, an
+            // append whose operands are typed by the field and the
+            // `recv` result, not a literal.
+            "tests/hale/api_context_test.hl: Api::ask StringConcat @6440..6456 InvokedUnboundedly",
             "tests/hale/api_roles_test.hl: main StringConcat @10367..10392 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10367..10385 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
@@ -1059,8 +1063,9 @@ fn startable_moves(target: &str) -> Option<Vec<String>> {
 /// `std::http::Server`, stays long-lived). Among the targets only the
 /// host's verb program moves: it starts no locus with a hook or a
 /// handler, so it runs to exit, and every leak site of its fns goes —
-/// counted by the seed the fn is declared in (the host's 565, the core's
-/// 145, …). The correction only narrows: no target gains a site. The old
+/// counted by the seed the fn is declared in (the host's 629, the core's
+/// 160, …; GH #1490's step 3 typed more concatenations: 565 and 145
+/// before it). The correction only narrows: no target gains a site. The old
 /// answer is the corrected summary with `startable` cleared.
 #[test]
 fn startable_only_the_verb_program_runs_to_exit() {
@@ -1076,11 +1081,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 145",
+                "dna__core: 160",
                 "dna__core__pond__pq: 11",
-                "dna__core__pond__realtime__nats: 2",
-                "dna__host: 565",
-                "dna__operations: 121",
+                "dna__core__pond__realtime__nats: 4",
+                "dna__host: 629",
+                "dna__operations: 140",
                 "the stdlib's copy: 1",
             ])
         )]

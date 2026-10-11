@@ -229,3 +229,27 @@ and 35.0 MB / 2M (lengths 7–8: 5.2 MB) — a known false negative of
 the flip, documented in spec/verification.md. The lever is the
 runtime's reuse (keep a block's true size across reuse, or bucket by
 size class), not the model.
+
+**Step 3, the spelling** (structure-and-bounds plan): the survey
+recorded a String `+` only where an operand was a literal or a name
+whose declared type was `String`, and the second never matched (the
+type parses as a primitive, which the name map does not hold), so a
+chain without a literal was no site at all — `out = out + piece(i)`,
+`self.buf = self.buf + chunk`, `acc = wrap(acc) + sep`. Recognition is
+now typed from declarations (`StrTy` in `alloc_summary.rs`: params,
+fields, annotated and initialized `let`s, `for` binders over String
+arrays, fns and methods declared `-> String`, `to_string`, scoped as
+written). This only adds sites, and C2's rule then judges the new
+accumulators like the old ones. Measured over every DNA program: 19
+warning lines more and none fewer — nine intermediate concatenations
+(`out + f(x)` inside `out + f(x) + " "`) in loops of frames with no
+boundary, beside the outer site already reported; four in the books
+acceptance's `hex_of` (`out + digits[..] + digits[..]`, no literal at
+all), a helper with no boundary of its own; four String field stores (`self.buf =
+self.buf + chunk` in a test; two replaces in the NATS adapter and one in
+a test, which step 4 makes store-latest); and `dna/host`'s
+`unescape_arg`, two sites of an accumulator whose result lands in
+`route_verb`'s frame once per argument word — real growth bounded by the
+command line, now `@bounded_by(argv)` beside `parse_args`. No decorator
+stopped silencing; three silence more (`GitJournal::landed`,
+`Review::consider`, `Host::fleet_window`).

@@ -27,6 +27,10 @@ fn escape_arg(s: String) -> String {
     return std::str::replace(std::str::replace(s, "\\", "\\\\"), "\n", "\\n");
 }
 
+// One argument word per call; what it builds lands in its caller's
+// frame (`word` in `route_verb`'s loop), as many as the command line has
+// words.
+@bounded_by(argv)
 fn unescape_arg(s: String) -> String {
     if !std::str::contains(s, "\\") { return s; }
     let mut out = "";

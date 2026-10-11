@@ -1910,9 +1910,31 @@ assume the others in a build:
   backing buffer grows with population and frees only at dissolve. A
   `@form(ring_buffer)` / `@form(lru_cache)` is cap-bounded and excluded.
   (Detection reads *declared* receiver types — params, typed `let`s, locus
-  param fields — not inferred ones.) Zero corpus false positives. Type-aware
-  String-concat sites and untyped-receiver collection inserts remain
-  deferred. See `notes/memory-bound-proofs.md`.
+  param fields — not inferred ones.) Zero corpus false positives.
+  Untyped-receiver collection inserts remain deferred. See
+  `notes/memory-bound-proofs.md`.
+
+  **A String `+` is a site however it is spelled** (GH #1490). The survey
+  records a concatenation where an operand is a String by what the program
+  declares, never by guess: a string literal; a binding whose annotation,
+  initializer (`let out = piece(0)`, `let s = to_string(n)`), parameter type
+  or `for` iterable (`for s in names`, `names: [String; 4]`) makes it one; a
+  field declared `String` (a locus param, a struct field, or a locus param
+  written without a type whose default is a string literal), on `self` or on
+  a receiver the walk types (`r.text`, `self.r.text`); a call of a fn or a
+  locus method whose declared return is `String`, or of a builtin whose
+  signature returns one (`to_string`); an element of a String array; and a
+  concatenation, an `or`, an `if` or a block whose value is one of these. A
+  binding is scoped as written (an inner `let x = 5` or a match binding
+  shadows a String `x`), and what it cannot type stays unrecorded, so
+  `i + 1` is never a concatenation. So `out = out + piece(i)` and `out =
+  wrap(out) + sep` are the accumulator `out = out + "x"` is, judged by the
+  same rules (the returned-accumulator rule below included), and so is
+  `self.buf = self.buf + chunk`. Before, an operand counted only as a
+  literal or a name declared `String`, and a declared `String` never
+  matched (the type is a primitive), so a chain with no literal in it was
+  no site at all: an under-report, now closed. `@budget` and the hot-path
+  lint read the same sites.
 
   **The reclaim boundary.** Each site carries the boundary at which its
   memory is reclaimed (the dump's `reclaim@…` column): a bus payload at

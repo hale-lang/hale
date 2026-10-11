@@ -167,6 +167,84 @@ fn is_growing_insert(form_name: &str, method: &str) -> bool {
     form_grows(form_name) && is_insert_method(method)
 }
 
+/// What the survey knows of a value's String-ness (GH #1490, step 3):
+/// a `String` (or a view of one), an array of them, or anything else.
+/// A String `+` is a fresh concatenation however its operands are
+/// spelled, so the survey types the operand from what the program
+/// declares — a binding's annotation or initializer, a fn's or a
+/// method's declared return, a field's declared type, a builtin's
+/// signature — and never guesses: what it cannot type is `Other`, so
+/// `i + 1` is never read as a concatenation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrTy {
+    Str,
+    StrArray,
+    Other,
+}
+
+/// Is `te` a String type: `String` or `StringView`, as a primitive or
+/// written as the bare name.
+fn is_string_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Primitive(PrimType::String | PrimType::StringView, _) => true,
+        TypeExpr::Named { path, generic_args, .. } => {
+            generic_args.is_empty()
+                && path.segments.len() == 1
+                && matches!(path.segments[0].name.as_str(), "String" | "StringView")
+        }
+        _ => false,
+    }
+}
+
+/// The String-ness a declared type gives a value of it.
+fn str_ty_of(te: &TypeExpr) -> StrTy {
+    match te {
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } if is_string_type(elem) => StrTy::StrArray,
+        _ if is_string_type(te) => StrTy::Str,
+        _ => StrTy::Other,
+    }
+}
+
+/// The String and String-array parameters of a signature.
+fn param_str_types(params: &[Param]) -> Vec<(String, StrTy)> {
+    params
+        .iter()
+        .map(|p| (p.name.name.clone(), str_ty_of(&p.ty)))
+        .filter(|(_, t)| *t != StrTy::Other)
+        .collect()
+}
+
+/// The String and String-array fields of a struct type, by name.
+fn struct_str_fields(fields: &[StructField]) -> BTreeMap<String, StrTy> {
+    fields
+        .iter()
+        .map(|f| (f.name.name.clone(), str_ty_of(&f.ty)))
+        .filter(|(_, t)| *t != StrTy::Other)
+        .collect()
+}
+
+/// The String and String-array fields of a locus's `params`: a
+/// declared type, or (a param written without one) a string-literal
+/// default.
+fn locus_str_fields(l: &LocusDecl) -> BTreeMap<String, StrTy> {
+    let mut m = BTreeMap::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                let t = match (&pd.ty, &pd.init) {
+                    (Some(te), _) => str_ty_of(te),
+                    (None, ParamInit::Value(Expr::Literal(Literal::String(_), _))) => StrTy::Str,
+                    _ => StrTy::Other,
+                };
+                if t != StrTy::Other {
+                    m.insert(pd.name.name.clone(), t);
+                }
+            }
+        }
+    }
+    m
+}
+
 /// The unqualified name of a `Named` type expression (`SegVec` from
 /// `path::to::SegVec`), or `None` for primitives / arrays / etc.
 fn type_expr_name(te: &TypeExpr) -> Option<String> {
@@ -2050,11 +2128,16 @@ pub fn summarize_identified(
     // is in, whether it is an `@hot` fn and a mode, and the declaration
     // it is a member of, and every param's name (the outermost of its
     // bindings). A body's place in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>);
+    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>, Vec<(String, StrTy)>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     // What a call spelling (locus, name) resolves to: the row of the last
     // declaration of the name.
     let mut known: Known = BTreeMap::new();
+    // GH #1490 (step 3): the fns and methods that return a String, and
+    // the String fields of every struct type and locus, so a `+` is
+    // read as a concatenation by its operands' declared types.
+    let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
+    let mut str_fields: BTreeMap<String, BTreeMap<String, StrTy>> = BTreeMap::new();
     let universe_of = |ids: &crate::snapshot::Snapshot| {
         if is_stdlib_copy(ids) {
             SiteUniverse::StdlibAnalysis
@@ -2307,10 +2390,14 @@ pub fn summarize_identified(
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
-                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params)));
+                    if decl.ret.as_ref().is_some_and(is_string_type) {
+                        string_rets.insert(key.clone());
+                    }
+                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
+                        str_fields.insert(td.name.name.clone(), struct_str_fields(fields));
                         let all_retirable = fields.iter().all(|f| {
                             matches!(
                                 &f.ty,
@@ -2348,6 +2435,7 @@ pub fn summarize_identified(
                         sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
+                    str_fields.insert(locus.clone(), locus_str_fields(l));
                     // GH #540: a stdlib locus is built by code the
                     // summary may not hold, so its slots keep every
                     // conformer.
@@ -2398,6 +2486,7 @@ pub fn summarize_identified(
                                     (false, true),
                                     l.id,
                                     param_names(&md.params),
+                                    param_str_types(&md.params),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -2414,6 +2503,9 @@ pub fn summarize_identified(
                                 };
                                 silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
+                                if decl.ret.as_ref().is_some_and(is_string_type) {
+                                    string_rets.insert(key.clone());
+                                }
                                 bodies.push((
                                     key,
                                     &decl.body,
@@ -2426,6 +2518,7 @@ pub fn summarize_identified(
                                     (decl.hot, false),
                                     l.id,
                                     param_names(&decl.params),
+                                    param_str_types(&decl.params),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -2449,6 +2542,7 @@ pub fn summarize_identified(
                                     (false, false),
                                     l.id,
                                     param_names(&lc.params),
+                                    param_str_types(&lc.params),
                                 ));
                             }
                             _ => {}
@@ -2667,6 +2761,7 @@ pub fn summarize_identified(
                 fn_params: &[String],
                 param_elems: &[(String, String)],
                 params: &[String],
+                str_params: &[(String, StrTy)],
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
@@ -2708,6 +2803,9 @@ pub fn summarize_identified(
             all_struct_fields: &struct_field_types,
             all_elem_types: &locus_elem_types,
             fn_ret_types: &fn_ret_types,
+            string_rets: &string_rets,
+            str_fields: &str_fields,
+            strs: vec![str_params.iter().cloned().collect()],
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -2743,18 +2841,18 @@ pub fn summarize_identified(
     // no row, then every subexpression a walk skipped, under the key and
     // the parameters of the body it sits in.
     type Pending<'i> =
-        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>);
+        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>, Vec<(String, StrTy)>);
     let mut pending: Vec<Pending> = Vec::new();
     let skipped_block = |es: Vec<Expr>| Block {
         span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
         stmts: es.into_iter().map(Stmt::Expr).collect(),
         tail: None,
     };
-    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params)) in
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params, str_params)) in
         bodies.iter().enumerate()
     {
         let (row, starts, skipped) =
-            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, ids, (*hot, *mode, decl_index));
+            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts);
         if runtime_ids.contains(decl) {
             summary.appended_runtime.insert(key.clone());
@@ -2774,6 +2872,7 @@ pub fn summarize_identified(
                     param_elems.clone(),
                     ids,
                     params.clone(),
+                    str_params.clone(),
                 ));
             }
         }
@@ -2790,17 +2889,18 @@ pub fn summarize_identified(
             param_var_elem_types(m.params),
             ids,
             param_names(m.params),
+            param_str_types(m.params),
         ));
     }
     let mut next = 0;
     while next < pending.len() {
-        let (site, position, key, body, param_types, fn_params, param_elems, ids, params) = pending[next].clone();
+        let (site, position, key, body, param_types, fn_params, param_elems, ids, params, str_params) = pending[next].clone();
         next += 1;
         let (body_summary, _, skipped) =
-            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, ids, (false, false, usize::MAX));
+            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, (false, false, usize::MAX));
         summary.declaration_bodies.push(DeclarationBody { declaration: site, position, summary: body_summary });
         if !skipped.is_empty() {
-            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params));
+            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params, str_params));
         }
     }
     // GH #540: an expression evaluated outside any body above — a
@@ -2832,6 +2932,7 @@ pub fn summarize_identified(
                 &fn_typed_params(params),
                 &param_var_elem_types(params),
                 &param_names(params),
+                &param_str_types(params),
                 ids,
                 (false, false, usize::MAX),
             );
@@ -4614,6 +4715,16 @@ struct Walker<'a> {
     /// #382 receiver-typing: free-fn -> declared locus return type,
     /// for call-result receivers (`make_b().work()`).
     fn_ret_types: &'a BTreeMap<String, String>,
+    /// GH #1490 (step 3): the fns and methods whose declared return is a
+    /// String, by row.
+    string_rets: &'a BTreeSet<FnKey>,
+    /// GH #1490 (step 3): each struct type's and locus's String and
+    /// String-array fields.
+    str_fields: &'a BTreeMap<String, BTreeMap<String, StrTy>>,
+    /// GH #1490 (step 3): the String-ness of each binding in scope, one
+    /// map per scope beside `locals` (a param, a `let`, a `for` binder;
+    /// a match binding shadows as `Other`).
+    strs: Vec<BTreeMap<String, StrTy>>,
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
@@ -4714,26 +4825,128 @@ impl<'a> Walker<'a> {
 
     /// Is this expression provably a String?
     ///
-    /// Deliberately narrow: a string literal, an f-string, or a name
-    /// whose declared type is `String`. Anything it cannot prove it
-    /// leaves alone, so `i + 1` is never mistaken for concatenation.
+    /// Typed from what the program declares, however the value is
+    /// spelled (GH #1490, step 3): a string literal (an f-string is one
+    /// by the time the survey walks it); a binding whose annotation,
+    /// initializer, parameter type or `for` iterable makes it a String;
+    /// a field whose declared type is `String`, on `self` or on a
+    /// receiver the walk types; a call of a fn or a method whose
+    /// declared return is `String`, or of a builtin whose signature
+    /// returns one (`to_string`); an element of a String array; and a
+    /// concatenation, an `or`, an `if` or a block whose value is one of
+    /// these. Anything it cannot prove it leaves alone, so `i + 1` is
+    /// never mistaken for concatenation.
     fn is_string_expr(&self, e: &Expr) -> bool {
         match e {
             Expr::Literal(Literal::String(_), _) => true,
             Expr::Ident(v) => {
-                self.var_types.get(&v.name).map(|t| t == "String").unwrap_or(false)
+                self.str_of(&v.name) == StrTy::Str
+                    || self.var_types.get(&v.name).map(|t| t == "String").unwrap_or(false)
             }
-            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
-                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-            {
-                self.field_types.get(&name.name).map(|t| t == "String").unwrap_or(false)
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                self.field_str(receiver, &name.name) == StrTy::Str
             }
             // `(a + b) + c` — a concat is itself a String.
             Expr::Binary { left, right, op: BinOp::Add, .. } => {
                 self.is_string_expr(left) || self.is_string_expr(right)
             }
+            Expr::Call { callee, .. } => self.call_returns_string(callee),
+            Expr::Index { receiver, .. } => self.str_iter(receiver) == StrTy::StrArray,
+            // `f(x) or ""` — the disposition unwraps the fallible; the
+            // value's type is the inner call's.
+            Expr::Or { inner, .. } => self.is_string_expr(inner),
+            // Every arm of an `if` value has the one type, so either
+            // arm's value answers.
+            Expr::If(ifs) => self.if_is_string(ifs),
+            Expr::Block(b) => b.tail.as_deref().is_some_and(|t| self.is_string_expr(t)),
             _ => false,
         }
+    }
+
+    fn if_is_string(&self, ifs: &IfStmt) -> bool {
+        ifs.then_block.tail.as_deref().is_some_and(|t| self.is_string_expr(t))
+            || match ifs.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(|t| self.is_string_expr(t)),
+                Some(ElseBranch::ElseIf(inner)) => self.if_is_string(inner),
+                None => false,
+            }
+    }
+
+    /// The String-ness of `receiver.name`: the field's declared type on
+    /// `self`'s locus or on the type the walk gives the receiver.
+    fn field_str(&self, receiver: &Expr, name: &str) -> StrTy {
+        let owner = match receiver {
+            Expr::KwSelf(_) => {
+                if self.field_types.get(name).is_some_and(|t| t == "String") {
+                    return StrTy::Str;
+                }
+                self.enclosing_locus.clone()
+            }
+            _ => self.receiver_type_name(receiver),
+        };
+        owner
+            .and_then(|o| self.str_fields.get(&o))
+            .and_then(|m| m.get(name).copied())
+            .unwrap_or(StrTy::Other)
+    }
+
+    /// The String-ness of an iterable or an indexed base: a String-array
+    /// binding or field, or an array literal of Strings.
+    fn str_iter(&self, e: &Expr) -> StrTy {
+        match e {
+            Expr::Ident(v) => match self.str_of(&v.name) {
+                StrTy::StrArray => StrTy::StrArray,
+                _ => StrTy::Other,
+            },
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                match self.field_str(receiver, &name.name) {
+                    StrTy::StrArray => StrTy::StrArray,
+                    _ => StrTy::Other,
+                }
+            }
+            Expr::Array(xs, _) if xs.first().is_some_and(|x| self.is_string_expr(x)) => StrTy::StrArray,
+            _ => StrTy::Other,
+        }
+    }
+
+    /// The String-ness of a `let`'s value, for its binding.
+    fn str_value(&self, value: &Expr) -> StrTy {
+        if self.is_string_expr(value) {
+            StrTy::Str
+        } else {
+            self.str_iter(value)
+        }
+    }
+
+    /// Does this callee return a String: a fn or a method of the program
+    /// (or the stdlib's analysis copy) whose declared return is one, as
+    /// [`Walker::record_call`] resolves the callee, or a bare builtin
+    /// whose signature returns one.
+    fn call_returns_string(&self, callee: &Expr) -> bool {
+        let key = match callee {
+            Expr::Ident(id) => match self.own_fn(&id.name) {
+                Some(key) => Some(key),
+                None => {
+                    return self.local(&id.name).is_none()
+                        && crate::builtin_sigs::bare_builtin_sig(&id.name).is_some_and(|s| {
+                            s.returns == crate::builtin_sigs::Returns::Prim(PrimType::String)
+                        });
+                }
+            },
+            Expr::Path(qp) => match self.path_callee(qp) {
+                Callee::Resolved(key) => Some(key),
+                Callee::Unresolved(_) => None,
+            },
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                let owner = match receiver.as_ref() {
+                    Expr::KwSelf(_) => self.enclosing_locus.clone(),
+                    r => self.receiver_type_name(r),
+                };
+                owner.and_then(|o| self.known.get(&(Some(o), name.name.clone())).cloned())
+            }
+            _ => None,
+        };
+        key.is_some_and(|k| self.string_rets.contains(&k))
     }
 
     /// The declared/inferable LOCUS type of a receiver expression
@@ -4923,13 +5136,26 @@ impl<'a> Walker<'a> {
 impl<'a> Walker<'a> {
     fn walk_block(&mut self, b: &Block, depth: u32, tail_escape: Escape) {
         self.locals.push(BTreeMap::new());
+        self.strs.push(BTreeMap::new());
         for s in &b.stmts {
             self.walk_stmt(s, depth);
         }
         if let Some(t) = &b.tail {
             self.walk_expr(t, depth, tail_escape);
         }
+        self.strs.pop();
         self.locals.pop();
+    }
+
+    /// GH #1490 (step 3): bind `name`'s String-ness in the innermost
+    /// scope.
+    fn bind_str(&mut self, name: &str, t: StrTy) {
+        self.strs.last_mut().expect("a body has a scope").insert(name.to_string(), t);
+    }
+
+    /// The String-ness of the binding `name` names here.
+    fn str_of(&self, name: &str) -> StrTy {
+        self.strs.iter().rev().find_map(|scope| scope.get(name).copied()).unwrap_or(StrTy::Other)
     }
 
     fn bind(&mut self, name: &str, local: Local) {
@@ -5043,15 +5269,23 @@ impl<'a> Walker<'a> {
                     // effect assertion and claim is blind to it.
                     self.var_types.insert(name.name.clone(), ty);
                 }
+                // GH #1490 (step 3): typed before the value is walked, so
+                // `let s = s + x` reads the outer `s`.
+                let str_ty = match ty {
+                    Some(t) => str_ty_of(t),
+                    None => self.str_value(value),
+                };
                 let esc = self.escaping.of_let(*id);
                 self.walk_let_value(value, *span, depth, esc);
                 let bound = self.bound_value(value);
                 self.bind(&name.name, bound);
+                self.bind_str(&name.name, str_ty);
             }
             Stmt::LetTuple { names, value, span, .. } => {
                 self.walk_let_value(value, *span, depth, Escape::Local);
                 for n in names {
                     self.bind(&n.name, Local::Unresolved);
+                    self.bind_str(&n.name, StrTy::Other);
                 }
             }
             Stmt::Assign { target, value, id, span, .. } => {
@@ -5181,7 +5415,13 @@ impl<'a> Walker<'a> {
                 self.loops_as_written += 1;
                 self.enter_loop(None, body);
                 self.locals.push(BTreeMap::from([(name.name.clone(), Local::Unresolved)]));
+                let binder = match self.str_iter(iter) {
+                    StrTy::StrArray => StrTy::Str,
+                    _ => StrTy::Other,
+                };
+                self.strs.push(BTreeMap::from([(name.name.clone(), binder)]));
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.strs.pop();
                 self.locals.pop();
                 self.loops_as_written -= 1;
                 self.loop_stack.pop();
@@ -5226,7 +5466,9 @@ impl<'a> Walker<'a> {
                 // The body writes into the ring view, not the arena; treat
                 // its allocations as local for now.
                 self.locals.push(BTreeMap::from([(binding.name.clone(), Local::Unresolved)]));
+                self.strs.push(BTreeMap::from([(binding.name.clone(), StrTy::Other)]));
                 self.walk_block(body, depth, Escape::Local);
+                self.strs.pop();
                 self.locals.pop();
             }
             Stmt::Expr(e) => {
@@ -5277,6 +5519,7 @@ impl<'a> Walker<'a> {
         for arm in &m.arms {
             let mut bound = BTreeMap::new();
             pattern_bindings(&arm.pattern, &mut bound);
+            self.strs.push(bound.keys().map(|n| (n.clone(), StrTy::Other)).collect());
             self.locals.push(bound);
             if let Some(g) = &arm.guard {
                 self.walk_expr(g, depth, Escape::Local);
@@ -5286,6 +5529,7 @@ impl<'a> Walker<'a> {
                 MatchArmBody::Expr(e) => self.walk_expr(e, depth, escape),
             }
             self.locals.pop();
+            self.strs.pop();
         }
     }
 
@@ -6660,6 +6904,149 @@ mod tests {
             join_leaks(src),
             vec![(Escape::Returned, LeakReason::InUnboundedLoop)],
         );
+    }
+
+    // === GH #1490 (step 3): the accumulator however it is spelled =====
+
+    /// A method `join_n` builds its result in its own loop, spelled by
+    /// `init` and `step`; `consumer` is `run` (each result lands in the
+    /// locus arena: reported once per call) or a method (`record`: the
+    /// result dies with its scratch: not reported).
+    fn spelled_accumulator(init: &str, step: &str, consumer: &str) -> String {
+        let body = if consumer == "run" {
+            "run() { let mut i = 0; while i < self.n { self.sink = self.sink + len(self.join_n(20, \",\", [\"a\", \"b\", \"c\", \"d\"])); i = i + 1; } }"
+                .to_string()
+        } else {
+            "fn record(i: Int) { self.sink = self.sink + len(self.join_n(20, \",\", [\"a\", \"b\", \"c\", \"d\"])); }
+             run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }"
+                .to_string()
+        };
+        format!(
+            "type Row {{ text: String; }}
+             fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+             fn wrap(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; r: Row = Row {{ text: \"abc\" }}; label: String = \"x\"; }}
+                 fn part(i: Int) -> String {{ return self.label; }}
+                 fn join_n(k: Int, sep: String, names: [String; 4]) -> String {{
+                     {init}
+                     let mut i = 0;
+                     while i < k {{ {step} i = i + 1; }}
+                     return out;
+                 }}
+                 {body}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    /// Each spelling of `acc = acc + x` / `acc = g(acc) + h` the survey
+    /// types from declarations: a call of a fn or a method returning
+    /// String, a builtin returning one, a String field reached through
+    /// a typed receiver, a String param, an element of a String array,
+    /// an `if` value, a `for` binder over a String array, an annotated
+    /// `let`. None has a literal in the chain.
+    const SPELLINGS: &[(&str, &str)] = &[
+        ("let mut out = piece(0);", "out = out + piece(i);"),
+        ("let mut out = to_string(k);", "out = out + to_string(i);"),
+        ("let mut out = self.r.text;", "out = out + self.r.text;"),
+        ("let mut out = sep;", "out = out + sep;"),
+        ("let mut out = self.part(0);", "out = self.part(i) + out;"),
+        ("let mut out = sep;", "out = out + names[i - (i / 4) * 4];"),
+        ("let mut out: String = sep;", "out = wrap(out) + sep;"),
+        ("let mut out = sep;", "out = out + (if i > 2 { sep } else { piece(i) });"),
+        ("let mut out = sep;", "for s in names { out = out + s; }"),
+        ("let mut out = piece(0) or sep;", "out = out + self.label;"),
+    ];
+
+    fn join_concats(src: &str) -> usize {
+        summarize(src)
+            .fns
+            .values()
+            .filter(|f| f.key.fn_name == "join_n")
+            .flat_map(|f| f.sites.iter())
+            .filter(|s| s.kind == AllocKind::StringConcat)
+            .count()
+    }
+
+    #[test]
+    fn a_concatenation_is_recognized_however_spelled() {
+        for (init, step) in SPELLINGS {
+            let src = spelled_accumulator(init, step, "run");
+            assert!(join_concats(&src) >= 1, "`{step}` is a String concatenation: no site recorded");
+            // Consumed in run's loop, the accumulator's result lands in
+            // the locus arena once per call (GAP A), whatever the
+            // spelling — the same verdict a literal in the chain gets.
+            assert_eq!(
+                join_leaks(&src),
+                vec![(Escape::Returned, LeakReason::InvokedUnboundedly)],
+                "`{init} … {step}` consumed in run",
+            );
+            // Consumed in a method, its superseded values and its result
+            // die with an activation (C2): nothing to report.
+            let leaks = join_leaks(&spelled_accumulator(init, step, "method"));
+            assert!(leaks.is_empty(), "`{init} … {step}` consumed in a method: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn arithmetic_is_never_read_as_a_concatenation() {
+        // Int-returning calls, a String binding shadowed by an Int one in
+        // an inner scope, a match binding shadowing a String, a method
+        // returning Int: no `+` here is a concatenation.
+        let src = r#"
+            fn count(i: Int) -> Int { return i; }
+            locus App {
+                params { n: Int = 1000; sink: Int = 0; label: String = "x"; }
+                fn size(i: Int) -> Int { return i; }
+                fn sum_n(k: Int, sep: String) -> Int {
+                    let mut total = count(0);
+                    let x = sep;
+                    let mut i = 0;
+                    while i < k {
+                        total = total + count(i) + len(x) + self.size(i);
+                        { let x = 5; total = total + x; }
+                        match i { sep -> { total = total + sep; } }
+                        i = i + 1;
+                    }
+                    return total;
+                }
+                run() { let mut i = 0; while i < self.n { self.sink = self.sink + self.sum_n(20, ","); i = i + 1; } }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        let concats: Vec<_> = summarize(src)
+            .fns
+            .values()
+            .filter(|f| f.key.fn_name == "sum_n")
+            .flat_map(|f| f.sites.iter())
+            .filter(|s| s.kind == AllocKind::StringConcat)
+            .map(|s| s.span)
+            .collect();
+        assert!(concats.is_empty(), "integer `+` read as a concatenation at {concats:?}");
+    }
+
+    #[test]
+    fn an_append_to_a_string_field_is_reported_however_spelled() {
+        // `self.log = self.log + piece(m)` in a handler appends to a
+        // field the locus keeps: real growth, reported. Before the
+        // spelling was typed, no site was recorded without a literal.
+        let src = r#"
+            fn piece(i: Int) -> String { return "p" + to_string(i); }
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { self.log = self.log + piece(m); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        let leaks: Vec<_> = summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == "on_t")
+            .map(|l| l.escape)
+            .collect();
+        assert_eq!(leaks, vec![Escape::StoredToSelf]);
     }
 
     #[test]
