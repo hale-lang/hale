@@ -644,7 +644,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http.hl#6bedc9d9
+== crates/hale-stdlib/hl/http.hl#4c9b0d77
 
 == crates/hale-stdlib/hl/http_client.hl#3eb0a967
 
@@ -2769,24 +2769,48 @@ domain	pool:io
 row	App@literal1	App	main	default
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	Routes	pool:io	inherited
 -- dynamic	sites in the stdlib
 dynamic	__StdHttpServerConn	on pool:io
+dynamic	__StdHttpServerFlow	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+
+== crates/hale-codegen/tests/http_server_concurrent.rs#a34912ce
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+-- App@literal1.web	__StdHttpServer
+row	~	__StdHttpServer	pool:web	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:web	inherited
+row	~.handler	Slow	pool:web	inherited
+shared	dynamic	sites in the stdlib #4681ee52
 
 == crates/hale-codegen/tests/http_server_memory.rs#b0d4feca
 row	Big@main2	Big	main	default
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
+row	~.conns	__StdHttpServerConns	main	inherited
 row	~.handler	Big	main	inherited
-shared	dynamic	sites in the stdlib #f765a7d6
+shared	dynamic	sites in the stdlib #2814facf
+
+== crates/hale-codegen/tests/http_server_memory.rs#cc9dbddc
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+-- App@literal1.web	__StdHttpServer
+row	~	__StdHttpServer	pool:web	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:web	inherited
+row	~.handler	Big	pool:web	inherited
+shared	dynamic	sites in the stdlib #4681ee52
 
 == crates/hale-codegen/tests/http_split_write.rs#74f0dac9
 row	Echo@main2	Echo	main	default
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
+row	~.conns	__StdHttpServerConns	main	inherited
 row	~.handler	Echo	main	inherited
-shared	dynamic	sites in the stdlib #f765a7d6
+shared	dynamic	sites in the stdlib #2814facf
 
 == crates/hale-codegen/tests/interface_dispatch.rs#16afad7a
 row	Hello@main1	Hello	main	default
@@ -2893,8 +2917,9 @@ row	WV@main1	WV	main	default
 row	Routes@main2	Routes	main	default
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
+row	~.conns	__StdHttpServerConns	main	inherited
 row	~.handler	Routes	main	inherited
-shared	dynamic	sites in the stdlib #f765a7d6
+shared	dynamic	sites in the stdlib #2814facf
 
 == crates/hale-codegen/tests/library_shape_http_json.rs#17880498
 row	Counter@main1	Counter	main	default
@@ -7753,7 +7778,7 @@ root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
-shared	App@literal1.server	__StdHttpServer #43a6bae6
+shared	App@literal1.server	__StdHttpServer #51933fe4
 shared	__lib_dna__oidc___stub__StubIssuer@main1	__lib_dna__oidc___stub__StubIssuer #12552093
 -- dynamic	sites in api/tests
 dynamic	Cases	on main
@@ -7762,7 +7787,7 @@ dynamic	__lib_dna__api__tests__fixture___main__Fixture	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in oidc #ef317be9
-shared	dynamic	sites in the stdlib #2712e8e5
+shared	dynamic	sites in the stdlib #1300000b
 
 == dna/api/tests/read_wire_test.hl
 -- ReadWireCases@main1	ReadWireCases
@@ -8575,11 +8600,12 @@ shared	App@literal1.keyless	__lib_dna__core___models__AnthropicMessages #d167053
 shared	App@literal1.overloaded	__lib_dna__core___models__AnthropicMessages #d1670536
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	FakeAnthropic	pool:io	inherited
 shared	App@literal1.wrong_scheme	__lib_dna__core___models__AnthropicMessages #d1670536
 shared	dynamic	sites in core #1c221828
 shared	dynamic	sites in core/pond/pq #39e83e0a
-shared	dynamic	sites in the stdlib #cb99e823
+shared	dynamic	sites in the stdlib #76c06d64
 
 == dna/tests/apply_test.hl
 root	App	the entry
@@ -9548,7 +9574,7 @@ row	App@literal1.head	__StdProcessChild	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #733000a1
 shared	App@literal1.journal	__lib_dna__core___routing__RoutedJournal #d907b0f2
-shared	App@literal1.server	__StdHttpServer #43a6bae6
+shared	App@literal1.server	__StdHttpServer #51933fe4
 shared	__lib_dna__oidc___stub__StubIssuer@main1	__lib_dna__oidc___stub__StubIssuer #12552093
 shared	dynamic	sites in core #e174c0d1
 shared	dynamic	sites in core/pond/pq #39e83e0a
@@ -9568,7 +9594,7 @@ dynamic	__lib_dna__core___work_system__LegRelay	on main
 dynamic	__lib_dna__core___work_system__RelayReplay	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #2712e8e5
+shared	dynamic	sites in the stdlib #1300000b
 
 == dna/tests/ingest_test.hl
 root	App	the entry
@@ -10262,7 +10288,7 @@ row	App@literal1	App	main	default
 row	App@literal1.head	__StdProcessChild	main	default
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
-shared	App@literal1.server	__StdHttpServer #43a6bae6
+shared	App@literal1.server	__StdHttpServer #51933fe4
 shared	__lib_dna__oidc___stub__StubIssuer@main1	__lib_dna__oidc___stub__StubIssuer #12552093
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in oidc #ef317be9
@@ -10272,7 +10298,7 @@ dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #2712e8e5
+shared	dynamic	sites in the stdlib #1300000b
 
 == dna/tests/oidc_verify_test.hl
 
@@ -10332,10 +10358,11 @@ shared	App@literal1.hosted	__lib_dna__core___models__OpenAiChat #47243906
 shared	App@literal1.keyless	__lib_dna__core___models__OpenAiChat #47243906
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	FakeOpenAi	pool:io	inherited
 shared	dynamic	sites in core #1c221828
 shared	dynamic	sites in core/pond/pq #39e83e0a
-shared	dynamic	sites in the stdlib #cb99e823
+shared	dynamic	sites in the stdlib #76c06d64
 
 == dna/tests/optimize_test.hl
 root	App	the entry
@@ -12016,6 +12043,7 @@ shared	Head@literal1.commands	Commands #7834e7ec
 shared	Head@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- Head@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -12036,6 +12064,7 @@ shared	Head@literal2.commands	Commands #7834e7ec
 shared	Head@literal2.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- Head@literal2.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -12193,7 +12222,7 @@ dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main|pool:comm
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main|pool:commands|pool:io
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main|pool:commands|pool:io
 shared	dynamic	sites in organization_source #ae56cbc2
-shared	dynamic	sites in the stdlib #9f2bb498
+shared	dynamic	sites in the stdlib #b5607d9a
 
 == dna/api/practice_review
 root	PracticeReviewHead	the entry
@@ -12248,6 +12277,7 @@ shared	PracticeReviewHead@literal1.commands	__lib_dna__api___commands__Commands 
 shared	PracticeReviewHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- PracticeReviewHead@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -12287,6 +12317,7 @@ shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands 
 shared	PracticeReviewHead@literal2.roles	__lib_dna__core___roles__RecordRoles #a6435742
 -- PracticeReviewHead@literal2.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -12492,7 +12523,7 @@ dynamic	__StdBytesBytesBuilder	on pool:io|unknown (no instance)
 dynamic	__StdProcessChild	on pool:io
 dynamic	__lib_dna__core___record__GitRecord	on pool:io|unknown (no instance)
 dynamic	__lib_dna__organization_source___organization_dependencies__OrganizationInspection	on pool:io|unknown (no instance)
-shared	dynamic	sites in the stdlib #9f2bb498
+shared	dynamic	sites in the stdlib #b5607d9a
 
 == dna/api/practice_review/tests/body
 root	Body	the entry
@@ -12705,6 +12736,7 @@ dynamic	__StdSecretCredential	on main	in ui
 shared	HeadMain@literal1.senses	__lib_dna__core___senses__Senses #7cd25e64
 -- HeadMain@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	Head	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.slots	PushSlots	pool:io	inherited
@@ -12773,6 +12805,7 @@ dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|pool
 -- dynamic	sites in the stdlib
 dynamic	__StdBytesBytesBuilder	on pool:senses|unknown (`body_alive` passed as a value)
 dynamic	__StdHttpServerConn	on pool:io|pool:senses
+dynamic	__StdHttpServerFlow	on pool:io
 dynamic	__StdIoTcpStream	on pool:io|pool:senses
 dynamic	__StdIterLines	on unknown (`body_alive` passed as a value)
 
@@ -12798,7 +12831,7 @@ row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	d
 dynamic	__StdSecretCredential	on pool:io	in ui
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #9a3e4d3c
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
-shared	FixtureHead@literal1.srv	__StdHttpServer #f1c61ed6
+shared	FixtureHead@literal1.srv	__StdHttpServer #d168a5cd
 -- FixtureProvider@main4	FixtureProvider
 row	~	FixtureProvider	main	default
 row	~.original	__lib_dna__operations___definitions__DeclaredWorkflowCatalog	main	inherited
@@ -12843,7 +12876,7 @@ dynamic	__lib_dna__core__pond__db___args__Args	on pool:io|unknown (no caller)|un
 shared	dynamic	sites in core/pond/pq #934df604
 shared	dynamic	sites in operations #ec038949
 shared	dynamic	sites in organization_source #ae56cbc2
-shared	dynamic	sites in the stdlib #9f2bb498
+shared	dynamic	sites in the stdlib #b5607d9a
 
 == dna/api/tests/commands
 root	FixtureHead	the entry
@@ -12866,7 +12899,7 @@ row	__lib_dna__operations___definitions__NoWorkflowCatalog@main3	__lib_dna__oper
 dynamic	__StdSecretCredential	on pool:io	in ui
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #9a3e4d3c
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
-shared	FixtureHead@literal1.srv	__StdHttpServer #f1c61ed6
+shared	FixtureHead@literal1.srv	__StdHttpServer #d168a5cd
 shared	dynamic	sites in api #5581576d
 -- dynamic	sites in api/tests/commands
 dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
@@ -12894,7 +12927,7 @@ dynamic	__lib_dna__core__pond__db___args__Args	on pool:io|unknown (no caller)|un
 shared	dynamic	sites in core/pond/pq #934df604
 shared	dynamic	sites in operations #ec038949
 shared	dynamic	sites in organization_source #ae56cbc2
-shared	dynamic	sites in the stdlib #9f2bb498
+shared	dynamic	sites in the stdlib #b5607d9a
 
 == dna/face/tests/organization
 root	Org	the entry
@@ -14348,13 +14381,15 @@ row	~.entries	__StdHttpEntryList	main	inherited
 row	~.mws	__StdHttpMwList	main	inherited
 row	~.not_found	__StdHttpNotFound404	main	inherited
 
-== shared __StdHttpServer #43a6bae6
+== shared __StdHttpServer #51933fe4
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
 
-== shared __StdHttpServer #f1c61ed6
+== shared __StdHttpServer #d168a5cd
 row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdHttpServerConns	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -16125,23 +16160,42 @@ dynamic	I	on main
 dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)
 dynamic	__StdIterLines	on unknown (`event` passed as a value)
 
-== shared sites in the stdlib #2712e8e5
+== shared sites in the stdlib #1300000b
 dynamic	__StdBytesBytesBuilder	on main|pool:io
 dynamic	__StdHttpServerConn	on pool:io
+dynamic	__StdHttpServerFlow	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 dynamic	__StdIterLines	on main|pool:io
+
+== shared sites in the stdlib #2814facf
+dynamic	__StdHttpServerConn	on main
+dynamic	__StdHttpServerFlow	on main
+dynamic	__StdIoTcpStream	on main
 
 == shared sites in the stdlib #3acbb365
 dynamic	__StdBytesBytesBuilder	on unknown (`request` passed as a value)
 dynamic	__StdIterLines	on unknown (`request` passed as a value)
 
+== shared sites in the stdlib #4681ee52
+dynamic	__StdHttpServerConn	on pool:web
+dynamic	__StdHttpServerFlow	on pool:web
+dynamic	__StdIoTcpStream	on pool:web
+
 == shared sites in the stdlib #5050d570
 dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
 dynamic	__StdIterLines	on unknown (`check` passed as a value)
 
-== shared sites in the stdlib #9f2bb498
+== shared sites in the stdlib #76c06d64
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdHttpServerConn	on pool:io
+dynamic	__StdHttpServerFlow	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdIterLines	on main
+
+== shared sites in the stdlib #b5607d9a
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdHttpServerConn	on pool:io
+dynamic	__StdHttpServerFlow	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 dynamic	__StdIterLines	on main|pool:commands|pool:io
 
@@ -16156,13 +16210,3 @@ dynamic	__StdIterLines	on unknown (`candidate` passed as a value)
 == shared sites in the stdlib #c3a51769
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIterLines	on main
-
-== shared sites in the stdlib #cb99e823
-dynamic	__StdBytesBytesBuilder	on main
-dynamic	__StdHttpServerConn	on pool:io
-dynamic	__StdIoTcpStream	on pool:io
-dynamic	__StdIterLines	on main
-
-== shared sites in the stdlib #f765a7d6
-dynamic	__StdHttpServerConn	on main
-dynamic	__StdIoTcpStream	on main

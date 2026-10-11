@@ -57,6 +57,72 @@ them — because the `Api` locus is alive for the whole run.
   (python's urllib, for one) work; requests are capped at 1 MiB
   (oversized declared bodies get a `413`).
 
+## Serving many requests at once
+
+The server above answers **one request at a time**: `fn main()`'s
+thread runs the accept loop, and while one handler works — a
+`sleep`, a call to another service, a minute-long job — every
+other request waits, health checks included. To serve requests
+concurrently, make the server a field of a `main locus` and place
+it on an `async_io` pool:
+
+```hale
+locus Api {
+    params { hits: Int = 0; }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/slow" {
+            std::time::sleep(1s);   // parks this request only
+        }
+        self.hits = self.hits + 1;
+        return std::http::Response { status: 200, body: f"hit #{self.hits}\n" };
+    }
+}
+
+main locus App {
+    params {
+        web: std::http::Server = std::http::Server { port: 8080, handler: Api { } };
+    }
+    placement { web: cooperative(pool = web) where async_io; }
+    run() {
+        // the server runs on its own pool; main keeps the program up
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    App { };
+}
+```
+
+That one placement line is the switch. On an `async_io` pool every
+connection runs on a coroutine of its own: when a handler parks — a
+`sleep`, a socket read, an outbound plain-HTTP call, a slow client
+on the write — the pool runs the other requests and keeps accepting.
+Five concurrent requests to `/slow` take one second instead of five.
+At most `max_connections` (256 by default) are in flight at once;
+the rest wait in the kernel's queue until one finishes. Anywhere
+else — `fn main()`, the main pool, `pinned`, a plain
+`cooperative(pool = io)` — the server stays one-at-a-time, because a
+blocking call there holds the whole thread. (macOS has no `async_io`
+pools; a server there is one-at-a-time.)
+
+What it means for your handler's `params`: every request calls the
+same `Api` locus, and on one thread, so two `handle` calls never run
+*at the same time*. But they can **interleave at a park**: while
+one request sleeps, another runs and bumps `self.hits`. Code between
+two parks runs uninterrupted; a value you read before a park may have
+changed after it. Read state again after a `sleep` or a call out
+rather than trusting a copy from before it.
+
+Blocking calls are the thing to avoid in a concurrent handler —
+https requests, `std::process::run`, file reads hold the pool's one
+thread, and with it every request. `hale check` warns about a
+blocking call reachable from an `async_io` locus.
+
+`shutdown()` stops accepting and lets the requests already accepted
+finish: the server's `run()` returns once each has been answered.
+
 ## Routing
 
 When the `if` ladder in a handler grows past a few routes, hand

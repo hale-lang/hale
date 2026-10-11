@@ -3304,6 +3304,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // declare i64 @lotus_tcp_parks() — 1 on an async_io pool's
+        // coroutine, where a blocking socket call parks (std::http::Server).
+        self.module.add_function(
+            "lotus_tcp_parks",
+            i64_t.fn_type(&[], false),
+            None,
+        );
         // #209 — errno-style status for the fallible Stream methods.
         // declare i64 @lotus_tcp_last_io_status()
         self.module.add_function(

@@ -187,6 +187,7 @@ ns std::io::tcp open_prefixes=[]
   __io_error_kind pure
   __last_io_status pure
   __listen_socket syscall
+  __parks pure
   __recv syscall|block
   __recv_bytes syscall|block
   __send syscall
@@ -757,6 +758,7 @@ std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block
 std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
 std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
 std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
+std::io::tcp::__parks | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__parks
 std::io::tcp::__recv | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=true | holds=true | unknown=- | suggest=__recv
 std::io::tcp::__recv_bytes | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes
 std::io::tcp::__send | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send

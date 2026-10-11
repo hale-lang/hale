@@ -791,14 +791,17 @@ run-completion, and an owner that declares no `release` simply has
 no bookend called.
 
 Whether `T` is a flow is decided over the whole program, imported
-seeds included, and a clause on a locus that is never instantiated
-counts all the same. `hale check --flows` reports every flow type with
+seeds and the standard library's own loci included (a stdlib owner's
+`release`, `std::http::Server`'s connections on an `async_io` pool,
+reclaims its children as a user owner's does), and a clause on a locus
+that is never instantiated counts all the same. `hale check --flows` reports every flow type with
 each `release(c: T)` clause that makes it one, by its declaring locus,
 file and line, as the declaring seed spells it, never a mangled symbol
 (GH #736); a qualified type is the whole path, so a local `Stream` is
 never mistaken for `std::io::tcp::Stream`. It is an
 opt-in report, never a diagnostic, since a release declaration is
-legitimate.
+legitimate. It lists the program's own clauses: a stdlib child type is
+internal to the stdlib locus that owns it, and is not listed.
 
 **Three ends, kept apart.** A *flow* ends by completing: its `run()`
 returns (or it `terminate`s), and it is reclaimed on the spot, its

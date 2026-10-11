@@ -835,7 +835,9 @@ crates/hale-codegen/tests/http_router.rs#0 d57a225f18d70f1a
 crates/hale-codegen/tests/http_router.rs#2 de8c5e36727bd8c1
 crates/hale-codegen/tests/http_router.rs#3 250342ebc529d515
 crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#0 d28956b68188a8e9
+crates/hale-codegen/tests/http_server_concurrent.rs#0 f09de138b6325cea
 crates/hale-codegen/tests/http_server_memory.rs#0 e9d0d38442751d50
+crates/hale-codegen/tests/http_server_memory.rs#1 a90dcea0c35cb10e
 crates/hale-codegen/tests/http_split_write.rs#0 455c3144fd92e193
 crates/hale-codegen/tests/if_expression.rs#0 865d341109268295
 crates/hale-codegen/tests/if_expression.rs#1 865d341109268295
@@ -1449,7 +1451,7 @@ crates/hale-stdlib/hl/api_rpc.hl 48f87b1aadb3c3d2
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
-crates/hale-stdlib/hl/http.hl 7965ec6de7dda94f
+crates/hale-stdlib/hl/http.hl f05efeb7a744870a
 crates/hale-stdlib/hl/http_client.hl 371edb8609756fca
 crates/hale-stdlib/hl/io_tcp.hl 753b13a6089fdfd6
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1

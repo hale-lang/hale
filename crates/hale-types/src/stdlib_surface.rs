@@ -853,6 +853,11 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__io_error_kind", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorKindRaw)),
             row!("__last_io_status", PURE, [] -> Int, Intrinsic(IoTcpLastIoStatusRaw)),
             row!("__listen_socket", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpListenSocketRaw)),
+            // 1 when a blocking socket call here parks the coroutine (an
+            // `async_io` pool's worker), 0 when it holds the thread: the
+            // `std::http::Server` serves a connection per coroutine only
+            // where one parks (spec/stdlib.md § std::http::Server).
+            row!("__parks", PURE, [] -> Int, Intrinsic(IoTcpParksRaw)),
             row!("__recv", SYSCALL | BLOCK, [Int, Int] -> Str, Intrinsic(IoTcpRecvRaw)),
             row!("__recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTcpRecvBytesRaw)),
             row!("__send", SYSCALL, [Int, Str] -> Int, Intrinsic(IoTcpSendRaw)),
@@ -1544,6 +1549,7 @@ pub enum IntrinsicId {
     IoTcpIoErrorKindRaw,
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
+    IoTcpParksRaw,
     IoTcpRecvRaw,
     IoTcpRecvBytesRaw,
     IoTcpSendRaw,

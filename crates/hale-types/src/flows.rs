@@ -170,6 +170,26 @@ impl FlowRows {
         out
     }
 
+    /// These rows and the flows the merged stdlib's own `release`
+    /// clauses make, surveyed over the merged program's stdlib tail:
+    /// what lowering reads. A stdlib locus that owns per-connection
+    /// children (`std::http::Server`'s, on an `async_io` pool) needs its
+    /// children reclaimed when their `run()` completes, as a user owner's
+    /// are; the checked programs' survey never sees the stdlib, so
+    /// without this a stdlib `release` clause made nothing a flow and its
+    /// children lived until the owner dissolved. The run rows stay the
+    /// checked programs': only the flow rows are extended.
+    pub fn with_stdlib(mut self, stdlib_items: &[TopDecl]) -> FlowRows {
+        let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
+        let mut runs: Vec<RunRow> = Vec::new();
+        walk(stdlib_items, &self, &mut by_child, &mut runs);
+        for (child, mut clauses) in by_child {
+            clauses.sort_by_key(|c| c.span.start.as_usize());
+            self.flows.push(Flow { child, clauses });
+        }
+        self
+    }
+
     /// The locus `ty` denotes as lowering names it, if it denotes one.
     fn locus(&self, ty: &TypeExpr) -> Option<String> {
         match child_locus_name(ty, &self.declared, &self.renames) {
