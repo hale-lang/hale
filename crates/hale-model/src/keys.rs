@@ -50,6 +50,12 @@ pub enum KeyValue {
 pub struct TopicKey {
     /// The payload field carrying the routing key.
     pub field: String,
+    /// The key field's declared type, in the vocabulary of
+    /// [`KeyDomain::AnyOfType`] (`Int`, `Bool`, `Time`, `Duration`,
+    /// `Decimal`, `String`, or a no-payload enum's name); `?` when
+    /// the field's type could not be resolved. Read from the topic's
+    /// payload declaration, so it is known with no publish site.
+    pub ty: String,
     /// What happens to a cell whose key matches no subscription.
     pub on_unmatched: KeyOnUnmatched,
 }

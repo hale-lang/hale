@@ -122,7 +122,7 @@ Claim [607..612] claim `route` violated: not every key of `Orders` reaches exact
 --- crates/hale-types/tests/claim_route_coverage.rs#6 ---
 Claim [357..362] claim `route` is malformed: topic `Orders` is not keyed — routing coverage is a claim about `keyed_by` topics (an unkeyed topic delivers to every subscriber; use `count subscribers` for that)
 --- crates/hale-types/tests/claim_route_coverage.rs#7 ---
-Claim [396..401] claim `route` is malformed: the interval `0..=3` states integer keys, but topic `Orders` is keyed by a field of another type
+Claim [396..401] claim `route` is malformed: the interval `0..=3` states integer keys, but topic `Orders` is keyed by `tag`, a `String` field
 --- crates/hale-types/tests/claims.rs#1 ---
 Claim [330..333] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `B::work`
 Claim [159..173] claim `iso`: the boundary into `b_side` is crossed by this call

@@ -507,3 +507,55 @@ fn a_stated_interval_judges_past_a_computed_publisher() {
     assert!(ds[0].contains("violated"), "{}", ds[0]);
     assert!(ds[0].contains("no registration of `workers` receives key 0"), "{}", ds[0]);
 }
+
+// ---- the declared key type decides the interval ---------------------
+
+/// A keyed topic with no publisher and an unkeyed subscriber: nothing
+/// but the declaration says what the key's type is. `KEY` is its type.
+const NO_PUBLISHER: &str = r#"
+type Msg { key: KEY; }
+topic Events { payload: Msg; subject: "events"; keyed_by key; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Events as on_event; }
+    fn on_event(m: Msg) { self.seen = self.seen + 1; }
+}
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims { route: cover keys(topic Events in 0..=3): delivered_to(exactly_one workers); }
+    run() { }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn an_interval_on_a_non_int_key_with_no_publisher_is_invalid() {
+    // The reviewer's control: the key type was inferred only from
+    // publish domains and literal filters, so with neither a `Bool` or
+    // `String` key was judged over invented integer keys and held.
+    for (ty, fallback) in [
+        ("Bool = false", false),
+        ("String = \"\"", false),
+        ("String = \"\"", true),
+    ] {
+        let mut src = NO_PUBLISHER.replace("KEY", ty);
+        if fallback {
+            src = src
+                .replace("keyed_by key; }", "keyed_by key; on_unmatched: fallback; }")
+                .replace("subscribe Events as on_event;", "subscribe Events as on_event where key == _;");
+        }
+        let ds = claim_diags(&src);
+        assert_eq!(ds.len(), 1, "{ty} {fallback}: {:?} {:?}", ds, diags(&src));
+        assert!(ds[0].contains("is malformed"), "{}", ds[0]);
+        assert!(ds[0].contains("integer keys"), "{}", ds[0]);
+        let name = ty.split(' ').next().unwrap();
+        assert!(ds[0].contains(&format!("keyed by `key`, a `{name}` field")), "{}", ds[0]);
+    }
+}
+
+#[test]
+fn an_interval_on_an_int_key_with_no_publisher_holds() {
+    let src = NO_PUBLISHER.replace("KEY", "Int = 0");
+    assert_eq!(claim_diags(&src), Vec::<String>::new(), "{:?}", diags(&src));
+}

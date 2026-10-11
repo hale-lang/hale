@@ -803,7 +803,7 @@ where the statement itself is malformed, it is `invalid`:
 | the topic is not `keyed_by` | invalid | "topic `T` is not keyed" |
 | no publish site and no `in` interval | uncertified | "no publish site of `T` is known … state them with `in LO..=HI`" |
 | no `in` interval and a publisher the model could not resolve may send on `T`'s wire | uncertified | "the permitted keys of `T` are not known: `X::f` publishes to a subject computed at runtime under its declared `pay.**` … state them with `in LO..=HI`" |
-| `in` interval on a topic keyed by another type | invalid | "states integer keys, but …" |
+| `in` interval on a topic whose `keyed_by` field is not an `Int` (judged from the declaration, with or without publishers) | invalid | "states integer keys, but topic `T` is keyed by `f`, a `Bool` field" |
 | a group with no locus members | invalid | "has no locus members" |
 
 An unknown filter on a subscriber *outside* the group still withdraws

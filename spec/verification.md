@@ -417,9 +417,11 @@ The remaining verbs (#382 phases 2–5):
   are asked for by wire through `model_query::unresolved_publishers`):
   such a publisher may send keys outside the domain its publish rows
   give, and the diagnostic names it. A stated interval is the domain
-  whatever such a publisher sends. Where the statement is malformed it is
-  `invalid`: an unkeyed topic, a key interval for a non-`Int` key, a
-  group with no locus members. Never `holds`. **What it proves:** in
+  whatever such a publisher sends. Where the statement is malformed
+  it is `invalid`: an unkeyed topic, a key interval for a non-`Int`
+  key (the `keyed_by` field's declared type decides, whether or not a
+  publish site or literal filter exists), a group with no locus
+  members. Never `holds`. **What it proves:** in
   the modeled arrangement, each permitted key selects exactly one
   registration of the group. **What it does not:** a different
   arrangement (a replacement, a restart or a runtime birth changes the

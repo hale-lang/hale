@@ -2244,6 +2244,7 @@ pub fn derive_application_model_over(
             payload: payload_id[&topic_payload[tname].clone()],
             key: t.keyed_by.as_ref().map(|f| TopicKey {
                 field: f.name.clone(),
+                ty: key_type_of(&info.raw_payload_ty(), &f.name),
                 on_unmatched: match t.on_unmatched {
                     None | Some(UnmatchedPolicy::Swallow) => {
                         KeyOnUnmatched::Swallow

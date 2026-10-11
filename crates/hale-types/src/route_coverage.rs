@@ -201,6 +201,27 @@ pub fn judge(
     let mut domains: Vec<KeyDomain> = Vec::new();
     match range {
         Some((lo, hi)) => {
+            // The key's declared type decides first: it is known with
+            // no publish site and no literal filter, which are the only
+            // other places a key type shows up.
+            match key.ty.as_str() {
+                "Int" => {}
+                "?" => {
+                    return Outcome::Uncertified(format!(
+                        "the type of `{}`'s key field `{}` could not be \
+                         resolved, so whether `{}..={}` states its keys is \
+                         unknown",
+                        tp.display, key.field, lo, hi
+                    ));
+                }
+                other => {
+                    return Outcome::Invalid(format!(
+                        "the interval `{}..={}` states integer keys, but \
+                         topic `{}` is keyed by `{}`, a `{}` field",
+                        lo, hi, tp.display, key.field, other
+                    ));
+                }
+            }
             for d in &site_domains {
                 let int_ok = match d {
                     KeyDomain::AnyOfType(t) => t == "Int",

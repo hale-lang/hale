@@ -79,6 +79,7 @@ crates/hale-types/tests/claim_route_coverage.rs#4	route	cover keys(topic Orders)
 crates/hale-types/tests/claim_route_coverage.rs#5	route	cover keys(topic Orders in 0..=2): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#6	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Invalid	None
 crates/hale-types/tests/claim_route_coverage.rs#7	route	cover keys(topic Orders in 0..=3): delivered_to(exactly_one workers)	Invalid	None
+crates/hale-types/tests/claim_route_coverage.rs#9	route	cover keys(topic Events in 0..=3): delivered_to(exactly_one workers)	Invalid	None
 crates/hale-types/tests/claims.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None
