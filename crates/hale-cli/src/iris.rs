@@ -80,6 +80,61 @@ pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) ->
     Ok(bin_path)
 }
 
+/// Build several seeds under the materialized cache `root`, side by side,
+/// under the cache's build lock held once for all of them, and return
+/// their binaries in the order given. A seed whose binary is already
+/// there is not rebuilt. Each `hale build` is one single-threaded
+/// process, so the head's four seeds build in parallel as
+/// `dna/face/start.sh` builds them from a checkout (GH #1147); every
+/// build is waited for even after one fails, and a failed build's output
+/// is printed under its seed's name.
+pub(crate) fn ensure_all_built_in(root: &Path, seeds: &[(&str, &str)], what: &str) -> Result<Vec<PathBuf>, String> {
+    let lock_path = root.join(".build.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
+    let _guard = BuildLock::acquire(&lock);
+    let me = std::env::current_exe().map_err(|e| format!("cannot locate the hale binary: {e}"))?;
+    let logs = root.join(".build-logs");
+    let mut running = Vec::new();
+    for (seed, bin) in seeds {
+        let bin_path = root.join(bin);
+        // a present, non-empty file is trusted, as in `ensure_built_in`
+        match std::fs::metadata(&bin_path) {
+            Ok(m) if m.is_file() && m.len() > 0 => continue,
+            Ok(_) => {
+                let _ = std::fs::remove_file(&bin_path);
+            }
+            Err(_) => {}
+        }
+        std::fs::create_dir_all(&logs).map_err(|e| format!("{}: {e}", logs.display()))?;
+        let log_path = logs.join(format!("{}.log", seed.replace('/', "_")));
+        let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+        eprintln!("hale: building {what}: {seed} @ {}", root.display());
+        let mut build = Command::new(&me);
+        // observation belongs to the application, never the head's parts
+        build.arg("build").arg(root.join(seed)).arg("-o").arg(&bin_path).env_remove("LOTUS_OBS").stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+        crate::shared::process::dies_with_us(&mut build);
+        let child = build.spawn().map_err(|e| format!("building {seed} failed to start: {e}"))?;
+        running.push((*seed, bin_path, log_path, child));
+    }
+    let mut failed = Vec::new();
+    for (seed, bin_path, log_path, mut child) in running {
+        let ok = matches!(child.wait(), Ok(st) if st.success()) && bin_path.is_file();
+        if !ok {
+            eprintln!("hale: ── {seed}: FAILED");
+            eprint!("{}", std::fs::read_to_string(&log_path).unwrap_or_default());
+            failed.push(seed);
+        }
+    }
+    if !failed.is_empty() {
+        return Err(format!("cannot build {} (its output is above)", failed.join(", ")));
+    }
+    Ok(seeds.iter().map(|(_, bin)| root.join(bin)).collect())
+}
+
 /// An exclusive advisory lock held for the build; released on drop.
 struct BuildLock<'a>(&'a std::fs::File);
 

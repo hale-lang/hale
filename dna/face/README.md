@@ -14,7 +14,17 @@ and its visual acceptance requirements.
 
 ## Run locally
 
-From this checkout, start the face against an existing DNA project with one command:
+With an installed toolchain (no checkout), start the face with:
+
+```sh
+hale dna head /absolute/path/to/dna-project --source-drafts
+```
+
+The toolchain carries this launcher, the head's seeds and the browser assets;
+`hale dna head` builds the seeds once into the toolchain cache and runs the
+launcher from there, and derives the head's memory DSN (below) when memory is
+up. From this checkout, start the face against an existing DNA project with one
+command:
 
 ```sh
 ./dna/face/start.sh /absolute/path/to/dna-project --source-drafts
@@ -89,9 +99,10 @@ callback must point to this service's `/auth/callback` on the same origin.
 The existing API can be supplied from a Hale build or an upstream artifact.
 Definitions and Knowledge need a service that advertises and implements their
 read contracts. Unsupported connections retain explicit unavailable states.
-This checkout launcher is separate from `hale iris`. Its project service is
-the operator-machine head; there is still no `hale dna api` or `hale dna face`
-CLI subcommand, complete Compose profile or hosted deployment.
+This launcher is separate from `hale iris`. Its project service is
+the operator-machine head, which `hale dna head` starts from an installed
+toolchain; there is still no `hale dna api` CLI subcommand, complete Compose
+profile or hosted deployment.
 
 ### Ordinary Hale application controls
 

@@ -43,6 +43,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+/// `hale dna head`: the head started from the toolchain, no checkout.
+mod head;
 mod pack;
 
 /// The record (GH #566 F1): one commit per event on this ref, the events as
@@ -375,6 +377,10 @@ pub fn run(args: &[String]) -> ExitCode {
     // starts nothing: `hale dna dev --help` used to read the flag as the
     // project directory and bring the seed's compose up (GH #817's rule
     // — the first argument after a subcommand — at the verb level).
+    // the head's own help, on stdout
+    if args.first().map(String::as_str) == Some("head") {
+        return head::head_cmd(&args[1..]);
+    }
     if matches!(args.first().map(String::as_str), Some(v) if !v.starts_with('-'))
         && matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h"))
     {
@@ -1092,6 +1098,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
+    eprintln!("       hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
+    eprintln!("                                    the head: the project service serving the browser face (8792), its API child, the stub");
+    eprintln!("                                    OpenID provider and, with a project, the reflexes — built once into the toolchain cache,");
+    eprintln!("                                    no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's");
+    eprintln!("                                    memory DSN derived as `memory migrate` derives it (`hale dna head --help`)");
     eprintln!("       hale dna ui [project] [--port N]");
     eprintln!("                                    under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,");
     eprintln!("                                    subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;");

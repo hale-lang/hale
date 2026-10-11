@@ -14,7 +14,10 @@ given, it is attached at startup; without it the head starts detached and the
 browser's Projects workspace creates, initializes or attaches one.
 Without --head/HALE_HEAD_BIN and --api/HALE_API_BIN, builds the checkout's
 project service and its per-project native API (dna/api/practice_review) in
-temporary storage using HALE_BIN (default: hale). Ctrl-C stops only the head:
+temporary storage using HALE_BIN (default: hale); the stub OpenID provider and
+the reflexes likewise, without HALE_OIDC_BIN and HALE_REFLEXES_BIN. With an
+installed toolchain and no checkout, `hale dna head` runs this launcher from
+the toolchain's own copy, every binary handed in. Ctrl-C stops only the head:
 the API child, a local body and every run it started are detached on
 purpose and are re-adopted by the next head.
 
@@ -66,6 +69,8 @@ oidc_port=8794
 commands_port=8795
 api=${HALE_API_BIN:-}
 head=${HALE_HEAD_BIN:-}
+oidc=${HALE_OIDC_BIN:-}
+reflexes_bin=${HALE_REFLEXES_BIN:-}
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
@@ -208,16 +213,25 @@ fi
 seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
-if ((oidc_local)); then seeds+=(dna/oidc/serve); fi
+if ((oidc_local)); then
+  if [[ -z "$oidc" ]]; then seeds+=(dna/oidc/serve); else oidc=$(absolute_executable "$oidc" 'OpenID provider'); fi
+fi
 # GH #988: the reflexes read a project's senses, so they are a seed when
 # a project is attached, beside the stub provider (a fixture's
 # trusted-local session starts neither)
-if ((oidc_local)) && [[ -n "$project" ]]; then seeds+=(dna/reflexes); fi
-if ((${#seeds[@]})); then
+if ((oidc_local)) && [[ -n "$project" ]]; then
+  if [[ -z "$reflexes_bin" ]]; then seeds+=(dna/reflexes); else reflexes_bin=$(absolute_executable "$reflexes_bin" reflexes); fi
+fi
+# the launch's own directory: the builds, and the provider's key
+if ((${#seeds[@]} || oidc_local)); then
   build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
+fi
+if ((${#seeds[@]})); then
   build_seeds
   [[ -n "$api" ]] || api=$build_dir/bin/practice_review
   [[ -n "$head" ]] || head=$build_dir/bin/project_service
+  [[ -n "$oidc" ]] || oidc=$build_dir/bin/serve
+  [[ -n "$reflexes_bin" ]] || reflexes_bin=$build_dir/bin/reflexes
 fi
 
 # GH #989: the head's principal path is OIDC. Once every seed is built,
@@ -225,7 +239,6 @@ fi
 # for this launch, and the person running this signs in through it as
 # local-sub; it goes with the launcher (cleanup stops it on any exit).
 if ((oidc_local)); then
-  oidc=$build_dir/bin/serve
   # the provider's key, made for this launch and readable by you alone; the
   # head pins its public half, since anyone on this machine could answer
   # on the loopback port
@@ -268,7 +281,7 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
   reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
   if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$reflexes_vault" && -n "$org" ]]; then
-    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$build_dir/bin/reflexes" >&2 &
+    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$reflexes_bin" >&2 &
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else

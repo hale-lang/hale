@@ -1022,7 +1022,7 @@ repository:
   no principal source) — is a fixture's mode alone: a head serves it
   only under `HALE_DNA_TRUSTED_LOCAL=1`, and refuses to start without
   either it or `dna.principal = oidc`. Local mode is OIDC too:
-  `dna/face/start.sh` starts the **stub provider** (`dna/oidc`: the
+  `hale dna head` (or, from a checkout, `dna/face/start.sh`) starts the **stub provider** (`dna/oidc`: the
   discovery document, a JWKS, an authorization endpoint that signs in
   `local-sub`, and a token endpoint that exchanges a code or mints for a
   subject, every ID token ES256 under its published test key) and signs
@@ -5276,7 +5276,7 @@ routes; it never plans on a reading.
     `reading.recorded` `reflexes/reflex.fired/<id>` (**The heart's
     events**), so a second publish of the same outage is refused as a
     duplicate. They remember what they published only while it is down.
-  - **Launch.** The face's `start.sh` builds and starts them beside the
+  - **Launch.** The face's launcher (`hale dna head`, `start.sh`) builds and starts them beside the
     stub OpenID provider when a project is attached, with that project's
     store and nerves, and stops them with the launcher. A store or
     nerves that does not come up leaves the face running without them.
@@ -5436,9 +5436,30 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
-The head (`dna/api/project_service`, `dna/face/start.sh [project]`),
-which serves the face, is the surface's counterpart for the operator's
-machine: one loopback process that serves the browser shell, keeps a registry
+The head (`dna/api/project_service`), which serves the face, is the
+surface's counterpart for the operator's machine. `hale dna head
+[project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P]
+[--source-drafts]` starts it from an installed toolchain: the toolchain
+embeds the head's seeds (`dna/api`, `dna/api/practice_review`,
+`dna/api/project_service`, `dna/oidc`, `dna/oidc/serve`, `dna/reflexes`),
+the face's assets (`dna/face/web`) and the launcher (`dna/face/start.sh`)
+beside the host's sources — not in the embedded DNA digest, which names
+what `vendor/dna` is materialized from — materializes them into the
+toolchain cache, whose key covers them, builds the four seeds there
+side by side under the cache's build lock once per key, and execs the
+materialized launcher with every binary handed in (`HALE_API_BIN`,
+`HALE_HEAD_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
+the running toolchain. With a project and no
+`HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN as
+`hale dna memory migrate` does, onto the launcher's environment and
+never its output, when memory is up: an owner's server
+(`HALE_DNA_MEMORY_DSN_OWNER`), or the project's compose `knowledge-db`
+already running. Otherwise it says memory is not up, names `hale dna
+dev`, and starts the head with Knowledge unsupported; it brings no
+database up. From a checkout, `dna/face/start.sh [project]` is the same
+launcher, building each seed it is not handed from the checkout into
+temporary storage on every start. The head is
+one loopback process that serves the browser shell, keeps a registry one loopback process that serves the browser shell, keeps a registry
 of projects and a journal of receipts under a state directory, and
 proxies the Record's read and command routes to a per-project API
 child it starts and replaces. Its own operations — create, init,
@@ -5589,3 +5610,5 @@ otherwise.
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
 | `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |
+| `HALE_OIDC_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt stub OpenID provider (`dna/oidc/serve`) to start. `hale dna head` hands in the one it built. |
+| `HALE_REFLEXES_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt reflexes binary (`dna/reflexes`) to start beside an attached project. `hale dna head` hands in the one it built. |

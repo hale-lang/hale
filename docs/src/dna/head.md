@@ -5,7 +5,8 @@ reach. It knows who is calling (a session, a bearer, a socket peer),
 maps them to the positions the record says they hold, and admits their
 commands into the record with a receipt. It never performs work. The
 operator who serves it owns it; it is built from source (`dna/api`) and
-started for you by `dna/face/start.sh`. A head fails closed: with no
+started for you by `hale dna head` (or, from a checkout, by
+`dna/face/start.sh`). A head fails closed: with no
 principal source it refuses to start, a caller it cannot name gets
 nothing, and a command outside the caller's positions is refused. It
 never holds the spine's database role, a model credential or the forge
@@ -15,7 +16,7 @@ shows itself to people.
 | part | what it is | where it lives |
 | --- | --- | --- |
 | head | a project's API: reads over HTTP, commands as a surface (`HeadCommands`) over a socket and an HTTP exposure | `dna/api` |
-| the project head | the face's server: a registry of projects, receipts, a proxy to each project's head | `dna/api/project_service`, `dna/face/start.sh` |
+| the project head | the face's server: a registry of projects, receipts, a proxy to each project's head | `dna/api/project_service`, `hale dna head`, `dna/face/start.sh` |
 | face | the browser shell | `dna/face` |
 | surface | `hale dna ui`: a read-only page from the record | `dna/ui` |
 | the Board and Reviews | the queue, the Review, its verdicts and signers | `hale dna board`, `hale dna review`, `dna/core/review.hl` |
@@ -23,17 +24,36 @@ shows itself to people.
 
 ## Start the head
 
-From a checkout of hale, with a project made by `hale dna new`:
+With the toolchain installed, and a project made by `hale dna new`:
+
+```sh
+hale dna head /absolute/path/to/project
+```
+
+The toolchain carries the head's sources, the face's assets and the
+launcher, as it carries the host's: the first `hale dna head` builds the
+project head, the project's API child, the stub OpenID provider and the
+reflexes into the toolchain cache, side by side (a few minutes), and every
+later one starts them at once, until the toolchain changes. It prints the
+face's loopback URL. With no project it starts detached, and the
+browser's Projects workspace creates, initializes or attaches one.
+
+With a project, the head reads Knowledge from memory under the record's
+head role. `hale dna head` derives that DSN as `hale dna memory migrate`
+derives it and hands it to the head alone; it is never printed. When the
+project's memory is not up it says so and starts anyway, with Knowledge
+unsupported: `hale dna dev` brings the project's memory and nerves up.
+An operator's own `HALE_DNA_MEMORY_DSN_HEAD` wins.
+
+From a checkout of hale, the launcher starts the same head, building it
+from the checkout into temporary storage on every start:
 
 ```sh
 dna/face/start.sh /absolute/path/to/project
 ```
 
-The launcher builds the project head and the project's API child in
-temporary storage and prints the face's loopback URL. With no project
-it starts detached, and the browser's Projects workspace creates,
-initializes or attaches one. The head is source-built; no `hale dna`
-verb starts it.
+Both take the same flags; `hale dna head --help` and
+`dna/face/start.sh --help` list them.
 
 | port | what listens | flag |
 | --- | --- | --- |
@@ -114,7 +134,7 @@ who holds that Work's attempt lease and by no one else: the member map
 names the person, and the claim row names who holds the lease
 ([Legs, hands and voice](./legs.md)).
 
-**Local mode is OIDC too.** `dna/face/start.sh` starts the stub
+**Local mode is OIDC too.** `hale dna head` (and `dna/face/start.sh`) starts the stub
 provider on the loopback and signs you in through it as the subject
 `local-sub`, mapped to `$USER`; it configures a project it attaches for
 that issuer, pins the stub's key, and refuses a project another issuer

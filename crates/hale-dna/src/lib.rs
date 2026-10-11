@@ -274,9 +274,106 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/verbs.hl",
 ];
 
+/// The head (`hale dna head`): what `dna/face/start.sh` builds and serves,
+/// so a person with an installed toolchain and no checkout can start the
+/// face. The four seeds the launcher builds — the per-project API
+/// (`dna/api/practice_review`), the project service (`dna/api/project_service`),
+/// the stub OpenID provider (`dna/oidc/serve`) and the reflexes
+/// (`dna/reflexes`) — with the seeds they import that no list above
+/// carries (`dna/api`, `dna/oidc`), the browser's assets (`dna/face/web`),
+/// and the launcher itself, which `hale dna head` runs from the
+/// materialized tree.
+///
+/// NOT part of `embedded_files()`, so not of `EMBEDDED_DIGEST`: that
+/// digest names what `vendor/dna` is materialized from and is persisted
+/// in users' trees, and the head is never vendored. The toolchain
+/// cache's key (`hale_iris::toolchain_hash`) covers these files, so a
+/// changed head is rebuilt.
+pub const HEAD_FILES: &[EmbeddedFile] = at![
+    "dna/api/bearer.hl",
+    "dna/api/commands.hl",
+    "dna/api/context.hl",
+    "dna/api/definition_drafts.hl",
+    "dna/api/http.hl",
+    "dna/api/knowledge_commands.hl",
+    "dna/api/knowledge.hl",
+    "dna/api/knowledge_memory.hl",
+    "dna/api/main.hl",
+    "dna/api/organization_candidate.hl",
+    "dna/api/organization_drafts.hl",
+    "dna/api/organization_impact.hl",
+    "dna/api/organization_status.hl",
+    "dna/api/people.hl",
+    "dna/api/source.hl",
+    "dna/api/tasks.hl",
+    "dna/api/upstream.hl",
+    "dna/api/web.hl",
+    "dna/api/workflows.hl",
+    "dna/api/practice_review/main.hl",
+    "dna/api/practice_review/provider.hl",
+    "dna/api/project_service/children.hl",
+    "dna/api/project_service/head.hl",
+    "dna/api/project_service/journal.hl",
+    "dna/api/project_service/main.hl",
+    "dna/api/project_service/operations.hl",
+    "dna/api/project_service/operations_s3.hl",
+    "dna/api/project_service/policy.hl",
+    "dna/api/project_service/proxy.hl",
+    "dna/api/project_service/push.hl",
+    "dna/api/project_service/registry.hl",
+    "dna/api/project_service/types.hl",
+    "dna/oidc/stub.hl",
+    "dna/oidc/serve/main.hl",
+    "dna/reflexes/main.hl",
+    "dna/face/web/app.js",
+    "dna/face/web/application.js",
+    "dna/face/web/definition-draft.js",
+    "dna/face/web/index.html",
+    "dna/face/web/knowledge-draft.js",
+    "dna/face/web/organization-draft.js",
+    "dna/face/web/projects.js",
+    "dna/face/web/styles.css",
+    "dna/face/web/task-administration.js",
+    "dna/face/web/task-create.js",
+    "dna/face/start.sh",
+];
+
+/// The directories `HEAD_FILES` takes whole, listed non-recursively, with
+/// the extensions each contributes (`*` for every file): the unit test
+/// holds the list equal to what these directories hold, so a file added
+/// to one cannot be left out of the head an installed toolchain builds.
+pub const HEAD_DIRS: &[(&str, &[&str])] = &[
+    ("dna/api", &["hl"]),
+    ("dna/api/practice_review", &["hl"]),
+    ("dna/api/project_service", &["hl"]),
+    ("dna/oidc", &["hl"]),
+    ("dna/oidc/serve", &["hl"]),
+    ("dna/reflexes", &["hl"]),
+    ("dna/face/web", &["*"]),
+];
+
+/// The launcher `hale dna head` runs from the materialized tree.
+pub const HEAD_LAUNCHER: &str = "dna/face/start.sh";
+
+/// One seed the head is built from: its path and the binary `hale build`
+/// makes of it, both relative to the materialization root.
+pub struct HeadSeed {
+    pub seed: &'static str,
+    pub bin: &'static str,
+}
+
+/// The per-project native API the head starts as its child.
+pub const HEAD_API: HeadSeed = HeadSeed { seed: "dna/api/practice_review", bin: "dna/api/practice_review/practice_review" };
+/// The project service: the head itself.
+pub const HEAD_SERVICE: HeadSeed = HeadSeed { seed: "dna/api/project_service", bin: "dna/api/project_service/project_service" };
+/// The stub OpenID provider the head signs a person in through (GH #989).
+pub const HEAD_OIDC: HeadSeed = HeadSeed { seed: "dna/oidc/serve", bin: "dna/oidc/serve/serve" };
+/// The reflexes, started beside an attached project (GH #988).
+pub const HEAD_REFLEXES: HeadSeed = HeadSeed { seed: "dna/reflexes", bin: "dna/reflexes/reflexes" };
+
 /// Every embedded file: the core, the host, the surface, pond's
 /// copies, the legs and the UI — the whole of what `EMBEDDED_DIGEST`
-/// names.
+/// names (the head's files, `HEAD_FILES`, are not among them).
 pub fn embedded_files() -> impl Iterator<Item = &'static EmbeddedFile> {
     FILES
         .iter()
@@ -368,6 +465,51 @@ mod tests {
         let mut legs_embedded: Vec<String> = LEGS_FILES.iter().map(|f| f.path.to_string()).collect();
         legs_embedded.sort();
         assert_eq!(legs_embedded, legs_on_disk, "a dna/core/legs file was added or removed without updating hale-dna");
+    }
+
+    /// `hale dna head` builds the head from `HEAD_FILES` alone: every file
+    /// of the directories it takes (`HEAD_DIRS`) is listed, and every
+    /// listed file is in one of them or is the launcher. A seed that
+    /// imports a directory no list carries fails the CLI's check of the
+    /// materialized tree instead (hale-cli's `dna_head.rs`).
+    #[test]
+    fn the_head_set_is_the_repo_directories() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut on_disk: Vec<String> = vec![HEAD_LAUNCHER.to_string()];
+        for (dir, exts) in HEAD_DIRS {
+            for e in std::fs::read_dir(root.join(dir)).unwrap_or_else(|e| panic!("{dir}: {e}")).filter_map(|e| e.ok()) {
+                let p = e.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if exts.contains(&"*") || exts.contains(&ext) {
+                    on_disk.push(format!("{dir}/{name}"));
+                }
+            }
+        }
+        on_disk.sort();
+        let mut listed: Vec<String> = HEAD_FILES.iter().map(|f| f.path.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, on_disk, "a file of the head (HEAD_DIRS, or the launcher) was added or removed without updating HEAD_FILES in hale-dna");
+        for f in HEAD_FILES {
+            assert!(!f.content.is_empty(), "{} is empty", f.path);
+            assert!(embedded_files().all(|e| e.path != f.path), "{} is in the digested set too", f.path);
+        }
+        for s in [&HEAD_API, &HEAD_SERVICE, &HEAD_OIDC, &HEAD_REFLEXES] {
+            let dir = format!("{}/", s.seed);
+            assert!(HEAD_FILES.iter().any(|f| f.path.starts_with(&dir)), "{} has no source in HEAD_FILES", s.seed);
+            let name = s.seed.rsplit('/').next().unwrap();
+            assert_eq!(s.bin, format!("{}/{name}", s.seed), "`hale build` names a seed's binary after its directory");
+        }
+        // the launcher refuses to start without every asset it serves;
+        // each one it names is embedded
+        let launcher = HEAD_FILES.iter().find(|f| f.path == HEAD_LAUNCHER).unwrap().content;
+        for f in HEAD_FILES.iter().filter(|f| f.path.starts_with("dna/face/web/")) {
+            let name = f.path.rsplit('/').next().unwrap();
+            assert!(launcher.contains(name), "start.sh does not name the asset {name}");
+        }
     }
 
     /// GH #726: the build's snapshot is coherent. `build.rs` digested
