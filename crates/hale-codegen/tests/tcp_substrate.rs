@@ -544,3 +544,72 @@ fn a_restarted_server_binds_afresh() {
 fn a_restarted_acceptor_binds_afresh() {
     restart_case("tcp_substrate_restart_acceptor", RESTART_ACCEPTOR);
 }
+
+// A server whose main locus blocks on stdin (review of #1508, round 3).
+// The server builds its consumer in `birth()`; pinned, that consumer's
+// subscription went to the global queue, which only main drains, so a
+// request was accepted and never answered. It registers with the pinned
+// thread's mailbox now, as a consumer built in the params did.
+const BLOCKED_MAIN: &str = r#"
+    locus Api {
+        params { hits: Int = 0; }
+        fn handle(req: std::http::Request) -> std::http::Response {
+            self.hits = self.hits + 1;
+            return std::http::Response { status: 200, body: "ok " + to_string(self.hits) };
+        }
+    }
+    main locus App {
+        params {
+            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            web: std::http::Server = std::http::Server { port: self.port, name: "web", handler: Api { }, ready_signal: "ready" };
+        }
+        placement { web: PLACEMENT; }
+        run() {
+            let line = std::io::stdin::read_line();
+            println("main got " + line);
+            std::io::tcp::stop("web");
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn served_while_main_blocks(tag: &str, placement: &str) {
+    let bin = build(tag, &BLOCKED_MAIN.replace("PLACEMENT", placement));
+    let port = ports::free_port();
+    let mut child = Command::new(&bin)
+        .arg(port.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let running = Running { child, port };
+    wait_line(&lines, "ready");
+    // main is blocked in read_line: the server's own thread answers
+    for i in 1..=3 {
+        assert_eq!(get(port), Some((200, format!("ok {i}"))), "{tag}: answered while main blocks");
+    }
+    stdin.write_all(b"bye\n").unwrap();
+    drop(stdin);
+    wait_line(&lines, "main got bye");
+    drop(running);
+    let _ = std::fs::remove_file(&bin);
+}
+
+#[test]
+fn a_pinned_server_answers_while_main_blocks() {
+    served_while_main_blocks("tcp_substrate_blocked_main_pinned", "pinned");
+}
+
+#[test]
+fn an_async_io_server_answers_while_main_blocks() {
+    served_while_main_blocks("tcp_substrate_blocked_main_async", "cooperative(pool = web) where async_io");
+}

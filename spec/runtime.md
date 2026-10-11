@@ -1212,7 +1212,14 @@ subscriber's mailbox (handler runs on the pinned thread).
 **Subscriptions follow the tower.** A locus nested under a root
 field placed off main runs on that field's thread (§ Placement
 classes), and so do its bus handlers: its subscriptions register
-with its anchor's route, not the global queue. Under a pinned
+with its anchor's route, not the global queue. That holds for a
+locus built at run time too — in a hook or a method, owned beyond the
+constructing scope (a field it is stored in, an accepted child): on a
+pinned thread it registers with that thread's mailbox, which the
+thread makes current before its params and its `birth()` run; on a
+pool's worker, with that pool. (`std::http::Server` builds its
+consumer in `birth()`; pinned, its deliveries used to reach the global
+queue and be served by main.) Under a pinned
 anchor that is the anchor's mailbox, which the anchor has whenever
 anything in its tree subscribes, whether or not it subscribes
 itself; under an anchor on `cooperative(pool = X)` it is pool `X`.
