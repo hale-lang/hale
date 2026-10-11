@@ -231,7 +231,9 @@ locus Projection {
         }
         return t;
     }
-    @unbounded
+    // One Review's row of the journal `j`; a caller walking every Review
+    // (`json`) keeps one per Review the journal holds.
+    @bounded_by(self.j)
     fn review_of(id: String) -> ReviewRow {
         let r = ops::review_row(self.j, id);
         return ReviewRow {

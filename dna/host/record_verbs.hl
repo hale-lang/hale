@@ -386,8 +386,9 @@ locus DigestNames {
 
 fn in_list(list: String, item: String) -> Bool { return std::str::contains(list, "\n" + item + "\n"); }
 
-// The record's design states, by name, from the rows and the receipts.
-@unbounded
+// The record's design states, by name, from the rows and the receipts:
+// the journal's `text`, read whole.
+@bounded_by(text)
 fn design_in_record(root: String, states: DesignStates) -> Bool {
     let r = rec(root);
     // a head that could not be read is not a record with no design in it:

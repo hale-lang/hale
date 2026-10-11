@@ -106,8 +106,9 @@ fn outbound_mailbox(cache: String, c: Connection, mine: String) -> dna::Head {
 }
 
 // One envelope into the connected record's mailbox for this record,
-// pushed there under compare-and-swap, re-read and re-appended when it moved.
-@unbounded
+// pushed there under compare-and-swap, re-read and re-appended when it
+// moved: one record handle per try, five at most.
+@bounded_by(tries)
 fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
     let mine = record_identity(root);
     if len(mine) == 0 { return PeerWrite { why: "this record has no identity yet (no journal)" }; }
