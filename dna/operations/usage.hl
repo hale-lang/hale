@@ -112,7 +112,7 @@ fn usage_line_count(lines: String) -> Int {
 }
 
 // The i-th line of a breakdown, parsed; an empty key past the end.
-@unbounded
+@bounded_by(lines)
 fn usage_line(lines: String, index: Int) -> UsageLine {
     let mut rest = lines;
     let mut n = 0;
@@ -216,7 +216,7 @@ fn usage_counts_text(calls: Int, input: Int, output: Int, cost: Int) -> String {
 }
 
 // One breakdown for the terminal: `<key> <counts>`, joined by `; `.
-@unbounded
+@bounded_by(lines)
 fn usage_lines_text(lines: String) -> String {
     let n = usage_line_count(lines);
     let mut out = "";

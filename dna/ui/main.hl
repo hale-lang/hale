@@ -230,6 +230,10 @@ locus Ui {
         }
         return "";
     }
+    // A sign-in takes the slot of one answered or older than its ten
+    // minutes (`take_pending` refuses those), so the list grows only to
+    // the most sign-ins started within ten minutes of each other.
+    @bounded_by(self.pending)
     fn begin_sign_in() -> std::http::Response {
         if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
         let state = dna::hex(std::os::getrandom(16) or b"");
@@ -240,7 +244,15 @@ locus Ui {
         // starter (login CSRF)
         let binding = dna::hex(std::os::getrandom(16) or b"");
         if len(state) < 32 || len(nonce) < 32 || len(binding) < 32 { return page(503, "no randomness for a sign-in"); }
-        self.pending.push(PendingSignIn { state: state, nonce: nonce, at: std::time::now(), binding: binding });
+        let now = std::time::now();
+        let started = PendingSignIn { state: state, nonce: nonce, at: now, binding: binding };
+        let mut i = 0;
+        while i < self.pending.len() {
+            let p = self.pending.get(i) or PendingSignIn { };
+            if len(p.state) == 0 || now - p.at > 600 { break; }
+            i = i + 1;
+        }
+        if i < self.pending.len() { self.pending.set(i, started) or discard; } else { self.pending.push(started); }
         let sep = if std::str::contains(self.authorize_url, "?") { "&" } else { "?" };
         let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
         return redirect(self.authorize_url + sep + "response_type=code&client_id=" + dna::url_encode(self.client)
@@ -264,7 +276,9 @@ locus Ui {
         }
         return "";
     }
-    @unbounded
+    // A session takes the slot of one expired or signed out, so the list
+    // grows only to the most sessions live at once (eight hours each).
+    @bounded_by(self.sessions)
     fn finish_sign_in(code: String, state: String, binding: String) -> std::http::Response {
         let nonce = self.take_pending(state, binding);
         if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
@@ -281,7 +295,15 @@ locus Ui {
         if len(name) == 0 { return page(403, "not a member: subject `" + c.sub + "` of " + c.iss + " maps to no one (`git config --add dna.oidc.member \"" + c.sub + "=<name>\"`)"); }
         let id = dna::hex(std::os::getrandom(32) or b"");
         if len(id) < 64 { return page(503, "no randomness for a session"); }
-        self.sessions.push(Session { id: id, name: name, subject: c.sub, expires: if c.exp < std::time::now() + 28800 { c.exp } else { std::time::now() + 28800 }, id_token: token });
+        let session = Session { id: id, name: name, subject: c.sub, expires: if c.exp < std::time::now() + 28800 { c.exp } else { std::time::now() + 28800 }, id_token: token };
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if s.expires <= now { break; }
+            i = i + 1;
+        }
+        if i < self.sessions.len() { self.sessions.set(i, session) or discard; } else { self.sessions.push(session); }
         let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
         return redirect("/", "dna_session=" + id + "; HttpOnly; SameSite=Lax; Path=/" + secure);
     }

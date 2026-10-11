@@ -479,7 +479,7 @@ fn routed_of(p: Projection, id: String) -> String {
 }
 
 // `<position>=<holder>,<holder> …` as `position (holder, holder), …`.
-@unbounded
+@bounded_by(signers)
 fn signers_shown(signers: String) -> String {
     let mut out = "";
     let mut i = 0;
@@ -507,8 +507,9 @@ fn review_targets(r: ReviewRow) -> String {
 // ratified for the subject's targets, ranked by the question and bounded by
 // the package's budget, under one heading with their names. Nothing is
 // written when the subject has no targets; without memory (the head's DSN)
-// it says so in a line, never an error.
-@unbounded
+// it says so in a line, never an error. One line per idea of the
+// package, which its budget holds to eight.
+@bounded_by(pkg.practices)
 fn review_knowledge(root: String, r: ReviewRow) -> String {
     let targets = review_targets(r);
     if len(targets) == 0 { return ""; }
@@ -527,7 +528,8 @@ fn review_knowledge(root: String, r: ReviewRow) -> String {
     return out;
 }
 
-@unbounded
+// One Review of the projection `p`: its rows, refusals and verdicts.
+@bounded_by(p)
 fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let r = p.review_of(id);
     if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
@@ -1296,8 +1298,9 @@ fn every_ms_of(text: String) -> Int {
 // GH #1143: `hale dna schedule declare`: the schedule asked of the
 // organization, which declares it or refuses it (the definition one its
 // catalog admits, the args what that definition takes, a convening
-// position), answered under the request's id.
-@unbounded
+// position), answered under the request's id. One projection per poll,
+// for at most sixty seconds.
+@bounded_by(deadline)
 fn schedule_declare(root: String, seed: String, id: String, who: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
     if len(id) == 0 || len(definition) == 0 || len(convener) == 0 || (len(every) == 0) == (len(cron) == 0) { return fail("usage: hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]"); }
     let every_ms = if len(every) > 0 { every_ms_of(every) } else { 0 };

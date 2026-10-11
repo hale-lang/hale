@@ -509,8 +509,8 @@ locus GraphIngest {
         }
     }
     // The seeds: a directory with a manifest, the outermost one; a process
-    // unfolds into the seed of its name.
-    @unbounded
+    // unfolds into the seed of its name. One edge per seed of `files`.
+    @bounded_by(self.files)
     fn seeds_step() {
         self.app_step();
         let mut dirs = "\n";
@@ -791,8 +791,8 @@ locus GraphIngest {
         self.nouns_and_refers(spec, names, nouns, refs, "foreign key");
     }
     // A contract's nouns, the names edge, then each reference between two
-    // of them: nodes first, edges after.
-    @unbounded
+    // of them: nodes first, edges after. One edge per reference of `refs`.
+    @bounded_by(refs)
     fn nouns_and_refers(spec: String, names: GraphEdge, nouns: String, refs: String, via: String) {
         let mut rest = nouns;
         while len(rest) > 1 {
@@ -1165,7 +1165,8 @@ locus GraphIngest {
             self.entry(f, title, entry);
         }
     }
-    @unbounded
+    // One edge per code span of the entry's `text`.
+    @bounded_by(text)
     fn entry(path: String, title: String, text: String) {
         if len(std::str::trim(title)) == 0 { return; }
         let dir = ingest_dir(path);

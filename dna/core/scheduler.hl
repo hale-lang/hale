@@ -113,7 +113,8 @@ locus Scheduler {
     // reason. A declaration is a row when it is new or changed, and names
     // the occurrence it was made at: nothing before it is due. "" when
     // declared, else why not.
-    @unbounded
+    // One answer per declaration, at most one refusal naming `s`.
+    @bounded_by(s)
     fn declare(s: Schedule, catalog: WorkflowCatalog, knowledge: MemoryKnowledge) -> String {
         let why = self.refusal(s, catalog, knowledge);
         if len(why) > 0 {
@@ -261,7 +262,8 @@ locus Scheduler {
     // A declaration of `id`, with its state from the record: the last
     // occurrence evaluated, the last execution admitted, one held in the
     // queue, whether it is paused.
-    @unbounded
+    // The rows grow by the schedules the journal declares, one per id.
+    @bounded_by(self.journal)
     fn install(id: String, body: String) {
         let mut s = schedule_of(id, body);
         s.last_occurrence = s.from;

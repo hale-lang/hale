@@ -227,8 +227,9 @@ fn ledger_submit(root: String, kind: String, entity: String, body: String, autho
 
 // One row into the Ledger in `author`'s name ("" = the host's): "" when it
 // landed, `stale_revision` when the Ledger moved past `expected` (-1 for
-// the tail), else why it was refused.
-@unbounded
+// the tail), else why it was refused. One reason per write: it outlives
+// the call only in a caller that writes several rows, one per row.
+@bounded_by(rows)
 fn ledger_write(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
     let l = memory.ledger;
     if !l.ready() { return "no memory is named here (" + l.dsn_env + "); this organism's operations live in the ledger since " + short(checkpoint_here(root)); }
@@ -277,7 +278,8 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
 
 // A row of the record in `author`'s name, at the tail however often the
 // chain moves under it: its digest, "" when it could not be written.
-@unbounded
+// One row per try, two hundred at most.
+@bounded_by(tries)
 fn record_append(repo: String, kind: String, entity: String, body: String, author: String) -> String {
     let r = rec(repo);
     let sign = signing(repo);

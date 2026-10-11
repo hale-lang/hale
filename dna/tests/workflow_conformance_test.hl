@@ -165,9 +165,11 @@ main locus App {
         publish dna::WorkflowCancelRequested;
         publish dna::RecordResumed;
     }
-    @unbounded
+    // one entry per run life the script's workflows publish
+    @bounded_by(script)
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
-    @unbounded
+    // one entry per settlement the script's workflows publish
+    @bounded_by(script)
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
 
     // ---- the tree's identities (contract §6) ----------------------------
@@ -634,7 +636,8 @@ main locus App {
         } }, owner: dna::Executions { scope: "main" } };
     }
 
-    @unbounded
+    // one assertion's message per ledger row r1 checks
+    @bounded_by(self.ledger)
     run() {
         // ---- the canonical example, bound (contract §6)
         std::test::assert_eq_str(self.cat.define("close-month", 1, "record record", "close the month"), "", "close-month");

@@ -24,16 +24,17 @@ import "../core/pond/realtime/nats" as nats;
 // durable of its own (`spine_<owner>`, a pull outstanding) within `secs`
 // (GH #986): each owner's facts are its organization's alone, so neither
 // organization pulls, and refuses, what the other's host published.
-@unbounded
 fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
     let c = nats::NatsClient { url: url, user: "spine", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") }, name: "two-owners-probe", timeout: 2s };
     if !c.open() { return "the nerves: " + c.last_error; }
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut why = "";
+    // spelled out, not asked of the core: the names are the contract
+    let consumer = "$JS.API.CONSUMER.INFO." + dna::nerves_stream(org) + ".spine_" + owner;
+    let filter = org + "." + owner + ".dna.>";
     while std::time::now() <= deadline {
-        // spelled out, not asked of the core: the names are the contract
-        let info = nats::js_call(c, "$JS.API.CONSUMER.INFO." + dna::nerves_stream(org) + ".spine_" + owner, "") or "";
-        if len(info) > 0 && std::json::find_int_field(info, "num_waiting") > 0 && std::json::find_string_field(std::json::find_string_field(info, "config"), "filter_subject") == org + "." + owner + ".dna.>" { c.close(); return ""; }
+        let info = nats::js_call(c, consumer, "") or "";
+        if len(info) > 0 && std::json::find_int_field(info, "num_waiting") > 0 && std::json::find_string_field(std::json::find_string_field(info, "config"), "filter_subject") == filter { c.close(); return ""; }
         why = if len(info) == 0 { c.last_error } else { info };
         std::time::sleep(250ms);
     }
@@ -118,8 +119,9 @@ fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String
 }
 
 // The body of a row of `app`'s record of `kind` whose body carries
-// `needle`, once there is one ("" when none within the bound).
-@unbounded
+// `needle`, once there is one ("" when none within the bound). One read
+// of the record per try.
+@bounded_by(tries)
 fn wait_record(app: String, kind: String, needle: String, tries: Int) -> String {
     let limit = tries * dna::wait_scale();
     let mut n = 0;

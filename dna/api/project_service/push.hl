@@ -163,10 +163,22 @@ locus NervesWatch {
         if a < 0 || b < 0 { self.client.close(); }
         self.org = p.org;
     }
+    // A push when the head's state moved since it was last seen. A method,
+    // so each reading is freed when it returns: read in `run`'s own loop,
+    // twice a second, every reading was kept for the life of the process.
+    fn watch_head() {
+        let h = self.head_state();
+        if h != self.head_seen {
+            if len(self.head_seen) > 0 {
+                self.pushed = self.pushed + 1;
+                self.send_all("event: changed\ndata: head\n\n");
+            }
+            self.head_seen = h;
+        }
+    }
     // The head's own state, as a fingerprint that moves whenever a
     // receipt, a run or a child does: the journal's size, every run's and
     // child's state files, and whether the API child answers.
-    @unbounded
     fn head_state() -> String {
         let mut f = to_string(std::io::fs::file_size(self.cfg.state_dir + "/" + RECEIPTS_FILE) or - 1);
         f = f + self.dir_state(self.cfg.state_dir + "/children");
@@ -225,14 +237,7 @@ locus NervesWatch {
             let mono = std::time::monotonic_ns();
             if mono - self.head_at >= 500000000 {
                 self.head_at = mono;
-                let h = self.head_state();
-                if h != self.head_seen {
-                    if len(self.head_seen) > 0 {
-                        self.pushed = self.pushed + 1;
-                        self.send_all("event: changed\ndata: head\n\n");
-                    }
-                    self.head_seen = h;
-                }
+                self.watch_head();
             }
             if now - self.beat_at >= PUSH_BEAT_SECS {
                 self.beat_at = now;

@@ -62,7 +62,7 @@ unfold|parent=process:node|child=seed:node
 ";
 
 // One `graph.edge` row's body as a line of EDGES.
-@unbounded
+@bounded_by(body)
 fn edge_line(body: String) -> String {
     let mut out = std::json::find_string_field(body, "kind");
     let mut it = std::json::array_first(std::json::find_field_raw(body, "members"));

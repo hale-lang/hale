@@ -58,7 +58,6 @@ locus MemoryLedger {
     fn ready() -> Bool { return dsn_set(self.dsn_env); }
     // Opened on first use, not at birth: an organism on routing 0 holds a
     // ledger and never asks it anything.
-    @unbounded
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.failure = self.dsn_env + " is not set: no ledger"; return false; }
@@ -112,8 +111,9 @@ locus MemoryLedger {
     // Ledger — exactly at `expected` when a decision was read there, at the
     // tail for -1 — keyed by `request`, so a write retried after an answer
     // that was lost lands once. Done when it lands; refused with the gate's
-    // reason (`last_error`) when it does not.
-    @unbounded
+    // reason (`last_error`) when it does not. One result per row: the
+    // host's `append_lines` writes a row per line of the text it is handed.
+    @bounded_by(text)
     fn write(expected: Int, kind: String, entity: String, body: String, author: String, request: String) -> AppendResult {
         if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
         let moved = self.store.refresh();
@@ -181,7 +181,6 @@ locus MemoryLeases {
         races: Int = 0;
     }
     fn ready() -> Bool { return dsn_set(self.dsn_env); }
-    @unbounded
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
@@ -191,7 +190,9 @@ locus MemoryLeases {
         self.opened = true;
         return true;
     }
-    @unbounded
+    // One lease per read, returned: only a test's driver reads it in a
+    // loop of its own, as many times as its script says.
+    @bounded_by(script)
     fn current(key: String) -> Lease {
         if !self.ensure_open() { self.reachable = false; return Lease { key: key }; }
         let s = self.store.current(key);
@@ -340,7 +341,6 @@ locus MemoryKnowledge {
     // The store scoped to the record as it is now (a record that had no
     // rows when the store opened, and has some now, moves to its own
     // schema), and a connection that still answers.
-    @unbounded
     fn ensure_open() -> Bool {
         let scope = self.record_identity();
         self.store.dsn_env = self.dsn_env;
@@ -359,7 +359,6 @@ locus MemoryKnowledge {
     // is about — ranks the bounded set (K3); an empty query is ratification
     // order. The digest identifies what is handed over — the target and
     // the ideas — and nothing that varies between runs (GH #583 K4).
-    @unbounded
     fn package_for(target: String, query: String) -> ContextPackage {
         if !self.ready() { return ContextPackage { target: target, error: "no memory (" + self.dsn_env + " is not set)" }; }
         self.asked = self.asked + 1;
@@ -422,7 +421,6 @@ locus MemoryKnowledge {
     // A hat by its digest, kept once (GH #946): done when memory holds it,
     // now or before; false, with `last_error`, when memory is not there
     // or would not take it.
-    @unbounded
     fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool {
         if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return false; }
         if !self.ensure_open() { return false; }
@@ -450,7 +448,9 @@ locus MemoryKnowledge {
     // binding fenced to that head), -1 while memory does not hold it
     // ratified — not there, not yet projected, or not reachable, with
     // `last_error` saying which.
-    @unbounded
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn ratified_at(digest: String) -> Int {
         if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return -1; }
         if !self.ensure_open() { return -1; }
@@ -611,7 +611,8 @@ locus MemoryVault {
     // Erase every body the record redacted and memory still holds (a head
     // records the redaction; the spine erases on its tick). The number
     // erased, or -1 with `last_error` when memory could not be read.
-    @unbounded
+    // `erased` gains a line per redaction of the record.
+    @bounded_by(self.j)
     fn complete_redactions() -> Int {
         if !self.ensure_open() { return -1; }
         let mut n = 0;
@@ -692,7 +693,9 @@ locus LedgerAdoption {
     // operational row of the record, in order, keyed by its commit (rerun
     // after any interruption, nothing copied twice), the cutover, and
     // `ledger.adopted` naming the checkpoint (GH #646 stage 1, #650).
-    @unbounded
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn adopt(intent: Event) -> Bool {
         let head = intent.digest;
         let mut copied = 0;

@@ -61,8 +61,18 @@ locus CaseRecord {
         }
         return false;
     }
-    @unbounded
-    fn await_plan(c: CaseAsk) { self.pending_cases.push(c); }
+    // One slot per case awaiting the word at once: a slot `planned`
+    // released is taken again before the queue grows.
+    @bounded_by(self.pending_cases)
+    fn await_plan(c: CaseAsk) {
+        let mut i = 0;
+        while i < self.pending_cases.len() {
+            let p = self.pending_cases.get(i) or CaseAsk { };
+            if len(p.attempt_id) == 0 { self.pending_cases.set(i, c) or discard; return; }
+            i = i + 1;
+        }
+        self.pending_cases.push(c);
+    }
     // The case awaiting the leader's word on this Work, taken from the
     // waiting (an empty ask when none waits).
     fn planned(task_id: String, work_id: String) -> CaseAsk {
@@ -78,13 +88,23 @@ locus CaseRecord {
         return CaseAsk { };
     }
     // ---- held asks (card 16), re-driven by the assembly's `redrive`
-    @unbounded
-    fn hold(c: CaseAsk) { self.held_cases.push(c); }
+    // One slot per ask held at once: a slot `take_held` released is taken
+    // again before the queue grows, so an ask the record refuses at every
+    // redrive keeps one slot.
+    @bounded_by(self.held_cases)
+    fn hold(c: CaseAsk) {
+        let mut i = 0;
+        while i < self.held_cases.len() {
+            let h = self.held_cases.get(i) or CaseAsk { };
+            if len(h.attempt_id) == 0 { self.held_cases.set(i, c) or discard; return; }
+            i = i + 1;
+        }
+        self.held_cases.push(c);
+    }
     // The record refused a case's admission: counted, and held.
-    @unbounded
     fn refused(c: CaseAsk) {
         self.record_refusals = self.record_refusals + 1;
-        self.held_cases.push(c);
+        self.hold(c);
     }
     fn held_count() -> Int { return self.held_cases.len(); }
     // The held ask at `h`, taken from the held.
@@ -182,15 +202,20 @@ locus CaseRecord {
         return CaseRows { ok: true, notice: if transfer { case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept" } else { case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }) } };
     }
     // An admitted case whose compatibility row the record refused: held,
-    // once, for `RecordResumed` and `redrive`.
-    @unbounded
+    // once, for `RecordResumed` and `redrive`. One slot per case held at
+    // once: a slot `release_rows` emptied is taken again.
+    @bounded_by(self.held_rows)
     fn hold_rows(case_id: String) {
         self.record_refusals = self.record_refusals + 1;
+        let mut free = -1;
         let mut i = 0;
         while i < self.held_rows.len() {
-            if (self.held_rows.get(i) or "") == case_id { return; }
+            let held = self.held_rows.get(i) or "";
+            if held == case_id { return; }
+            if free < 0 && len(held) == 0 { free = i; }
             i = i + 1;
         }
+        if free >= 0 { self.held_rows.set(free, case_id) or discard; return; }
         self.held_rows.push(case_id);
     }
     fn release_rows(case_id: String) {
@@ -212,8 +237,10 @@ locus CaseRecord {
         }
         return false;
     }
-    // A completion its bound condition refuses, noted once.
-    @unbounded
+    // A completion its bound condition refuses, noted once: one id per
+    // case of the record whose completion was refused, kept for the
+    // organism's life (`noted` reads it).
+    @bounded_by(self.journal)
     fn refused_now(case_id: String) {
         self.completions_refused = self.completions_refused + 1;
         self.refused_completions.push(case_id);

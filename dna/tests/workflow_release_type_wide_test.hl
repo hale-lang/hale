@@ -82,7 +82,8 @@ main locus App {
         publish Offers;
         publish Replies;
     }
-    @unbounded
+    // one entry per run life the script's workflows publish
+    @bounded_by(script)
     fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     run() {
         Offers <- Offer { key: "resident" };

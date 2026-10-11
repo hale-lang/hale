@@ -114,7 +114,8 @@ locus ReviewRecord {
     // them all, and one already settled ignores them.
     // The Reviews a gate run is to be told to, one id a line, which the
     // assembly tells.
-    @unbounded
+    // `gate_runs_told` grows by the gate runs the journal holds, each once.
+    @bounded_by(self.journal)
     fn gate_runs() -> String {
         let mut told = "\n";
         let mut out = "";
@@ -136,14 +137,16 @@ locus ReviewRecord {
         while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
         return false;
     }
-    @unbounded
+    // One id per Review born this incarnation, as the journal opens them.
+    @bounded_by(self.journal)
     fn knowledge_born(id: String) { self.knowledge_reviews.push(id); }
     fn source_known(id: String) -> Bool {
         let mut i = 0;
         while i < self.organization_source_reviews.len() { if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1; }
         return false;
     }
-    @unbounded
+    // One id per Review born this incarnation, as the journal opens them.
+    @bounded_by(self.journal)
     fn source_born(id: String) { self.organization_source_reviews.push(id); }
     // ---- a Review's settlement, as the record answers it
     // A decision by command, settled once, with the reasoning it gave:

@@ -122,7 +122,9 @@ locus PqLedger {
         self.opened = false;
     }
     fn schema() -> String { return schema_for(self.record_id); }
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -190,8 +192,8 @@ locus PqLedger {
     }
     // Every row from the one after the last held, in order, as JSON per
     // line (the driver's rows are tab-separated with no escaping; a body
-    // is free text).
-    @unbounded
+    // is free text). The Ledger is mirrored here row for row.
+    @bounded_by(ledger_rows)
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
@@ -223,7 +225,9 @@ locus PqLedger {
         let e = self.rows.get(self.rows.len() - 1) or Event { };
         return e.digest;
     }
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn refresh() -> Bool {
         // last_error describes this read, not an earlier refused command.
         self.error = "";
@@ -253,8 +257,9 @@ locus PqLedger {
     fn writer_of(i: Int) -> String { return self.writers.get(i) or ""; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
     // One insert conditioned on the tail: zero rows means another writer
-    // got there first (or a claim is taken: a unique violation).
-    @unbounded
+    // got there first (or a claim is taken: a unique violation). The row
+    // joins the mirror of the Ledger.
+    @bounded_by(ledger_rows)
     fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
         let prev = self.head();
         let digest = event_digest(prev, kind, entity, body);
@@ -284,7 +289,9 @@ locus PqLedger {
     // One row through memory's insert function (GH #1026), which is the
     // Ledger's gate: `expected` the revision a decision was read at, -1 for
     // the tail. The rows since the last read are loaded either way.
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn gate(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let a = db::Args { };
         a.add(to_string(expected));
@@ -308,7 +315,9 @@ locus PqLedger {
     }
     // At the tail, once the in-process check against `expected` holds: the
     // insert function serializes appends, so a lost race is not a refusal.
-    @unbounded
+    // One result per call, returned: only a test's driver calls it in a
+    // loop of its own, as many times as its script says.
+    @bounded_by(script)
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
@@ -429,7 +438,6 @@ locus PqLeaseStore {
         self.opened = false;
     }
     fn last_error() -> String { return self.error; }
-    @unbounded
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -464,7 +472,9 @@ locus PqLeaseStore {
         if r.ok || !self.redial() { return r; }
         return self.conn.query_params(sql, a);
     }
-    @unbounded
+    // One lease per read, returned: only a test's poll reads it in a loop
+    // of its own, as many times as its script says.
+    @bounded_by(script)
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
@@ -476,7 +486,9 @@ locus PqLeaseStore {
     }
     // One statement: insert when nothing is there and 0 was expected,
     // else update where the stored token is the one expected.
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
         let a = db::Args { };
         a.add(key);
@@ -499,7 +511,9 @@ locus PqLeaseStore {
     // the token; any other take raises it). The claim as it stands after
     // the statement, whoever holds it; `known` false with `last_error`
     // when the store could not answer.
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn claim(key: String, holder: String, ttl: Int) -> StoredLease {
         let a = db::Args { };
         a.add(key);
@@ -513,7 +527,9 @@ locus PqLeaseStore {
     }
     // Give `key` back if `holder` holds it: its token kept, so a late
     // renewal of the old claim lands nothing. True when it was theirs.
-    @unbounded
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn give_back(key: String, holder: String) -> Bool {
         let a = db::Args { };
         a.add(key);

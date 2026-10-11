@@ -215,7 +215,8 @@ fn review_rank(r: String) -> Int {
 // always read through its parent's CURRENT grant, so a parent that
 // contracted binds its children from that moment, whatever they were
 // born with. A ceiling with no child is no ceiling.
-@unbounded
+// One Grant per call, as wide as `child`'s.
+@bounded_by(child)
 fn intersect_grants(child: Grant, ceiling: Grant) -> Grant {
     if len(ceiling.child) == 0 { return child; }
     return Grant {
@@ -350,8 +351,8 @@ fn earlier_expiry(x: Int, y: Int) -> Int {
 // grant, a larger per-operation or per-window ceiling, a window the
 // ceiling does not share, a counterparty or route it does not name, a
 // later expiry.
-// Bounded by the currencies, parties and routes the child's grant names.
-@unbounded
+// Grows by the currencies, parties and routes the child's grant names.
+@bounded_by(child)
 fn resource_gap(child: Grant, ceiling: Grant) -> String {
     let mut out = "";
     let mut window_named = false;

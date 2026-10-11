@@ -25,9 +25,9 @@ fn dna_cli(app: String, args: String) -> String {
 }
 
 // The record's lines that carry every one of `needles` (tab-separated).
-@unbounded
 fn record_lines_with(app: String, needles: String) -> Int {
     let text = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let tabbed = needles + "\t";
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {
@@ -35,7 +35,7 @@ fn record_lines_with(app: String, needles: String) -> Int {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let mut all = len(line) > 0;
-        let mut ns = needles + "\t";
+        let mut ns = tabbed;
         while len(ns) > 0 && all {
             let t = std::str::index_of(ns, "\t");
             let needle = ns[0..t];

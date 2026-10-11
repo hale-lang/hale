@@ -226,7 +226,8 @@ locus SpendRecord {
     // less every compensation, as a decimal string; "" while unsettled
     // (GH #668: every attempt is retained, nothing is rolled back by
     // implication).
-    @unbounded
+    // One total per call, read from the journal's first `upto` rows.
+    @bounded_by(upto)
     fn spent_of(child: String, op: String, upto: Int) -> String {
         let mut total = 0.0d;
         let mut settled = false;

@@ -84,7 +84,6 @@ fn curl(method: String, url: String, cookie: String, body: String) -> Http {
     return Http { status: status, headers: head, body: rest };
 }
 
-@unbounded
 fn form_field(body: String, name: String) -> String {
     let mut rest = body + "&";
     while len(rest) > 0 {
@@ -117,7 +116,6 @@ locus FakeIssuer {
         exchanges: Int = 0;
         refused_secrets: Int = 0;
     }
-    @unbounded
     fn handle(req: std::http::Request) -> std::http::Response {
         let ctx = std::http::build_context(req);
         if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
@@ -155,7 +153,6 @@ locus FakeIssuer {
 }
 
 // The line of a text that carries `needle` ("" when none).
-@unbounded
 fn row_with(text: String, needle: String) -> String {
     let mut rest = text;
     while len(rest) > 0 {
@@ -169,7 +166,6 @@ fn row_with(text: String, needle: String) -> String {
 
 // The history line of one kind about one exact id (card 18: the case's
 // history holds its root's birth too).
-@unbounded
 fn history_row(text: String, kind: String, id: String) -> String {
     let mut rest = text;
     while len(rest) > 0 {
@@ -182,7 +178,6 @@ fn history_row(text: String, kind: String, id: String) -> String {
 }
 
 // How many lines of `text` carry `needle`.
-@unbounded
 fn count_rows(text: String, needle: String) -> Int {
     let mut n = 0;
     let mut rest = text;
@@ -201,7 +196,6 @@ fn ledger(app: String, head_dsn: String) -> String {
 }
 
 // Wait, bounded, for a ledger row carrying `needle`; the row, or "".
-@unbounded
 fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String {
     let mut n = 0;
     while n < tries {
@@ -214,7 +208,6 @@ fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String
 }
 
 // How many lines of `text` carry both `a` and `b`.
-@unbounded
 fn count_both(text: String, a: String, b: String) -> Int {
     let mut n = 0;
     let mut rest = text;
@@ -343,7 +336,6 @@ main locus App {
     }
     // Wait, bounded, for a row of the RECORD carrying `needle`, syncing
     // the founder's clone each try; the row, or "".
-    @unbounded
     fn wait_in_record(app: String, head_dsn: String, needle: String, tries: Int) -> String {
         let mut n = 0;
         while n < tries {
@@ -356,7 +348,6 @@ main locus App {
         return "";
     }
     // Wait, bounded, for the Review whose question carries `text`; its id.
-    @unbounded
     fn wait_review(app: String, head_dsn: String, text: String, tries: Int) -> String {
         let mut n = 0;
         while n < tries {
@@ -375,7 +366,6 @@ main locus App {
     // try. A Review the founder's clone lists is in the remote only once
     // that clone's next sync pushes it: `wait_review` syncs before it
     // reads, so the organism can put the Review there in between.
-    @unbounded
     fn wait_listed(clone: String, head_dsn: String, id: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
@@ -393,7 +383,6 @@ main locus App {
     // even when the surface is already built, and syncs its clone; on a
     // cold cache another fixture's build can hold that lock the whole
     // time.
-    @unbounded
     fn head_up(ui: String, pid: String, log: String, secs: Int) -> String {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {

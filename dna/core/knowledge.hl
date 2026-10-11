@@ -127,8 +127,8 @@ locus Knowledge {
         return c;
     }
     fn accepted_count() -> Int { return self.ideas.len(); }
-    // Bounded by the store's size; one substitute struct per row scanned.
-    @unbounded
+    // One substitute struct per idea scanned.
+    @bounded_by(self.ideas)
     fn find(id: String) -> Idea {
         let mut i = 0;
         while i < self.ideas.len() {
@@ -201,7 +201,7 @@ fn knowledge_review_id(digest: String) -> String {
 }
 
 // Every byte that is not a letter, a digit, `-`, `_` or `.` as `%XX`.
-@unbounded
+@bounded_by(s)
 fn url_encode(s: String) -> String {
     let out = std::str::builder_new();
     let bytes = std::bytes::from_string(s);

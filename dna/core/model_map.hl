@@ -72,7 +72,7 @@ fn model_size_known(size: String) -> Bool { return word_in(size, MODEL_SIZES); }
 
 // A selector's rule: the latest `model.rule` row for it; an empty rule (no
 // size) when the record holds none.
-@unbounded
+@bounded_by(j)
 fn model_rule_of(j: Journal, selector: String) -> ModelRule {
     let mut out = ModelRule { selector: selector };
     let mut i = 0;
@@ -88,7 +88,7 @@ fn model_rule_of(j: Journal, selector: String) -> ModelRule {
 
 // A category's latest `model.category` row; an empty one (no model) when the
 // record holds none.
-@unbounded
+@bounded_by(j)
 fn model_category_of(j: Journal, category: String) -> ModelCategory {
     let mut out = ModelCategory { category: category };
     let mut i = 0;

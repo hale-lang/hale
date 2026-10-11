@@ -140,7 +140,9 @@ fn requested_standing(journal: String, evidence: String) -> Bool {
 // step failed, "rejected: …" for a document that is not a bill. Each step
 // is skipped when the record already holds it, so a bill delivered twice,
 // or retried after a partial failure, is filed once and followed up once.
-@unbounded
+// What it builds lands in its caller: `Intake::poll`, which frees it on
+// return, or `drain_once`, once per bill in the inbox.
+@bounded_by(inbox)
 fn capture(path: String) -> String {
     let text = std::io::fs::read_file(path) or "";
     let b = parse_bill(text);
@@ -197,7 +199,7 @@ fn name_before(a: String, b: String) -> Bool {
 
 // The first bill waiting in `inbox/`, by name, not among `skip`
 // (newline-separated names); "" when none.
-@unbounded
+@bounded_by(inbox)
 fn next_bill(skip: String) -> String {
     let n = std::io::fs::list_dir_count("inbox") or 0;
     let mut next = "";
@@ -260,7 +262,7 @@ fn state_of(journal: String, task: String) -> String {
 }
 
 // `totals` (lines of `<currency> <amount>`) with `amount` added, in Decimal.
-@unbounded
+@bounded_by(totals)
 fn add_total(totals: String, currency: String, amount: String) -> String {
     let add = std::str::parse_decimal(amount) or 0.0d;
     let mut out = "";
@@ -297,7 +299,7 @@ fn settle_bill(name: String, result: String) -> Bool {
 }
 
 // Every bill in the inbox, tried once (BOOKS_MODE=once).
-@unbounded
+@bounded_by(inbox)
 fn drain_once() {
     std::io::fs::mkdir("inbox/done") or discard;
     let mut tried = "\n";
@@ -322,8 +324,8 @@ fn assignee_of(journal: String, task: String) -> String {
 
 // How a Task was completed, as the export says it: its linked evidence, an
 // authorized exception, a reported decision (#637: absent before), a
-// person's word, or open.
-@unbounded
+// person's word, or open. Called once per bill of `export_week`'s journal.
+@bounded_by(journal)
 fn completion_of(journal: String, task: String, state: String) -> String {
     let linked = last_body(journal, "completion.linked", task);
     if len(linked) > 0 { return "evidence " + std::json::find_string_field(linked, "evidence"); }
@@ -337,7 +339,8 @@ fn completion_of(journal: String, task: String, state: String) -> String {
 
 // Every bill filed as evidence whose date falls in [from, to], with its
 // obligation as the record has it; totals by currency; the record's head.
-@unbounded
+// The CSV grows by the bills of the journal it reads whole.
+@bounded_by(journal)
 fn export_week(from: String, to: String) -> String {
     // the journal at the head the export names, read once: a live organism
     // moving the ref in between cannot make the rows and the head disagree
@@ -403,22 +406,28 @@ main locus Intake {
         println(INTAKE, ": watching inbox/");
         if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
         while true {
-            if std::time::now() - self.deferred_at >= 10 { self.deferred = "\n"; }
-            let next = next_bill(self.deferred);
-            if len(next) == 0 {
-                std::time::sleep(300ms);
-                continue;
-            }
-            let result = capture("inbox/" + next);
-            println(result);
-            if settle_bill(next, result) {
-                self.captured = self.captured + 1;
-            } else {
-                // not captured: it stays in the inbox and is tried again later
-                if self.deferred == "\n" { self.deferred_at = std::time::now(); }
-                self.deferred = self.deferred + next + "\n";
-            }
+            if !self.poll() { std::time::sleep(300ms); }
         }
+    }
+    // One look at the inbox: the next bill tried, false when none waits.
+    // A method, so what the capture built is freed when it returns; in
+    // `run`'s own loop it was kept for the life of the process. `deferred`
+    // holds the bills that failed in the last ten seconds.
+    @bounded_by(inbox)
+    fn poll() -> Bool {
+        if std::time::now() - self.deferred_at >= 10 { self.deferred = "\n"; }
+        let next = next_bill(self.deferred);
+        if len(next) == 0 { return false; }
+        let result = capture("inbox/" + next);
+        println(result);
+        if settle_bill(next, result) {
+            self.captured = self.captured + 1;
+        } else {
+            // not captured: it stays in the inbox and is tried again later
+            if self.deferred == "\n" { self.deferred_at = std::time::now(); }
+            self.deferred = self.deferred + next + "\n";
+        }
+        return true;
     }
 }
 

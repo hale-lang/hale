@@ -164,7 +164,9 @@ locus KnowledgeCommands {
             }
         };
     }
-    @unbounded
+    // At most `limits.attempts` (eight) attempts: one snapshot, journal and
+    // codecs per attempt, freed when it returns.
+    @bounded_by(self.limits.attempts)
     fn execute(context: GovernanceContext, command: KnowledgeCommand, recovery: Bool) -> KnowledgeResult {
         let codec = KnowledgeCommandCodec { };
         if len(codec.identity(context, command.request_id)) == 0 || (!recovery && !codec.valid(context, command)) { return KnowledgeResult { code: "invalid_command" }; }

@@ -47,7 +47,7 @@ locus NatsTransport {
 }
 
 // Lowercase hex of `b`.
-// @unbounded: two characters per byte of a fixed-size random id.
+// Two characters per byte of a fixed-size random id.
 fn hex_of(b: Bytes) -> String {
     let digits = "0123456789abcdef";
     let mut out = "";
@@ -108,9 +108,9 @@ locus NatsClient {
     }
 
     // Record why the last operation failed, as "<kind>: <detail>".
-    // @unbounded: once per failure, and a failure ends the operation
-    // or the connection.
-    @unbounded
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn note(kind: String, detail: String) { self.last_error = kind + ": " + detail; }
 
     fn fail_with(kind: String, detail: String) -> NatsError {
@@ -313,9 +313,9 @@ locus NatsClient {
         self.last.data = data;
     }
 
-    // @unbounded: one entry per message that arrives while a `request`
-    // waits; read_msg empties the stash once it has handed them all out.
-    @unbounded
+    // One entry per message that arrives while a `request` waits;
+    // read_msg empties the stash once it has handed them all out.
+    @bounded_by(request)
     fn set_aside() {
         let f = self.framer.frame;
         self.stash.push(f.subject, f.data);

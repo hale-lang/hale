@@ -298,7 +298,9 @@ locus WorkflowProjection {
     fn fact_count() -> Int { return self.facts.len(); }
     fn node_count() -> Int { return self.tree.len(); }
 
-    @unbounded
+    // One view per lookup, returned; a caller looks up at most every Work
+    // the projection holds.
+    @bounded_by(self.works)
     fn work(work_id: String) -> WorkView {
         let mut i = 0;
         while i < self.works.len() {
@@ -309,7 +311,9 @@ locus WorkflowProjection {
         return WorkView { };
     }
 
-    @unbounded
+    // One view per lookup, returned; a caller looks up at most every step
+    // the projection holds.
+    @bounded_by(self.steps)
     fn step(step_id: String) -> StepView {
         let mut i = 0;
         while i < self.steps.len() {
@@ -391,7 +395,9 @@ locus WorkflowProjection {
         }
         return index;
     }
-    @unbounded
+    // One view per lookup, returned; a caller looks up at most every Task
+    // the projection holds.
+    @bounded_by(self.tasks)
     fn task(task_id: String) -> TaskView {
         let mut i = 0;
         while i < self.tasks.len() {
@@ -461,8 +467,8 @@ locus WorkflowProjection {
     // it is the admitted Task set itself — a chain longer than that is a
     // chain that loops — and a chain that does not resolve refuses, it
     // never permits: reaching a guard is not the same as reaching the
-    // root and finding it running.
-    @unbounded
+    // root and finding it running. One answer per call.
+    @bounded_by(self.tasks)
     fn stop(task_id: String) -> String {
         let t = self.task(task_id);
         if len(t.disposition) > 0 { return "task " + task_id + " " + t.disposition; }
@@ -547,7 +553,7 @@ locus WorkflowProjection {
     }
 
     // one row per committed fact: the projection is the record's size
-    @unbounded
+    @bounded_by(record)
     fn record(kind: String, id: String, body: String) {
         self.facts.push(Fact { kind: kind, id: id, body: body });
     }
@@ -577,7 +583,9 @@ locus WorkflowProjection {
 
     // ---- admission: the recipe becomes the authority ------------------
 
-    @unbounded
+    // The admission's Task and its recipe's nodes join the projection,
+    // which is the record's size.
+    @bounded_by(record)
     fn admitted(entity: String, body: String) -> Applied {
         let read = decode_admission(body);
         if !read.ok { return refused(read.why); }
@@ -663,7 +671,8 @@ locus WorkflowProjection {
         return applied();
     }
 
-    @unbounded
+    // A refused Task's view joins the projection, the record's size.
+    @bounded_by(record)
     fn refusal(entity: String, body: String) -> Applied {
         let read = decode_refusal(body);
         if !read.ok { return refused(read.why); }
@@ -715,8 +724,9 @@ locus WorkflowProjection {
 
     // An ask refused before any Task: its own row under its own identity,
     // `<ask>#<decision>`. No Task is looked up and none is written, so it
-    // can contradict no execution, whatever an owner is called.
-    @unbounded
+    // can contradict no execution, whatever an owner is called. The
+    // projection holds one per refusal row: the record's size.
+    @bounded_by(record)
     fn ask_refused(entity: String, body: String) -> Applied {
         let read = decode_ask_refusal(body);
         if !read.ok { return refused(read.why); }
@@ -767,7 +777,8 @@ locus WorkflowProjection {
         return out;
     }
 
-    @unbounded
+    // A registered step's view joins the projection, the record's size.
+    @bounded_by(record)
     fn registered(entity: String, body: String) -> Applied {
         let read = decode_members(body);
         if !read.ok { return refused(read.why); }
@@ -895,7 +906,8 @@ locus WorkflowProjection {
 
     // ---- attempts: first, current, next ---------------------------------
 
-    @unbounded
+    // An attempt's Work view joins the projection, the record's size.
+    @bounded_by(record)
     fn attempt(entity: String, body: String) -> Applied {
         let read = decode_attempt(body);
         if !read.ok { return refused(read.why); }
