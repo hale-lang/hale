@@ -858,6 +858,9 @@ locus GitRecord {
     // One commit for `journal.jsonl` + the row's line on top of `at`.
     // Touches no ref. Under a signing writer the commit is signed (GH #604
     // rule 6); `note` becomes the message's body.
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn build(at: String, row: Row, sign: Bool, note: String) -> String {
         // the kind and the entity are the commit's subject line, and the
         // arguments to git are newline-separated: a line break in either

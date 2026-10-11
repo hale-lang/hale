@@ -222,6 +222,9 @@ locus PqLedger {
         let e = self.rows.get(self.rows.len() - 1) or Event { };
         return e.digest;
     }
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn refresh() -> Bool {
         // last_error describes this read, not an earlier refused command.
         self.error = "";
@@ -283,6 +286,9 @@ locus PqLedger {
     // One row through memory's insert function (GH #1026), which is the
     // Ledger's gate: `expected` the revision a decision was read at, -1 for
     // the tail. The rows since the last read are loaded either way.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn gate(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let a = db::Args { };
         a.add(to_string(expected));
@@ -477,6 +483,9 @@ locus PqLeaseStore {
     }
     // One statement: insert when nothing is there and 0 was expected,
     // else update where the stored token is the one expected.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
         let a = db::Args { };
         a.add(key);
@@ -499,6 +508,9 @@ locus PqLeaseStore {
     // the token; any other take raises it). The claim as it stands after
     // the statement, whoever holds it; `known` false with `last_error`
     // when the store could not answer.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn claim(key: String, holder: String, ttl: Int) -> StoredLease {
         let a = db::Args { };
         a.add(key);
@@ -512,6 +524,9 @@ locus PqLeaseStore {
     }
     // Give `key` back if `holder` holds it: its token kept, so a late
     // renewal of the old claim lands nothing. True when it was theirs.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn give_back(key: String, holder: String) -> Bool {
         let a = db::Args { };
         a.add(key);

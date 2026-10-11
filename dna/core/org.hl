@@ -187,6 +187,9 @@ locus Leader {
     }
     // One decision per Review the org announces; bounded by the
     // Mutations proposed.
+    // `self.last` holds only the last decision, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last)
     fn on_requested(req: ReviewRequest) {
         // GH #1089: a Review its route routes is decided by the positions
         // the route names, never by the leader on its own authority

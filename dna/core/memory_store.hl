@@ -502,6 +502,9 @@ locus Pq {
     fn note(what: String, e: db::DbError) {
         self.error = what + ": " + e.kind + " " + e.detail;
     }
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn open() -> Bool {
         if self.opened { return true; }
         // A failed migration or scope change may have left a live session.
@@ -525,8 +528,7 @@ locus Pq {
             let owner = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
             if !owner.ok && owner.err.kind != "no_row" { return self.fail("scope", owner.err); }
             if !owner.ok || trim_nl(owner.data) != self.record_id {
-                let whose = if owner.ok { "record " + trim_nl(owner.data) } else { "no record" };
-                self.error = "scope: schema " + sch + " belongs to " + whose + ", not " + self.record_id + "; it is not read";
+                self.error = "scope: schema " + sch + " belongs to " + (if owner.ok { "record " + trim_nl(owner.data) } else { "no record" }) + ", not " + self.record_id + "; it is not read";
                 self.close();
                 return false;
             }

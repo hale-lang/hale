@@ -287,6 +287,9 @@ locus SourceEditor {
     // Which file the objective is about (GH #529 D7 step 5): a file the
     // objective names, else the quick tier's pick from the listing —
     // and only a listed file is ever a target.
+    // `self.located_why` holds only why the last objective was not located, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.located_why)
     fn locate(attempt: String, objective: String) -> String {
         let listing = self.files();
         self.located_why = "";
@@ -316,8 +319,7 @@ locus SourceEditor {
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
         if !pick.ok {
-            let refused = if len(pick.refused) > 0 { pick.refused } else { "no answer" };
-            self.located_why = "the model could not be asked which file (" + refused + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
+            self.located_why = "the model could not be asked which file (" + (if len(pick.refused) > 0 { pick.refused } else { "no answer" }) + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
             return "";
         }
         let name = trim_nl(pick.output);
@@ -332,6 +334,9 @@ locus SourceEditor {
     // segment it is. Two such entries make it ambiguous: "" with
     // `located_why` naming both. A name no entry answers is "" with
     // `located_why` left as it was. Never a suffix of a longer path.
+    // `self.located_why` holds only why the last name was not located, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.located_why)
     fn match_entry(listing: String, name: String) -> String {
         let mut first = "";
         let mut second = "";
@@ -447,12 +452,14 @@ locus SourceEditor {
     // differs or is new is written through the tools, one that is gone
     // is removed; a change outside the grant is counted and left behind.
     // Returns the grant-relative files changed, space-separated.
+    // `self.import_error` holds only the last import's failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.import_error)
     fn import_from(dir: String) -> String {
         self.import_error = "";
         let mut changed = "";
-        let mut failed = ""; // the file the tools could not write or remove
         let mut lines = self.listing(dir);
-        while len(lines) > 0 && len(failed) == 0 {
+        while len(lines) > 0 {
             let nl = std::str::index_of(lines, "\n");
             let rel = if nl < 0 { lines } else { lines[0..nl] };
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
@@ -472,11 +479,10 @@ locus SourceEditor {
             // inside the grant, so a refusal here is an I/O failure, not
             // a boundary: a partial import must not become a candidate
             if self.tools.edit(g, after) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { failed = g; }
+            else { self.import_error = "could not import " + g + ": " + self.tools.last_refusal; return ""; }
         }
-        if len(failed) > 0 { self.import_error = "could not import " + failed + ": " + self.tools.last_refusal; return ""; }
         let mut gone = self.listing(self.worktree);
-        while len(gone) > 0 && len(failed) == 0 {
+        while len(gone) > 0 {
             let nl = std::str::index_of(gone, "\n");
             let rel = if nl < 0 { gone } else { gone[0..nl] };
             if nl < 0 { gone = ""; } else { gone = gone[(nl + 1)..len(gone)]; }
@@ -484,9 +490,8 @@ locus SourceEditor {
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
             if self.tools.remove(g) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { failed = g; }
+            else { self.import_error = "could not remove " + g + ": " + self.tools.last_refusal; return ""; }
         }
-        if len(failed) > 0 { self.import_error = "could not remove " + failed + ": " + self.tools.last_refusal; return ""; }
         return trim_nl(changed);
     }
     // One try of the harness: export, then ask with the export as its

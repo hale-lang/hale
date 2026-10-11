@@ -690,20 +690,22 @@ locus LedgerAdoption {
     // operational row of the record, in order, keyed by its commit (rerun
     // after any interruption, nothing copied twice), the cutover, and
     // `ledger.adopted` naming the checkpoint (GH #646 stage 1, #650).
+    // `self.last_error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
     fn adopt(intent: Event) -> Bool {
         let head = intent.digest;
         let mut copied = 0;
-        let mut refused = -1;
         let mut i = 0;
-        while i < self.j.revision() && refused < 0 {
+        while i < self.j.revision() {
             let e = self.j.read(i);
             if e.seq > intent.seq { break; }
             if memory_of(e.kind) == "ledger" {
-                if self.ledger.adopt_row(e.kind, e.entity, e.body, self.j.author_of(i), e.seq, e.digest) { copied = copied + 1; } else { refused = e.seq; }
+                if !self.ledger.adopt_row(e.kind, e.entity, e.body, self.j.author_of(i), e.seq, e.digest) { self.last_error = "the ledger could not take row " + to_string(e.seq) + ": " + self.ledger.last_error(); return false; }
+                copied = copied + 1;
             }
             i = i + 1;
         }
-        if refused >= 0 { self.last_error = "the ledger could not take row " + to_string(refused) + ": " + self.ledger.last_error(); return false; }
         if !self.ledger.cutover(head, copied, ROUTING_VERSION) { self.last_error = "the ledger could not record the cutover: " + self.ledger.last_error(); return false; }
         // before `ledger.adopted` moves leases to memory: the body lease
         // this node holds goes with them, at its token

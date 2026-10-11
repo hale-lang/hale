@@ -3908,14 +3908,16 @@ locus Dna {
         }
     }
     // This node's name in its claims (GH #1026).
+    // `self.node` holds only the name once made, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.node)
     fn node_name() -> String {
         if len(self.node) > 0 { return self.node; }
         if std::env::var_exists("HALE_DNA_NODE") && len(std::env::var("HALE_DNA_NODE")) > 0 {
             self.node = std::env::var("HALE_DNA_NODE");
         } else {
             let h = run_tool("hostname");
-            let host = if h.code == 0 { trim_nl(h.stdout) } else { "localhost" };
-            self.node = host + ":" + to_string(std::process::pid());
+            self.node = (if h.code == 0 { trim_nl(h.stdout) } else { "localhost" }) + ":" + to_string(std::process::pid());
         }
         return self.node;
     }

@@ -210,6 +210,9 @@ locus Review {
     // Whether the approvals admitted, with the gate runs observed since,
     // now settle it: the last approval decides, as it would have had the
     // runs been in when it arrived. Never after a settlement the record holds.
+    // `self.comment` holds only the settled comment, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.comment)
     fn recheck() -> Bool {
         if self.settled || len(self.organization_source_request.request_id) > 0 { return false; }
         let moved = self.journal.refresh();
@@ -495,6 +498,9 @@ locus Review {
     // Whether a verdict at a settled Review is the same approval again.
     // Reached per verdict from Review's verdict handler, like `consider`:
     // bounded by the reviewers of one candidate.
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn readmit(v: Verdict) -> Bool {
         if len(self.organization_source_request.request_id) > 0 {
             self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;

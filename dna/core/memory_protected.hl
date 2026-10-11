@@ -121,6 +121,9 @@ type ProtectedRow {
         self.error = "put: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
         return false;
     }
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn erase(digest: String) -> Bool {
         if !self.open() { return false; }
         let a = db::Args { };
@@ -136,14 +139,14 @@ type ProtectedRow {
             self.error = "erase: " + again.err.kind + " " + again.err.detail;
             return false;
         }
-        // the redial's own error, said after this call's: nothing of an
-        // earlier call's error is kept
-        let dial = self.error;
-        self.error = "erase: " + r.err.kind + " " + r.err.detail + "; dialling again: " + dial;
+        self.error = "erase: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
         return false;
     }
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
+    // `self.error` holds only the last failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.error)
     fn get(digest: String) -> Protected {
         // the error is this read's, not one left by an earlier call: an
         // absent body with no error is absent
@@ -156,11 +159,7 @@ type ProtectedRow {
         let mut rows = self.conn.query_params("SELECT receipt_read($1)", a);
         if !rows.ok {
             let first = "get: " + rows.err.kind + " " + rows.err.detail;
-            if !self.redial() {
-                let dial = self.error;
-                self.error = first + "; dialling again: " + dial;
-                return Protected { };
-            }
+            if !self.redial() { self.error = first + "; dialling again: " + self.error; return Protected { }; }
             rows = self.conn.query_params("SELECT receipt_read($1)", a);
             if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
             self.error = "";
