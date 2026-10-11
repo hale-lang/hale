@@ -952,6 +952,9 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
+    /// GH #1490 (step 4): each publish of the body, its subject as
+    /// written (`None` when computed) and what its payload carries.
+    pub(crate) sends: Vec<(Option<PublishSubject>, Taint)>,
     /// What a free fn's body allocates into, as lowering routes it
     /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
     /// `main` (lowered as the program's entry), and for a row the summary
@@ -2230,16 +2233,19 @@ pub fn summarize_identified(
     // the String fields of every struct type and locus, so a `+` is
     // read as a concatenation by its operands' declared types.
     let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
-    // GH #1490 (step 4): parameters whose default reads `self` — what
-    // a caller that leaves them passes is its own `self`'s.
-    let mut self_default_params: BTreeSet<(FnKey, String)> = BTreeSet::new();
-    let note_self_defaults = |key: &FnKey, params: &[Param], out: &mut BTreeSet<(FnKey, String)>| {
-        for p in params {
-            if p.default.as_ref().is_some_and(mentions_self) {
-                out.insert((key.clone(), p.name.name.clone()));
-            }
-        }
+    // GH #1490 (step 4): every fn's and method's parameters with their
+    // defaults — a default is evaluated in the CALLER's scope, so a call
+    // that leaves a parameter passes what the default reads there — and
+    // every struct type's and locus's field defaults, evaluated where its
+    // literal is written.
+    let mut param_info: ParamInfo = BTreeMap::new();
+    let note_params = |key: &FnKey, params: &[Param], out: &mut ParamInfo| {
+        out.insert(key.clone(), params.iter().map(|p| (p.name.name.clone(), p.default.clone())).collect());
     };
+    let mut field_defaults: FieldDefaults = BTreeMap::new();
+    // GH #1490 (step 4): each locus's handlers with the subject each
+    // subscribes to (`None` for a qualified topic, matched as anything).
+    let mut subscriptions: Subscriptions = BTreeMap::new();
     let mut str_fields: BTreeMap<String, BTreeMap<String, StrTy>> = BTreeMap::new();
     let universe_of = |ids: &crate::snapshot::Snapshot| {
         if is_stdlib_copy(ids) {
@@ -2496,12 +2502,16 @@ pub fn summarize_identified(
                     if decl.ret.as_ref().is_some_and(is_string_type) {
                         string_rets.insert(key.clone());
                     }
-                    note_self_defaults(&key, &decl.params, &mut self_default_params);
+                    note_params(&key, &decl.params, &mut param_info);
                     bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
                         str_fields.insert(td.name.name.clone(), struct_str_fields(fields));
+                        field_defaults.insert(
+                            td.name.name.clone(),
+                            fields.iter().map(|f| (f.name.name.clone(), f.default.clone())).collect(),
+                        );
                         let all_retirable = fields.iter().all(|f| {
                             matches!(
                                 &f.ty,
@@ -2540,6 +2550,7 @@ pub fn summarize_identified(
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     str_fields.insert(locus.clone(), locus_str_fields(l));
+                    field_defaults.insert(locus.clone(), locus_field_defaults(l));
                     // GH #540: a stdlib locus is built by code the
                     // summary may not hold, so its slots keep every
                     // conformer.
@@ -2558,6 +2569,7 @@ pub fn summarize_identified(
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
+                    subscriptions.insert(locus.clone(), bus_subscriptions(l));
                     for member in &l.members {
                         match member {
                             // A `mode` body was never collected, so
@@ -2610,7 +2622,7 @@ pub fn summarize_identified(
                                 if decl.ret.as_ref().is_some_and(is_string_type) {
                                     string_rets.insert(key.clone());
                                 }
-                                note_self_defaults(&key, &decl.params, &mut self_default_params);
+                                note_params(&key, &decl.params, &mut param_info);
                                 bodies.push((
                                     key,
                                     &decl.body,
@@ -2912,6 +2924,9 @@ pub fn summarize_identified(
             str_fields: &str_fields,
             strs: vec![str_params.iter().cloned().collect()],
             taints: vec![params.iter().map(|p| (p.clone(), Taint::param(p))).collect()],
+            param_info: &param_info,
+            field_defaults: &field_defaults,
+            expanding: std::cell::RefCell::new(Vec::new()),
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -2920,6 +2935,7 @@ pub fn summarize_identified(
             self_replace: None,
             let_call: None,
             in_place_sites: Vec::new(),
+            sends: Vec::new(),
             retired_init: false,
         };
         w.walk_block(body, 0, Escape::Local);
@@ -2938,6 +2954,7 @@ pub fn summarize_identified(
                 mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
+                sends: w.sends,
                 frame: None,
             },
             starts,
@@ -3326,24 +3343,88 @@ pub fn summarize_identified(
     summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
-    resolve_param_provenance(&mut summary, &param_order, &self_default_params);
+    resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
     summary
 }
 
-/// GH #1490 (step 4): does `e` mention `self`? Conservative: a form this
-/// does not walk answers yes.
-fn mentions_self(e: &Expr) -> bool {
-    match e {
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => false,
-        Expr::KwSelf(_) => true,
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => mentions_self(receiver),
-        Expr::Binary { left, right, .. } => mentions_self(left) || mentions_self(right),
-        Expr::Unary { operand, .. } => mentions_self(operand),
-        Expr::Index { receiver, index, .. } => mentions_self(receiver) || mentions_self(index),
-        Expr::Call { callee, args, .. } => mentions_self(callee) || args.iter().any(mentions_self),
-        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().any(mentions_self),
-        Expr::Struct { inits, .. } => inits.iter().any(|si| mentions_self(&si.value)),
+/// GH #1490 (step 4): each locus's bus handlers with their subjects.
+type Subscriptions = BTreeMap<String, Vec<(String, Option<PublishSubject>)>>;
+
+fn bus_subscriptions(l: &LocusDecl) -> Vec<(String, Option<PublishSubject>)> {
+    let mut out = Vec::new();
+    for member in &l.members {
+        if let LocusMember::Bus(bus) = member {
+            for bm in &bus.members {
+                if let BusMember::Subscribe { handler, subject, .. } = bm {
+                    let s = match subject {
+                        BusSubject::Literal { subject, .. } => Some(PublishSubject { text: subject.clone(), literal: true }),
+                        BusSubject::Topic(id) => Some(PublishSubject { text: id.name.clone(), literal: false }),
+                        BusSubject::QualifiedTopic(_) => None,
+                    };
+                    out.push((handler.name.clone(), s));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// May a publish to `sent` reach a subscription to `sub`? Two literal
+/// subjects or two topic names reach each other when they are written
+/// alike; anything else (a topic against a literal, which the topic's
+/// declared subject may equal; a computed or qualified subject) is
+/// taken to.
+fn subjects_may_meet(sent: &Option<PublishSubject>, sub: &Option<PublishSubject>) -> bool {
+    match (sent, sub) {
+        (Some(a), Some(b)) if a.literal == b.literal => {
+            let last = |t: &str| t.rsplit("::").next().unwrap_or(t).to_string();
+            if a.literal { a.text == b.text } else { last(&a.text) == last(&b.text) }
+        }
         _ => true,
+    }
+}
+
+/// GH #1490 (step 4): each fn's and method's parameters, in order, with
+/// the default each has.
+type ParamInfo = BTreeMap<FnKey, Vec<(String, Option<Expr>)>>;
+
+/// GH #1490 (step 4): each struct type's and locus's fields, with the
+/// default each has.
+type FieldDefaults = BTreeMap<String, Vec<(String, Option<Expr>)>>;
+
+fn locus_field_defaults(l: &LocusDecl) -> Vec<(String, Option<Expr>)> {
+    let mut out = Vec::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                let d = match &pd.init {
+                    ParamInit::Value(e) => Some(e.clone()),
+                    ParamInit::Inferred => None,
+                };
+                out.push((pd.name.name.clone(), d));
+            }
+        }
+    }
+    out
+}
+
+/// GH #1490 (step 4): collect the names `e` reads; `false` when it holds
+/// a form this does not walk.
+fn idents_of(e: &Expr, out: &mut BTreeSet<String>) -> bool {
+    match e {
+        Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => true,
+        Expr::Ident(v) => {
+            out.insert(v.name.clone());
+            true
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => idents_of(receiver, out),
+        Expr::Binary { left, right, .. } => idents_of(left, out) & idents_of(right, out),
+        Expr::Unary { operand, .. } => idents_of(operand, out),
+        Expr::Index { receiver, index, .. } => idents_of(receiver, out) & idents_of(index, out),
+        Expr::Call { callee, args, .. } => args.iter().fold(idents_of(callee, out), |ok, a| idents_of(a, out) & ok),
+        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().fold(true, |ok, x| idents_of(x, out) & ok),
+        Expr::Struct { inits, .. } => inits.iter().fold(true, |ok, si| idents_of(&si.value, out) & ok),
+        _ => false,
     }
 }
 
@@ -3362,8 +3443,12 @@ fn mentions_self(e: &Expr) -> bool {
 /// to whatever it calls. A call the walk could not resolve passing such
 /// an argument makes every method of that name carry anything (a
 /// method call) or every free fn's parameters carry anything (a call
-/// through a function value), and a parameter whose default reads
-/// `self` carries anything. A parameter with no call — a bus handler's
+/// through a function value). A parameter a call leaves takes its
+/// default, which Hale evaluates in the CALLER's scope: the walk records
+/// what the default reads there as that call's argument; an edge
+/// resolved after the walk (interface dispatch, a function value) has
+/// no such record, and a parameter it leaves that has a default carries
+/// anything. A parameter with no call — a bus handler's
 /// message, a hook's argument — carries nothing: the runtime passes a
 /// fresh value.
 ///
@@ -3372,10 +3457,10 @@ fn mentions_self(e: &Expr) -> bool {
 fn resolve_param_provenance(
     summary: &mut AllocSummary,
     param_order: &BTreeMap<FnKey, Vec<String>>,
-    self_defaults: &BTreeSet<(FnKey, String)>,
+    param_info: &ParamInfo,
+    subscriptions: &Subscriptions,
 ) {
-    let mut val: BTreeMap<(FnKey, String), Taint> =
-        self_defaults.iter().map(|k| (k.clone(), Taint::Top)).collect();
+    let mut val: BTreeMap<(FnKey, String), Taint> = BTreeMap::new();
     let mut tainted_methods: BTreeSet<String> = BTreeSet::new();
     let mut unknown_flow = false;
     loop {
@@ -3402,6 +3487,17 @@ fn resolve_param_provenance(
                 match &e.callee {
                     Callee::Resolved(ck) => {
                         let Some(names) = param_order.get(ck) else { continue };
+                        // A parameter the edge has no argument for was left
+                        // to its default where the walk could not see the
+                        // callee (an edge resolved after the walk): what
+                        // the default read in the caller is not known.
+                        let defaults = param_info.get(ck);
+                        let mut args = args;
+                        while args.len() < names.len() {
+                            let i = args.len();
+                            let has_default = defaults.and_then(|d| d.get(i)).is_some_and(|(_, d)| d.is_some());
+                            args.push(if has_default { Taint::Top } else { Taint::none() });
+                        }
                         for (a, pn) in args.into_iter().zip(names) {
                             let t = if ck.locus.is_none() {
                                 a
@@ -3422,8 +3518,36 @@ fn resolve_param_provenance(
                         if e.indirect {
                             unknown_flow = true;
                         } else if e.receiver_present && tainted_methods.insert(name.clone()) {
+                            // Whatever the receiver's type (none the walk
+                            // could find, a generic parameter, a type whose
+                            // body is not here), the method may be any
+                            // locus's of that name.
                             changed = true;
                         }
+                    }
+                }
+            }
+        }
+        // A locus that publishes what it carries of its own `self` may be
+        // its own subscriber: the message its handler receives carries it
+        // (the same instance, as a call on `self`).
+        for f in summary.fns.values() {
+            let Some(locus) = &f.key.locus else { continue };
+            let Some(subs) = subscriptions.get(locus) else { continue };
+            for (subject, payload) in &f.sends {
+                let t = payload.substitute(&|p| val.get(&(f.key.clone(), p.to_string())).cloned().unwrap_or_else(Taint::none));
+                if t.is_none() {
+                    continue;
+                }
+                for (handler, sub) in subs {
+                    if !subjects_may_meet(subject, sub) {
+                        continue;
+                    }
+                    let Some(hk) = param_order.keys().find(|k| k.locus.as_deref() == Some(locus.as_str()) && k.fn_name == *handler) else {
+                        continue;
+                    };
+                    if let Some(pn) = param_order.get(hk).and_then(|ns| ns.first()) {
+                        changed |= contribute(&mut val, (hk.clone(), pn.clone()), t.clone());
                     }
                 }
             }
@@ -4964,6 +5088,15 @@ struct Walker<'a> {
     /// carry ([`Taint`]), one map per scope beside `strs`; a param
     /// carries none.
     taints: Vec<BTreeMap<String, Taint>>,
+    /// GH #1490 (step 4): every fn's parameters with their defaults, so
+    /// a call that leaves one passes what its default reads here.
+    param_info: &'a ParamInfo,
+    /// GH #1490 (step 4): every struct type's and locus's field
+    /// defaults, evaluated where a literal leaves the field.
+    field_defaults: &'a FieldDefaults,
+    /// The struct literals whose left fields' defaults `taint_of` is
+    /// expanding, outermost first.
+    expanding: std::cell::RefCell<Vec<String>>,
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
@@ -4992,6 +5125,8 @@ struct Walker<'a> {
     let_call: Option<(Span, Span)>,
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
+    /// `FnSummary::sends`.
+    sends: Vec<(Option<PublishSubject>, Taint)>,
     /// GH #1490 (step 4): the expression walked next is a whole field
     /// of a retired struct replace (`AllocSite::retired_store`).
     retired_init: bool,
@@ -5452,7 +5587,42 @@ impl<'a> Walker<'a> {
             Expr::Unary { operand, .. } => self.taint_of(operand),
             Expr::Index { receiver, index, .. } => self.taint_of(receiver).join(self.taint_of(index)),
             Expr::Tuple(xs, _) | Expr::Array(xs, _) => all(&mut xs.iter()),
-            Expr::Struct { inits, .. } => all(&mut inits.iter().map(|si| &si.value)),
+            // A field the literal leaves takes its default, evaluated
+            // here: what the default reads in this scope. A type whose
+            // fields the summary does not hold may default to anything.
+            Expr::Struct { path, inits, .. } => {
+                let given = all(&mut inits.iter().map(|si| &si.value));
+                let joined = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                let decl = self
+                    .field_defaults
+                    .get(&joined)
+                    .or_else(|| {
+                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                        crate::stdlib_bodies::mangled_locus_name(&segs).and_then(|m| self.field_defaults.get(m))
+                    })
+                    .or_else(|| self.rename_map.get(&joined).and_then(|m| self.field_defaults.get(m)))
+                    .or_else(|| path.segments.last().and_then(|l| self.field_defaults.get(&l.name)));
+                let Some(fields) = decl else { return Taint::Top };
+                let left: Vec<&Expr> = fields
+                    .iter()
+                    .filter(|(f, _)| !inits.iter().any(|si| si.name.name == *f))
+                    .filter_map(|(_, d)| d.as_ref())
+                    .collect();
+                if left.is_empty() {
+                    return given;
+                }
+                // A default may build the type it belongs to (or one
+                // that builds it back): past a type already being
+                // expanded, or a depth no real nesting reaches, the
+                // value may carry anything.
+                if self.expanding.borrow().contains(&joined) || self.expanding.borrow().len() > 16 {
+                    return Taint::Top;
+                }
+                self.expanding.borrow_mut().push(joined.clone());
+                let t = left.into_iter().fold(given, |t, d| t.join(self.taint_of(d)));
+                self.expanding.borrow_mut().pop();
+                t
+            }
             Expr::Call { callee, args, .. } => {
                 let callee_t = match callee.as_ref() {
                     // A bound local may be a fn value: nothing to trace.
@@ -5490,6 +5660,22 @@ impl<'a> Walker<'a> {
             Expr::Block(b) if b.stmts.is_empty() => b.tail.as_deref().map_or(Taint::none(), |t| self.taint_of(t)),
             _ => Taint::Top,
         }
+    }
+
+    /// What a parameter default evaluated at this call carries: what it
+    /// reads in the caller's scope, and — should it name one of the
+    /// callee's own parameters — what that argument carries.
+    fn default_taint(&self, d: &Expr, params: &[(String, Option<Expr>)], given: &[Taint]) -> Taint {
+        let mut names = BTreeSet::new();
+        let t = self.taint_of(d);
+        if !idents_of(d, &mut names) {
+            return Taint::Top;
+        }
+        params
+            .iter()
+            .zip(given)
+            .filter(|((n, _), _)| names.contains(n))
+            .fold(t, |t, (_, a)| t.join(a.clone()))
     }
 
     fn if_taint(&self, ifs: &IfStmt) -> Taint {
@@ -5868,6 +6054,8 @@ impl<'a> Walker<'a> {
                     }),
                     _ => None,
                 };
+                let payload = self.taint_of(value);
+                self.sends.push((subj.clone(), payload));
                 self.push_effect_site(
                     EffectSiteKind::Publish(subj),
                     depth,
@@ -6260,7 +6448,7 @@ impl<'a> Walker<'a> {
         let arity = args.len();
         // GH #1490 (step 4): what each argument carries, for the callee's
         // parameters' provenance, and whether the call is on `self`.
-        let arg_taints: Vec<Taint> = args.iter().map(|a| self.taint_of(a)).collect();
+        let mut arg_taints: Vec<Taint> = args.iter().map(|a| self.taint_of(a)).collect();
         let self_call = matches!(callee, Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }
             if matches!(receiver.as_ref(), Expr::KwSelf(_)));
         let mut recv_ty: Option<String> = None;
@@ -6358,6 +6546,19 @@ impl<'a> Walker<'a> {
             _ => false,
         };
         let indirect = through_param || unresolved_local || computed;
+        // GH #1490 (step 4): a parameter the call leaves takes its
+        // default, evaluated here, in the caller's scope.
+        if let Callee::Resolved(key) = &resolved {
+            if let Some(params) = self.param_info.get(key) {
+                for (_, default) in params.iter().skip(args.len()) {
+                    let t = match default {
+                        Some(d) => self.default_taint(d, params, &arg_taints),
+                        None => Taint::none(),
+                    };
+                    arg_taints.push(t);
+                }
+            }
+        }
         let spelling = CallSpelling::of(callee);
         self.calls.push(CallEdge {
             recv_ty,
@@ -7766,6 +7967,86 @@ mod tests {
             "let mut q = to_string(m); let mut i = 0; while i < 2 { self.append(q); let t = self.log; q = t; i = i + 1; }",
         );
         assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_left_parameter_carries_what_its_default_reads_at_the_call() {
+        // Hale evaluates a default in the caller's scope.
+        let with_default = |d: &str| format!("fn append(previous: String = {d}) {{ self.log = previous + \"x\"; }}");
+        // The review's control: the default names a local the caller
+        // bound to `self.log`.
+        let src = caller_provenance(&with_default("old"), "let old = self.log; self.append();");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // The default reads the caller's `self.log` itself.
+        let src = caller_provenance(&with_default("self.log"), "self.append();");
+        assert_eq!(field_leaks(&src, "append"), vec![Escape::StoredToSelf]);
+        // A constant default, and a local the caller bound to a fresh
+        // value: a replace.
+        let src = caller_provenance(&with_default("\"fresh\""), "self.append();");
+        assert!(field_leaks(&src, "append").is_empty());
+        let src = caller_provenance(&with_default("old"), "let old = to_string(m); self.append();");
+        assert!(field_leaks(&src, "append").is_empty());
+        // Given explicitly, the default plays no part.
+        let src = caller_provenance(&with_default("self.log"), "self.append(\"fresh\");");
+        assert!(field_leaks(&src, "append").is_empty());
+    }
+
+    #[test]
+    fn a_struct_literal_carries_what_its_left_fields_default_to() {
+        // A struct field's default is evaluated where the literal is.
+        let src = |on_t: &str| {
+            format!(
+                "type Cell {{ s: String = old; n: Int = 0; }}
+                 locus App {{
+                     params {{ log: String = \"\"; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ {on_t} }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        let tainted = src("let old = self.log; let c = Cell { n: m }; self.log = c.s + \"x\";");
+        assert_eq!(field_leaks(&tainted, "on_t"), vec![Escape::StoredToSelf]);
+        let fresh = src("let old = to_string(m); let c = Cell { n: m }; self.log = c.s + \"x\";");
+        assert!(field_leaks(&fresh, "on_t").is_empty());
+        // Given, the field's default plays no part.
+        let given = src("let old = self.log; let c = Cell { s: to_string(m), n: m }; self.log = c.s + \"x\";");
+        assert!(field_leaks(&given, "on_t").is_empty());
+        // Defaults that build each other: the expansion stops, and what
+        // it cannot finish may carry anything.
+        let cyclic = src("let old = to_string(m); let c = A { }; self.log = c.s + \"x\";")
+            .replace("type Cell", "type A { s: String = \"\"; b: B = B { }; }\n type B { a: A = A { }; }\n type Cell");
+        assert_eq!(field_leaks(&cyclic, "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn an_or_substitute_carries_what_it_reads() {
+        let src = caller_provenance("", "self.log = (piece(m) or self.log) + \"x\";")
+            .replace("locus Peer", "fn piece(i: Int) -> String { return to_string(i); }\n locus Peer");
+        assert_eq!(field_leaks(&src, "on_t"), vec![Escape::StoredToSelf]);
+        let src = caller_provenance("", "self.log = (piece(m) or \"\") + \"x\";")
+            .replace("locus Peer", "fn piece(i: Int) -> String { return to_string(i); }\n locus Peer");
+        assert!(field_leaks(&src, "on_t").is_empty());
+    }
+
+    #[test]
+    fn a_locus_that_publishes_its_field_to_itself_appends() {
+        // The handler's message is what the locus published: its own
+        // `self.log`, so the handler's store appends.
+        let src = |payload: &str| {
+            format!(
+                "type Tick {{ text: String; }}
+                 locus App {{
+                     params {{ log: String = \"\"; n: Int = 3; }}
+                     bus {{ subscribe \"t\" as on_t of type Tick; publish \"t\" of type Tick; }}
+                     fn on_t(t: Tick) {{ self.log = t.text + \"x\"; }}
+                     run() {{ let mut i = 0; while i < self.n {{ \"t\" <- Tick {{ text: {payload} }}; i = i + 1; }} }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        assert_eq!(field_leaks(&src("self.log"), "on_t"), vec![Escape::StoredToSelf]);
+        assert!(field_leaks(&src("to_string(i)"), "on_t").is_empty());
     }
 
     #[test]

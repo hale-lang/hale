@@ -110,6 +110,31 @@ fn verdict(line: &str) -> &str {
         .unwrap_or_else(|| panic!("a site line with no verdict: {line}"))
 }
 
+/// GH #1490 (step 4): each field replace site of `before` given `now`'s
+/// store-latest answer for the same site.
+fn same_field_replaces(before: &mut AllocSummary, now: &AllocSummary) {
+    let answers: BTreeMap<(String, String), bool> = now
+        .fns
+        .values()
+        .flat_map(|f| {
+            f.sites
+                .iter()
+                .filter(|s| s.target_field.is_some())
+                .map(move |s| ((f.key.display(), format!("{:?}", s.span)), s.retired_store))
+        })
+        .collect();
+    for f in before.fns.values_mut() {
+        let key = f.key.display();
+        for site in &mut f.sites {
+            if site.target_field.is_some() {
+                if let Some(r) = answers.get(&(key.clone(), format!("{:?}", site.span))) {
+                    site.retired_store = *r;
+                }
+            }
+        }
+    }
+}
+
 /// `summary` with the reclaim boundary's correction (E3b) cleared: no
 /// fn's frame classified, and no site reclaimed at its fn's return.
 fn without_frames(summary: &AllocSummary) -> AllocSummary {
@@ -146,10 +171,17 @@ fn change(target: &str) -> Change {
                     programs.iter().map(|p| (*p, &bundle.snapshot)).collect();
                 let mut before: AllocSummary = without_frames(&summarize_identified(&identified, &[]));
                 // This correction alone: the reclaim boundary's (E3b) and
-                // the startable loci's (GH #1490) cleared on both sides.
+                // the startable loci's (GH #1490) cleared on both sides,
+                // and a field replace's store-latest answer (GH #1490,
+                // step 4) taken from the corrected summary on both: its
+                // provenance proof reads the stdlib's declarations (a
+                // struct literal's field defaults, a callee's parameter
+                // defaults), so without them it answers more
+                // conservatively, a difference that is not this one.
                 let mut now = without_frames(now);
                 before.startable = None;
                 now.startable = None;
+                same_field_replaces(&mut before, &now);
                 let now = &now;
                 let mut c = Change::default();
                 let (old, new) = (blocks(&before.render()), blocks(&now.render()));

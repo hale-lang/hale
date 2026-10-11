@@ -2715,9 +2715,19 @@ assume the others in a build:
   `self` (the receiver may be the same instance); a call the survey
   cannot resolve passing such an argument makes every method of that
   name, or (through a function value) every free fn, carry every
-  field; a default that reads `self` does too. A parameter no call
+  field. A parameter a call leaves takes its default, which Hale
+  evaluates in the caller's scope, so the call passes what the default
+  reads there (`= old` with the caller's `let old = self.log` carries
+  `log`); a call resolved only after the walk (an interface's
+  conformer, a function value) leaves its defaults unknown, and they
+  carry every field. A struct or locus literal's left fields likewise
+  take their defaults where the literal is written. A parameter no call
   passes — a bus handler's message, a hook's argument — carries
-  nothing. So `let previous = self.log; self.log = previous + "x"`,
+  nothing, except that a locus publishing what it carries of its own
+  `self` may be its own subscriber: its handlers whose subjects that
+  publish may reach (two literal subjects or two topic names written
+  alike; anything else is taken to meet) receive what the payload
+  carries. A message from another locus is taken as fresh. So `let previous = self.log; self.log = previous + "x"`,
   `self.log = self.previous() + "x"`, `self.log = wrap(self.log) +
   "x"` and `fn append(p: String) { self.log = p + "x"; }` called as
   `self.append(self.log)` are appends and reported, as `self.log =

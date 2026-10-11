@@ -303,7 +303,13 @@ value that did not spell `self.<f>` (`let previous = self.log;
 self.log = previous + "x"`, `self.log = self.previous() + "x"`), a
 second took every parameter to carry nothing (`fn append(p: String) {
 self.log = p + "x"; }` called as `self.append(self.log)`); all append
-to the live value as `self.log = self.log + "x"` does. DNA, final:
+to the live value as `self.log = self.log + "x"` does; a third took a
+left parameter's default to read only `self` syntactically, where Hale
+evaluates it in the caller's scope (`fn append(p: String = old)` with
+the caller's `let old = self.log; self.append();`), now evaluated there
+as the call's argument, with struct-literal field defaults alike and a
+locus's publishes into its own handlers (a message from another locus
+stays fresh: provenance does not cross loci). DNA, final:
 12 decorators silence nothing in any program (0 before; 29 under the
 first cut, 19 under the second; the difference is replaces whose value
 comes from a `self` method's result or a parameter some caller passes
