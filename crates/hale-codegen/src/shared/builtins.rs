@@ -668,6 +668,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_str_clone", str_clone_ty, None);
+        // GH #1490: the anchor clone of a String field stored into a
+        // field of `self` (a struct replaced whole), in a field block
+        // the replace after it retires at its size class.
+        // declare ptr @lotus_str_clone_slot(ptr arena, ptr s)
+        self.module
+            .add_function("lotus_str_clone_slot", str_clone_ty, None);
         // declare ptr @lotus_str_assign_in_place(ptr arena, ptr old, ptr new)
         // declare ptr @lotus_bytes_assign_in_place(ptr arena, ptr old, ptr new)
         // — used at the `self.X = String|Bytes` field-assign site to

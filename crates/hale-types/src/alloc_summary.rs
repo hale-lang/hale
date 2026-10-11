@@ -2814,6 +2814,7 @@ pub fn summarize_identified(
             self_replace: None,
             let_call: None,
             in_place_sites: Vec::new(),
+            retired_init: false,
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -4753,6 +4754,9 @@ struct Walker<'a> {
     let_call: Option<(Span, Span)>,
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
+    /// GH #1490 (step 4): the expression walked next is a whole field
+    /// of a retired struct replace (`AllocSite::retired_store`).
+    retired_init: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -4886,6 +4890,18 @@ impl<'a> Walker<'a> {
         };
         owner
             .and_then(|o| self.str_fields.get(&o))
+            .and_then(|m| m.get(name).copied())
+            .unwrap_or(StrTy::Other)
+    }
+
+    /// The String-ness of the enclosing locus's field `name`.
+    fn self_field_str(&self, name: &str) -> StrTy {
+        if self.field_types.get(name).is_some_and(|t| t == "String") {
+            return StrTy::Str;
+        }
+        self.enclosing_locus
+            .as_ref()
+            .and_then(|l| self.str_fields.get(l))
             .and_then(|m| m.get(name).copied())
             .unwrap_or(StrTy::Other)
     }
@@ -5588,13 +5604,20 @@ impl<'a> Walker<'a> {
                 let mut site = self.site(AllocKind::StructLit(name), escape, depth, *span);
                 site.bare_stmt = self.bare_stmt.take() == Some(*span);
                 site.self_replace = self.self_replace.take().filter(|(v, _)| v == span).map(|(_, s)| s);
+                let retired = site.retired_store;
                 if inplace_no_heap {
                     self.in_place_sites.push(site);
                 } else {
                     self.sites.push(site);
                 }
                 for si in inits {
+                    // GH #1490 (step 4): a concatenation that is a whole
+                    // field of a struct replaced whole into `self` is one
+                    // of the String fields the store retires
+                    // (`lotus_str_field_replace_fixup`).
+                    self.retired_init = retired && matches!(&si.value, Expr::Binary { op: BinOp::Add, .. });
                     self.walk_expr(&si.value, depth, escape);
+                    self.retired_init = false;
                 }
             }
             Expr::Array(xs, span) => {
@@ -5625,10 +5648,27 @@ impl<'a> Walker<'a> {
             // certificate that ignores the most common way Hale code
             // allocates is worse than no certificate — it reads as proof.
             Expr::Binary { left, right, op, .. } => {
+                let retired_init = std::mem::take(&mut self.retired_init);
                 if matches!(op, BinOp::Add)
                     && (self.is_string_expr(left) || self.is_string_expr(right))
                 {
                     let span = left.span().merge(right.span());
+                    // GH #1490 (step 4): the concatenation is the whole
+                    // new value of a String field of `self` — a replace,
+                    // not an append when it does not read the field.
+                    // The store retires the value it replaces at the
+                    // field's size class (`lotus_str_assign_in_place`),
+                    // so the field holds one value of at most its
+                    // largest class: store-latest, judged as Gap D's
+                    // struct replace (`retired_store`).
+                    let target_field = if escape == Escape::StoredToSelf {
+                        self.store_target.clone()
+                    } else {
+                        None
+                    };
+                    let retired_store = target_field.as_deref().is_some_and(|f| {
+                        (retired_init || self.self_field_str(f) == StrTy::Str) && !reads_self_field(expr, f)
+                    });
                     self.sites.push(AllocSite {
                         kind: AllocKind::StringConcat,
                         escape,
@@ -5642,8 +5682,8 @@ impl<'a> Walker<'a> {
                             .iter()
                             .any(|i| *i),
                         reclaim: ReclaimScope::EnclosingLocus,
-                        target_field: None,
-                        retired_store: false,
+                        target_field,
+                        retired_store,
                         in_loop: self.loops_as_written > 0,
                         bare_stmt: false,
                         self_replace: None,
@@ -5844,6 +5884,36 @@ impl<'a> Walker<'a> {
             span,
             callee_span: callee.span(),
         });
+    }
+}
+
+/// GH #1490 (step 4): does `e` read `self.<field>` — the new value of a
+/// field store incorporating the old one, an append (`self.log =
+/// self.log + x`) rather than a replace? An expression this does not
+/// walk counts as reading it, so an append is never taken for a
+/// replace.
+fn reads_self_field(e: &Expr, field: &str) -> bool {
+    match e {
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => false,
+        Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+            (matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == field)
+                || reads_self_field(receiver, field)
+        }
+        Expr::Binary { left, right, .. } => reads_self_field(left, field) || reads_self_field(right, field),
+        Expr::Unary { .. } => true,
+        Expr::Call { callee, args, .. } => {
+            reads_self_field(callee, field) || args.iter().any(|a| reads_self_field(a, field))
+        }
+        Expr::Index { receiver, index, .. } => reads_self_field(receiver, field) || reads_self_field(index, field),
+        Expr::Or { inner, disposition, .. } => {
+            reads_self_field(inner, field)
+                || match disposition {
+                    OrDisposition::Substitute(x) => reads_self_field(x, field),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => false,
+                    _ => true,
+                }
+        }
+        _ => true,
     }
 }
 
@@ -7047,6 +7117,93 @@ mod tests {
             .map(|l| l.escape)
             .collect();
         assert_eq!(leaks, vec![Escape::StoredToSelf]);
+    }
+
+    // === GH #1490 (step 4): a String field replaced whole =============
+
+    fn field_leaks(src: &str, owner: &str) -> Vec<Escape> {
+        summarize(src)
+            .leak_sites()
+            .into_iter()
+            .filter(|l| l.owner.fn_name == owner)
+            .map(|l| l.escape)
+            .collect()
+    }
+
+    #[test]
+    fn a_string_field_replaced_whole_is_store_latest() {
+        // The store retires the value it replaces at the field's size
+        // class, so the field holds one value however often a handler
+        // replaces it (alloc_model_rss.rs::
+        // a_string_field_replace_of_varying_length_stays_flat).
+        for value in ["\"v.\" + piece(m)", "piece(m) + \"!\"", "self.tag + to_string(m)"] {
+            let src = format!(
+                "fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+                 locus App {{
+                     params {{ last: String = \"\"; tag: String = \"t\"; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ self.last = {value}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            );
+            let leaks = field_leaks(&src, "on_t");
+            assert!(leaks.is_empty(), "`self.last = {value}` is store-latest: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn a_concatenated_field_of_a_struct_replaced_whole_is_store_latest() {
+        // Gap D's struct replace retires its top-level String fields;
+        // a concatenation that is one of them is retired with it. One
+        // that reads the field it replaces is an append, and stays.
+        let src = |value: &str| {
+            format!(
+                "type Cell {{ s: String = \"\"; n: Int = 0; }}
+                 locus App {{
+                     params {{ st: Cell = Cell {{ }}; }}
+                     bus {{ subscribe \"t\" as on_t of type Int; }}
+                     fn on_t(m: Int) {{ self.st = Cell {{ s: {value}, n: m }}; }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        assert!(field_leaks(&src("\"v.\" + to_string(m)"), "on_t").is_empty());
+        assert_eq!(field_leaks(&src("self.st.s + \"x\""), "on_t"), vec![Escape::StoredToSelf]);
+    }
+
+    #[test]
+    fn a_string_field_append_and_a_boundaryless_replace_stay_reported() {
+        // An append keeps every value it was built from.
+        let append = r#"
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { self.log = self.log + "x" + to_string(m); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert_eq!(field_leaks(append, "on_t"), vec![Escape::StoredToSelf]);
+        // A replace directly in run's loop never reaches the activation
+        // boundary its retires wait for.
+        let in_run = r#"
+            locus App {
+                params { last: String = ""; n: Int = 10; }
+                run() { let mut i = 0; while i < self.n { self.last = "v." + to_string(i); i = i + 1; } }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert_eq!(field_leaks(in_run, "run"), vec![Escape::StoredToSelf]);
+        // A field that is not a String (an Int `+`) records no site, and
+        // a store into a local is no field replace.
+        let local = r#"
+            locus App {
+                params { sink: Int = 0; }
+                bus { subscribe "t" as on_t of type Int; }
+                fn on_t(m: Int) { let mut s = ""; let mut i = 0; while i < m { s = s + "x"; i = i + 1; } self.sink = self.sink + len(s); }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(local, "on_t").is_empty());
     }
 
     #[test]

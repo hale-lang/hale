@@ -1064,8 +1064,9 @@ fn startable_moves(target: &str) -> Option<Vec<String>> {
 /// host's verb program moves: it starts no locus with a hook or a
 /// handler, so it runs to exit, and every leak site of its fns goes —
 /// counted by the seed the fn is declared in (the host's 629, the core's
-/// 160, …; GH #1490's step 3 typed more concatenations: 565 and 145
-/// before it). The correction only narrows: no target gains a site. The old
+/// 157, …; GH #1490's step 3 typed more concatenations, 565 and 145
+/// before it, and step 4 made a String field replaced whole
+/// store-latest). The correction only narrows: no target gains a site. The old
 /// answer is the corrected summary with `startable` cleared.
 #[test]
 fn startable_only_the_verb_program_runs_to_exit() {
@@ -1081,11 +1082,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 160",
+                "dna__core: 157",
                 "dna__core__pond__pq: 11",
-                "dna__core__pond__realtime__nats: 4",
+                "dna__core__pond__realtime__nats: 2",
                 "dna__host: 629",
-                "dna__operations: 140",
+                "dna__operations: 138",
                 "the stdlib's copy: 1",
             ])
         )]

@@ -253,3 +253,45 @@ a test, which step 4 makes store-latest); and `dna/host`'s
 command line, now `@bounded_by(argv)` beside `parse_args`. No decorator
 stopped silencing; three silence more (`GitJournal::landed`,
 `Review::consider`, `Host::fleet_window`).
+
+**Step 4, the replaced field — the runtime lever, then the model**
+(structure-and-bounds plan). C3's measurement named the lever; it is
+built. Once a locus replaces a `String` field, the field's values take
+blocks from size classes of their own (`lotus_slot_alloc` in
+`lotus_arena.c`: 16-byte steps to 128 bytes, then four classes per power
+of two, to 16 MiB), each its class's whole capacity. A per-arena
+capacity table (block -> class; allocated at the arena's first replace,
+one entry per field value it keeps) lets the retire
+(`lotus_slot_retire`) file the block at its real size whatever value it
+last held, on its class's own list, where the next value of that class
+takes it from the head — no probe window, no shrinking. The compound
+store's anchor walk clones a struct's top-level `String` fields into the
+same blocks (`lotus_str_clone_slot`), so Gap D is covered by the same
+fix, by measurement. Design notes: the table is the smallest correct
+record of a block's capacity — a String carries only its length, and a
+header would have to be readable on every block a slot can hold,
+including ones no field allocated (a field's first value, set at
+instantiation); a block the table does not know is retired at its
+length, as before. Nothing changes on the arena's fast path
+(`lotus_arena_alloc`), and the general freelist (map cells, vec
+elements, Bytes) is untouched. Cost: rounding a field value up to its
+class (under 16 bytes, or a quarter above 128), and ~200 bytes of
+malloc'd state per locus that replaces a String field.
+
+Measured (self-RSS / max RSS, release build): 1M replaces in a method at
+lengths 6–55, 35.5 MB -> 4.7 MB and 1.11 s -> 0.08 s; a one-String-field
+struct at lengths 6–55, 36 MB -> 4.7 MB and 0.62 s -> 0.08 s; a bus
+handler, 500k messages at lengths 6–55, 20.9 MB -> 5.1 MB; the steady
+length, a two-String struct churn, a hashmap value churn and the C2
+accumulator unchanged (4.7–5.1 MB, same times); all clean under
+AddressSanitizer with the chunk pool off. The model then moved: a
+concatenation that is the whole new value of a `String` field of `self`,
+or a whole field of a struct replaced whole, and does not read the field
+it replaces, is `retired_store` (store-latest, judged as Gap D: not
+reported from a frame with an activation boundary; reported in a `run()`
+loop, a scratchless frame, or as an append). DNA: 29 decorators now
+silence nothing in any program (0 before); `hale check` warning lines
+over every DNA program 590 -> 586 (the NATS adapter's two replaces, one
+test's, and `Ui::discovered`); the survey sites the decorators silence
+fall from 205 / 168 / 176 / 156 to 146 / 113 / 121 / 102 (host,
+operations, api, core).

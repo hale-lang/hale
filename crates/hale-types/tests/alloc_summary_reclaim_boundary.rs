@@ -265,7 +265,9 @@ fn stores_and_bus_payloads() {
         fn_block(&dump, "App::keep"),
         [
             "fn App::keep [invoked-unboundedly]",
-            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve @155..162",
+            // GH #1490 (step 4): a concatenation stored whole into a
+            // field names the field, as a struct literal's store does.
+            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve @155..162 ->self.last",
         ]
     );
     assert_eq!(dump, old_model(&now).render(), "nothing here moves");

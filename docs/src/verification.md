@@ -198,7 +198,11 @@ however it is spelled: the survey types each operand from what you
 declared — a `String` parameter, field or annotated `let`, a `let`
 initialized from one, a function or method declared `-> String`,
 `to_string(x)` — so `out = out + piece(i)` is the same accumulator as
-`out = out + "x"`, and `i + 1` is never a concatenation.
+`out = out + "x"`, and `i + 1` is never a concatenation. A
+`String` field replaced whole in a method or handler (`self.last =
+"seen " + id`) holds one value, its largest at most — the store
+retires what it replaces and the next value reuses the block — so it
+is not reported; an append (`self.log = self.log + line`) is.
 `--dump-alloc-summary` tags each scratch-local function,
 and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.

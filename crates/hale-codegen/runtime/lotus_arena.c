@@ -450,6 +450,12 @@ typedef struct lotus_arena {
     void                *retire_shells;
     void                *retire_free;
     void                *retire_free_small;
+    /* GH #1490 (step 4): the String-field slot reuse state — the
+     * size-classed free lists a replaced field value goes back to and
+     * the capacity table of the blocks handed out from them. NULL
+     * until the arena's first String field store; freed at destroy.
+     * See lotus_slot_reuse_t. */
+    void                *slot_reuse;
     /* 2026-06-13: set to 1 only on the shared g_bus_payload_arena. That
      * arena is reachable lock-free via lotus_caller_arena_or_global() (the
      * fallback when the per-thread caller_arena TLS is unset) — e.g. a
@@ -1702,6 +1708,7 @@ static void lotus_arena_init_struct(lotus_arena_t *a) {
     a->retire_shells = NULL;
     a->retire_free = NULL;
     a->retire_free_small = NULL;
+    a->slot_reuse = NULL;
     a->numa_node = -1;  /* topology arena-on-node: unbound by default */
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
@@ -2638,6 +2645,188 @@ void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
  * Codegen emits this at instantiation for a @form locus hosting a
  * SYNCED hashmap, whose blobs are allocated, retired and flushed
  * from more than one pool. Idempotent. */
+/* ── GH #1490 (step 4): String-field slot reuse ──────────────────
+ *
+ * `self.f = <String>` retires the value it replaces
+ * (lotus_str_assign_in_place, and lotus_str_field_replace_fixup for
+ * a String field of a struct replaced whole). The general reuse
+ * freelist could not make that store-latest: a retired block is
+ * recorded at its value's strlen+1, the only size record a String
+ * carries, so a block reused for a shorter value is retired again
+ * at the shorter size and its slack is lost — a block only ever
+ * shrank, and a field whose value varied in length kept
+ * bump-allocating (~31 B per replace at lengths 6..55).
+ *
+ * A field's blocks therefore come from size classes of their own.
+ * A value of `size` bytes (strlen+1) is stored in a block of its
+ * class's whole capacity (lotus_slot_class_cap: 16-byte steps to
+ * 128, then four classes per power of two, so the slack is under
+ * 16 bytes or a quarter); the capacity table records which class
+ * each such block belongs to, so the retire knows the block's true
+ * capacity whatever value it holds, and the flush files it on its
+ * class's list, where the next value of that class takes it from
+ * the head. A field's memory is then bounded by its largest value's
+ * class (times the replaces one activation keeps pending), however
+ * its length varies. A block the table does not know (a field's
+ * first value, set by the instantiation; anything above the largest
+ * class) is retired at its strlen+1 through the general freelists,
+ * as before.
+ *
+ * Only the field-store paths use this, and only once a field is
+ * REPLACED: an arena's state is allocated at its first replace of a
+ * String field (a pointer in the arena struct until then), so a locus
+ * that sets its fields once pays nothing. The table then holds one
+ * entry per field value the locus keeps, and the class lists one head
+ * per class its fields have used. Guarded by retire_lock like the
+ * other retire lists. */
+#define LOTUS_SLOT_MAX ((size_t)1 << 24)
+
+typedef struct lotus_slot_head {
+    void    *head;        /* blocks linked through their first 8 bytes */
+    uint32_t cls;
+} lotus_slot_head_t;
+
+typedef struct lotus_slot_reuse {
+    lotus_slot_head_t *heads;   /* the classes used, in first-use order */
+    uint32_t nheads, capheads;
+    void   **keys;        /* open addressing, linear probe */
+    uint8_t *cls;
+    size_t   cap;         /* power of two, or 0 */
+    size_t   len;
+} lotus_slot_reuse_t;
+
+/* The class of a value of `size` bytes, or -1 above the largest. */
+static int lotus_slot_class(size_t size) {
+    if (size == 0 || size > LOTUS_SLOT_MAX) return -1;
+    if (size <= 128) return (int)((size + 15) / 16) - 1;
+    int k = 63 - __builtin_clzll((unsigned long long)(size - 1));
+    size_t base = (size_t)1 << k;
+    size_t step = base >> 2;
+    int idx = (int)((size - base + step - 1) / step);  /* 1..4 */
+    return 8 + (k - 7) * 4 + (idx - 1);
+}
+
+static size_t lotus_slot_class_cap(int c) {
+    if (c < 8) return (size_t)16 * (size_t)(c + 1);
+    int j = c - 8;
+    int k = 7 + j / 4;
+    return ((size_t)1 << k) + (size_t)(j % 4 + 1) * ((size_t)1 << (k - 2));
+}
+
+static size_t lotus_slot_hash(const void *p, size_t cap) {
+    uint64_t h = ((uint64_t)(uintptr_t)p) * 0x9E3779B97F4A7C15ull;
+    return (size_t)(h >> 20) & (cap - 1);
+}
+
+static int lotus_slot_tab_grow(lotus_slot_reuse_t *r) {
+    size_t ncap = r->cap ? r->cap * 2 : 8;
+    void **nk = (void **)calloc(ncap, sizeof(void *));
+    uint8_t *nc = (uint8_t *)malloc(ncap);
+    if (!nk || !nc) { free(nk); free(nc); return 0; }
+    for (size_t i = 0; i < r->cap; i++) {
+        void *k = r->keys[i];
+        if (!k) continue;
+        size_t j = lotus_slot_hash(k, ncap);
+        while (nk[j]) j = (j + 1) & (ncap - 1);
+        nk[j] = k;
+        nc[j] = r->cls[i];
+    }
+    free(r->keys);
+    free(r->cls);
+    r->keys = nk;
+    r->cls = nc;
+    r->cap = ncap;
+    return 1;
+}
+
+/* Record that block `p` has class `c`. A table that cannot grow
+ * drops the record: the block is then retired at its strlen+1, as a
+ * block the table never knew, which is safe. */
+static void lotus_slot_tab_put(lotus_slot_reuse_t *r, void *p, int c) {
+    if ((r->len + 1) * 2 > r->cap && !lotus_slot_tab_grow(r)) return;
+    size_t j = lotus_slot_hash(p, r->cap);
+    while (r->keys[j] && r->keys[j] != p) j = (j + 1) & (r->cap - 1);
+    if (!r->keys[j]) r->len++;
+    r->keys[j] = p;
+    r->cls[j] = (uint8_t)c;
+}
+
+/* Take block `p`'s record out of the table: its class, or -1 when
+ * the table does not know it. Backward-shift deletion keeps every
+ * probe chain unbroken without tombstones. */
+static int lotus_slot_tab_take(lotus_slot_reuse_t *r, const void *p) {
+    if (!r->cap) return -1;
+    size_t mask = r->cap - 1;
+    size_t j = lotus_slot_hash(p, r->cap);
+    while (r->keys[j] != p) {
+        if (!r->keys[j]) return -1;
+        j = (j + 1) & mask;
+    }
+    int c = r->cls[j];
+    size_t hole = j;
+    size_t i = (j + 1) & mask;
+    while (r->keys[i]) {
+        size_t home = lotus_slot_hash(r->keys[i], r->cap);
+        /* Move i into the hole unless its home lies cyclically in
+         * (hole, i]. */
+        int stays = (hole <= i) ? (home > hole && home <= i)
+                                : (home > hole || home <= i);
+        if (!stays) {
+            r->keys[hole] = r->keys[i];
+            r->cls[hole] = r->cls[i];
+            hole = i;
+        }
+        i = (i + 1) & mask;
+    }
+    r->keys[hole] = NULL;
+    r->len--;
+    return c;
+}
+
+/* Class `c`'s list head, added when `create` (NULL when absent, or
+ * when it cannot be added). */
+static void **lotus_slot_head(lotus_slot_reuse_t *r, int c, int create) {
+    for (uint32_t i = 0; i < r->nheads; i++) {
+        if (r->heads[i].cls == (uint32_t)c) return &r->heads[i].head;
+    }
+    if (!create) return NULL;
+    if (r->nheads == r->capheads) {
+        uint32_t ncap = r->capheads ? r->capheads * 2 : 4;
+        lotus_slot_head_t *nh = (lotus_slot_head_t *)realloc(
+            r->heads, ncap * sizeof(lotus_slot_head_t));
+        if (!nh) return NULL;
+        r->heads = nh;
+        r->capheads = ncap;
+    }
+    r->heads[r->nheads].head = NULL;
+    r->heads[r->nheads].cls = (uint32_t)c;
+    return &r->heads[r->nheads++].head;
+}
+
+/* The flush's half: file a retired block on its class list. The
+ * block is dead (its activation ended), so its first 8 bytes hold
+ * the link. Returns 0 when the list cannot be grown; the caller then
+ * files the block on the general freelist at its class's capacity,
+ * which is its true size. Caller holds retire_lock. */
+static int lotus_slot_reuse_push(lotus_arena_t *a, void *blob, int c) {
+    lotus_slot_reuse_t *r = (lotus_slot_reuse_t *)a->slot_reuse;
+    void **h = lotus_slot_head(r, c, 1);
+    if (!h) return 0;
+    memcpy(blob, h, sizeof(void *));
+    *h = blob;
+    return 1;
+}
+
+static void lotus_slot_reuse_free(lotus_arena_t *a) {
+    lotus_slot_reuse_t *r = (lotus_slot_reuse_t *)a->slot_reuse;
+    if (!r) return;
+    a->slot_reuse = NULL;
+    free(r->heads);
+    free(r->keys);
+    free(r->cls);
+    free(r);
+}
+
 void lotus_arena_mark_shared(void *arena_ptr) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (a) a->shared_concurrent = 1;
@@ -2746,6 +2935,7 @@ void lotus_arena_destroy(lotus_arena_t *a) {
      * (unlike subregion_lock's static init), so it is destroyed
      * unconditionally too. */
     pthread_mutex_destroy(&a->retire_lock);
+    lotus_slot_reuse_free(a);
     free(a);
 }
 
@@ -2846,6 +3036,7 @@ static void lotus_recpool_init_cell_arena(char *cell_base, size_t cell_bytes) {
     a->free_cap           = 0;
     a->next_slot          = 0;
     a->fixed_size         = 1;
+    a->slot_reuse         = NULL;
 }
 
 static size_t lotus_recpool_bitmap_words_for(size_t cap_count) {
@@ -2910,6 +3101,9 @@ void lotus_recpool_fixed_release(lotus_recpool_fixed_t *p,
     if (off % p->cell_stride != 0) return;
     size_t slot = off / p->cell_stride;
     if (slot >= p->cap_count) return;
+    /* GH #1490: the cell's String-field reuse state is malloc'd; the
+     * next acquire re-initializes the inline arena without it. */
+    lotus_slot_reuse_free(arena);
     p->bitmap[slot / 64] &= ~((uint64_t)1 << (slot % 64));
     /* Cell content stays valid-looking until the next acquire
      * re-initializes the inline arena. No memset — matches the
@@ -2950,6 +3144,7 @@ lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
     a->free_cap           = 0;
     a->next_slot          = 0;
     a->fixed_size         = 1;
+    a->slot_reuse         = NULL;
     p->slab_arena = a;
     return p;
 }
@@ -5690,14 +5885,18 @@ typedef struct lotus_retire_shell {
     void *blob;                    /* [i64 len][bytes][NUL] blob   */
     size_t size;                   /* full block size              */
     struct lotus_retire_shell *next;
+    /* GH #1490: the slot size class a String-field block goes back
+     * to at the flush (lotus_slot_reuse_t), or -1 for the general
+     * freelists. */
+    int cls;
 } lotus_retire_shell_t;
 
 /* Shared retire core: track (blob, size) on the pending list.
  * Gates: in THIS arena (contains_ptr also excludes .rodata
  * literals) and non-NULL. The blob's bytes stay intact until the
  * flush. */
-static void lotus_arena_retire_sized(lotus_arena_t *a, void *blob,
-                                     size_t size) {
+static void lotus_arena_retire_sized_cls(lotus_arena_t *a, void *blob,
+                                         size_t size, int cls) {
     if (!a || !blob) return;
     if (!lotus_arena_contains_ptr(a, blob)) return;
     lotus_retire_lock(a);
@@ -5711,6 +5910,7 @@ static void lotus_arena_retire_sized(lotus_arena_t *a, void *blob,
     }
     sh->blob = blob;
     sh->size = size;
+    sh->cls = cls;
     sh->next = (lotus_retire_shell_t *)a->retire_pending;
     a->retire_pending = sh;
     lotus_retire_unlock(a);
@@ -5736,7 +5936,7 @@ void lotus_arena_retire_str(void *arena_ptr, char *s) {
      * recycle too — the 2026-07-17 fix for the downstream ~128 B/frame
      * churned-recorded-state-map leak, where sub-16-byte values were
      * previously dropped at flush and leaked. */
-    lotus_arena_retire_sized(a, s, strlen(s) + 1);
+    lotus_arena_retire_sized_cls(a, s, strlen(s) + 1, -1);
 }
 
 /* Bytes companion (2026-07-18): blobs are `[int64 len][payload]` at
@@ -5754,7 +5954,7 @@ void lotus_arena_retire_bytes(void *arena_ptr, void *b) {
     int64_t len;
     memcpy(&len, b, sizeof(int64_t));
     if (len < 0) len = 0;
-    lotus_arena_retire_sized(a, b, sizeof(int64_t) + (size_t)len);
+    lotus_arena_retire_sized_cls(a, b, sizeof(int64_t) + (size_t)len, -1);
 }
 
 /* Install the retire descriptor on a map (codegen, once at
@@ -5809,6 +6009,7 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
         }
         sh->blob = blob;
         sh->size = size;
+        sh->cls = -1;
         sh->next = (lotus_retire_shell_t *)a->retire_free_small;
         a->retire_free_small = sh;
     }
@@ -5883,7 +6084,16 @@ void lotus_arena_flush_retired(void *arena_ptr) {
     a->retire_pending = NULL;
     while (sh) {
         lotus_retire_shell_t *next = sh->next;
-        if (sh->size >= 16) {
+        if (sh->cls >= 0 && a->slot_reuse &&
+            lotus_slot_reuse_push(a, sh->blob, sh->cls)) {
+            /* GH #1490: a String field's block goes back to its own
+             * size class, whole: every block on a class list has
+             * exactly that class's capacity (>= 16, so the 8-byte
+             * link fits), and the next store of any value of the
+             * class takes it from the head. */
+            sh->next = (lotus_retire_shell_t *)a->retire_shells;
+            a->retire_shells = sh;
+        } else if (sh->size >= 16) {
             /* String blobs are align-1; unaligned on purpose
              * (fine on x86-64, the only native target). The block
              * is >= 16 bytes, so it can carry the 16-byte intrusive
@@ -15261,6 +15471,88 @@ static char *lotus_str_copy_owned(lotus_arena_t *a, const char *s) {
     return out;
 }
 
+
+/* GH #1490 (step 4): a block for a String field's value of `size`
+ * bytes — its class's whole capacity, from the class's list when a
+ * retired one is there, else bumped — recorded in the capacity
+ * table. `replacing`: the store replaces a value the arena holds,
+ * which allocates the arena's slot state on its first time; before
+ * that (a field's first values) and above the largest class, the
+ * general reusable path at the exact size, as before. */
+static char *lotus_slot_alloc(lotus_arena_t *a, size_t size, int replacing) {
+    int c = lotus_slot_class(size);
+    if (c < 0) return (char *)lotus_arena_alloc_reusable(a, size, 1);
+    lotus_retire_lock(a);
+    lotus_slot_reuse_t *r = (lotus_slot_reuse_t *)a->slot_reuse;
+    if (!r) {
+        r = replacing
+            ? (lotus_slot_reuse_t *)calloc(1, sizeof(lotus_slot_reuse_t))
+            : NULL;
+        if (!r) {
+            lotus_retire_unlock(a);
+            return (char *)lotus_arena_alloc_reusable(a, size, 1);
+        }
+        a->slot_reuse = r;
+    }
+    void **h = lotus_slot_head(r, c, 0);
+    char *b = h ? (char *)*h : NULL;
+    if (b) {
+        memcpy(h, b, sizeof(void *));
+    }
+    lotus_retire_unlock(a);
+    if (!b) {
+        b = (char *)lotus_arena_alloc(a, lotus_slot_class_cap(c), 1);
+        if (!b) return NULL;
+    }
+    lotus_retire_lock(a);
+    lotus_slot_tab_put(r, b, c);
+    lotus_retire_unlock(a);
+    return b;
+}
+
+/* An owned copy of `s` in a field block of `a`. */
+static char *lotus_slot_copy(lotus_arena_t *a, const char *s, int replacing) {
+    size_t n = strlen(s);
+    char *out = lotus_slot_alloc(a, n + 1, replacing);
+    if (!out) return NULL;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+
+/* Retire a String field's replaced value: at its class's capacity
+ * when the table knows the block, so the flush files it whole on
+ * that class's list; at its strlen+1 through the general freelists
+ * otherwise (lotus_arena_retire_str's gates apply either way). */
+static void lotus_slot_retire(lotus_arena_t *a, char *s) {
+    if (!a || !s) return;
+    if (!lotus_arena_contains_ptr(a, s)) return;
+    int c = -1;
+    if (a->slot_reuse) {
+        lotus_retire_lock(a);
+        c = lotus_slot_tab_take((lotus_slot_reuse_t *)a->slot_reuse, s);
+        lotus_retire_unlock(a);
+    }
+    if (c < 0) {
+        lotus_arena_retire_str(a, s);
+        return;
+    }
+    lotus_arena_retire_sized_cls(a, s, lotus_slot_class_cap(c), c);
+}
+
+/* The anchor clone of a struct's top-level String field stored whole
+ * into a field of `self` (codegen's compound self-field store): what
+ * lotus_str_clone does, with a field block for the copy, so the
+ * fixup that follows can retire it at its class when the next store
+ * replaces it. A same-arena value passes through, and the fixup
+ * makes the owned copy. */
+char *lotus_str_clone_slot(lotus_arena_t *a, const char *s) {
+    if (!s) return NULL;
+    if (lotus_str_is_static_literal(s)) return (char *)s;
+    if (lotus_ptr_in_arena(a, s)) return (char *)s;
+    return lotus_slot_copy(a, s, 1);   /* the store replaces the struct */
+}
+
 /* Gap A (2026-07-17): post-replace fixup for ONE String field of a
  * compound `self.<field> = Struct { ... }` store. Called by codegen
  * after the rhs bytes are memcpy'd over the existing struct, once
@@ -15293,9 +15585,10 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
     if (!a || !slot) return;
     char *ap = *slot;
     if (ap == oldp) return;
-    lotus_arena_retire_str(a, oldp);
+    /* GH #1490: a field block retires at its class's capacity. */
+    lotus_slot_retire(a, oldp);
     if (ap && ap == rawp && lotus_ptr_in_arena(a, ap)) {
-        char *own = lotus_str_copy_owned(a, ap);
+        char *own = lotus_slot_copy(a, ap, 1);
         if (own) *slot = own;
     }
 }
@@ -15355,18 +15648,18 @@ char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
      * overwrite silently mutated this slot too — and a shared blob
      * must never be retired. Force an owned copy instead; the
      * static-literal and cross-arena paths keep the clone-skip. */
+    /* GH #1490 (step 4): every block this stores is a field block
+     * (lotus_slot_alloc), retired at its class's capacity when the
+     * next store replaces it, so the field reuses it for any later
+     * value of that class. */
     if (!old) {
-        if (lotus_ptr_in_arena(a, new_s)) {
-            return lotus_str_copy_owned(a, new_s);
-        }
-        return lotus_str_clone(a, new_s);
+        if (lotus_str_is_static_literal(new_s)) return (char *)new_s;
+        return lotus_slot_copy(a, new_s, 0);
     }
     if (old == new_s) return old;
     if (lotus_str_is_static_literal(old)) {
-        if (lotus_ptr_in_arena(a, new_s)) {
-            return lotus_str_copy_owned(a, new_s);
-        }
-        return lotus_str_clone(a, new_s);
+        if (lotus_str_is_static_literal(new_s)) return (char *)new_s;
+        return lotus_slot_copy(a, new_s, 0);
     }
     /* old is an arena-owned NUL-terminated buffer, and its block is
      * exactly strlen(old)+1 bytes: every producer allocates that, and
@@ -15390,18 +15683,21 @@ char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
      * a field alternating between a heap value and an empty one
      * leaked one block per cycle. Never shrinking keeps strlen+1 the
      * block's true size, so every retire here is exact and the next
-     * write of that size reuses it. */
-    lotus_arena_retire_str(a, old);
+     * write of that size reuses it.
+     *
+     * GH #1490 (step 4): the strlen+1 record still lost a block's
+     * slack once the general freelist handed it to a shorter value,
+     * so a field whose length varied kept growing. A field block is
+     * retired at its size class's capacity instead, and the next
+     * value of that class reuses it (lotus_slot_alloc). */
+    lotus_slot_retire(a, old);
     if (lotus_str_is_static_literal(new_s)) {
         return (char *)new_s;         /* a literal needs no block */
     }
     if (new_len == 0) {
         return (char *)"";            /* nor does an empty value */
     }
-    if (lotus_ptr_in_arena(a, new_s)) {
-        return lotus_str_copy_owned(a, new_s);
-    }
-    return lotus_str_clone(a, new_s);
+    return lotus_slot_copy(a, new_s, lotus_ptr_in_arena(a, old));
 }
 
 /* lotus_bytes_clone is defined further down (alongside the
@@ -21918,6 +22214,7 @@ static void lotus_bus_call_arena_close(lotus_arena_t *a) {
     lotus_arena_chunk_t *c = a->head;
     int *fl = a->free_list;
     pthread_mutex_destroy(&a->retire_lock);
+    lotus_slot_reuse_free(a);
     if (fl) free(fl);
     /* The host chunk — the one carrying `a` — is the list's last
      * element (later chunks push at the head), so nothing below reads

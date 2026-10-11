@@ -2675,24 +2675,34 @@ assume the others in a build:
   `run()`-loop (no activation boundary — pending retires never
   flush), and scratchless owners.
 
-  **A `String` field replaced whole stays reported** (GH #1490). A
-  `self.<f> = <fresh String>` store retires the replaced block at the
-  activation boundary too (`lotus_str_assign_in_place`), but the
-  runtime reuses a retired block only when the next value's size fits
-  it within a short probe window, and a reused block is retired again
-  at its new value's length, so the slack of a longer block that took
-  a shorter value is lost. A value of near-constant length recycles; a
-  value whose length varies keeps bump-allocating into the locus
-  arena — measured over 1M replaces in a method, lengths 7–8 stay at
-  the 4.6 MB floor while lengths 6–55 reach 35.7 MB (the locus arena
-  alone 15.6 MiB after 500k; a bus handler, 500k messages: 24.5 MB
-  against 9.3 MB). The survey cannot see a value's length, so the
-  replace is reported as before
-  (`alloc_model_rss.rs::a_string_field_replace_of_varying_length_grows`).
-  The struct replace this flip excuses recycles its `String` fields
-  through the same reuse and has the same limit: its "flat" holds for
-  near-constant lengths (the measurement above used 7–8 characters);
-  with lengths 6–15 one `String` field grows ~15 B per replace.
+  **A `String` field replaced whole is store-latest** (GH #1490, step
+  4). A `self.<f> = <String>` store retires the value it replaces
+  (`lotus_str_assign_in_place`), and the field's next value reuses the
+  block whatever its length: once a locus replaces a String field, the
+  field's values take blocks from size classes of their own (16-byte
+  steps to 128 bytes, then four classes per power of two, to 16 MiB),
+  each block its class's whole capacity, recorded in the arena's
+  capacity table so the retire knows the block's real size whatever
+  value it last held; the activation-boundary flush files the block on
+  its class's list, and the next value of that class takes it. A
+  field's memory is bounded by its largest value (times the replaces one
+  activation leaves pending), however its length varies. A struct
+  replaced whole (the flip above) clones its top-level `String` fields
+  into the same field blocks, so its "flat" holds at any lengths too.
+  The survey models the store as it models that struct replace: a
+  concatenation that is the whole new value of a `String` field of
+  `self` and does not read the field (a replace, not an append) is
+  `retired_store`, so invoked unboundedly from a frame with an
+  activation boundary it is not reported; directly in a `run()` loop or
+  a scratchless frame, and as an append (`self.log = self.log + x`), it
+  is. Measured (`alloc_model_rss.rs`): 1M replaces in a method at
+  lengths 6–55 stay at the 4.7 MB floor of near-constant lengths
+  (before: 35.7 MB), a one-`String`-field struct at lengths 6–55 the
+  same (before: 36 MB), values climbing to ~1 KB over 200k replaces the
+  same; a bus handler, 500k messages at lengths 6–55, 5.1 MB (before:
+  20.9 MB). A field's first values, before its locus's first replace,
+  and a value above 16 MiB take exact-size blocks through the general
+  freelist and are retired at their length, as before.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /
