@@ -27,8 +27,10 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
+
+use child::{bound_port, Stderr};
 
 // The server on an async_io pool, serving until the process drains.
 const SERVE: &str = r#"
@@ -96,6 +98,7 @@ struct Running {
     child: Child,
     port: u16,
     lines: std::sync::mpsc::Receiver<String>,
+    err: Stderr,
 }
 
 impl Drop for Running {
@@ -106,14 +109,15 @@ impl Drop for Running {
 }
 
 impl Running {
+    /// Start `bin` on port 0 and read back the port the kernel gave it.
     fn start(bin: &Path, env: &[(&str, &str)]) -> Running {
-        let port = ports::free_port();
         let mut cmd = Command::new(bin);
-        cmd.arg(port.to_string()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.arg("0").stdout(Stdio::piped()).stderr(Stdio::piped());
         for (k, v) in env {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().expect("spawn the server");
+        let err = Stderr::of(&mut child);
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -121,8 +125,9 @@ impl Running {
                 let _ = tx.send(line);
             }
         });
-        let running = Running { child, port, lines };
+        let mut running = Running { child, port: 0, lines, err };
         running.expect_line("ready");
+        running.port = bound_port(running.child.id(), &running.err);
         running
     }
 
@@ -135,7 +140,7 @@ impl Running {
                 Err(_) => break,
             }
         }
-        panic!("the server never printed `{want}`");
+        panic!("the server never printed `{want}`; stderr:\n{}", self.err.text());
     }
 
     /// The program's exit, and what it wrote to stderr.
@@ -143,11 +148,7 @@ impl Running {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             if let Some(status) = self.child.try_wait().expect("wait") {
-                let mut err = String::new();
-                if let Some(mut e) = self.child.stderr.take() {
-                    let _ = e.read_to_string(&mut err);
-                }
-                return (status, err);
+                return (status, self.err.finished());
             }
             assert!(Instant::now() < deadline, "the program did not end");
             std::thread::sleep(Duration::from_millis(20));
