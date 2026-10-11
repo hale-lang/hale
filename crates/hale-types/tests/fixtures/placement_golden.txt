@@ -1797,6 +1797,25 @@ row	App@literal1.a	Sub	main	default
 row	App@literal1.b	Sub	main	default
 row	Loopback@binding1	Loopback	pinned:Loopback@binding1	binding
 
+== crates/hale-codegen/tests/bus_scope_local_subscriber.rs#0292841a
+root	App	the entry
+domain	pinned:App@literal1.h
+row	App@literal1	App	main	default
+row	App@literal1.h	Host	pinned:App@literal1.h	entry	off owner
+dynamic	Peer	on pinned:App@literal1.h	in the seed
+
+== crates/hale-codegen/tests/bus_scope_local_subscriber.rs#a5bf2e4a
+root	App	the entry
+domain	pool:aio	async_io
+domain	pool:cls
+domain	pinned:App@literal1.p
+row	App@literal1	App	main	default
+row	App@literal1.a	Host	pool:aio	entry	off owner
+row	App@literal1.b	Host	pool:aio	entry	off owner
+row	App@literal1.c	Host	pool:cls	entry	off owner
+row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
+dynamic	Peer	on pool:aio|pool:cls	in the seed
+
 == crates/hale-codegen/tests/bus_subscriber.rs#13a2a6c3
 row	Sub@main1	Sub	main	default
 

@@ -7868,6 +7868,51 @@ typedef struct lotus_reclaim_scope {
 } lotus_reclaim_scope_t;
 static __thread lotus_reclaim_scope_t *t_reclaim_scope = NULL;
 
+/* The reclaim state above is a thread's, kept as stacks that its call
+ * frames push and pop in order: a release entered and left
+ * (`t_reclaim_active`, `t_reclaim_flushing`), a scope entered and left,
+ * the owner hints, the records a handler defers to its end. Coroutines
+ * multiplex an `async_io` pool's worker, and a release parks while it
+ * waits for a handler that holds its child (R52) — so another coroutine
+ * would push onto, flush or pop the parked one's stacks: two scope-local
+ * subscribers dissolving on one pool, each waiting for a parked handler,
+ * left their releases out of order (`lotus_reclaim_release_leave`'s
+ * abort), and a deferred record could be flushed by a handler that does
+ * not own it. A coroutine's reclaim state is its own: a park saves it and
+ * puts back what the drain had when the coroutine took the worker, and a
+ * resume swaps them again (`lotus_coro_t.reclaim_own`, `reclaim_outer`),
+ * as it does the caller-arena TLS. `t_run_waits` stays the thread's: its
+ * re-entry check is about the instance, whichever coroutine waits. */
+typedef struct lotus_reclaim_ctx {
+    lotus_retired_reclaim_t *head;
+    lotus_retired_reclaim_t *tail;
+    lotus_retired_reclaim_t *active;
+    void                    *entering;
+    int                      flushing;
+    lotus_reclaim_owner_t   *owner;
+    lotus_reclaim_scope_t   *scope;
+} lotus_reclaim_ctx_t;
+
+static inline void lotus_reclaim_ctx_save(lotus_reclaim_ctx_t *c) {
+    c->head     = t_reclaim_head;
+    c->tail     = t_reclaim_tail;
+    c->active   = t_reclaim_active;
+    c->entering = t_reclaim_entering;
+    c->flushing = t_reclaim_flushing;
+    c->owner    = t_reclaim_owner;
+    c->scope    = t_reclaim_scope;
+}
+
+static inline void lotus_reclaim_ctx_load(const lotus_reclaim_ctx_t *c) {
+    t_reclaim_head     = c->head;
+    t_reclaim_tail     = c->tail;
+    t_reclaim_active   = c->active;
+    t_reclaim_entering = c->entering;
+    t_reclaim_flushing = c->flushing;
+    t_reclaim_owner    = c->owner;
+    t_reclaim_scope    = c->scope;
+}
+
 void *lotus_reclaim_scope_enter(void *owner) {
     if (lotus_reclaim_quiet()) return NULL;
     if (!t_reclaim_scope && !lotus_run_child_live_other(owner))
@@ -9222,6 +9267,10 @@ typedef struct lotus_coro {
      * pointer (heap-use-after-free). NULL while running / not yet
      * parked. */
     lotus_arena_t    *saved_caller_arena;
+    /* The coroutine's reclaim state while it is parked, and the drain's
+     * while it runs (see `lotus_reclaim_ctx_t`): a park swaps them. */
+    lotus_reclaim_ctx_t reclaim_own;
+    lotus_reclaim_ctx_t reclaim_outer;
     /* The outcome of the last Stream send/recv this coro made (see
      * lotus_io_status_set): a coro's I/O status is its own, because
      * coros multiplex one worker thread and a thread-local would hand
@@ -11514,6 +11563,8 @@ static void lotus_coro_thunk(void) {
         }
         return;
     }
+    /* The drain's reclaim state, put back while this coroutine parks. */
+    lotus_reclaim_ctx_save(&c->reclaim_outer);
     lotus_bus_note_consume(c->self_ptr, c->rec_pub_id);
     ((lotus_handler_fn)c->handler)(c->self_ptr, c->payload_ptr);
     c->done = 1;
@@ -11612,6 +11663,8 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->payload_region = NULL;
     c->payload_size   = 0;
     c->saved_caller_arena = NULL;
+    memset(&c->reclaim_own, 0, sizeof c->reclaim_own);
+    memset(&c->reclaim_outer, 0, sizeof c->reclaim_outer);
     c->io_status   = 0;
     c->run_ticket  = NULL;
     c->next        = NULL;
@@ -11740,6 +11793,8 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
      * whatever arena the last-running coro left behind, which may since
      * have been destroyed (use-after-free). */
     c->saved_caller_arena = lotus_current_caller_arena;
+    lotus_reclaim_ctx_save(&c->reclaim_own);
+    lotus_reclaim_ctx_load(&c->reclaim_outer);
     /* Swap to drain. Returns here when the worker swaps back in
      * after epoll_wait wakeup (fd ready) or deadline expiry. The fd
      * has already been removed from epoll by the resume path before
@@ -11747,8 +11802,11 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     swapcontext(&c->ctx, &p->drain_ctx);
     /* Resumed. The resume path cleared parked_fd to -1, detached us
      * from parked_head, and set park_timed_out on the expiry path.
-     * Restore the caller-arena TLS we were running with. */
+     * Restore the caller-arena TLS we were running with, and our
+     * reclaim state. */
     lotus_current_caller_arena = c->saved_caller_arena;
+    lotus_reclaim_ctx_save(&c->reclaim_outer);
+    lotus_reclaim_ctx_load(&c->reclaim_own);
     c->park_deadline_ns = 0;
     int timed_out = c->park_timed_out;
     c->park_timed_out = 0;
@@ -11788,8 +11846,12 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     /* Same caller-arena snapshot discipline as the fd park: the
      * worker runs other coros while we're parked. */
     c->saved_caller_arena = lotus_current_caller_arena;
+    lotus_reclaim_ctx_save(&c->reclaim_own);
+    lotus_reclaim_ctx_load(&c->reclaim_outer);
     swapcontext(&c->ctx, &p->drain_ctx);
     lotus_current_caller_arena = c->saved_caller_arena;
+    lotus_reclaim_ctx_save(&c->reclaim_outer);
+    lotus_reclaim_ctx_load(&c->reclaim_own);
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
     return 1;

@@ -1018,13 +1018,17 @@ resolved pool is non-NULL the child's `run()` is posted to it
 coro, so a blocking `recv` in the child's `run()` parks that
 child's coro rather than the spawning handler's) and its bus
 subscriptions are tagged with that pool so dispatch routes to
-the right worker. This is **gated on the child being owned
-beyond the spawning scope** — `accept`'d, an owned param
+the right worker. The `run()` post is **gated on the child being
+owned beyond the spawning scope** — `accept`'d, an owned param
 field, or returned. A handler-local `let`-bound long-lived
 locus is *not* owned (its deferred dissolve fires at the
 handler's scope exit), so posting its `run()` would execute
-after it's dissolved; those keep the prior behavior
-(synchronous `run()`, global-queue subscription). The
+after it's dissolved; its `run()` stays synchronous. Its
+subscriptions are tagged with the pool all the same (§
+"Subscriptions follow the tower": a run-time subscriber takes
+the constructing thread's route whatever its ownership). They
+used to go to the global queue, where main ran their handlers
+beside the worker's own use of the locus. The
 canonical N-dynamic-children shape (per-connection handlers,
 per-tenant workers) is therefore an `accept`'d child whose
 `run()` holds the recv loop — it multiplexes on an `async_io`
@@ -1213,13 +1217,38 @@ subscriber's mailbox (handler runs on the pinned thread).
 field placed off main runs on that field's thread (§ Placement
 classes), and so do its bus handlers: its subscriptions register
 with its anchor's route, not the global queue. That holds for a
-locus built at run time too — in a hook or a method, owned beyond the
-constructing scope (a field it is stored in, an accepted child): on a
-pinned thread it registers with that thread's mailbox, which the
-thread makes current before its params and its `birth()` run; on a
-pool's worker, with that pool. (`std::http::Server` builds its
-consumer in `birth()`; pinned, its deliveries used to reach the global
-queue and be served by main.) Under a pinned
+locus built at run time too — in a hook or a method, whatever owns
+it (a field it is stored in, an accepted child, or nothing beyond
+the constructing scope: a `let` or a statement-position literal the
+scope dissolves): on a pinned thread it registers with that
+thread's mailbox, which the thread makes current before its params
+and its `birth()` run; on a pool's worker, with that pool; on main,
+with the global queue. (`std::http::Server` builds its consumer in
+`birth()`; pinned, its deliveries used to reach the global queue
+and be served by main. A scope-local subscriber built on a pool's
+worker or a pinned thread did the same until the registration
+stopped asking about ownership: main ran its handlers while the
+thread that built it was still using it.) A scope-local
+subscriber's handlers run where that thread runs cells while the
+scope is open: on an `async_io` pool, while the constructing body
+parks; on a pinned thread, at the body's sleeps and yields, which
+drain its mailbox; on main, at the drains of its statement
+boundaries and its scope exit. A classic pool's cells are
+handler-atomic, and the constructing body holds the worker for the
+subscriber's whole life, so a delivery to a scope-local subscriber
+there waits and is dropped with it. Its dissolve is a reclaim like
+any other: the subscriber is quarantined before its storage goes, so
+a cell still queued for it on the pool or the mailbox is dropped at
+materialization (GH #703), and the release waits for a handler of it
+that has started (R52). A release on an `async_io` pool parks while
+it waits, and the reclaim state a thread keeps as stacks — releases
+entered, owner scopes, records deferred to a handler's end — is the
+parked coroutine's own: a park saves it and puts back the drain's,
+so two coroutines dissolving their subscribers on one worker never
+pop each other's entries. A pinned anchor has a mailbox only when a
+locus nested in its params tree subscribes (below); a pinned thread
+without one has no route of its own, and a subscriber built there
+at run time registers with the global queue. Under a pinned
 anchor that is the anchor's mailbox, which the anchor has whenever
 anything in its tree subscribes, whether or not it subscribes
 itself; under an anchor on `cooperative(pool = X)` it is pool `X`.

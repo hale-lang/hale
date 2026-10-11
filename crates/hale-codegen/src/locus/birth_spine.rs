@@ -152,7 +152,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
-        owned_beyond_scope: bool,
     ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
         let Some(mb_idx) = info.mailbox_field_idx else { return Ok(None) };
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -188,7 +187,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(mb_ptr),
                 payload_type,
                 key_filter.as_ref(),
-                owned_beyond_scope,
             )?;
         }
         self.in_params_default = prev_ipd_pinned;
