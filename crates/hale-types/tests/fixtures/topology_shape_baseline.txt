@@ -38,7 +38,7 @@ crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl 4d85266ab5ef7e98
-crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl a4c2c6a9ba24f47b
+crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl f57407308fa24882
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/form-hashmap-qualified-model/main.hl af67c9605fa68550
 crates/hale-cli/tests/fixtures/g34-app/main.hl 865d341109268295

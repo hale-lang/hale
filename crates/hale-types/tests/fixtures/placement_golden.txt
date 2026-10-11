@@ -520,12 +520,12 @@ row	Src@main2	Src	main	default
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl#0217e859
 row	Acc@main1	Acc	main	default
 
-== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#420761ce
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#b2fcf07a
 root	App	the entry
 domain	pool:__api_unix	async_io
-row	App@entry	App	main	default
-row	App@entry.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
-row	App@entry.echo	Echo	main	default
+row	App@literal1	App	main	default
+row	App@literal1.__rpc_u_1	__StdApiUnixListener	pool:__api_unix	entry	off owner
+row	App@literal1.echo	Echo	main	default
 shared	dynamic	sites in the seed #16819ea8
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3

@@ -19,3 +19,5 @@ main locus App {
         sock.stop();
     }
 }
+
+fn main() { App { }; }
