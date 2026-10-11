@@ -1074,12 +1074,12 @@ pub struct AllocSummary {
     /// Flow loci: the types some `release(c: T)` clause names, the
     /// stdlib's included. A flow's arena is reclaimed the moment its
     /// `run()` returns (spec/semantics.md § "`release(c)` and flow
-    /// children"), so a flow `run()` with no loop of its own is one
-    /// activation, not a long-lived frame: it bounds what it and the free
-    /// fns it calls allocate, as a method's scratch does
-    /// ([`AllocSummary::scratchless_longlived`]). A flow whose `run()`
-    /// loops (a connection serving many messages) stays long-lived: what
-    /// its loop allocates accumulates for the connection's life.
+    /// children"), so a flow `run()` in which nothing repeats without a
+    /// bound is one activation, not a long-lived frame
+    /// ([`AllocSummary::flow_run_is_activation`]). A flow whose `run()`
+    /// loops, itself or in a free fn it calls (a connection serving many
+    /// messages), stays long-lived: what the loop allocates accumulates
+    /// for the connection's life.
     pub flow_loci: BTreeSet<String>,
     /// One row per fn-like declaration, keyed by its identity.
     pub fns: BTreeMap<FnKey, FnSummary>,
@@ -1517,6 +1517,44 @@ impl AllocSummary {
         set
     }
 
+    /// Whether `f` is a flow's `run()` that is ONE activation: no frame
+    /// whose allocations land in its arena repeats without a bound. Those
+    /// frames are the run itself and, transitively, the free fns it calls
+    /// that allocate into their caller's arena — the edges
+    /// [`AllocSummary::scratchless_longlived`] propagates along. If one of
+    /// them holds an unbounded loop (any loop but a const-bounded
+    /// `for`-range or `while` counter), what that loop allocates
+    /// accumulates in the flow's arena for as long as the activation
+    /// lasts, which a `while true` makes forever: the run stays a
+    /// long-lived frame. A method or bus handler it calls stops the walk,
+    /// as it stops the propagation: its own per-call scratch takes what
+    /// its loops allocate, and the verdicts of its sites are its own.
+    fn flow_run_is_activation(&self, f: &FnSummary) -> bool {
+        if f.entry != Some(EntryKind::Run) || !f.key.locus.as_ref().is_some_and(|l| self.flow_loci.contains(l)) {
+            return false;
+        }
+        let unbounded_loop =
+            |g: &FnSummary| g.loops.iter().any(|l| !matches!(l.kind, LoopKind::ForRange { bounded: Some(_) } | LoopKind::WhileCounter));
+        let mut seen: BTreeSet<&FnKey> = BTreeSet::new();
+        let mut work: Vec<&FnSummary> = vec![f];
+        while let Some(g) = work.pop() {
+            if !seen.insert(&g.key) {
+                continue;
+            }
+            if unbounded_loop(g) {
+                return false;
+            }
+            for c in &g.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    if let Some(h) = self.fns.get(callee).filter(|h| callee.locus.is_none() && !h.frees_at_return()) {
+                        work.push(h);
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// M3 stage 5 gap A/B (2026-07-02, audit notes/unbounded-alloc-
     /// audit-2026-07-02.md): the set of frames whose allocations live
     /// in a LONG-LIVED arena with no per-call scratch — `main` and
@@ -1526,16 +1564,12 @@ impl AllocSummary {
     /// lifetime arena. Member fns and bus handlers open a per-call
     /// method scratch, and a scratch-local free fn its own subregion
     /// ([`FnSummary::frees_at_return`]), so they STOP the propagation
-    /// — a value consumed there dies at its exit. A flow's loop-free
-    /// `run()` is not long-lived either: it runs once per flow instance,
-    /// and the flow's arena is reclaimed when it returns
-    /// ([`AllocSummary::flow_loci`]), so it seeds nothing.
+    /// — a value consumed there dies at its exit. A flow's `run()` that
+    /// is one activation ([`AllocSummary::flow_run_is_activation`]) is
+    /// not long-lived either: it runs once per flow instance and the
+    /// flow's arena is reclaimed when it returns, so it seeds nothing.
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
-        let flow_run = |f: &FnSummary| {
-            f.entry == Some(EntryKind::Run)
-                && f.loops.is_empty()
-                && f.key.locus.as_ref().is_some_and(|l| self.flow_loci.contains(l))
-        };
+        let flow_run = |f: &FnSummary| self.flow_run_is_activation(f);
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
@@ -8440,6 +8474,68 @@ mod tests {
     }
 
     // ---- step 3: call-graph propagation + the bound solver ----
+
+    /// A flow's `run()` is one activation only when nothing that
+    /// allocates into its arena repeats without a bound: a loop in a free
+    /// fn it calls counts as one in its own body (review of #1506). The
+    /// control: the loop sits in `serve_loop`, a helper of the flow's
+    /// `run()`, and its concat accumulates for the flow's life.
+    #[test]
+    fn a_flow_run_whose_helper_loops_forever_stays_long_lived() {
+        let src = r#"
+            fn payload(s: String) -> String { return s + "hello"; }
+            fn serve_loop() { while true { println(payload("x")); std::time::sleep(1ms); } }
+            locus Work { run() { serve_loop(); } }
+            locus Holder { accept(c: Work) { } release(c: Work) { } }
+            main locus App {
+                params { work: Work = Work { }; }
+                placement { work: cooperative(pool = worker); }
+                run() { while !self.draining { std::time::sleep(20ms); } }
+            }
+            fn main() { App { }; }
+        "#;
+        let s = summarize(src);
+        assert!(s.flow_loci.contains("Work"));
+        assert!(s.scratchless_longlived().contains(&named(&s, Some("Work"), "run")), "the flow's run stays long-lived");
+        assert!(
+            s.leak_sites().iter().any(|l| l.owner == named(&s, None, "payload")),
+            "payload's concat accumulates in the flow's arena: {:?}",
+            s.leak_sites()
+        );
+    }
+
+    /// The HTTP server's shape: a flow per connection whose `run()` calls
+    /// a free fn that reads with a const-bounded loop and asks a handler
+    /// through an interface. Nothing repeats without a bound, so the run
+    /// is one activation and the handler's returned struct is not an
+    /// accumulation; the same helper looping `while true` makes it one.
+    #[test]
+    fn a_flow_run_whose_helpers_loop_finitely_is_one_activation() {
+        let shape = |looping: &str| {
+            format!(
+                r#"
+                type Resp {{ body: String; }}
+                interface H {{ fn handle(n: Int) -> Resp; }}
+                locus Api {{ fn handle(n: Int) -> Resp {{ return Resp {{ body: "x" + to_string(n) }}; }} }}
+                fn serve_one(h: H, n: Int) {{ let mut i = 0; {looping} {{ let r = h.handle(n); i = i + 1; }} }}
+                locus Conn {{ params {{ h: H; n: Int = 0; }} run() {{ serve_one(self.h, self.n); }} }}
+                locus Conns {{ fn serve(h: H, n: Int) {{ Conn {{ h: h, n: n }}; }} accept(c: Conn) {{ }} release(c: Conn) {{ }} }}
+                locus Srv {{ params {{ h: H; conns: Conns = Conns {{ }}; }} run() {{ let mut n = 0; while true {{ self.conns.serve(self.h, n); n = n + 1; }} }} }}
+                fn main() {{ Srv {{ h: Api {{ }} }}; }}
+            "#
+            )
+        };
+        let bounded = summarize(&shape("while i < 4"));
+        let run = named(&bounded, Some("Conn"), "run");
+        assert!(!bounded.scratchless_longlived().contains(&run), "a finite helper keeps the run one activation");
+        assert!(
+            !bounded.leak_sites().iter().any(|l| l.owner.locus.as_deref() == Some("Api")),
+            "the handler's struct is not an accumulation: {:?}",
+            bounded.leak_sites()
+        );
+        let forever = summarize(&shape("while true"));
+        assert!(forever.scratchless_longlived().contains(&named(&forever, Some("Conn"), "run")));
+    }
 
     #[test]
     fn alloc_in_fn_called_in_unbounded_loop_is_flagged() {

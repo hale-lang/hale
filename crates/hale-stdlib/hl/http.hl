@@ -416,34 +416,40 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
     let mut raw = "";
     let mut header_end = 0 - 1;
     let mut need = 0;
-    let mut done = false;
     let mut too_large = false;
-    while !done {
+    // Each pass ends the loop or appends at least one byte, and
+    // `max_request` bytes end it: at most max_request + 1 reads. The
+    // ceiling says so where the memory survey reads it (a const-bounded
+    // `while` counter), so what a connection reads is known bounded and
+    // a connection served on a coroutine of its own (__StdHttpServerFlow)
+    // is one activation, not a long-lived frame.
+    let mut reads = 0;
+    while reads < 1048578 {
         if header_end >= 0 && len(raw) - (header_end + 4) >= need {
-            done = true;
-        } else if len(raw) >= max_request || (header_end >= 0 && need > max_request) {
+            break;
+        }
+        if len(raw) >= max_request || (header_end >= 0 && need > max_request) {
             too_large = true;
-            done = true;
-        } else {
-            // #209: recv is fallible(IoError); a genuine read error
-            // is folded into the same "stop reading, serve what we
-            // have" shape as EOF/timeout (empty chunk).
-            let chunk = s.recv(8192) or "";
-            if len(chunk) == 0 {
-                // EOF or recv timeout: serve what we have.
-                done = true;
-            } else {
-                raw = raw + chunk;
-                if header_end < 0 {
-                    header_end = std::str::index_of(raw, "\r\n\r\n");
-                    if header_end >= 0 {
-                        let partial = std::http::parse_request(raw);
-                        need = std::str::parse_int(
-                            std::http::header(partial, "Content-Length")) or 0;
-                    }
-                }
+            break;
+        }
+        // #209: recv is fallible(IoError); a genuine read error
+        // is folded into the same "stop reading, serve what we
+        // have" shape as EOF/timeout (empty chunk).
+        let chunk = s.recv(8192) or "";
+        if len(chunk) == 0 {
+            // EOF or recv timeout: serve what we have.
+            break;
+        }
+        raw = raw + chunk;
+        if header_end < 0 {
+            header_end = std::str::index_of(raw, "\r\n\r\n");
+            if header_end >= 0 {
+                let partial = std::http::parse_request(raw);
+                need = std::str::parse_int(
+                    std::http::header(partial, "Content-Length")) or 0;
             }
         }
+        reads = reads + 1;
     }
     if header_end < 0 {
         // Never saw a complete header block: close without a

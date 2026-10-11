@@ -644,7 +644,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http.hl#4c9b0d77
+== crates/hale-stdlib/hl/http.hl#f0c83504
 
 == crates/hale-stdlib/hl/http_client.hl#3eb0a967
 
@@ -10298,7 +10298,11 @@ dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #1300000b
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on main|pool:io
+dynamic	__StdHttpServerFlow	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdIterLines	on main|pool:io
 
 == dna/tests/oidc_verify_test.hl
 

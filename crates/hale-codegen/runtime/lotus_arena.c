@@ -10227,13 +10227,18 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
 
 /* A child's run(), posted by the compiled instantiation:
  * `lotus_coop_pool_post(pool, __coop_pool_run_<L>, self, NULL, 0)`. */
+/* `payload_size` is an int64_t, not a size_t: codegen declares the
+ * call with an i64 on every target, and on wasm32 a size_t is 32 bits,
+ * so the two disagreed and wasm-ld warned of a signature mismatch the
+ * moment a program lowered a call (the std::http::Server's per-
+ * connection flow child is in every program's stdlib). */
 void lotus_coop_pool_post(lotus_coop_pool_t *p,
                           void *handler,
                           void *self_ptr,
                           const void *payload_src,
-                          size_t payload_size) {
+                          int64_t payload_size) {
     lotus_coop_pool_post_cell(p, handler, self_ptr, payload_src,
-                              payload_size, 1);
+                              (size_t)payload_size, 1);
 }
 
 /* A bus delivery to a subscriber on a cooperative pool. */
@@ -23434,6 +23439,9 @@ void *lotus_reentry_arena(const char *fn_name) {
             "@ffi call that installed it.\n",
             fn_name ? fn_name : "?");
     abort();
+    /* Unreachable; the wasm shim's abort() is not declared noreturn, so
+     * the wasm32 build warned (-Wreturn-type) without it. */
+    return NULL;
 }
 
 void *lotus_caller_or_global_bytes_create(int64_t len) {
