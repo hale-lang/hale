@@ -2691,11 +2691,26 @@ assume the others in a build:
   into the same field blocks, so its "flat" holds at any lengths too.
   The survey models the store as it models that struct replace: a
   concatenation that is the whole new value of a `String` field of
-  `self` and does not read the field (a replace, not an append) is
-  `retired_store`, so invoked unboundedly from a frame with an
-  activation boundary it is not reported; directly in a `run()` loop or
-  a scratchless frame, and as an append (`self.log = self.log + x`), it
-  is. Measured (`alloc_model_rss.rs`): 1M replaces in a method at
+  `self`, proven to carry nothing of that field (a replace, not an
+  append), is `retired_store`, so invoked unboundedly from a frame with
+  an activation boundary it is not reported; directly in a `run()` loop
+  or a scratchless frame, and as an append, it is. Independence is
+  proven by provenance, never assumed: the walk tracks which fields of
+  `self` every binding may carry — what it was bound with and every
+  write into it (whole, or through a field or an element), and, for a
+  binding a loop writes, anything (a later iteration's write reaches an
+  earlier read) — and a value carries what its operands carry: a read
+  of `self.<f>` carries `f`, a free fn's or a builtin's call what its
+  arguments carry (it reaches `self` only through them), a method of
+  another receiver its receiver's and arguments'. A method of `self`,
+  `self` itself, a call through a local, an `if`, a `match` or a block
+  value, and any form the walk does not follow may carry every field.
+  So `let previous = self.log; self.log = previous + "x"`, `self.log =
+  self.previous() + "x"` and `self.log = wrap(self.log) + "x"` are
+  appends and reported, as `self.log = self.log + "x"` is; a value built
+  from params, other fields, `to_string` or a free fn of those is a
+  replace. The same rule judges a concatenation that is a whole field
+  of a struct replaced whole, against the struct's field of `self`. Measured (`alloc_model_rss.rs`): 1M replaces in a method at
   lengths 6–55 stay at the 4.7 MB floor of near-constant lengths
   (before: 35.7 MB), a one-`String`-field struct at lengths 6–55 the
   same (before: 36 MB), values climbing to ~1 KB over 200k replaces the

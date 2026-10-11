@@ -196,6 +196,41 @@ fn is_string_type(te: &TypeExpr) -> bool {
     }
 }
 
+/// GH #1490 (step 4): which fields of `self` a value may carry — the
+/// provenance a field replace's independence is judged by. `Top` is a
+/// value the walk cannot trace (a method of `self`, `self` itself, a
+/// binding a loop rewrites, an expression form the walk does not
+/// follow): it may carry any field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Taint {
+    Top,
+    Fields(BTreeSet<String>),
+}
+
+impl Taint {
+    fn none() -> Self {
+        Taint::Fields(BTreeSet::new())
+    }
+
+    fn join(self, other: Taint) -> Taint {
+        match (self, other) {
+            (Taint::Fields(mut a), Taint::Fields(b)) => {
+                a.extend(b);
+                Taint::Fields(a)
+            }
+            _ => Taint::Top,
+        }
+    }
+
+    /// May the value carry `self.<field>`?
+    fn may_carry(&self, field: &str) -> bool {
+        match self {
+            Taint::Top => true,
+            Taint::Fields(f) => f.contains(field),
+        }
+    }
+}
+
 /// The String-ness a declared type gives a value of it.
 fn str_ty_of(te: &TypeExpr) -> StrTy {
     match te {
@@ -2806,6 +2841,7 @@ pub fn summarize_identified(
             string_rets: &string_rets,
             str_fields: &str_fields,
             strs: vec![str_params.iter().cloned().collect()],
+            taints: vec![params.iter().map(|p| (p.clone(), Taint::none())).collect()],
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -4726,6 +4762,10 @@ struct Walker<'a> {
     /// map per scope beside `locals` (a param, a `let`, a `for` binder;
     /// a match binding shadows as `Other`).
     strs: Vec<BTreeMap<String, StrTy>>,
+    /// GH #1490 (step 4): the fields of `self` each binding in scope may
+    /// carry ([`Taint`]), one map per scope beside `strs`; a param
+    /// carries none.
+    taints: Vec<BTreeMap<String, Taint>>,
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
@@ -5153,14 +5193,98 @@ impl<'a> Walker<'a> {
     fn walk_block(&mut self, b: &Block, depth: u32, tail_escape: Escape) {
         self.locals.push(BTreeMap::new());
         self.strs.push(BTreeMap::new());
+        self.taints.push(BTreeMap::new());
         for s in &b.stmts {
             self.walk_stmt(s, depth);
         }
         if let Some(t) = &b.tail {
             self.walk_expr(t, depth, tail_escape);
         }
+        self.taints.pop();
         self.strs.pop();
         self.locals.pop();
+    }
+
+    /// GH #1490 (step 4): bind `name`'s provenance in the innermost
+    /// scope.
+    fn bind_taint(&mut self, name: &str, t: Taint) {
+        self.taints.last_mut().expect("a body has a scope").insert(name.to_string(), t);
+    }
+
+    /// A write to the binding `name` (whole or through a field) joins
+    /// what it writes into what the binding may carry.
+    fn join_taint(&mut self, name: &str, t: Taint) {
+        if let Some(scope) = self.taints.iter_mut().rev().find(|s| s.contains_key(name)) {
+            let old = scope.remove(name).unwrap_or_else(Taint::none);
+            scope.insert(name.to_string(), old.join(t));
+        }
+    }
+
+    /// What the binding `name` may carry: an unbound name (a constant,
+    /// a fn) carries no field of `self`.
+    fn taint_of_name(&self, name: &str) -> Taint {
+        self.taints.iter().rev().find_map(|scope| scope.get(name).cloned()).unwrap_or_else(Taint::none)
+    }
+
+    /// GH #1490 (step 4): the fields of `self` the value of `e` may
+    /// carry. A read of `self.<f>` (through any further fields or
+    /// indexes) carries `f`; a binding, what it was bound and written
+    /// with; an operator, a free fn's or a builtin's call, an index, a
+    /// literal of a struct, array or tuple, what its operands carry (a
+    /// free fn reaches `self` only through its arguments); a method of
+    /// another receiver, its receiver's and its arguments'. A method
+    /// of `self`, `self` itself, a call through a local or a computed
+    /// callee, and every form this does not follow are `Top`.
+    fn taint_of(&self, e: &Expr) -> Taint {
+        let all = |es: &mut dyn Iterator<Item = &Expr>| es.fold(Taint::none(), |t, x| t.join(self.taint_of(x)));
+        match e {
+            Expr::Literal(..) | Expr::Path(_) => Taint::none(),
+            Expr::Ident(v) => self.taint_of_name(&v.name),
+            Expr::KwSelf(_) => Taint::Top,
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                    Taint::Fields(BTreeSet::from([name.name.clone()]))
+                } else {
+                    self.taint_of(receiver)
+                }
+            }
+            Expr::Binary { left, right, .. } => self.taint_of(left).join(self.taint_of(right)),
+            Expr::Unary { operand, .. } => self.taint_of(operand),
+            Expr::Index { receiver, index, .. } => self.taint_of(receiver).join(self.taint_of(index)),
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => all(&mut xs.iter()),
+            Expr::Struct { inits, .. } => all(&mut inits.iter().map(|si| &si.value)),
+            Expr::Call { callee, args, .. } => {
+                let callee_t = match callee.as_ref() {
+                    // A bound local may be a fn value: nothing to trace.
+                    Expr::Ident(id) if self.local(&id.name).is_some() && self.own_fn(&id.name).is_none() => {
+                        return Taint::Top;
+                    }
+                    Expr::Ident(_) | Expr::Path(_) => Taint::none(),
+                    Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => match receiver.as_ref() {
+                        Expr::KwSelf(_) => return Taint::Top,
+                        // `alias::f(..)` spelled with a dot is a free fn.
+                        Expr::Ident(r)
+                            if self.local(&r.name).is_none()
+                                && self.rename_map.keys().any(|k| k.starts_with(&format!("{}::", r.name))) =>
+                        {
+                            Taint::none()
+                        }
+                        r => self.taint_of(r),
+                    },
+                    _ => return Taint::Top,
+                };
+                callee_t.join(all(&mut args.iter()))
+            }
+            Expr::Or { inner, disposition, .. } => {
+                let t = self.taint_of(inner);
+                match disposition {
+                    OrDisposition::Substitute(x) => t.join(self.taint_of(x)),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => t,
+                    _ => Taint::Top,
+                }
+            }
+            _ => Taint::Top,
+        }
     }
 
     /// GH #1490 (step 3): bind `name`'s String-ness in the innermost
@@ -5195,6 +5319,12 @@ impl<'a> Walker<'a> {
     fn enter_loop(&mut self, cond: Option<&Expr>, body: &Block) {
         for name in loop_reassigned(cond, body) {
             self.unresolve(&name);
+        }
+        // GH #1490 (step 4): a binding the loop writes may carry, at any
+        // point of the loop, what a later iteration wrote into it: its
+        // provenance is not traced through the loop.
+        for name in loop_assigned_heads(cond, body) {
+            self.join_taint(&name, Taint::Top);
         }
     }
 
@@ -5291,17 +5421,21 @@ impl<'a> Walker<'a> {
                     Some(t) => str_ty_of(t),
                     None => self.str_value(value),
                 };
+                let taint = self.taint_of(value);
                 let esc = self.escaping.of_let(*id);
                 self.walk_let_value(value, *span, depth, esc);
                 let bound = self.bound_value(value);
                 self.bind(&name.name, bound);
                 self.bind_str(&name.name, str_ty);
+                self.bind_taint(&name.name, taint);
             }
             Stmt::LetTuple { names, value, span, .. } => {
+                let taint = self.taint_of(value);
                 self.walk_let_value(value, *span, depth, Escape::Local);
                 for n in names {
                     self.bind(&n.name, Local::Unresolved);
                     self.bind_str(&n.name, StrTy::Other);
+                    self.bind_taint(&n.name, taint.clone());
                 }
             }
             Stmt::Assign { target, value, id, span, .. } => {
@@ -5356,6 +5490,12 @@ impl<'a> Walker<'a> {
                 // last: the walk does not follow flow.
                 if target.tail.is_empty() {
                     self.unresolve(&target.head.name);
+                }
+                // GH #1490 (step 4): a write through a binding (whole or
+                // into a field or element of it) joins what it writes.
+                if target.head.name != "self" {
+                    let t = self.taint_of(value);
+                    self.join_taint(&target.head.name, t);
                 }
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
@@ -5436,7 +5576,10 @@ impl<'a> Walker<'a> {
                     _ => StrTy::Other,
                 };
                 self.strs.push(BTreeMap::from([(name.name.clone(), binder)]));
+                let iter_t = self.taint_of(iter);
+                self.taints.push(BTreeMap::from([(name.name.clone(), iter_t)]));
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.taints.pop();
                 self.strs.pop();
                 self.locals.pop();
                 self.loops_as_written -= 1;
@@ -5483,7 +5626,9 @@ impl<'a> Walker<'a> {
                 // its allocations as local for now.
                 self.locals.push(BTreeMap::from([(binding.name.clone(), Local::Unresolved)]));
                 self.strs.push(BTreeMap::from([(binding.name.clone(), StrTy::Other)]));
+                self.taints.push(BTreeMap::from([(binding.name.clone(), Taint::Top)]));
                 self.walk_block(body, depth, Escape::Local);
+                self.taints.pop();
                 self.strs.pop();
                 self.locals.pop();
             }
@@ -5536,6 +5681,8 @@ impl<'a> Walker<'a> {
             let mut bound = BTreeMap::new();
             pattern_bindings(&arm.pattern, &mut bound);
             self.strs.push(bound.keys().map(|n| (n.clone(), StrTy::Other)).collect());
+            let scrutinee_t = self.taint_of(&m.scrutinee);
+            self.taints.push(bound.keys().map(|n| (n.clone(), scrutinee_t.clone())).collect());
             self.locals.push(bound);
             if let Some(g) = &arm.guard {
                 self.walk_expr(g, depth, Escape::Local);
@@ -5545,6 +5692,7 @@ impl<'a> Walker<'a> {
                 MatchArmBody::Expr(e) => self.walk_expr(e, depth, escape),
             }
             self.locals.pop();
+            self.taints.pop();
             self.strs.pop();
         }
     }
@@ -5654,20 +5802,25 @@ impl<'a> Walker<'a> {
                 {
                     let span = left.span().merge(right.span());
                     // GH #1490 (step 4): the concatenation is the whole
-                    // new value of a String field of `self` — a replace,
-                    // not an append when it does not read the field.
+                    // new value of a String field of `self` (or a whole
+                    // field of a struct replaced whole into one), proven
+                    // to carry nothing of the field it replaces
+                    // ([`Walker::taint_of`]): a replace, not an append.
                     // The store retires the value it replaces at the
                     // field's size class (`lotus_str_assign_in_place`),
                     // so the field holds one value of at most its
                     // largest class: store-latest, judged as Gap D's
-                    // struct replace (`retired_store`).
+                    // struct replace (`retired_store`). A value that
+                    // reads the field, through a binding, a method of
+                    // `self` or anything the walk cannot trace, keeps
+                    // the advisory.
                     let target_field = if escape == Escape::StoredToSelf {
                         self.store_target.clone()
                     } else {
                         None
                     };
                     let retired_store = target_field.as_deref().is_some_and(|f| {
-                        (retired_init || self.self_field_str(f) == StrTy::Str) && !reads_self_field(expr, f)
+                        (retired_init || self.self_field_str(f) == StrTy::Str) && !self.taint_of(expr).may_carry(f)
                     });
                     self.sites.push(AllocSite {
                         kind: AllocKind::StringConcat,
@@ -5887,36 +6040,6 @@ impl<'a> Walker<'a> {
     }
 }
 
-/// GH #1490 (step 4): does `e` read `self.<field>` — the new value of a
-/// field store incorporating the old one, an append (`self.log =
-/// self.log + x`) rather than a replace? An expression this does not
-/// walk counts as reading it, so an append is never taken for a
-/// replace.
-fn reads_self_field(e: &Expr, field: &str) -> bool {
-    match e {
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => false,
-        Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
-            (matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == field)
-                || reads_self_field(receiver, field)
-        }
-        Expr::Binary { left, right, .. } => reads_self_field(left, field) || reads_self_field(right, field),
-        Expr::Unary { .. } => true,
-        Expr::Call { callee, args, .. } => {
-            reads_self_field(callee, field) || args.iter().any(|a| reads_self_field(a, field))
-        }
-        Expr::Index { receiver, index, .. } => reads_self_field(receiver, field) || reads_self_field(index, field),
-        Expr::Or { inner, disposition, .. } => {
-            reads_self_field(inner, field)
-                || match disposition {
-                    OrDisposition::Substitute(x) => reads_self_field(x, field),
-                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => false,
-                    _ => true,
-                }
-        }
-        _ => true,
-    }
-}
-
 /// The names a match pattern binds, none of them a fn the walk follows.
 fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
     match p {
@@ -5941,7 +6064,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
 /// assignment runs, on a later iteration, the value the assignment
 /// stored. Every walker that tracks bindings uses this one rule.
 pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new() };
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeSet::new() };
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -5949,11 +6072,26 @@ pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<Str
     a.out
 }
 
+/// GH #1490 (step 4): every binding a loop writes, whole or through a
+/// field or an index (`x = …`, `x.f = …`), wherever it is declared — an
+/// over-approximation, which only makes a field-provenance answer more
+/// conservative.
+fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeSet::new() };
+    if let Some(c) = cond {
+        a.expr(c);
+    }
+    a.block(body, Vec::new());
+    a.heads
+}
+
 /// [`loop_reassigned`]'s walk: the names bound inside the loop, innermost
 /// scope last.
 struct Reassigned {
     scopes: Vec<BTreeSet<String>>,
     out: BTreeSet<String>,
+    /// [`loop_assigned_heads`]: every assigned binding.
+    heads: BTreeSet<String>,
 }
 
 impl Reassigned {
@@ -5992,6 +6130,9 @@ impl Reassigned {
                 }
                 self.expr(value);
                 let name = &target.head.name;
+                if name != "self" {
+                    self.heads.insert(name.clone());
+                }
                 if target.tail.is_empty() && !self.scopes.iter().any(|s| s.contains(name)) {
                     self.out.insert(name.clone());
                 }
@@ -7151,6 +7292,74 @@ mod tests {
         }
     }
 
+    /// A handler `on_t(m: Int)` whose body is `body`, on a locus with
+    /// String fields `log` and `tag`, a method `previous` reading `log`
+    /// and free fns `piece` (of an Int) and `wrap` (of a String).
+    fn field_store(body: &str) -> String {
+        format!(
+            "fn piece(i: Int) -> String {{ return \"p\" + to_string(i); }}
+             fn wrap(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ log: String = \"\"; tag: String = \"t\"; }}
+                 bus {{ subscribe \"t\" as on_t of type Int; }}
+                 fn previous() -> String {{ return self.log; }}
+                 fn on_t(m: Int) {{ {body} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_replace_that_carries_the_field_it_replaces_is_an_append() {
+        // Each new value here holds the old one however the read is
+        // spelled — through a binding, a chain of them, a method of
+        // `self`, a free fn's argument, a binding a loop carries, `self`
+        // itself — so the field grows by every store, as
+        // `self.log = self.log + "x"` does. Independence is proven or
+        // the advisory stays.
+        for body in [
+            "let previous = self.log; self.log = previous + \"x\";",
+            "self.log = self.previous() + \"x\";",
+            "let a = self.log; let b = a; self.log = b + \"x\";",
+            "self.log = wrap(self.log) + \"x\";",
+            // The store reads `p` before the loop's own write to it, which a
+            // later iteration's store sees (a bounded loop, so only the
+            // provenance rule can report it).
+            "let mut p = \"\"; let mut i = 0; while i < 2 { self.log = p + \"x\"; p = self.log; i = i + 1; }",
+            "let mut p = \"\"; p = self.log; self.log = p + to_string(m);",
+            "self.log = (if m > 0 { self.log } else { \"\" }) + \"x\";",
+        ] {
+            let leaks = field_leaks(&field_store(body), "on_t");
+            assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` appends to `self.log`: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn a_replace_proven_independent_of_its_field_is_store_latest() {
+        // Built from a param, another field, `to_string`, a free fn of a
+        // param, or a binding of one of those: nothing of `self.log`.
+        for body in [
+            "self.log = \"v.\" + to_string(m);",
+            "self.log = self.tag + \"!\";",
+            "self.log = piece(m) + \"!\";",
+            "let s = piece(m); self.log = s + self.tag;",
+            "let s = to_string(m); let t = s; self.log = t + \"x\";",
+        ] {
+            let leaks = field_leaks(&field_store(body), "on_t");
+            assert!(leaks.is_empty(), "`{body}` replaces `self.log` whole: {leaks:?}");
+        }
+        // A free fn of a String param, inside a method of its own.
+        let src = r#"
+            locus App {
+                params { log: String = ""; }
+                bus { subscribe "t" as on_t of type String; }
+                fn on_t(s: String) { self.log = s + "!"; }
+            }
+            fn main() { let a = App { }; }
+        "#;
+        assert!(field_leaks(src, "on_t").is_empty());
+    }
+
     #[test]
     fn a_concatenated_field_of_a_struct_replaced_whole_is_store_latest() {
         // Gap D's struct replace retires its top-level String fields;
@@ -7169,6 +7378,13 @@ mod tests {
         };
         assert!(field_leaks(&src("\"v.\" + to_string(m)"), "on_t").is_empty());
         assert_eq!(field_leaks(&src("self.st.s + \"x\""), "on_t"), vec![Escape::StoredToSelf]);
+        // The same read through a binding.
+        let aliased = src("\"\" + \"y\"").replace(
+            "fn on_t(m: Int) { self.st = Cell { s: \"\" + \"y\", n: m }; }",
+            "fn on_t(m: Int) { let old = self.st.s; self.st = Cell { s: old + \"x\", n: m }; }",
+        );
+        assert!(aliased.contains("let old = self.st.s"), "{aliased}");
+        assert_eq!(field_leaks(&aliased, "on_t"), vec![Escape::StoredToSelf]);
     }
 
     #[test]

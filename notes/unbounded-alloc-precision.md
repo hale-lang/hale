@@ -286,12 +286,22 @@ length, a two-String struct churn, a hashmap value churn and the C2
 accumulator unchanged (4.7–5.1 MB, same times); all clean under
 AddressSanitizer with the chunk pool off. The model then moved: a
 concatenation that is the whole new value of a `String` field of `self`,
-or a whole field of a struct replaced whole, and does not read the field
-it replaces, is `retired_store` (store-latest, judged as Gap D: not
-reported from a frame with an activation boundary; reported in a `run()`
-loop, a scratchless frame, or as an append). DNA: 29 decorators now
-silence nothing in any program (0 before); `hale check` warning lines
-over every DNA program 590 -> 586 (the NATS adapter's two replaces, one
-test's, and `Ui::discovered`); the survey sites the decorators silence
-fall from 205 / 168 / 176 / 156 to 146 / 113 / 121 / 102 (host,
-operations, api, core).
+or a whole field of a struct replaced whole, proven to carry nothing of
+the field it replaces, is `retired_store` (store-latest, judged as Gap
+D: not reported from a frame with an activation boundary; reported in a
+`run()` loop, a scratchless frame, or as an append). The proof is field
+provenance (`Taint` in `alloc_summary.rs`): which fields of `self` each
+binding may carry, joined over every write into it and taken as
+anything for a binding a loop writes; a method of `self` and the forms
+the walk does not follow may carry anything. A first cut excused any
+value that did not spell `self.<f>` (review of #1502): `let previous =
+self.log; self.log = previous + "x"` and `self.log = self.previous() +
+"x"` append to the live value as `self.log = self.log + "x"` does, and
+were excused. DNA: 19 decorators now silence nothing in any program (0
+before; 29 under the first cut, the 10 more were values from methods of
+`self`, e.g. `self.error = "put: " + r.err.kind` with `r` a `self`
+method's result, which the walk cannot prove independent); `hale check`
+warning lines over every DNA program 590 -> 586 (the NATS adapter's two
+replaces, one test's, and `Ui::discovered`; the provenance rule adds
+none); the survey sites the decorators silence fall from 205 / 168 /
+176 / 156 to 167 / 134 / 147 / 122 (host, operations, api, core).
