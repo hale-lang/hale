@@ -7,11 +7,12 @@
 // step the same invariants hold, whatever the scenario: every hold sits on
 // a position the graph states; every position the graph states has a
 // ratified mandate; reading the organization twice from the record gives
-// the same organization. An operation that is not built yet (vacate, merge,
-// split, adopt or retire a pack, expose, depend, externalize, internalize,
-// graft, extract, absorb, re-parent) fails its scenario, and those
-// scenarios are listed in KNOWN_OPEN and asserted to fail: when an
-// operation lands, its scenario passes and its entry has to go.
+// the same organization. An operation of one organism that is not built
+// yet (merge, split, assign, adopt or retire a pack, expose, depend,
+// externalize, internalize) fails its scenario, and those scenarios are
+// listed in KNOWN_OPEN and asserted to fail: when an operation lands, its
+// scenario passes and its entry has to go. The habitat's operations (graft,
+// extract, absorb, re-parent) span several records and come with saplings.
 //
 // Opening a position is one Board Review: its node and its mandate are two
 // members of one family, ratified together.
@@ -107,21 +108,68 @@ expect stale
 expect position ops/dev
 ";
 
-// Operations not built yet: their scenarios fail, as asserted below.
-const TEAM_SHRINKS: String = "# the team shrinks: a holder leaves, two positions become one
+const VACATED: String = "# a holder leaves: the position stays, the hold goes, once the Board says so
 open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
 ratify by riley
 fill api/dev ada
 ratify by riley
 vacate api/dev ada
+expect holds api/dev ada
+ratify batch by riley
+expect no-holds api/dev ada
+expect position api/dev
+refused vacate api/dev zed
+refused apply {
+fill api/dev bo
+vacate api/dev bo
+}
+";
+
+// Operations not built yet: each scenario fails at the operation it names,
+// as asserted below. When one lands, its scenario passes and its entry goes.
+const TEAM_MERGES: String = "# two positions become one: holds and bound knowledge carry over
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+ratify by riley
 merge api/dev api/reviewer
+";
+
+const TEAM_SPLITS: String = "# one position becomes two, its mandate and bindings divided
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+ratify by riley
+split api/dev api/frontend api/backend
+";
+
+const ASSIGNED: String = "# a position reviews a contract
+open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+ratify by riley
+assign api/reviewer reviews contract:spec/todo.md
 ";
 
 const PACK: String = "# a family of practices comes into force as one unit
 adopt-pack publication
 ";
 
-const KNOWN_OPEN: String = "TEAM_SHRINKS vacate\nPACK adopt-pack\n";
+const PACK_RETIRED: String = "# that family leaves, and what it superseded is restored
+retire-pack publication
+";
+
+const EXPOSED: String = "# an internal capability gets a named contract
+expose seed:api contract:spec/api.md
+";
+
+const DEPENDS: String = "# a part relies on a contract
+depend seed:web contract:spec/api.md
+";
+
+const EXTERNALIZED: String = "# a part leaves the organism; the organism depends on its contract
+externalize seed:billing contract:spec/billing.md
+";
+
+const INTERNALIZED: String = "# a contract depended on becomes a part the organism owns
+internalize contract:spec/billing.md seed:billing
+";
+
+const KNOWN_OPEN: String = "TEAM_MERGES merge\nTEAM_SPLITS split\nASSIGNED assign\nPACK adopt-pack\nPACK_RETIRED retire-pack\nEXPOSED expose\nDEPENDS depend\nEXTERNALIZED externalize\nINTERNALIZED internalize\n";
 
 main locus App {
     params {
@@ -266,6 +314,12 @@ main locus App {
             self.last = std::json::find_string_field(proposed, "digest");
             return "";
         }
+        if std::str::starts_with(line, "vacate ") {
+            // an operation of the batch alone: a one-step batch, as `hale dna
+            // vacate` proposes it
+            let why = self.apply(line + "\n");
+            return why;
+        }
         if std::str::starts_with(line, "ratify batch by ") {
             if len(self.last_batch) == 0 { return "no batch to ratify"; }
             let reviewer = std::str::trim(line[16..len(line)]);
@@ -307,6 +361,12 @@ main locus App {
         if std::str::starts_with(line, "expect ") {
             let what = std::str::trim(line[7..len(line)]);
             let org = self.org();
+            if std::str::starts_with(what, "no-holds ") {
+                let tail = what[9..len(what)];
+                let sp = std::str::index_of(tail, " ");
+                let held = "holds position:" + tail[0..sp] + " " + tail[(sp + 1)..len(tail)] + "\n";
+                return if std::str::contains(org, held) { "still held: " + held } else { "" };
+            }
             if std::str::starts_with(what, "no-position ") { return if std::str::contains(org, "position position:" + what[12..len(what)] + "\n") { "`" + what[12..len(what)] + "` is stated" } else { "" }; }
             if std::str::starts_with(what, "holds ") {
                 let tail = what[6..len(what)];
@@ -366,6 +426,11 @@ main locus App {
         dna::scratch_done(self.repo);
         return "";
     }
+    // A scenario the known-open table names: it fails, at its operation.
+    fn known_open(name: String, text: String, verb: String) {
+        let got = self.scenario(name, text);
+        std::test::assert(std::str::contains(got, "not built: `" + verb + "`") && std::str::contains(KNOWN_OPEN, name + " " + verb + "\n"), "known open: `" + verb + "` is not built: " + got);
+    }
     run() {
         std::test::assert_eq_str(self.scenario("dev-team", DEV_TEAM), "", "a small dev team is opened, filled and ratified, the invariants holding at every step");
         std::test::assert_eq_str(self.scenario("opened-once", OPENED_ONCE), "", "a stated position is not opened twice, and none opens without a mandate");
@@ -373,11 +438,17 @@ main locus App {
         std::test::assert_eq_str(self.scenario("dev-team-batch", DEV_TEAM_BATCH), "", "the dev team proposed as one batch is ratified once, whole");
         std::test::assert_eq_str(self.scenario("batch-refused", BATCH_REFUSED), "", "a batch that is wrong anywhere is refused before anything is proposed");
         std::test::assert_eq_str(self.scenario("batch-stale", BATCH_STALE), "", "a batch whose ground moved is refused whole when the Board decides it");
+        std::test::assert_eq_str(self.scenario("vacated", VACATED), "", "a holder leaves through one Review; the position stays");
         // the known-open table: each fails at the operation it names
-        let shrinks = self.scenario("team-shrinks", TEAM_SHRINKS);
-        std::test::assert(std::str::contains(shrinks, "not built: `vacate`") && std::str::contains(KNOWN_OPEN, "TEAM_SHRINKS vacate"), "known open: vacating a position is not built: " + shrinks);
-        let pack = self.scenario("pack", PACK);
-        std::test::assert(std::str::contains(pack, "not built: `adopt-pack`") && std::str::contains(KNOWN_OPEN, "PACK adopt-pack"), "known open: adopting a pack is not built: " + pack);
+        self.known_open("TEAM_MERGES", TEAM_MERGES, "merge");
+        self.known_open("TEAM_SPLITS", TEAM_SPLITS, "split");
+        self.known_open("ASSIGNED", ASSIGNED, "assign");
+        self.known_open("PACK", PACK, "adopt-pack");
+        self.known_open("PACK_RETIRED", PACK_RETIRED, "retire-pack");
+        self.known_open("EXPOSED", EXPOSED, "expose");
+        self.known_open("DEPENDS", DEPENDS, "depend");
+        self.known_open("EXTERNALIZED", EXTERNALIZED, "externalize");
+        self.known_open("INTERNALIZED", INTERNALIZED, "internalize");
     }
 }
 fn main() { App { }; }

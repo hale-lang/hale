@@ -8,7 +8,8 @@
 // it opens, `batch.proposed` naming what was asked and `graph.requested`
 // asking the organization to open the Review. `--dry-run` proposes nothing;
 // a batch wrong anywhere is refused before anything is written; the same
-// steps still pending are proposed once. The organization's side (the
+// steps still pending are proposed once. `hale dna vacate <position>
+// <holder>` is a one-step batch. The organization's side (the
 // Review opened, ratified whole, refused whole when stale) is
 // scenario_test.hl's.
 
@@ -123,6 +124,29 @@ fn check() {
     let again = dna_cli(repo, "apply\n" + scratch + "/team.batch");
     std::test::assert(again.code == 0 && std::str::contains(again.stdout, "already proposed as " + dna::knowledge_review_id(family) + ", not yet decided"), "proposed once: " + again.stdout + again.stderr);
     std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 1, "still one Review");
+
+    // 5. ratified (its members' rows, as the organization writes them), the
+    // team is the organization; `vacate` takes a holder out, a one-step
+    // batch of its own
+    let j = dna::GitJournal { repo: repo };
+    let mut each_member = ideas;
+    while len(each_member) > 0 {
+        let nl = std::str::index_of(each_member, "\n");
+        let line = each_member[0..nl];
+        each_member = each_member[(nl + 1)..len(each_member)];
+        let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
+        std::test::assert(j.append(j.revision(), "knowledge.ratified", d, "{\"digest\": \"" + d + "\", \"outcome\": \"approve\", \"decided_by\": \"board\"}").ok, "a member ratified: " + line);
+    }
+    let chart = dna::org_chart(dna::GitJournal { repo: repo }, receipts);
+    std::test::assert(std::str::contains(chart, "holds position:api/dev ada\n") && std::str::contains(chart, "mandate position:api/reviewer\n"), "the team is the organization: " + chart);
+    let leave = dna_cli(repo, "vacate\napi/dev\nada\n--dry-run");
+    std::test::assert(leave.code == 0 && std::str::contains(leave.stdout, "- holds position:api/dev ada\n") && std::str::contains(leave.stdout, "1 taken out"), "vacate shows the hold it takes out: " + leave.stdout + leave.stderr);
+    let stranger = dna_cli(repo, "vacate\napi/dev\nzed");
+    std::test::assert(stranger.code != 0 && std::str::contains(stranger.stderr, "the record states no such hold"), "a hold the record does not state is refused: " + stranger.stderr);
+    let left = dna_cli(repo, "vacate\napi/dev\nada");
+    std::test::assert(left.code == 0 && std::str::contains(left.stdout, "proposed the batch as k:"), "vacate proposes its one-step batch: " + left.stdout + left.stderr);
+    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 2, "a Review of its own");
+    std::test::assert_eq_int(count_rows(repo, "batch.proposed", "vacate\\tposition:api/dev\\tada"), 1, "naming the step");
     dna::scratch_done(scratch);
 }
 

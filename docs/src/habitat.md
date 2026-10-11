@@ -149,6 +149,7 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | `runs_under`, policies rendered as projections, per-attachment credentials | **not built**: reserved as a relation for the compiler's registry (GH #1212) |
 | serving a surface over a transport, and placing a locus | `api::serve` over unix and HTTP, `hale api describe` and `call`: [API](./services/api.md); pools and programs: [Concurrency & placement](./services/concurrency.md) |
 | opening and filling a position | `hale dna position open` (its node and its mandate, one Board Review) and `hale dna fill`, each ratified by the Board: [Positions and `fill`](./dna/shaping.md) |
-| the other operations on a changing structure: vacate, merge, split, packs, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built**; vacating a position and adopting a pack are scenarios asserted to fail until they are (`dna/tests/scenario_test.hl`) |
+| several changes as one Review, and vacating a position | **built**: `hale dna apply <file>` (open, fill, vacate) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
+| the other operations on a changing structure: merge, split, assign, packs, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built**; each organism-level one is a scenario asserted to fail until it is (`dna/tests/scenario_test.hl`); the habitat's come with saplings |
 | standard equipment | **not built** |
 | finance capture and books | **not built** |

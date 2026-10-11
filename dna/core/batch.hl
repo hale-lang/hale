@@ -6,6 +6,7 @@
 //
 //   open <name> [under <node>] | <mandate>
 //   fill <name> <holder>
+//   vacate <name> <holder>
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
 // with or without its `position:` prefix.
@@ -14,7 +15,8 @@
 // against the graph the record states and the steps beside it, and the
 // organization it would leave against the invariants every step keeps —
 // every hold sits on a position the graph states, and every position a hold
-// sits on has a mandate. Order inside a batch does not matter; the end
+// sits on has a mandate; a vacated hold is one the record states. Order
+// inside a batch does not matter; the end
 // state does. What it would change is the org chart before and after
 // (`batch_render`), which is what `hale dna apply --dry-run` prints and the
 // Board reads.
@@ -27,7 +29,8 @@
 // refused whole as stale, never half applied.
 
 // A planned batch. `steps` are the normalized steps, one a line:
-// `open\t<position>\t<under>\t<mandate>` or `fill\t<position>\t<holder>`.
+// `open\t<position>\t<under>\t<mandate>`, `fill\t<position>\t<holder>` or
+// `vacate\t<position>\t<holder>`.
 // `before` and `after` are org charts as `org_chart` writes them.
 type BatchPlan {
     ok: Bool = false;
@@ -88,18 +91,19 @@ fn batch_steps(text: String) -> BatchPlan {
             out.steps = out.steps + "open\t" + batch_position(name) + "\t" + under + "\t" + mandate + "\n";
             continue;
         }
-        if std::str::starts_with(line, "fill ") {
-            let args = std::str::trim(line[5..len(line)]);
+        if std::str::starts_with(line, "fill ") || std::str::starts_with(line, "vacate ") {
+            let verb = line[0..std::str::index_of(line, " ")];
+            let args = std::str::trim(line[(len(verb) + 1)..len(line)]);
             let sp = std::str::index_of(args, " ");
-            if sp < 0 { out.why = at + "a fill names the position and its holder: `fill <name> <holder>`"; return out; }
+            if sp < 0 { out.why = at + "a " + verb + " names the position and its holder: `" + verb + " <name> <holder>`"; return out; }
             let name = args[0..sp];
             let holder = std::str::trim(args[(sp + 1)..len(args)]);
-            if !batch_word(name) || !batch_word(holder) { out.why = at + "a fill names the position and its holder, one word each"; return out; }
-            out.steps = out.steps + "fill\t" + batch_position(name) + "\t" + holder + "\n";
+            if !batch_word(name) || !batch_word(holder) { out.why = at + "a " + verb + " names the position and its holder, one word each"; return out; }
+            out.steps = out.steps + verb + "\t" + batch_position(name) + "\t" + holder + "\n";
             continue;
         }
         let sp = std::str::index_of(line, " ");
-        out.why = at + "`" + (if sp < 0 { line } else { line[0..sp] }) + "` is no step a batch takes (open, fill)";
+        out.why = at + "`" + (if sp < 0 { line } else { line[0..sp] }) + "` is no step a batch takes (open, fill, vacate)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -227,6 +231,15 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
             continue;
         }
         let holder = batch_field(step, 2);
+        if batch_field(step, 0) == "vacate" {
+            // a hold the record states, left once, never one the batch fills
+            if !std::str::contains("\n" + out.before, "\nholds " + p + " " + holder + "\n") { out.why = "`vacate " + p + " " + holder + "`: the record states no such hold"; return out; }
+            if std::str::contains(out.steps, "fill\t" + p + "\t" + holder + "\n") { out.why = "`vacate " + p + " " + holder + "`: the batch fills the same hold"; return out; }
+            if !std::str::contains("\n" + after, "\nholds " + p + " " + holder + "\n") { out.why = "`vacate " + p + " " + holder + "` is asked twice"; return out; }
+            let without = std::str::replace("\n" + after, "\nholds " + p + " " + holder + "\n", "\n");
+            after = without[1..len(without)];
+            continue;
+        }
         let stated = std::str::contains("\n" + out.before, "\nposition " + p + "\n");
         if !stated && !std::str::contains(opened, "\n" + p + "\n") { out.why = "`fill " + p + " " + holder + "`: no position the graph states or the batch opens"; return out; }
         if stated && !std::str::contains("\n" + out.before, "\nmandate " + p + "\n") { out.why = "`fill " + p + " " + holder + "`: the position has no ratified mandate; a hold sits on a mandated position"; return out; }
@@ -239,12 +252,14 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
 }
 
 // The org chart before and after a planned batch: every line of the after
-// chart, `+ ` where the batch adds it, then a count.
+// chart, `+ ` where the batch adds it, then `- ` for each line it takes out,
+// then a count.
 @unbounded
 fn batch_render(plan: BatchPlan) -> String {
     let mut out = "";
     let mut added = 0;
     let mut kept = 0;
+    let mut gone = 0;
     let mut rest = plan.after;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -254,7 +269,17 @@ fn batch_render(plan: BatchPlan) -> String {
         if had { kept = kept + 1; } else { added = added + 1; }
         out = out + (if had { "  " } else { "+ " }) + line + "\n";
     }
-    return out + to_string(added) + " line(s) added to the organization, " + to_string(kept) + " unchanged\n";
+    rest = plan.before;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::contains("\n" + plan.after, "\n" + line + "\n") {
+            gone = gone + 1;
+            out = out + "- " + line + "\n";
+        }
+    }
+    return out + to_string(added) + " line(s) added to the organization, " + to_string(gone) + " taken out, " + to_string(kept) + " unchanged\n";
 }
 
 // One `{kind, entity, body}` row, as a line.
@@ -302,6 +327,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
     let name = "batch/" + request_id;
     let mut opens = 0;
     let mut fills = 0;
+    let mut vacates = 0;
     let g = std::json::Builder { };
     g.begin_object();
     g.string_field("author", by);
@@ -309,10 +335,10 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
     g.string_field("name", name);
     g.string_field("provenance", "proposed by " + by);
     g.begin_array_field("rows");
-    // nodes, then their edges, then holds: memory takes a proposal's rows in
-    // order
+    // nodes, then their edges, then holds, then the holds left: memory takes
+    // a proposal's rows in order
     let mut pass = 0;
-    while pass < 3 {
+    while pass < 4 {
         let mut rest = plan.steps;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
@@ -372,11 +398,19 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
                 g.string_field("body", e.result());
                 g.end_object();
             }
+            if pass == 3 && verb == "vacate" {
+                vacates = vacates + 1;
+                g.begin_object();
+                g.string_field("kind", "graph.retired");
+                g.string_field("entity", "holds:" + p + "|" + batch_field(step, 2));
+                g.string_field("body", "{}");
+                g.end_object();
+            }
         }
         pass = pass + 1;
     }
     g.end_array();
-    let question = "ratify the batch " + request_id + " as " + by + " proposes it: " + to_string(opens) + " position(s) opened, each with its mandate, and " + to_string(fills) + " filled";
+    let question = "ratify the batch " + request_id + " as " + by + " proposes it: " + to_string(opens) + " position(s) opened, each with its mandate, " + to_string(fills) + " filled and " + to_string(vacates) + " vacated";
     g.string_field("question", question);
     g.string_field("target", "org");
     g.string_field("text", question + ".");
@@ -481,7 +515,7 @@ fn batch_text(steps: String) -> String {
             let under = batch_field(step, 2);
             out = out + "open " + batch_field(step, 1) + (if len(under) > 0 { " under " + under } else { "" }) + " | " + batch_field(step, 3) + "\n";
         } else {
-            out = out + "fill " + batch_field(step, 1) + " " + batch_field(step, 2) + "\n";
+            out = out + verb + " " + batch_field(step, 1) + " " + batch_field(step, 2) + "\n";
         }
     }
     return out;

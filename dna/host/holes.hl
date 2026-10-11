@@ -128,7 +128,9 @@ fn held_state(root: String) -> HeldState {
             if std::str::starts_with(entity, "holds:") {
                 let bar = std::str::index_of(entity, "|");
                 let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
-                if !std::str::contains(out.holds, "\n" + pair + "\n") { out.holds = out.holds + pair + "\n"; }
+                // a hold left (a vacate) takes the pair out; any other row states it
+                if std::json::find_string_field(row, "kind") == "graph.retired" { out.holds = std::str::replace(out.holds, "\n" + pair + "\n", "\n"); }
+                else if !std::str::contains(out.holds, "\n" + pair + "\n") { out.holds = out.holds + pair + "\n"; }
             }
         }
         i = i + 1;
@@ -275,11 +277,23 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
 // rows land in the proposer's name, as `ingest`'s do; `graph.requested`
 // asks the running organization to open the Review, and the Board's one
 // verdict ratifies every member in one append.
-@unbounded
 fn apply_verb(root: String, seed: String, file: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
     if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
     let text = std::io::fs::read_file(file) or "";
     if len(text) == 0 { return fail("apply: `" + file + "` is not a file with steps in it"); }
+    return apply_text(root, seed, text, dry_run, who_flag, memory);
+}
+
+// `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`: a holder
+// leaves a position, proposed as a one-step batch, the Board's one Review.
+fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
+    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna vacate <position> <holder> [--dry-run] [--as <who>]"); }
+    return apply_text(root, seed, "vacate " + name + " " + holder + "\n", dry_run, who_flag, memory);
+}
+
+// A batch's text planned, printed and, unless `dry_run`, proposed.
+@unbounded
+fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     // the record as the organization reads it: a ratification lands in

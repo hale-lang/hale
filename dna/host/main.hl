@@ -254,6 +254,9 @@ fn main() {
     } else if verb == "apply" {
         // `hale dna apply <file> [--dry-run] [--as <who>]`: a batch of changes to the structure, one Board Review
         ans = apply_verb(root, seed, word(a, 0), has_flag(a, "--dry-run"), flag(a, "--as"), memory);
+    } else if verb == "vacate" {
+        // `hale dna vacate <position> <holder>`: a one-step batch
+        ans = vacate_verb(root, seed, word(a, 0), word(a, 1), has_flag(a, "--dry-run"), flag(a, "--as"), memory);
     } else if verb == "fill" {
         // GH #1091: `hale dna fill <position> <holder>`, a holder proposed through the organization
         ans = fill_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), memory);

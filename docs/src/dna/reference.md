@@ -240,8 +240,10 @@ hale dna ingest [project] [--at <rev>]
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
 hale dna apply <file> [--dry-run] [--as <who>]
-                             several changes to the structure (`open`, `fill`) as one Board Review, applied all or nothing
+                             several changes to the structure (`open`, `fill`, `vacate`) as one Board Review, applied all or nothing
                              (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing
+hale dna vacate <position> <holder> [--dry-run] [--as <who>]
+                             a holder leaves a position: a one-step batch, one Board Review (`review changes approve`)
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
                              propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
 ```

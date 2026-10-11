@@ -4627,23 +4627,27 @@ The live half is memory's, projected from the record by the spine
   <who>]`, `dna/core/batch.hl`).** Several changes to the structure as
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
-  <node>] | <mandate>` and `fill <name> <holder>`; `#` starts a comment,
+  <node>] | <mandate>`, `fill <name> <holder>` and `vacate <name>
+  <holder>`; `#` starts a comment,
   and a name is a position's, with or without `position:`. The host
   plans the batch against the record (`batch_plan`): a line that is no
   step, a name with a space, `|` or tab, an `open` with no mandate, a
   position the graph states or the batch opens twice, an `under` that is
   neither a node the graph states nor a position the batch opens, a
   `fill` of a position the graph does not state and the batch does not
-  open, a `fill` of a stated position with no ratified mandate, or a hold
-  the organization would then hold twice is refused whole, naming the
+  open, a `fill` of a stated position with no ratified mandate, a hold
+  the organization would then hold twice, or a `vacate` of a hold the
+  record does not state, asked twice or filled in the same batch is
+  refused whole, naming the
   step, and nothing is written. Order inside a batch does not matter: a
   fill or `under` may name a position a later step opens. Planned, the
   batch prints the org chart before and after (`position <id>`,
   `mandate <id>`, `holds <id> <holder>` lines, `+ ` where the batch adds
-  one), and `--dry-run` stops there. Otherwise the host keeps the
+  one, `- ` where it takes one out), and `--dry-run` stops there. Otherwise the host keeps the
   receipts and appends, in the asker's name: one graph proposal (`kind:
   graph`, name `batch/<request id>`, target `org`) whose rows are the
-  opened positions' nodes, then their `unfold` edges, then the holds;
+  opened positions' nodes, then their `unfold` edges, then the holds,
+  then a `graph.retired` for each hold vacated;
   one mandate per opened position (`mandate/<name>`); each a member
   (`knowledge.proposed`, no Review of its own); the family (`kind:
   family`, its `ideas` the members in that order, and `batch`, the
@@ -4661,7 +4665,12 @@ The live half is memory's, projected from the record by the spine
   the family `library.family.refused`, nothing of it projected. Memory
   still admits each ratified hold as it admits any (`hold.refused` for a
   holder it does not know), so the batch checks structure, and the store
-  stays the gate on who may hold what.
+  stays the gate on who may hold what. **`hale dna vacate <position>
+  <holder> [--dry-run] [--as <who>]`** is a one-step batch: the holder
+  leaves, the position stays. Every reader of holds takes a retirement
+  carried by a ratified proposal as it takes a `graph.retired` row: the
+  graph, memory's projection, the head's seats (`HoldsReader`) and the
+  CLI's (`held_state`).
   **Mandates (seed/structure).** Each position `init` proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
   knowledge idea of kind `mandate` (family `mandate`, `author: hale dna

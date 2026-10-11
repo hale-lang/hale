@@ -660,6 +660,9 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("ingest") => ingest_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
+        // a holder leaves a position, as a one-step batch:
+        // `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`
+        Some("vacate") => host_exec("vacate", Path::new("."), &args[1..]),
         // several changes to the structure as one Board Review:
         // `hale dna apply <file> [--dry-run] [--as <who>]`; the file is read
         // by the host, so it goes as an absolute path
@@ -967,6 +970,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
     eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
     eprintln!("       hale dna apply <file> [--dry-run] [--as <who>]");
+    eprintln!("       hale dna vacate <position> <holder> [--dry-run] [--as <who>]");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");

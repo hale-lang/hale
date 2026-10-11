@@ -544,6 +544,10 @@ hale dna apply team.batch --dry-run
 nothing proposed (--dry-run)
 ```
 
+A step may also take a holder out: `vacate api/dev ada`. On its own,
+`hale dna vacate api/dev ada` proposes that one step the same way; the
+position stays, and the hold goes once the Board ratifies it.
+
 Without `--dry-run`, `apply` proposes it as one Review, listed under
 `changes`; `hale dna review changes approve` ratifies every step of it
 together. A batch is checked whole before anything is written: a fill
