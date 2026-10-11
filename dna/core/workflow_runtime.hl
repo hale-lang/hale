@@ -89,7 +89,8 @@ locus WorkflowRuntime {
     // and remember each committed proposal's id and revision. Returns the
     // revision the projection now reflects: the one reading a decision is
     // taken at, and the one its append is exact at — never a second look.
-    @unbounded
+    // `committed` gains a line per committed proposal: the record's size.
+    @bounded_by(self.journal)
     fn catch_up() -> Int {
         let n = self.journal.revision();
         while self.cursor < n {
@@ -813,8 +814,8 @@ locus TaskRun {
         };
     }
     // The workflow is born with every leaf and child of this Task, by
-    // step, from the recipe.
-    @unbounded
+    // step, from the recipe (the bound nodes `cat` read).
+    @bounded_by(self.cat)
     fn start() {
         if self.started { return; }
         self.started = true;
@@ -994,8 +995,9 @@ locus Executions {
     }
     // Only the answer to a question this owner holds outstanding — the
     // same scope, task and identity — and only once; anything else,
-    // including a positive answer nobody asked for, is a stray.
-    @unbounded
+    // including a positive answer nobody asked for, is a stray. One
+    // TaskRun per execution admitted, alive until the execution settles.
+    @bounded_by(a)
     fn on_admission(a: AdmissionAnswer) {
         if a.scope != self.scope || !set_has(self.outstanding, a.ask_id) || !std::str::starts_with(a.ask_id, a.task_id + "@ask") {
             self.strays = self.strays + 1;
@@ -1015,7 +1017,8 @@ locus Executions {
             recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false
         };
     }
-    @unbounded
+    // One TaskRun per child execution admitted, alive until it settles.
+    @bounded_by(c)
     fn on_child(c: ChildAdmission) {
         if set_has(self.born, c.task_id) { self.repeats = self.repeats + 1; return; }
         self.born = set_add(self.born, c.task_id);
@@ -1076,7 +1079,8 @@ locus WorkflowRun {
         publish RunLives;
     }
     accept(s: StepRun) { }
-    @unbounded
+    // A copy of each leaf and child the recipe binds to this workflow.
+    @bounded_by(self.leaves)
     birth() {
         let mut i = 0;
         while i < self.leaves.len() {
@@ -1146,8 +1150,9 @@ locus WorkflowRun {
         self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
     }
     // Step `index` is born, this workflow's own child, with the leaves
-    // bound under it.
-    @unbounded
+    // bound under it: the leaves and children of this workflow that are
+    // the step's.
+    @bounded_by(self.mine)
     fn start_step(index: Int) {
         let step_id = self.workflow_id + "/s" + to_string(index);
         let mut rows = LeafSpecRows { };
@@ -1300,7 +1305,8 @@ locus StepRun {
     fn leaving() {
         StepDrained <- StepDrain { task_id: self.task_id, step_id: self.step_id, step_index: self.step_index, disposition: self.disposition };
     }
-    @unbounded
+    // A copy of each leaf and child the recipe binds to this step.
+    @bounded_by(self.leaves)
     birth() {
         // the leaves are copied while the owner's arena is still alive
         let mut i = 0;
@@ -1443,7 +1449,8 @@ locus StepRun {
         self.left = set_add(self.left, c.key);
         if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
     }
-    @unbounded
+    // The activation's answer births one WorkRun per leaf of the step.
+    @bounded_by(self.mine)
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";

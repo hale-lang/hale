@@ -113,7 +113,8 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
     return task_done_admit(root, seed, id, who_flag, note, evidence_flag, exception, authorized_by, writer, memory);
 }
 
-@unbounded
+// One projection per try, STALE_TRIES at most.
+@bounded_by(STALE_TRIES)
 fn task_done_admit(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String, writer: TaskWriterAdmission, memory: dna::Memory) -> Answer {
     if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
     let s = sync_record(root, memory);
@@ -225,7 +226,8 @@ fn task_authorize_verb(root: String, seed: String, id: String, exception: String
     return task_authorize_admit(root, seed, id, exception, who_flag, writer, memory);
 }
 
-@unbounded
+// One projection per try, STALE_TRIES at most.
+@bounded_by(STALE_TRIES)
 fn task_authorize_admit(root: String, seed: String, id: String, exception: String, who_flag: String, writer: TaskWriterAdmission, memory: dna::Memory) -> Answer {
     if len(id) == 0 || len(exception) == 0 { return fail("task authorize: `hale dna task authorize <id> --exception <why> [--as <authorizer>]`"); }
     let s = sync_record(root, memory);
@@ -282,7 +284,8 @@ fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, 
     return task_decide_admit(root, seed, id, decided_by, via, evidence_flag, note, who_flag, writer, memory);
 }
 
-@unbounded
+// One projection per try, STALE_TRIES at most.
+@bounded_by(STALE_TRIES)
 fn task_decide_admit(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String, writer: TaskWriterAdmission, memory: dna::Memory) -> Answer {
     if len(id) == 0 { return fail("task decide: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]`"); }
     let s = sync_record(root, memory);
@@ -401,7 +404,8 @@ fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_fla
     return task_reassign_admit(root, seed, id, to, by_flag, writer, memory);
 }
 
-@unbounded
+// One projection per try, STALE_TRIES at most.
+@bounded_by(STALE_TRIES)
 fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_flag: String, writer: TaskWriterAdmission, memory: dna::Memory) -> Answer {
     if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
     let s = sync_record(root, memory);
@@ -452,7 +456,8 @@ fn task_accept_verb(root: String, seed: String, id: String, who_flag: String, no
     return task_accept_admit(root, seed, id, who_flag, note, writer, memory);
 }
 
-@unbounded
+// One projection per try, STALE_TRIES at most.
+@bounded_by(STALE_TRIES)
 fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, note: String, writer: TaskWriterAdmission, memory: dna::Memory) -> Answer {
     if len(id) == 0 { return fail("task accept: `hale dna task accept <id> [--as <who>] [--note <why>]`"); }
     let s = sync_record(root, memory);
@@ -1442,7 +1447,9 @@ fn gate_of_run(gates: String, name: String) -> String {
     return "";
 }
 
-@unbounded
+// Every Review of the projection `p`, with the verdicts and check runs
+// the forge reports for each: one projection per one written.
+@bounded_by(p)
 fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
     if !forge.present() { return fail("no forge: " + forge.name()); }
     let board = "," + std::str::replace(rec(root).setting("github.board"), " ", "") + ",";

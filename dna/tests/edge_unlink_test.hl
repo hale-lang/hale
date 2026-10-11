@@ -14,7 +14,8 @@ locus EdgeCapture {
     params { rows: ReturnedEdges = ReturnedEdges { }; }
     fn node(row: dna::Stored) -> Bool { return true; }
     fn binding(row: dna::KnowledgeBinding) -> Bool { return true; }
-    @unbounded
+    // one row per edge the test's script projects
+    @bounded_by(script)
     fn edge(row: dna::KnowledgeEdge) -> Bool { self.rows.push(row); return true; }
     fn has(edge: dna::KnowledgeEdge) -> Bool {
         let mut i = 0;

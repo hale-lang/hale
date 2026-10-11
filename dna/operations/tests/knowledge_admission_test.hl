@@ -15,7 +15,8 @@ locus AdmittedEdgeCapture {
     params { tuples: String = ""; }
     fn node(row: dna::Stored) -> Bool { return true; }
     fn binding(row: dna::KnowledgeBinding) -> Bool { return true; }
-    @unbounded
+    // one line per edge the test's script projects
+    @bounded_by(script)
     fn edge(row: dna::KnowledgeEdge) -> Bool { self.tuples = self.tuples + row.from + "\t" + row.to + "\t" + row.rel + "\n"; return true; }
 }
 locus AdmittedEdgesVisible { params { } fn visible(id: String) -> Bool { return true; } }

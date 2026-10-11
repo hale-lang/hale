@@ -49,7 +49,8 @@ fn parse_vector(lit: String, into: Floats) {
 
 // Each word lands in two buckets with a sign from its hash; the vector
 // is normalized. Empty text is the zero vector.
-@unbounded
+// The vector is DIM floats, whatever the text.
+@bounded_by(DIM)
 fn embed_text(text: String) -> String {
     let v = Floats { };
     let mut i = 0;

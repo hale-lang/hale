@@ -420,8 +420,9 @@ locus WorkflowCatalog {
     // GH #1143: how `id` at `revision` occurs when a schedule points at it:
     // its concurrency while an execution is open, and the input names it
     // takes (space-separated).
-    // "" when set, else why not.
-    @unbounded
+    // "" when set, else why not: one answer per call, and a reader calls
+    // it once per definition of the document it reads.
+    @bounded_by(document)
     fn occurs(id: String, revision: Int, concurrency: String, takes: String) -> String {
         if !word_in(concurrency, WORKFLOW_CONCURRENCY) { return "workflow " + definition_name(id, revision) + ": concurrency is one of " + WORKFLOW_CONCURRENCY + ", not `" + concurrency + "`"; }
         let mut i = 0;
@@ -519,8 +520,9 @@ locus WorkflowCatalog {
     }
     // Why the organization cannot perform a definition's steps ("" when it
     // can): a step it would perform itself (`requires: "organism"`) that
-    // this toolchain does not know, named by its key.
-    @unbounded
+    // this toolchain does not know, named by its key. One answer per call;
+    // the listing asks once per definition of the catalog.
+    @bounded_by(self.workflows)
     fn unperformed(id: String, revision: Int) -> String {
         let mut m = 0;
         while m < self.members.len() {
@@ -572,8 +574,9 @@ locus WorkflowCatalog {
     fn member_at(i: Int) -> MemberDef { return self.members.get(i) or MemberDef { }; }
     fn bound_count() -> Int { return self.bound.len(); }
     fn bound_at(i: Int) -> BoundNode { return self.bound.get(i) or BoundNode { }; }
-    // The bound node with this id, or an empty one.
-    @unbounded
+    // The bound node with this id, or an empty one: one per call, and a
+    // caller walking a subtree asks once per node of it.
+    @bounded_by(self.bound)
     fn bound_node(id: String) -> BoundNode {
         let mut i = 0;
         while i < self.bound.len() {
@@ -627,8 +630,9 @@ locus WorkflowCatalog {
         return "";
     }
     // Check one definition and everything it invokes. Returns its index in
-    // `stats`, or -1 with `self.gap` saying why it was refused.
-    @unbounded
+    // `stats`, or -1 with `self.gap` saying why it was refused. A stat per
+    // definition the walk reaches, `stats` emptied by each expansion.
+    @bounded_by(self.workflows)
     fn preflight(id: String, revision: Int, path: String, at: String, limits: AdmissionLimits) -> Int {
         let name = definition_name(id, revision);
         let seen = self.stat_at(id, revision);
@@ -733,8 +737,9 @@ locus WorkflowCatalog {
     // ---- expansion -----------------------------------------------------
 
     // Bind one execution of definition `id`@`revision` under root Task
-    // `root_task`: the whole finite tree, or nothing.
-    @unbounded
+    // `root_task`: the whole finite tree, or nothing. The nodes are this
+    // execution's alone (`bound` is emptied first), held to `limits`.
+    @bounded_by(limits)
     fn expand(root_task: String, id: String, revision: Int, limits: AdmissionLimits) -> Expansion {
         self.bound = BoundNodeRows { };
         self.stats = DefStatRows { };
@@ -932,7 +937,7 @@ locus WorkflowCatalog {
     // Read a recipe back as this catalog's bound nodes. "" when read, else
     // why not; nothing is bound when it is refused, whichever rule refused
     // it, and nothing is bound until the whole document has been read.
-    @unbounded
+    @bounded_by(text)
     fn decode_bound(text: String) -> String {
         self.bound = BoundNodeRows { };
         let gap = self.recipe_gap(text);
@@ -1020,7 +1025,7 @@ locus WorkflowCatalog {
     }
     // Add every definition and member in `text` (what `encode` wrote). ""
     // when read, else why not; nothing is added when it is refused.
-    @unbounded
+    @bounded_by(text)
     fn decode(text: String) -> String {
         if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/3" {
             return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
@@ -1181,7 +1186,7 @@ fn define_baseline(c: WorkflowCatalog) {
 // The catalog as `hale dna definitions` prints it: every definition with
 // its revision and title, each step with its key and store, what a newer
 // revision supersedes, and what a definition is refused at admission for.
-@unbounded
+@bounded_by(c)
 fn definitions_listing(c: WorkflowCatalog) -> String {
     let mut out = if len(c.refused) > 0 { "the project's own definitions were refused (dna/org/own_workflows.hl): " + c.refused + "\n" } else { "" };
     let mut i = 0;

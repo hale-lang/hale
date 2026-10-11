@@ -6945,7 +6945,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
 dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 -- dynamic	sites in dna/operations
@@ -6963,7 +6962,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
@@ -7052,7 +7050,7 @@ dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/commands_api_test.hl
@@ -7135,8 +7133,8 @@ dynamic	__lib_dna__core___roles__RecordRoles	on main
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdJsonBuilder	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
-shared	dynamic	sites in core #1cd6b27e
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in core #c1bf73a0
+shared	dynamic	sites in operations #07070d4b
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/context_api_test.hl
@@ -7160,7 +7158,7 @@ dynamic	__lib_dna__api___main__Api	on main
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/definition_drafts_api_test.hl
@@ -7201,7 +7199,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/definitions_api_test.hl
@@ -7229,7 +7227,7 @@ shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__test
 shared	dynamic	sites in api #33b097d0
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/edge_review_api_test.hl
@@ -7279,7 +7277,7 @@ dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_api_test.hl
@@ -7401,7 +7399,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
@@ -7568,8 +7565,8 @@ dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingComma
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
-shared	dynamic	sites in core #1cd6b27e
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in core #c1bf73a0
+shared	dynamic	sites in operations #07070d4b
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_local_test.hl
@@ -7594,8 +7591,8 @@ dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on main
 dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
-shared	dynamic	sites in core #1cd6b27e
-shared	dynamic	sites in operations #b41ece82
+shared	dynamic	sites in core #c1bf73a0
+shared	dynamic	sites in operations #250079bd
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_memory_refused_test.hl
@@ -7691,7 +7688,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
@@ -7789,8 +7785,8 @@ shared	dynamic	sites in api #b8033fda
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main
-shared	dynamic	sites in core #1cd6b27e
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in core #c1bf73a0
+shared	dynamic	sites in operations #07070d4b
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/organization_impact_api_test.hl
@@ -7811,7 +7807,7 @@ dynamic	__lib_dna__operations___organization_policy__FixedOrganizationAuthority	
 dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
 shared	dynamic	sites in core #47f5f26d
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/organization_receipt_api_test.hl
@@ -7853,7 +7849,7 @@ dynamic	__lib_dna__operations___organization_policy__FixedOrganizationAuthority	
 dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
 shared	dynamic	sites in core #47f5f26d
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/read_api_test.hl
@@ -7898,7 +7894,12 @@ dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api___knowledge_commands__KnowledgeAdmission	on main
 dynamic	__lib_dna__api___source__SourceReader	on main
 dynamic	__lib_dna__core___roles__RecordRoles	on main
-shared	dynamic	sites in core #2c2de503
+-- dynamic	sites in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 shared	dynamic	sites in operations #547a6538
 shared	dynamic	sites in the stdlib #c3a51769
 
@@ -7931,8 +7932,7 @@ dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main
-shared	dynamic	sites in dna/operations #e1f14478
+shared	dynamic	sites in dna/operations #07070d4b
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/task_query_test.hl
@@ -7973,7 +7973,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
@@ -8040,7 +8039,7 @@ dynamic	__lib_dna__api___main__Api	on main
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
-shared	dynamic	sites in operations #2e6c26cd
+shared	dynamic	sites in operations #4444350e
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/face/examples/intake-control/tests/provider_test.hl
@@ -8149,7 +8148,7 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`subject` passed as a value)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`subject` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on unknown (`subject` passed as a value)|unknown (no instance)
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	Authority	on main
 dynamic	FaultRecord	on main
@@ -8185,7 +8184,7 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`candidate` passed as a value)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`candidate` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on unknown (`candidate` passed as a value)|unknown (no instance)
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	NodeReviewAuthority	on main
 dynamic	__StdBytesBytesBuilder	on main
@@ -8220,7 +8219,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on unknown (`admission` passed as a value)
 dynamic	__lib_dna__core___record__GitRecord	on unknown (`admission` passed as a value)|unknown (no instance)
 dynamic	__lib_dna__core___record__Texts	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___roles__HoldsReader	on unknown (`admission` passed as a value)
 dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`admission` passed as a value)
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on unknown (`admission` passed as a value)
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`admission` passed as a value)|unknown (no instance)
@@ -8297,7 +8295,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
@@ -8362,7 +8359,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/operations/tests/knowledge_binding_admission_test.hl
 row	BindingAdmissionCases@main1	BindingAdmissionCases	main	default
 shared	dynamic	sites in core #55125a37
-shared	dynamic	sites in operations #b41ece82
+shared	dynamic	sites in operations #250079bd
 -- dynamic	sites in operations/tests
 dynamic	BindingAuthority	on main
 dynamic	BindingFaultRecord	on main
@@ -8385,7 +8382,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/operations/tests/knowledge_node_admission_test.hl
 row	NodeAdmissionCases@main1	NodeAdmissionCases	main	default
 shared	dynamic	sites in core #55125a37
-shared	dynamic	sites in operations #b41ece82
+shared	dynamic	sites in operations #250079bd
 -- dynamic	sites in operations/tests
 dynamic	NodeAuthority	on main
 dynamic	NodeFaultRecord	on main
@@ -8415,7 +8412,7 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`command` passed as a value)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`command` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	Authority	on main
 dynamic	FaultRecord	on main
@@ -8496,7 +8493,7 @@ dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in operations #2321e86b
+shared	dynamic	sites in operations #e3c33461
 -- dynamic	sites in operations/tests
 dynamic	ApplicationJournal	on main
 dynamic	Authority	on main
@@ -8544,7 +8541,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/operations/tests/person_retirement_test.hl
 row	RetirementCases@main1	RetirementCases	main	default
 shared	dynamic	sites in core #fd739ca5
-shared	dynamic	sites in operations #c943bc87
+shared	dynamic	sites in operations #344ad859
 -- dynamic	sites in operations/tests
 dynamic	RetirementFaultBatch	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
@@ -8616,7 +8613,7 @@ dynamic	__StdIterLines	on unknown (`propose` passed as a value)
 == dna/operations/tests/task_administration_test.hl
 row	TaskCases@main1	TaskCases	main	default
 shared	dynamic	sites in core #fd739ca5
-shared	dynamic	sites in operations #c943bc87
+shared	dynamic	sites in operations #344ad859
 -- dynamic	sites in operations/tests
 dynamic	TaskFaultRecord	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
@@ -8634,7 +8631,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/operations/tests/task_create_test.hl
 row	CreateCases@main1	CreateCases	main	default
 shared	dynamic	sites in core #fd739ca5
-shared	dynamic	sites in operations #e1f14478
+shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	CreateFaultRecord	on main
 dynamic	__StdBytesBytesBuilder	on main
@@ -9046,39 +9043,10 @@ row	~.journal.ledger.store.writers	__lib_dna__core___journal__Authors	main	inher
 row	~.journal.order	__lib_dna__core___routing__PlacedRows	main	inherited
 row	~.journal.record	__lib_dna__core___journal__MemJournal	main	inherited
 row	~.journal.record.rows	__lib_dna__core___journal__EventRows	main	inherited
--- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitLeases	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
-dynamic	__lib_dna__core___steps__StepAsks	on main
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
+shared	dynamic	sites in dna/core #ba99a4a0
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
 shared	dynamic	sites in dna/host #61ef3cf8
-shared	dynamic	sites in dna/operations #e1f14478
+shared	dynamic	sites in dna/operations #07070d4b
 shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
 dynamic	__StdJsonBuilder	on main
@@ -10189,36 +10157,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/legs_test.hl
 row	__lib_dna__core___record__GitRecord@main2	__lib_dna__core___record__GitRecord	main	default
 shared	App@main1	App #0e5afafb
--- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitLeases	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
-dynamic	__lib_dna__core___steps__StepAsks	on main
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
+shared	dynamic	sites in dna/core #ba99a4a0
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
 shared	dynamic	sites in dna/host #61ef3cf8
 shared	dynamic	sites in dna/organization_runtime #1a33f9eb
@@ -10571,7 +10510,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 shared	dynamic	sites in core #55125a37
-shared	dynamic	sites in operations #2321e86b
+shared	dynamic	sites in operations #e3c33461
 shared	dynamic	sites in organization_source #5ef637a9
 -- dynamic	sites in tests
 dynamic	SourceApplyJournal	on main
@@ -10938,7 +10877,13 @@ row	~.roles.git.record	__lib_dna__core___record__GitRecord	main	inherited
 row	~.roles.git.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
-shared	dynamic	sites in core #2c2de503
+-- dynamic	sites in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/record_test.hl
@@ -12281,7 +12226,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 -- dynamic	sites in operations
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|pool:commands|pool:io|unknown (no caller)|unknown (no instance)
@@ -12297,7 +12241,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on pool:io
 dynamic	__lib_dna__core___record__GitReceipts	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__Texts	on main|pool:commands|pool:io
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___routing__RoutedJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on pool:io
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main|pool:commands|pool:io
@@ -12576,7 +12519,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 dynamic	__lib_dna__core__pond__db___args__Args	on pool:io|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in dna/core/pond/pq
 dynamic	__StdBytesBytesBuilder	on pool:io
@@ -12597,7 +12539,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on pool:io
 dynamic	__lib_dna__core___record__GitReceipts	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__Texts	on main|pool:commands|pool:io
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___routing__RoutedJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on pool:io
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main|pool:commands|pool:io
@@ -13008,12 +12949,11 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
 dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on pool:io|unknown (no caller)|unknown (no instance)
 shared	dynamic	sites in core/pond/pq #934df604
-shared	dynamic	sites in operations #5f13310b
+shared	dynamic	sites in operations #3c44e6b1
 shared	dynamic	sites in organization_source #ae56cbc2
 shared	dynamic	sites in the stdlib #d1d49800
 
@@ -13064,10 +13004,9 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitJournal	on main|pool:commands|pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pool:commands|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main|pool:commands|pool:io
 dynamic	__lib_dna__core__pond__db___args__Args	on pool:io|unknown (no caller)|unknown (no instance)
 shared	dynamic	sites in core/pond/pq #934df604
-shared	dynamic	sites in operations #5f13310b
+shared	dynamic	sites in operations #3c44e6b1
 shared	dynamic	sites in organization_source #ae56cbc2
 shared	dynamic	sites in the stdlib #d1d49800
 
@@ -13179,7 +13118,7 @@ dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitLeases	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
@@ -13227,7 +13166,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
@@ -15529,27 +15467,6 @@ dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
-== shared sites in core #1cd6b27e
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main
-
-== shared sites in core #2c2de503
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___roles__HoldsReader	on main
-
 == shared sites in core #3932612c
 dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_embed__Words	on main
@@ -15692,6 +15609,17 @@ dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (n
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core___record__RowBatch	on unknown (`check` passed as a value)|unknown (no instance)
 
+== shared sites in core #c1bf73a0
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
+
 == shared sites in core #c8204432
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -15784,6 +15712,37 @@ dynamic	__StdSecretCredential	on pool:io
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)
 
+== shared sites in dna/core #ba99a4a0
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
+dynamic	__lib_dna__core___memory_embed__Words	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__GitLeases	on main
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main
+dynamic	__lib_dna__core___review__Review	on main
+dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
+dynamic	__lib_dna__core___steps__StepAsks	on main
+dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
+dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
+dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__Executions	on main
+dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
+dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
+
 == shared sites in dna/core/pond/pq #39e83e0a
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIoTcpStream	on main
@@ -15803,7 +15762,7 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)
 dynamic	__lib_dna__host___projection__Projection	on main
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on main|unknown (no caller)
 
-== shared sites in dna/operations #e1f14478
+== shared sites in dna/operations #07070d4b
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)|unknown (no instance)
@@ -15817,7 +15776,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
@@ -15856,6 +15814,49 @@ dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdJsonBuilder	on pool:io
 dynamic	__StdSecretCredential	on pool:io
 
+== shared sites in operations #07070d4b
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___memory_spine__MemoryLeases	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__Texts	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on main|unknown (no instance)
+dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on main
+dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
+dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
+dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
+dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main
+dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
+dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
+dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
+dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
+
 == shared sites in operations #11da8ca7
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -15891,7 +15892,59 @@ dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCode
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 
-== shared sites in operations #2321e86b
+== shared sites in operations #250079bd
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no caller)
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLeases	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___record__Texts	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on main
+dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main
+dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingAdmission	on main
+dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingReceipts	on main
+dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_binding_projection__KnowledgeBindingProjection	on main
+dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_admission__KnowledgeEdgeAdmission	on main
+dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_projection__KnowledgeEdgeProjection	on main
+dynamic	__lib_dna__operations___knowledge_node_admission__KnowledgeNodeAdmission	on main
+dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main
+dynamic	__lib_dna__operations___knowledge_node_projection__KnowledgeNodeProjection	on main
+dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
+dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on main
+dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
+dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
+dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
+dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main
+dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
+dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
+dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
+dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
+
+== shared sites in operations #344ad859
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)|unknown (no instance)
@@ -15905,7 +15958,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
@@ -15925,17 +15977,75 @@ dynamic	__lib_dna__operations___organization_application__OrganizationApplicatio
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main
+dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
 dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
 dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main
-dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
+dynamic	__lib_dna__operations___queries__Queries	on main
 dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 
-== shared sites in operations #2e6c26cd
+== shared sites in operations #3c44e6b1
+dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io|unknown (no instance)
+dynamic	__StdJsonBuilder	on pool:commands|pool:io|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryLeases	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryVault	on pool:commands|pool:io
+dynamic	__lib_dna__core___native_json__NativeJson	on pool:commands|pool:io
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:commands|pool:io
+dynamic	__lib_dna__core___ownership__Ownership	on pool:io
+dynamic	__lib_dna__core___record__GitReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__core___record__GitRecord	on pool:commands|pool:io
+dynamic	__lib_dna__core___record__Texts	on pool:commands|pool:io
+dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
+dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on pool:io
+dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCapture	on pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingAdmission	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_binding_projection__KnowledgeBindingProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_admission__KnowledgeEdgeAdmission	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__operations___knowledge_edge_projection__KnowledgeEdgeProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_node_admission__KnowledgeNodeAdmission	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_node_projection__KnowledgeNodeProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___organization_impact__OrganizationImpactEntries	on pool:io
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on pool:commands|pool:io
+dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on pool:commands|pool:io
+dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io|unknown (no instance)
+dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
+
+== shared sites in operations #4444350e
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)
@@ -15950,7 +16060,6 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
@@ -16001,162 +16110,6 @@ dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 
-== shared sites in operations #5f13310b
-dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io|unknown (no instance)
-dynamic	__StdJsonBuilder	on pool:commands|pool:io|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryLeases	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryVault	on pool:commands|pool:io
-dynamic	__lib_dna__core___native_json__NativeJson	on pool:commands|pool:io
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:commands|pool:io
-dynamic	__lib_dna__core___ownership__Ownership	on pool:io
-dynamic	__lib_dna__core___record__GitReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__core___record__GitRecord	on pool:commands|pool:io
-dynamic	__lib_dna__core___record__Texts	on pool:commands|pool:io
-dynamic	__lib_dna__core___roles__HoldsReader	on pool:commands|pool:io
-dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
-dynamic	__lib_dna__core___workflow_projection__WorkflowProjection	on pool:io
-dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCapture	on pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingAdmission	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_binding_projection__KnowledgeBindingProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_admission__KnowledgeEdgeAdmission	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_projection__KnowledgeEdgeProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_node_admission__KnowledgeNodeAdmission	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_node_projection__KnowledgeNodeProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___organization_impact__OrganizationImpactEntries	on pool:io
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on pool:commands|pool:io
-dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on pool:commands|pool:io
-dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
-
-== shared sites in operations #b41ece82
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no caller)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
-dynamic	__lib_dna__core___memory_spine__MemoryLeases	on main
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
-dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
-dynamic	__lib_dna__core___record__GitReceipts	on main
-dynamic	__lib_dna__core___record__GitRecord	on main
-dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
-dynamic	__lib_dna__core___routing__RoutedJournal	on main
-dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on main
-dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main
-dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingAdmission	on main
-dynamic	__lib_dna__operations___knowledge_binding_admission__KnowledgeBindingReceipts	on main
-dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_binding_projection__KnowledgeBindingProjection	on main
-dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_admission__KnowledgeEdgeAdmission	on main
-dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main|unknown (no caller)
-dynamic	__lib_dna__operations___knowledge_edge_projection__KnowledgeEdgeProjection	on main
-dynamic	__lib_dna__operations___knowledge_node_admission__KnowledgeNodeAdmission	on main
-dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main
-dynamic	__lib_dna__operations___knowledge_node_projection__KnowledgeNodeProjection	on main
-dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
-dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on main
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
-dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
-dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main
-dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
-dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
-dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
-dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-
-== shared sites in operations #c943bc87
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___memory_spine__MemoryLeases	on main
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
-dynamic	__lib_dna__core___memory_spine__MemoryVault	on main
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
-dynamic	__lib_dna__core___record__GitReceipts	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
-dynamic	__lib_dna__core___routing__RoutedJournal	on main
-dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on main|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on main
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
-dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
-dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main
-dynamic	__lib_dna__operations___queries__Queries	on main
-dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
-dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
-dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-
 == shared sites in operations #cbf89ec1
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -16174,7 +16127,7 @@ dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCode
 dynamic	__lib_dna__operations___memory_tail__GraphReceipts	on main
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 
-== shared sites in operations #e1f14478
+== shared sites in operations #e3c33461
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no caller)|unknown (no instance)
@@ -16188,7 +16141,6 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__Texts	on main
-dynamic	__lib_dna__core___roles__HoldsReader	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
 dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
@@ -16208,7 +16160,7 @@ dynamic	__lib_dna__operations___organization_application__OrganizationApplicatio
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main
 dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on main
 dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
 dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on main

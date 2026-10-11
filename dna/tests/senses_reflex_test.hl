@@ -50,8 +50,8 @@ fn get(url: String) -> String {
 }
 
 // The rows of the record at `repo` of `kind` whose entity starts with
-// `entity`, each `entity body` on a line.
-@unbounded
+// `entity`, each `entity body` on a line. The record is read whole.
+@bounded_by(repo)
 fn rows(repo: String, kind: String, entity: String) -> String {
     let j = dna::GitJournal { repo: repo };
     let mut out = "";

@@ -116,8 +116,9 @@ main locus Reflexes {
         eprintln("reflexes: the nerves did not take a firing: ", c.last_error);
         std::process::exit(1);
     }
-    // One pass of the rule over what the store holds now.
-    @unbounded
+    // One pass of the rule over what the store holds now. `fired` is
+    // replaced each pass by the outages the store's answer still holds.
+    @bounded_by(body)
     fn evaluate() {
         let resp = std::http::get(self.store + "/api/v1/query?query=" + query_escape(QUERY)) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
         let body = std::str::from_bytes(resp.body);

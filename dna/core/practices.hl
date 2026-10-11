@@ -60,8 +60,8 @@ locus PracticeRecord {
     // Whether this incarnation has ratified `review_id` through
     // practice-ratify, and so never asks it again.
     fn ratified(review_id: String) -> Bool { return std::str::contains(self.ratified_through, "\n" + review_id + "\n"); }
-    // one line per Review, per incarnation: bounded by the record's Reviews
-    @unbounded
+    // One line per Review ratified this incarnation, as the journal holds them.
+    @bounded_by(self.journal)
     fn ratified_now(review_id: String) { self.ratified_through = self.ratified_through + review_id + "\n"; }
     // ---- practice-ratify ----
     // The execution a knowledge proposal is ratified under, "" when none.

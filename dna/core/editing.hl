@@ -57,7 +57,9 @@ locus WorktreeTools {
         if !self.inside(rel) { return false; }
         return !std::io::fs::file_exists(self.root + "/" + rel);
     }
-    @unbounded
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn read(rel: String) -> String {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
         self.reads = self.reads + 1;
@@ -66,8 +68,9 @@ locus WorktreeTools {
     // The directories a path needs, created one segment at a time and
     // only under the grant's root. A harness that adds a new seed writes
     // `newdir/new.hl`, and the write failed with `not_found` while the
-    // import went on without it (the shakeout's finding 11).
-    @unbounded
+    // import went on without it (the shakeout's finding 11). A path per
+    // directory segment of `rel`.
+    @bounded_by(rel)
     fn ensure_parents(rel: String) {
         let mut at = 0;
         while true {
@@ -78,7 +81,9 @@ locus WorktreeTools {
             std::io::fs::mkdir(self.root + "/" + rel[0..(at - 1)]) or discard;
         }
     }
-    @unbounded
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn edit(rel: String, content: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
         self.ensure_parents(rel);
@@ -88,7 +93,6 @@ locus WorktreeTools {
         self.edits = self.edits + 1;
         return true;
     }
-    @unbounded
     fn write_failed(e: IoError) {
         self.refused = self.refused + 1;
         self.last_refusal = "write failed: " + e.kind;
@@ -101,7 +105,9 @@ locus WorktreeTools {
     // incomplete-import check could never catch a deletion that did not
     // happen: the candidate was proposed as if the file were gone while
     // it was still there (the review's second round, finding 5).
-    @unbounded
+    // `self.last_refusal` holds only the last refusal, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_refusal)
     fn remove(rel: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
         let before = self.refused;
@@ -115,7 +121,6 @@ locus WorktreeTools {
         self.edits = self.edits + 1;
         return true;
     }
-    @unbounded
     fn remove_failed(e: IoError) {
         self.refused = self.refused + 1;
         self.last_refusal = "remove failed: " + e.kind;
@@ -291,7 +296,9 @@ locus SourceEditor {
     // Which file the objective is about (GH #529 D7 step 5): a file the
     // objective names, else the quick tier's pick from the listing —
     // and only a listed file is ever a target.
-    @unbounded
+    // `self.located_why` holds only why the last objective was not located, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.located_why)
     fn locate(attempt: String, objective: String) -> String {
         let listing = self.files();
         self.located_why = "";
@@ -336,7 +343,9 @@ locus SourceEditor {
     // segment it is. Two such entries make it ambiguous: "" with
     // `located_why` naming both. A name no entry answers is "" with
     // `located_why` left as it was. Never a suffix of a longer path.
-    @unbounded
+    // `self.located_why` holds only why the last name was not located, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.located_why)
     fn match_entry(listing: String, name: String) -> String {
         let mut first = "";
         let mut second = "";
@@ -452,8 +461,9 @@ locus SourceEditor {
     // differs or is new is written through the tools, one that is gone
     // is removed; a change outside the grant is counted and left behind.
     // Returns the grant-relative files changed, space-separated.
-    // Bounded by the files of one worktree.
-    @unbounded
+    // `self.import_error` holds only the last import's failure, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.import_error)
     fn import_from(dir: String) -> String {
         self.import_error = "";
         let mut changed = "";
@@ -592,10 +602,11 @@ locus SourceEditor {
             performer: self.name
         };
     }
-    // Bounded by the attempt cap of the Work that owns this performer
-    // and by `max_tries` (GH #566 F3): a proposal that does not check
-    // is tried again with the diagnostics fed back, then fails.
-    @unbounded
+    // One result per request, returned to the caller that asked; within
+    // it, the tries are held to `max_tries` (GH #566 F3): a proposal that
+    // does not check is tried again with the diagnostics fed back, then
+    // fails.
+    @bounded_by(req)
     fn perform(req: WorkRequest) -> WorkResult {
         self.attempts = self.attempts + 1;
         self.bindings = req.knowledge_bindings;

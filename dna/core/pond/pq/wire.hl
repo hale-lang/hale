@@ -200,7 +200,7 @@ fn cstr_end(buf: Bytes, off: Int, limit: Int) -> Int {
 // sasl_mechanisms — the advertised mechanism names from an
 // AuthenticationSASL body, joined with ", " for a diagnostic error
 // detail. Empty string if none are present.
-// @unbounded: concatenates the server's advertised mechanism list, bounded by the message.
+// Concatenates the server's advertised mechanism list, bounded by the message.
 fn sasl_mechanisms(body: Bytes, total: Int) -> String {
     let mut off = 9;
     let mut out = "";

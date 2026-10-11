@@ -162,7 +162,8 @@ locus App {
     // rows in the ledger, and answers a verdict behind them (a Review's own
     // rows, and a hold's, stay on the record, where these read them):
     // the fixture asserts the answer, not how soon it comes (GH #995).
-    @unbounded
+    // One answer per decision the script asks for.
+    @bounded_by(script)
     fn decide(review: String, args: String, secs: Int) -> String {
         let before = dna::GitJournal { repo: self.repo }.revision();
         let wrote = self.dna("review\n" + review + "\n" + args + "\n--no-wait");

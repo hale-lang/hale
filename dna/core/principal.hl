@@ -228,7 +228,7 @@ type UrlParts {
     port: String = "";
 }
 
-@unbounded
+@bounded_by(url)
 fn url_parts(url: String) -> UrlParts {
     let sep = std::str::index_of(url, "://");
     if sep <= 0 { return UrlParts { }; }

@@ -480,8 +480,9 @@ fn with_field(json: String, key: String, raw: String) -> String {
 // ---- credentials ---------------------------------------------------------
 
 // The model keys the catalog names (`HostedCredential { key: "X" }` in
-// dna/org/models.hl), space-separated: the host's own scan.
-@unbounded
+// dna/org/models.hl), space-separated: the host's own scan. It grows by
+// the keys of the catalog it reads whole.
+@bounded_by(catalog)
 fn catalog_credentials(root: String) -> String {
     let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
     let mut out = "";

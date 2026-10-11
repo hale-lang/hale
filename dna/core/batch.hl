@@ -113,7 +113,7 @@ fn batch_word(w: String) -> Bool {
 }
 
 // A line's words, one a line.
-@unbounded
+@bounded_by(line)
 fn batch_words(line: String) -> String {
     let mut out = "";
     let mut rest = std::str::trim(line);
@@ -167,7 +167,7 @@ fn batch_usage(verb: String) -> String {
 }
 
 // The batch's steps, normalized; `why` names the first line that is not one.
-@unbounded
+@bounded_by(text)
 fn batch_steps(text: String) -> BatchPlan {
     let mut out = BatchPlan { };
     let mut n = 0;
@@ -278,7 +278,7 @@ fn batch_field(step: String, k: Int) -> String {
 // mandate in force, `holds <id> <holder>` for every hold the graph states
 // and memory did not refuse, its holder not retired, and `practice <name>`
 // for every named practice in force. In the graph's order, positions first.
-@unbounded
+@bounded_by(j)
 fn org_chart(j: Journal, receipts: Receipts) -> String {
     let g = record_graph(j, receipts);
     let mut mandates = "\n"; // `<digest> <target>` of mandate proposals
@@ -391,7 +391,8 @@ fn batch_mandated(mandates: String, ratified: String, retired: String, position:
 // refused. Opens are taken first, so a step may name a position a later
 // line opens; every other step is taken in the order written, each against
 // the organization the steps before it leave.
-@unbounded
+// Grows by the batch's steps over the organization `j` states.
+@bounded_by(text)
 fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
     let mut out = batch_steps(text);
     if !out.ok { return out; }
@@ -636,7 +637,7 @@ fn batch_fill_vacant(st: PlanState, steps: String) -> PlanState {
 // batch itself added) dropped. Nodes, then edges, then holds, then the
 // restated `meets` edges, then what leaves: memory takes a proposal's rows
 // in order.
-@unbounded
+@bounded_by(order)
 fn batch_rows(order: String, restated: String, g: RecordGraph) -> String {
     let mut nodes = "";
     let mut edges = "";
@@ -664,7 +665,7 @@ fn batch_rows(order: String, restated: String, g: RecordGraph) -> String {
 // begins with `prefix`, one a line.
 fn chart_has(chart: String, line: String) -> Bool { return std::str::contains("\n" + chart, "\n" + line + "\n"); }
 
-@unbounded
+@bounded_by(chart)
 fn chart_with(chart: String, prefix: String) -> String {
     let mut out = "";
     let mut rest = chart;
@@ -729,7 +730,7 @@ fn plan_unassign(st: PlanState, p: String, subject: String) -> PlanState {
 // A position closed: its holds and what it reviews retired, the edge it
 // unfolds from, then its node; never the Board's, and never one the batch
 // opens.
-@unbounded
+@bounded_by(g)
 fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanState {
     let mut out = st;
     if !chart_has(out.after, "position " + p) { out.why = "`close " + p + "`: no such position"; return out; }
@@ -763,7 +764,7 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
 // A part leaving the organism: every contract it serves is met by the
 // party outside instead (each must have a consumer left, or it would meet
 // no one), every position unfolding from it closes, and its node retires.
-@unbounded
+@bounded_by(g)
 fn plan_externalize(st: PlanState, g: RecordGraph, bodies: String, opened: String, seed: String) -> PlanState {
     let mut out = st;
     if !record_graph_has(g.nodes, seed) { out.why = "`externalize " + seed + "`: the graph states no such part"; return out; }
@@ -813,7 +814,7 @@ fn plan_body(st: PlanState, bodies: String, id: String) -> String {
 
 // A contract's `meets` edge restated with `members` (`<role>\t<node>` a
 // line) and the parties outside, the chart's lines for it with it.
-@unbounded
+@bounded_by(members)
 fn plan_meets(st: PlanState, met: String, members: String, outside: String) -> PlanState {
     let mut out = st;
     let id = "meets:" + met;
@@ -838,7 +839,7 @@ fn plan_meets(st: PlanState, met: String, members: String, outside: String) -> P
 // The chart's lines for every `meets` edge in `bodies` (`<id>\t<body>` a
 // line): `serves|consumes|carries <node> <contract>`, `outside <contract>
 // <party>`.
-@unbounded
+@bounded_by(bodies)
 fn batch_meets_lines(bodies: String) -> String {
     let mut out = "";
     let mut rest = bodies;
@@ -873,7 +874,7 @@ fn batch_meets_lines(bodies: String) -> String {
 
 // A `meets` body's members but its contract, `<role>\t<node>` a line, and
 // the names of the parties outside, one a line.
-@unbounded
+@bounded_by(body)
 fn batch_meets_members(body: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(body, "members"));
@@ -885,7 +886,7 @@ fn batch_meets_members(body: String) -> String {
     return out;
 }
 
-@unbounded
+@bounded_by(body)
 fn batch_meets_outside(body: String) -> String {
     let mut out = "";
     let raw = std::json::find_field_raw(body, "outside");
@@ -965,7 +966,7 @@ fn batch_pair_body(kind: String, r1: String, n1: String, r2: String, n2: String)
 }
 
 // The text of the ratified mandate in force for `position`, "" when none.
-@unbounded
+@bounded_by(j)
 fn batch_mandate_text(j: Journal, receipts: Receipts, position: String) -> String {
     let mut ratified = "\n";
     let mut retired = "\n";
@@ -1122,7 +1123,8 @@ fn batch_member_row(digest: String, kind: String, by: String, target: String, na
 // open and route the Review (`on_graph_requested`). `at` stamps the
 // proposals. The same batch asked again under the same id is the same
 // family.
-@unbounded
+// Grows by the plan's rows and the ideas it files.
+@bounded_by(plan)
 fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: String) -> BatchFiling {
     let mut out = BatchFiling { };
     if !plan.ok { out.why = plan.why; return out; }
@@ -1288,7 +1290,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
 }
 
 // The digest of the practice named `name` in force, "" when none.
-@unbounded
+@bounded_by(j)
 fn batch_practice_digest(j: Journal, name: String) -> String {
     let mut ratified = "\n";
     let mut retired = "\n";
@@ -1357,7 +1359,7 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
 }
 
 // What a batch does, counted by step: `2 open, 2 fill, 1 practice`.
-@unbounded
+@bounded_by(steps)
 fn batch_summary(steps: String) -> String {
     let mut out = "";
     let mut verbs = "open fill vacate practice retire-practice nursery assign unassign close merge split expose depend externalize internalize ";

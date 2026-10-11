@@ -89,7 +89,7 @@ fn ledger_holding(app: String, head_dsn: String, needles: String, secs: Int) -> 
 }
 
 // Every line of `text` holding `needle`, newline-joined.
-@unbounded
+@bounded_by(text)
 fn row_with_all(text: String, needle: String) -> String {
     let mut out = "";
     let mut rest = text;
@@ -125,7 +125,6 @@ fn curl(method: String, url: String, cookie: String, body: String) -> Http {
     return Http { status: status, headers: head, body: rest };
 }
 
-@unbounded
 fn form_field(body: String, name: String) -> String {
     let mut rest = body + "&";
     while len(rest) > 0 {
@@ -158,7 +157,6 @@ locus FakeIssuer {
         exchanges: Int = 0;
         refused_secrets: Int = 0;
     }
-    @unbounded
     fn handle(req: std::http::Request) -> std::http::Response {
         let ctx = std::http::build_context(req);
         if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
@@ -196,7 +194,6 @@ locus FakeIssuer {
 }
 
 // The line of a JSON-per-line text that carries `needle` ("" when none).
-@unbounded
 fn row_with(text: String, needle: String) -> String {
     let mut rest = text;
     while len(rest) > 0 {
@@ -210,14 +207,14 @@ fn row_with(text: String, needle: String) -> String {
 
 // Whether memory's org chart, read as `dsn`, comes to hold `who` retired
 // within `secs` (the nodes project it from the record, GH #1026).
-@unbounded
 fn retired_in_memory(dsn: String, record: String, who: String, secs: Int) -> Bool {
     let c = dna::pq_conn(dna::parse_dsn(dsn));
     if !c.open().ok { return false; }
     let deadline = std::time::now() + dna::wait_secs(secs);
+    let query = "SELECT count(*) FROM " + dna::schema_for(record) + ".org_retired WHERE person = '" + who + "'";
     let mut ok = false;
     while !ok && std::time::now() <= deadline {
-        let r = c.query_one("SELECT count(*) FROM " + dna::schema_for(record) + ".org_retired WHERE person = '" + who + "'");
+        let r = c.query_one(query);
         ok = r.ok && dna::trim_nl(r.data) == "1";
         if !ok { std::time::sleep(200ms); }
     }

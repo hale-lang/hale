@@ -171,8 +171,8 @@ locus Leader {
     // purpose, the law as the genome holds it, and the practices the
     // Board has ratified for the whole organization — each under its
     // own heading, the practices with the package they came from.
-    // Bounded like the caller.
-    @unbounded
+    // One brief, kept in `last_brief` and replaced by the next.
+    @bounded_by(self.last_brief)
     fn brief(query: String) -> String {
         let mut out = "";
         if len(self.charter) > 0 { out = out + "CHARTER\n" + self.charter + "\n\n"; }
@@ -187,7 +187,9 @@ locus Leader {
     }
     // One decision per Review the org announces; bounded by the
     // Mutations proposed.
-    @unbounded
+    // `self.last` holds only the last decision, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last)
     fn on_requested(req: ReviewRequest) {
         // GH #1089: a Review its route routes is decided by the positions
         // the route names, never by the leader on its own authority

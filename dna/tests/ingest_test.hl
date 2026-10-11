@@ -51,7 +51,9 @@ fn proposed_rows(repo: String) -> String {
     return dna::proposal_rows(dna::GitReceipts { repo: repo }.read(digest[7..len(digest)]));
 }
 
-@unbounded
+// The rows of the record at `repo` of `kind` that mention `needle`: one
+// pass over the record, read whole.
+@bounded_by(repo)
 fn count_rows(repo: String, kind: String, needle: String) -> Int {
     let j = dna::GitJournal { repo: repo };
     let mut n = 0;

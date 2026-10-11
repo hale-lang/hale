@@ -65,7 +65,7 @@ fn api_scalar_float(json: String) -> Float {
 }
 
 // The roles of a refusal's `requires` array, joined by `,`.
-@unbounded
+@bounded_by(array)
 fn api_roles(array: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first_span(array);
@@ -117,7 +117,8 @@ fn api_http(endpoint: String, bearer: String, member: String, payload: String) -
 
 // ---- over a Unix socket: one line each way ----
 
-@unbounded
+// The reply line, read until its newline or until `API_WAIT_NS` runs out.
+@bounded_by(API_WAIT_NS)
 fn api_unix_exchange(path: String, line: String) -> String {
     let fd = std::io::unix::connect(path) or - 1;
     if fd < 0 { return ""; }
@@ -201,8 +202,9 @@ locus ApiWs {
         text: String = "";
         timed: Bool = false;
     }
-    // The upgrade, the credential in `Authorization: Bearer`.
-    @unbounded
+    // The upgrade, the credential in `Authorization: Bearer`. The hub's
+    // answer is read until its blank line or until `API_WAIT_NS` runs out.
+    @bounded_by(API_WAIT_NS)
     fn connect(endpoint: String, bearer: String) -> Bool {
         if !std::str::starts_with(endpoint, "ws://") {
             self.why = "a stream is a hub's: the endpoint is ws://host:port";
@@ -261,7 +263,8 @@ locus ApiWs {
     }
     // The next text message within `wait_ns`: "" when none came (the
     // connection is still `open`) or when the connection ended (it is not).
-    @unbounded
+    // The frames buffered are what arrived within the wait.
+    @bounded_by(wait_ns)
     fn read_text(wait_ns: Int) -> String {
         let until = std::time::monotonic_ns() + wait_ns;
         while self.open {

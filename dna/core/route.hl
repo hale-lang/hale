@@ -33,7 +33,7 @@ type Route {
 }
 
 // `<a>\t<b>` pairs from a JSON array of two-element arrays.
-@unbounded
+@bounded_by(raw)
 fn route_pairs(raw: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(raw);
@@ -60,7 +60,7 @@ locus Router {
         law: String = "\n";
         route: Route = Route { };
     }
-    @unbounded
+    @bounded_by(json)
     fn load(json: String) {
         let mut it = std::json::array_first(std::json::find_field_raw(json, "nodes"));
         while !it.done {
@@ -104,7 +104,7 @@ locus Router {
     }
     // The `<b>`s of the pairs whose `<a>` is `a`, or with `reverse` the
     // `<a>`s whose `<b>` is `b`.
-    @unbounded
+    @bounded_by(pairs)
     fn related(pairs: String, key: String, reverse: Bool) -> String {
         let mut out = "";
         let mut rest = pairs;
@@ -139,7 +139,8 @@ locus Router {
         return out;
     }
     // A signer, once, with the first reason it signs.
-    @unbounded
+    // The route grows by the paths `graph_route` walks, each signer once; a Router lives for that one call.
+    @bounded_by(paths)
     fn sign(position: String, because: String) -> Bool {
         if std::str::contains("\n" + self.route.signers, "\n" + position + "\t") { return true; }
         self.route.signers = self.route.signers + position + "\t" + because + "\n";
@@ -160,7 +161,7 @@ locus Router {
     // reviewer, which reviews what the part consumes; any other consumer (a
     // contract, a document, a deployment) through the positions reviewing
     // it — said, either way, when no position does.
-    @unbounded
+    @bounded_by(paths)
     fn consumer(node: String, spec: String) -> Int {
         let because = "consumes " + show_name(spec);
         if !std::str::starts_with(node, "process:") && !std::str::starts_with(node, "seed:") {
@@ -181,7 +182,7 @@ locus Router {
     }
     // One path of the change set: its node, who signs it, the gates that
     // are its evidence; to the fallback when no position signs it.
-    @unbounded
+    @bounded_by(paths)
     fn path(p: String) {
         let node = self.node_of(p);
         if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract, document or deployment file the graph holds\n"; return; }
@@ -271,7 +272,7 @@ type RouteRequirement {
 // The targets of the bound practices ratified as law, one per line: a
 // practice's receipt says whether it was ratified as law (`law: true`) or
 // as advice, which memory's binding does not (GH #1087 review, G3).
-@unbounded
+@bounded_by(bound)
 fn route_law(bound: String, receipts: Receipts) -> String {
     let mut out = "";
     let mut rest = bound;
@@ -291,7 +292,7 @@ fn route_law(bound: String, receipts: Receipts) -> String {
 // The people who hold `position`, `,`-joined, from the routing query's
 // holds: a position an organization holds is held by that organization's
 // members (GH #1123), each once.
-@unbounded
+@bounded_by(json)
 fn route_held_by(json: String, position: String) -> String {
     let r = Router { };
     r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
@@ -319,7 +320,7 @@ fn route_held_by(json: String, position: String) -> String {
 }
 
 // What a Review of `r` requires over the routing query's answer `json`.
-@unbounded
+@bounded_by(r)
 fn route_requirement(json: String, r: Route) -> RouteRequirement {
     let mut signers = "";
     let mut held = false;
@@ -364,7 +365,7 @@ fn signers_held_now(json: String, signers: String) -> String {
 // The Board's requirement: the `board` position under the purpose, with
 // its holders — what practice-ratify's Review requires. None while nobody
 // holds it (the fallback).
-@unbounded
+@bounded_by(json)
 fn board_requirement(json: String) -> RouteRequirement {
     let holders = route_held_by(json, "position:board");
     if len(holders) == 0 { return RouteRequirement { }; }
@@ -391,7 +392,7 @@ fn show_name(id: String) -> String {
 }
 
 // A JSON array of strings, one per line.
-@unbounded
+@bounded_by(raw)
 fn show_strings(raw: String) -> String {
     let mut out = "";
     if !std::str::starts_with(std::str::trim(raw), "[") { return out; }

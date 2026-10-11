@@ -83,7 +83,8 @@ locus Node {
     // `only`: a reflex's restart (GH #988) — that one instance of this node,
     // if it is not up, started again at the deploy's revision; no other
     // instance is touched, and the deploy is not marked expressed by it.
-    @unbounded
+    // `instances` gains an entry only for an id of the plan it has none for.
+    @bounded_by(plan)
     fn express(deploy: dna::Event, only: String) -> Bool {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }

@@ -99,7 +99,7 @@ fn ping_line() -> String { return "PING" + crlf(); }
 fn pong_line() -> String { return "PONG" + crlf(); }
 
 // The `k`th space-separated token of `line` (0-based), "" past the end.
-// @unbounded: walks one control line, at most MAX_CONTROL_LINE bytes.
+// Walks one control line, at most MAX_CONTROL_LINE bytes.
 fn token_at(line: String, k: Int) -> String {
     let mut rest = line;
     let mut i = 0;
@@ -115,7 +115,7 @@ fn token_at(line: String, k: Int) -> String {
 }
 
 // How many space-separated tokens `line` has.
-// @unbounded: walks one control line, at most MAX_CONTROL_LINE bytes.
+// Walks one control line, at most MAX_CONTROL_LINE bytes.
 fn token_count(line: String) -> Int {
     let mut rest = line;
     let mut n = 0;
@@ -157,7 +157,6 @@ locus NatsFramer {
 
     // Stop framing: `next()` refuses every later frame, so this runs
     // once per stream (until `clear()`).
-    // @unbounded: once per stream, on the frame that cannot be NATS.
     fn stop(what: String, line: String) { self.error = what + line; }
 
     fn next() -> Bool {

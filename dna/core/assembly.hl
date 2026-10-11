@@ -188,7 +188,7 @@ type StepVerdict { disposition: String = ""; result: String = ""; narrative: Str
 // What a leg's reported calls spent (GH #1131): the calls made — a wait
 // row (`adapter: legs`) is none — and what they cost together.
 type LegSpend { calls: Int = 0; cost_micros: Int = 0; }
-@unbounded
+@bounded_by(calls)
 fn spend_of(calls: String) -> LegSpend {
     let mut out = LegSpend { };
     if len(calls) == 0 || !std::json::valid(calls) { return out; }
@@ -617,8 +617,9 @@ locus Dna {
         self.revisit_steps(false);
     }
     // The Review decided; the Journal records it (the file
-    // `hale dna status` and `history` read).
-    @unbounded
+    // `hale dna status` and `history` read). One codec per settlement,
+    // freed when the handler returns.
+    @bounded_by(r)
     fn on_review_settled(r: ReviewSettlement) {
         // the engine's rows are another writer's (card 15): read fresh
         let moved = self.journal.refresh();
@@ -727,8 +728,9 @@ locus Dna {
     // review is refused by digest), and the apply goes through the
     // gateway — journaled under the candidate, fenced by the lease — so
     // a crashed and retried apply reads the recorded result and never
-    // commits twice. Then the host is asked to rebuild and restart.
-    @unbounded
+    // commits twice. Then the host is asked to rebuild and restart. One
+    // answer per mutation applied, returned.
+    @bounded_by(mutation_id)
     fn apply_reviewed(mutation_id: String, now: Int) -> String {
         let req = mutation_review_request(self.journal, mutation_id);
         if req == "" { return "refused: no mutation review " + mutation_id; }
@@ -1886,7 +1888,8 @@ locus Dna {
     // A generic knowledge command carries the exact native document it means
     // to propose. Delivery is the host's trust boundary; the started row is
     // this Body's durable proof of delivery, not another incoming request.
-    @unbounded
+    // One codec per request, freed when the handler returns.
+    @bounded_by(r)
     fn on_knowledge_node_requested(r: KnowledgeNodeRequest) {
         let codec = KnowledgeNodeRequestCodec { };
         // An unrepresentable request cannot name a safe, correlated outcome.
@@ -1920,7 +1923,8 @@ locus Dna {
             subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
-    @unbounded
+    // One codec per request, freed when the handler returns.
+    @bounded_by(r)
     fn on_knowledge_binding_requested(r: KnowledgeBindingRequest) {
         let codec = KnowledgeBindingCodec { };
         if !codec.valid(r) { return; }
@@ -1950,7 +1954,8 @@ locus Dna {
             subject_digest: r.candidate_digest, required_authority: "board", author: r.by, governance: true, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
         self.reviews.knowledge_born(id); return true;
     }
-    @unbounded
+    // One codec per request, freed when the handler returns.
+    @bounded_by(r)
     fn on_knowledge_edge_requested(r: KnowledgeEdgeRequest) {
         let codec = KnowledgeEdgeCodec { };
         if !codec.valid(r) { return; }
@@ -2094,7 +2099,8 @@ locus Dna {
         if !append_once(self.journal, "expression.restart_requested", id, handoff) { return "pending: restart handoff acknowledgment"; }
         return "applied";
     }
-    @unbounded
+    // One codec per trigger, freed when the handler returns.
+    @bounded_by(t)
     fn on_organization_source_requested(t: OrganizationSourceTrigger) {
         let refreshed = self.journal.refresh(); let codec = OrganizationSourceRequestCodec { };
         let r = self.org_source.admitted(t.request_id);
@@ -2184,7 +2190,8 @@ locus Dna {
     // Resume only work this Body already received, never new incoming Record
     // requests. The host owns trust verification and trigger redelivery.
     // Decided commands continue independently after the host stops relaying.
-    @unbounded
+    // A codec per started or settled row of the journal it walks.
+    @bounded_by(self.journal)
     fn reconcile_governance() {
         let n = self.journal.revision();
         let mut i = 0;
@@ -2263,8 +2270,10 @@ locus Dna {
     }
     // Intent enters through the Board and births a durable Task;
     // its birth and its settlement are Journal events (the causal
-    // authority), the live locus is the expression.
-    @unbounded
+    // authority), the live locus is the expression. One answer per intent,
+    // returned; one slot per intent awaiting the leader's word at once (a
+    // slot `on_planned` released is taken again).
+    @bounded_by(self.pending_asks)
     fn ask(i: Intent) -> String {
         // GH #682: an intent offered twice — a head's publish and the host's
         // relay of the same durable row, or a re-delivery after a publish
@@ -2339,7 +2348,15 @@ locus Dna {
         if self.planned {
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
-            self.pending_asks.push(Intent { id: std::str::clone(i.id), outcome: std::str::clone(i.outcome), from: std::str::clone(i.from), to: std::str::clone(i.to) });
+            let kept = Intent { id: std::str::clone(i.id), outcome: std::str::clone(i.outcome), from: std::str::clone(i.from), to: std::str::clone(i.to) };
+            let mut free = -1;
+            let mut k = 0;
+            while k < self.pending_asks.len() && free < 0 {
+                let p = self.pending_asks.get(k) or Intent { };
+                if len(p.id) == 0 { free = k; }
+                k = k + 1;
+            }
+            if free >= 0 { self.pending_asks.set(free, kept) or discard; } else { self.pending_asks.push(kept); }
             PlanRequested <- PlanRequest { org: self.org_id, task_id: i.id, work_id: "ask", objective: i.outcome, target: "", requires: "edit", data_class: "internal" };
             return "planning";
         }
@@ -2415,7 +2432,7 @@ locus Dna {
     // the exact Work (its bound id), never for a key, which two Works of
     // different steps or workflows may share. The selection request is
     // the Work's own, under the Task that owns it.
-    @unbounded
+    @bounded_by(self.catalog.bound)
     fn kinds_of(task_id: String) -> String {
         let adm = self.recorded_admission(task_id);
         if !adm.ok { return ""; }
@@ -2451,8 +2468,9 @@ locus Dna {
         }
         return "";
     }
-    // The admission of a Task, decoded; not ok when none.
-    @unbounded
+    // The admission of a Task, decoded; not ok when none. One per call,
+    // from the journal it reads whole.
+    @bounded_by(self.journal)
     fn recorded_admission(task_id: String) -> DecodedAdmission {
         let n = self.journal.revision();
         let mut i = 0;
@@ -2699,14 +2717,20 @@ locus Dna {
     // ---- optimize-walk ----
     // One step: the machinery's signals read, the leader asked once per
     // incarnation, and done at the `org.reviewed` row its answer is.
-    @unbounded
+    // `optimize_asked` holds the walks asked and not yet answered: an
+    // answered walk's line goes.
+    @bounded_by(self.journal)
     fn optimize_step(task: String, key: String, x: String) -> StepVerdict {
         if key != "walk" { return step_failed("optimize-walk has no step `" + key + "`"); }
         let n = self.journal.revision();
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "org.reviewed" && std::json::find_string_field(e.body, "task") == task { return step_done(std::json::find_string_field(e.body, "outcome"), std::json::find_string_field(e.body, "proposal")); }
+            if e.kind == "org.reviewed" && std::json::find_string_field(e.body, "task") == task {
+                // answered: the walk needs no mark of being asked any more
+                if std::str::contains(self.optimize_asked, "\n" + task + "\n") { self.optimize_asked = std::str::replace(self.optimize_asked, "\n" + task + "\n", "\n"); }
+                return step_done(std::json::find_string_field(e.body, "outcome"), std::json::find_string_field(e.body, "proposal"));
+            }
             i = i + 1;
         }
         if !std::str::contains(self.optimize_asked, "\n" + task + "\n") {
@@ -2754,8 +2778,9 @@ locus Dna {
     // Over a shared record only the owner of the position admits (GH
     // #664), and a body that names no owner admits nothing; that rule is
     // the same one `ask` applies, and it is applied before an id is
-    // minted. Nothing here dispatches; later cards execute.
-    @unbounded
+    // minted. Nothing here dispatches; later cards execute. One answer per
+    // ask, returned.
+    @bounded_by(a)
     fn admit_workflow(a: WorkflowAsk) -> String {
         if len(a.id) == 0 { return "refused: an admission names its request id"; }
         self.bind_owner();
@@ -3259,13 +3284,12 @@ locus Dna {
     // The Mutation one Work's attempt asks for (card 14): the request as
     // asked binds it. `mutate` above is the Task-level entry — an ask
     // with no Work behind it binds nothing and is the Task's alone.
-    @unbounded
     fn mutate_for(req: WorkRequest, change_class: String, objective: String, target: String, now: Int) -> String {
         let task_id = req.task_id;
         self.bind_owner();
         self.mutations_minted = self.mutations_minted + 1;
-        let id = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
-        self.last_mutation = id;
+        self.last_mutation = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
+        let id = std::str::clone(self.last_mutation);
         let seed = self.seed_for(change_class);
         let base = self.gateway.head();
         // card 14: which exact Work and attempt asked for this Mutation,
@@ -3441,7 +3465,6 @@ locus Dna {
     // in its worktree — only under the seed its class edits — and the
     // candidate committed, verified and put to its Review by the leg that
     // made it. What stands in the way is the Mutation's failure, a row.
-    @unbounded
     fn mutate_from_leg(req: WorkRequest, s: WorkSubmission, now: Int) -> String {
         let class = self.edit_class_of(req.task_id);
         let seed = self.seed_for(class);
@@ -3449,8 +3472,8 @@ locus Dna {
         let found = self.leg_patch(sha, s.evidence_ref);
         self.bind_owner();
         self.mutations_minted = self.mutations_minted + 1;
-        let id = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
-        self.last_mutation = id;
+        self.last_mutation = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
+        let id = std::str::clone(self.last_mutation);
         let base = self.gateway.head();
         let asked = std::json::Builder { };
         asked.begin_object();
@@ -3608,8 +3631,9 @@ locus Dna {
     // Pending mutation Reviews, re-born from the Journal: every
     // `review.requested` that names a mutation and has no settlement.
     // The purpose Review is the Genome's own static child, never
-    // rehydrated here.
-    @unbounded
+    // rehydrated here. A Review per pending one, and a codec per row of the
+    // journal it walks.
+    @bounded_by(self.journal)
     fn rehydrate() {
         // who owns which position, before anything is admitted
         self.refresh_ownership();
@@ -3883,8 +3907,6 @@ locus Dna {
             i = i + 1;
         }
     }
-    // Whether the journal holds a row of `kind` for `entity`, anywhere.
-    @unbounded
     // This node's name in its claims (GH #1026).
     fn node_name() -> String {
         if len(self.node) > 0 { return self.node; }

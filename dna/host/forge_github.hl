@@ -58,8 +58,9 @@ locus GitHubForge {
         return dna::ReviewRef { present: true, ref: dna::trim_nl(c.stdout) };
     }
     // Every review on the pull request, `who\toutcome\twhen\tkey`, where
-    // `when` is the commit reviewed and `key` names the review once.
-    @unbounded
+    // `when` is the commit reviewed and `key` names the review once: one
+    // line per review of the pull request's `doc`.
+    @bounded_by(doc)
     fn verdicts(review: String) -> String {
         let number = review_number(review);
         let v = gh("pr\nview\n" + number + "\n--repo\n" + self.repo + "\n--json\nstate,headRefOid,reviews");
@@ -138,7 +139,8 @@ locus FileForge {
         if !w { return dna::ReviewRef { why: "cannot write " + self.dir }; }
         return dna::ReviewRef { present: true, ref: self.dir + "/" + n };
     }
-    @unbounded
+    // One line per line of the review's verdicts file.
+    @bounded_by(text)
     fn verdicts(review: String) -> String {
         let text = std::io::fs::read_file(review + ".verdicts") or "";
         let mut out = "";
@@ -158,7 +160,8 @@ locus FileForge {
         }
         return out;
     }
-    @unbounded
+    // One line per line of the review's checks file.
+    @bounded_by(text)
     fn checks(review: String, sha: String) -> String {
         let text = std::io::fs::read_file(review + ".checks") or "";
         let mut out = "";

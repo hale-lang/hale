@@ -144,10 +144,11 @@ locus GraphEdge {
         members: String = ""; // `<role>\t<node>\n` per member, in order
         outside: String = ""; // one party per line
     }
-    // Bounded by the edge: a check refuses more than GRAPH_MEMBERS_MAX.
-    @unbounded
+    // One edge's members: its row's check refuses more than GRAPH_MEMBERS_MAX.
+    @bounded_by(GRAPH_MEMBERS_MAX)
     fn member(role: String, node: String) { self.members = self.members + role + "\t" + node + "\n"; }
-    @unbounded
+    // One edge's parties, as many as the document that writes it names.
+    @bounded_by(document)
     fn party(name: String) { self.outside = self.outside + name + "\n"; }
     // Whether `node` is a member already.
     fn has(node: String) -> Bool { return std::str::contains("\n" + self.members, "\t" + node + "\n"); }
@@ -200,8 +201,9 @@ locus GraphEdge {
 // An edge's id: `<kind>:<anchor>`, or `<kind>:<anchor>|<second>` for a
 // kind keyed by both — no name holds a `|`. `members` is
 // `<role>\t<node>\n` per member; with none, the id is `<kind>:`, which no
-// check admits.
-@unbounded
+// check admits. One id per edge, from its first two members; it grows
+// only where a caller keeps one per edge of what it reads.
+@bounded_by(members)
 fn graph_edge_id(kind: String, members: String) -> String {
     let nl0 = std::str::index_of(members, "\n");
     if nl0 < 0 { return kind + ":"; }
@@ -248,7 +250,8 @@ fn graph_node_row(entity: String, body: String) -> GraphRow {
     return GraphRow { ok: true, id: id, kind: kind, name: name };
 }
 
-@unbounded
+// The members array of `body`, walked once: at most GRAPH_MEMBERS_MAX.
+@bounded_by(body)
 fn graph_edge_row(entity: String, body: String) -> GraphRow {
     if !std::json::valid_object(body) { return graph_refused("a graph edge's body is not a JSON object"); }
     let kind = std::json::find_string_field(body, "kind");
@@ -307,8 +310,8 @@ fn graph_edge_row(entity: String, body: String) -> GraphRow {
 // holds — stated first where the record does not yet. A shared record's
 // fixtures seat its organizations and members this way; a live
 // organization proposes the same edge through `hale dna fill`. "" when it
-// landed, else why not.
-@unbounded
+// landed, else why not. The nodes stated grow by the journal it reads whole.
+@bounded_by(j)
 fn graph_seat(j: dna::Journal, node: String, holder: String) -> String {
     let mut stated = "\n";
     let mut i = 0;

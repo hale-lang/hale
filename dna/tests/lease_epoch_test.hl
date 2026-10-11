@@ -60,8 +60,8 @@ fn stop_spine(app: String, pid: String) {
 }
 
 // The body of the record's row of `kind` about `entity`, once there is one
-// or `secs` pass ("" when none).
-@unbounded
+// or `secs` pass ("" when none). One read of the record per poll.
+@bounded_by(secs)
 fn record_row(app: String, kind: String, entity: String, secs: Int) -> String {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
@@ -141,14 +141,14 @@ fn write_as(dsn: String, record: String, kind: String, entity: String, body: Str
 
 // Whether memory's org chart, read as `dsn`, comes to name `who` as `owner`'s
 // member (`retired`: as retired) within `secs` — the nodes project it.
-@unbounded
 fn chart_holds(dsn: String, record: String, sql: String, secs: Int) -> Bool {
     let c = dna::pq_conn(dna::parse_dsn(dsn));
     if !c.open().ok { return false; }
     let deadline = std::time::now() + dna::wait_secs(secs);
+    let query = "SELECT count(*) FROM " + dna::schema_for(record) + "." + sql;
     let mut ok = false;
     while !ok && std::time::now() <= deadline {
-        let r = c.query_one("SELECT count(*) FROM " + dna::schema_for(record) + "." + sql);
+        let r = c.query_one(query);
         ok = r.ok && dna::trim_nl(r.data) == "1";
         if !ok { std::time::sleep(200ms); }
     }

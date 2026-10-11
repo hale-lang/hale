@@ -84,8 +84,8 @@ locus PgPool {
     // (wire::pool_tls_mismatch); a mismatch tears down the offending
     // connection AND every already-opened one, and fails the whole pool
     // closed rather than risk that corruption.
-    // @unbounded: one PgConn per pool slot; the loop bound is the configured pool size.
-    @unbounded
+    // One PgConn per pool slot: the loop runs the configured pool size.
+    @bounded_by(self.size)
     fn open() -> db::Status {
         let mut i = 0;
         while i < self.size {
@@ -130,8 +130,8 @@ locus PgPool {
     // make a subsequent open() push new fds past the ones __acquire
     // actually indexes into (0..n), silently handing out closed/stale
     // handles.
-    // @unbounded: one PgConn per pool slot; the loop bound is the configured pool size.
-    @unbounded
+    // One PgConn per opened slot, at most the configured pool size.
+    @bounded_by(self.n)
     fn __teardown() {
         let mut i = 0;
         while i < self.n {

@@ -134,6 +134,10 @@ locus NatsConn {
         received: Int = 0;
         reconnects: Int = 0;
         last_error: String = "";
+        // the trouble behind `last_error` when the audit last spoke: what
+        // a refusal, the server or the client said, never the audit's own
+        // verdict, so an audit names the cause, not an earlier audit
+        cause: String = "";
         inbox: String = "";
         ack_sid: Int = 0;
         pull_sid: Int = 0;
@@ -163,10 +167,20 @@ locus NatsConn {
 
     closure delivery { captures: sent, acked, last_error; epoch inline; }
 
-    // Record why delivery is in trouble.
-    // @unbounded: once per refused publish, server error, or the
-    // violation that ends this conn.
-    fn note(what: String, detail: String) { self.last_error = what + detail; }
+    // Record why delivery is in trouble: a refused publish or a server
+    // error. The audit's verdict is written by the audit itself.
+    // `self.last_error` holds only the last trouble, replaced whole (the old text is
+    // retired); the survey cannot prove the new text independent of it.
+    @bounded_by(self.last_error)
+    fn note(what: String, detail: String) {
+        self.last_error = what + detail;
+        self.cause = what + detail;
+    }
+    // What the client said, as this conn's trouble.
+    fn client_trouble() {
+        self.last_error = self.client.last_error;
+        self.cause = self.client.last_error;
+    }
 
     birth() {
         self.client.url = self.url;
@@ -181,10 +195,10 @@ locus NatsConn {
     }
 
     // Runs on this locus's thread, between reads (run() yields for it).
-    // @unbounded: one entry per message the server has not acknowledged;
-    // advance() cuts them as acknowledgements arrive and the audit ends
-    // the conn if they stop.
-    @unbounded
+    // One entry per message the server has not acknowledged; advance()
+    // cuts them as acknowledgements arrive and the audit ends the conn if
+    // they stop.
+    @bounded_by(unacknowledged)
     fn on_out(o: Outbound) {
         if o.ack {
             if self.client.connected { self.client.pub_msg(o.subject, "", o.data) or discard; }
@@ -349,14 +363,14 @@ locus NatsConn {
     // the server has not acknowledged. False when the server is not
     // reachable yet (retried with backoff).
     fn connect() -> Bool {
-        if !self.client.open_as(self.credential) { self.last_error = self.client.last_error; return false; }
+        if !self.client.open_as(self.credential) { self.client_trouble(); return false; }
         if self.jetstream {
             self.ack_sid = self.client.sub_to(self.inbox + ".ack.*", "") or 0;
         }
         if len(self.stream) > 0 && len(self.consumer.durable) > 0 {
             js_consumer_create(self.client, self.stream, self.consumer) or discard;
-            if !self.client.connected { self.last_error = self.client.last_error; return false; }
-            if std::str::starts_with(self.client.last_error, "jetstream") { self.last_error = self.client.last_error; }
+            if !self.client.connected { self.client_trouble(); return false; }
+            if std::str::starts_with(self.client.last_error, "jetstream") { self.client_trouble(); }
             self.pull_sid = self.client.sub_to(self.inbox + ".pull", "") or 0;
             self.pull_open = false;
         }
@@ -379,8 +393,10 @@ locus NatsConn {
         if self.head >= self.pending.len() { return; }
         let queued = self.queued.get(self.head) or now;
         if now - queued < self.ack_window_ms * 1000000 { return; }
-        let why = if len(self.last_error) > 0 { self.last_error } else { "no acknowledgement" };
-        self.note("message " + to_string(self.base_id + self.head) + " on " + self.pending.subject_at(self.head) + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: ", why);
+        // the cause, not `last_error`: an earlier audit's verdict fed back
+        // in would grow the field by a verdict per audit
+        let why = if len(self.cause) > 0 { self.cause } else { "no acknowledgement" };
+        self.last_error = "message " + to_string(self.base_id + self.head) + " on " + self.pending.subject_at(self.head) + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: " + why;
         violate delivery;
     }
 
@@ -409,13 +425,13 @@ locus NatsConn {
         }
         if !self.client.connected {
             // everything written but unacknowledged goes again
-            self.last_error = self.client.last_error;
+            self.client_trouble();
             self.pull_open = false;
             self.barrier = -1;
         }
     }
 
-    // @unbounded: the connection's receive loop, for the conn's life;
+    // The connection's receive loop, for the conn's life;
     // each pass reads at most 256 frames or waits 10 ms.
     run() {
         let started = std::time::monotonic_ns();

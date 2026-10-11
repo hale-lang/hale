@@ -91,7 +91,7 @@ locus Ownership {
     birth() {
         if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) { self.me = std::env::var(self.me_env); }
     }
-    @unbounded
+    @bounded_by(self.graph)
     fn load() {
         if self.loaded { return; }
         self.loaded = true;
@@ -109,7 +109,8 @@ locus Ownership {
             it = std::json::array_next(it);
         }
     }
-    @unbounded
+    // One membership per organization `self.graph` names.
+    @bounded_by(self.graph)
     fn join(owner: String, person: String) {
         let mut i = 0;
         while i < self.memberships.len() {

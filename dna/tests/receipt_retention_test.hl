@@ -64,8 +64,9 @@ main locus App {
         head: dna::Pq = dna::Pq { };
     }
     // How many protected bodies memory keeps under `digest`, read with the
-    // owner's DSN ("?" when it could not be read).
-    @unbounded
+    // owner's DSN ("?" when it could not be read). One answer per check
+    // the script makes.
+    @bounded_by(script)
     fn kept(record: String, digest: String) -> String {
         let r = self.owner_conn.conn.query_one("SELECT count(*) FROM " + dna::schema_for(record) + ".protected_receipts WHERE digest = '" + digest + "'");
         return if r.ok { dna::trim_nl(r.data) } else { "? " + r.err.kind + " " + r.err.detail };

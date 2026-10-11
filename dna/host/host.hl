@@ -27,8 +27,8 @@ const ORG_SEED: String = "dna/org";
 // a node raising the same concern three times writes three identical
 // rows, each a fact of its own — so the key counts the identical rows
 // before this one; a reconcile keeps a source's rows in order, so the
-// count holds across it.
-@unbounded
+// count holds across it. It scans the projection `p` up to row `i`.
+@bounded_by(p)
 fn fact_key(p: Projection, i: Int) -> String {
     let e = p.row(i);
     let mut before = 0;
@@ -66,8 +66,8 @@ fn keys_add(list: String, key: String) -> String {
 // counting: the k-th such request of a (kind, entity) is answered when k
 // answers for that entity exist, which is what this host did before —
 // enough while a record holds only pre-rule rows, and never applied to a
-// request that has an id.
-@unbounded
+// request that has an id. It scans the rows of the projection `p` after `i`.
+@bounded_by(p)
 fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
     let r = p.row(i);
     let command_id = dna::native_json_string(r.body, "command_id");
@@ -1263,7 +1263,8 @@ main locus Host {
     // changes, and tried again next tick. The text said is kept in one
     // field, `memory_said`: replaced in place, the old text retired at
     // this method's return (spec/memory.md, in-place String reassignment),
-    // which the survey models for a struct's fields but not a String's.
+    // which the survey models only for a concatenation stored whole, not
+    // for one built in a local first, as this one is.
     @bounded_by(self.memory_said)
     fn memory_tick(synced: Bool) {
         if !self.memory_on { return; }
@@ -1503,8 +1504,8 @@ main locus Host {
         self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; the relay goes on publishing it until it does");
     }
     // Whether `expression.observed <id>` with `outcome` is in the record,
-    // waiting up to `secs` for it.
-    @unbounded
+    // waiting up to `secs` for it: one projection per half-second poll.
+    @bounded_by(secs)
     fn observation_landed(mutation_id: String, outcome: String, secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
@@ -1728,8 +1729,10 @@ main locus Host {
         eprintln("hale dna: organization restarted (pid ", self.org.pid, ") as ", expression);
         return self.wait_nerves(20);
     }
-    // The window over the touched instances of a fleet deploy.
-    @unbounded
+    // The window over the touched instances of a fleet deploy: one
+    // projection per half-second poll, until `settle_secs` has passed (or
+    // `observe_secs` since every instance was up).
+    @bounded_by(settle_secs)
     fn fleet_window(rev: String, touched: String, deploy_seq: Int, settle_secs: Int) -> FleetOutcome {
         let settle = std::time::now() + settle_secs;
         let mut all_up_at = -1;

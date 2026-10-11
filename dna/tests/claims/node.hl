@@ -34,14 +34,14 @@ main locus Node {
         }
         return "";
     }
-    @unbounded
     run() {
         let until = std::time::now() + self.deadline;
         let mut said = "";
         let mut taken = false;
         let mut answered = false;
+        let ask = dna::Intent { id: self.intent, outcome: "file the quarter's expense report", from: "riley" };
         while !taken && !answered && std::time::now() < until {
-            let answer = self.core.ask(dna::Intent { id: self.intent, outcome: "file the quarter's expense report", from: "riley" });
+            let answer = self.core.ask(ask);
             if answer == "planning" {
                 taken = true;
                 println("node: claimed plan/", self.intent);
