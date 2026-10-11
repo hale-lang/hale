@@ -1898,6 +1898,14 @@ pub fn summarize_identified(
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
+    // GH #540: a slot's stores are only all seen when the bundle closes
+    // a world. A library's loci are built by the importer, whose
+    // literals this walk never reads, so its slots keep every conformer.
+    let closed_world = {
+        let own: Vec<&Program> =
+            identified.iter().filter(|(_, ids)| !is_stdlib_copy(ids)).map(|(p, _)| *p).collect();
+        crate::entry::entry_row_in(&own).closes_a_world()
+    };
     // What the checked programs declare. A program that is stdlib source
     // itself (`hale check` over a stdlib file) declares what the analysis
     // copy beside it declares; the program's declaration is the row, and
@@ -1992,6 +2000,14 @@ pub fn summarize_identified(
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
     let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // `alias::name` -> mangled symbol, for cross-seed call resolution.
+    let rename_map: BTreeMap<String, String> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
+        .collect();
+    // GH #540: what the program stores into each interface-typed slot.
+    let mut slot_stores = SlotStores::default();
+    let walked_stores = std::cell::RefCell::new(SlotStores::default());
     // Gap D — struct types whose fields are ALL scalar / String: a
     // whole-field replace of one fully reclaims via anchor retirement
     // (Gap A). Conservative: any Bytes / nested compound / array /
@@ -2230,12 +2246,19 @@ pub fn summarize_identified(
                         sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
+                    // GH #540: a stdlib locus is built by code the
+                    // summary may not hold, so its slots keep every
+                    // conformer.
+                    let narrow = (closed_world && !is_stdlib_copy(ids) && !in_runtime(&l.name))
+                        .then_some(&mut slot_stores);
                     locus_field_types.insert(
                         locus.clone(),
                         locus_param_field_types(
                             l,
                             &locus_type_names,
                             &interface_names,
+                            &rename_map,
+                            narrow,
                         ),
                     );
                     locus_inline_arrays
@@ -2366,11 +2389,6 @@ pub fn summarize_identified(
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
     let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
-    // `alias::name` -> mangled symbol, for cross-seed call resolution.
-    let rename_map: BTreeMap<String, String> = import_renames
-        .iter()
-        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
-        .collect();
     let no_renames: BTreeMap<String, String> = BTreeMap::new();
 
     // #382 receiver-typing: struct TYPE field -> type-name map (a
@@ -2577,6 +2595,7 @@ pub fn summarize_identified(
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
             starts: BTreeSet::new(),
+            stores: &walked_stores,
             scope_fns: &scope_fns[scope_index(ids)],
             rename_map: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
             loop_stack: Vec::new(),
@@ -2686,6 +2705,43 @@ pub fn summarize_identified(
             pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params));
         }
     }
+    // GH #540: an expression evaluated outside any body above — a
+    // parameter default (built at the CALL site), a struct field default,
+    // a closure assertion — can build a locus too. Walk each for its
+    // slot stores alone; its rows are no declaration body.
+    {
+        let mut defaults: Vec<(FnKey, Block, &[Param], &crate::snapshot::Snapshot)> = Vec::new();
+        for (program, ids) in identified {
+            if is_stdlib_copy(ids) {
+                continue;
+            }
+            let mut found = Vec::new();
+            for item in flat_decls(&program.items) {
+                default_bodies_of(item, &mut found);
+            }
+            defaults.extend(found.into_iter().map(|(k, b, p)| (k, b, p, *ids)));
+        }
+        let mut next = 0;
+        while next < defaults.len() {
+            let (key, body, params, ids) = (defaults[next].0.clone(), defaults[next].1.clone(), defaults[next].2, defaults[next].3);
+            next += 1;
+            let (_, _, skipped) = walk(
+                &key,
+                &body,
+                None,
+                &key.locus,
+                &param_var_types(params),
+                &fn_typed_params(params),
+                &param_var_elem_types(params),
+                &param_names(params),
+                ids,
+                (false, false, usize::MAX),
+            );
+            if !skipped.is_empty() {
+                defaults.push((key, skipped_block(skipped), params, ids));
+            }
+        }
+    }
     summary.bounded_loci = bounded_loci;
     // Second pass: a locus holding a sync-bearing form can take that
     // form's lock, so calls into it are potentially blocking.
@@ -2764,6 +2820,25 @@ pub fn summarize_identified(
         }
         conformers.insert(iname, who);
     }
+    // GH #540: fold the walks' writes into the slot defaults, then the
+    // callee set of each slot a body reached: what is stored in it,
+    // intersected with the interface's conformers.
+    {
+        let walked = walked_stores.into_inner();
+        for (k, v) in walked.literals {
+            let e = slot_stores.literals.entry(k).or_default();
+            e.impls.extend(v.impls);
+            e.opaque |= v.opaque;
+        }
+        for (k, v) in walked.given {
+            slot_stores.given.entry(k).or_default().extend(v);
+        }
+        for (k, v) in walked.assigned {
+            let e = slot_stores.assigned.entry(k).or_default();
+            e.impls.extend(v.impls);
+            e.opaque |= v.opaque;
+        }
+    }
     let mut next_group: u32 = 0;
     // The rows first, so their groups are numbered as before the
     // declaration bodies were summarized beside them.
@@ -2776,18 +2851,31 @@ pub fn summarize_identified(
             {
                 (Callee::Unresolved(m), Some(t))
                     if edge.receiver_present
-                        && ifaces.contains_key(t) =>
+                        && ifaces.contains_key(t.split('@').next().unwrap_or(t)) =>
                 {
                     Some((m.clone(), t.to_string()))
                 }
                 _ => None,
             };
-            let Some((method, iface)) = dispatch else {
+            let Some((method, slot_or_iface)) = dispatch else {
                 rewritten.push(edge);
                 continue;
             };
+            // GH #540: `Iface@Locus.field` is a slot; an empty or unknown
+            // set of stored impls is every conformer.
+            let (iface, stored) = match slot_or_iface.split_once('@') {
+                Some((i, slot)) => {
+                    let narrowed = slot
+                        .rsplit_once('.')
+                        .and_then(|(l, f)| slot_stores.narrowed(l, f))
+                        .filter(|set| !set.is_empty());
+                    (i.to_string(), narrowed)
+                }
+                None => (slot_or_iface.clone(), None),
+            };
             let targets: Vec<FnKey> = conformers[iface.as_str()]
                 .iter()
+                .filter(|l| stored.as_ref().is_none_or(|set| set.contains(**l)))
                 .filter_map(|l| known.get(&(Some(l.to_string()), method.clone())).cloned())
                 .collect();
             if targets.is_empty() {
@@ -3054,6 +3142,69 @@ struct MemberBody<'p> {
     params: &'p [Param],
 }
 
+/// GH #540: the expressions of `item` that are evaluated outside every
+/// body the summary walks: each parameter default of a fn, method, hook,
+/// mode, failure handler or perspective fn, each struct field default and
+/// each closure assertion. A default is built where its fn is CALLED, so
+/// a locus literal in one is a store like any other. Each is a block of
+/// its expressions under the key of the member it sits in.
+fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Param])>) {
+    let block = |es: Vec<&Expr>| Block {
+        span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
+        stmts: es.into_iter().map(|e| Stmt::Expr(e.clone())).collect(),
+        tail: None,
+    };
+    let param_defaults = |params: &'p [Param]| -> Vec<&'p Expr> { params.iter().filter_map(|p| p.default.as_ref()).collect() };
+    let field_defaults = |td: &'p TypeDecl| -> Vec<&'p Expr> {
+        match &td.body {
+            TypeDeclBody::Struct(fields) => fields.iter().filter_map(|f| f.default.as_ref()).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let mut push = |key: FnKey, es: Vec<&Expr>, params: &'p [Param]| {
+        if !es.is_empty() {
+            out.push((key, block(es), params));
+        }
+    };
+    match item {
+        TopDecl::Fn(f) => push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), param_defaults(&f.params), &f.params),
+        TopDecl::Type(td) => push(FnKey::free_fn(DeclId::user(td.id), td.name.name.clone()), field_defaults(td), &[]),
+        TopDecl::Locus(l) => {
+            let locus = &l.name.name;
+            let method = |id: NodeId, name: &str| FnKey::method(DeclId::user(id), locus.clone(), name);
+            for m in &l.members {
+                match m {
+                    LocusMember::Fn(f) => push(method(f.id, &f.name.name), param_defaults(&f.params), &f.params),
+                    LocusMember::Lifecycle(lc) => {
+                        push(method(lc.id, &lifecycle_key(lc.kind).0), param_defaults(&lc.params), &lc.params)
+                    }
+                    LocusMember::Mode(md) => push(method(md.id, "mode"), param_defaults(&md.params), &md.params),
+                    LocusMember::Failure(fd) => push(method(fd.id, "on_failure"), param_defaults(&fd.params), &fd.params),
+                    LocusMember::Closure(c) => push(
+                        method(c.id, &c.name.name),
+                        c.assertion.iter().flat_map(|a| [&a.left, &a.right, &a.tolerance]).collect(),
+                        &[],
+                    ),
+                    LocusMember::Type(td) => push(method(td.id, &td.name.name), field_defaults(td), &[]),
+                    _ => {}
+                }
+            }
+        }
+        TopDecl::Perspective(p) => {
+            for m in &p.members {
+                if let PerspectiveMember::Fn(f) = m {
+                    push(
+                        FnKey::method(DeclId::user(f.id), p.name.name.clone(), f.name.name.clone()),
+                        param_defaults(&f.params),
+                        &f.params,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The bodies of `item` the reveal rule walks that are no row (a
 /// [`DeclarationBody`] each), with the declaration each is a member of.
 /// The rows are a fn's body and a locus's methods, modes and authored
@@ -3130,12 +3281,86 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
     }
 }
 
+/// GH #540: what the program stores into one interface-typed slot —
+/// the loci it can see written there, and whether any write is one it
+/// cannot name (a parameter, a call result, an `if` value). An opaque
+/// write keeps the slot's callee set at every conformer.
+#[derive(Default, Clone)]
+struct SlotSet {
+    impls: BTreeSet<String>,
+    opaque: bool,
+}
+
+impl SlotSet {
+    fn store(&mut self, value: &Expr, locus_types: &BTreeSet<String>, renames: &BTreeMap<String, String>) {
+        match value {
+            Expr::Struct { path, .. } => match slot_locus(path, locus_types, renames) {
+                Some(l) => {
+                    self.impls.insert(l);
+                }
+                None => self.opaque = true,
+            },
+            _ => self.opaque = true,
+        }
+    }
+}
+
+/// Every write the bodies make that can reach an interface-typed slot:
+/// `Locus { field: <init> }` literals and `<place>.field = <value>`
+/// assignments (each of which is opaque). The assignment's receiver is not typed, so it is keyed
+/// by field NAME and applies to every locus declaring a slot of it.
+#[derive(Default)]
+struct SlotStores {
+    literals: BTreeMap<(String, String), SlotSet>,
+    assigned: BTreeMap<String, SlotSet>,
+    defaults: BTreeMap<(String, String), SlotSet>,
+    /// Per locus, the field names each of its literals gives. A default
+    /// is a store only when some literal omits the field — or when no
+    /// literal of the locus is seen, so it is built somewhere unseen.
+    given: BTreeMap<String, Vec<BTreeSet<String>>>,
+}
+
+impl SlotStores {
+    /// The loci stored into `locus.field`, or `None` when some write is
+    /// one the pre-pass cannot see.
+    fn narrowed(&self, locus: &str, field: &str) -> Option<BTreeSet<String>> {
+        let key = (locus.to_string(), field.to_string());
+        let default_used = self
+            .given
+            .get(locus)
+            .is_none_or(|lits| lits.iter().any(|g| !g.contains(field)));
+        let sets = [
+            self.defaults.get(&key).filter(|_| default_used),
+            self.literals.get(&key),
+            self.assigned.get(field),
+        ];
+        let mut all = BTreeSet::new();
+        for s in sets.into_iter().flatten() {
+            if s.opaque {
+                return None;
+            }
+            all.extend(s.impls.iter().cloned());
+        }
+        Some(all)
+    }
+}
+
+/// The type name an interface-typed slot carries in the walker:
+/// `Iface@Locus.field`. The dispatch rewrite resolves it against the
+/// slot's own callee set; every other reader sees an unknown type, as
+/// it did for the bare interface.
+fn slot_type(iface: &str, locus: &str, field: &str) -> String {
+    format!("{iface}@{locus}.{field}")
+}
+
 /// D2: a locus's `params { … }` fields as field → declared-type-name, so a
 /// `self.<field>.push(x)` can resolve `<field>`'s form.
 fn locus_param_field_types(
     l: &LocusDecl,
     locus_types: &BTreeSet<String>,
     interface_types: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+    mut narrow: Option<&mut SlotStores>,
 ) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for member in &l.members {
@@ -3177,7 +3402,21 @@ fn locus_param_field_types(
                 };
                 let resolved = match (&declared, &concrete_default) {
                     (Some(d), _) if interface_types.contains(d) => {
-                        Some(d.clone())
+                        match narrow.as_deref_mut() {
+                            Some(stores) => {
+                                // GH #540: the slot gets its own name so
+                                // dispatch can fan to what is stored in
+                                // it; the default is one of the stores.
+                                let key = (l.name.name.clone(), pd.name.name.clone());
+                                let set = stores.defaults.entry(key).or_default();
+                                match &pd.init {
+                                    ParamInit::Value(e) => set.store(e, locus_types, renames),
+                                    ParamInit::Inferred => set.opaque = true,
+                                }
+                                Some(slot_type(d, &l.name.name, &pd.name.name))
+                            }
+                            None => Some(d.clone()),
+                        }
                     }
                     (Some(d), Some(c)) if !locus_types.contains(d) => {
                         Some(c.clone())
@@ -3452,6 +3691,27 @@ fn struct_locus(path: &hale_syntax::ast::QualifiedName,locus_types: &BTreeSet<St
         _ => crate::stdlib_bodies::mangled_locus_name(&segs)?.to_string(),
     };
     locus_types.contains(&name).then_some(name)
+}
+
+/// GH #540: the locus a struct literal's path names, as the slot tables
+/// key it: a bare name, an imported seed's `alias::Name` through the
+/// bundle's import renames to the mangled name it is merged under, or a
+/// stdlib path. Anything else names no locus the pre-pass can read.
+fn slot_locus(
+    path: &hale_syntax::ast::QualifiedName,
+    locus_types: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> Option<String> {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    if let [one] = segs.as_slice() {
+        return locus_types.contains(*one).then(|| one.to_string());
+    }
+    match renames.get(&segs.join("::")) {
+        Some(mangled) => locus_types.contains(mangled).then(|| mangled.clone()),
+        // A module-nested locus is declared and looked up by its bare name.
+        None => struct_locus(path, locus_types)
+            .or_else(|| segs.last().filter(|n| locus_types.contains(**n)).map(|n| n.to_string())),
+    }
 }
 
 /// The loci a struct-literal expression instantiates, nested literals
@@ -3924,6 +4184,8 @@ struct Walker<'a> {
     known: &'a Known,
     /// The loci this body instantiates, by their declared names.
     starts: BTreeSet<String>,
+    /// GH #540: the slot writes this walk sees.
+    stores: &'a std::cell::RefCell<SlotStores>,
     /// The free fns of the body's own scope (its seed's programs,
     /// modules included): the only fns a bare name resolves to.
     scope_fns: &'a BTreeSet<String>,
@@ -4411,6 +4673,16 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::Assign { target, value, id, span, .. } => {
+                // GH #540: a write to a field of any place may be a write
+                // to an interface-typed slot of that name.
+                for seg in &target.tail {
+                    if let LValueSeg::Field(f) = seg {
+                        // (A literal cannot be assigned to an interface
+                        // slot, so an assignment is never a nameable
+                        // store.)
+                        self.stores.borrow_mut().assigned.entry(f.name.clone()).or_default().opaque = true;
+                    }
+                }
                 if target.head.name == "self"
                     && matches!(target.tail.as_slice(), [LValueSeg::Field(_)])
                     && matches!(value, Expr::Struct { .. })
@@ -4655,6 +4927,24 @@ impl<'a> Walker<'a> {
                 // the site — that's the TP-3 anchor-clone class.
                 let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
                     && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
+                // GH #540: an imported seed's locus is written
+                // `alias::Name`; the slot tables key it by the mangled
+                // name it is merged under.
+                if let Some(l) = slot_locus(path, self.locus_types, self.rename_map) {
+                    let mut stores = self.stores.borrow_mut();
+                    for si in inits {
+                        stores
+                            .literals
+                            .entry((l.clone(), si.name.name.clone()))
+                            .or_default()
+                            .store(&si.value, self.locus_types, self.rename_map);
+                    }
+                    stores
+                        .given
+                        .entry(l.clone())
+                        .or_default()
+                        .push(inits.iter().map(|si| si.name.name.clone()).collect());
+                }
                 if let Some(l) = struct_locus(path, self.locus_types) {
                     self.starts.insert(l);
                 }

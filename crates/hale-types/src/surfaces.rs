@@ -586,6 +586,46 @@ pub fn select_members(
     out
 }
 
+/// What a `role R` group member names (docs/src/claims.md § `group`): the
+/// handlers of every member, over every surface, that a caller holding
+/// `R` may call. A caller holds `R` and every role `R` includes, so a
+/// member is callable when each role it requires is `R` or reached by
+/// `R`'s `includes`; a member that requires nothing is callable by all.
+/// The same reading admission has (spec/api.md § The admission order).
+#[derive(Debug, Clone, Default)]
+pub struct RoleHandlers {
+    /// Every declared role, sorted: the did-you-mean's vocabulary.
+    pub declared: Vec<String>,
+    /// `R` is declared.
+    pub is_declared: bool,
+    /// Some surface row names `R` in its `requires`.
+    pub required: bool,
+    /// The handlers: (locus, method), the locus empty for a free fn;
+    /// sorted, once each however many surfaces hold them.
+    pub handlers: Vec<(String, String)>,
+}
+
+/// The one reading of `role R` for claims: selection (diagnostics,
+/// vacuity) and the model's group rows both call it.
+pub fn role_handlers(programs: &[&Program], renames: &[(Vec<String>, String)], role: &str) -> RoleHandlers {
+    let confer = crate::rpc_expand::conferring(programs);
+    let mut out = RoleHandlers {
+        declared: confer.keys().cloned().collect(),
+        is_declared: confer.contains_key(role),
+        ..RoleHandlers::default()
+    };
+    let mut handlers: BTreeSet<(String, String)> = BTreeSet::new();
+    for m in select_members(programs, None, renames, "") {
+        out.required |= m.requires.iter().any(|(r, _)| r == role);
+        let callable = m.requires.iter().all(|(r, _)| confer.get(r).is_some_and(|c| c.iter().any(|h| h == role)));
+        if callable {
+            handlers.insert((m.locus, m.method));
+        }
+    }
+    out.handlers = handlers.into_iter().collect();
+    out
+}
+
 /// The `surface` family of `bundle` (spec/api.md § Surfaces and their
 /// rows): every row an `api` block or an `@rpc` handler declares,
 /// resolved against the loci it names; each surface's digest; the serve

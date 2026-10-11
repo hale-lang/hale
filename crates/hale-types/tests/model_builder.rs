@@ -199,6 +199,7 @@ fn the_rich_fixture_derives_a_lawful_model_with_every_family() {
         .map(|s| match &s.selector {
             SelectorForm::Named { display, .. } => display.clone(),
             SelectorForm::SeedGlob { display, .. } => display.clone(),
+            SelectorForm::Role { display, .. } => display.clone(),
         })
         .collect();
     assert_eq!(sel, ["Store", "Worker", "double"]);
@@ -430,6 +431,9 @@ fn model_and_artifact_extract_the_same_facts() {
                             display.clone()
                         }
                         SelectorForm::SeedGlob { display, .. } => {
+                            display.clone()
+                        }
+                        SelectorForm::Role { display, .. } => {
                             display.clone()
                         }
                     },

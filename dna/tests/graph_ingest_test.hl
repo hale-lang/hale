@@ -175,7 +175,7 @@ locus App {
         std::test::assert_eq_int(copies.code, 0, "two copies with a structure policy each: " + copies.stderr);
         let with_roles = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + opted + "\n" + toolchain());
         std::test::assert_eq_int(with_roles.code, 0, "init with roles: " + with_roles.stdout + with_roles.stderr);
-        std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 31 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
+        std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 52 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
         let refused = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + odd + "\n" + toolchain());
         std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "dna/org/structure.hl names `oncall`, which is not an operational role"), "a word that is no role is refused: " + refused.stdout + refused.stderr);
         std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + odd + "\nfor-each-ref\nrefs/dna").stdout), "", "and no record is born");

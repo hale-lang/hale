@@ -158,8 +158,14 @@ fn structure_roles(root: String) -> String {
     return dna::trim_nl(std::str::trim(lit[0..end]));
 }
 
-fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer {
-    let g = ops::GraphIngest { root: root };
+// An application's (`hale dna init`, the application attached): `rows_path`
+// is a file of the artifact's rows, which land first; `app` names the
+// application's root seed; `description_path` is a file holding what
+// `hale check --api` exports.
+fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String, description_path: String, memory: dna::Memory) -> Answer {
+    let described = if len(description_path) > 0 { std::io::fs::read_file(description_path) or "" } else { "" };
+    let declared = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
+    let g = ops::GraphIngest { root: root, app: app, description: described, declared: declared };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
     // GH #1091: the holes, proposed in the same seed as the graph, with the
@@ -177,11 +183,174 @@ fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer
     // GH #995: the declared purpose, proposed in the same checked seed, so
     // a repository with nothing to ingest still has its record
     let purpose = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
-    let before = if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" };
+    let observed = if len(rows_path) > 0 { std::io::fs::read_file(rows_path) or "" } else { "" };
+    if len(rows_path) > 0 && len(observed) == 0 { return fail("graph-ingest: no rows at " + rows_path); }
+    let head = if len(observed) > 0 && !std::str::ends_with(observed, "\n") { observed + "\n" } else { observed };
+    let before = head + (if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" });
     if !keeps_flush(root, keeps) { return fail("graph-ingest: the receipts could not be kept; nothing was seeded"); }
     let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
     return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
+}
+
+// Whether the record attaches an application (`application.attached`).
+@unbounded
+fn attached_somewhere(j: dna::Journal) -> Bool {
+    let mut i = 0;
+    while i < j.revision() {
+        if j.read(i).kind == "application.attached" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Whether an id is one the repository's ingest states (and so one a
+// re-ingest may add, change or retire): its node kinds and edge kinds,
+// and an `unfold` between two of them, never a position's, a work's, an
+// organization's or a definition's, which the record's own proposals own.
+fn ingest_owned(id: String) -> Bool {
+    let colon = std::str::index_of(id, ":");
+    if colon <= 0 { return false; }
+    let kind = id[0..colon];
+    if dna::word_in(kind, "purpose axiom process seed contract noun deployment gate document witness tool meets names refers constrains runs gates witnesses") { return true; }
+    if kind != "unfold" { return false; }
+    let rest = id[(colon + 1)..len(id)];
+    let bar = std::str::index_of(rest, "|");
+    if bar < 0 { return false; }
+    let ends = rest[0..bar] + " " + rest[(bar + 1)..len(rest)];
+    return !std::str::contains(" " + ends, " position:") && !std::str::contains(" " + ends, " work:") && !std::str::contains(" " + ends, " organization:") && !std::str::contains(" " + ends, " definition:");
+}
+
+// `hale dna ingest [--at <rev>]` (the CLI checks the commit out at `tree`):
+// the repository's graph as it stands at `at`, diffed against the graph the
+// record states over what the ingest owns, the difference filed as ONE
+// reviewed graph proposal (group `ingest`): nodes and edges added, bodies
+// changed, and the ones gone as retirements, edges first. A `graph.ingested`
+// row names the commit either way; with nothing changed there is nothing to
+// review. An application's own re-ingest follows (its description is the
+// toolchain's to export at that commit).
+@unbounded
+fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memory) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    if len(at) < 7 { return fail("ingest: name the commit (--at <sha>)"); }
+    // the record as the organization reads it: a ratification lands in
+    // memory's ledger once the ledger is adopted
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    if attached_somewhere(journal) { return fail("ingest: an attached application's re-ingest is not built yet; a repository's is"); }
+    let g = ops::GraphIngest { root: tree, tools: true };
+    let r = g.ingest();
+    if len(r.error) > 0 { return fail("ingest: " + r.error); }
+    let current = dna::record_graph_bodies(journal, dna::GitReceipts { repo: root });
+    let mut ids = "\n";
+    let mut nodes = "";
+    let mut edges = "";
+    let mut added = 0;
+    let mut changed = 0;
+    let v = std::str::bytes_view(r.rows);
+    let mut at_ = 0;
+    while at_ < v.n {
+        let mut end = at_;
+        while end < v.n && std::str::byte_at(v, end) != 10 { end = end + 1; }
+        let row = std::str::slice(v, at_, end);
+        at_ = end + 1;
+        if len(row) == 0 { continue; }
+        let id = std::json::find_string_field(row, "entity");
+        let body = std::json::find_string_field(row, "body");
+        ids = ids + id + "\n";
+        let was = dna::graph_body_of(current, id);
+        if len(was) == 0 || was != body {
+            if len(was) == 0 { added = added + 1; } else { changed = changed + 1; }
+            if std::json::find_string_field(row, "kind") == "graph.node" { nodes = nodes + row + "\n"; } else { edges = edges + row + "\n"; }
+        }
+    }
+    // what the record states and the repository no longer does: retired,
+    // the edges before the nodes they name
+    let mut gone_edges = "";
+    let mut gone_nodes = "";
+    let mut retired = 0;
+    let cv = std::str::bytes_view(current);
+    let mut c = 0;
+    while c < cv.n {
+        let mut end = c;
+        while end < cv.n && std::str::byte_at(cv, end) != 10 { end = end + 1; }
+        let line = std::str::slice(cv, c, end);
+        c = end + 1;
+        let tab = std::str::index_of(line, "\t");
+        if tab <= 0 { continue; }
+        let id = line[0..tab];
+        if !ingest_owned(id) || std::str::contains(ids, "\n" + id + "\n") { continue; }
+        if !ops::graph_retired_row(id).ok { continue; }
+        retired = retired + 1;
+        let gone = hole_row("graph.retired", id, "{}");
+        let colon = std::str::index_of(id, ":");
+        if dna::word_in(id[0..colon], "meets names refers constrains runs gates witnesses unfold") { gone_edges = gone_edges + gone; } else { gone_nodes = gone_nodes + gone; }
+    }
+    let short = at[0..12];
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("commit", at);
+    b.int_field("added", added);
+    b.int_field("changed", changed);
+    b.int_field("retired", retired);
+    let total = added + changed + retired;
+    if total == 0 {
+        b.string_field("review_id", "");
+        b.end_object();
+        let seeded = seed_rows(root, hole_row("graph.ingested", at, b.result()), "ingest", memory);
+        if !seeded.ok { return seeded; }
+        return answer("ingested " + short + ": the graph the record states is the repository's; nothing to review\n");
+    }
+    // one graph proposal: its rows as the receipt carries them
+    let d = std::json::Builder { };
+    d.begin_object();
+    d.string_field("author", "hale dna ingest");
+    d.string_field("kind", "graph");
+    d.string_field("name", "ingest@" + short);
+    d.string_field("provenance", "ingested at " + at);
+    let question = "ratify the graph as the repository states it at " + short + ": " + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired) + " retired";
+    d.string_field("question", question);
+    d.begin_array_field("rows");
+    let all = nodes + edges + gone_edges + gone_nodes;
+    let av = std::str::bytes_view(all);
+    let mut a = 0;
+    while a < av.n {
+        let mut end = a;
+        while end < av.n && std::str::byte_at(av, end) != 10 { end = end + 1; }
+        let row = std::str::slice(av, a, end);
+        a = end + 1;
+        if len(row) == 0 { continue; }
+        d.begin_object();
+        d.string_field("kind", std::json::find_string_field(row, "kind"));
+        d.string_field("entity", std::json::find_string_field(row, "entity"));
+        d.string_field("body", std::json::find_string_field(row, "body"));
+        d.end_object();
+    }
+    d.end_array();
+    d.string_field("target", "org");
+    d.string_field("text", question + ".");
+    d.end_object();
+    let keeps = dna::Texts { };
+    let proposal = hole_rows(keeps, ops::hole_line(d.result(), question, "ingest", "graph", "ingest@" + short, "org"), "hale dna ingest");
+    let digest = std::json::find_string_field(proposal[0..std::str::index_of(proposal, "\n")], "entity");
+    b.string_field("review_id", dna::knowledge_review_id(digest));
+    b.end_object();
+    // the same difference at the same commit is the same proposal: asked once
+    if len(dna::first_row(journal, "knowledge.proposed", digest).kind) > 0 {
+        return answer("ingested " + short + ": the same difference is already proposed as " + dna::knowledge_review_id(digest) + "\n");
+    }
+    if !keeps_flush(root, keeps) { return fail("ingest: the receipt could not be kept; nothing was proposed"); }
+    // the organization opens the Review it is asked to (a running one hears
+    // the request; one started later finds it in the record)
+    let rq = std::json::Builder { };
+    rq.begin_object();
+    rq.string_field("request_id", "g" + digest[7..19]);
+    rq.string_field("review_id", dna::knowledge_review_id(digest));
+    rq.string_field("by", "hale dna ingest");
+    rq.end_object();
+    let seeded = seed_rows(root, proposal + hole_row("graph.ingested", at, b.result()) + hole_row("graph.requested", "g" + digest[7..19], rq.result()), "ingest", memory);
+    if !seeded.ok { return seeded; }
+    return answer("ingested " + short + ": " + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired) + " retired; the Board ratifies it as " + dna::knowledge_review_id(digest) + " (`hale dna review` lists it under `ingest`)\n");
 }
 
 // ---- the toolchain's design, as proposals (GH #596 C) --------------------
@@ -306,9 +475,9 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
 // once ratified (GH #1143) — a change to either is a new revision.
 fn design_terms(text: String, schedule: String) -> String { return if len(schedule) > 0 { text + "\n\nschedule: " + schedule } else { text }; }
 
-fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
+fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"kind\":\"" + (if len(target) > 0 { "mandate" } else { "practice" }) + "\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":" + q.quote(if len(target) > 0 { target } else { "org" }) + ",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
 // A seeded practice's family: the part of its name before the slash
@@ -321,17 +490,19 @@ fn seeded_family(name: String) -> String {
 // Propose one practice: its receipt (queued in `keeps`), a
 // `knowledge.proposed` row and a Review of its own, grouped by its family
 // for the listing: the two seed rows.
-fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
-    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule));
+fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
+    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule, target));
+    let kind = if len(target) > 0 { "mandate" } else { "practice" };
+    let bound = if len(target) > 0 { target } else { "org" };
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("digest", digest);
     b.string_field("review_id", review_id);
-    b.string_field("kind", "practice");
+    b.string_field("kind", kind);
     b.string_field("author", "org");
-    b.string_field("target", "org");
+    b.string_field("target", bound);
     b.string_field("class", "initiative");
     b.string_field("provenance", "design");
     b.string_field("name", name);
@@ -339,7 +510,7 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
     b.end_object();
     let proposed = hole_row("knowledge.proposed", digest, b.result());
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
-    let question = "ratify the " + seeded_family(name) + " practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
+    let question = (if len(target) > 0 { "ratify the mandate of `" + target + "` (`" + name + "`)" } else { "ratify the " + seeded_family(name) + " practice `" + name + "`" }) + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
     q.begin_object();
     q.string_field("question", question);
@@ -347,8 +518,8 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
     q.string_field("required_authority", "board");
     q.string_field("author", "org");
     q.string_field("knowledge_digest", digest);
-    q.string_field("kind", "practice");
-    q.string_field("target", "org");
+    q.string_field("kind", kind);
+    q.string_field("target", bound);
     q.string_field("class", "initiative");
     q.string_field("group", seeded_family(name));
     q.string_field("name", name);
@@ -617,11 +788,12 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         let name = std::json::find_string_field(line, "name");
         let text = std::json::find_string_field(line, "text");
         let schedule = std::json::find_string_field(line, "schedule");
+        let target = std::json::find_string_field(line, "target");
         let st = states.get(name) or DesignState { };
         if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused { continue; }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
-        rows = rows + design_rows(keeps, name, text, toolchain, old, schedule);
+        rows = rows + design_rows(keeps, name, text, toolchain, old, schedule, target);
         proposed = proposed + 1;
         if len(old) > 0 { superseding = superseding + 1; }
     }

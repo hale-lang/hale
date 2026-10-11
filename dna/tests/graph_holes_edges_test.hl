@@ -60,7 +60,7 @@ fn main() {
     // the roles: known ones, each once, whatever the whitespace
     let opted = ops::graph_holes(graph(), " support\tsupport\non-call ");
     std::test::assert_eq_str(opted.error, "", "the roles derive");
-    std::test::assert_eq_int(opted.count, h.count + 2, "two roles under one deployment");
+    std::test::assert_eq_int(opted.count, h.count + 4, "two roles under one deployment, each with its mandate");
     std::test::assert_eq_int(count(opted.proposals, "\"name\": \"compose/support\""), 1, "support once: " + opted.proposals);
     std::test::assert(std::str::contains(opted.proposals, "`compose/on-call` under deployment compose, proposed empty"), "on-call under the deployment, empty: " + opted.proposals);
     let odd = ops::graph_holes(graph(), "operator");

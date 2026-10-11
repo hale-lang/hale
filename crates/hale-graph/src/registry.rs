@@ -1300,7 +1300,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(SURFACES, "surface_rows"), site(SURFACES, "select_members"), site(SURFACES, "surface_laws"), site(SNAPSHOT, "demand_surface_rows")],
         seams: &[
             Seam { symbol: "surface_rows(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
-            Seam { symbol: "select_members(", allowed: &[(SURFACES, 2), (RPC_EXPAND, 1)] },
+            Seam { symbol: "select_members(", allowed: &[(SURFACES, 3), (RPC_EXPAND, 1)] },
             Seam { symbol: "surface_laws(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "serve_laws(", allowed: &[(SURFACES, 1), (SNAPSHOT, 1), (CHECK, 1)] },
         ],
@@ -1993,7 +1993,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "type_expr_identity(", allowed: &[(CHECK, 7)] },
             // The name joins left to `FunctionId` and `FnKey`: resolving
             // author text, and a key no mint numbered.
-            Seam { symbol: "fn_id.get(", allowed: &[(MODEL_BUILDER, 8), ("crates/hale-types/src/claim_lowering.rs", 1)] },
+            Seam { symbol: "fn_id.get(", allowed: &[(MODEL_BUILDER, 9), ("crates/hale-types/src/claim_lowering.rs", 1)] },
             Seam { symbol: "FnKey::method(None", allowed: &[(FRONTIER, 1)] },
         ],
     },

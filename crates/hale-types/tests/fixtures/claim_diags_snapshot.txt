@@ -99,8 +99,8 @@ Claim [248..257] claim `isolation` violated: `src` reaches `dst` — witness: `A
 Claim [124..137] claim `isolation`: the boundary into `dst` is crossed by this call
 Claim [7..8] claim `isolation`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/claim_lowering.rs#0 ---
-Claim [552..557] claim `iso`: `avoiding gates` overlaps `gates` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
-Claim [552..557] claim `iso`: `avoiding gates` overlaps `wings` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+Claim [552..557] claim `iso`: `avoiding gates` overlaps `gates` (shared: `Gate::relay`) — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+Claim [552..557] claim `iso`: `avoiding gates` overlaps `wings` (shared: `Gate::relay`) — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
 Claim [750..755] claim `vault` violated: a locus in `gates` is not `@sealed`, so its state is readable by anything holding it — Gate
 Claim [792..798] claim `tagged` violated: a fn performs `syscall` with no declared purpose — classify it (`@effects(is: {...})`) with a user effect class so the operation is attributable: App::run
 --- crates/hale-types/tests/claim_lowering.rs#1 ---
@@ -144,7 +144,7 @@ Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
 Claim [176..179] claim `iso` violated: `a_side` reaches `b_side` — witness: `X::go`
 Claim [15..16] claim `iso`: the forbidden destination `X` is declared here
 --- crates/hale-types/tests/claims_edges.rs#3 ---
-Claim [397..401] claim `g`: `avoiding gate` overlaps `b_side` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+Claim [397..401] claim `g`: `avoiding gate` overlaps `b_side` (shared: `B::work`) — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
 --- crates/hale-types/tests/claims_edges.rs#4 ---
 Claim [642..650] claim `no_spend` violated: `api` reaches `effects(money)` — witness: `Api::handle` -(publishes "Charge")-> `Worker::on_cmd` -> `charge`
 Claim [473..488] claim `no_spend`: the boundary into `effects(money)` is crossed by this call

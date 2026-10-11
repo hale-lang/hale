@@ -49,19 +49,93 @@ fn override_with_the_carrier_is_refused() {
     );
 }
 
-/// Default the carrier, override harmless: the conservative answer is
-/// STILL a refusal — every conformer is a possible callee of the slot
-/// and the engine never claims absence it cannot prove. What changes
-/// is that the verdict no longer depends on which literal happens to
-/// be the default.
+/// Default the carrier, override harmless, and the only site
+/// overrides: GH #540 narrows the slot to what the program stores
+/// into it. The default literal is never evaluated, so the carrier
+/// is not stored and the claim holds — whichever literal happens to
+/// be the default no longer decides the verdict.
 #[test]
-fn default_carrier_with_harmless_override_is_still_refused_conservatively() {
+fn default_carrier_with_harmless_override_holds_when_no_site_stores_it() {
     let ds = diags(&program("Real", "Noop"));
     assert!(
-        ds.iter().any(|m| m.contains("claim `gated` violated")),
-        "conformer fan-out keeps the carrier reachable: {:?}",
+        !violated(&ds),
+        "the carrier is only the default and every site overrides it: {:?}",
         ds
     );
+}
+
+/// The default is used when a literal omits the field, so it is one
+/// of the slot's stores then.
+#[test]
+fn default_carrier_used_by_an_omitting_site_is_reached() {
+    let extra = "fn mk() -> Holder { return Holder { }; }";
+    let ds = diags(&slot_program(" = Real { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "{:?}", ds);
+}
+
+fn slot_program(default_impl: &str, stores: &str, extra: &str) -> String {
+    format!(
+        r#"
+effect apply_it;
+interface Gate {{ fn apply(x: String) -> Bool; }}
+locus Real {{ @effects(is: {{ apply_it }}) fn apply(x: String) -> Bool {{ return true; }} }}
+locus Noop {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Other {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Holder {{ params {{ dep: Gate{default_impl}; }} }}
+group organism = {{ App }};
+main locus App {{
+    params {{ h: Holder = {stores}; }}
+    claims {{ gated: forbid reaches(organism, effects(apply_it)); }}
+    run() {{ let ok = self.h.dep.apply("x"); }}
+}}
+{extra}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn violated(ds: &[String]) -> bool {
+    ds.iter().any(|m| m.contains("claim `gated` violated"))
+}
+
+/// The carrier conforms but is never stored: the claim holds.
+#[test]
+fn unstored_carrier_does_not_reach_through_the_slot() {
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", ""));
+    assert!(!violated(&ds), "Real is never stored into the slot: {:?}", ds);
+}
+
+/// Two sites store different impls: both are callees.
+#[test]
+fn two_sites_keep_both_impls() {
+    let extra = "fn mk() -> Holder { return Holder { dep: Real { } }; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "the second site stores the carrier: {:?}", ds);
+}
+
+/// A literal whose value is an interface-typed parameter is a write
+/// the pre-pass cannot name: the slot keeps every conformer.
+#[test]
+fn slot_written_from_a_parameter_keeps_every_conformer() {
+    let extra = "fn mk(g: Gate) -> Holder { return Holder { dep: g }; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "an unseen write puts every conformer back: {:?}", ds);
+}
+
+/// An assignment of a value the pre-pass cannot name does the same,
+/// whatever the receiver.
+#[test]
+fn slot_assigned_an_opaque_value_keeps_every_conformer() {
+    let extra = "fn swap(h: Holder, g: Gate) { h.dep = g; }";
+    let ds = diags(&slot_program(" = Noop { }", "Holder { dep: Other { } }", extra));
+    assert!(violated(&ds), "{:?}", ds);
+}
+
+/// A slot with no default narrows to its literals.
+#[test]
+fn slot_without_default_narrows_to_its_literals() {
+    let ds = diags(&slot_program("", "Holder { dep: Other { } }", ""));
+    assert!(!violated(&ds), "{:?}", ds);
 }
 
 /// With no carrier conforming to the interface at all, the claim holds.
@@ -107,4 +181,188 @@ fn main() { let m = Manifest { }; println(certified(m)); }
         "witness through the slot: {:?}",
         ds
     );
+}
+
+/// GH #540, argument defaults: a program whose `Holder` is built by a
+/// parameter default. `decls` are the fns, `run` is what `App::run` does.
+fn default_program(decls: &str, run: &str) -> String {
+    format!(
+        r#"
+effect apply_it;
+interface Gate {{ fn apply(x: String) -> Bool; }}
+locus Real {{ @effects(is: {{ apply_it }}) fn apply(x: String) -> Bool {{ return true; }} }}
+locus Noop {{ fn apply(x: String) -> Bool {{ return false; }} }}
+locus Holder {{
+    params {{ dep: Gate = Noop {{ }}; }}
+    fn use_it(x: String) -> Bool {{ return self.dep.apply(x); }}
+}}
+{decls}
+group organism = {{ App }};
+main locus App {{
+    claims {{ gated: forbid reaches(organism, effects(apply_it)); }}
+    {run}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn refused_through_the_slot(ds: &[String]) -> bool {
+    ds.iter().any(|m| {
+        m.contains("claim `gated` violated")
+            && m.contains("Holder::use_it")
+            && m.contains("dispatches Gate.apply")
+            && m.contains("Real::apply")
+    })
+}
+
+const TAKE: &str = r#"fn take(h: Holder = Holder { dep: Real { } }) -> Bool { return h.use_it("x"); }"#;
+
+/// A carrier built by an OMITTED argument is a store: the default is
+/// evaluated at the call site, so `take()` puts `Real` in the slot.
+#[test]
+fn omitted_argument_default_stores_the_carrier() {
+    let ds = diags(&default_program(TAKE, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// Control: the same carrier passed explicitly.
+#[test]
+fn explicit_argument_stores_the_carrier() {
+    let ds = diags(&default_program(TAKE, "run() { take(Holder { dep: Real { } }); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// Supplying a harmless impl, with a harmless default, holds.
+#[test]
+fn harmless_argument_and_default_hold() {
+    let ds = diags(&default_program(
+        r#"fn take(h: Holder = Holder { dep: Noop { } }) -> Bool { return h.use_it("x"); }"#,
+        "run() { take(Holder { dep: Noop { } }); }",
+    ));
+    assert!(!violated(&ds), "{:?}", ds);
+}
+
+/// A method's parameter default is a store as well.
+#[test]
+fn method_argument_default_stores_the_carrier() {
+    let run = r#"fn go(h: Holder = Holder { dep: Real { } }) -> Bool { return h.use_it("x"); }
+    run() { self.go(); }"#;
+    let ds = diags(&default_program("", run));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// A default that gets its literal through another fn's default.
+#[test]
+fn nested_argument_default_stores_the_carrier() {
+    let decls = r#"
+fn inner(h: Holder = Holder { dep: Real { } }) -> Holder { return h; }
+fn take(h: Holder = inner()) -> Bool { return h.use_it("x"); }"#;
+    let ds = diags(&default_program(decls, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// A literal inside a default's own literal is a store too.
+#[test]
+fn argument_default_nested_in_a_literal_stores_the_carrier() {
+    let decls = r#"
+locus Outer { params { held: Holder = Holder { }; } fn go() -> Bool { return self.held.use_it("x"); } }
+fn take(o: Outer = Outer { held: Holder { dep: Real { } } }) -> Bool { return o.go(); }"#;
+    let ds = diags(&default_program(decls, "run() { take(); }"));
+    assert!(refused_through_the_slot(&ds), "{:?}", ds);
+}
+
+/// GH #540: a store written through an import alias is a store. The
+/// importing seed's `lib::Manifest { sink: lib::Loud { } }` names the
+/// locus the way the bundle merges it, `alias::Name`, not by the mangled
+/// name the slot tables key it by; reading only bare names narrowed the
+/// slot to its default and deleted the edge to `Loud`.
+fn cross_seed(stored: &str) -> Vec<String> {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Disk;
+    let dir = std::env::temp_dir().join(format!("hale-slot-alias-{}-{}", std::process::id(), stored));
+    let seed = dir.join("seed");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("lib.hl"),
+        r#"
+interface Emitter { fn emit(tag: String) -> Int; }
+locus Loud { fn emit(tag: String) -> Int { println("loud: ", tag); return 1; } }
+locus Quiet { fn emit(tag: String) -> Int { return 0; } }
+locus Manifest {
+    params { sink: Emitter = Quiet { }; }
+    fn reach(t: String) -> Int { return self.sink.emit(t); }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        seed.join("main.hl"),
+        format!(
+            r#"
+import "../lib" as lib;
+@no_syscall
+fn certified(m: lib::Manifest) -> Int {{ return m.reach("x"); }}
+main locus App {{
+    run() {{ let m = lib::Manifest {{ sink: lib::{stored} {{ }} }}; let n = certified(m); }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        ),
+    )
+    .unwrap();
+    let snap = Snapshot::load(&seed, LoadMode::WholeSeed, &Disk, Config::check(true, false))
+        .unwrap_or_else(|_| panic!("load the two-seed fixture"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    entries::checked(&snap).into_iter().map(|d| d.message).collect()
+}
+
+#[test]
+fn a_store_through_an_import_alias_reaches_the_carrier() {
+    let ds = cross_seed("Loud");
+    assert!(ds.iter().any(|m| m.contains("Manifest::reach") && m.contains("Loud::emit")), "{:?}", ds);
+}
+
+#[test]
+fn a_harmless_store_through_an_import_alias_holds() {
+    let ds = cross_seed("Quiet");
+    assert!(!ds.iter().any(|m| m.contains("Loud::emit")), "{:?}", ds);
+}
+
+/// GH #540: the stores are only all seen when the bundle closes a
+/// world. A library's `Manifest` is built by whoever imports it, so with
+/// no `main locus` the slot keeps every conformer even though nothing in
+/// the bundle stores `Loud`; with one, the same code narrows.
+fn open_or_closed(main_locus: &str) -> Vec<String> {
+    diags(&format!(
+        r#"
+interface Emitter {{ fn emit(tag: String) -> Int; }}
+locus Loud {{ fn emit(tag: String) -> Int {{ println("loud: ", tag); return 1; }} }}
+locus Quiet {{ fn emit(tag: String) -> Int {{ return 0; }} }}
+locus Manifest {{
+    params {{ sink: Emitter = Quiet {{ }}; }}
+    fn reach(t: String) -> Int {{ return self.sink.emit(t); }}
+}}
+@no_syscall
+fn certified(m: Manifest) -> Int {{ return m.reach("x"); }}
+{main_locus}
+"#
+    ))
+}
+
+#[test]
+fn a_library_slot_keeps_every_conformer() {
+    let ds = open_or_closed("");
+    assert!(ds.iter().any(|m| m.contains("Manifest::reach") && m.contains("Loud::emit")), "{:?}", ds);
+}
+
+#[test]
+fn a_closed_world_slot_narrows_to_its_stores() {
+    let ds = open_or_closed(
+        "main locus App { run() { let m = Manifest { }; let n = certified(m); } } fn main() { App { }; }",
+    );
+    assert!(!ds.iter().any(|m| m.contains("Loud::emit")), "{:?}", ds);
 }

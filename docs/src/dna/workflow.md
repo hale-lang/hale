@@ -74,8 +74,9 @@ claims the plan before it asks, so two nodes never plan one ask twice.
 | `claim.released plan/i…` | ledger | the plan's claim given back |
 
 A change is admitted under the `ask-edit` definition, a person's job
-under `ask-person`, and `task create --judgment` under `ask-judge`,
-with no plan asked. An ask the gates refuse (an exhausted budget, for
+under `ask-person`, `task create --judgment` under `ask-judge`, and
+`task create --to position:<name>` under `ask-position`, with no plan
+asked. An ask the gates refuse (an exhausted budget, for
 one) is `intent.refused`, and the verb prints `refused: …`.
 
 ## 3. The engine runs the step

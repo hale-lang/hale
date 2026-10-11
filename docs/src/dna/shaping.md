@@ -98,20 +98,31 @@ them, and nothing is in force until the Board says so.
 
 | family | practices | what it says |
 |---|---|---|
-| `design` (8) | `principles`, `evolution`, `structure-follows-intent`, `standard-equipment`, `signals`, `signaling`, `optimize`, `software-delivery` | how an organization is shaped: minimal structure, clean cuts, growth by proposal |
+| `design` (8, and three mandates) | `principles`, `evolution`, `structure-follows-intent`, `standard-equipment`, `signals`, `signaling`, `optimize`, `software-delivery`; `mandate-leader`, `mandate-editor`, `mandate-agent` | how an organization is shaped: minimal structure, clean cuts, growth by proposal |
 | `operating` (7) | `one-store-per-step`, `row-first`, `readings-never-act`, `legs-hold-nothing`, `deploy-settles-on-pulse`, `the-forge-decides`, `optimize-cadence` | how the organism runs: what the Leader plans within and a reviewer cites |
 | `using` (7) | `propose-review-ratify`, `change-classes`, `ask-the-leader`, `cut-structure`, `read-the-record`, `evidence-first`, `bind-knowledge` | how to work with the organism: what a proposal states, who a class signs for, what the record is for, where knowledge is bound |
+
+A **mandate** is a practice with a position to be bound to: what that
+position decides, what it may not, what it cites, how it writes and what
+it escalates, with the authority defaults derived from the law's change
+classes (the charter refines them). The three in `design` are the
+Leader's, the editor's and the agent's; `init` on a repository proposes
+one more with every position it proposes, in a repository or an
+application (`mandate/<position>`, listed
+under `holes` right after its position). Ratified, a mandate is bound to
+the position's node, so whoever holds the position reads it in their
+hat. It is knowledge about a position, not a grant.
 
 The first two operating practices are the two rules of
 [the organism](./index.md). `hale dna review` groups them:
 
 ```text
 $ hale dna review
-23 pending review(s) of 23
+32 pending review(s) of 32
   purpose — the declared purpose, the Board's to ratify first:
       k:3870910f5de4 — ratify the declared purpose?
       decide one with `hale dna review <id> …`, or all pending with `hale dna review purpose approve|reject`
-  design — 8 seeded practice(s), each its own Review:
+  design — 11 seeded practice(s), each its own Review:
       k:05cecb18af4e — ratify the design practice `design/software-delivery`: For an appendage or a product: process boundaries first (what runs, fail…
       …
       decide one with `hale dna review <id> …`, or all pending with `hale dna review design approve|reject`
@@ -123,6 +134,10 @@ $ hale dna review
       k:8c1f6a4e2d70 — ratify the using practice `using/propose-review-ratify`: nothing is in force until the Board says so. A change to the organi…
       …
       decide one with `hale dna review <id> …`, or all pending with `hale dna review using approve|reject`
+  holes — 6 hole(s) the repository leaves, each its own Review:
+      k:d51a712f169e — ratify the position `board` under the purpose: it ratifies what this organization becomes
+      …
+      decide one with `hale dna review <id> …`, or all pending with `hale dna review holes approve|reject`
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
@@ -415,9 +430,11 @@ people hold — a board, a reviewer of a part, a dev, an operator — are
 nodes of the organism's graph, and who holds each is a `holds` edge,
 proposed and ratified like a practice ([Memory and the
 record](./memory.md) has the graph; `hale dna show org` reads it from
-memory). `init` on a repository proposes the positions its structure
-implies ([DNA, the building block](./dna.md#a-repository-instead-of-one-application));
-an application's record starts with none, so there is nothing to fill:
+memory). `init` proposes the positions its structure implies, for a
+repository ([DNA, the building block](./dna.md#a-repository-instead-of-one-application))
+and for an application alike: the board, the application's `dev` and
+`reviewer`, each as a proposal until the Board ratifies it with
+`hale dna review holes approve`. Before it does, there is nothing to fill:
 
 ```text
 $ hale dna fill board alice
@@ -431,12 +448,25 @@ a holder:
 hale dna fill <position> <holder> [project] [--as <who>]
 ```
 
+A position's node can carry **equipment**, the API roles its holder is
+fitted with (`equipment.roles`): `init` derives them from the
+description the toolchain exports for a contract (`spec/<Stem>.description.json`,
+or `hale check --api` for the surfaces and streams an application serves;
+`requires: [editor]` lands on `<app>/dev`, `requires: [reviewer]` on
+`<app>/reviewer`) and `fill` prints them (`equipment: editor`), and `hale dna show org` lists them
+with the position's mandate (`{mandate: ratified; roles: editor}`). Granting a
+token that carries them is not done by `fill`.
+
 The CLI checks first: the holder must be a person the record knows (a
 row in their name, or an organization's member) who has not retired,
 and never a name the organism writes as. The request is a
 `hold.requested` row in your name; the organization answers with a
-Board Review, listed by `hale dna review` under `holds`, which you, the
-asker, may not ratify:
+Board Review, listed by `hale dna review` under `holds`. Whoever holds
+the Board decides it, you included if that is you: a governance proposal
+is the one exception to the rule that a candidate's author may not
+review it, since seating someone is not reviewing your own work (a change
+to the code still needs someone other than its author, even one the
+Board must approve):
 
 ```text
 proposed alice to hold position:board: the Board ratifies it as k:… (`hale dna review` lists it under `holds`)
@@ -457,6 +487,31 @@ hale dna fill organization:north bob               # bob is north's member
 
 A position has one owning organization, and a person belongs to one at
 most.
+
+
+### Opening a position
+
+A position the graph does not state yet is opened through the
+organization, as a fill is:
+
+```sh
+hale dna position open api/steward --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --under api --text "keeps the list's api"
+```
+
+The mandate is required: what the position decides, what it may not
+do, what it cites and what it escalates. `--under` names the part it
+unfolds from; a bare name is the seed, work part, position or process
+the graph states by that name, and a name the graph does not state is
+refused. The organization proposes the position's node and its mandate
+as one Board Review, listed under `positions`:
+
+```text
+proposed opening position:api/steward with its mandate: the Board ratifies it as k:… (`hale dna review` lists it under `positions`)
+```
+
+Ratifying it ratifies both. A name the graph already states, or one
+asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
+holder.
 
 ## How the organization grows
 
