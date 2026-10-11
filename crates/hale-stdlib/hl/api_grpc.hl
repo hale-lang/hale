@@ -386,7 +386,6 @@ locus __StdApiGrpcRpc {
         }
     }
     // ---- the streams ----
-    @unbounded
     fn find(conn: Int, stream: Int) -> Int {
         let n = self.streams.len();
         let mut k = 0;
@@ -566,7 +565,6 @@ locus __StdApiGrpcRpc {
     }
     // The descriptor of the file named `want` (or declaring the symbol), empty
     // when no file does.
-    @unbounded
     fn file_for(want: String, by_symbol: Bool) -> Bytes {
         let mut rest = self.files;
         while len(rest) > 0 {
@@ -621,7 +619,6 @@ locus __StdApiGrpcRpc {
             __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: conn * 4294967296 + stream };
         }
     }
-    @unbounded
     fn drop_conn(conn: Int) {
         let n = self.streams.len();
         let mut k = 0;
@@ -774,7 +771,6 @@ locus __StdApiGrpcRpc {
     }
     // GOAWAY on every connection and the listener closed, after the replies
     // already sent (one subscriber sees the bus in the order it was published).
-    @unbounded
     fn stop_listening() {
         self.stops = self.stops + 1;
         // a reflection call still open ends with its status, before the GOAWAY

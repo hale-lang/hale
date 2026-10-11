@@ -156,7 +156,6 @@ locus __StdApiStaticRoles {
 }
 
 /// Whether every byte of `s` is a letter, a digit or one of `extra`.
-@unbounded
 fn __api_chars_ok(s: String, extra: String) -> Bool {
     let mut i = 0;
     while i < len(s) {
@@ -174,7 +173,6 @@ fn __api_chars_ok(s: String, extra: String) -> Bool {
 /// characters (an OIDC subject is at most 255 ASCII characters), never a
 /// blank or the table's own separators `,` `;` `=`, since the table
 /// travels as one line the binding re-splits.
-@unbounded
 fn __api_bearer_name_ok(s: String) -> Bool {
     if len(s) == 0 || len(s) > 255 {
         return false;
@@ -196,7 +194,6 @@ fn __api_bearer_name_ok(s: String) -> Bool {
 /// `_`, `-`, `@`, at most 64), `bearer:<name>` (a name the bearer source
 /// answers, an OIDC subject say: printable ASCII but blanks and the
 /// table's own `,` `;` `=`, at most 255) or `*`.
-@unbounded
 fn __api_table_refusal(table: String, known: String) -> String {
     let mut rest = table;
     while len(rest) > 0 {

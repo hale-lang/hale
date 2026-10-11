@@ -229,7 +229,6 @@ locus __StdApiWsPeer {
         // a reader that never reads cannot hold this connection's writer for long
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
-    @unbounded
     run() {
         if self.mode == 1 {
             self.subscriber();
@@ -252,7 +251,6 @@ locus __StdApiWsPeer {
     // It lives from its first datagram until it unsubscribes or the hub stops.
     // Nothing reads for it: the endpoint hands it its datagrams over the bus,
     // so its loop only keeps the clock for the credential's expiry.
-    @unbounded
     fn subscriber() {
         while self.open && !self.draining {
             self.check_expiry();
@@ -312,7 +310,6 @@ locus __StdApiWsPeer {
         __ApiHubUpT <- __StdApiHubUp { key: self.tid, conn: self.conn, kind: kind, a: a, text: text, text2: "" };
     }
     // ---- the request ----
-    @unbounded
     fn serve() {
         let mut head = "";
         let mut ended = false;
@@ -422,7 +419,6 @@ locus __StdApiWsPeer {
             }
         }
     }
-    @unbounded
     fn parse_frames() {
         let mut more = true;
         while more && self.open {
