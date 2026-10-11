@@ -4655,6 +4655,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 
+== crates/hale-types/tests/claim_no_silent_loss.rs#999655df
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.l	Ledger	main	default
+
 == crates/hale-types/tests/claims.rs#afe54d07
 root	App	the entry
 row	App@literal1	App	main	default
@@ -9318,7 +9323,9 @@ row	~.j.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
 shared	dynamic	sites in core #3932612c
 -- dynamic	sites in tests
+dynamic	BrokenJournal	on main
 dynamic	KnownAuthors	on main
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #c3a51769

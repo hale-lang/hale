@@ -82,6 +82,7 @@
 - [The head and the face](./dna/head.md)
 - [Shaping and governing it](./dna/shaping.md)
 - [DNA, the building block](./dna/dna.md)
+- [Held together by the compiler](./dna/standard.md)
 - [Troubleshooting](./dna/troubleshooting.md)
 - [Reference](./dna/reference.md)
 

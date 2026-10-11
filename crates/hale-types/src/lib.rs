@@ -54,6 +54,7 @@ pub mod judgment;
 pub mod mangle;
 pub mod model_builder;
 pub mod model_query;
+pub mod route_loss;
 pub mod topic_identity;
 pub mod topology;
 pub mod topology_diff;
