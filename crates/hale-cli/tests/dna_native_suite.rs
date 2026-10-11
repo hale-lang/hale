@@ -893,6 +893,7 @@ fn dna_fixture_set_is_complete() {
             "apply_test.hl",
             "assembly_test.hl",
             "attempt_commands_test.hl",
+            "batch_apply_test.hl",
             "binding_store_test.hl",
             "body_claim_expired_test.hl",
             "body_lease_blocked_test.hl",

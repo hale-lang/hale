@@ -181,6 +181,16 @@ locus KnowledgeRecord {
                 }
             }
             if settled != outcome + " by " + reviewer { return false; }
+            // a batch (`batch.hl`) is planned again before it is ratified: one
+            // whose ground moved since it was proposed is refused whole, each
+            // member with why, never half applied. Only while no member has
+            // settled: once its rows landed, the batch is what the record says.
+            let mut stale = "";
+            let steps = native_json_string(doc, "batch");
+            if outcome == "approve" && len(steps) > 0 && !self.batch_settled(members, ratified, refused, declined) {
+                let why_stale = batch_stale(self.journal, self.receipts, steps);
+                if len(why_stale) > 0 { stale = "the batch is stale: " + why_stale + "; not ratified — propose it again against the organization as it stands"; }
+            }
             // every member's rows, in the family's order
             let batch = RowBatch { };
             let mut all = true;
@@ -207,13 +217,15 @@ locus KnowledgeRecord {
                     if outcome == "approve" { all = false; continue; }
                 } else {
                     let gone = if len(old) > 0 { rec_replacing(retired, successors, old) } else { "" };
-                    let refuses = outcome == "approve" && len(old) > 0 && (len(gone) > 0 || !rec_has(ratified, old));
+                    let refuses = len(stale) > 0 || (outcome == "approve" && len(old) > 0 && (len(gone) > 0 || !rec_has(ratified, old)));
                     let b = std::json::Builder { };
                     b.begin_object();
                     b.string_field("digest", member);
                     b.string_field("review_id", review_id);
                     b.string_field("decided_by", reviewer);
-                    if refuses {
+                    if len(stale) > 0 {
+                        b.string_field("why", stale);
+                    } else if refuses {
                         b.string_field("supersedes", old);
                         b.string_field("retired_by", gone);
                         b.string_field("why", if len(gone) > 0 { "supersedes a version already retired by " + gone + "; not ratified — propose again against the active version" } else { "supersedes a version that is not ratified; not ratified — propose again against the active version" });
@@ -289,6 +301,19 @@ locus KnowledgeRecord {
             if a.ok { return agrees; }
             if a.error != "stale_revision" { return false; }
             tries = tries + 1;
+        }
+        return false;
+    }
+    // Whether any member of a family has settled: ratified, refused or
+    // declined.
+    @unbounded
+    fn batch_settled(members: String, ratified: String, refused: String, declined: String) -> Bool {
+        let mut rest = members[1..len(members)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let m = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if rec_has(ratified, m) || rec_has_key(refused, m) || rec_has(declined, m) { return true; }
         }
         return false;
     }

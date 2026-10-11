@@ -239,6 +239,9 @@ hale dna ingest [project] [--at <rev>]
                              for every served operation included, proposed as one Board Review (`review ingest approve`)
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
+hale dna apply <file> [--dry-run] [--as <who>]
+                             several changes to the structure (`open`, `fill`) as one Board Review, applied all or nothing
+                             (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing
 hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
                              propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
 ```
@@ -439,6 +442,7 @@ kind it does not know keeps walking.
 | `decision.reported` | ledger | a decision someone else made, reported by the assignee |
 | `person.retired` | record | someone left, and who took their work |
 | `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
+| `batch.proposed` | record | a batch `hale dna apply` proposed as one Review in `changes`, with its steps; `graph.requested` under the same id asks the organization to open it |
 | `position.requested` / `position.proposed` / `position.refused` | record | a position asked at run time (`hale dna position open`), proposed with its mandate as one Board Review, or refused |
 | `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
 | `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |

@@ -1,0 +1,130 @@
+// dna/tests/batch_apply_test.hl — a batch of changes to the organization's
+// structure, from the command line.
+//
+// `hale dna apply <file>` plans the batch against the record (each step,
+// then the organization it would leave), prints the org chart before and
+// after, and proposes it as ONE family Review in the group `changes`: one
+// graph proposal with every node and edge it adds, one mandate per position
+// it opens, `batch.proposed` naming what was asked and `graph.requested`
+// asking the organization to open the Review. `--dry-run` proposes nothing;
+// a batch wrong anywhere is refused before anything is written; the same
+// steps still pending are proposed once. The organization's side (the
+// Review opened, ratified whole, refused whole when stale) is
+// scenario_test.hl's.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(repo: String, args: String) -> dna::RunResult { return in_dir(repo, toolchain() + "\ndna\n" + args); }
+
+@unbounded
+fn count_rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && std::str::contains(e.entity + " " + e.body, needle) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The body of the record's last `kind` row, "" when there is none.
+@unbounded
+fn last_body(repo: String, kind: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
+const TEAM: String = "# a dev team, one Review
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/dev ada
+fill api/reviewer bo
+";
+
+fn check() {
+    let scratch = dna::scratch_root("batch-apply");
+    let repo = scratch + "/todo";
+    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + repo + "\n" + source());
+    std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+    let init = dna_cli(repo, "init\n.\n--no-library");
+    std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+    std::io::fs::write_file(scratch + "/team.batch", TEAM) or discard;
+    let rows_before = dna::GitJournal { repo: repo }.revision();
+
+    // 1. --dry-run: the org chart before and after, nothing proposed
+    let dry = dna_cli(repo, "apply\n" + scratch + "/team.batch\n--dry-run");
+    std::test::assert(dry.code == 0 && std::str::contains(dry.stdout, "+ position position:api/reviewer\n+ mandate position:api/reviewer\n") && std::str::contains(dry.stdout, "+ holds position:api/dev ada\n") && std::str::contains(dry.stdout, "nothing proposed (--dry-run)"), "the dry run prints what the batch adds: " + dry.stdout + dry.stderr);
+    std::test::assert_eq_int(dna::GitJournal { repo: repo }.revision(), rows_before, "and writes nothing");
+
+    // 2. a batch wrong anywhere is refused whole, before anything is written
+    std::io::fs::write_file(scratch + "/bad.batch", "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n") or discard;
+    let bad = dna_cli(repo, "apply\n" + scratch + "/bad.batch");
+    std::test::assert(bad.code != 0 && std::str::contains(bad.stderr, "refused: `fill position:nowhere ada`: no position the graph states or the batch opens"), "refused, naming the step: " + bad.stderr);
+    std::io::fs::write_file(scratch + "/typo.batch", "open web/dev | Decides: the web client.\nhire web/dev ada\n") or discard;
+    let typo = dna_cli(repo, "apply\n" + scratch + "/typo.batch");
+    std::test::assert(typo.code != 0 && std::str::contains(typo.stderr, "line 2 (`hire web/dev ada`): `hire` is no step a batch takes"), "a line that is no step is named: " + typo.stderr);
+    std::test::assert_eq_int(dna::GitJournal { repo: repo }.revision(), rows_before, "nothing of a refused batch is written");
+
+    // 3. proposed: one family Review in `changes`, its members the graph
+    // proposal and one mandate per opened position
+    let one = dna_cli(repo, "apply\n" + scratch + "/team.batch");
+    std::test::assert(one.code == 0 && std::str::contains(one.stdout, "proposed the batch as k:"), "the batch is proposed: " + one.stdout + one.stderr);
+    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 1, "as one Review");
+    let req = last_body(repo, "review.requested");
+    std::test::assert(dna::native_json_string(req, "kind") == "family" && std::json::find_int_field(req, "count") == 3 && dna::native_json_string(req, "required_authority") == "board", "a family of three under the Board: " + req);
+    std::test::assert_eq_int(count_rows(repo, "batch.proposed", "fill\\tposition:api/reviewer\\tbo"), 1, "what was asked is a row");
+    let family = dna::native_json_string(req, "knowledge_digest");
+    std::test::assert_eq_int(count_rows(repo, "graph.requested", dna::knowledge_review_id(family)), 1, "and the organization is asked to open the Review");
+    let receipts = dna::GitReceipts { repo: repo };
+    let fdoc = receipts.read(family[7..len(family)]);
+    std::test::assert(std::str::contains(dna::native_json_string(fdoc, "batch"), "open\tposition:api/dev\t\t"), "the family carries its steps, for the check at ratification: " + fdoc);
+    let ideas = dna::native_json_string(fdoc, "ideas");
+    std::test::assert(std::str::contains(ideas, "\nmandate/api/dev sha256:") && std::str::contains(ideas, "\nmandate/api/reviewer sha256:"), "a mandate per opened position: " + ideas);
+    let mut each = ideas;
+    while len(each) > 0 {
+        let nl = std::str::index_of(each, "\n");
+        let line = each[0..nl];
+        each = each[(nl + 1)..len(each)];
+        let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
+        std::test::assert_eq_int(count_rows(repo, "knowledge.proposed", d), 1, "each member proposed, with no Review of its own: " + line);
+    }
+    let graph_digest = ideas[(std::str::index_of(ideas, " ") + 1)..std::str::index_of(ideas, "\n")];
+    let rows = dna::proposal_rows(receipts.read(graph_digest[7..len(graph_digest)]));
+    let node = std::str::index_of(rows, "\"entity\": \"position:api/reviewer\"");
+    let unfold = std::str::index_of(rows, "\"entity\": \"unfold:position:api/dev|position:api/reviewer\"");
+    let hold = std::str::index_of(rows, "\"entity\": \"holds:position:api/reviewer|bo\"");
+    std::test::assert(node >= 0 && unfold > node && hold > unfold, "the graph proposal's rows: nodes, then their edges, then holds: " + rows);
+    std::test::assert(std::str::contains(dna_cli(repo, "review").stdout, "changes — 1 batch(es) of changes to the organization"), "listed under changes");
+
+    // 4. the same steps, still pending, are the same proposal
+    let again = dna_cli(repo, "apply\n" + scratch + "/team.batch");
+    std::test::assert(again.code == 0 && std::str::contains(again.stdout, "already proposed as " + dna::knowledge_review_id(family) + ", not yet decided"), "proposed once: " + again.stdout + again.stderr);
+    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 1, "still one Review");
+    dna::scratch_done(scratch);
+}
+
+main locus App { run() { check(); } }
+fn main() { App { }; }

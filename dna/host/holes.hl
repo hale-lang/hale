@@ -267,6 +267,97 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
     return answer("opening " + position + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
 }
 
+// `hale dna apply <file> [--dry-run] [--as <who>]`: several changes to the
+// organization's structure as ONE Board Review (dna/core/batch.hl). The
+// batch is planned against the record as it stands, refused whole with why
+// when any step or the organization it would leave is wrong, and printed as
+// the org chart before and after. Proposed, its receipts are kept and its
+// rows land in the proposer's name, as `ingest`'s do; `graph.requested`
+// asks the running organization to open the Review, and the Board's one
+// verdict ratifies every member in one append.
+@unbounded
+fn apply_verb(root: String, seed: String, file: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
+    if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
+    let text = std::io::fs::read_file(file) or "";
+    if len(text) == 0 { return fail("apply: `" + file + "` is not a file with steps in it"); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    // the record as the organization reads it: a ratification lands in
+    // memory's ledger once the ledger is adopted
+    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let receipts = dna::GitReceipts { repo: root };
+    let plan = dna::batch_plan(journal, receipts, text);
+    if !plan.ok { return fail("apply: refused: " + plan.why); }
+    let chart = dna::batch_render(plan);
+    if dry_run { return answer(chart + "nothing proposed (--dry-run)\n"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    // the same steps still pending are the same proposal: asked once
+    let pending = pending_batch(journal, plan.steps);
+    if len(pending) > 0 { return answer(chart + "already proposed as " + pending + ", not yet decided\n"); }
+    let request_id = request_digest_id(root, "b", plan.steps + who);
+    let filing = dna::batch_filing(plan, who, request_id, std::time::now());
+    if !filing.ok { return fail("apply: " + filing.why); }
+    // the same batch at the same head is the same proposal: asked once
+    if len(dna::first_row(journal, "knowledge.proposed", filing.digest).kind) > 0 {
+        return answer(chart + "already proposed as " + filing.review_id + "\n");
+    }
+    let keeps = dna::Texts { };
+    let mut docs = filing.docs;
+    while len(docs) > 0 {
+        let nl = std::str::index_of(docs, "\n");
+        let raw = keep_later(keeps, docs[0..nl]);
+        docs = docs[(nl + 1)..len(docs)];
+    }
+    if !keeps_flush(root, keeps) { return fail("apply: the receipts could not be kept; nothing was proposed"); }
+    if organism_here(root, memory) {
+        let watched = open_projection(root, seed, "", memory);
+        let before = watched.rows();
+        let seeded = seed_rows(root, filing.rows, "apply", memory);
+        if !seeded.ok { return seeded; }
+        let deadline = std::time::now() + dna::wait_secs(60);
+        while std::time::now() <= deadline {
+            let fresh = watch(watched);
+            let r = find_after(watched, before, " graph.proposed graph.refused ", request_id);
+            if r.seq >= 0 {
+                if r.kind == "graph.refused" { return fail("apply: the organization could not open the Review: " + std::json::find_string_field(r.body, "why")); }
+                return answer(chart + "proposed the batch as one Review: the Board ratifies it as " + filing.review_id + " (`hale dna review` lists it under `changes`)\n");
+            }
+            std::time::sleep(150ms);
+        }
+        return fail("proposed the batch as " + filing.review_id + ", but the organization journaled no answer for " + request_id + " in time");
+    }
+    if len(record_remote(root)) == 0 {
+        let seeded = seed_rows(root, filing.rows, "apply", memory);
+        if !seeded.ok { return seeded; }
+        return answer(chart + "proposed the batch as " + filing.review_id + "; the organization opens its Review when it starts (`hale dna run`)\n");
+    }
+    let seeded = seed_rows(root, filing.rows, "apply", memory);
+    if !seeded.ok { return seeded; }
+    let s = sync_record(root, memory);
+    if !s.ok { return fail(s.summary); }
+    return answer(chart + "proposed the batch as " + filing.review_id + " in the record; the organization opens its Review when it hears it\n");
+}
+
+// The Review of a batch with these steps the Board has not decided yet, ""
+// when there is none.
+@unbounded
+fn pending_batch(j: dna::Journal, steps: String) -> String {
+    let mut proposed = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "batch.proposed" && dna::native_json_string(e.body, "steps") == steps { proposed = proposed + dna::native_json_string(e.body, "review_id") + "\n"; }
+        i = i + 1;
+    }
+    while len(proposed) > 0 {
+        let nl = std::str::index_of(proposed, "\n");
+        let id = proposed[0..nl];
+        proposed = proposed[(nl + 1)..len(proposed)];
+        if len(dna::first_row(j, "review.settled", id).kind) == 0 { return id; }
+    }
+    return "";
+}
+
 // `hale dna fill <position> <holder>`: a holder proposed, through the
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the

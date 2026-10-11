@@ -513,6 +513,48 @@ Ratifying it ratifies both. A name the graph already states, or one
 asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
 holder.
 
+### Changing several things at once
+
+A team is several positions and the people who hold them. Opening and
+filling each one is a Review apiece; a **batch** proposes them all as one,
+and the Board decides it once. Write the steps in a file:
+
+```text
+# the api team
+open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/dev ada
+fill api/reviewer bo
+```
+
+and read what it would do before proposing it:
+
+```sh
+hale dna apply team.batch --dry-run
+```
+
+```text
++ position position:api/dev
++ mandate position:api/dev
++ position position:api/reviewer
++ mandate position:api/reviewer
++ holds position:api/dev ada
++ holds position:api/reviewer bo
+6 line(s) added to the organization, 0 unchanged
+nothing proposed (--dry-run)
+```
+
+Without `--dry-run`, `apply` proposes it as one Review, listed under
+`changes`; `hale dna review changes approve` ratifies every step of it
+together. A batch is checked whole before anything is written: a fill
+of a position nobody opens, a position opened twice, an `under` naming
+nothing, and the batch is refused with the step that is wrong. The
+order of the steps does not matter. If the organization changed before
+the Board decides, so that the batch no longer applies (one of its
+positions was opened meanwhile), approving it refuses it whole, and
+nothing of it lands: propose it again against the organization as it
+is.
+
 ## How the organization grows
 
 The org chart grows the way the code does: by a proposal the Board

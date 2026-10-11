@@ -1447,6 +1447,7 @@ record's.
 | `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
+| `batch.proposed` | record | a batch of changes `hale dna apply` proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`); its `graph.requested`, under the same id, asks the organization to open the Review |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`), relayed as `PositionOpenRequested` (`dna.position.requested`) |
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
@@ -4603,7 +4604,7 @@ The live half is memory's, projected from the record by the spine
   whatever order the Board ratifies them in; the proposal stays in memory
   as the idea it was, bound to nothing, so it never enters a context
   package. Ratifying them fills the org chart. `hale dna review` lists the
-  groups `holes`, `practices`, `holds`, `positions` and `ingest`
+  groups `holes`, `practices`, `holds`, `positions`, `changes` and `ingest`
   together, as it does `design`
   and `operating`, and `hale dna review <group> approve|reject` decides
   each pending one in turn. A seeded group is listed, and decided by its
@@ -4622,6 +4623,45 @@ The live half is memory's, projected from the record by the spine
   a hole, and an `unfold` edge from the part with `--under`) and its
   mandate as two members of one family Review in the group `positions`
   (`position.proposed`), which ratifying ratifies both.
+  **A batch of changes (`hale dna apply <file> [--dry-run] [--as
+  <who>]`, `dna/core/batch.hl`).** Several changes to the structure as
+  ONE Board Review, applied all or nothing. The file is one step a line,
+  in the language the scenario runner reads: `open <name> [under
+  <node>] | <mandate>` and `fill <name> <holder>`; `#` starts a comment,
+  and a name is a position's, with or without `position:`. The host
+  plans the batch against the record (`batch_plan`): a line that is no
+  step, a name with a space, `|` or tab, an `open` with no mandate, a
+  position the graph states or the batch opens twice, an `under` that is
+  neither a node the graph states nor a position the batch opens, a
+  `fill` of a position the graph does not state and the batch does not
+  open, a `fill` of a stated position with no ratified mandate, or a hold
+  the organization would then hold twice is refused whole, naming the
+  step, and nothing is written. Order inside a batch does not matter: a
+  fill or `under` may name a position a later step opens. Planned, the
+  batch prints the org chart before and after (`position <id>`,
+  `mandate <id>`, `holds <id> <holder>` lines, `+ ` where the batch adds
+  one), and `--dry-run` stops there. Otherwise the host keeps the
+  receipts and appends, in the asker's name: one graph proposal (`kind:
+  graph`, name `batch/<request id>`, target `org`) whose rows are the
+  opened positions' nodes, then their `unfold` edges, then the holds;
+  one mandate per opened position (`mandate/<name>`); each a member
+  (`knowledge.proposed`, no Review of its own); the family (`kind:
+  family`, its `ideas` the members in that order, and `batch`, the
+  normalized steps), with its `review.requested` in the group `changes`
+  under the Board; `batch.proposed <request id>` (`digest`, `review_id`,
+  `by`, `steps`); and `graph.requested <request id>`, which a running
+  organization answers by opening and routing the Review
+  (`graph.proposed`), as it does a re-ingest. The same steps while a
+  batch of them is pending are answered with that batch's Review. The
+  Board's one verdict decides every member in one append
+  (`resume_family`); an approval first plans the batch again against the
+  record as it then stands, and a batch whose ground moved (a position
+  it opens was opened since, one it fills was retired) is refused whole:
+  every member `knowledge.refused` with `why` `the batch is stale: …`,
+  the family `library.family.refused`, nothing of it projected. Memory
+  still admits each ratified hold as it admits any (`hold.refused` for a
+  holder it does not know), so the batch checks structure, and the store
+  stays the gate on who may hold what.
   **Mandates (seed/structure).** Each position `init` proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
   knowledge idea of kind `mandate` (family `mandate`, `author: hale dna

@@ -660,6 +660,40 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("ingest") => ingest_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
+        // several changes to the structure as one Board Review:
+        // `hale dna apply <file> [--dry-run] [--as <who>]`; the file is read
+        // by the host, so it goes as an absolute path
+        Some("apply") => {
+            let mut forwarded = Vec::new();
+            let mut file = None;
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--as" {
+                    forwarded.push(a.clone());
+                    if let Some(v) = rest.next() {
+                        forwarded.push(v.clone());
+                    }
+                } else if a == "--dry-run" {
+                    forwarded.push(a.clone());
+                } else if a.starts_with('-') {
+                    eprintln!("hale dna apply: `{a}` is not a flag of apply (--dry-run, --as)\nusage: hale dna apply <file> [--dry-run] [--as <who>]");
+                    return ExitCode::from(2);
+                } else if file.is_none() {
+                    file = Some(a.clone());
+                } else {
+                    eprintln!("hale dna apply: one batch file at a time\nusage: hale dna apply <file> [--dry-run] [--as <who>]");
+                    return ExitCode::from(2);
+                }
+            }
+            let Some(file) = file else {
+                eprintln!("usage: hale dna apply <file> [--dry-run] [--as <who>]");
+                return ExitCode::from(2);
+            };
+            let path = std::fs::canonicalize(&file).unwrap_or_else(|_| PathBuf::from(&file));
+            let mut words = vec![path.to_string_lossy().to_string()];
+            words.extend(forwarded);
+            host_exec("apply", Path::new("."), &words)
+        }
         Some("fill") => {
             let mut words = Vec::new();
             let mut forwarded = Vec::new();
@@ -932,6 +966,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    read the repository's graph again at a commit (HEAD): what differs from the record, tools");
     eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
     eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("       hale dna apply <file> [--dry-run] [--as <who>]");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
