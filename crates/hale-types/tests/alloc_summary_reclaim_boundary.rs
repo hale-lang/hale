@@ -418,6 +418,8 @@ fn targets() -> Vec<String> {
             && !p.ends_with("tests")
             && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
     });
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push("dna/host/verb".to_string());
     out.sort();
     out
 }
@@ -573,19 +575,22 @@ fn per_target_moves() {
 }
 
 /// `factory_field_owner_test` loses `churn`'s in-loop
-/// temporary; `dna/host` loses three of its own fns' (two in
-/// `magnitude_facets`), and gains the caller-arena sites of its CLI verbs
-/// and of `Host::run`'s tick (`exit_code` → `alive`): of those with an
-/// author position, the advisory's, 133 appear and 2 go. Every other
+/// temporary; `dna/host` loses one of its own fns' sites and gains the
+/// caller-arena sites of what its body reaches, `Host::run`'s tick
+/// (`exit_code` → `alive`) among them. Its one-shot verbs are the verb
+/// program's since GH #1490 (`dna/host/verb`), which runs to exit and
+/// has no leak site on either side: it moves its dump alone. Every other
 /// target moves its dump's tags and reclaim columns alone.
 ///
 /// GH #1490 (C2) adds the scratch-local accumulators — a value built in
 /// the fn's own loop and returned — to what the frame decides:
 /// `factory_field_owner_test`'s `churn` result also goes (its caller's
 /// loop is const-bounded), and in `dna/host` one more goes (dna/core's
-/// `words_in_both`) and two move their reason (`env_words`' and
-/// `magnitude_facets`' results, kept once per call by a long-lived
-/// caller); nine more of its dump's verdicts move with them.
+/// `words_in_both`) and one moves its reason (`env_words`' result, kept
+/// once per call by a long-lived caller; `magnitude_facets`', the other
+/// before the split, is verb code the body no longer reaches, and the
+/// verb program has no leak site to move); one more of the body's dump
+/// verdicts and nine of the verb program's move with them.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -603,7 +608,8 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
     "dna/api: 0 go, 0 appear; dump 347 tags, 710 reclaim, 0 verdicts",
     "dna/core: 0 go, 0 appear; dump 279 tags, 630 reclaim, 0 verdicts",
-    "dna/host: 7 go, 284 appear, 2 move their reason; dump 413 tags, 700 reclaim, 695 verdicts",
+    "dna/host: 2 go, 31 appear, 1 move their reason; dump 413 tags, 773 reclaim, 44 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 413 tags, 700 reclaim, 667 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "dna/operations: 0 go, 0 appear; dump 337 tags, 702 reclaim, 0 verdicts",
     "dna/organism: 0 go, 0 appear; dump 290 tags, 648 reclaim, 0 verdicts",

@@ -132,15 +132,27 @@ fn targets() -> Vec<String> {
             && !p.ends_with("tests")
             && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
     });
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push("dna/host/verb".to_string());
     out.sort();
     out
 }
 
 /// Run `f` over the target's snapshot, loaded as `hale check <target>`
-/// loads it, and its summary. On a thread of its own: a whole DNA seed's
-/// walk is deep. `None` when the target does not load or its scope is
-/// blocked (it has no summary).
+/// loads it, and its summary with the later correction's startable loci
+/// (GH #1490) cleared, so each earlier correction is pinned alone. On a
+/// thread of its own: a whole DNA seed's walk is deep. `None` when the
+/// target does not load or its scope is blocked (it has no summary).
 fn over_target<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -> T + Send) -> Option<T> {
+    over_target_as_built(target, |snap, now| {
+        let mut now = now.clone();
+        now.startable = None;
+        f(snap, &now)
+    })
+}
+
+/// [`over_target`] with the summary as the snapshot built it.
+fn over_target_as_built<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -> T + Send) -> Option<T> {
     let path = root().join(target);
     std::thread::scope(|s| {
         std::thread::Builder::new()
@@ -989,4 +1001,88 @@ fn main() { App { }; }
     let bundle = hale_types::Bundle::new([("app.hl".to_string(), &program)].into_iter().collect());
     let model = entries::derive_application_model(&bundle);
     assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
+}
+
+/// What the startable correction (GH #1490) removes in one target: its
+/// leak sites gone, of the program's own fns, counted by the file the
+/// owner's site is in. `None` when it moves nothing. Panics if it adds a
+/// site, or moves one in a program with no `main` or whose own seed
+/// declares a `run` hook or a bus handler on a locus it starts.
+fn startable_moves(target: &str) -> Option<Vec<String>> {
+    over_target_as_built(target, |_, now| {
+        let now = &without_frames(now);
+        let mut old = now.clone();
+        old.startable = None;
+        let site = |l: &LeakSite| {
+            format!("{} {:?} @{}..{} {:?}", l.owner.display(), l.kind, l.span.start.0, l.span.end.0, l.reason)
+        };
+        let is: BTreeSet<String> = now.leak_sites().iter().map(site).collect();
+        let was: BTreeSet<String> = old.leak_sites().iter().map(site).collect();
+        assert!(is.is_subset(&was), "{target}: the correction added a leak site");
+        if is == was {
+            return None;
+        }
+        let started = now.startable.as_ref().expect("a site moved, so the set is known");
+        let live = now.fns.values().any(|f| {
+            now.is_own(&f.key)
+                && matches!(f.entry, Some(EntryKind::Run) | Some(EntryKind::BusHandler))
+                && f.key.locus.as_ref().is_none_or(|l| started.contains(l))
+        });
+        assert!(!live, "{target}: a site moved in a program that starts a long-lived locus");
+        assert!(is.is_empty(), "{target}: the program runs to exit and keeps a leak site");
+        let mut by_seed: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for l in old.leak_sites() {
+            let owner = l.owner.display();
+            let seed = match owner.strip_prefix("__lib_").and_then(|r| r.split("___").next()) {
+                Some(seed) => seed.to_string(),
+                None if now.is_own(&l.owner) => "the program's own".to_string(),
+                None => "the stdlib's copy".to_string(),
+            };
+            *by_seed.entry(seed).or_default() += 1;
+        }
+        Some(by_seed.into_iter().map(|(s, n)| format!("{s}: {n}")).collect())
+    })
+    .flatten()
+}
+
+/// **An imported seed's loci run where they are named (GH #1490).** The
+/// run-to-exit rule counted every `run` hook and bus handler of the
+/// program's own fns, an imported seed's included, whether or not the
+/// program ever started the locus that declares it: a program over
+/// `dna/core` (69 bus handlers, seven `run` hooks) was long-lived however
+/// it used the core, and the host's one-shot verbs, which start none of
+/// them, were judged as a daemon. Now a hook or a handler of an imported
+/// locus counts only when the program can start the locus
+/// (`AllocSummary::startable`: its own seed's loci, and every imported
+/// one a fn its `main` reaches, or a started locus, names; the stdlib's
+/// loci it names count too, so `dna/ui`, which starts
+/// `std::http::Server`, stays long-lived). Among the targets only the
+/// host's verb program moves: it starts no locus with a hook or a
+/// handler, so it runs to exit, and every leak site of its fns goes —
+/// counted by the seed the fn is declared in (the host's 129, the core's
+/// 85, …). The correction only narrows: no target gains a site. The old
+/// answer is the corrected summary with `startable` cleared.
+#[test]
+fn startable_only_the_verb_program_runs_to_exit() {
+    let mut moved = Vec::new();
+    for t in targets() {
+        if let Some(m) = startable_moves(&t) {
+            moved.push((t, m));
+        }
+    }
+    let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    assert_eq!(
+        moved,
+        vec![(
+            "dna/host/verb".to_string(),
+            strs(&[
+                "dna__core: 85",
+                "dna__core__pond__pq: 11",
+                "dna__core__pond__realtime__nats: 2",
+                "dna__host: 129",
+                "dna__operations: 20",
+                "the stdlib's copy: 1",
+            ])
+        )]
+    );
 }

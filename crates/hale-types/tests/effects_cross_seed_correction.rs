@@ -49,6 +49,8 @@ fn seeds() -> Vec<String> {
         })
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push("host/verb".to_string());
     out.sort();
     out
 }
@@ -111,7 +113,7 @@ fn pinned(seed: &str, rows_before: usize, rows_now: usize, expected: &str) {
     assert_eq!((before, now), (rows_before, rows_now), "dna/{seed}: the manifest's row counts");
 }
 
-/// The five seeds pinned below are the only ones whose manifest the
+/// The six seeds pinned below are the only ones whose manifest the
 /// correction changes.
 #[test]
 fn no_other_seed_changes() {
@@ -122,7 +124,7 @@ fn no_other_seed_changes() {
             corrected.push(seed);
         }
     }
-    assert_eq!(corrected, ["api", "host", "operations", "organization_runtime", "organization_source"]);
+    assert_eq!(corrected, ["api", "host", "host/verb", "operations", "organization_runtime", "organization_source"]);
 }
 
 /// The live-effects gate refuses on the same classes, seed by seed,
@@ -150,6 +152,7 @@ fn the_replay_gate_refuses_what_it_refused() {
             "api {syscall,unclassified}",
             "core {syscall}",
             "host {syscall,unclassified}",
+            "host/verb {syscall,unclassified}",
             "oidc {syscall}",
             "operations {syscall,unclassified}",
             "organism {syscall}",
@@ -192,13 +195,20 @@ fn api() {
     );
 }
 
+/// host/verb, the host's verb program (GH #1490): its one row, `main`,
+/// whose every verb is an imported call.
+#[test]
+fn host_verb() {
+    pinned("host/verb", 1, 1, "main  does={unclassified}");
+}
+
 /// host: 92 of 455 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        469,
-        475,
+        470,
+        476,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}

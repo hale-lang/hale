@@ -170,7 +170,10 @@ into the stdlib's own Hale bodies: a handler the stdlib's HTTP loop
 dispatches to is invoked once per request when your program starts
 that loop, and not otherwise. Run-to-exit programs (a `main` with no
 `run` loop and no bus handler of their own) warn nothing — a script
-owes no bound proof.
+owes no bound proof. A library's loops and handlers count only where
+your program starts their locus: a program that imports a seed full
+of bus handlers and only calls its functions still runs to exit,
+because those handlers run in whichever process instantiates them.
 Whether an allocation accumulates depends on where it is reclaimed,
 judged against the loop in question. A small helper that takes and
 returns only Strings and numbers, builds no struct and calls no

@@ -953,6 +953,15 @@ pub struct AllocSummary {
     /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
     /// every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
+    /// GH #1490: the loci a program with a `fn main` can start, when the
+    /// walk can say ([`loci_started_from_main`]): its own seed's, and the
+    /// imported ones its code names. The run-to-exit rule
+    /// ([`AllocSummary::leak_sites`]) counts the `run` hooks and bus
+    /// handlers of these loci alone. `None` when the
+    /// program has no `fn main`, or a call the walk cannot follow (a
+    /// function value it does not resolve) leaves the set unknown: then
+    /// every own `run` hook and bus handler counts, as before.
+    pub startable: Option<BTreeSet<String>>,
     /// The fns of the stdlib's analysis copy summarized beside the
     /// program; empty when every fn is the program's.
     pub analysis_copy: BTreeSet<FnKey>,
@@ -1244,6 +1253,7 @@ impl AllocSummary {
             bounded_by: self.bounded_by.iter().filter(|(k, _)| own_key(k)).map(|(k, b)| (k.clone(), b.clone())).collect(),
             locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
             reached: None,
+            startable: self.startable.clone(),
             analysis_copy: BTreeSet::new(),
             analysis_copy_loci: BTreeSet::new(),
             analysis_copy_interfaces: BTreeSet::new(),
@@ -1608,12 +1618,25 @@ impl AllocSummary {
         // the copy always carries `run` hooks, so counting them would
         // switch the rule off for every program.
         let own = || self.fns.values().filter(|f| self.is_own(&f.key));
-        let has_long_lived_entry = own().any(|f| {
-            matches!(
-                f.entry,
-                Some(EntryKind::Run) | Some(EntryKind::BusHandler)
-            )
-        });
+        // GH #1490: and only while the program can start one — a locus it
+        // starts with a `run` hook or a bus handler, the stdlib's included
+        // (a program over `dna/core` that starts `std::http::Server`
+        // serves). An imported seed's loci the program never names run in
+        // the processes that start them, so a program that only calls the
+        // seed's fns runs to exit. This only narrows: a program whose own
+        // fns hold no hook or handler stays run-to-exit whatever the
+        // stdlib's loci it starts.
+        let long_lived = |f: &FnSummary| matches!(f.entry, Some(EntryKind::Run) | Some(EntryKind::BusHandler));
+        let has_long_lived_entry = own().any(long_lived)
+            && self.startable.as_ref().is_none_or(|started| {
+                self.fns.values().any(|f| {
+                    long_lived(f)
+                        && match &f.key.locus {
+                            Some(l) => started.contains(l),
+                            None => self.is_own(&f.key),
+                        }
+                })
+            });
         let has_main = own().any(|f| matches!(f.entry, Some(EntryKind::Main)));
         if has_main && !has_long_lived_entry {
             return Vec::new();
@@ -3092,7 +3115,140 @@ pub fn summarize_identified(
         }
         summary.reached = Some(reached);
     }
+    summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
     summary
+}
+
+/// GH #1490: the loci a program with a `fn main` can start — `None` when
+/// it has no `fn main`, or when a call the walk cannot follow leaves the
+/// set unknown.
+///
+/// Every locus the program's own seed declares counts as started, as the
+/// rule has always counted them. An imported seed's locus is started only
+/// where the program names it: its `run` hook and bus handlers run only
+/// on an instance, and an instance exists only where some code names the
+/// locus — a literal, a param field of its type, a binding's adapter. So
+/// the walk starts from `fn main` and the seed's own loci, follows every
+/// resolved call (the interface fan-out and the resolved function values
+/// included), and starts every locus a reached free fn, or a started
+/// locus's declaration, names anywhere: a one-segment path by the locus's
+/// name or, inside its own seed, the name it is declared under; an
+/// importer's `alias::Name` through the bundle's import renames. Starting
+/// a locus reaches all its members. A declaration that is neither a fn
+/// nor a locus (a type, a perspective, a constant) is not reached through
+/// a call, so the loci it names are started whatever main does.
+///
+/// Over-approximate by construction: a name is a start whether or not a
+/// literal is built (a type annotation counts), and a call through a
+/// function value the walk does not resolve gives up the set rather than
+/// guess. What it leaves out is a library's locus the program never
+/// names: a seed declares handlers for the processes that start them,
+/// and a program that only calls its fns — the host's verb program over
+/// the host's seed — starts none.
+fn loci_started_from_main(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    is_copy: &dyn Fn(&crate::snapshot::Snapshot) -> bool,
+    summary: &AllocSummary,
+) -> Option<BTreeSet<String>> {
+    use hale_syntax::names::{for_each_spelled_in_item, Spelled};
+    let mains: Vec<FnKey> = summary
+        .fns
+        .values()
+        .filter(|f| summary.is_own(&f.key) && f.entry == Some(EntryKind::Main))
+        .map(|f| f.key.clone())
+        .collect();
+    if mains.is_empty() {
+        return None;
+    }
+    // Each locus by the one-segment paths that spell it: its name, and an
+    // imported one's as its own seed writes it (the last segment of
+    // `__lib_<seed>__<file>__<name>`). An importer's `alias::Name` is the
+    // bundle's import renames', and a `std::…` path the stdlib's.
+    let mut loci: BTreeSet<String> = BTreeSet::new();
+    let mut spelled_as: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (p, _) in identified {
+        for item in flat_decls(&p.items) {
+            if let TopDecl::Locus(l) = item {
+                let full = l.name.name.clone();
+                let bare = if full.starts_with("__lib_") { full.rsplit("__").next().unwrap_or(&full).to_string() } else { full.clone() };
+                loci.insert(full.clone());
+                spelled_as.entry(full.clone()).or_default().insert(full.clone());
+                spelled_as.entry(bare).or_default().insert(full);
+            }
+        }
+    }
+    let renamed: BTreeMap<&[String], &String> =
+        import_renames.iter().filter(|(_, m)| loci.contains(m)).map(|(path, m)| (path.as_slice(), m)).collect();
+    let named_in = |item: &TopDecl| -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for_each_spelled_in_item(item, &mut |s| match s {
+            Spelled::Path([one]) => out.extend(spelled_as.get(&one.name).into_iter().flatten().cloned()),
+            Spelled::Path(segs) => {
+                let path: Vec<String> = segs.iter().map(|i| i.name.clone()).collect();
+                out.extend(renamed.get(path.as_slice()).map(|m| (*m).clone()));
+                let words: Vec<&str> = path.iter().map(String::as_str).collect();
+                out.extend(crate::stdlib_bodies::mangled_locus_name(&words).filter(|m| loci.contains(*m)).map(str::to_string));
+            }
+            // a name outside a path (a capacity slot's item, a handler):
+            // a locus's own full name only
+            Spelled::Name(n) if loci.contains(n) => {
+                out.insert(n.to_string());
+            }
+            Spelled::Name(_) | Spelled::Text(_) => {}
+        });
+        out
+    };
+    let mut fn_names: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
+    let mut locus_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut pending: Vec<String> = Vec::new();
+    for (p, ids) in identified {
+        let copy = is_copy(ids);
+        let universe = if copy { SiteUniverse::StdlibAnalysis } else { SiteUniverse::User };
+        for item in flat_decls(&p.items) {
+            match item {
+                TopDecl::Fn(f) => {
+                    fn_names.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), named_in(item));
+                }
+                TopDecl::Locus(l) => {
+                    locus_names.entry(l.name.name.clone()).or_default().extend(named_in(item));
+                    if !copy && !l.imported {
+                        pending.push(l.name.name.clone());
+                    }
+                }
+                TopDecl::Module(_) => {}
+                // the stdlib's declarations start nothing of their own
+                _ if copy => {}
+                _ => pending.extend(named_in(item)),
+            }
+        }
+    }
+    let mut started: BTreeSet<String> = BTreeSet::new();
+    let mut reached: BTreeSet<FnKey> = BTreeSet::new();
+    let mut work: Vec<FnKey> = mains;
+    loop {
+        while let Some(l) = pending.pop() {
+            if !started.insert(l.clone()) {
+                continue;
+            }
+            work.extend(summary.fns.values().filter(|f| f.key.locus.as_ref() == Some(&l)).map(|f| f.key.clone()));
+            pending.extend(locus_names.get(&l).into_iter().flatten().cloned());
+        }
+        let Some(k) = work.pop() else { break };
+        if !reached.insert(k.clone()) {
+            continue;
+        }
+        pending.extend(fn_names.get(&k).into_iter().flatten().cloned());
+        let Some(f) = summary.fns.get(&k) else { continue };
+        for c in &f.calls {
+            match &c.callee {
+                Callee::Resolved(callee) => work.push(callee.clone()),
+                Callee::Unresolved(_) if c.indirect => return None,
+                Callee::Unresolved(_) => {}
+            }
+        }
+    }
+    Some(started)
 }
 
 /// The fns in a cycle of resolved calls: a strongly connected component
@@ -5987,8 +6143,20 @@ mod tests {
     }
 
     fn summarize(src: &str) -> AllocSummary {
-        let (program, ids) = minted(src);
-        summarize_identified(&[(&program, &ids)], &[])
+        renamed_summary(src, &[])
+    }
+
+    /// [`summarize`] with import renames, and every `__lib_…` locus
+    /// marked imported, as the cross-seed rename pass marks the loci it
+    /// renames.
+    fn renamed_summary(src: &str, renames: &[(Vec<String>, String)]) -> AllocSummary {
+        let (mut program, ids) = minted(src);
+        for item in program.items.iter_mut() {
+            if let TopDecl::Locus(l) = item {
+                l.imported = l.name.name.starts_with("__lib_");
+            }
+        }
+        summarize_identified(&[(&program, &ids)], renames)
     }
 
     /// The advisory over `programs` alone, every one minted with `ids`:
@@ -6671,6 +6839,36 @@ mod tests {
             "make's alloc should be flagged via call-graph propagation; got {:?}",
             leaks
         );
+    }
+
+    /// GH #1490: an imported seed's `run` hook makes a program long-lived
+    /// only where the program names that locus. `Worker` stands for an
+    /// imported locus (its seed's mangled name, marked `imported` as the
+    /// cross-seed rename pass marks it); `make`'s struct, built once per
+    /// iteration of its `run` loop, is a site the survey reports in a
+    /// long-lived program and nowhere else.
+    #[test]
+    fn an_imported_locus_counts_only_where_the_program_names_it() {
+        let leaks = |main: &str, renames: &[(Vec<String>, String)]| {
+            let src = format!(
+                r#"
+                type Q {{ a: Int; }}
+                fn make(n: Int) -> Q {{ return Q {{ a: n }}; }}
+                locus __lib_l__w__Worker {{ run {{ let mut i = 0; while true {{ let q = make(i); i = i + 1; }} }} }}
+                {main}
+            "#
+            );
+            renamed_summary(&src, renames).leak_sites().len()
+        };
+        let renames = vec![(vec!["l".to_string(), "Worker".to_string()], "__lib_l__w__Worker".to_string())];
+        assert_eq!(leaks("fn main() { let q = make(1); }", &[]), 0, "a library's locus the program never names runs elsewhere: run to exit");
+        assert!(leaks("fn main() { __lib_l__w__Worker { }; }", &[]) > 0, "named by its own name, it is started");
+        assert!(leaks("fn main() { l::Worker { }; }", &renames) > 0, "named through the import alias, it is started");
+        assert!(leaks("fn start() { l::Worker { }; }\nfn main() { start(); }", &renames) > 0, "named by a fn main reaches");
+        assert_eq!(leaks("fn start() { l::Worker { }; }\nfn main() { let q = make(1); }", &renames), 0, "a fn main never reaches starts nothing");
+        // the program's own seed's loci count whether or not main names them
+        let own = "locus Mine { run { let mut i = 0; while true { let q = make(i); i = i + 1; } } }\nfn main() { }";
+        assert!(leaks(own, &[]) > 0, "the program's own locus is started");
     }
 
     #[test]

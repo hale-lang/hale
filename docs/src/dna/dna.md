@@ -72,6 +72,14 @@ The binary embeds more than `vendor/dna`: the host that `hale dna dev`,
 face. Those are built from the binary into its cache and never copied
 into your project. The digest covers all of it.
 
+The host is two programs over one seed. Its body (`dna/host`) is what
+`hale dna dev`, `hale dna run` and `hale node` run until they are
+stopped; every other verb — `status`, `review`, `apply`, `fill` and the
+rest — is its verb program's (`dna/host/verb`), which answers one verb
+and exits. `hale dna` builds both into the cache the first time any
+host verb needs one, and runs the one the verb belongs to in its own
+process, so stopping `hale dna dev` stops the body itself.
+
 ## The `dna::Dna` locus
 
 Your organization is a Hale program, `dna/org/main.hl`, and its main

@@ -205,9 +205,9 @@ goes on. See [closures and violations](./skin.md#closures-and-violations).
 
 ## The body
 
-A body is a host running the organism for a record: the `dna/host`
-program under `hale dna run` or `hale dna dev`, which is a node of the
-spine. Its holder name is `user@host:<clone>`, so the same clone
+A body is a host running the organism for a record: the host's body
+program (`dna/host`) under `hale dna run` or `hale dna dev`, which is a
+node of the spine. Its holder name is `user@host:<clone>`, so the same clone
 restarting takes its lease straight back. A record admits one body at
 a time (one per owner over a shared record). The lease itself, its
 renewal and the fence that kills a body that lost it are

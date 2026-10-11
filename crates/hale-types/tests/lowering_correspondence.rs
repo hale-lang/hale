@@ -63,6 +63,8 @@ fn targets() -> Vec<PathBuf> {
     push_dir("crates/hale-codegen/tests/fixtures/examples", &|p| p.is_dir());
     push_dir("tests/hale", &|p| p.to_string_lossy().ends_with("_test.hl"));
     push_dir("dna", &|p| p.is_dir() && p.join("main.hl").exists());
+    // the host's verb program, a seed inside the host's (GH #1490)
+    out.push(root.join("dna/host/verb"));
     out.sort();
     out
 }

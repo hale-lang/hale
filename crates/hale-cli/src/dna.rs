@@ -59,15 +59,22 @@ const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 /// so it is never part of the project's own source or its reviews.
 const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 
-/// GH #566 F8: the host is a Hale program (`dna/host`, embedded beside
-/// the core and built once into the toolchain cache). A verb that is
-/// DNA behaviour — a projection, a relay, supervision — execs it with
-/// the project resolved: `host <verb> <root> <seed> <fleet> <plan> …`,
+/// GH #566 F8: the host is Hale (`dna/host`, embedded beside the core
+/// and built once into the toolchain cache). A verb that is DNA
+/// behaviour — a projection, a relay, supervision — execs it with the
+/// project resolved: `<program> <verb> <root> <seed> <fleet> <plan> …`,
 /// with the toolchain and the toolchain version in the environment.
 /// This shim resolves the project (the manifest is the compiler's) and
 /// forwards the exit status.
-/// The host's command for a verb: the project resolved, the host built
-/// once into the toolchain cache, the environment the host expects.
+/// The host's command for a verb: the project resolved, the host's two
+/// programs built once into the toolchain cache, the environment the
+/// host expects. GH #1490: the program is the verb's — the body
+/// (`dna/host`) for `run`, `dev`, `node` and `body-fence`, which run
+/// until they are stopped; the verb program (`dna/host/verb`), which
+/// runs to exit, for every other (`hale_dna::host_program_for`). Both
+/// are built together the first time either is needed, side by side,
+/// so a body that execs its own binary (`body-fence`) and a fixture
+/// that looks for the body in the cache find it after any verb.
 fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     let (root, seed) = project(dir)?;
     let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
@@ -76,7 +83,9 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         None => (String::new(), String::new()),
     };
     let cache = hale_iris::materialize(&crate::build_env::host_cache_options()).map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
-    let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
+    crate::iris::ensure_all_built_in(&cache, &[(hale_dna::HOST_SEED, hale_dna::HOST_BIN), (hale_dna::HOST_VERB_SEED, hale_dna::HOST_VERB_BIN)], "the host")?;
+    let (_, bin) = hale_dna::host_program_for(verb);
+    let host = cache.join(bin);
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(&host);
     cmd.arg(verb)

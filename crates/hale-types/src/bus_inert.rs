@@ -45,7 +45,7 @@ pub fn bus_inert(user: &Program) -> bool {
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let mut mangled = false;
     for_each_spelled(&user.items, &mut |s| {
-        let (Spelled::Name(t) | Spelled::Text(t)) = s;
+        let (Spelled::Name(t) | Spelled::Text(t)) = s else { return };
         mangled |= t.contains("__Std");
         if let Spelled::Name(n) = s {
             names.insert(n);
