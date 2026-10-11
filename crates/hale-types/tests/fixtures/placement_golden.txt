@@ -650,7 +650,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#acd51881
+== crates/hale-stdlib/hl/api_rpc.hl#aedfe6bf
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -4221,15 +4221,17 @@ domain	pool:web	async_io
 domain	pinned:App@literal1.acceptor
 row	App@literal1	App	main	default
 shared	App@literal1.acceptor	__StdIoTcpAcceptor #1ef3cccf
--- App@literal1.conns	__StdIoTcpConnections
-row	~	__StdIoTcpConnections	pool:web	entry	off owner
-row	~.flows	__StdIoTcpFlows	pool:web	inherited
-row	~.handler	__StdHttpResponder	pool:web	inherited
-row	~.handler.handler	Api	pool:web	inherited
--- dynamic	sites in the seed
-dynamic	__StdIoTcpConnFlow	on pool:web
-dynamic	__StdIoTcpConnInline	on pool:web
-dynamic	__StdIoTcpStream	on pool:web
+shared	App@literal1.conns	__StdIoTcpConnections #bf7a48f2
+shared	dynamic	sites in the seed #6247a882
+
+== crates/hale-codegen/tests/tcp_substrate.rs#21dde496
+root	App	the entry
+domain	pool:web	async_io
+domain	pinned:App@literal1.acceptor
+row	App@literal1	App	main	default
+shared	App@literal1.acceptor	__StdIoTcpAcceptor #1ef3cccf
+shared	App@literal1.conns	__StdIoTcpConnections #bf7a48f2
+shared	dynamic	sites in the seed #6247a882
 
 == crates/hale-codegen/tests/term_primitives.rs#3ddf52f2
 row	__StdTermRawMode@main1	__StdTermRawMode	main	default
@@ -14693,6 +14695,12 @@ row	~.flows	__StdIoTcpFlows	pool:zero	inherited
 row	~.handler	__StdHttpResponder	pool:zero	inherited
 row	~.handler.handler	Api	pool:zero	inherited
 
+== shared __StdIoTcpConnections #bf7a48f2
+row	~	__StdIoTcpConnections	pool:web	entry	off owner
+row	~.flows	__StdIoTcpFlows	pool:web	inherited
+row	~.handler	__StdHttpResponder	pool:web	inherited
+row	~.handler.handler	Api	pool:web	inherited
+
 == shared __StdJsonBuilder #6efd4260
 row	~	__StdJsonBuilder	main	default
 row	~.buf	__StdBytesBytesBuilder	main	inherited
@@ -16422,6 +16430,11 @@ dynamic	__StdIoTcpStream	on pool:one|pool:zero
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no caller)|unknown (no instance)
+
+== shared sites in the seed #6247a882
+dynamic	__StdIoTcpConnFlow	on pool:web
+dynamic	__StdIoTcpConnInline	on pool:web
+dynamic	__StdIoTcpStream	on pool:web
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w

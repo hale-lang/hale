@@ -26655,6 +26655,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoUnixPeerUid => self.lower_std_io_unix_peer("uid", args, scope),
             Id::IoUnixPeerGid => self.lower_std_io_unix_peer("gid", args, scope),
             Id::IoUnixPeerPid => self.lower_std_io_unix_peer("pid", args, scope),
+            Id::IoUnixReleasePathRaw => {
+                self.lower_std_io_tcp_named_listener(args, scope, "lotus_unix_release_path", "__release_path", true)
+            }
             // GH #1109: the static role table's name spellings.
             Id::IoUnixUserId => self.lower_std_io_unix_name_id("user_id", args, scope),
             Id::IoUnixGroupId => self.lower_std_io_unix_name_id("group_id", args, scope),
@@ -27686,6 +27689,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoUnixPeerGroupAt
             | Id::IoUnixPeerGroupsCount
             | Id::IoUnixPeerPid
+            | Id::IoUnixReleasePathRaw
             | Id::IoUnixPeerUid
             | Id::IoUnixUserId
             | Id::JsonNextNonWs

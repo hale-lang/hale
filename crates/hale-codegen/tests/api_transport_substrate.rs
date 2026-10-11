@@ -279,3 +279,24 @@ fn the_bench_program_runs_clean_under_asan() {
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
     assert!(!done.stderr.contains("AddressSanitizer"), "{}", done.stderr);
 }
+
+#[test]
+fn the_unix_listener_removes_only_the_socket_file_it_bound() {
+    // a replacement binds a file of its own at the path while the api
+    // listener still holds the old one (unlinked under it): the listener's
+    // release at stop leaves the replacement's file alone
+    let mut server = Server::start(&bench(), &[]);
+    server.ready();
+    let sock = server.sock();
+    wait_accepting_unix(&sock);
+    std::fs::remove_file(&sock).expect("unlink the bound file");
+    let replacement = std::os::unix::net::UnixListener::bind(&sock).expect("the replacement binds the path");
+    // (the server's own directory goes when it is dropped: ask while it lives)
+    server.trigger();
+    let done = server.wait(Duration::from_secs(30));
+    assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
+    assert!(sock.exists(), "the replacement's socket file survives the api listener's release");
+    replacement.set_nonblocking(true).unwrap();
+    let _client = UnixStream::connect(&sock).expect("the replacement still accepts");
+    assert!(replacement.accept().is_ok());
+}

@@ -844,6 +844,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("peer_groups_count", SYSCALL, [Int] -> Int, Intrinsic(IoUnixPeerGroupsCount)),
             row!("peer_pid", SYSCALL, [Int] -> Int, Intrinsic(IoUnixPeerPid)),
             row!("peer_uid", SYSCALL, [Int] -> Int, Intrinsic(IoUnixPeerUid)),
+            // A listener's socket file, removed only while its path still
+            // names the file the listener bound (spec/stdlib.md § "The TCP
+            // connection substrate").
+            row!("__release_path", SYSCALL, [Str, Int] -> Int, Intrinsic(IoUnixReleasePathRaw)),
             // GH #1109: the static role table's `user:` / `group:` spellings.
             row!("user_id", SYSCALL, [Str] -> Int, Intrinsic(IoUnixUserId)),
         ],
@@ -1556,6 +1560,7 @@ pub enum IntrinsicId {
     IoUnixPeerGroupAt,
     IoUnixPeerGroupsCount,
     IoUnixPeerPid,
+    IoUnixReleasePathRaw,
     IoUnixPeerUid,
     IoUnixUserId,
     IoTcpAcceptOneRaw,

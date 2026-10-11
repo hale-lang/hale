@@ -1542,9 +1542,11 @@ locus __StdApiUnixListener {
     }
     fn release_socket() {
         if self.fd < 0 { return; }
+        // only while the path still names the file this listener bound
+        // (a replacement may have bound one there since)
+        std::io::unix::__release_path(self.path, self.fd);
         std::io::tcp::__close_fd(self.fd);
         self.fd = -1;
-        std::io::fs::unlink(self.path) or discard;
     }
     dissolve() {
         self.release_socket();

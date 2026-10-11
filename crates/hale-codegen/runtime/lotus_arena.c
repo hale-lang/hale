@@ -17735,6 +17735,92 @@ static int lotus_unix_addr(const char *path, struct sockaddr_un *addr) {
     return 0;
 }
 
+/* The socket files this process bound, by listening fd: the file's
+ * identity (device and inode) when it was bound. A listener removes its
+ * path when it goes (`std::io::unix::__release_path`) only while the path
+ * still names that file: `stop(name)` shuts a listener but leaves its fd
+ * open until its owner releases it, and meanwhile a shut Unix listener
+ * refuses connects, so a replacement may find the path stale and bind a
+ * new file there; the old listener's cleanup must not delete the
+ * replacement's. A bind of a path also retires every earlier record of
+ * that path in this process, so the answer never rests on an inode
+ * number alone (a freed inode may be reused by the replacement's file).
+ * A record leaves with its fd (`lotus_tcp_close_fd`). */
+#define LOTUS_UNIX_BOUND_MAX 64
+static struct { int fd; uint64_t dev; uint64_t ino; char path[sizeof(((struct sockaddr_un *)0)->sun_path)]; } g_unix_bound[LOTUS_UNIX_BOUND_MAX];
+static int g_unix_bound_len = 0;
+static pthread_mutex_t g_unix_bound_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Drop the records that match `fd` (>= 0) or `path` (non-NULL); the
+ * caller holds the lock. */
+static void lotus_unix_bound_forget_locked(int fd, const char *path) {
+    for (int i = 0; i < g_unix_bound_len; i++) {
+        if ((fd >= 0 && g_unix_bound[i].fd == fd) || (path && strcmp(g_unix_bound[i].path, path) == 0)) {
+            g_unix_bound[i] = g_unix_bound[--g_unix_bound_len];
+            i--;
+        }
+    }
+}
+
+static void lotus_unix_bound_forget_fd(int fd) {
+    pthread_mutex_lock(&g_unix_bound_lock);
+    lotus_unix_bound_forget_locked(fd, NULL);
+    pthread_mutex_unlock(&g_unix_bound_lock);
+}
+
+/* The file at `path`: its device and inode, 0 when there is none. The
+ * wasm32 build has no Unix sockets and its stat carries neither: it
+ * records nothing, and so removes nothing. */
+static int lotus_unix_file_id(const char *path, uint64_t *dev, uint64_t *ino) {
+#ifdef __wasm__
+    (void)path; (void)dev; (void)ino;
+    return 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    *dev = (uint64_t)st.st_dev;
+    *ino = (uint64_t)st.st_ino;
+    return 1;
+#endif
+}
+
+static void lotus_unix_bound_record(int fd, const char *path) {
+    uint64_t dev = 0, ino = 0;
+    int known = lotus_unix_file_id(path, &dev, &ino);
+    pthread_mutex_lock(&g_unix_bound_lock);
+    lotus_unix_bound_forget_locked(fd, path);
+    if (known && g_unix_bound_len < LOTUS_UNIX_BOUND_MAX && strlen(path) < sizeof(g_unix_bound[0].path)) {
+        g_unix_bound[g_unix_bound_len].fd = fd;
+        g_unix_bound[g_unix_bound_len].dev = dev;
+        g_unix_bound[g_unix_bound_len].ino = ino;
+        memcpy(g_unix_bound[g_unix_bound_len].path, path, strlen(path) + 1);
+        g_unix_bound_len++;
+    }
+    pthread_mutex_unlock(&g_unix_bound_lock);
+}
+
+/* `std::io::unix::__release_path(path, fd)`: remove the socket file the
+ * listener on `fd` bound at `path`, if the path still names it: 1 when
+ * removed, 0 when the path is another's now (a replacement's file, or no
+ * file) or `fd` bound nothing there. Call it before closing `fd`. */
+int64_t lotus_unix_release_path(const char *path, int64_t fd) {
+    if (!path || fd < 0) return 0;
+    int64_t removed = 0;
+    pthread_mutex_lock(&g_unix_bound_lock);
+    for (int i = 0; i < g_unix_bound_len; i++) {
+        if (g_unix_bound[i].fd == (int)fd && strcmp(g_unix_bound[i].path, path) == 0) {
+            uint64_t dev = 0, ino = 0;
+            if (lotus_unix_file_id(path, &dev, &ino) && dev == g_unix_bound[i].dev && ino == g_unix_bound[i].ino) {
+                removed = unlink(path) == 0;
+            }
+            g_unix_bound[i] = g_unix_bound[--g_unix_bound_len];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_unix_bound_lock);
+    return removed;
+}
+
 int lotus_unix_listen_socket(const char *path) {
     struct sockaddr_un addr;
     if (lotus_unix_addr(path, &addr) < 0) return -1;
@@ -17779,6 +17865,7 @@ int lotus_unix_listen_socket(const char *path) {
         errno = err;
         return -1;
     }
+    lotus_unix_bound_record(sock, path);
     return sock;
 }
 
@@ -17985,6 +18072,7 @@ int lotus_tcp_close_fd(int fd) {
     if (fd < 0) return 0;
     lotus_shut_listen_mark(fd, 0);
     lotus_tcp_listener_forget(fd);
+    lotus_unix_bound_forget_fd(fd);
     return close(fd);
 }
 

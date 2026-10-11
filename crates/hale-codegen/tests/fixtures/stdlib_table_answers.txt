@@ -179,6 +179,7 @@ ns std::io::unix open_prefixes=[]
   peer_groups_count syscall
   peer_pid syscall
   peer_uid syscall
+  __release_path syscall
   user_id syscall
 ns std::io::tcp open_prefixes=[]
   __accept_one syscall|block
@@ -831,6 +832,7 @@ std::io::udp::set_option_bool | lookup=io::udp@3 | locus=false | effects=syscall
 std::io::udp::set_option_int | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Int, Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_option_int
 std::io::udp::set_recv_timeout | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_recv_timeout
 std::io::udp::set_send_timeout | lookup=io::udp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
+std::io::unix::__release_path | lookup=io::unix@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__release_path
 std::io::unix::connect | lookup=io::unix@3 | locus=false | effects=syscall|block | sig=(Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
 std::io::unix::connect_wait | lookup=io::unix@3 | locus=false | effects=syscall|block | sig=(Str, Duration) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect_wait
 std::io::unix::group_id | lookup=io::unix@3 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=group_id

@@ -553,7 +553,9 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   from birth, but nothing is accepted until the exposure is attached to
   the bus (a client that connects earlier waits in the socket's backlog), so
   a request read is never published to an exposure that is not there yet.
-  The socket file is removed when the exposure stops or is torn down.
+  The socket file is removed when the exposure stops or is torn down, if
+  the path still names the file the listener bound (a replacement may
+  have taken a stopped listener's path; its file is left alone).
 - **The listener runs on a pool of its own.** A socket's accept and read
   park a coroutine, so they need an `async_io` pool, and only the main
   locus places: the serve expansion adds the listener to the serving main

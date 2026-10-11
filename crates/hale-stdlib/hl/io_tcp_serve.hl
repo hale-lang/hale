@@ -216,17 +216,20 @@ locus __StdIoTcpAcceptor {
             self.relay.accept_all(self.listen_fd, self.max_accepts);
         }
     }
-    // Close the socket, and remove a Unix socket's file: the path is this
-    // listener's only while it holds the socket.
+    // Close the socket, and remove a Unix socket's file if it is still the
+    // one this listener bound.
     fn release_socket() {
         if self.listen_fd < 0 {
             return;
         }
+        // the file goes only while the path still names the one this
+        // listener bound: after `stop(name)` a replacement may have found
+        // the path stale and bound a file of its own there
+        if len(self.path) > 0 {
+            std::io::unix::__release_path(self.path, self.listen_fd);
+        }
         std::io::tcp::__close_fd(self.listen_fd);
         self.listen_fd = -1;
-        if len(self.path) > 0 {
-            std::io::fs::unlink(self.path) or discard;
-        }
     }
     dissolve() {
         self.release_socket();

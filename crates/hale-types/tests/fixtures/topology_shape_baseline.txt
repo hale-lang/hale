@@ -1337,6 +1337,7 @@ crates/hale-codegen/tests/tcp_substrate.rs#3 43100f35b6f886bf
 crates/hale-codegen/tests/tcp_substrate.rs#4 e9d42b79cd3f97e8
 crates/hale-codegen/tests/tcp_substrate.rs#5 4ca4e8c34c62a68b
 crates/hale-codegen/tests/tcp_substrate.rs#7 f9fa285a82e97aa6
+crates/hale-codegen/tests/tcp_substrate.rs#8 ddb25912bcd49bf0
 crates/hale-codegen/tests/term_primitives.rs#0 865d341109268295
 crates/hale-codegen/tests/term_primitives.rs#1 865d341109268295
 crates/hale-codegen/tests/term_primitives.rs#2 865d341109268295
