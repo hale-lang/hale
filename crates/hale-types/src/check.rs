@@ -2208,11 +2208,45 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 /// Its finding is a [`Violation`] (F.40 phase 4, W5): an error under
 /// `@hot`, else a warning.
 fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
+    for (f, found) in hot_path_findings(rows) {
+        for (span, msg) in found {
+            if f.hot {
+                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
+            } else if !rows.summary.unbounded_fns.contains(&f.key) {
+                out.push(Violation::warning(HOT_PATH, span, msg));
+            }
+        }
+    }
+}
+
+/// How many hot-path warnings `@unbounded` silences in each decorated fn:
+/// the findings [`check_hot_path_alloc`] drops because the fn carries it.
+/// A `@hot` fn's findings are errors either way, so it silences none of
+/// them. Keyed by the fn; a fn the lint finds nothing in has no entry.
+/// `summary` and `top` are the ones the check reads (a snapshot's
+/// `demand_alloc_summary` and `demand_scope`).
+pub fn hot_path_silenced(
+    summary: &crate::alloc_summary::AllocSummary,
+    top: &TopScope,
+) -> BTreeMap<crate::alloc_summary::FnKey, usize> {
+    hot_path_findings(&HotPathRows { summary, top })
+        .into_iter()
+        .filter(|(f, found)| !f.hot && !found.is_empty() && summary.unbounded_fns.contains(&f.key))
+        .map(|(f, found)| (f.key.clone(), found.len()))
+        .collect()
+}
+
+/// The hot-path lint's findings, each fn's in the order it reports them,
+/// before `@hot` and `@unbounded` decide what each becomes.
+fn hot_path_findings<'s>(
+    rows: &HotPathRows<'s>,
+) -> Vec<(&'s crate::alloc_summary::FnSummary, Vec<(Span, String)>)> {
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
     let (summary, top) = (rows.summary, rows.top);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     rows.sort_by_key(|f| f.decl_index);
+    let mut out = Vec::new();
     for f in rows {
         let handler = f.entry == Some(EntryKind::BusHandler);
         let mut found: Vec<(Span, String)> = Vec::new();
@@ -2255,14 +2289,9 @@ fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
         // left to right. A dispatch's alternatives are one call.
         found.sort_by_key(|(span, _)| (span.end, std::cmp::Reverse(span.start)));
         found.dedup();
-        for (span, msg) in found {
-            if f.hot {
-                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
-            } else if !summary.unbounded_fns.contains(&f.key) {
-                out.push(Violation::warning(HOT_PATH, span, msg));
-            }
-        }
+        out.push((f, found));
     }
+    out
 }
 
 /// The hot-path allocation lint.

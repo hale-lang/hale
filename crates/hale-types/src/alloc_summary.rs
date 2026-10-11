@@ -1521,8 +1521,26 @@ impl AllocSummary {
     }
 
     /// Every site whose final verdict is unbounded accumulation — the
-    /// step-3 result the diagnostic emits.
+    /// step-3 result the diagnostic emits. An `@unbounded` fn's sites are
+    /// dropped ([`AllocSummary::unbounded_fns`]).
     pub fn leak_sites(&self) -> Vec<LeakSite> {
+        self.leak_sites_with(true)
+    }
+
+    /// The leak sites `@unbounded` drops: [`AllocSummary::leak_sites`]
+    /// with the carve-out off, kept only where the owner carries it. The
+    /// carve-out drops a fn's own sites and nothing else (no verdict
+    /// reads it), so these are exactly the sites the decorators silence.
+    pub fn silenced_leak_sites(&self) -> Vec<LeakSite> {
+        self.leak_sites_with(false)
+            .into_iter()
+            .filter(|ls| self.unbounded_fns.contains(&ls.owner))
+            .collect()
+    }
+
+    /// [`AllocSummary::leak_sites`], with the `@unbounded` carve-out on
+    /// (`skip_unbounded`) or off.
+    fn leak_sites_with(&self, skip_unbounded: bool) -> Vec<LeakSite> {
         // M3 stage 5 gap E (2026-07-02): a bundle with NO long-lived
         // entry point — no `run` loop, no bus handler — is a
         // run-to-exit program (a script, a smoke binary, a lib
@@ -1574,7 +1592,7 @@ impl AllocSummary {
             // `@unbounded` is the acknowledged carve-out — its sites never
             // surface, with or without the survey flag, in or out of a
             // `@bounded` locus.
-            if self.unbounded_fns.contains(&f.key) {
+            if skip_unbounded && self.unbounded_fns.contains(&f.key) {
                 continue;
             }
             for s in &f.sites {
@@ -3522,6 +3540,98 @@ pub fn advisory_leak_sites(
         .into_iter()
         .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
         .collect()
+}
+
+/// The leak sites `@unbounded` silences, filtered as
+/// [`advisory_leak_sites`] filters the reported ones: the program's own
+/// fns, at an author position. What the survey would report for each
+/// decorated fn were its decorator removed (`hale check
+/// --report-unbounded-use`).
+pub fn silenced_advisory_leak_sites(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+) -> Vec<LeakSite> {
+    let positions = AuthorPositions::of(programs, ids, sources);
+    summary
+        .silenced_leak_sites()
+        .into_iter()
+        .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
+        .collect()
+}
+
+/// One `@unbounded` decorator of the program, and what it silences
+/// (`hale check --report-unbounded-use`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnboundedUse {
+    /// The decorated fn or lifecycle hook.
+    pub key: FnKey,
+    /// Where the decorator is written: the `@unbounded` of a fn, or the
+    /// start of a hook's declaration, which a hook's decorator opens
+    /// (a hook takes no other).
+    pub at: Span,
+    /// The survey's sites it silences ([`silenced_advisory_leak_sites`]):
+    /// what the default whole-program survey would warn in the fn were
+    /// the decorator removed.
+    pub survey: usize,
+    /// The hot-path lint's warnings it silences
+    /// ([`crate::check::hot_path_silenced`]).
+    pub hot_path: usize,
+}
+
+/// Every `@unbounded` fn and lifecycle hook the program's own source
+/// declares (its imported seeds' included, the stdlib's analysis copy
+/// and the appended api runtime aside, [`AllocSummary::is_own`]), with
+/// the survey sites it silences and `hot_path`'s count for it, in the
+/// order the declarations are written.
+pub fn unbounded_uses(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+    hot_path: &BTreeMap<FnKey, usize>,
+) -> Vec<UnboundedUse> {
+    let mut survey: BTreeMap<FnKey, usize> = BTreeMap::new();
+    for ls in silenced_advisory_leak_sites(summary, programs, ids, sources) {
+        *survey.entry(ls.owner).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    let mut push = |key: FnKey, at: Span| {
+        if summary.is_own(&key) {
+            let (survey, hot_path) =
+                (survey.get(&key).copied().unwrap_or(0), hot_path.get(&key).copied().unwrap_or(0));
+            out.push(UnboundedUse { key, at, survey, hot_path });
+        }
+    };
+    for p in programs {
+        for item in flat_decls(&p.items) {
+            match item {
+                TopDecl::Fn(f) if f.unbounded => {
+                    let at = f.decorators.iter().find(|d| d.name == "unbounded").map_or(f.span, |d| d.span);
+                    push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), at);
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) if f.unbounded => {
+                                let at =
+                                    f.decorators.iter().find(|d| d.name == "unbounded").map_or(f.span, |d| d.span);
+                                push(FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone()), at);
+                            }
+                            LocusMember::Lifecycle(lc) if lc.unbounded => {
+                                let key = FnKey::method(DeclId::user(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
+                                push(key, lc.span);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.

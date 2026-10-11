@@ -1746,6 +1746,31 @@ assume the others in a build:
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).
+    **`--report-unbounded-use`** says which `@unbounded` decorators
+    silence anything (GH #1490). It prints one line on stdout per
+    `@unbounded` fn or lifecycle hook of the program, its imported
+    seeds' included (the stdlib's analysis copy and the appended api
+    runtime are not the program's, so their decorators are not listed):
+    `unbounded-use<TAB><path>:<line><TAB><fn><TAB><survey><TAB><hot-path>`.
+    `<path>` is relative to the working directory, `<line>` is the
+    decorator's (a hook takes no other decorator, so its declaration
+    opens with it), and `<fn>` is spelled as the program spells it.
+    `<survey>` counts the fn's sites this survey would report were the
+    decorator removed: final verdict unbounded accumulation, the
+    program's own, at an author position — the same filter as the
+    warnings — and 0 in a run-to-exit program. `<hot-path>` counts the
+    hot-path allocation warnings the lint drops for the fn (0 for a
+    `@hot` fn, whose findings are errors either way). The carve-out
+    drops a fn's own sites and findings and nothing else — no verdict
+    reads it — so each count is exactly what removing that one
+    decorator would add. Each count is the analysis's, before the
+    check drops advisories in files the target does not own: a seed's
+    decorator is counted in a consumer's context, where its fn may be
+    invoked unboundedly though the consumer's check would not print the
+    warning. Lines are sorted by path and line; the diagnostics and
+    the exit code are the check's. `scripts/unbounded-unused.sh`
+    aggregates the report over every DNA program and lists the
+    decorators that silence nothing in any program that contains them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
   a method, an authored hook, a mode), keyed by its site and printed

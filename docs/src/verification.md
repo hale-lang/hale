@@ -189,7 +189,10 @@ reclaims it. `--dump-alloc-summary` tags each scratch-local function,
 and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.
 `@unbounded fn` is the in-source carve-out for an acknowledged
-site; `--no-warn-unbounded-alloc` opts a run out. A site in code
+site; `--no-warn-unbounded-alloc` opts a run out, and
+`--report-unbounded-use` lists each `@unbounded` with the sites and
+hot-path warnings it silences, so one that silences nothing can be
+found and removed. A site in code
 the compiler generated (a serve site's exposure, a `json:` parser) has no
 place in your source to report it, so it is left out; a site in
 your own code is reported wherever it is called from. It is advisory:

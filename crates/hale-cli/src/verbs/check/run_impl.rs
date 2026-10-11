@@ -214,6 +214,40 @@ fn unit_report_place(
     })
 }
 
+/// `--report-unbounded-use`'s lines: `unbounded-use`, the decorator's
+/// `path:line` (the path relative to the working directory), the fn's
+/// name as the program spells it, and the survey sites and the hot-path
+/// warnings it silences, tab-separated, sorted by path and line.
+fn render_unbounded_use(
+    rows: &[hale_types::alloc_summary::UnboundedUse],
+    file_bases: &[(u32, std::path::PathBuf, u32)],
+    sources: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    import_renames: &[(Vec<String>, String)],
+) -> String {
+    let demangler = hale_types::stdlib_bodies::Demangler::new(import_renames);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut lines: Vec<((String, usize, String), String)> = rows
+        .iter()
+        .map(|u| {
+            let off = u.at.start.as_usize() as u32;
+            let (path, line) = file_bases
+                .iter()
+                .find(|(base, _, len)| hale_syntax::file_owns_offset(*base, *len, off))
+                .and_then(|(base, path, _)| {
+                    let src = sources.get(path)?;
+                    let (line, _) = u.at.shifted(base.wrapping_neg()).line_col(src);
+                    Some((hale_frontend::diag::display_relative(&cwd, path), line))
+                })
+                .unwrap_or_else(|| ("<unknown>".to_string(), 0));
+            let name = demangler.demangle(&u.key.display());
+            let text = format!("unbounded-use\t{path}:{line}\t{name}\t{}\t{}\n", u.survey, u.hot_path);
+            ((path, line, name), text)
+        })
+        .collect();
+    lines.sort();
+    lines.into_iter().map(|(_, l)| l).collect()
+}
+
 pub(crate) fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     run_check_impl_env(target, gate_warnings, &[])
 }
@@ -864,6 +898,21 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // engine read, blocked only with the scope.
     if let Ok(summary) = snap.demand_alloc_summary() {
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, survey_all));
+    }
+    // GH #1490: which `@unbounded` decorators silence anything. One line
+    // per decorated fn or hook of the program (its imported seeds'
+    // included), with the survey sites and hot-path warnings it drops,
+    // on stdout, so a script can aggregate across every program that
+    // compiles a shared seed. It changes nothing the check reports or
+    // its exit code.
+    if std::env::args().any(|a| a == "--report-unbounded-use") {
+        match (snap.demand_alloc_summary(), snap.demand_scope()) {
+            (Ok(summary), Ok(top)) => {
+                let rows = hale_types::unbounded_use_report(&bundle, summary, top);
+                print!("{}", render_unbounded_use(&rows, file_bases, sources, import_renames));
+            }
+            _ => eprintln!("unbounded-use: not reported: the program does not resolve"),
+        }
     }
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {

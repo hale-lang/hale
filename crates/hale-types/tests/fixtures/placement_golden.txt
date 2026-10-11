@@ -514,6 +514,15 @@ row	Src@main2	Src	main	default
 row	Acc@main1	Acc	main	default
 row	Src@main2	Src	main	default
 
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl#0217e859
+row	Acc@main1	Acc	main	default
+
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3
+row	Acc@main1	Acc	main	default
+row	Fan@main2	Fan	main	default
+row	Src@main3	Src	main	default
+dynamic	Conn	on main	in the seed
+
 == crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl#ebe49800
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `c::Box`|unresolved declaration `c::Holder`	in the seed
 

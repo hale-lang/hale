@@ -1,0 +1,20 @@
+// GH #1490: a run-to-exit program (a `main`, no `run` and no bus
+// handler): the survey reports nothing, so `@unbounded` silences no site.
+type Holder { items: [Int; 4]; }
+
+locus Acc {
+    params { cache: Holder = Holder { items: [0, 0, 0, 0] }; }
+    @unbounded
+    fn put(v: Int) {
+        self.cache = Holder { items: [v, v, v, v] };
+    }
+}
+
+fn main() {
+    let a = Acc { };
+    let mut i = 0;
+    while i < 1000 {
+        a.put(i);
+        i = i + 1;
+    }
+}

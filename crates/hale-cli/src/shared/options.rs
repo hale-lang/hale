@@ -48,6 +48,7 @@ pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-resource-budget",
     "--check-resource-budget",
     "--dump-alloc-summary",
+    "--report-unbounded-use",
     "--units",
 ];
 
@@ -78,6 +79,8 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-model", false),
     ("--json", false),
     ("--no-warn-unbounded-alloc", false),
+    // GH #1490: which `@unbounded` decorators silence anything.
+    ("--report-unbounded-use", false),
     // Retired opt-in spelling from when the unbounded-alloc survey
     // was off by default. It is a no-op now (the survey is on), but
     // it was accepted for a release and rejecting it would break

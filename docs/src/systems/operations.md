@@ -125,6 +125,10 @@ For a long-lived service, the surface is:
   ```
 
 - **`--no-warn-unbounded-alloc`** — opts a whole run out.
+- **`--report-unbounded-use`** — prints one line per `@unbounded`
+  fn or hook, with how many survey sites and hot-path warnings it
+  silences in this program. A decorator whose counts are 0 in every
+  program that compiles it acknowledges nothing and can go.
 - `@bounded locus L { … }` is now redundant with the default and
   still accepted.
 

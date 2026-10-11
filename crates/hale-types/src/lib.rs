@@ -154,6 +154,21 @@ pub fn unbounded_alloc_warnings(
     alloc_summary::unbounded_alloc_diags(summary, &progs, &bundle.snapshot, &bundle.sources, include_all)
 }
 
+/// What each `@unbounded` decorator of the program silences: the
+/// survey's sites and the hot-path lint's warnings it drops
+/// ([`alloc_summary::unbounded_uses`]). `summary` and `top` are the
+/// bundle's snapshot's (`demand_alloc_summary`, `demand_scope`). Drives
+/// `hale check --report-unbounded-use`.
+pub fn unbounded_use_report(
+    bundle: &Bundle<'_>,
+    summary: &alloc_summary::AllocSummary,
+    top: &resolve::TopScope,
+) -> Vec<alloc_summary::UnboundedUse> {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let hot = check::hot_path_silenced(summary, top);
+    alloc_summary::unbounded_uses(summary, &progs, &bundle.snapshot, &bundle.sources, &hot)
+}
+
 /// Resource-leak warnings: an fd-acquiring call whose result is stored
 /// resident in an unbounded context (GH #18 item 5, leak stage). Opt-in
 /// via `--warn-resource-leak`. `summary` is the bundle's snapshot's.
