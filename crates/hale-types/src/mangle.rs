@@ -1145,6 +1145,7 @@ fn rewrite_claim_topic_refs(
                 }
             }
             ClaimForm::Require { topic, .. }
+            | ClaimForm::RouteCoverage { topic, .. }
             | ClaimForm::RequireNoSilentLossTopic { topic }
             | ClaimForm::Count { topic, .. } => {
                 rewrite(topic);
@@ -1728,6 +1729,16 @@ impl<'a> Mangler<'a> {
                     | ClaimForm::RequireNoSilentLossGroup { group }
                     | ClaimForm::Cover { group, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);
+                    }
+                    ClaimForm::RouteCoverage { group, topic, .. } => {
+                        self.rewrite_group_ident(&mut group.name, bind);
+                        if topic.segments.len() == 1 {
+                            self.rewrite_ident(
+                                &mut topic.segments[0].name,
+                            );
+                        } else {
+                            self.rewrite_alias_head(&mut topic.segments);
+                        }
                     }
                     ClaimForm::RequireNoSilentLossTopic { topic } => {
                         if topic.segments.len() == 1 {

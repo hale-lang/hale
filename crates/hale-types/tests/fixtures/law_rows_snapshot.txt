@@ -72,6 +72,14 @@ crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) =
 crates/hale-types/tests/claim_no_silent_loss.rs#2	loss	require no_silent_loss(topic Payments)	Holds	None
 crates/hale-types/tests/claim_no_silent_loss.rs#3	loss	require no_silent_loss(topic Payments)	Violated	None
 crates/hale-types/tests/claim_no_silent_loss.rs#6	loss	require no_silent_loss(all quiet)	Invalid	None
+crates/hale-types/tests/claim_route_coverage.rs#1	route	cover keys(topic Orders in 0..=1): delivered_to(exactly_one workers)	Violated	None
+crates/hale-types/tests/claim_route_coverage.rs#2	route	cover keys(topic Orders in 7..=7): delivered_to(exactly_one workers)	Violated	None
+crates/hale-types/tests/claim_route_coverage.rs#3	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Uncertified	None
+crates/hale-types/tests/claim_route_coverage.rs#4	route	cover keys(topic Orders): delivered_to(exactly_one workers)	Holds	None
+crates/hale-types/tests/claim_route_coverage.rs#5	route	cover keys(topic Orders in 0..=2): delivered_to(exactly_one workers)	Violated	None
+crates/hale-types/tests/claim_route_coverage.rs#6	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Invalid	None
+crates/hale-types/tests/claim_route_coverage.rs#7	route	cover keys(topic Orders in 0..=3): delivered_to(exactly_one workers)	Invalid	None
+crates/hale-types/tests/claim_route_coverage.rs#9	route	cover keys(topic Events in 0..=3): delivered_to(exactly_one workers)	Invalid	None
 crates/hale-types/tests/claims.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None

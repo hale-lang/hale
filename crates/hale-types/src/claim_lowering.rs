@@ -537,6 +537,15 @@ pub fn lower_claims_over(
                 },
                 group: group_ref(recs, &group.name, group.span),
             },
+            ClaimForm::RouteCoverage {
+                topic,
+                range,
+                group,
+            } => ClaimIr::RouteCoverage {
+                topic: topic_ref(recs, topic),
+                range: *range,
+                group: group_ref(recs, &group.name, group.span),
+            },
             ClaimForm::Count {
                 publishers,
                 topic,

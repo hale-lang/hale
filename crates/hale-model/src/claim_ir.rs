@@ -366,6 +366,15 @@ pub enum ClaimIr {
     RequireAttributed { class: EffectClassRef },
     /// `cover topic in seed(a): subscribed_by(some G)`.
     Cover { seed: SeedIrRef, group: GroupRef },
+    /// `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G)`
+    /// — every permitted key of the keyed topic reaches exactly one
+    /// registration of the group.
+    RouteCoverage {
+        topic: TopicIrRef,
+        /// The stated permitted integer interval, inclusive.
+        range: Option<(i64, i64)>,
+        group: GroupRef,
+    },
     /// `count publishers/subscribers(topic T) <cmp> N`.
     Count {
         publishers: bool,
@@ -1029,6 +1038,26 @@ impl ClaimRow {
                 sref(seed),
                 gref(group)
             ),
+            ClaimIr::RouteCoverage {
+                topic,
+                range,
+                group,
+            } => {
+                let mut out = format!(
+                    "{{\"kind\": \"route_coverage\", \"topic\": {}, \
+                     \"group\": {}",
+                    tref(topic),
+                    gref(group)
+                );
+                if let Some((lo, hi)) = range {
+                    out.push_str(&format!(
+                        ", \"range\": [{}, {}]",
+                        lo, hi
+                    ));
+                }
+                out.push('}');
+                out
+            }
             ClaimIr::Count {
                 publishers,
                 topic,
@@ -1214,6 +1243,7 @@ impl ClaimRow {
             | ClaimIr::RequireNoSilentLossTopic { .. }
             | ClaimIr::RequireNoSilentLossGroup { .. }
             | ClaimIr::Cover { .. }
+            | ClaimIr::RouteCoverage { .. }
             | ClaimIr::Count { .. } => JudgmentFamily::Endpoint,
             ClaimIr::Bound { .. } => JudgmentFamily::Bound,
             ClaimIr::EffectForbid { .. }
@@ -1297,6 +1327,15 @@ impl ClaimRow {
             ClaimIr::Cover { seed, group } => {
                 form::cover(&seed.name, &group.name.display)
             }
+            ClaimIr::RouteCoverage {
+                topic,
+                range,
+                group,
+            } => form::route_coverage(
+                &topic.name.display,
+                *range,
+                &group.name.display,
+            ),
             ClaimIr::Count {
                 publishers,
                 topic,
@@ -1805,6 +1844,10 @@ impl ClaimIrTable {
                             return Err(dis("seed"));
                         }
                     }
+                    group_ok(group)?;
+                }
+                ClaimIr::RouteCoverage { topic, group, .. } => {
+                    topic_ok(topic)?;
                     group_ok(group)?;
                 }
                 ClaimIr::Count { topic, .. } => topic_ok(topic)?,

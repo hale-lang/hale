@@ -147,6 +147,7 @@ fn tiny_model() -> ApplicationModel {
                 payload: PayloadContractId(0),
                 key: Some(TopicKey {
                     field: "sensor".to_string(),
+                    ty: "Int".to_string(),
                     on_unmatched: KeyOnUnmatched::Swallow,
                 }),
                 bound: Some(TopicBound {
@@ -740,6 +741,7 @@ fn fallback_contract_is_validated_both_ways() {
     let mut m = tiny_model();
     m.entities.topics[0].key = Some(TopicKey {
         field: "sensor".to_string(),
+        ty: "Int".to_string(),
         on_unmatched: KeyOnUnmatched::Fallback,
     });
     assert_eq!(
