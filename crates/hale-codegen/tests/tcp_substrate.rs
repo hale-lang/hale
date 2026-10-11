@@ -16,15 +16,16 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
+
+use child::{bound_port, listening_ports, Stderr};
 
 // Two replicas behind one listener of two shards.
 const REPLICAS: &str = r#"
@@ -84,6 +85,7 @@ const HALF: &str = r#"
 struct Running {
     child: Child,
     port: u16,
+    err: Stderr,
 }
 
 impl Drop for Running {
@@ -94,18 +96,20 @@ impl Drop for Running {
 }
 
 impl Running {
+    /// Start `bin` on port 0 and read back the port the kernel gave it.
     fn start(bin: &Path) -> Running {
-        let port = ports::free_port();
         let mut child = Command::new(bin)
-            .arg(port.to_string())
+            .arg("0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn");
+        let err = Stderr::of(&mut child);
         let mut line = String::new();
         let _ = BufReader::new(child.stdout.take().unwrap()).read_line(&mut line);
-        assert_eq!(line.trim(), "ready", "the listener did not come up on {port}");
-        Running { child, port }
+        assert_eq!(line.trim(), "ready", "the listener did not come up; stderr:\n{}", err.text());
+        let port = bound_port(child.id(), &err);
+        Running { child, port, err }
     }
 
     /// SIGTERM, and the program's exit and stderr.
@@ -114,11 +118,7 @@ impl Running {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             if let Some(status) = self.child.try_wait().expect("wait") {
-                let mut err = String::new();
-                if let Some(mut e) = self.child.stderr.take() {
-                    let _ = e.read_to_string(&mut err);
-                }
-                return (status, err);
+                return (status, self.err.finished());
             }
             assert!(Instant::now() < deadline, "the program did not end on SIGTERM");
             std::thread::sleep(Duration::from_millis(20));
@@ -147,6 +147,7 @@ fn build(name: &str, source: &str) -> PathBuf {
     build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
     bin
 }
+
 
 #[test]
 fn two_replicas_share_one_listener_and_serve_concurrently() {
@@ -203,18 +204,19 @@ fn the_replicas_run_clean_under_asan() {
     // reclaimed region read again would be reported
     let bin = harness::unique_bin("tcp_substrate_replicas_asan");
     harness::build_source_asan(REPLICAS, &bin);
-    let port = ports::free_port();
     let mut child = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
+    let err = Stderr::of(&mut child);
     let mut line = String::new();
     let _ = BufReader::new(child.stdout.take().unwrap()).read_line(&mut line);
-    assert_eq!(line.trim(), "ready");
-    let server = Running { child, port };
+    assert_eq!(line.trim(), "ready", "stderr:\n{}", err.text());
+    let port = bound_port(child.id(), &err);
+    let server = Running { child, port, err };
     let hs: Vec<_> = (0..6).map(|_| std::thread::spawn(move || get(port))).collect();
     for h in hs {
         assert_eq!(h.join().unwrap().map(|(c, _)| c), Some(200));
@@ -311,24 +313,9 @@ fn start_pair(tag: &str, names: (&str, &str), expect_refusal: bool) -> Pair {
 /// The process's listening sockets: its socket descriptors whose inode
 /// `/proc/<pid>/net/tcp` lists in the LISTEN state (`0A`).
 fn listening(pid: u32) -> usize {
-    let inodes: BTreeSet<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
-        .map(|d| {
-            d.flatten()
-                .filter_map(|e| std::fs::read_link(e.path()).ok())
-                .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
-    table
-        .lines()
-        .skip(1)
-        .filter(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            f.len() > 9 && f[3] == "0A" && inodes.contains(f[9])
-        })
-        .count()
+    listening_ports(pid).len()
 }
+
 
 /// Every request to `port` is answered by the handler tagged `tag`, in
 /// order: no other consumer takes a connection of this server.
@@ -379,12 +366,16 @@ fn distinct_explicit_names_both_serve() {
     assert_eq!(listening(p.child.id()), 2);
 }
 
-// A live Acceptor named "web" with no consumer, and a Server on the same
-// port, named NAME, whose bind fails and whose supervisor absorbs it
-// (review of #1508, round 2). The failed server holds no subscription on
-// any route, so the acceptor's catch-unmatched closes every connection:
-// with NAME "web" its consumer used to sit on web#0 unarmed, shadow the
-// fallback, and leave every accepted descriptor open.
+// A live Acceptor named "web" with no consumer, and a Server named NAME
+// whose bind fails and whose supervisor absorbs it (review of #1508, round
+// 2). The failed server holds no subscription on any route, so the
+// acceptor's catch-unmatched closes every connection: with NAME "web" its
+// consumer used to sit on web#0 unarmed, shadow the fallback, and leave
+// every accepted descriptor open. The server fails on a host that is no
+// address, not on the acceptor's port: the two bind in their births, each
+// on its pinned thread, so on a shared port either may win (under load
+// the server sometimes did, and the acceptor's own `listen_failed` ended
+// the program before `ready`).
 const SHADOW: &str = r#"
     locus Tag {
         fn handle(req: std::http::Request) -> std::http::Response {
@@ -395,7 +386,7 @@ const SHADOW: &str = r#"
         params {
             port: Int = std::str::parse_int(std::env::arg(1)) or 0;
             acc: std::io::tcp::Acceptor = std::io::tcp::Acceptor { port: self.port, name: "web", ready_signal: "ready" };
-            web: std::http::Server = std::http::Server { port: self.port, name: "NAME", handler: Tag { } };
+            web: std::http::Server = std::http::Server { host: "256.0.0.1", port: 0, name: "NAME", handler: Tag { } };
         }
         placement { acc: pinned; web: pinned; }
         on_failure(s: std::http::Server, err: ClosureViolation) {
@@ -409,21 +400,26 @@ const SHADOW: &str = r#"
     fn main() { App { }; }
 "#;
 
-/// Read `child`'s stdout until `want` (or 20 s).
-fn wait_line(lines: &std::sync::mpsc::Receiver<String>, want: &str) {
+/// Read `child`'s stdout until `want` (or 20 s); the panic carries what the
+/// program wrote to stderr.
+fn wait_line(lines: &std::sync::mpsc::Receiver<String>, err: &Stderr, want: &str) {
     let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seen = Vec::new();
     while Instant::now() < deadline {
         if let Ok(l) = lines.recv_timeout(Duration::from_millis(100)) {
             if l.trim() == want {
                 return;
             }
+            seen.push(l);
         }
     }
-    panic!("never printed `{want}`");
+    panic!("never printed `{want}`; stdout so far: {seen:?}; stderr:\n{}", err.text());
 }
 
-fn spawn_lines(bin: &Path, port: u16) -> (Child, std::sync::mpsc::Receiver<String>) {
-    let mut child = Command::new(bin).arg(port.to_string()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+/// `bin` on port 0, its stdout as lines and its stderr.
+fn spawn_lines(bin: &Path) -> (Child, std::sync::mpsc::Receiver<String>, Stderr) {
+    let mut child = Command::new(bin).arg("0").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let err = Stderr::of(&mut child);
     let out = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -431,16 +427,16 @@ fn spawn_lines(bin: &Path, port: u16) -> (Child, std::sync::mpsc::Receiver<Strin
             let _ = tx.send(line);
         }
     });
-    (child, rx)
+    (child, rx, err)
 }
 
 fn shadow_case(name: &str) {
     let bin = build(&format!("tcp_substrate_shadow_{name}"), &SHADOW.replace("NAME", name));
-    let port = ports::free_port();
-    let (child, lines) = spawn_lines(&bin, port);
-    let running = Running { child, port };
-    wait_line(&lines, "ready");
-    wait_line(&lines, "refused listen_failed");
+    let (child, lines, err) = spawn_lines(&bin);
+    wait_line(&lines, &err, "ready");
+    let port = bound_port(child.id(), &err);
+    let running = Running { child, port, err };
+    wait_line(&lines, &running.err, "refused listen_failed");
     let fds = || std::fs::read_dir(format!("/proc/{}/fd", running.child.id())).map(|d| d.count()).unwrap_or(0);
     let before = fds();
     for _ in 0..40 {
@@ -519,11 +515,11 @@ const RESTART_ACCEPTOR: &str = r#"
 
 fn restart_case(tag: &str, source: &str) {
     let bin = build(tag, source);
-    let port = ports::free_port();
-    let (child, lines) = spawn_lines(&bin, port);
-    let running = Running { child, port };
-    wait_line(&lines, "refused listen_failed");
-    wait_line(&lines, "ready");
+    let (child, lines, err) = spawn_lines(&bin);
+    wait_line(&lines, &err, "refused listen_failed");
+    wait_line(&lines, &err, "ready");
+    let port = bound_port(child.id(), &err);
+    let running = Running { child, port, err };
     for _ in 0..3 {
         assert_eq!(get(port), Some((200, "served".to_string())), "{tag}: the restart bound the corrected host and serves");
     }
@@ -575,14 +571,14 @@ const BLOCKED_MAIN: &str = r#"
 
 fn served_while_main_blocks(tag: &str, placement: &str) {
     let bin = build(tag, &BLOCKED_MAIN.replace("PLACEMENT", placement));
-    let port = ports::free_port();
     let mut child = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
+    let err = Stderr::of(&mut child);
     let mut stdin = child.stdin.take().unwrap();
     let out = child.stdout.take().unwrap();
     let (tx, lines) = std::sync::mpsc::channel();
@@ -591,15 +587,16 @@ fn served_while_main_blocks(tag: &str, placement: &str) {
             let _ = tx.send(line);
         }
     });
-    let running = Running { child, port };
-    wait_line(&lines, "ready");
+    wait_line(&lines, &err, "ready");
+    let port = bound_port(child.id(), &err);
+    let running = Running { child, port, err };
     // main is blocked in read_line: the server's own thread answers
     for i in 1..=3 {
         assert_eq!(get(port), Some((200, format!("ok {i}"))), "{tag}: answered while main blocks");
     }
     stdin.write_all(b"bye\n").unwrap();
     drop(stdin);
-    wait_line(&lines, "main got bye");
+    wait_line(&lines, &running.err, "main got bye");
     drop(running);
     let _ = std::fs::remove_file(&bin);
 }
