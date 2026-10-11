@@ -67,8 +67,10 @@ hale-ts-shim  staticlib; no dependents; linked by path
 ## The pipeline
 
 1. **Load**: `hale-frontend/src/snapshot.rs` `Snapshot::load`
-   (`load_whole_seed`: a file target stands for its seed, a dir is one
-   seed, every `import` followed); cross-seed names are mangled here.
+   (`load_whole_seed`: a file target is that file, a dir is one seed,
+   every `import` followed, as `hale build` loads them; the editor's
+   `load_editor` takes the edited file's whole seed); cross-seed names
+   are mangled here.
 2. **Parse**: `hale-syntax/src/lexer.rs`, `parser.rs`. Parse-time
    sugar: `@no_*` (`effect_assert_for`), chains
    (`chains::desugar_chains`).
