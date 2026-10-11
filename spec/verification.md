@@ -353,8 +353,11 @@ The remaining verbs (#382 phases 2–5):
 - **`require no_silent_loss(topic T | all G)`** (GH #1327 § 2) — no
   modeled boundary on a named route is configured to discard
   silently. A route is a wire subject; `all G` takes every route a
-  member publishes or subscribes (a group touching none is an error).
-  Read from the model at every boundary on the route: the topic's
+  member publishes or subscribes (a group touching none is an error);
+  a wildcard endpoint contributes every modeled wire its pattern
+  covers (`wildcard_match`) plus the pattern itself for the
+  unmodeled remainder, and on a pattern route endpoints and holes
+  are matched by subject-set overlap. Read from the model at every boundary on the route: the topic's
   `on_unmatched: swallow`, a subscription's `drop_old` / `drop_new`
   shed policy, a send's `or discard`, a binding whose loss behavior
   is `drop`. A refusal the caller observes (`on_unmatched: fail` or
@@ -362,7 +365,12 @@ The remaining verbs (#382 phases 2–5):
   discard. `violated` lists every silent setting; `uncertified` (never
   `holds`) when a send routes its refusal into a custom handler, when a
   connect-side binding's link loss is supervision policy and not every
-  send waits, or when a hole hides the route's endpoints. A silent
+  send waits, when a hole hides the route's endpoints, or when an
+  unresolved publisher may reach the route — a function-grain
+  `ComputedSubject` hole whose locus's declared publish patterns
+  overlap it (no declared pattern: every route), any other
+  function-grain hole hiding PUBLISHES, or stdlib absorption residue
+  that can address it. A silent
   setting outranks an unproven one. Policy only: accepted-message
   accounting and durability across process failure are out of scope.
 - **`cover topic in seed(a): subscribed_by(some G)`** — bounded

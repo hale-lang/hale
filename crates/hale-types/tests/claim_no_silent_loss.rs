@@ -262,6 +262,190 @@ fn a_listen_binding_fails_loudly_and_holds() {
     assert_clean(&linked("", "listen"));
 }
 
+// ---- wildcard endpoints cover the wires under them ------------------
+
+/// A group whose only member subscribes a WILDCARD, `"pay.**"`, and a
+/// keyed topic on a concrete wire under it. `SUB` is the subscribed
+/// subject, `SEND` the send's `or` clause, `CLAIM` the claim.
+const WILD: &str = r#"
+type Pay { id: Int = 0; }
+topic Payments { payload: Pay; subject: "pay.event"; keyed_by id; on_unmatched: fail; }
+
+locus Ledger {
+    params { seen: Int = 0; }
+    bus { subscribe "SUB" as on_pay of type Pay; }
+    fn on_pay(p: Pay) { self.seen = self.seen + 1; }
+}
+
+group route = { Ledger };
+
+main locus App {
+    params { l: Ledger = Ledger { }; }
+    bus { publish Payments; }
+    claims {
+        loss: CLAIM;
+    }
+    run() { Payments <- Pay { id: 1 } SEND; }
+}
+fn main() { App { }; }
+"#;
+
+fn wild(sub: &str, send: &str, claim: &str) -> String {
+    WILD.replace("SUB", sub)
+        .replace("SEND", send)
+        .replace("CLAIM", claim)
+}
+
+#[test]
+fn a_wildcard_subscription_judges_the_wires_it_covers() {
+    // The reviewer's control: the discarding send is on `pay.event`,
+    // which the group reaches only through its `pay.**` subscription.
+    // Read as one literal subject, the pattern matched no send and the
+    // claim held.
+    let src = wild("pay.**", "or discard", GROUP);
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("violated"), "{}", ds[0]);
+    assert!(ds[0].contains("send in `App::run` on `Payments`"), "{}", ds[0]);
+    assert!(ds[0].contains("`or discard`"), "{}", ds[0]);
+    // …and it agrees with the two spellings that always saw it.
+    for (sub, claim) in [("pay.event", GROUP), ("pay.**", TOPIC)] {
+        let src = wild(sub, "or discard", claim);
+        let ds = claim_diags(&src);
+        assert_eq!(ds.len(), 1, "{sub} {claim}: {:?}", ds);
+        assert!(ds[0].contains("violated"), "{}", ds[0]);
+        assert!(ds[0].contains("`or discard`"), "{}", ds[0]);
+    }
+}
+
+#[test]
+fn a_wildcard_subscription_finds_a_swallowing_topic_under_it() {
+    let src = wild("pay.**", "", GROUP).replace("on_unmatched: fail;", "");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("violated"), "{}", ds[0]);
+    assert!(ds[0].contains("on_unmatched: swallow"), "{}", ds[0]);
+}
+
+#[test]
+fn a_shedding_wildcard_subscriber_is_named_once() {
+    let src = wild("pay.**", "or raise", GROUP)
+        .replace("of type Pay;", "of type Pay bounded(4, drop_old);");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("violated"), "{}", ds[0]);
+    assert_eq!(
+        ds[0].matches("subscriber `Ledger::on_pay` on `pay.**`").count(),
+        1,
+        "{}",
+        ds[0]
+    );
+}
+
+#[test]
+fn a_wildcard_route_with_every_boundary_non_lossy_holds() {
+    assert_clean(&wild("pay.**", "or raise", GROUP));
+}
+
+// ---- computed publishers are route evidence the model lacks ---------
+
+/// An ordinary publisher and subscriber of `Payments` on `pay.event`,
+/// beside a called `Sender::go` that publishes to a COMPUTED subject
+/// under its declared `PATTERN`. `SEND` is the ordinary send's `or`
+/// clause.
+const COMPUTED: &str = r#"
+type Pay { id: Int = 0; }
+topic Payments { payload: Pay; subject: "pay.event"; keyed_by id; on_unmatched: fail; }
+
+locus Ledger {
+    params { seen: Int = 0; }
+    bus { subscribe Payments as on_pay; }
+    fn on_pay(p: Pay) { self.seen = self.seen + 1; }
+}
+
+locus Sender {
+    params { subject: String = "pay.event"; }
+    bus { publish "PATTERN" of type Pay; }
+    fn go() { self.subject <- Pay { id: 1 }; }
+}
+
+group route = { Ledger };
+
+main locus App {
+    params { l: Ledger = Ledger { }; s: Sender = Sender { }; }
+    bus { publish Payments; }
+    claims {
+        loss: CLAIM;
+    }
+    run() {
+        Payments <- Pay { id: 1 } SEND;
+        self.s.go();
+    }
+}
+fn main() { App { }; }
+"#;
+
+fn computed(pattern: &str, send: &str, claim: &str) -> String {
+    COMPUTED
+        .replace("PATTERN", pattern)
+        .replace("SEND", send)
+        .replace("CLAIM", claim)
+}
+
+#[test]
+fn a_computed_publisher_under_a_covering_pattern_is_uncertified() {
+    // The reviewer's control: the model records `Sender::go` as a
+    // computed publish (a hole at the FUNCTION), which the subject-
+    // and topic-grain hole index never meets — the claim held.
+    for claim in [TOPIC, GROUP] {
+        let src = computed("pay.**", "or raise", claim);
+        let ds = claim_diags(&src);
+        assert_eq!(ds.len(), 1, "{claim}: {:?} {:?}", ds, diags(&src));
+        assert!(ds[0].contains("uncertified"), "{}", ds[0]);
+        assert!(
+            ds[0].contains(
+                "`Sender::go` publishes to a subject computed at runtime \
+                 under its declared `pay.**`"
+            ),
+            "{}",
+            ds[0]
+        );
+    }
+}
+
+#[test]
+fn a_silent_setting_beats_a_computed_publisher() {
+    let src = computed("pay.**", "or discard", TOPIC);
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("violated"), "{}", ds[0]);
+    assert!(ds[0].contains("`or discard`"), "{}", ds[0]);
+}
+
+#[test]
+fn a_computed_publisher_whose_pattern_misses_the_route_does_not_count() {
+    // The declaration bounds the send (the publish site enforces it):
+    // `audit.**` cannot reach `pay.event`.
+    let src = computed("audit.**", "or raise", TOPIC)
+        .replace("\"pay.event\"; }\n    bus { publish", "\"audit.x\"; }\n    bus { publish");
+    assert_clean(&src);
+}
+
+#[test]
+fn a_computed_publisher_on_a_wildcard_remainder_is_uncertified() {
+    // `Ledger` subscribes `pay.**`; the computed send's pattern
+    // `pay.other.**` covers no modeled wire, only the remainder of the
+    // subscription, where the send's policy is unknown.
+    let src = computed("pay.other.**", "or raise", GROUP)
+        .replace("subscribe Payments as on_pay;", "subscribe \"pay.**\" as on_pay of type Pay;")
+        .replace("\"pay.event\"; }\n    bus { publish", "\"pay.other.x\"; }\n    bus { publish");
+    let ds = claim_diags(&src);
+    assert_eq!(ds.len(), 1, "{:?} {:?}", ds, diags(&src));
+    assert!(ds[0].contains("uncertified"), "{}", ds[0]);
+    assert!(ds[0].contains("`Sender::go`"), "{}", ds[0]);
+    assert!(ds[0].contains("`pay.**`"), "{}", ds[0]);
+}
+
 // ---- claim hygiene --------------------------------------------------
 
 #[test]

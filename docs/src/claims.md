@@ -543,7 +543,14 @@ that touches no route is an error, not a vacuous truth). The claim
 is that **no boundary on the route is configured to discard
 silently**. It reads the settings the model records, at every
 boundary on the route, whoever owns it — a subscriber outside the
-group still sits on the route:
+group still sits on the route.
+
+A **wildcard endpoint** is a route for every wire it covers. A group
+member subscribing `"pay.**"` (or declaring `publish "pay.**"`)
+brings in each modeled subject under the pattern — `pay.event`'s
+topic policy, its sends and its bindings are judged as if the member
+had named it — and the pattern itself, for the remainder no modeled
+endpoint names. Subjects match the way the bus matches them.
 
 | boundary | setting read | silent when |
 |---|---|---|
@@ -574,6 +581,16 @@ What the claim does **not** prove, and says so rather than holding:
 - A hole that hides the route's subscribers, publishers or delivery
   (an adapter transport, an unanalyzed publisher) leaves the route
   `uncertified`.
+- A **publisher the model cannot resolve** is route evidence it does
+  not have. A send to a computed subject (`self.subject <- v`) is
+  admitted only under its locus's declared `publish` patterns, so it
+  may reach every route one of those patterns covers, with a subject
+  and a refusal policy the model does not know: the route is
+  `uncertified`, naming the function. The declaration bounds it — the
+  publish site enforces the pattern — so a send declared under
+  `"audit.**"` says nothing about `pay.event`. A body the analysis did
+  not walk, or a stdlib interior that may publish on the route, is
+  unproven the same way.
 
 A silent setting always beats an unproven one: a route that is
 configured to discard is `violated` however many handlers it also

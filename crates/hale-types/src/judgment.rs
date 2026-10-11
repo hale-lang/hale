@@ -177,6 +177,15 @@ impl BusHoles {
             })
         })
     }
+
+    /// Does a subject-grain hole share any subject with `wire`, which
+    /// may itself be a pattern? ([`Self::blocks`] asks whether a hole
+    /// covers one concrete wire.)
+    fn overlaps(&self, mask: hale_model::RelationSet, wire: &str) -> bool {
+        self.subject_pats.iter().any(|(pat, m)| {
+            m.intersects(mask) && hale_model::subjects_can_overlap(pat, wire)
+        })
+    }
 }
 
 fn span_of(
@@ -3152,7 +3161,11 @@ pub fn judge_endpoints(
                         .filter(|(_, t)| t.subject == s)
                         .map(|(i, _)| i as u32)
                         .collect();
-                    bus_holes.blocks(mask, None, Some(wire))
+                    // A route may itself be a pattern (a wildcard
+                    // endpoint's remainder): a subject hole is
+                    // relevant when the two subject SETS meet, which
+                    // for a concrete wire is the hole covering it.
+                    bus_holes.overlaps(mask, wire)
                         || topics.iter().any(|t| {
                             bus_holes.blocks(mask, Some(*t), None)
                         })

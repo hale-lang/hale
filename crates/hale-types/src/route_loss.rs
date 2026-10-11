@@ -24,6 +24,19 @@
 //! (the publishes during a lost window are dropped) unless every
 //! send on the route waits.
 //!
+//! A wildcard endpoint is a route for every wire it covers: a group
+//! subscribing `pay.**` is judged on each modeled subject under the
+//! pattern (its topics, sends and bindings), and on the pattern
+//! itself for the remainder no modeled endpoint names.
+//!
+//! A publisher the model could not resolve is missing route
+//! evidence: a computed send (`subj <- v`) whose locus's declared
+//! publish pattern overlaps the route, a body nobody walked, or a
+//! stdlib interior that may publish there. Its subject and refusal
+//! policy are unknown, so the route is unproven. The declared
+//! pattern bounds a computed send — the publish site enforces it — so
+//! a send declared under `audit.**` says nothing about `pay.event`.
+//!
 //! Precedence is the repo's: a concrete silent setting beats a gap
 //! in the model (`violated`), a gap beats a false proof
 //! (`uncertified`), and only a complete route with nothing silent
@@ -66,9 +79,11 @@ pub enum Outcome {
     Uncertified(Vec<String>),
 }
 
+/// Does an endpoint on `pattern` meet the route `wire`? Set overlap,
+/// because a route may itself be a wildcard's remainder; for a
+/// concrete wire this is the bus's own match.
 fn covers(pattern: &str, wire: &str) -> bool {
-    pattern == wire
-        || (pattern.contains("**") && crate::wildcard_match(pattern, wire))
+    hale_model::subjects_can_overlap(pattern, wire)
 }
 
 /// Judge every route in `routes`. `incomplete(subject)` says whether
@@ -113,11 +128,20 @@ pub fn judge(
                 }
             }
         }
-        // Subscriber queues.
+        // Subscriber queues. A wildcard subscription sits on every
+        // route under it, so it is named by its OWN spelling and the
+        // finding is listed once, however many routes reach it.
         for su in &r.subscribes {
-            if !covers(e.subjects[su.subject.index()].pattern.as_str(), wire) {
+            let pat = e.subjects[su.subject.index()].pattern.as_str();
+            if !covers(pat, wire) {
                 continue;
             }
+            let spelled = e
+                .topics
+                .iter()
+                .find(|t| t.subject == su.subject)
+                .map(|t| t.display.clone())
+                .unwrap_or_else(|| pat.to_string());
             let shed = match su.shed {
                 ShedPolicy::None => continue,
                 ShedPolicy::DropOld => "drop_old",
@@ -128,7 +152,7 @@ pub fn judge(
                 hale_model::Capacity::Unbounded => String::new(),
             };
             note(
-                format!("subscriber `{}` on `{}`", fn_disp(su.handler), route),
+                format!("subscriber `{}` on `{}`", fn_disp(su.handler), spelled),
                 format!("{bound}on_full: {shed}"),
             );
         }
@@ -153,6 +177,43 @@ pub fn judge(
             if p.disposition != PublishDisposition::Wait {
                 every_send_waits = false;
             }
+        }
+        // Publishers the model could not resolve: a computed send
+        // whose declared pattern covers this route, a body nobody
+        // walked, a stdlib interior. Their target and refusal policy
+        // are unknown, so the route's send account is incomplete.
+        for u in crate::model_query::unresolved_publishers(model, wire) {
+            use crate::model_query::UnresolvedPublish as U;
+            let f = fn_disp(u.function);
+            unproven.push(match u.kind {
+                U::Computed { patterns } if !patterns.is_empty() => format!(
+                    "`{}` publishes to a subject computed at runtime \
+                     under its declared `{}`, which covers `{}`; the \
+                     model knows neither that send's subject nor its \
+                     refusal policy",
+                    f,
+                    patterns.join("`, `"),
+                    route
+                ),
+                U::Computed { .. } => format!(
+                    "`{}` publishes to a subject computed at runtime \
+                     that no declared pattern bounds, so it may send on \
+                     `{}` under a refusal policy the model does not know",
+                    f, route
+                ),
+                U::Unanalyzed { reason } => format!(
+                    "`{}` holds a publish the model did not resolve \
+                     ({}), so it may send on `{}` under a refusal policy \
+                     the model does not know",
+                    f, reason, route
+                ),
+                U::Absorbed => format!(
+                    "`{}` calls into a stdlib interior that may publish \
+                     on `{}`, and the model does not record that send's \
+                     refusal policy",
+                    f, route
+                ),
+            });
         }
         for f in handlers {
             unproven.push(format!(
@@ -206,6 +267,8 @@ pub fn judge(
         }
     }
     if !silent.is_empty() {
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        silent.retain(|f| seen.insert((f.at.clone(), f.setting.clone())));
         return Outcome::Violated(silent);
     }
     unproven.sort();
@@ -220,6 +283,14 @@ pub fn judge(
 /// member's methods, declared `publish` ends of member loci, and
 /// subscription handlers that are members' methods. Member free
 /// functions count for their sends.
+///
+/// A wildcard endpoint (`subscribe "pay.**"`, a declared `publish
+/// "pay.**"`) is a route for EVERY wire it covers: each modeled
+/// subject under the pattern joins the set, so the topics, sends and
+/// bindings on those wires are judged. The pattern itself stays in
+/// the set for the remainder no modeled endpoint names — what can
+/// arrive there is only unresolved publishers, which `judge` asks
+/// about by overlap.
 pub fn group_routes(
     model: &ApplicationModel,
     loci: &BTreeSet<u32>,
@@ -248,5 +319,23 @@ pub fn group_routes(
             out.insert(su.subject);
         }
     }
+    let subjects = &model.entities.subjects;
+    let patterns: Vec<&str> = out
+        .iter()
+        .map(|s| subjects[s.index()].pattern.as_str())
+        .filter(|p| p.contains("**"))
+        .collect();
+    let covered: Vec<SubjectId> = subjects
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            !row.pattern.contains("**")
+                && patterns
+                    .iter()
+                    .any(|p| crate::wildcard_match(p, &row.pattern))
+        })
+        .map(|(i, _)| SubjectId(i as u32))
+        .collect();
+    out.extend(covered);
     out
 }
