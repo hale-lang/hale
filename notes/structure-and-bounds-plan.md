@@ -41,6 +41,18 @@ In order: vacate; assign (a position writes or reviews a part or a contract); ad
 
 Retiring a pack restores what it superseded.
 
+## The nursery
+
+Packs and saplings are published in a **nursery**, and a nursery is a git repository. It needs no service to run: a record is already git; a version is a tag; provenance is a commit; an upgrade proposed against what the host has ratified since is a diff between two tags; and a company that wants a private nursery forks one or starts its own.
+
+- **The layout.** `nursery.toml` at the root indexes what the repository offers: for each entry its name, kind (`pack` or `sapling`), version, path, content digest, the toolchain it needs and a one-line summary. An entry may point at another repository and a revision instead of a path, so a sapling can grow into a repository of its own and stay listed.
+- **One official nursery,** `hale-lang/nursery`. The starter packs are its first entries. The library the toolchain embeds today stays as the built-in baseline, readable with no network.
+- **Adding a source is governance.** `hale dna nursery add <git-url>` proposes the source as a binding the Board ratifies, since what a nursery offers is proposed into the organization. `hale dna pack list` reads every ratified nursery and the baseline.
+- **Pinned by content.** Applying an entry records the nursery, the commit and the entry's digest in the proposal, so what the Board ratified is exactly what was applied. A moved tag is a new version, never a silent change. Signed tags come later; the Review's preview is the check until then.
+- **Discovery later.** A static index on the site can be generated from the official nursery for browsing and search; the repository stays the source of truth.
+
+Saplings and grafting come after this plan; the nursery's format carries them from the start, so the first sapling is an entry, not a migration.
+
 ## Onboarding
 
 From about fifteen commands to about five: `init --with <pack>`, one verdict, `dev`, `head`, `work login`.
@@ -87,7 +99,7 @@ At most one change in CI and one more beside it; a compiler change pairs with a 
 | 1 | the held branches; memory refuses and moves on | the issue; which decorators suppress nothing |
 | then | | cleanup, first pass |
 | 2 | batch apply, its preview and command; the runner on its parser | returned accumulators; replaced fields |
-| 3 | the known-open scenarios; vacate; packs adopt and retire; the starter packs; `Commands::fill`, `Commands::open_position` | one command per process |
+| 3 | the known-open scenarios; vacate; packs adopt and retire; the nursery and its starter packs; `Commands::fill`, `Commands::open_position` | one command per process |
 | then | | cleanup, second pass |
 | 4 | onboarding: `head`, the derived DSN, `init --with`, the starter mapping, the cycle rewritten | `@bounded_by` |
 | 5 | assign, merge and split, expose and depend, externalize and internalize | verify green and gated; the standard updated |
@@ -100,6 +112,7 @@ Each was taken by recommendation and stands until overruled:
 - `init --with` folds init's seeded proposals and the pack into one Review;
 - batches land before the onboarding changes, which build on them;
 - the first packs are a dev team, a small startup and a team that ships no code;
+- a nursery is a git repository indexed by `nursery.toml`; the official one is `hale-lang/nursery`;
 - the held `claims/no-silent-loss` and `claims/routing-coverage` branches land;
 - the host's long-running loop becomes its own program rather than gaining an annotation;
 - `@bounded_by` takes a free-form name;
