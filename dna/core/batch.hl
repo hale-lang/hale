@@ -13,6 +13,7 @@
 //   merge <name> into <name>            split <name> into <name> <name>
 //   expose <node> as <contract>         depend <node> on <contract>
 //   externalize <seed>                  internalize <contract> as <seed>
+//   retire-practice <name>
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
 // with or without its `position:` prefix.
@@ -51,6 +52,8 @@ type BatchPlan {
     // the mandates it proposes, `<position>\t<text>` a line: an opened
     // position's, and a split position's for each of its two
     mandates: String = "";
+    // the practices it retires, `<name>\t<digest>` a line
+    retirements: String = "";
 }
 
 // What a plan has made of the steps so far: the org chart after them, the
@@ -65,6 +68,7 @@ type PlanState {
     retires: String = "";
     mandates: String = "";
     restated: String = "\n";
+    retirements: String = ""; // `<name>\t<digest>` of each practice it retires
 }
 
 // A planned batch, filed: the receipts to keep (one document a line) and the
@@ -130,7 +134,7 @@ fn batch_count(lines: String) -> Int {
 }
 
 // Whether `verb` is a step of a batch, and how it is written.
-fn dna_batch_verb(verb: String) -> Bool { return word_in(verb, "assign unassign close merge split expose depend externalize internalize"); }
+fn dna_batch_verb(verb: String) -> Bool { return word_in(verb, "assign unassign close merge split expose depend externalize internalize retire-practice"); }
 
 fn batch_usage(verb: String) -> String {
     if verb == "assign" || verb == "unassign" { return verb + " <name> reviews <kind>:<node>"; }
@@ -140,6 +144,7 @@ fn batch_usage(verb: String) -> String {
     if verb == "expose" { return "expose <kind>:<node> as contract:<name>"; }
     if verb == "depend" { return "depend <kind>:<node> on contract:<name>"; }
     if verb == "externalize" { return "externalize seed:<name>"; }
+    if verb == "retire-practice" { return "retire-practice <name>"; }
     return "internalize contract:<name> as seed:<name>";
 }
 
@@ -206,6 +211,7 @@ fn batch_steps(text: String) -> BatchPlan {
             continue;
         }
         if verb == "close" && n == 2 { out.steps = out.steps + "close\t" + batch_position(a1) + "\n"; continue; }
+        if verb == "retire-practice" && n == 2 && batch_word(a1) { out.steps = out.steps + "retire-practice\t" + a1 + "\n"; continue; }
         if verb == "merge" && n == 4 && a2 == "into" { out.steps = out.steps + "merge\t" + batch_position(a1) + "\t" + batch_position(a3) + "\n"; continue; }
         if verb == "split" && n == 5 && a2 == "into" { out.steps = out.steps + "split\t" + batch_position(a1) + "\t" + batch_position(a3) + "\t" + batch_position(a4) + "\n"; continue; }
         if (verb == "expose" && n == 4 && a2 == "as") || (verb == "depend" && n == 4 && a2 == "on") {
@@ -224,7 +230,7 @@ fn batch_steps(text: String) -> BatchPlan {
             continue;
         }
         if dna_batch_verb(verb) { out.why = at + "`" + verb + "` is written `" + batch_usage(verb) + "`"; return out; }
-        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
+        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, retire-practice, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -432,6 +438,13 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         } else if verb == "unassign" {
             if !chart_has(st.after, "reviews " + p + " " + q) { st.why = "`unassign " + p + " reviews " + q + "`: it does not review it"; }
             else { st = plan_unassign(st, p, q); }
+        } else if verb == "retire-practice" {
+            let d = batch_practice_digest(j, p);
+            if !chart_has(st.after, "practice " + p) || len(d) == 0 { st.why = "`retire-practice " + p + "`: no practice of that name is in force"; }
+            else {
+                st.retirements = st.retirements + p + "\t" + d + "\n";
+                st.after = chart_without(st.after, "practice " + p);
+            }
         } else if verb == "close" {
             st = plan_close(st, g, opened, p);
         } else if verb == "merge" {
@@ -519,6 +532,7 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
     }
     out.after = st.after;
     out.mandates = st.mandates;
+    out.retirements = st.retirements;
     // the restated meets edges, each once, at its latest body
     let mut met = st.restated;
     let mut restated = "";
@@ -1042,6 +1056,21 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         ideas = ideas + "practice/" + pn + " " + pd + "\n";
         count = count + 1;
     }
+    // a retirement per practice it retires: ratified, it retires the
+    // practice in force (`knowledge.retired`)
+    let mut rs = plan.retirements;
+    while len(rs) > 0 {
+        let nl = std::str::index_of(rs, "\n");
+        let line = rs[0..nl];
+        rs = rs[(nl + 1)..len(rs)];
+        let rn = batch_field(line, 0);
+        let rdoc = knowledge_document(Idea { kind: "retirement", text: "retired in " + name, author: by, name: rn, supersedes: batch_field(line, 1), provenance: "proposed by " + by + " in " + name }, "org");
+        let rd = digest_of(rdoc);
+        docs = docs + rdoc + "\n";
+        members = members + batch_member_row(rd, "retirement", by, "org", rn, at);
+        ideas = ideas + "retirement/" + rn + " " + rd + "\n";
+        count = count + 1;
+    }
     // a mandate per position it opens (a split's two included)
     let mut ms = plan.mandates;
     while len(ms) > 0 {
@@ -1116,11 +1145,82 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     return out;
 }
 
+// The digest of the practice named `name` in force, "" when none.
+@unbounded
+fn batch_practice_digest(j: Journal, name: String) -> String {
+    let mut ratified = "\n";
+    let mut retired = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
+        if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
+        i = i + 1;
+    }
+    let mut found = "";
+    i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && native_json_string(e.body, "name") == name && std::str::contains(ratified, "\n" + e.entity + "\n") && !std::str::contains(retired, "\n" + e.entity + "\n") { found = e.entity; }
+        i = i + 1;
+    }
+    return found;
+}
+
+// The batch that undoes an adopted one, as a batch's text: what it opened
+// closed (its holds and reviews with it), what it filled on a position
+// that stays vacated, what it assigned there unassigned, and its practices
+// retired; whatever has already gone is passed over, so retiring after a
+// later change takes out only what is left. "" when nothing is left.
+@unbounded
+fn batch_inverse(j: Journal, receipts: Receipts, steps: String) -> String {
+    let chart = org_chart(j, receipts);
+    let mut opened = "\n";
+    let mut out = "";
+    let mut rest = steps;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let step = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let verb = batch_field(step, 0);
+        let p = batch_field(step, 1);
+        if verb == "open" && chart_has(chart, "position " + p) { opened = opened + p + "\n"; out = out + "close " + p + "\n"; }
+    }
+    rest = steps;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let step = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let verb = batch_field(step, 0);
+        let p = batch_field(step, 1);
+        let q = batch_field(step, 2);
+        if std::str::contains(opened, "\n" + p + "\n") { continue; }
+        if verb == "fill" && chart_has(chart, "holds " + p + " " + q) { out = out + "vacate " + p + " " + q + "\n"; }
+        if verb == "assign" && chart_has(chart, "reviews " + p + " " + q) { out = out + "unassign " + p + " reviews " + q + "\n"; }
+        if verb == "practice" && chart_has(chart, "practice " + p) { out = out + "retire-practice " + p + "\n"; }
+    }
+    return out;
+}
+
+// The steps of the latest adoption of the pack `name` the Board ratified,
+// "" when none was.
+@unbounded
+fn pack_adopted_steps(j: Journal, name: String) -> String {
+    let mut found = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "batch.proposed" && std::str::starts_with(native_json_string(e.body, "pack"), name + "@") && row_exists(j, "library.family.ratified", native_json_string(e.body, "digest")) { found = native_json_string(e.body, "steps"); }
+        i = i + 1;
+    }
+    return found;
+}
+
 // What a batch does, counted by step: `2 open, 2 fill, 1 practice`.
 @unbounded
 fn batch_summary(steps: String) -> String {
     let mut out = "";
-    let mut verbs = "open fill vacate practice assign unassign close merge split expose depend externalize internalize ";
+    let mut verbs = "open fill vacate practice retire-practice assign unassign close merge split expose depend externalize internalize ";
     while len(verbs) > 0 {
         let sp = std::str::index_of(verbs, " ");
         let v = verbs[0..sp];
@@ -1161,7 +1261,7 @@ fn batch_text(steps: String) -> String {
             out = out + "practice " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
         } else if verb == "assign" || verb == "unassign" {
             out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2) + "\n";
-        } else if verb == "close" || verb == "externalize" {
+        } else if verb == "close" || verb == "externalize" || verb == "retire-practice" {
             out = out + verb + " " + batch_field(step, 1) + "\n";
         } else if verb == "merge" {
             out = out + "merge " + batch_field(step, 1) + " into " + batch_field(step, 2) + "\n";

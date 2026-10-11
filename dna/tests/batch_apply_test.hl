@@ -163,6 +163,9 @@ fn check() {
     std::test::assert(std::str::contains(dna::native_json_string(last_body(repo, "review.requested"), "question"), "ratify adopting the pack dev-team@1"), "the Review names the pack: " + last_body(repo, "review.requested"));
     std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/pack-dev-team.batch"), "the rendered steps are not left behind");
 
+    let unratified = dna_cli(repo, "pack\nretire\ndev-team");
+    std::test::assert(unratified.code != 0 && std::str::contains(unratified.stderr, "no adoption of the pack `dev-team` the Board ratified"), "a pack is retired once the Board has adopted it: " + unratified.stderr);
+
     // 7. a nursery of one's own, a directory with its index at the root
     let mine = scratch + "/nursery";
     std::io::fs::mkdir(mine) or discard;

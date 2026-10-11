@@ -4636,7 +4636,7 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name>
-  <holder>`, `practice <name> | <text>`, `assign|unassign <name>
+  <holder>`, `practice <name> | <text>`, `retire-practice <name>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
   contract:<name>`, `depend <kind>:<node> on contract:<name>`,
@@ -4733,8 +4733,17 @@ The live half is memory's, projected from the record by the spine
   named `pack/<name>@<version>`, its question `ratify adopting the pack
   <name>@<version> …`, and `batch.proposed` carries `pack`: the name and
   version, `sha256:` of the pack's text, and its source (`toolchain
-  <version>`, the directory, or `<url>@<commit>`). Adding a nursery as
-  a source the Board ratifies, and retiring a pack, are not built yet.
+  <version>`, the directory, or `<url>@<commit>`). **`hale dna pack
+  retire <name> [--dry-run] [--as <who>]`** undoes the latest adoption
+  of the pack the Board ratified, as one batch (`pack/<name>/retired`):
+  every position it opened that is still stated closes (its holds and
+  reviews with it), every hold it filled and assignment it made on a
+  position that stays is taken back, and every practice it proposed
+  that is in force retires (`retire-practice <name>`, a member of kind
+  `retirement` superseding the practice, which ratifying retires);
+  whatever has gone since is passed over. A pack supersedes nothing, so
+  there is nothing to restore. Adding a nursery as a source the Board
+  ratifies is not built yet.
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`

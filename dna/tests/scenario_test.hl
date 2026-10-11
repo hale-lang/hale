@@ -7,11 +7,12 @@
 // step the same invariants hold, whatever the scenario: every hold sits on
 // a position the graph states; every position the graph states has a
 // ratified mandate; reading the organization twice from the record gives
-// the same organization. An operation of one organism that is not built
-// yet (retiring a pack) fails its scenario, and those scenarios are
-// listed in KNOWN_OPEN and asserted to fail: when an operation lands, its
-// scenario passes and its entry has to go. The habitat's operations (graft,
-// extract, absorb, re-parent) span several records and come with saplings.
+// the same organization. Every operation of one organism has a scenario
+// here. An operation not built yet gets one too, listed in KNOWN_OPEN and
+// asserted to fail at its verb (`known_open`): when it lands, its scenario
+// passes and its entry goes. The table is empty; the habitat's operations
+// (graft, extract, absorb, re-parent) span several records and come with
+// saplings.
 //
 // Opening a position is one Board Review: its node and its mandate are two
 // members of one family, ratified together.
@@ -189,8 +190,23 @@ practice ship-small | Proposed again while in force.
 }
 ";
 
-const PACK_RETIRED: String = "# that family leaves, and what it superseded is restored
-retire-pack publication
+const PACK_RETIRED: String = "# a pack retired: what it opened closes, its practices retire, and the rest stays
+open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
+ratify by riley
+apply {
+open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+fill api/dev ada
+fill ops/lead ada
+practice api/reviewed-before-merge | Every change to the api is approved by its reviewer before it merges.
+}
+ratify batch by riley
+expect practice api/reviewed-before-merge
+retire-pack
+ratify batch by riley
+expect no-position api/dev
+expect no practice api/reviewed-before-merge
+expect no-holds ops/lead ada
+expect position ops/lead
 ";
 
 const EXPOSED: String = "# an internal capability gets a named contract, and a part relies on it
@@ -232,7 +248,7 @@ expect serves seed:billing contract:spec/billing.md
 expect no outside contract:spec/billing.md billing
 ";
 
-const KNOWN_OPEN: String = "PACK_RETIRED retire-pack\n";
+const KNOWN_OPEN: String = "";
 
 main locus App {
     params {
@@ -241,6 +257,7 @@ main locus App {
         asks: Int = 0;
         last: String = ""; // the last proposal's digest
         last_batch: String = ""; // the last batch's family digest
+        last_steps: String = ""; // and its steps
     }
     bus { publish dna::ReviewVerdict; }
 
@@ -330,6 +347,7 @@ main locus App {
         if len(self.row_body("graph.proposed", id)) == 0 { return "the organization opened no Review for the batch"; }
         self.last = filing.digest;
         self.last_batch = filing.digest;
+        self.last_steps = plan.steps;
         return "";
     }
 
@@ -386,6 +404,13 @@ main locus App {
         }
         let first = if std::str::index_of(line, " ") > 0 { line[0..std::str::index_of(line, " ")] } else { line };
         if dna::dna_batch_verb(first) { return self.apply(line + "\n"); }
+        if line == "retire-pack" {
+            // the last batch adopted, undone as one batch, as `hale dna pack
+            // retire` undoes a pack
+            let inverse = dna::batch_inverse(self.body.journal, dna::GitReceipts { repo: self.repo }, self.last_steps);
+            if len(inverse) == 0 { return "nothing to retire"; }
+            return self.apply(inverse);
+        }
         if std::str::starts_with(line, "vacate ") {
             // an operation of the batch alone: a one-step batch, as `hale dna
             // vacate` proposes it
@@ -521,7 +546,7 @@ main locus App {
         std::test::assert_eq_str(self.scenario("exposed", EXPOSED), "", "a capability exposed as a contract, and a part depending on it");
         std::test::assert_eq_str(self.scenario("externalized", EXTERNALIZED), "", "a part externalized and internalized again");
         // the known-open table: each fails at the operation it names
-        self.known_open("PACK_RETIRED", PACK_RETIRED, "retire-pack");
+        std::test::assert_eq_str(self.scenario("pack-retired", PACK_RETIRED), "", "a pack retired: what it brought leaves, what was there before stays");
     }
 }
 fn main() { App { }; }

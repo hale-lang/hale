@@ -152,9 +152,18 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
 // rows land in the proposer's name, as `ingest`'s do; `graph.requested`
 // asks the running organization to open the Review, and the Board's one
 // verdict ratifies every member in one append.
-fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, memory: dna::Memory) -> Answer {
+fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, memory: dna::Memory) -> Answer {
     // `hale dna pack apply` hands the rendered steps over as they are
     if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, memory); }
+    // `hale dna pack retire <name>`: the latest ratified adoption, undone
+    if len(retire_pack) > 0 {
+        let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+        let adopted = dna::pack_adopted_steps(journal, retire_pack);
+        if len(adopted) == 0 { return fail("pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified"); }
+        let inverse = dna::batch_inverse(journal, dna::GitReceipts { repo: root }, adopted);
+        if len(inverse) == 0 { return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left"); }
+        return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", memory);
+    }
     if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
     let text = std::io::fs::read_file(file) or "";
     if len(text) == 0 { return fail("apply: `" + file + "` is not a file with steps in it"); }

@@ -18,7 +18,7 @@ use std::process::{Command, ExitCode};
 
 use serde::Deserialize;
 
-const USAGE: &str = "usage: hale dna pack list [--from <dir|git-url[#rev]>]\n       hale dna pack show <name> [--set <param>=<value>]… [--from …]\n       hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]";
+const USAGE: &str = "usage: hale dna pack list [--from <dir|git-url[#rev]>]\n       hale dna pack show <name> [--set <param>=<value>]… [--from …]\n       hale dna pack apply <name> [--set <param>=<value>]… [--from …] [--dry-run] [--as <who>] [project]\n       hale dna pack retire <name> [--dry-run] [--as <who>] [project]";
 
 #[derive(Deserialize)]
 struct Index {
@@ -272,8 +272,19 @@ pub(super) fn pack_cmd(args: &[String]) -> ExitCode {
             host_args.extend(forwarded);
             super::host_exec("apply", &dir, &host_args)
         }
+        Some("retire") => {
+            // the latest adoption the Board ratified, undone as one batch
+            let Some(name) = words.first() else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let dir = words.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let mut host_args = vec!["--retire-pack".to_string(), name.clone()];
+            host_args.extend(forwarded);
+            super::host_exec("apply", &dir, &host_args)
+        }
         Some(other) => {
-            eprintln!("hale dna pack: `{other}` is not a pack verb (list, show, apply)\n{USAGE}");
+            eprintln!("hale dna pack: `{other}` is not a pack verb (list, show, apply, retire)\n{USAGE}");
             ExitCode::from(2)
         }
     }

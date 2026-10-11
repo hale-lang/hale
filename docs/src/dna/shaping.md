@@ -606,6 +606,11 @@ nursery is named with `--from`: a directory, or a git URL with `#<rev>`
 for the revision to read. The Review records which pack it was, its
 digest and where it came from.
 
+`hale dna pack retire dev-team` undoes the latest adoption the Board
+ratified, as one more Review: the positions the pack opened close, the
+seats it filled and the reviews it assigned elsewhere are taken back,
+and its practices retire. Anything that has already gone is left out.
+
 ### From the head's API
 
 The same changes are commands of the head, for a UI or any program: every
