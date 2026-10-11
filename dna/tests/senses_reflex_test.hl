@@ -201,7 +201,20 @@ main locus App {
         forger.close();
 
         // ---- down, whatever happened
-        let stop = dna::run_tool("sh\n-c\nfor p in \"$1\" \"$2\" \"$3\"; do [ -n \"$p\" ] && kill \"$p\" 2>/dev/null; done; for i in $(seq 1 150); do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; done; true\nsh\n" + reflexes + "\n" + node + "\n" + host);
+        // Each process takes the TERM itself, once. What the fixture holds
+        // is the `timeout` each runs under, and `timeout` hands a TERM to
+        // its child and then to its whole group: when the child has taken
+        // the first before the second lands — a loaded machine — the
+        // second ends a Hale program at once, without its drain
+        // (semantics.md, "Drain cascade"), and a host ended so leaves its
+        // organization to the body fence. Then the organization: read
+        // before the stop, since a host that drains removes its pid file,
+        // and waited for until it is gone — with its host, or the fence's
+        // doing — before compose and the scratch root go, which take the
+        // fence's mandate with them. One still up is killed here, so
+        // nothing outlives the fixture, and the fixture fails.
+        let org_pid = dna::trim_nl(text_of(self.app + "/.hale/dna/org.pid"));
+        let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; c=$(pgrep -P \"$t\" 2>/dev/null | head -n 1); kill \"${c:-$t}\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
         let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
 
         std::test::assert(up, "the seed compose's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
@@ -220,6 +233,8 @@ main locus App {
         std::test::assert(len(concern) > 0, "the second firing inside the window became a concern the organization raised: " + rows(self.app, "concern.requested", "reflexes/") + self.logs());
         std::test::assert_eq_int(forged.seq, -1, "the application's user may not publish a firing (the stream took it at seq " + to_string(forged.seq) + ")");
         std::test::assert_eq_str(rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged"), "", "and no forged firing was recorded");
+        std::test::assert(len(org_pid) > 0, "the host named its organization's pid: " + self.logs());
+        std::test::assert_eq_str(stop.stdout, "", "the organization went with its host: " + self.logs());
         std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
         dna::scratch_done(scratch);
     }
