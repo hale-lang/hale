@@ -1447,7 +1447,7 @@ record's.
 | `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
-| `batch.proposed` | record | a batch of changes `hale dna apply` proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`); its `graph.requested`, under the same id, asks the organization to open the Review |
+| `batch.proposed` | record | a batch of changes `hale dna apply` (or `vacate`, or `pack apply`) proposed as one family Review in the group `changes` (`digest`, `review_id`, `by`, `steps`, and `pack` for a pack: `<name>@<version> sha256:<digest> <source>`); its `graph.requested`, under the same id, asks the organization to open the Review |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`), relayed as `PositionOpenRequested` (`dna.position.requested`) |
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
@@ -4627,8 +4627,8 @@ The live half is memory's, projected from the record by the spine
   <who>]`, `dna/core/batch.hl`).** Several changes to the structure as
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
-  <node>] | <mandate>`, `fill <name> <holder>` and `vacate <name>
-  <holder>`; `#` starts a comment,
+  <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name>
+  <holder>` and `practice <name> | <text>`; `#` starts a comment,
   and a name is a position's, with or without `position:`. The host
   plans the batch against the record (`batch_plan`): a line that is no
   step, a name with a space, `|` or tab, an `open` with no mandate, a
@@ -4637,7 +4637,8 @@ The live half is memory's, projected from the record by the spine
   `fill` of a position the graph does not state and the batch does not
   open, a `fill` of a stated position with no ratified mandate, a hold
   the organization would then hold twice, or a `vacate` of a hold the
-  record does not state, asked twice or filled in the same batch is
+  record does not state, asked twice or filled in the same batch, or a
+  practice named twice or already in force is
   refused whole, naming the
   step, and nothing is written. Order inside a batch does not matter: a
   fill or `under` may name a position a later step opens. Planned, the
@@ -4648,7 +4649,9 @@ The live half is memory's, projected from the record by the spine
   graph`, name `batch/<request id>`, target `org`) whose rows are the
   opened positions' nodes, then their `unfold` edges, then the holds,
   then a `graph.retired` for each hold vacated;
-  one mandate per opened position (`mandate/<name>`); each a member
+  one mandate per opened position (`mandate/<name>`); one practice per
+  `practice` step (kind `practice`, its name, target `org`, the
+  proposer its author); each a member
   (`knowledge.proposed`, no Review of its own); the family (`kind:
   family`, its `ideas` the members in that order, and `batch`, the
   normalized steps), with its `review.requested` in the group `changes`
@@ -4670,7 +4673,27 @@ The live half is memory's, projected from the record by the spine
   leaves, the position stays. Every reader of holds takes a retirement
   carried by a ratified proposal as it takes a `graph.retired` row: the
   graph, memory's projection, the head's seats (`HoldsReader`) and the
-  CLI's (`held_state`).
+  CLI's (`held_state`). The org chart a batch is planned against also
+  lists `practice <name>` for each named practice in force.
+  **Packs and the nursery (`hale dna pack list | show <name> | apply
+  <name> [--set <param>=<value>]… [--from <dir|git-url[#rev]>]
+  [--dry-run] [--as <who>] [project]`).** A pack is a batch with
+  `{param}` placeholders; a nursery is a directory or a git repository
+  whose `nursery.toml` lists its packs (`[[pack]]`: `name`, `version`,
+  `path`, `summary`, `params` with each one's default, `""` for none).
+  With no `--from` the nursery is the toolchain's (`dna/nursery`,
+  embedded: `dev-team`, `small-startup`, `content-team`); a git
+  repository is cloned into `$XDG_CACHE_HOME/hale/nursery/` and read at
+  the revision after `#`, its default branch's head without one. The CLI
+  renders the pack: every parameter replaced by its `--set` value or its
+  default, a line beginning `? ` kept only when every parameter it names
+  has a value, and a parameter with neither refused by name. `apply`
+  proposes the steps as a batch whose family and graph proposal are
+  named `pack/<name>@<version>`, its question `ratify adopting the pack
+  <name>@<version> …`, and `batch.proposed` carries `pack`: the name and
+  version, `sha256:` of the pack's text, and its source (`toolchain
+  <version>`, the directory, or `<url>@<commit>`). Adding a nursery as
+  a source the Board ratifies, and retiring a pack, are not built yet.
   **Mandates (seed/structure).** Each position `init` proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
   knowledge idea of kind `mandate` (family `mandate`, `author: hale dna

@@ -43,6 +43,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod pack;
+
 /// The record (GH #566 F1): one commit per event on this ref, the events as
 /// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
 const RECORD_REF: &str = "refs/dna/journal";
@@ -658,6 +660,8 @@ pub fn run(args: &[String]) -> ExitCode {
         // a holder asked of the organization, which proposes it to the Board
         // the repository's graph read again at a commit, its difference proposed
         Some("ingest") => ingest_cmd(&args[1..]),
+        // packs from a nursery: `hale dna pack list | show | apply <name>`
+        Some("pack") => pack::pack_cmd(&args[1..]),
         // a position opened at run time: `hale dna position open <name> --mandate "…"`
         Some("position") => host_exec("position", Path::new("."), &args[1..]),
         // a holder leaves a position, as a one-step batch:
@@ -971,6 +975,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
     eprintln!("       hale dna apply <file> [--dry-run] [--as <who>]");
     eprintln!("       hale dna vacate <position> <holder> [--dry-run] [--as <who>]");
+    eprintln!("       hale dna pack list | show <name> | apply <name> [--set <param>=<value>]… [--from <dir|git-url[#rev]>] [--dry-run]");
     eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");

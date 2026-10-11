@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at --pack --steps ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -253,7 +253,7 @@ fn main() {
         else { ans = fail("position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`"); }
     } else if verb == "apply" {
         // `hale dna apply <file> [--dry-run] [--as <who>]`: a batch of changes to the structure, one Board Review
-        ans = apply_verb(root, seed, word(a, 0), has_flag(a, "--dry-run"), flag(a, "--as"), memory);
+        ans = apply_verb(root, seed, word(a, 0), flag(a, "--steps"), has_flag(a, "--dry-run"), flag(a, "--as"), flag(a, "--pack"), memory);
     } else if verb == "vacate" {
         // `hale dna vacate <position> <holder>`: a one-step batch
         ans = vacate_verb(root, seed, word(a, 0), word(a, 1), has_flag(a, "--dry-run"), flag(a, "--as"), memory);

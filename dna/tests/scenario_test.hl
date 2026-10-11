@@ -8,7 +8,7 @@
 // a position the graph states; every position the graph states has a
 // ratified mandate; reading the organization twice from the record gives
 // the same organization. An operation of one organism that is not built
-// yet (merge, split, assign, adopt or retire a pack, expose, depend,
+// yet (merge, split, assign, retire a pack, expose, depend,
 // externalize, internalize) fails its scenario, and those scenarios are
 // listed in KNOWN_OPEN and asserted to fail: when an operation lands, its
 // scenario passes and its entry has to go. The habitat's operations (graft,
@@ -145,8 +145,19 @@ ratify by riley
 assign api/reviewer reviews contract:spec/todo.md
 ";
 
-const PACK: String = "# a family of practices comes into force as one unit
-adopt-pack publication
+const PACK: String = "# a pack: positions and the practices they work by, in force as one unit
+apply {
+open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+practice api/reviewed-before-merge | Every change to the api is approved by its reviewer before it merges.
+practice ship-small | Work ships in the smallest change that is useful on its own.
+}
+ratify batch by riley
+expect practice ship-small
+expect practice api/reviewed-before-merge
+expect mandate api/dev
+refused apply {
+practice ship-small | Proposed again while in force.
+}
 ";
 
 const PACK_RETIRED: String = "# that family leaves, and what it superseded is restored
@@ -169,7 +180,7 @@ const INTERNALIZED: String = "# a contract depended on becomes a part the organi
 internalize contract:spec/billing.md seed:billing
 ";
 
-const KNOWN_OPEN: String = "TEAM_MERGES merge\nTEAM_SPLITS split\nASSIGNED assign\nPACK adopt-pack\nPACK_RETIRED retire-pack\nEXPOSED expose\nDEPENDS depend\nEXTERNALIZED externalize\nINTERNALIZED internalize\n";
+const KNOWN_OPEN: String = "TEAM_MERGES merge\nTEAM_SPLITS split\nASSIGNED assign\nPACK_RETIRED retire-pack\nEXPOSED expose\nDEPENDS depend\nEXTERNALIZED externalize\nINTERNALIZED internalize\n";
 
 main locus App {
     params {
@@ -246,7 +257,7 @@ main locus App {
         if !plan.ok { return "refused: " + plan.why; }
         self.asks = self.asks + 1;
         let id = "b" + to_string(self.asks);
-        let filing = dna::batch_filing(plan, "grace", id, std::time::now());
+        let filing = dna::batch_filing(plan, "grace", id, std::time::now(), "");
         if !filing.ok { return "not filed: " + filing.why; }
         let mut docs = filing.docs;
         while len(docs) > 0 {
@@ -361,6 +372,7 @@ main locus App {
         if std::str::starts_with(line, "expect ") {
             let what = std::str::trim(line[7..len(line)]);
             let org = self.org();
+            if std::str::starts_with(what, "practice ") { return if std::str::contains(org, what + "\n") { "" } else { "not in force: " + what + "\nin\n" + org }; }
             if std::str::starts_with(what, "no-holds ") {
                 let tail = what[9..len(what)];
                 let sp = std::str::index_of(tail, " ");
@@ -439,11 +451,11 @@ main locus App {
         std::test::assert_eq_str(self.scenario("batch-refused", BATCH_REFUSED), "", "a batch that is wrong anywhere is refused before anything is proposed");
         std::test::assert_eq_str(self.scenario("batch-stale", BATCH_STALE), "", "a batch whose ground moved is refused whole when the Board decides it");
         std::test::assert_eq_str(self.scenario("vacated", VACATED), "", "a holder leaves through one Review; the position stays");
+        std::test::assert_eq_str(self.scenario("pack", PACK), "", "a pack's positions and practices come into force as one unit");
         // the known-open table: each fails at the operation it names
         self.known_open("TEAM_MERGES", TEAM_MERGES, "merge");
         self.known_open("TEAM_SPLITS", TEAM_SPLITS, "split");
         self.known_open("ASSIGNED", ASSIGNED, "assign");
-        self.known_open("PACK", PACK, "adopt-pack");
         self.known_open("PACK_RETIRED", PACK_RETIRED, "retire-pack");
         self.known_open("EXPOSED", EXPOSED, "expose");
         self.known_open("DEPENDS", DEPENDS, "depend");

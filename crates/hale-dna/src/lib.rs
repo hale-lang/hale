@@ -164,6 +164,17 @@ macro_rules! at {
     };
 }
 
+/// The toolchain's nursery (`dna/nursery`): its index and the packs it
+/// lists, which `hale dna pack` offers when no `--from` names another. Not
+/// part of the embedded DNA source set (`EMBEDDED_DIRS`): a pack is pinned
+/// by its own digest when it is applied.
+pub const NURSERY_FILES: &[EmbeddedFile] = at![
+    "dna/nursery/nursery.toml",
+    "dna/nursery/packs/content-team.pack",
+    "dna/nursery/packs/dev-team.pack",
+    "dna/nursery/packs/small-startup.pack",
+];
+
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.
 pub const OPERATION_FILES: &[EmbeddedFile] = at![

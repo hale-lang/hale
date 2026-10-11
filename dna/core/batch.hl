@@ -7,6 +7,7 @@
 //   open <name> [under <node>] | <mandate>
 //   fill <name> <holder>
 //   vacate <name> <holder>
+//   practice <name> | <text>
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
 // with or without its `position:` prefix.
@@ -30,7 +31,7 @@
 
 // A planned batch. `steps` are the normalized steps, one a line:
 // `open\t<position>\t<under>\t<mandate>`, `fill\t<position>\t<holder>` or
-// `vacate\t<position>\t<holder>`.
+// `vacate\t<position>\t<holder>` or `practice\t<name>\t<text>`.
 // `before` and `after` are org charts as `org_chart` writes them.
 type BatchPlan {
     ok: Bool = false;
@@ -91,6 +92,16 @@ fn batch_steps(text: String) -> BatchPlan {
             out.steps = out.steps + "open\t" + batch_position(name) + "\t" + under + "\t" + mandate + "\n";
             continue;
         }
+        if std::str::starts_with(line, "practice ") {
+            let bar = std::str::index_of(line, "|");
+            if bar < 0 { out.why = at + "a practice is proposed with its text: `practice <name> | <text>`"; return out; }
+            let name = std::str::trim(line[9..bar]);
+            let text = std::str::trim(line[(bar + 1)..len(line)]);
+            if !batch_word(name) { out.why = at + "a practice is named by one word, with no space or `|`"; return out; }
+            if len(text) == 0 || std::str::contains(text, "\t") { out.why = at + "a practice is one line of text, with no tab"; return out; }
+            out.steps = out.steps + "practice\t" + name + "\t" + text + "\n";
+            continue;
+        }
         if std::str::starts_with(line, "fill ") || std::str::starts_with(line, "vacate ") {
             let verb = line[0..std::str::index_of(line, " ")];
             let args = std::str::trim(line[(len(verb) + 1)..len(line)]);
@@ -103,7 +114,7 @@ fn batch_steps(text: String) -> BatchPlan {
             continue;
         }
         let sp = std::str::index_of(line, " ");
-        out.why = at + "`" + (if sp < 0 { line } else { line[0..sp] }) + "` is no step a batch takes (open, fill, vacate)";
+        out.why = at + "`" + (if sp < 0 { line } else { line[0..sp] }) + "` is no step a batch takes (open, fill, vacate, practice)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -128,9 +139,9 @@ fn batch_field(step: String, k: Int) -> String {
 
 // The organization the record states, as lines: `position <id>` for every
 // position the graph states, `mandate <id>` beside each one with a ratified
-// mandate in force, and `holds <id> <holder>` for every hold the graph
-// states and memory did not refuse, its holder not retired. In the graph's
-// order, positions first.
+// mandate in force, `holds <id> <holder>` for every hold the graph states
+// and memory did not refuse, its holder not retired, and `practice <name>`
+// for every named practice in force. In the graph's order, positions first.
 @unbounded
 fn org_chart(j: Journal, receipts: Receipts) -> String {
     let g = record_graph(j, receipts);
@@ -139,6 +150,7 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
     let mut retired = "\n";
     let mut refused = "\n";
     let mut gone = "\n";
+    let mut named = "\n"; // `<digest> <name>` of practice proposals
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -147,6 +159,7 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
         if e.kind == "hold.refused" { refused = refused + e.entity + "\n"; }
         if e.kind == "person.retired" { gone = gone + e.entity + "\n"; }
+        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && len(native_json_string(e.body, "name")) > 0 { named = named + e.entity + " " + native_json_string(e.body, "name") + "\n"; }
         i = i + 1;
     }
     let mut lines = "";
@@ -172,6 +185,18 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         let holder = id[(bar + 1)..len(id)];
         if std::str::contains(gone, "\n" + holder + "\n") { continue; }
         lines = lines + "holds " + id[6..bar] + " " + holder + "\n";
+    }
+    // the practices in force, by name
+    rest = named;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let line = body[0..nl];
+        rest = body[nl..len(body)];
+        let sp = std::str::index_of(line, " ");
+        let d = line[0..sp];
+        let pname = line[(sp + 1)..len(line)];
+        if std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") && !std::str::contains("\n" + lines, "\npractice " + pname + "\n") { lines = lines + "practice " + pname + "\n"; }
     }
     return lines;
 }
@@ -216,12 +241,27 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         opened = opened + p + "\n";
     }
     let mut after = out.before;
+    // the practices it proposes: one of a name, never one in force
+    let mut practices = "\n";
+    rest = out.steps;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let step = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if batch_field(step, 0) != "practice" { continue; }
+        let name = batch_field(step, 1);
+        if std::str::contains(practices, "\n" + name + "\n") { out.why = "the practice `" + name + "` is proposed twice in the batch"; return out; }
+        if std::str::contains("\n" + out.before, "\npractice " + name + "\n") { out.why = "the practice `" + name + "` is in force already; propose a new version of it on its own"; return out; }
+        practices = practices + name + "\n";
+        after = after + "practice " + name + "\n";
+    }
     rest = out.steps;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let p = batch_field(step, 1);
+        if batch_field(step, 0) == "practice" { continue; }
         if batch_field(step, 0) == "open" {
             let under = batch_field(step, 2);
             // the part it unfolds from is a node the graph states, or one the
@@ -302,7 +342,7 @@ fn batch_member_row(digest: String, kind: String, by: String, target: String, na
     b.string_field("kind", kind);
     b.string_field("author", by);
     b.string_field("target", target);
-    b.string_field("class", "initiative");
+    b.string_field("class", if kind == "practice" { classify_binding(by, target) } else { "initiative" });
     b.string_field("name", name);
     b.int_field("at", at);
     b.end_object();
@@ -319,12 +359,16 @@ fn batch_member_row(digest: String, kind: String, by: String, target: String, na
 // proposals. The same batch asked again under the same id is the same
 // family.
 @unbounded
-fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> BatchFiling {
+fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: String) -> BatchFiling {
     let mut out = BatchFiling { };
     if !plan.ok { out.why = plan.why; return out; }
     if !batch_word(by) { out.why = "a batch is proposed by someone: the Review's author"; return out; }
     if !batch_word(request_id) { out.why = "a batch is asked under one id"; return out; }
-    let name = "batch/" + request_id;
+    // a pack (`hale dna pack apply`) names itself: `<name>@<version>`, then
+    // its digest and where it came from
+    let sp = std::str::index_of(pack, " ");
+    let pack_id = if sp < 0 { pack } else { pack[0..sp] };
+    let name = if len(pack) > 0 { "pack/" + pack_id } else { "batch/" + request_id };
     let mut opens = 0;
     let mut fills = 0;
     let mut vacates = 0;
@@ -410,7 +454,15 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
         pass = pass + 1;
     }
     g.end_array();
-    let question = "ratify the batch " + request_id + " as " + by + " proposes it: " + to_string(opens) + " position(s) opened, each with its mandate, " + to_string(fills) + " filled and " + to_string(vacates) + " vacated";
+    let mut practiced = 0;
+    let mut pr = plan.steps;
+    while len(pr) > 0 {
+        let nl = std::str::index_of(pr, "\n");
+        if batch_field(pr[0..nl], 0) == "practice" { practiced = practiced + 1; }
+        pr = pr[(nl + 1)..len(pr)];
+    }
+    let what = if len(pack) > 0 { "adopting the pack " + pack_id } else { "the batch " + request_id };
+    let question = "ratify " + what + " as " + by + " proposes it: " + to_string(opens) + " position(s) opened, each with its mandate, " + to_string(fills) + " filled, " + to_string(vacates) + " vacated and " + to_string(practiced) + " practice(s)";
     g.string_field("question", question);
     g.string_field("target", "org");
     g.string_field("text", question + ".");
@@ -426,6 +478,16 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
+        if batch_field(step, 0) == "practice" {
+            let pn = batch_field(step, 1);
+            let pdoc = knowledge_document(Idea { kind: "practice", text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name }, "org");
+            let pd = digest_of(pdoc);
+            docs = docs + pdoc + "\n";
+            members = members + batch_member_row(pd, "practice", by, "org", pn, at);
+            ideas = ideas + "practice/" + pn + " " + pd + "\n";
+            count = count + 1;
+            continue;
+        }
         if batch_field(step, 0) != "open" { continue; }
         let p = batch_field(step, 1);
         let pname = p[9..len(p)];
@@ -479,6 +541,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int) -> Bat
     a.string_field("review_id", review_id);
     a.string_field("by", by);
     a.string_field("steps", plan.steps);
+    if len(pack) > 0 { a.string_field("pack", pack); }
     a.end_object();
     let rq = std::json::Builder { };
     rq.begin_object();
@@ -514,6 +577,8 @@ fn batch_text(steps: String) -> String {
         if verb == "open" {
             let under = batch_field(step, 2);
             out = out + "open " + batch_field(step, 1) + (if len(under) > 0 { " under " + under } else { "" }) + " | " + batch_field(step, 3) + "\n";
+        } else if verb == "practice" {
+            out = out + "practice " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
         } else {
             out = out + verb + " " + batch_field(step, 1) + " " + batch_field(step, 2) + "\n";
         }

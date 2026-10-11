@@ -559,6 +559,30 @@ positions was opened meanwhile), approving it refuses it whole, and
 nothing of it lands: propose it again against the organization as it
 is.
 
+### Packs
+
+A **pack** is a batch someone wrote once to be adopted many times, with
+blanks to fill: a dev team for a part, a small startup, a team that ships
+no code. Packs come from a **nursery**, a directory or a git repository
+with a `nursery.toml` index at its root; the toolchain carries one.
+
+```sh
+hale dna pack list
+hale dna pack show dev-team --set part=api
+hale dna pack apply dev-team --set part=api --set dev=ada --dry-run
+hale dna pack apply dev-team --set part=api --set dev=ada
+```
+
+`show` prints the steps with the blanks filled; `apply` proposes them as
+one Review, named for the pack, like any batch. A pack may open
+positions, fill them and propose the practices its people work by
+(`practice <name> | <text>` is a batch step too). A line marked `? ` is
+left out when a blank it uses is not given, so `--set dev=ada` fills the
+dev's seat and leaving out `reviewer` leaves that seat open. Another
+nursery is named with `--from`: a directory, or a git URL with `#<rev>`
+for the revision to read. The Review records which pack it was, its
+digest and where it came from.
+
 ## How the organization grows
 
 The org chart grows the way the code does: by a proposal the Board
