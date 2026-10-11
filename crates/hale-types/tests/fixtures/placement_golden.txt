@@ -4628,6 +4628,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 
+== crates/hale-types/tests/claim_no_silent_loss.rs#999655df
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.l	Ledger	main	default
+
 == crates/hale-types/tests/claims.rs#afe54d07
 root	App	the entry
 row	App@literal1	App	main	default

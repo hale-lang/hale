@@ -1214,86 +1214,100 @@ impl ApplicationModel {
     /// interior may contain a publish that was never even seen, so
     /// it also answers true.
     pub fn publish_hole_can_address(&self, subject: &str) -> bool {
-        for a in &self.analyses.stdlib_absorption {
-            for n in &a.nodes {
-                for ev in &n.events {
-                    match ev {
-                        crate::AbsorbedEvent::PublishHole { patterns } => {
-                            // `subject` may itself be a pattern — a
-                            // subscription can be declared on
-                            // `log.**` — so this is set OVERLAP, not
-                            // "does this subject match". Asking the
-                            // narrower question let a hole on
-                            // `log.**` slip past a subscriber on
-                            // `log.**`.
-                            if patterns.is_empty()
-                                || patterns.iter().any(|p| {
-                                    crate::subjects_can_overlap(
-                                        p, subject,
-                                    )
-                                })
-                            {
-                                return true;
-                            }
-                        }
-                        // An unfollowable interior call may reach a
-                        // publish that was never seen, and a
-                        // truncated interior may contain one — both
-                        // are unbounded, so neither can be scoped by
-                        // a pattern.
-                        crate::AbsorbedEvent::CallHole(_)
-                        | crate::AbsorbedEvent::Truncated => {
-                            return true
-                        }
-                        // An interior publish whose subject the model
-                        // has no row for also counts as residue at
-                        // the judgment (it cannot be joined to an
-                        // endpoint), so it must be answered for here
-                        // too — bounded by its own subject text,
-                        // which the absorption did record. Missing
-                        // this let a `std::log::Logger` publish, whose
-                        // computed `log.<path>` resolves to no
-                        // subject row, slip past a subscriber on
+        self.analyses
+            .stdlib_absorption
+            .iter()
+            .any(|a| self.absorbed_publish_can_address(a, subject))
+            // A fn-grain hole that withdraws PUBLISHES carries no
+            // pattern, so it is unbounded by construction.
+            || self.holes.iter().any(|h| {
+                h.hides.intersects(crate::hole::RelationSet::PUBLISHES)
+            })
+    }
+
+    /// [`Self::publish_hole_can_address`] for ONE stdlib interior: can
+    /// the residue of the interior `a` enters publish to `subject`?
+    /// Split out so a judgment can name the user function whose call
+    /// carries the residue, not only answer that some residue exists.
+    pub fn absorbed_publish_can_address(
+        &self,
+        a: &StdlibAbsorption,
+        subject: &str,
+    ) -> bool {
+        for n in &a.nodes {
+            for ev in &n.events {
+                match ev {
+                    crate::AbsorbedEvent::PublishHole { patterns } => {
+                        // `subject` may itself be a pattern — a
+                        // subscription can be declared on
+                        // `log.**` — so this is set OVERLAP, not
+                        // "does this subject match". Asking the
+                        // narrower question let a hole on
+                        // `log.**` slip past a subscriber on
                         // `log.**`.
-                        crate::AbsorbedEvent::Publish {
-                            subject: s,
-                            declared_topic,
-                            ..
-                        } => {
-                            // Resolve exactly as the judgment does. A
-                            // subject text the model has no row for is
-                            // an address it cannot reason about — the
-                            // absorption records the send's subject
-                            // EXPRESSION, so a computed one arrives
-                            // here as the variable's name (`subj`).
-                            // Comparing that as if it were a wire
-                            // subject matches nothing and would
-                            // certify straight through the publish it
-                            // stands for.
-                            let resolves = declared_topic.is_some()
-                                || self
-                                    .entities
-                                    .subjects
-                                    .iter()
-                                    .any(|row| row.pattern == *s);
-                            if !resolves
-                                || crate::subjects_can_overlap(
-                                    s, subject,
+                        if patterns.is_empty()
+                            || patterns.iter().any(|p| {
+                                crate::subjects_can_overlap(
+                                    p, subject,
                                 )
-                            {
-                                return true;
-                            }
+                            })
+                        {
+                            return true;
                         }
-                        _ => {}
                     }
+                    // An unfollowable interior call may reach a
+                    // publish that was never seen, and a
+                    // truncated interior may contain one — both
+                    // are unbounded, so neither can be scoped by
+                    // a pattern.
+                    crate::AbsorbedEvent::CallHole(_)
+                    | crate::AbsorbedEvent::Truncated => {
+                        return true
+                    }
+                    // An interior publish whose subject the model
+                    // has no row for also counts as residue at
+                    // the judgment (it cannot be joined to an
+                    // endpoint), so it must be answered for here
+                    // too — bounded by its own subject text,
+                    // which the absorption did record. Missing
+                    // this let a `std::log::Logger` publish, whose
+                    // computed `log.<path>` resolves to no
+                    // subject row, slip past a subscriber on
+                    // `log.**`.
+                    crate::AbsorbedEvent::Publish {
+                        subject: s,
+                        declared_topic,
+                        ..
+                    } => {
+                        // Resolve exactly as the judgment does. A
+                        // subject text the model has no row for is
+                        // an address it cannot reason about — the
+                        // absorption records the send's subject
+                        // EXPRESSION, so a computed one arrives
+                        // here as the variable's name (`subj`).
+                        // Comparing that as if it were a wire
+                        // subject matches nothing and would
+                        // certify straight through the publish it
+                        // stands for.
+                        let resolves = declared_topic.is_some()
+                            || self
+                                .entities
+                                .subjects
+                                .iter()
+                                .any(|row| row.pattern == *s);
+                        if !resolves
+                            || crate::subjects_can_overlap(
+                                s, subject,
+                            )
+                        {
+                            return true;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-        // A fn-grain hole that withdraws PUBLISHES carries no
-        // pattern, so it is unbounded by construction.
-        self.holes.iter().any(|h| {
-            h.hides.intersects(crate::hole::RelationSet::PUBLISHES)
-        })
+        false
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
