@@ -279,6 +279,9 @@ locus GraphIngest {
         app: String = "";
         declared: String = ""; // the purpose `init` declares, for an application with no README
         description: String = "";
+        // `hale dna ingest`: a `tool` node per operation of each served
+        // surface (init leaves them to the first ingest)
+        tools: Bool = false;
         files: String = "\n"; // tracked, one per line
         rows: String = "";
         ids: String = "\n";
@@ -343,6 +346,37 @@ locus GraphIngest {
         return id;
     }
     fn written(id: String) -> Bool { return std::str::contains(self.ids, "\n" + id + "\n"); }
+    // One operation of a surface as a `tool` node: its contract, the roles
+    // it requires and its effect class. A description says nothing of an
+    // operation's effects, so every served operation is `uncertain` (it may
+    // have acted; a lost answer is never retried) until it says.
+    fn tool(surface: String, member: String, source: String) {
+        if !self.tools { return; }
+        let name = std::json::find_string_field(member, "name");
+        if len(name) == 0 || !graph_text_ok(name) { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("kind", "tool");
+        b.string_field("name", name);
+        b.string_field("text", "`" + name + "`, an operation of " + surface);
+        b.string_field("source", source);
+        b.string_field("contract", surface);
+        b.string_field("effect", "uncertain");
+        // the roles, as strings: a description is pretty-printed, a body is one line
+        b.begin_array_field("requires");
+        let mut required = std::json::array_first(std::json::find_field_raw(member, "requires"));
+        while !required.done {
+            let e = std::str::trim(required.element);
+            if len(e) >= 3 && std::str::starts_with(e, "\"") { b.string_value(std::json::unescape_string(e[1..(len(e) - 1)])); }
+            required = std::json::array_next(required);
+        }
+        b.end_array();
+        b.end_object();
+        if self.emit("graph.node", graph_node_id("tool", name), b.result()) {
+            self.nodes = self.nodes + 1;
+            self.kinds = self.kinds + "tool\n";
+        }
+    }
     fn edge(e: GraphEdge) {
         if e.size() < 2 { return; }
         if self.emit("graph.edge", e.id(), e.body()) { self.edges = self.edges + 1; }
@@ -602,6 +636,7 @@ locus GraphIngest {
             while !surfaces.done {
                 let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
                 while !members.done {
+                    self.tool(matched, members.element, f);
                     let mut required = std::json::array_first(std::json::find_field_raw(members.element, "requires"));
                     while !required.done {
                         let e = std::str::trim(required.element);
@@ -647,6 +682,7 @@ locus GraphIngest {
                 self.serves(c);
                 let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
                 while !members.done {
+                    self.tool(c, members.element, "hale check --api");
                     self.requires(c, members.element);
                     members = std::json::array_next(members);
                 }

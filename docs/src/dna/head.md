@@ -203,7 +203,8 @@ hale dna review <id> --iris      # a change's semantic diff in iris's review vie
 
 The list groups the toolchain's seeded proposals under their headings
 (`purpose`, `design`, `operating`, `using`, the library's families and a repository's `holes`,
-`practices` and `holds`), in the order they were proposed: under `holes`,
+`practices` and `holds`, `positions` opened at run time and the
+repository's graph read again, `ingest`), in the order they were proposed: under `holes`,
 each position is followed by its mandate (`ratify the mandate of
 <position>: …`), so `hale dna review holes approve` ratifies the
 position and then its mandate, and the mandate is bound to the position
@@ -263,7 +264,10 @@ The Review admits a verdict only if:
 2. **the reviewer stands to decide it**: with signers, a holder of a
    required position; with none, a claimed authority that satisfies
    the required one (else `authority <a> does not satisfy <required>`);
-3. **the reviewer did not author it** (`reviewer <who> authored the candidate`).
+3. **the reviewer did not author it** (`reviewer <who> authored the candidate`),
+   except on a governance proposal requiring the Board (a fill, an
+   opening, a graph proposal), which admits its author's verdict:
+   [Positions and `fill`](./shaping.md).
 
 | authority | rank |
 | --- | --- |

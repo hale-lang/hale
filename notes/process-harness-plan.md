@@ -6,7 +6,7 @@ This note is the design that closes it, and the order it lands in. A thin **skel
 
 ## The harness: hat and hands
 
-A Work is one step of a process, and a code change is one kind of output among several: the tree already has `Patch`, `Assessment`, `Applied`, `Evidence`, `Report`, `MonthlyReport`, `reconciliation` and `approval`. The organism's harness is therefore a **process harness**, not a coding one. For one Work it is two things.
+A Work is one step of a process, and a code change is one kind of output among several. The baseline's definitions owe two today, `Patch` and `Assessment`; `output_contract` is otherwise a free string, which test fixtures fill with names such as `Report` or `approval` that nothing describes. The organism's harness is therefore a **process harness**, not a coding one, and an output contract becomes something declared (`dna/core/contracts.hl`), not a string a definition makes up. For one Work it is two things.
 
 - **The hat** is the assembled context: the position's mandate and charter, the practices and knowledge drawn for the Work, the objective, the history, the output contract and how it is judged (its gates, the position that reviews it, its change class), the workspace for a Work that changes files (the repository, the base, what the grant may touch), and the model chosen for it with the rule that chose it. It stays structure, sealed by its digest, as today.
 - **The hands** are the toolset composed for that Work: the tools to act with, and the validators of its output contract, run before the outcome is submitted. A validator in the harness is pre-flight. The owner runs the same validators on submit, and only the owner's verdict counts: the store is the gate.
@@ -38,7 +38,7 @@ Authority is not transitive. Voice issues its own keys, and a habitat holds one 
 
 Which model a Work gets is decided on hale's side, in categories along two axes.
 
-- **Mode belongs to the harness**: `think` is one call; `tools` is a loop of calls over the hands without a machine; `do` is that loop with a workspace. By default the mode follows the Work: a `Patch`, or hands that include a workspace, is `do`; an `Assessment` is `think`.
+- **Mode belongs to the harness**: `think` is one call; `tools` is a loop of calls over the hands without a machine; `do` is that loop with a workspace. By default the mode follows the Work: a `Patch`, or hands that include a workspace, is `do`; an `Assessment`, whose hands are the record's reads, is `tools`; a Work with no hands is `think`.
 - **Size belongs to the model**: quick, standard or deep, with capability flags (tool calls, context length). `tools` and `do` map only to models that return tool calls.
 
 Two tables hold the mapping. The organism's maps a selector to a category, and is portable: a pack or a recipe carries it without naming a vendor. The habitat's maps a category to a model voice serves, and is swappable: upgrading every deep reviewer is one line. Selectors resolve most-specific first: the habitat's default, the organism, the position, the workflow step or output contract, the task (an override at the ask, or the Leader's plan). An override stays inside the position's permitted set and never widens it. Data class filters which models may fill a category; it is not a category of its own. The rules are rows, so they have history, and the resolution travels in the hat with the rule that made it.
@@ -66,12 +66,12 @@ A performer's knowledge today comes from a fixed set of targets: the Work's locu
 
 ## The skeleton
 
-It is done when one cycle from scratch, on canned models, is green three times running:
+It is done when one cycle from scratch, on canned models, is green three times running (`scripts/dna-cycle/cycles.sh 3`):
 
 1. `init`, ratification, filling.
 2. A position opened through the operation layer, with its mandate and a model-mapping default.
 3. An ask routed to that position as a `Patch` Work, delivered three ways, each ending applied: by the organization's own editor; by a leg running its own tool loop (hat, hands, a model through an OpenAI-compatible endpoint); by a scripted person session over MCP, with the hat and hands the head serves.
-4. One `Assessment` Work done by a leg in `think` mode.
+4. One `Assessment` Work done by a leg: a `tools` Work, since its hands are the record's reads (S1).
 5. `hale dna ingest` at a later commit, filing the graph's diff, including the tool nodes of the application's surfaces, as reviewed proposals.
 6. A teardown that leaves nothing.
 

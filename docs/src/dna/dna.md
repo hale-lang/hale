@@ -179,6 +179,7 @@ and binds the facts that enter the organization to the nerves, one
         dna::ConcernRaised: nats::NatsAdapter { };
         dna::PracticeRequested: nats::NatsAdapter { };
         dna::HoldRequested: nats::NatsAdapter { };
+        dna::PositionOpenRequested: nats::NatsAdapter { };
         dna::KnowledgeNodeRequested: nats::NatsAdapter { };
         dna::KnowledgeBindingRequested: nats::NatsAdapter { };
         dna::KnowledgeEdgeRequested: nats::NatsAdapter { };

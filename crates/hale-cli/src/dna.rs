@@ -97,6 +97,81 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
 /// Run a host verb to completion and return what it printed; its
 /// complaint when it failed. For the verbs the driver itself needs
 /// (`init` seeding the record, `ui` syncing before it serves).
+/// `hale dna ingest [project] [--at <rev>]`: the repository at a commit
+/// (HEAD by default), checked out beside the record under `.hale/dna/ingest/`
+/// with the repository's own directory name (the ingest names its purpose
+/// after it when the README does not), read by the same ingest `init`
+/// runs, and its difference from the graph the record states proposed to
+/// the Board (`graph-reingest`); the checkout is removed after.
+fn ingest_cmd(rest: &[String]) -> ExitCode {
+    let mut at = "HEAD".to_string();
+    let mut dir = PathBuf::from(".");
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--at" => {
+                let Some(v) = rest.get(i + 1) else {
+                    eprintln!("usage: hale dna ingest [project] [--at <rev>]");
+                    return ExitCode::from(2);
+                };
+                at = v.clone();
+                i += 2;
+            }
+            a if !a.starts_with("--") => {
+                dir = PathBuf::from(a);
+                i += 1;
+            }
+            a => {
+                eprintln!("hale dna ingest: `{a}` is not a flag of ingest (--at)\nusage: hale dna ingest [project] [--at <rev>]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
+    let sha = match git(&["rev-parse", "--verify", &format!("{at}^{{commit}}")]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            eprintln!("hale dna ingest: `{at}` names no commit of {}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = match dir.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hale dna ingest: {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let base = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repository".to_string());
+    let holder = root.join(".hale/dna/ingest").join(&sha);
+    let tree = holder.join(&base);
+    let _ = fs::remove_dir_all(&holder);
+    let _ = git(&["worktree", "prune"]);
+    if let Err(e) = fs::create_dir_all(&holder) {
+        eprintln!("hale dna ingest: {}: {e}", holder.display());
+        return ExitCode::FAILURE;
+    }
+    let added = git(&["worktree", "add", "--quiet", "--detach", &tree.display().to_string(), &sha]);
+    if !matches!(&added, Ok(o) if o.status.success()) {
+        let why = added.map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string()).unwrap_or_else(|e| e.to_string());
+        eprintln!("hale dna ingest: the commit could not be checked out: {why}");
+        return ExitCode::FAILURE;
+    }
+    let answered = host_run("graph-reingest", &root, &[tree.display().to_string(), "--at".to_string(), sha.clone()]);
+    let _ = git(&["worktree", "remove", "--force", &tree.display().to_string()]);
+    let _ = fs::remove_dir_all(&holder);
+    match answered {
+        Ok(out) => {
+            print!("{out}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("hale dna ingest: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     let (mut cmd, _) = host_command(verb, dir)?;
     let out = cmd.args(args).output().map_err(|e| format!("hale dna {verb}: {e}"))?;
@@ -509,7 +584,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        // `hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>`
+        // `hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>`
         // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -581,6 +656,10 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
+        // the repository's graph read again at a commit, its difference proposed
+        Some("ingest") => ingest_cmd(&args[1..]),
+        // a position opened at run time: `hale dna position open <name> --mandate "…"`
+        Some("position") => host_exec("position", Path::new("."), &args[1..]),
         Some("fill") => {
             let mut words = Vec::new();
             let mut forwarded = Vec::new();
@@ -665,6 +744,10 @@ pub fn run(args: &[String]) -> ExitCode {
             host_exec("fleet", &dir, &rest)
         }
         Some("ui") => ui_cmd(&args[1..]),
+        // the model mapping's tables, as rows: `models rule|category|map …`
+        Some("models") if matches!(args.get(1).map(String::as_str), Some("rule" | "category" | "map")) => {
+            host_exec("models-map", Path::new("."), &args[1..])
+        }
         Some("models") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("models", &dir, &rest)
@@ -826,8 +909,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
-    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,");
-    eprintln!("                                    renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
+    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]");
+    eprintln!("                                    which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs");
+    eprintln!("                                    (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it");
+    eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,");
+    eprintln!("                                    renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);");
     eprintln!("                                    loop --parallel N is a worker: N children, each its own holder; loop --drain ends one");
     eprintln!("       hale dna definitions [project] [--json]");
     eprintln!("                                    the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store");
@@ -842,6 +928,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
+    eprintln!("       hale dna ingest [project] [--at <rev>]");
+    eprintln!("                                    read the repository's graph again at a commit (HEAD): what differs from the record, tools");
+    eprintln!("                                    for every served operation included, proposed as one Board Review (`review ingest approve`)");
+    eprintln!("       hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]");
+    eprintln!("                                    open a position at run time: its node and its mandate, one Board Review (`review positions approve`)");
     eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
@@ -884,8 +975,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
@@ -922,7 +1013,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence, and the knowledge ratified for");
     eprintln!("                                    the node it is bound to (or system:dna for a change to the organization) when memory is there");
     eprintln!("       hale dna review <family> approve|reject");
-    eprintln!("                                    decide every pending Review of a seeded family in turn: purpose, design, operating, using, library (a library family is one Review for all its ideas)");
+    eprintln!("                                    decide every pending Review of a group in turn: purpose, design, operating, using, library, holes, practices, holds, positions, ingest (a library family is one Review for all its ideas)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
@@ -2668,6 +2759,7 @@ main locus Org {{
         dna::ConcernRaised: nats::NatsAdapter {{ }};
         dna::PracticeRequested: nats::NatsAdapter {{ }};
         dna::HoldRequested: nats::NatsAdapter {{ }};
+        dna::PositionOpenRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};

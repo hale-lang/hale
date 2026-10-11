@@ -726,6 +726,22 @@ locus WorkflowCatalog {
             i = i + 1;
         }
     }
+    // A position-routed ask's position, bound into every Work that
+    // requires one and names none: the word `position:<name>` joins its
+    // requirement, so only a leg holding that position matches it.
+    fn bind_position(position: String) {
+        if !std::str::starts_with(position, "position:") { return; }
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            if n.kind == "work" && word_in("position", n.requires) && len(position_in(n.requires)) == 0 {
+                let mut m = n;
+                m.requires = n.requires + " " + position;
+                self.bound.set(i, m) or discard;
+            }
+            i = i + 1;
+        }
+    }
     // ---- expansion -----------------------------------------------------
 
     // Bind one execution of definition `id`@`revision` under root Task
@@ -1127,6 +1143,11 @@ fn define_baseline(c: WorkflowCatalog) {
     // person's on the second attempt
     let jd = c.define("ask-judge", 1, "record", "an ask: a judgment, an assessment handed back");
     let jl = c.leaf("ask-judge", 1, 0, "j", WorkRequest { requires: "judgment", output_contract: "Assessment" }, 2);
+    // a change routed to a position (`task create --to position:<name>`):
+    // one leaf a leg holding that position performs, its Patch reviewed as
+    // any candidate; the position is bound at admission (`bind_position`)
+    let pd = c.define("ask-position", 1, "record", "an ask: one change, made by the position it is routed to");
+    let pw = c.leaf("ask-position", 1, 0, "w", WorkRequest { requires: "position", output_contract: "Patch" }, 1);
     // GH #1143: a scheduled ask names its objective
     let ao = c.occurs("ask-edit", 1, "skip", "objective");
     let po = c.occurs("ask-person", 1, "skip", "objective");

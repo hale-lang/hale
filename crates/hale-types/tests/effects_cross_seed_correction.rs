@@ -195,8 +195,8 @@ fn api() {
 fn host() {
     pinned(
         "host",
-        457,
-        464,
+        465,
+        472,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -289,6 +289,7 @@ fn host() {
         senses_up_verb  does={syscall,block,alloc}
         show_verb  does={syscall,block,time,env,alloc}
         this_host  does={syscall,block,alloc}
+        under_node  does={syscall,block,time,entropy,env,alloc,secret_use}
         work_verb  does={syscall,block,alloc}
         ",
     );
@@ -299,9 +300,10 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        468,
-        486,
+        471,
+        490,
         "
+        AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
         DefinitionCodec::field_allowed  does={alloc}
         DefinitionDrafts::recapture  does={syscall,block,env,alloc}

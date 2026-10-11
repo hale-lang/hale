@@ -461,8 +461,12 @@ The CLI checks first: the holder must be a person the record knows (a
 row in their name, or an organization's member) who has not retired,
 and never a name the organism writes as. The request is a
 `hold.requested` row in your name; the organization answers with a
-Board Review, listed by `hale dna review` under `holds`, which you, the
-asker, may not ratify:
+Board Review, listed by `hale dna review` under `holds`. Whoever holds
+the Board decides it, you included if that is you: a governance proposal
+is the one exception to the rule that a candidate's author may not
+review it, since seating someone is not reviewing your own work (a change
+to the code still needs someone other than its author, even one the
+Board must approve):
 
 ```text
 proposed alice to hold position:board: the Board ratifies it as k:… (`hale dna review` lists it under `holds`)
@@ -483,6 +487,31 @@ hale dna fill organization:north bob               # bob is north's member
 
 A position has one owning organization, and a person belongs to one at
 most.
+
+
+### Opening a position
+
+A position the graph does not state yet is opened through the
+organization, as a fill is:
+
+```sh
+hale dna position open api/steward --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --under api --text "keeps the list's api"
+```
+
+The mandate is required: what the position decides, what it may not
+do, what it cites and what it escalates. `--under` names the part it
+unfolds from; a bare name is the seed, work part, position or process
+the graph states by that name, and a name the graph does not state is
+refused. The organization proposes the position's node and its mandate
+as one Board Review, listed under `positions`:
+
+```text
+proposed opening position:api/steward with its mandate: the Board ratifies it as k:… (`hale dna review` lists it under `positions`)
+```
+
+Ratifying it ratifies both. A name the graph already states, or one
+asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
+holder.
 
 ## How the organization grows
 
