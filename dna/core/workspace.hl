@@ -310,21 +310,24 @@ fn graph_ownership_of(lines: String) -> String {
 // started one's index 1 where the other's index 2 started, both probes
 // found the port free, and the later bind of the two was refused.
 //
-// 30000..46999, the range the fixtures' own arithmetic chose: clear of
-// the fixed ports the OIDC fixtures bind. -1, with a line saying so,
-// when every candidate was in use.
+// 20000..32767: below the kernel's ephemeral range (Linux's
+// `ip_local_port_range` is 32768..60999 by default), so no outgoing
+// connection on the box is handed the port between the close here and
+// the service's own bind — the window in which a reflex fixture's spine
+// once found its port taken (the range was 30000..46999, most of it
+// ephemeral). Clear of the fixed ports the OIDC fixtures bind. -1, with a
+// line saying so, when every candidate was in use.
 //
-// A window stays open between the close here and the service's own
-// bind — the Rust harness's `free_port()` has the same one. What this
-// removes is the fixture that never looked.
+// The window itself stays open: another fixture's probe could still take
+// the port, which the pid-hashed starts below keep apart.
 fn free_port(index: Int) -> Int {
-    let span = 17000;
+    let span = 12768;
     let h = std::crypto::sha256(std::bytes::from_string("free_port:" + to_string(std::process::pid())));
     let offset = (std::bytes::at(h, 0) or 0) * 256 + (std::bytes::at(h, 1) or 0);
     let start = (offset + index * 512) % span;
     let mut i = 0;
     while i < 512 {
-        let port = 30000 + (start + i) % span;
+        let port = 20000 + (start + i) % span;
         let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
         if fd >= 0 {
             std::io::tcp::__close_fd(fd);
@@ -332,7 +335,7 @@ fn free_port(index: Int) -> Int {
         }
         i = i + 1;
     }
-    println("dna::free_port: every port from ", 30000 + start, " on (512 candidates in 30000..46999) was refused at bind; each errno is above. The caller is handed -1.");
+    println("dna::free_port: every port from ", 20000 + start, " on (512 candidates in 20000..32767) was refused at bind; each errno is above. The caller is handed -1.");
     return -1;
 }
 
