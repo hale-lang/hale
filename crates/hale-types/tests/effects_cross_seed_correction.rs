@@ -300,8 +300,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        471,
-        490,
+        472,
+        491,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}

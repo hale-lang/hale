@@ -9289,6 +9289,7 @@ row	~.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
 shared	dynamic	sites in core #3932612c
 -- dynamic	sites in tests
 dynamic	KnownAuthors	on main
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #c3a51769

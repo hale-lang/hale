@@ -1444,7 +1444,7 @@ record's.
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
 | `graph.requested` | record | `hale dna ingest` asks the running organization to open the Review it filed (`request_id`, `review_id`, `by`), relayed as `GraphReviewRequested` (`dna.graph.requested`) |
-| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not |
+| `graph.proposed` / `graph.refused` | record | the organization opened that Review (routed, its signers told), or could not; `graph.refused <row id>` is also memory's refusal of a graph row it would not project, in the record or in a ratified proposal (`kind`, `why`, `row`, `by: memory`) |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (entity the commit; `added`, `changed`, `retired`, the `review_id` of the one proposal it filed, `""` when nothing differed) |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
 | `position.requested` | record | someone asks the organization to open a position at run time, with its mandate (`hale dna position open`: `position`, `text`, `mandate`, `under`, `by`), relayed as `PositionOpenRequested` (`dna.position.requested`) |
@@ -4422,9 +4422,15 @@ The live half is memory's, projected from the record by the spine
   **The tail checks a graph row whole** before memory takes it — the
   kind is the vocabulary's, the anchor comes first, every member names
   a node of the kind its role requires and no node twice, the arity is
-  two or more, and the entity is the id the body implies — and a row that fails stops
-  the projection at that row, `invalid graph.<kind> (row n): <why>`,
-  like any invalid fact. A node or edge is replaced by a later row with
+  two or more, and the entity is the id the body implies. A row that
+  fails is refused as a row, as a refused hold is: memory appends
+  `graph.refused <row id>` (`kind`, `why`, `row`, `by: memory`) once,
+  says it on stderr, and the projection goes on past it, so one bad
+  row never holds back every read waiting on the watermark. A graph
+  row inside a ratified proposal is checked and refused the same way,
+  at the row that ratified it, and the proposal's other rows land. A
+  store that fails to take a valid row still stops the projection at
+  that row: that is the database's failure, retried, not the row's. A node or edge is replaced by a later row with
   its id (an edge's members with it) and taken out by `graph.retired`; a
   retired node's edges stay as the record left them, and the perspectives
   leave its memberships out (an edge whose anchor is gone is not shown).

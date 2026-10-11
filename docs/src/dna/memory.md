@@ -374,6 +374,14 @@ over one record converge on one graph with each row applied once, and
 a projection interrupted mid-row leaves nothing of it. Nothing else
 writes the graph.
 
+A graph row memory will not take, malformed or naming nodes of the
+wrong kind, whether written straight to the record or carried by a
+proposal the Board ratified, is refused as a row of its own:
+`graph.refused` with the row it was at and why, `by: memory`. The
+projection goes on past it, so one bad row never holds back the reads
+that wait for memory to catch up. Only the database failing stops the
+projection, at that row, until it answers.
+
 There is one org chart, and it is this graph: its positions, the
 organizations that own them, and who holds them, all `holds` edges.
 Read its two perspectives with:

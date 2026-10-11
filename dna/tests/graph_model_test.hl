@@ -10,8 +10,8 @@
 // and memory answers with GRAPH.md's counts and both perspectives: the
 // org chart and the process model. A row re-put replaces its edge's
 // members, a retired one leaves (a retired node leaves the perspectives),
-// a rebuild reproduces both perspectives, and a malformed one stops the projection
-// at its row with the reason. The checks on rows run without memory;
+// a rebuild reproduces both perspectives, and a malformed one is refused as a
+// row with the reason while the projection goes on. The checks on rows run without memory;
 // memory is Postgres, and without the owner's DSN in
 // HALE_DNA_MEMORY_DSN_OWNER the projection half is not exercised.
 
@@ -496,12 +496,56 @@ locus App {
         std::test::assert_eq_str(after.error, "", "the retirement projects");
         std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("bob")), "", "bob retired, and holds node/dev no more");
 
-        // ---- a malformed row stops the projection at its row, with why
+        // ---- a malformed row is refused as a row, with why, and the
+        // projection goes on past it: the row after it lands
         let at = self.j.revision();
         self.append("graph.edge", "meets:contract:spec/node.yaml", "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}");
-        let refused = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
-        std::test::assert(std::str::contains(refused.error, "invalid graph.edge (row " + to_string(at) + "): a meets edge joins two or more members"), "the reason, at its row: " + refused.error);
-        std::test::assert_eq_int(store.watermark(), at, "nothing of the refused row landed");
+        self.append("graph.node", "axiom:Refusals are rows", "{\"kind\": \"axiom\", \"name\": \"Refusals are rows\"}");
+        let end = self.j.revision();
+        let refused = ops::apply_record_to(store, self.j, self.receipts, end, "", "local", KnownAuthors { });
+        std::test::assert_eq_str(refused.error, "", "a malformed row stops nothing");
+        std::test::assert_eq_int(refused.graph, 1, "the row after it projected");
+        std::test::assert_eq_int(store.watermark(), end, "the projection reached the end it was given");
+        std::test::assert_eq_int(self.j.revision(), end + 1, "and the refusal is the row after it");
+        std::test::assert_eq_int(store.graph_edges_count("meets"), 6, "nothing of the refused row landed");
+        let why = self.last("graph.refused", "meets:contract:spec/node.yaml");
+        std::test::assert(std::str::contains(std::json::find_string_field(why, "why"), "a meets edge joins two or more members") && std::json::find_int_field(why, "row") == at && std::json::find_string_field(why, "by") == "memory" && std::json::find_string_field(why, "kind") == "graph.edge", "the refusal is a row, at its row, by memory: " + why);
+        // replayed, the refusal is not written twice
+        let rows = self.j.revision();
+        std::test::assert(store.rebuild(store.projection_basis().watermark, store.projection_basis().head), "the projection emptied");
+        let replayed = ops::apply_record_to(store, self.j, self.receipts, rows, "", "local", KnownAuthors { });
+        std::test::assert_eq_str(replayed.error, "", "the replay projects clean");
+        std::test::assert_eq_int(self.j.revision(), rows, "one refusal row, however often the row is read");
+
+        // ---- a ratified proposal's malformed row is refused the same way:
+        // its other rows land, and so does the record after it
+        let bad = "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}";
+        let good = "{\"kind\": \"axiom\", \"name\": \"A batch is ratified whole\"}";
+        let d = std::json::Builder { };
+        d.begin_object();
+        d.string_field("author", "ada");
+        d.string_field("kind", "graph");
+        d.string_field("name", "two rows, one malformed");
+        d.begin_array_field("rows");
+        d.begin_object(); d.string_field("kind", "graph.edge"); d.string_field("entity", "meets:contract:spec/node.yaml|proposed"); d.string_field("body", bad); d.end_object();
+        d.begin_object(); d.string_field("kind", "graph.node"); d.string_field("entity", "axiom:A batch is ratified whole"); d.string_field("body", good); d.end_object();
+        d.end_array();
+        d.string_field("target", "purpose:voice");
+        d.string_field("text", "two rows, one malformed.");
+        d.end_object();
+        let proposal = "sha256:" + self.receipts.store(d.result());
+        self.append("knowledge.proposed", proposal, "{\"kind\": \"graph\", \"class\": \"initiative\", \"target\": \"purpose:voice\"}");
+        let ratified_at = self.j.revision();
+        self.append("knowledge.ratified", proposal, "{\"kind\": \"graph\", \"class\": \"initiative\", \"target\": \"purpose:voice\", \"decided_by\": \"ada\"}");
+        self.append("graph.node", "axiom:The record goes on", "{\"kind\": \"axiom\", \"name\": \"The record goes on\"}");
+        let axioms = store.graph_nodes_count("axiom");
+        let tail = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
+        std::test::assert_eq_str(tail.error, "", "a ratified proposal's malformed row stops nothing");
+        std::test::assert_eq_int(tail.graph, 2, "its good row and the record's next row projected");
+        std::test::assert_eq_int(store.graph_nodes_count("axiom"), axioms + 2, "both new axioms are in the graph");
+        let in_proposal = self.last("graph.refused", "meets:contract:spec/node.yaml|proposed");
+        std::test::assert(std::str::contains(std::json::find_string_field(in_proposal, "why"), "the edge's entity") || std::str::contains(std::json::find_string_field(in_proposal, "why"), "two or more members"), "the proposal's bad row is refused as a row: " + in_proposal);
+        std::test::assert_eq_int(std::json::find_int_field(in_proposal, "row"), ratified_at, "at the row that ratified it");
 
         // ---- a memory migrated before the graph is refused at open, never
         // left to stall: version 3 has no graph tables

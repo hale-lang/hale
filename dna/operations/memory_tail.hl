@@ -139,7 +139,9 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
     // winning, or taken out
     if e.kind == "graph.node" || e.kind == "graph.edge" || e.kind == "graph.retired" {
         let g = if e.kind == "graph.node" { graph_node_row(e.entity, e.body) } else if e.kind == "graph.edge" { graph_edge_row(e.entity, e.body) } else { graph_retired_row(e.entity) };
-        if !g.ok { out.error = "invalid " + e.kind + " (row " + to_string(i) + "): " + g.why; return out; }
+        // a row memory will not take is refused as a row and passed, as a
+        // refused hold is: one bad row never stops the projection
+        if !g.ok { graph_row_refused(j, e.kind, e.entity, g.why, i); return out; }
         // a hold is the store's to admit, however it reached the record
         let refused_hold = if e.kind == "graph.edge" && g.kind == "holds" { hold_refusal(store, authors, i, g.id, trust) } else { "" };
         if len(refused_hold) > 0 { hold_refused(j, g.id, refused_hold, i); return out; }
@@ -301,7 +303,11 @@ fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAut
         let body = std::json::find_string_field(it.element, "body");
         // a reviewed retirement (`hale dna ingest`) takes a node or edge out
         let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else if kind == "graph.retired" { graph_retired_row(entity) } else { graph_refused("`" + kind + "` is no graph row") };
-        if !g.ok { out.error = "invalid " + kind + " in a ratified proposal (row " + to_string(i) + "): " + g.why; return out; }
+        if !g.ok {
+            graph_row_refused(j, kind, entity, g.why, i);
+            it = std::json::array_next(it);
+            continue;
+        }
         if g.kind == "holds" {
             let why = hold_refusal(store, authors, i, entity, trust);
             if len(why) > 0 {
@@ -401,6 +407,29 @@ fn hold_refused(j: dna::Journal, id: String, why: String, i: Int) {
     b.string_field("by", "memory");
     b.end_object();
     let r = j.append(j.revision(), "hold.refused", id, b.result());
+}
+
+// A graph row memory will not take (`graph.node`, `graph.edge` or
+// `graph.retired`, in the record or in a ratified proposal), as a row:
+// `graph.refused <entity>` says why and at which row, once, and the stderr
+// line says it here too. The projection goes on past it.
+@unbounded
+fn graph_row_refused(j: dna::Journal, kind: String, entity: String, why: String, i: Int) {
+    eprintln("hale dna: memory: a ", kind, " (row ", to_string(i), ") is not projected: ", why);
+    let mut k = 0;
+    while k < j.revision() {
+        let e = j.read(k);
+        if e.kind == "graph.refused" && e.entity == entity && std::json::find_int_field(e.body, "row") == i { return; }
+        k = k + 1;
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("why", why);
+    b.int_field("row", i);
+    b.string_field("by", "memory");
+    b.end_object();
+    let r = j.append(j.revision(), "graph.refused", entity, b.result());
 }
 
 // Whether the record redacted `digest` (GH #606).
