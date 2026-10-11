@@ -4636,7 +4636,12 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name>
-  <holder>` and `practice <name> | <text>`; `#` starts a comment,
+  <holder>`, `practice <name> | <text>`, `assign|unassign <name>
+  reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
+  `split <name> into <name> <name>`, `expose <kind>:<node> as
+  contract:<name>`, `depend <kind>:<node> on contract:<name>`,
+  `externalize seed:<name>` and `internalize contract:<name> as
+  seed:<name>`; `#` starts a comment,
   and a name is a position's, with or without `position:`. The host
   plans the batch against the record (`batch_plan`): a line that is no
   step, a name with a space, `|` or tab, an `open` with no mandate, a
@@ -4648,8 +4653,35 @@ The live half is memory's, projected from the record by the spine
   record does not state, asked twice or filled in the same batch, or a
   practice named twice or already in force is
   refused whole, naming the
-  step, and nothing is written. Order inside a batch does not matter: a
-  fill or `under` may name a position a later step opens. Planned, the
+  step, and nothing is written. Opens are taken first, so a step may
+  name a position a later line opens; every other step is taken in the
+  order written, against the organization the steps before it leave.
+  **The operations, as graph rows.** `assign` adds a `reviews` edge
+  (`reviews:<position>|<node>`; the node a contract, document, seed or
+  deployment the graph states) and `unassign` retires it. `close`
+  retires a position: its holds, what it reviews, the `unfold` edge it
+  hangs from, then its node; never `position:board`, and never one the
+  batch opens. `merge a into b` fills `b` with every holder of `a` it
+  lacks and assigns it what `a` reviews, then closes `a`. `split a into
+  b c` opens `b` and `c`, each with `a`'s ratified mandate to start
+  from (the Board amends either later; refused when `a` has none),
+  fills both with `a`'s holders, assigns both what `a` reviews, and
+  closes `a`. `expose n as c` states `contract:c` if the graph does not
+  and writes its `meets` edge with `n` its server (refused when the
+  contract is met already); `depend n on c` restates that edge with
+  `n` a consumer. `externalize seed:s`: every contract the part serves
+  is restated without it, the part's name added to the edge's
+  `outside` parties (refused when nothing in the organism consumes the
+  contract, or when the part serves none), every position unfolding
+  from it closes, and its node retires. `internalize c as seed:s`
+  states the part again and restates the edge with it the server and
+  its name out of `outside`. A batch's rows are its nodes, then its
+  edges (each restated `meets` once, at its last body), then its holds,
+  then what it retires. Knowledge bound to a closed position stays
+  bound to its node; rebinding it is not built. The org chart a batch
+  is planned against also lists `reviews <position> <node>`, `part
+  seed:<name>`, `serves|consumes|carries <node> <contract>` and
+  `outside <contract> <party>`. Planned, the
   batch prints the org chart before and after (`position <id>`,
   `mandate <id>`, `holds <id> <holder>` lines, `+ ` where the batch adds
   one, `- ` where it takes one out), and `--dry-run` stops there. Otherwise the host keeps the

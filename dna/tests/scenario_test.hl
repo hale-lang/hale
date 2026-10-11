@@ -8,8 +8,7 @@
 // a position the graph states; every position the graph states has a
 // ratified mandate; reading the organization twice from the record gives
 // the same organization. An operation of one organism that is not built
-// yet (merge, split, assign, retire a pack, expose, depend,
-// externalize, internalize) fails its scenario, and those scenarios are
+// yet (retiring a pack) fails its scenario, and those scenarios are
 // listed in KNOWN_OPEN and asserted to fail: when an operation lands, its
 // scenario passes and its entry has to go. The habitat's operations (graft,
 // extract, absorb, re-parent) span several records and come with saplings.
@@ -125,24 +124,54 @@ vacate api/dev bo
 }
 ";
 
-// Operations not built yet: each scenario fails at the operation it names,
-// as asserted below. When one lands, its scenario passes and its entry goes.
-const TEAM_MERGES: String = "# two positions become one: holds and bound knowledge carry over
-open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
-ratify by riley
-merge api/dev api/reviewer
+const TEAM_MERGES: String = "# two positions become one: holders and what it reviews carry over
+state contract:spec/todo.md
+apply {
+open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/reviewer bo
+assign api/reviewer reviews contract:spec/todo.md
+}
+ratify batch by riley
+merge api/reviewer into api/dev
+ratify batch by riley
+expect no-position api/reviewer
+expect holds api/dev bo
+expect reviews position:api/dev contract:spec/todo.md
+expect no reviews position:api/reviewer contract:spec/todo.md
+refused merge api/dev into api/dev
+refused close board
 ";
 
-const TEAM_SPLITS: String = "# one position becomes two, its mandate and bindings divided
-open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
-ratify by riley
-split api/dev api/frontend api/backend
+const TEAM_SPLITS: String = "# one position becomes two, each starting from its mandate, its holders and what it reviews
+state seed:api
+apply {
+open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+fill api/dev ada
+assign api/dev reviews seed:api
+}
+ratify batch by riley
+split api/dev into api/frontend api/backend
+ratify batch by riley
+expect no-position api/dev
+expect mandate api/frontend
+expect mandate api/backend
+expect holds api/frontend ada
+expect holds api/backend ada
+expect reviews position:api/backend seed:api
 ";
 
-const ASSIGNED: String = "# a position reviews a contract
+const ASSIGNED: String = "# a position reviews a contract, and stops
+state contract:spec/todo.md
 open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
 ratify by riley
 assign api/reviewer reviews contract:spec/todo.md
+ratify batch by riley
+expect reviews position:api/reviewer contract:spec/todo.md
+refused assign api/reviewer reviews contract:spec/nowhere.md
+unassign api/reviewer reviews contract:spec/todo.md
+ratify batch by riley
+expect no reviews position:api/reviewer contract:spec/todo.md
 ";
 
 const PACK: String = "# a pack: positions and the practices they work by, in force as one unit
@@ -164,23 +193,46 @@ const PACK_RETIRED: String = "# that family leaves, and what it superseded is re
 retire-pack publication
 ";
 
-const EXPOSED: String = "# an internal capability gets a named contract
-expose seed:api contract:spec/api.md
+const EXPOSED: String = "# an internal capability gets a named contract, and a part relies on it
+state seed:api
+state seed:web
+apply {
+expose seed:api as contract:spec/api.md
+depend seed:web on contract:spec/api.md
+}
+ratify batch by riley
+expect serves seed:api contract:spec/api.md
+expect consumes seed:web contract:spec/api.md
+refused expose seed:web as contract:spec/api.md
+refused depend seed:web on contract:spec/api.md
 ";
 
-const DEPENDS: String = "# a part relies on a contract
-depend seed:web contract:spec/api.md
+const EXTERNALIZED: String = "# a part leaves the organism, its positions with it; the organism depends on its contract; and comes back
+state seed:billing
+state seed:web
+apply {
+expose seed:billing as contract:spec/billing.md
+depend seed:web on contract:spec/billing.md
+open billing/dev under seed:billing | Decides: how billing is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+fill billing/dev ada
+}
+ratify batch by riley
+expect holds billing/dev ada
+externalize seed:billing
+ratify batch by riley
+expect no-position billing/dev
+expect no part seed:billing
+expect outside contract:spec/billing.md billing
+expect consumes seed:web contract:spec/billing.md
+refused externalize seed:web
+internalize contract:spec/billing.md as seed:billing
+ratify batch by riley
+expect part seed:billing
+expect serves seed:billing contract:spec/billing.md
+expect no outside contract:spec/billing.md billing
 ";
 
-const EXTERNALIZED: String = "# a part leaves the organism; the organism depends on its contract
-externalize seed:billing contract:spec/billing.md
-";
-
-const INTERNALIZED: String = "# a contract depended on becomes a part the organism owns
-internalize contract:spec/billing.md seed:billing
-";
-
-const KNOWN_OPEN: String = "TEAM_MERGES merge\nTEAM_SPLITS split\nASSIGNED assign\nPACK_RETIRED retire-pack\nEXPOSED expose\nDEPENDS depend\nEXTERNALIZED externalize\nINTERNALIZED internalize\n";
+const KNOWN_OPEN: String = "PACK_RETIRED retire-pack\n";
 
 main locus App {
     params {
@@ -325,6 +377,15 @@ main locus App {
             self.last = std::json::find_string_field(proposed, "digest");
             return "";
         }
+        if std::str::starts_with(line, "state ") {
+            // a fixture's node, appended as the repository's graph states one
+            let id = std::str::trim(line[6..len(line)]);
+            let colon = std::str::index_of(id, ":");
+            let r = self.body.journal.append(self.body.journal.revision(), "graph.node", id, "{\"kind\": \"" + id[0..colon] + "\", \"name\": \"" + id[(colon + 1)..len(id)] + "\"}");
+            return if r.ok { "" } else { "the record refused the node" };
+        }
+        let first = if std::str::index_of(line, " ") > 0 { line[0..std::str::index_of(line, " ")] } else { line };
+        if dna::dna_batch_verb(first) { return self.apply(line + "\n"); }
         if std::str::starts_with(line, "vacate ") {
             // an operation of the batch alone: a one-step batch, as `hale dna
             // vacate` proposes it
@@ -372,6 +433,8 @@ main locus App {
         if std::str::starts_with(line, "expect ") {
             let what = std::str::trim(line[7..len(line)]);
             let org = self.org();
+            if std::str::starts_with(what, "no ") && !std::str::starts_with(what, "no-") { return if std::str::contains(org, what[3..len(what)] + "\n") { "still stated: " + what[3..len(what)] + "\nin\n" + org } else { "" }; }
+            if std::str::starts_with(what, "reviews ") || std::str::starts_with(what, "serves ") || std::str::starts_with(what, "consumes ") || std::str::starts_with(what, "outside ") || std::str::starts_with(what, "part ") { return if std::str::contains(org, what + "\n") { "" } else { "not stated: " + what + "\nin\n" + org }; }
             if std::str::starts_with(what, "practice ") { return if std::str::contains(org, what + "\n") { "" } else { "not in force: " + what + "\nin\n" + org }; }
             if std::str::starts_with(what, "no-holds ") {
                 let tail = what[9..len(what)];
@@ -452,15 +515,13 @@ main locus App {
         std::test::assert_eq_str(self.scenario("batch-stale", BATCH_STALE), "", "a batch whose ground moved is refused whole when the Board decides it");
         std::test::assert_eq_str(self.scenario("vacated", VACATED), "", "a holder leaves through one Review; the position stays");
         std::test::assert_eq_str(self.scenario("pack", PACK), "", "a pack's positions and practices come into force as one unit");
+        std::test::assert_eq_str(self.scenario("team-merges", TEAM_MERGES), "", "two positions become one, its holders and reviews carried over");
+        std::test::assert_eq_str(self.scenario("team-splits", TEAM_SPLITS), "", "one position becomes two");
+        std::test::assert_eq_str(self.scenario("assigned", ASSIGNED), "", "a position reviews a contract, and stops");
+        std::test::assert_eq_str(self.scenario("exposed", EXPOSED), "", "a capability exposed as a contract, and a part depending on it");
+        std::test::assert_eq_str(self.scenario("externalized", EXTERNALIZED), "", "a part externalized and internalized again");
         // the known-open table: each fails at the operation it names
-        self.known_open("TEAM_MERGES", TEAM_MERGES, "merge");
-        self.known_open("TEAM_SPLITS", TEAM_SPLITS, "split");
-        self.known_open("ASSIGNED", ASSIGNED, "assign");
         self.known_open("PACK_RETIRED", PACK_RETIRED, "retire-pack");
-        self.known_open("EXPOSED", EXPOSED, "expose");
-        self.known_open("DEPENDS", DEPENDS, "depend");
-        self.known_open("EXTERNALIZED", EXTERNALIZED, "externalize");
-        self.known_open("INTERNALIZED", INTERNALIZED, "internalize");
     }
 }
 fn main() { App { }; }

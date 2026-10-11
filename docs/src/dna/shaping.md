@@ -559,6 +559,29 @@ positions was opened meanwhile), approving it refuses it whole, and
 nothing of it lands: propose it again against the organization as it
 is.
 
+### Reshaping the organization
+
+The same file takes the operations that change a structure that exists:
+
+```text
+assign api/reviewer reviews contract:spec/todo.md
+merge api/reviewer into api/dev          # holders and reviews carry over, then api/reviewer closes
+split api/dev into api/frontend api/backend
+close ops/oncall
+expose seed:billing as contract:spec/billing.md
+depend seed:web on contract:spec/billing.md
+externalize seed:billing                 # the part leaves; the organism depends on its contract
+internalize contract:spec/billing.md as seed:billing
+```
+
+Each is a step like `open` or `fill`, so several of them are one Review,
+and the dry run shows what they add and take out: `reviews` lines for
+what a position signs, `part` lines for the parts, `serves`, `consumes`
+and `outside` lines for who meets at a contract. A split starts both new
+positions from the old one's mandate, for the Board to amend. Closing a
+position takes its holders and reviews with it; the Board's position is
+never closed.
+
 ### Packs
 
 A **pack** is a batch someone wrote once to be adopted many times, with

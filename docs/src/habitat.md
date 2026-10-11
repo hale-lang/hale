@@ -149,8 +149,8 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | `runs_under`, policies rendered as projections, per-attachment credentials | **not built**: reserved as a relation for the compiler's registry (GH #1212) |
 | serving a surface over a transport, and placing a locus | `api::serve` over unix and HTTP, `hale api describe` and `call`: [API](./services/api.md); pools and programs: [Concurrency & placement](./services/concurrency.md) |
 | opening and filling a position | `hale dna position open` (its node and its mandate, one Board Review) and `hale dna fill`, each ratified by the Board: [Positions and `fill`](./dna/shaping.md) |
-| several changes as one Review, and vacating a position | **built**: `hale dna apply <file>` (open, fill, vacate, practice) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
+| several changes as one Review, and the operations of one organism | **built**: `hale dna apply <file>` (open, fill, vacate, practice, assign, close, merge, split, expose, depend, externalize, internalize) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
 | adopting a pack from a nursery | **built**: `hale dna pack apply` from the toolchain's nursery, a directory or a git repository at a revision, recorded with its digest and source; ratifying a nursery as a source, and retiring a pack, are not built |
-| the other operations on a changing structure: merge, split, assign, retiring a pack, expose, depend, externalize, internalize, graft, extract, absorb, re-parent | **not built**; each organism-level one is a scenario asserted to fail until it is (`dna/tests/scenario_test.hl`); the habitat's come with saplings |
+| retiring a pack; the habitat's operations: graft, extract, absorb, re-parent | **not built**; retiring a pack is a scenario asserted to fail until it is (`dna/tests/scenario_test.hl`); the habitat's come with saplings |
 | standard equipment | **not built** |
 | finance capture and books | **not built** |
