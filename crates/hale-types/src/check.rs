@@ -1471,9 +1471,10 @@ pub fn interface_admits<'a>(
     iface_name: &str,
     candidates: impl IntoIterator<Item = &'a str>,
 ) -> BTreeSet<String> {
-    if !matches!(top.lookup(iface_name), Some(TopSymbol::Interface(_))) {
+    // An alias of an interface admits what the interface does.
+    let Some(iface_name) = top.interface_named(iface_name) else {
         return BTreeSet::new();
-    }
+    };
     candidates
         .into_iter()
         .filter(|l| matches!(top.lookup(l), Some(TopSymbol::Locus(_))))
@@ -12177,8 +12178,7 @@ impl<'a> Checker<'a> {
         if path.segments.len() != 1 || !generic_args.is_empty() {
             return None;
         }
-        let name = &path.segments[0].name;
-        matches!(self.top.lookup(name), Some(TopSymbol::Interface(_))).then(|| name.clone())
+        self.top.interface_named(&path.segments[0].name).map(str::to_string)
     }
 
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
@@ -15654,7 +15654,7 @@ impl<'a> Checker<'a> {
                     if let Some(iface) = self
                         .current_locus
                         .and_then(|li| li.accept_written.as_deref())
-                        .filter(|w| matches!(self.top.lookup(w), Some(TopSymbol::Interface(_))))
+                        .and_then(|w| self.top.interface_named(w))
                     {
                         self.diags.push(Diag::ty(
                             *span,

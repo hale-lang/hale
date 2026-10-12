@@ -2300,9 +2300,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         l.members.iter().find_map(|m| match m {
             LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept) => {
                 let TypeExpr::Named { path, generic_args, .. } = &lc.params.first()?.ty else { return None };
-                let name = &path.segments.last()?.name;
-                (path.segments.len() == 1 && generic_args.is_empty() && self.user_interfaces.contains(name))
-                    .then(|| name.clone())
+                if path.segments.len() != 1 || !generic_args.is_empty() {
+                    return None;
+                }
+                // The interface itself, or an alias of one through any
+                // chain of aliases.
+                let mut name = &path.segments[0].name;
+                for _ in 0..=self.user_type_aliases.len() {
+                    if self.user_interfaces.contains(name) {
+                        return Some(name.clone());
+                    }
+                    match self.user_type_aliases.get(name) {
+                        Some(TypeExpr::Named { path, generic_args, .. })
+                            if path.segments.len() == 1 && generic_args.is_empty() =>
+                        {
+                            name = &path.segments[0].name
+                        }
+                        _ => return None,
+                    }
+                }
+                None
             }
             _ => None,
         })

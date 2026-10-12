@@ -2211,11 +2211,19 @@ impl AllocSummary {
 fn interface_admits_by_name(programs: &[&Program]) -> BTreeMap<String, BTreeSet<String>> {
     let mut ifaces: Vec<(&str, BTreeSet<&str>)> = Vec::new();
     let mut loci: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    let mut aliases: BTreeMap<&str, &str> = BTreeMap::new();
     for program in programs {
         for item in flat_decls(&program.items) {
             match item {
                 TopDecl::Interface(i) => {
                     ifaces.push((&i.name.name, i.methods.iter().map(|m| m.name.name.as_str()).collect()))
+                }
+                TopDecl::Type(td) => {
+                    if let TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) = &td.body {
+                        if path.segments.len() == 1 && generic_args.is_empty() {
+                            aliases.insert(&td.name.name, &path.segments[0].name);
+                        }
+                    }
                 }
                 TopDecl::Locus(l) if l.generics.is_empty() => loci.push((
                     &l.name.name,
@@ -2231,13 +2239,27 @@ fn interface_admits_by_name(programs: &[&Program]) -> BTreeMap<String, BTreeSet<
             }
         }
     }
-    ifaces
+    let mut out: BTreeMap<String, BTreeSet<String>> = ifaces
         .into_iter()
         .map(|(name, methods)| {
             let admitted = loci.iter().filter(|(_, fns)| methods.is_subset(fns)).map(|(l, _)| l.to_string()).collect();
             (name.to_string(), admitted)
         })
-        .collect()
+        .collect();
+    // An alias of an interface, through any chain, admits what the
+    // interface does.
+    for alias in aliases.keys() {
+        let mut at: &str = alias;
+        for _ in 0..=aliases.len() {
+            let Some(next) = aliases.get(at) else { break };
+            at = next;
+            if let Some(admitted) = out.get(at).cloned() {
+                out.insert(alias.to_string(), admitted);
+                break;
+            }
+        }
+    }
+    out
 }
 
 pub fn summarize_identified(

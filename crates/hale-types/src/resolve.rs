@@ -34,11 +34,26 @@ pub struct TopScope {
     /// interface-typed slot resolves to `Unknown` in the checker (see
     /// `Ty::assignable_from`).
     pub names: KnownNames,
+    /// Each `type A = I;` alias whose target is an interface, through
+    /// any chain of aliases: alias name -> the interface's name. An
+    /// alias's `TypeKind::Alias` holds the target's resolved type, which
+    /// for an interface is `Unknown` (as every interface-typed slot's
+    /// is), so the interface it spells is kept here.
+    pub interface_aliases: BTreeMap<String, String>,
 }
 
 impl TopScope {
     pub fn lookup(&self, name: &str) -> Option<&TopSymbol> {
         self.symbols.get(name)
+    }
+
+    /// The interface `name` names: an interface itself, or an alias of
+    /// one ([`TopScope::interface_aliases`]).
+    pub fn interface_named(&self, name: &str) -> Option<&str> {
+        match self.symbols.get(name) {
+            Some(TopSymbol::Interface(_)) => self.symbols.get_key_value(name).map(|(k, _)| k.as_str()),
+            _ => self.interface_aliases.get(name).map(String::as_str),
+        }
     }
 
     /// The scope's name table, from its symbols and the bundle's
@@ -514,7 +529,38 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
 
     scope.topics = topics;
     scope.names = scope.name_table(&bundle.import_renames);
+    scope.interface_aliases = interface_aliases(bundle, &scope);
     (scope, diags)
+}
+
+/// The aliases whose target, through any chain of aliases, is an
+/// interface ([`TopScope::interface_aliases`]).
+fn interface_aliases(bundle: &Bundle<'_>, scope: &TopScope) -> BTreeMap<String, String> {
+    let mut targets: BTreeMap<String, String> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            let TopDecl::Type(td) = item else { continue };
+            let TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) = &td.body else { continue };
+            if path.segments.len() == 1 && generic_args.is_empty() {
+                targets.insert(td.name.name.clone(), path.segments[0].name.clone());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for alias in targets.keys() {
+        let mut at = alias.as_str();
+        // A chain of aliases ends at a declaration; a cycle is the
+        // alias pass's diagnostic, and names no interface here.
+        for _ in 0..=targets.len() {
+            let Some(next) = targets.get(at) else { break };
+            at = next;
+            if matches!(scope.symbols.get(at), Some(TopSymbol::Interface(_))) {
+                out.insert(alias.clone(), at.to_string());
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// True when at least one locus in the bundle carries a

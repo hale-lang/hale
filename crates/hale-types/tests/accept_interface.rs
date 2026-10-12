@@ -187,3 +187,33 @@ fn main() { Pool { }; }
     assert!(!hale_types::flows::is_flow(flows, "Idle"), "no Job: resident");
     assert!(!hale_types::flows::is_flow(flows, "Job"), "the interface names no locus");
 }
+
+/// An alias of an interface, through a chain of aliases, is the
+/// interface in every reader: the graph admits the satisfying loci, the
+/// body is held to the interface's methods, and iterating the children
+/// is refused.
+#[test]
+fn an_alias_of_an_interface_is_the_interface() {
+    let src = r#"
+interface Job { fn weight() -> Int; }
+type Jobs = Job;
+type Work = Jobs;
+locus Small { params { w: Int = 3; } fn weight() -> Int { return self.w; } }
+locus Plain { params { w: Int = 3; } }
+locus Pool {
+    params { sum: Int = 0; }
+    accept(c: Work) { self.sum = self.sum + c.weight(); }
+    fn go() { let s = Small { }; let p = Plain { }; }
+}
+fn main() { let p = Pool { }; p.go(); }
+"#;
+    let g = graph(src);
+    let accepts: Vec<&str> = g.accepts["Pool"].iter().map(String::as_str).collect();
+    assert_eq!(accepts, ["Small"], "the alias chain admits what Job does");
+    assert_eq!(resolution(&g, "Pool", "Small"), OwnerResolution::SelfOwned("Pool".into()));
+    assert!(messages(src).is_empty(), "{:?}", messages(src));
+    let field = src.replace("c.weight()", "c.w");
+    assert!(messages(&field).iter().any(|m| m.contains("no field `w` on `Job`")), "{:?}", messages(&field));
+    let iter = src.replace("fn go() {", "fn go() { for c in self.children { } ");
+    assert!(messages(&iter).iter().any(|m| m.contains("accepts through the interface `Job`")), "{:?}", messages(&iter));
+}
