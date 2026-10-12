@@ -188,7 +188,9 @@ The listener deals its connections round-robin over its `shards`; each
 any locus with `fn serve(c: std::io::tcp::Accepted)` is one too (it
 owns `c.fd`). A connection no consumer takes is closed by its listener,
 never leaked, so `require no_silent_loss(topic __TcpAcceptedT)` holds
-in a program's `claims`.
+in a program's `claims`. Neither piece grows with the connections it
+serves: each connection is served in a child that goes with it, and
+the handle the listener sends is gone once the consumer has taken it.
 
 `std::io::tcp::Acceptor { path: "/run/app.sock" }` listens on a Unix
 socket instead of a port (its name is `unix:/run/app.sock`, and it
@@ -201,6 +203,35 @@ per-connection work is a locus that subscribes to the bus starts it as
 a flow child of its own — declare `accept` and `release` for it on the
 handler — rather than building it inside `serve`: a locus born and gone
 within a method has its deliveries queued for the main thread.
+
+Below HTTP, `std::io::tcp::Listener` is the same two pieces with a
+function for a handler: each connection is handed to `on_connection`
+as a `std::io::tcp::Stream`, closed when the function returns.
+`max_accepts` defaults to 1 (pass `-1` to serve until stopped), and the
+placement decides the concurrency exactly as for `Server`:
+
+```hale
+fn echo(s: std::io::tcp::Stream) {
+    let line = s.recv(1024) or "";
+    s.send(line) or discard;
+}
+
+main locus App {
+    params {
+        echo: std::io::tcp::Listener = std::io::tcp::Listener {
+            port: 9000, max_accepts: -1, on_connection: echo
+        };
+    }
+    placement { echo: cooperative(pool = echo) where async_io; }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    App { };
+}
+```
 
 ## Routing
 

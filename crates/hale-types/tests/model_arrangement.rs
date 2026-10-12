@@ -139,9 +139,7 @@ fn the_arrangement_is_rooted_at_the_deployed_main() {
 }
 
 const M3: &str = r#"
-fn ignore_conn(s: std::io::tcp::Stream) { }
-
-locus Listener {
+locus Reader {
     params {
         n: Int = 0;
     }
@@ -151,13 +149,8 @@ locus Tail { }
 
 main locus App {
     params {
-        a: Listener = Listener { };
-        l: std::io::tcp::Listener = std::io::tcp::Listener {
-            host: "127.0.0.1",
-            port: 0,
-            max_accepts: -1,
-            on_connection: ignore_conn,
-        };
+        a: Reader = Reader { };
+        l: std::io::udp::Reader = std::io::udp::Reader { port: 0 };
         z: Tail = Tail { };
     }
     placement {
@@ -172,15 +165,19 @@ fn main() { App { }; }
 /// names a user locus was arranged as the user's locus, on the stdlib
 /// field's pool. The table realizes the stdlib declaration, which the
 /// user-only projection leaves out (U-4): the wrongly inferred
-/// `Listener` goes, the later id shifts down, and `pool:io` is no
-/// domain of the arrangement any more.
+/// `Reader` goes, the later id shifts down, and `pool:io` is no
+/// domain of the arrangement any more. (The case was written over
+/// `std::io::tcp::Listener`, which is now the TCP connection
+/// substrate's, appended to the program that names it rather than a
+/// declaration of the stdlib's analysis copy; the bundled UDP `Reader`
+/// is the stdlib field since, and the identities are pinned over it.)
 #[test]
-fn the_wrongly_inferred_listener_is_removed() {
+fn the_wrongly_inferred_twin_is_removed() {
     let s = snapshot(M3);
     let m = model(&s);
     remapped(m, &[("App", Some(0), Some(0)), ("App.a", Some(1), Some(1)), ("App.l", Some(2), None), ("App.z", Some(3), Some(2))]);
-    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.a Listener - main 0", "2 App.z Tail - main 0"]);
-    identities_hold(m, "f9d60755d77ddbcb", "e0c4bf36558405b3");
+    assert_eq!(arrangement(m), ["0 App App - main -", "1 App.a Reader - main 0", "2 App.z Tail - main 0"]);
+    identities_hold(m, "87629485bc24b57d", "76ab966fa69b16ae");
 }
 
 /// U-4 (M-2): the projection is user-only. The table places the stdlib
@@ -200,7 +197,7 @@ fn stdlib_instances_are_left_out_of_the_arrangement() {
         })
         .map(|(k, _)| k.path.iter().map(|s| s.field.as_str()).collect::<Vec<_>>().join("."))
         .collect();
-    assert_eq!(stdlib, ["l"], "the table places the stdlib field");
+    assert_eq!(stdlib, ["l", "l.buf"], "the table places the stdlib field and its subtree");
     let m = model(&s);
     assert!(!m.entities.locus_instances.iter().any(|i| i.path.starts_with("App.l")));
     assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
