@@ -785,7 +785,12 @@ locus GitRecord {
     //
     // Every commit of the stream carries the whole journal, so the stream
     // is quadratic in the batch: it goes to its file a few MiB at a time,
-    // and the journal grows in one buffer. Built whole in memory, with the
+    // and the journal grows in one buffer. The file must hold every byte
+    // given to it, checked by its size after each write: a stream cut
+    // short at a commit boundary is still a valid stream, and fast-import
+    // would land the commits before the cut, so a write that did not land
+    // whole ends the batch before fast-import runs. The stream also asks
+    // for `done` and ends with it, so git itself refuses one cut short. Built whole in memory, with the
     // journal re-concatenated per row, a batch of 2,000 rows onto an empty
     // record peaked near 3 GB and one of 12,000 was killed for memory.
     fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
@@ -825,7 +830,11 @@ locus GitRecord {
         text.append_str(start);
         // the stream not yet in its file
         let b = std::bytes::BytesBuilder { };
+        b.append_str("feature done\n");
+        // the bytes the file holds
+        let mut written = 0;
         std::io::fs::write_file(stream, "") or self.io_failed(err);
+        if (std::io::fs::file_size(stream) or - 1) != 0 { return self.batch_refused(stream, "the batch's stream could not be created"); }
         // `key<TAB>author<TAB>committer` a line: the identities git stamps
         let mut idents = "";
         let mut nonce = "";
@@ -865,12 +874,17 @@ locus GitRecord {
             b.append(text.view());
             b.append_str("\n\n");
             if b.len() >= BATCH_FLUSH_AT {
+                written = written + b.len();
                 std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
+                if (std::io::fs::file_size(stream) or - 1) != written { return self.batch_refused(stream, "the batch's stream could not be written"); }
                 b.clear();
             }
             i = i + 1;
         }
+        b.append_str("done\n");
+        written = written + b.len();
         std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
+        if (std::io::fs::file_size(stream) or - 1) != written { return self.batch_refused(stream, "the batch's stream could not be written"); }
         let fi = run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + self.repo + "\n" + stream);
         std::io::fs::unlink(stream) or discard;
         if fi.code != 0 {
@@ -882,6 +896,12 @@ locus GitRecord {
         if len(id) == 0 { return Appended { error: "io: the batch could not be read back" }; }
         if !self.move_chain(chain, id, at) { return Appended { error: "stale" }; }
         return Appended { ok: true, id: id };
+    }
+    // A batch given up before fast-import ran: its stream removed, the
+    // chain untouched.
+    fn batch_refused(stream: String, why: String) -> Appended {
+        std::io::fs::unlink(stream) or discard;
+        return Appended { error: "io: " + why };
     }
     // One commit for `journal.jsonl` + the row's line on top of `at`.
     // Touches no ref. Under a signing writer the commit is signed (GH #604

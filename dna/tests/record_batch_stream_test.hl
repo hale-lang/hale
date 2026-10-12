@@ -1,0 +1,76 @@
+// dna/tests/record_batch_stream_test.hl — a record batch's fast-import
+// stream lands whole or not at all. The stream goes to its file a few MiB
+// at a time, and a stream cut short at a commit boundary is still one git
+// accepts: the commits before the cut would land, the chain would move
+// onto them and the batch would report success with rows missing. A write
+// that does not land whole ends the batch before fast-import runs, the
+// chain where it was; and the stream ends with `done` under `feature
+// done`, so git refuses one cut short by anything else.
+
+import "../core" as dna;
+
+fn row(k: Int) -> dna::Row {
+    return dna::Row { kind: "batch.row", entity: "b" + to_string(k), body: "row " + to_string(k), author: "batch" };
+}
+
+fn batch(n: Int) -> dna::RowBatch {
+    let rows = dna::RowBatch { };
+    let mut k = 0;
+    while k < n {
+        rows.push(row(k));
+        k = k + 1;
+    }
+    return rows;
+}
+
+main locus App {
+    run() {
+        let repo = dna::scratch_root("rbstream");
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "a repository: " + init.stderr);
+        let rec = dna::GitRecord { repo: repo };
+        let first = rec.append_batch("journal", "", batch(3), false, "");
+        std::test::assert(first.ok, "a batch lands: " + first.error);
+        std::test::assert_eq_int(rec.count("journal"), 3, "its three rows");
+        // the batch's stream file, as the record names it
+        let stream = repo + "/.hale/dna/batch." + to_string(std::process::pid()) + ".tmp";
+
+        // the stream cannot be created: a directory stands where it goes
+        std::io::fs::mkdir(stream) or discard;
+        let blocked = rec.append_batch("journal", first.id, batch(4), false, "");
+        std::test::assert(!blocked.ok, "a stream that cannot be created ends the batch");
+        std::test::assert_eq_str(blocked.error, "io: the batch's stream could not be created", "before fast-import ran");
+        std::test::assert_eq_str(rec.head("journal").id, first.id, "the chain did not move");
+        let rm = dna::run_tool("rmdir\n" + stream);
+
+        // the stream's writes do not land: it goes to a device that takes
+        // none (Linux has /dev/full; elsewhere this half is not run)
+        if std::io::fs::file_exists("/dev/full") {
+            let ln = dna::run_tool("ln\n-s\n/dev/full\n" + stream);
+            std::test::assert_eq_int(ln.code, 0, "the stream points at /dev/full: " + ln.stderr);
+            let full = rec.append_batch("journal", first.id, batch(5), false, "");
+            std::test::assert(!full.ok, "a stream whose writes do not land ends the batch");
+            std::test::assert_eq_str(full.error, "io: the batch's stream could not be written", "before fast-import ran");
+            std::test::assert_eq_str(rec.head("journal").id, first.id, "the chain did not move");
+            std::test::assert(!std::io::fs::file_exists(stream), "the stream is gone");
+        }
+
+        // and a batch whose stream lands whole still lands
+        let again = rec.append_batch("journal", first.id, batch(2), false, "");
+        std::test::assert(again.ok, "a batch lands after the failures: " + again.error);
+        std::test::assert_eq_int(rec.count("journal"), 5, "the rows of both batches");
+
+        // git itself refuses a stream that asks for `done` and ends without
+        // it, even at a commit boundary
+        let cut = repo + "/.hale/dna/cut.stream";
+        std::io::fs::write_file(cut, "feature done\ncommit refs/dna/cut\ncommitter t <t@t> 0 +0000\ndata 2\nc\nM 100644 inline f\ndata 2\nx\n\n") or discard;
+        let fi = dna::run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + repo + "\n" + cut);
+        std::test::assert(fi.code != 0, "a stream without its done is refused");
+        std::test::assert_eq_int(len(rec.head("cut").id), 0, "and lands no ref");
+        dna::scratch_done(repo);
+    }
+}
+
+fn main() { App { }; }

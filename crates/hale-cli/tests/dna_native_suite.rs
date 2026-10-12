@@ -1017,6 +1017,7 @@ fn dna_fixture_set_is_complete() {
             "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
+            "record_batch_stream_test.hl",
             "record_batch_test.hl",
             "record_identity_test.hl",
             "record_roles_test.hl",

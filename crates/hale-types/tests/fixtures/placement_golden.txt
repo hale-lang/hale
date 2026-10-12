@@ -11084,6 +11084,14 @@ dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/record_batch_stream_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+shared	dynamic	sites in core #0ca7b9c1
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___record__RowBatch	on unknown (`batch` passed as a value)
+
 == dna/tests/record_batch_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
