@@ -1022,6 +1022,17 @@ pub fn check_bundle_by_declaration(
     // (hoisted field / `recv_into`).
     let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
+    // A subscriber built and dissolved inside one call on a classic
+    // cooperative pool: its deliveries are always dropped (spec/runtime.md
+    // § "Subscriptions follow the tower").
+    let rows = ScopeLocalSubscriberRows {
+        bundle,
+        top,
+        summary: inputs.alloc_summary,
+        ownership: inputs.ownership,
+        placement: inputs.placement,
+    };
+    diags.extend(Law { rule: DROPPED_DELIVERY, eval: check_scope_local_subscriber_on_classic_pool }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
@@ -3002,6 +3013,162 @@ fn check_birth_order(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
 
 /// Pool starvation.
 const STARVATION: RuleId = RuleId::registered("verification/structural", "pool-starvation");
+/// A scope-local subscriber on a classic pool, whose deliveries are dropped.
+const DROPPED_DELIVERY: RuleId = RuleId::registered("verification/structural", "dropped-scope-local-delivery");
+
+/// What the dropped-delivery law reads: the program's own allocation
+/// rows (where a locus literal is written and whether its value leaves
+/// the call), the scope (which locus subscribes), the ownership graph
+/// (whether an `accept` owns the literal) and the placement table (the
+/// domains the literal's enclosing scope runs in, a free fn's through
+/// its callers).
+struct ScopeLocalSubscriberRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    top: &'r TopScope,
+    summary: &'r crate::alloc_summary::AllocSummary,
+    ownership: &'r crate::ownership_graph::OwnershipGraph,
+    placement: &'r crate::placement::PlacementTable,
+}
+
+/// A subscriber built and dissolved inside one call that runs on a
+/// classic cooperative pool (not `where async_io`). Its subscription
+/// registers with that pool (spec/runtime.md § "Subscriptions follow the
+/// tower"), whose cells are handler-atomic: the call holds the pool's
+/// worker for the subscriber's whole life, so every delivery to it waits
+/// and is dropped when it dissolves. Scope-local is the allocation rows'
+/// `Local` (a `let` or a bare statement, neither stored in a field nor
+/// returned) with no `accept` owning it; the pools are the placement
+/// table's domains for the literal (its enclosing locus's instances, or a
+/// free fn's callers). A literal in a bus handler is rule 20's, and an
+/// enclosing scope whose domains are unknown proves nothing: silent.
+/// The loci whose instance holds a bus subscriber for as long as it
+/// lives: it subscribes, or a locus it keeps does — one its params
+/// defaults build (transitively, as the construction template is lowered
+/// with it), one its bodies build that it `accept`s, or one its bodies
+/// store in a field of its own. Computed to a fixed point over the keep
+/// edges (a flag only ever turns on), so no answer depends on declaration
+/// order or on where a cycle is entered.
+fn loci_keeping_a_subscriber(
+    top: &TopScope,
+    summary: &crate::alloc_summary::AllocSummary,
+    ownership: &crate::ownership_graph::OwnershipGraph,
+) -> BTreeSet<String> {
+    use crate::alloc_summary::{AllocKind, Escape};
+    use crate::ownership_graph::OwnerResolution;
+    let mut keeps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for o in &ownership.sites {
+        if o.params_default || matches!(&o.resolution, OwnerResolution::SelfOwned(l) if *l == o.enclosing_locus) {
+            keeps.entry(o.enclosing_locus.clone()).or_default().insert(o.child_ty.clone());
+        }
+    }
+    for f in summary.fns.values() {
+        let Some(locus) = &f.key.locus else { continue };
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            if let (AllocKind::StructLit(lit), Escape::StoredToSelf) = (&s.kind, &s.escape) {
+                keeps.entry(locus.clone()).or_default().insert(lit.clone());
+            }
+        }
+    }
+    let subscribes =
+        |name: &str| matches!(top.lookup(name), Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty());
+    let mut names: BTreeSet<String> = keeps.keys().cloned().collect();
+    names.extend(keeps.values().flatten().cloned());
+    let mut on: BTreeSet<String> = names.iter().filter(|n| subscribes(n)).cloned().collect();
+    loop {
+        let before = on.len();
+        for (holder, children) in &keeps {
+            if !on.contains(holder) && children.iter().any(|c| on.contains(c)) {
+                on.insert(holder.clone());
+            }
+        }
+        if on.len() == before {
+            break;
+        }
+    }
+    on
+}
+
+fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
+    use crate::alloc_summary::{AllocKind, EntryKind, Escape};
+    use crate::ownership_graph::OwnerResolution;
+    use crate::placement::{DomainKind, SiteUniverse};
+    let ScopeLocalSubscriberRows { bundle, top, summary, ownership, placement } = *rows;
+    // The classic pools each written literal may run on, by its span.
+    let mut pools_at: Vec<(Span, BTreeSet<String>)> = Vec::new();
+    for d in &placement.dynamic {
+        if d.literal.universe != SiteUniverse::User {
+            continue;
+        }
+        let Some(site) = bundle.snapshot.site(d.literal.id) else { continue };
+        let pools: BTreeSet<String> = d
+            .domains
+            .iter()
+            .filter_map(|id| match &placement.domain(*id).kind {
+                DomainKind::Pool { name, async_io: false, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if !pools.is_empty() {
+            pools_at.push((site.span, pools));
+        }
+    }
+    if pools_at.is_empty() {
+        return;
+    }
+    let mut fns: Vec<&crate::alloc_summary::FnSummary> =
+        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+    fns.sort_by_key(|f| f.decl_index);
+    let mut kept: Option<BTreeSet<String>> = None;
+    for f in fns {
+        if f.entry == Some(EntryKind::BusHandler) {
+            continue;
+        }
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            let AllocKind::StructLit(lit) = &s.kind else { continue };
+            if s.escape != Escape::Local {
+                continue;
+            }
+            let Some((_, pools)) = pools_at.iter().find(|(at, _)| *at == s.span) else { continue };
+            let keeping = kept.get_or_insert_with(|| loci_keeping_a_subscriber(top, summary, ownership));
+            if !keeping.contains(lit.as_str())
+                && !matches!(top.lookup(lit), Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty())
+            {
+                continue;
+            }
+            let owned = ownership.sites.iter().any(|o| {
+                o.span == s.span
+                    && matches!(
+                        o.resolution,
+                        OwnerResolution::SelfOwned(_) | OwnerResolution::Ancestor(_) | OwnerResolution::PerPath(_)
+                    )
+            });
+            if owned {
+                continue;
+            }
+            let call = match &f.key.locus {
+                Some(l) => format!("{}.{}", l, f.key.fn_name),
+                None => f.key.fn_name.clone(),
+            };
+            let pools = pools.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ");
+            let what = match top.lookup(lit) {
+                Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty() => "subscribes on the bus",
+                _ => "holds a bus subscriber for its whole life (one its construction or its bodies build and keep)",
+            };
+            out.push(Violation::warning(
+                DROPPED_DELIVERY,
+                s.span,
+                format!(
+                    "`{lit}` {what}, and this literal builds it and dissolves it inside one call of \
+                     `{call}`, which runs on the classic cooperative pool {pools}. Its subscription registers \
+                     with that pool, which runs one cell at a time: the call holds the pool's worker for the \
+                     subscriber's whole life, so every delivery to it waits and is dropped when it dissolves. \
+                     Place the pool `where async_io` (its handlers then run while the call parks), or keep the \
+                     subscriber beyond the call (`accept` it, store it in a field, or return it)."
+                ),
+            ));
+        }
+    }
+}
 /// The birth-order trap.
 const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
 

@@ -418,3 +418,206 @@ fn a_recycled_child_cell_never_runs_its_predecessor_s_cells() {
         }
     }
 }
+
+// A pinned thread gets a mailbox when a subscriber may be built on it at
+// run time, here in a free fn its `run()` calls; a pinned thread nothing
+// could post to gets none (spec/runtime.md § "Subscriptions follow the
+// tower"). The one with a mailbox serves it after its `run()` returns,
+// until its dissolve at main's teardown; the one without dissolves as
+// soon as its `run()` returns, as before.
+const PINNED_FREE_FN: &str = r#"
+    type Msg { n: Int; }
+    locus Peer {
+        params { got: Int = 0; }
+        bus { subscribe "peer.msg" as on_msg of type Msg; }
+        fn on_msg(m: Msg) { self.got = self.got + 1; println("handler n=" + to_string(m.n)); }
+    }
+    fn serve_once() {
+        let p = Peer { };
+        std::time::sleep(300ms);
+        println("free fn got=" + to_string(p.got));
+    }
+    locus Host {
+        run() { serve_once(); }
+        dissolve() { println("host dissolve"); }
+    }
+    locus Pub {
+        bus { publish "peer.msg" of type Msg; }
+        run() { std::time::sleep(100ms); "peer.msg" <- Msg { n: 1 }; }
+        dissolve() { println("pub dissolve"); }
+    }
+    main locus App {
+        params { h: Host = Host { }; p: Pub = Pub { }; }
+        placement { h: pinned; p: pinned; }
+        run() {
+            let line = std::io::stdin::read_line();
+            println("main got " + line);
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+/// The body of the LLVM function `name` in `ir`.
+fn ir_fn(ir: &str, name: &str) -> String {
+    let head = format!("@{name}(");
+    let lines: Vec<&str> = ir.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("define") && l.contains(&head))
+        .unwrap_or_else(|| panic!("no `{name}` defined"));
+    let end = start + lines[start..].iter().position(|l| *l == "}").expect("the function ends");
+    lines[start..=end].join("\n")
+}
+
+#[test]
+fn a_pinned_thread_that_may_build_a_subscriber_has_a_mailbox_and_serves_it() {
+    pinned_mailbox_case("pinned_free_fn_subscriber", PINNED_FREE_FN);
+}
+
+/// `PINNED_FREE_FN` with `serve_once` building the subscriber as `serve`
+/// says (a function and the loci it needs).
+fn pinned_with_serve(serve: &str) -> String {
+    let free_fn = "    fn serve_once() {
+        let p = Peer { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(p.got));
+    }
+";
+    assert!(PINNED_FREE_FN.contains(free_fn), "the fixture's serve_once moved");
+    PINNED_FREE_FN.replace(free_fn, serve)
+}
+
+// Review of #1513: a non-subscribing wrapper whose params default builds
+// the subscriber. The default is lowered where the wrapper is built, on
+// the pinned thread, but it is no dynamic site of its own, so the
+// mailbox decision has to follow the wrapper's construction template.
+#[test]
+fn a_subscriber_in_a_wrapper_s_params_default_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Wrapper { params { p: Peer = Peer { }; } }
+    fn serve_once() {
+        let w = Wrapper { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(w.p.got));
+    }
+",
+    );
+    pinned_mailbox_case("pinned_wrapper_default", &src);
+}
+
+#[test]
+fn a_subscriber_two_defaults_down_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Inner { params { p: Peer = Peer { }; } }
+    locus Outer { params { i: Inner = Inner { }; } }
+    fn serve_once() {
+        let o = Outer { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(o.i.p.got));
+    }
+",
+    );
+    pinned_mailbox_case("pinned_nested_default", &src);
+}
+
+// The bodies of a locus only a default builds run there too: the child's
+// method builds the subscriber.
+#[test]
+fn a_subscriber_a_default_built_child_builds_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Child {
+        fn serve() {
+            let p = Peer { };
+            std::time::sleep(300ms);
+            println(\"free fn got=\" + to_string(p.got));
+        }
+    }
+    locus Wrapper { params { c: Child = Child { }; } }
+    fn serve_once() {
+        let w = Wrapper { };
+        w.c.serve();
+    }
+",
+    );
+    pinned_mailbox_case("pinned_default_child_body", &src);
+}
+
+// Review of #1513, round 2: the closure is a fixed point, not a memoized
+// walk. `A` builds the subscriber in its default and, through `make_b`,
+// `B`, whose birth builds `A` again: a cycle. A walk entered at `A`
+// (through `main_first`, declared first and never called) cached `B` as
+// building no subscriber while `A` was still open, so `WrapB`, the only
+// thing the pinned host builds, was judged not to either, and the host
+// got no mailbox; declared after, it did. Both orders give it one now.
+const CYCLE_FIRST: &str = "    fn main_first() { WrapA { }; }
+";
+const CYCLE_REST: &str = "    locus A {
+        params { p: Peer = Peer { }; recurse: Bool = false; }
+        birth() { if self.recurse { make_b(); } }
+    }
+    locus B { birth() { make_a(); } }
+    locus WrapA { params { a: A = A { }; } }
+    locus WrapB { params { b: B = B { }; } }
+    fn make_a() {
+        let a = A { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(a.p.got));
+    }
+    fn make_b() { B { }; }
+    fn serve_once() { WrapB { }; std::time::sleep(300ms); }
+";
+
+#[test]
+fn a_construction_cycle_gets_its_pinned_thread_a_mailbox_in_either_declaration_order() {
+    pinned_mailbox_case("pinned_cycle_first", &pinned_with_serve(&format!("{CYCLE_FIRST}{CYCLE_REST}")));
+    pinned_mailbox_case("pinned_cycle_last", &pinned_with_serve(&format!("{CYCLE_REST}{CYCLE_FIRST}")));
+}
+
+/// Build `src`, check that the pinned `Host` has the mailbox loop and the
+/// pinned `Pub` none, and run it with main blocked on stdin: the free fn
+/// sees its delivery before main unblocks, `Pub` dissolves as its run()
+/// returns, and `Host` after main.
+fn pinned_mailbox_case(tag: &str, src: &str) {
+    let bin = harness::unique_bin(tag);
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
+    // Host's thread loops on its mailbox after run(); Pub's has none.
+    assert!(ir_fn(&ir, "__pinned_main_Host").contains("lotus_mailbox_drain_one"), "Host has no mailbox loop");
+    assert!(!ir_fn(&ir, "__pinned_main_Pub").contains("lotus_mailbox_drain_one"), "Pub has a mailbox loop");
+    let mut child = Command::new(&bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seen: Vec<String> = Vec::new();
+    while !seen.iter().any(|l| l.starts_with("free fn got=")) {
+        match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(l) => seen.push(l),
+            Err(_) => break,
+        }
+    }
+    // main is still blocked in read_line: the pinned thread served it
+    stdin.write_all(b"bye\n").unwrap();
+    drop(stdin);
+    let status = child.wait().expect("wait");
+    seen.extend(lines.try_iter());
+    let mut err = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut err);
+    let _ = std::fs::remove_file(&bin);
+    assert!(status.success(), "{status:?}\n{err}");
+    let at = |s: &str| seen.iter().position(|l| l == s).unwrap_or_else(|| panic!("no `{s}` in {seen:?}"));
+    assert!(at("free fn got=1") < at("main got bye"), "{seen:?}");
+    // Pub, with no mailbox, dissolves as its run() returns; Host serves
+    // its mailbox until main's teardown dissolves it
+    assert!(at("pub dissolve") < at("main got bye"), "{seen:?}");
+    assert!(at("main got bye") < at("host dissolve"), "{seen:?}");
+}
