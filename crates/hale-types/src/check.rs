@@ -10677,7 +10677,7 @@ impl<'a> Checker<'a> {
         }
         self.locals.push();
         for p in &decl.params {
-            let ty = self.resolve_te(&p.ty);
+            let ty = self.resolve_param_te(&p.ty);
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_block(&decl.body);
@@ -12334,6 +12334,35 @@ impl<'a> Checker<'a> {
         iface_name: &str,
     ) -> Result<(), String> {
         conformance(self.top, locus_name, iface_name)
+    }
+
+    /// A fn or method PARAMETER's type, as the body's local sees it: as
+    /// [`Self::resolve_te`], except that a parameter typed by an
+    /// interface is that interface (`Ty::Named`), not `Unknown`. The
+    /// scope's name table leaves interfaces out so an interface-typed
+    /// SLOT accepts any satisfying locus (`Ty::assignable_from`), which
+    /// also left the parameter's own uses unchecked: `fn f(c: T) {
+    /// c.v }` passed the check and the build refused the field read
+    /// (friction sweep 2026-10-12). Typed as the interface, the local
+    /// offers exactly the interface's methods (`field_ty`'s interface
+    /// arm), and a field read or an undeclared method is refused here.
+    fn resolve_param_te(&self, te: &TypeExpr) -> Ty {
+        let ty = self.resolve_te(te);
+        if !matches!(ty, Ty::Unknown) {
+            return ty;
+        }
+        if let TypeExpr::Named { path, generic_args, .. } = te {
+            if path.segments.len() == 1 && generic_args.is_empty() {
+                let n = &path.segments[0].name;
+                if !self.generic_params.contains(n)
+                    && !self.generic_bindings.contains_key(n)
+                    && matches!(self.top.lookup(n), Some(TopSymbol::Interface(_)))
+                {
+                    return Ty::Named(n.clone());
+                }
+            }
+        }
+        ty
     }
 
     /// A type expression the walk resolves: through the scope's names,
@@ -16102,6 +16131,11 @@ impl<'a> Checker<'a> {
                                             pi.methods.iter().map(|m| m.name.clone()),
                                         );
                                     }
+                                    Some(TopSymbol::Interface(ii)) => {
+                                        candidates.extend(
+                                            ii.methods.iter().map(|m| m.name.clone()),
+                                        );
+                                    }
                                     Some(TopSymbol::Type(ti)) => {
                                         if let TypeKind::Struct(fields) = &ti.kind {
                                             candidates.extend(
@@ -16135,6 +16169,25 @@ impl<'a> Checker<'a> {
                                     )
                                 {
                                     hint = format!(" — {}", advice);
+                                }
+                            }
+                            // Friction sweep 2026-10-12: a value of an
+                            // interface offers its methods and nothing
+                            // else — no fields, whatever the locus
+                            // behind it holds.
+                            if let Ty::Named(tn) = &rt {
+                                if let Some(TopSymbol::Interface(ii)) = self.top.symbols.get(tn) {
+                                    let methods: Vec<String> =
+                                        ii.methods.iter().map(|m| format!("`{}`", m.name)).collect();
+                                    // The method list replaces the
+                                    // nearest-name guess: it is the
+                                    // whole of what may be written.
+                                    hint = format!(
+                                        " — `{tn}` is an interface: a value of it \
+                                         offers only its methods ({}), never the \
+                                         fields of the locus behind it",
+                                        if methods.is_empty() { "none".to_string() } else { methods.join(", ") }
+                                    );
                                 }
                             }
                             // Friction sweep 2026-10-12: a `@form`

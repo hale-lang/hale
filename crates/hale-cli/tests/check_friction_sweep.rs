@@ -25,6 +25,9 @@
 //! - A trailing comma in call arguments is accepted.
 //! - A `@form(vec)` walked by its declared slot name (`v.cells`) is
 //!   refused with a hint naming `.items`, the form's iteration surface.
+//! - An interface-typed parameter offers only the interface's methods:
+//!   a field read or an undeclared method is refused at the check (it
+//!   passed the check and failed the build).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -210,6 +213,24 @@ fn a_vec_walked_by_its_slot_name_is_pointed_at_items() {
         "{out}"
     );
     let (checked, out, built, bout) = check_and_build(&src.replace("v.cells", "v.items"), "slot_items");
+    assert!(checked, "{out}");
+    assert!(built, "{bout}");
+}
+
+#[test]
+fn an_interface_parameter_offers_only_its_methods() {
+    let src = "interface T { fn x() -> Int; }\n\
+               locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+               fn f(c: T) -> Int { return c.x() + c.v; }\n\
+               fn main() { let a = A { }; println(f(a)); }\n";
+    let (checked, out, built, bout) = check_and_build(src, "iface_field");
+    assert!(!checked, "{out}");
+    assert!(
+        out.contains("no field `v` on `T` — `T` is an interface: a value of it offers only its methods (`x`), never the fields of the locus behind it"),
+        "{out}"
+    );
+    assert!(!built && bout.contains("no field `v` on `T`"), "the build refuses it at the check alike: {bout}");
+    let (checked, out, built, bout) = check_and_build(&src.replace(" + c.v", ""), "iface_method");
     assert!(checked, "{out}");
     assert!(built, "{bout}");
 }

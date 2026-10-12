@@ -416,6 +416,17 @@ declares an interface-typed param: missing-method, arity-
 mismatch, param-type, or return-type mismatches all produce
 typed diagnostics at typecheck time.
 
+Inside the fn, the parameter's local IS the interface: it offers
+exactly the interface's methods, and nothing of the locus behind it.
+A field read (`sink.path`) or a method the interface does not declare
+(`sink.flush()`) is a check-time error naming the interface and its
+methods; a local bound from the parameter (`let s = sink;`) is the
+interface too (friction sweep 2026-10-12; until then the parameter
+typed as unknown, the check passed such a read and the build refused
+it). A fn or locus-method parameter has this typing; an interface-
+typed slot (a field, an array element, a `let` annotation) still
+accepts any satisfying locus.
+
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:
 

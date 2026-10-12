@@ -2107,3 +2107,71 @@ fn a_raw_frame_topic_off_a_layout_ring_is_refused_by_the_check_not_the_build() {
         "hale_cb_raw_frame_layout_ring",
     );
 }
+
+/// The 2026-10-12 friction sweep's shapes, each held to the sweep's own
+/// verdict: what the check now accepts builds, and what it refuses is
+/// refused by the check, never first by the build. In particular an
+/// interface-typed parameter's field read passed the check (the local
+/// typed `Unknown`) and was refused by codegen ("field access `.v` on
+/// non-record type Interface"), the divergence this file exists for.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_friction_sweep_shapes_agree() {
+    let builds = [
+        // F.43: the framework vocabulary names fields, params, locals, fns.
+        ("type Job { run: Int; epoch: Int; restart: Bool = false; }\n\
+          fn run(capacity: Int) -> Int { let where = capacity + 1; return where; }\n\
+          locus W { params { tier: Int = 1; } fn restart() -> Int { return self.tier; } }\n\
+          fn main() { let j = Job { run: 1, epoch: 2 }; let w = W { }; println(run(j.run + j.epoch) + w.restart()); }\n",
+         "hale_cb_fs_words"),
+        // `or discard` drops a value-bearing fallible as a statement.
+        ("type Oops { why: String = \"\"; }\n\
+          fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+          fn main() { parse(\"bad\") or discard; parse(\"ok\") or discard; }\n",
+         "hale_cb_fs_discard"),
+        // A literal const takes the literal's type; a trailing comma.
+        ("const LIMIT = 100;\nfn add(a: Int, b: Int) -> Int { return a + b; }\n\
+          fn main() { println(add(LIMIT, 2,)); }\n",
+         "hale_cb_fs_const"),
+        // `@unbounded` before a mode.
+        ("@form(vec)\nlocus V { capacity { heap items of String; } }\n\
+          locus L { params { v: V = V { }; n: Int = 3; }\n\
+          @unbounded\n mode bulk() { let mut i = 0; while i < self.n { self.v.push(\"x\"); i = i + 1; } }\n\
+          run() { self.bulk(); } }\n\
+          fn main() { let l = L { }; }\n",
+         "hale_cb_fs_mode"),
+        // An interface parameter's methods are callable.
+        ("interface T { fn x() -> Int; }\n\
+          locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+          fn f(c: T) -> Int { let d = c; return d.x() + c.x(); }\n\
+          fn main() { let a = A { }; println(f(a)); }\n",
+         "hale_cb_fs_iface_ok"),
+    ];
+    for (src, tag) in builds {
+        assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
+    }
+    let refused_by_check = [
+        "type Oops { why: String = \"\"; }\n\
+         fn parse(s: String) -> Int fallible(Oops) { return 7; }\n\
+         fn main() { let x = parse(\"1\") or discard; println(x); }\n",
+        "interface T { fn x() -> Int; }\n\
+         locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+         fn f(c: T) -> Int { return c.v; }\n\
+         fn main() { let a = A { }; println(f(a)); }\n",
+        "interface T { fn x() -> Int; }\n\
+         locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+         locus H { fn m(c: T) -> Int { return c.y(); } }\n\
+         fn main() { let a = A { }; let h = H { }; println(h.m(a)); }\n",
+        "locus F { params { ps: [Decimal; 2] = [1.5d, 2.0d]; } run { println(self.ps.sum(0.0d)); } }\n\
+         fn main() { let f = F { }; }\n",
+    ];
+    for src in refused_by_check {
+        assert_eq!(
+            sweep_verdict(src, "hale_cb_fs_refused"),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}
