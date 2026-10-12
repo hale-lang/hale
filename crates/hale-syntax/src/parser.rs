@@ -7540,6 +7540,9 @@ impl Parser {
         if !self.at(&TokenKind::RParen) {
             args.push(self.parse_expr()?);
             while self.eat(&TokenKind::Comma) {
+                if self.at(&TokenKind::RParen) {
+                    break;
+                }
                 args.push(self.parse_expr()?);
             }
         }
@@ -8031,7 +8034,13 @@ impl Parser {
                         args = self.parse_serve_args()?;
                     } else if !self.at(&TokenKind::RParen) {
                         args.push(self.parse_expr()?);
+                        // A trailing comma before `)` is accepted, as
+                        // in a struct literal (friction sweep
+                        // 2026-10-12): `f(a, b,)`.
                         while self.eat(&TokenKind::Comma) {
+                            if self.at(&TokenKind::RParen) {
+                                break;
+                            }
                             args.push(self.parse_expr()?);
                         }
                     }

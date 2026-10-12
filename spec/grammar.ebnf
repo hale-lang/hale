@@ -1612,7 +1612,7 @@ match_expr        = match_stmt ;
 sum_expr          = "sum" , "(" , expression , ")" ;
 prod_expr         = "prod" , "(" , expression , ")" ;
 
-argument_list     = expression , { "," , expression } ;
+argument_list     = expression , { "," , expression } , [ "," ] ;   (* a trailing comma is accepted *)
 
 identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 

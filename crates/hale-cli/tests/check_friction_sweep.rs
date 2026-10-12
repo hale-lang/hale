@@ -22,6 +22,7 @@
 //!   says to write a chain (`xs.map(it).sum(…)`), and that chain runs.
 //! - `const X = 1;` takes the literal's type; a non-literal initializer
 //!   without a type says the annotation is required.
+//! - A trailing comma in call arguments is accepted.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -184,4 +185,15 @@ fn a_literal_const_takes_its_literal_type() {
     // A mistyped use is still a type error against the inferred type.
     let (checked, out, _, _) = check_and_build("const LIMIT = 100;\nfn main() { let s: String = LIMIT; println(s); }\n", "const_mistyped");
     assert!(!checked && out.contains("Int"), "{out}");
+}
+
+#[test]
+fn a_trailing_comma_in_call_arguments_is_accepted() {
+    let src = "fn add(a: Int, b: Int) -> Int { return a + b; }\nfn main() {\n    println(add(1, 2,));\n    println(add(\n        3,\n        4,\n    ));\n}\n";
+    let (checked, out, built, bout) = check_and_build(src, "trailing_comma");
+    assert!(checked, "{out}");
+    assert!(built, "{bout}");
+    // A lone comma is still not an argument list.
+    let (checked, out, _, _) = check_and_build("fn f() { }\nfn main() { f(,); }\n", "lone_comma");
+    assert!(!checked, "{out}");
 }
