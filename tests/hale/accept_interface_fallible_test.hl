@@ -1,0 +1,63 @@
+// An interface `accept` / `release` keeps the interface's contract in
+// every monomorph. `Store.put` is `fallible(StoreError)`; `Lenient`
+// implements it infallibly, which satisfies it (GH #732), and the body
+// the checker typed through the interface addresses the error with
+// `or`. In `Lenient`'s monomorph the call is direct and always takes the
+// success path; in `Strict`'s it is the fallible method, both paths live.
+// Each `or` form, `raise` included, and the `release` body alike.
+
+type StoreError { kind: String = ""; }
+
+interface Store {
+    fn put(k: String) -> Int fallible(StoreError);
+    fn check(k: String) fallible(StoreError);
+}
+
+locus Strict {
+    params { key: String = ""; }
+    fn put(k: String) -> Int fallible(StoreError) {
+        if k == "" { fail StoreError { kind: "empty" }; }
+        return len(k);
+    }
+    fn check(k: String) fallible(StoreError) {
+        if k == "" { fail StoreError { kind: "unchecked" }; }
+    }
+}
+
+locus Lenient {
+    params { key: String = ""; }
+    fn put(k: String) -> Int { return 7; }
+    fn check(k: String) { }
+}
+
+fn kind_of(e: StoreError) -> Int { return len(e.kind); }
+
+locus Owner {
+    params { sum: Int = 0; handled: Int = 0; checked: Int = 0; released: Int = 0; }
+    accept(s: Store) {
+        self.sum = self.sum + (s.put("abc") or 0) + (s.put("") or 100);
+        self.handled = self.handled + (s.put("") or kind_of(err));
+        let ok = self.check_through(s) or false;
+        if ok { self.checked = self.checked + 1; }
+    }
+    release (s: Store) { self.released = self.released + (s.put("") or 1000); }
+    fn check_through(s: Store) -> Bool fallible(StoreError) {
+        s.check("") or raise;
+        return true;
+    }
+    run() {
+        Strict { };
+        Lenient { };
+    }
+}
+
+fn main() {
+    let o = Owner { };
+    // Strict: 3 + 100; Lenient: 7 + 7.
+    std::test::assert_eq_int(o.sum, 117, "each monomorph keeps the contract: Strict fails on \"\", Lenient never does");
+    // Strict: len("empty"); Lenient: 7.
+    std::test::assert_eq_int(o.handled, 12, "a handler arm, and the success path that never reaches it");
+    std::test::assert_eq_int(o.checked, 1, "a raise through the interface value: only Lenient checks");
+    // Both are flows (released): Strict 1000, Lenient 7.
+    std::test::assert_eq_int(o.released, 1007, "the release monomorphs keep it too");
+}

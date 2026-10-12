@@ -1507,6 +1507,7 @@ pub fn build_resolved(
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
+        current_accept_interface: None,
         loops: Vec::new(),
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
@@ -3449,6 +3450,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `self.X` reads/writes lower to GEP+load/store on the struct
     /// pointer passed as the method's first arg.
     pub(crate) current_self: Option<SelfCx<'ctx>>,
+    /// The interface an `accept(c: I)` / `release(c: I)` monomorph's body
+    /// is being lowered for: the checker held the body to `I`'s contract,
+    /// so a call it typed fallible through `I` keeps that contract when the
+    /// concrete method is infallible (the known-success adaptation, as an
+    /// interface's vtable slot does; `lower_fallible_method_call`).
+    pub(crate) current_accept_interface: Option<String>,
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     pub(crate) loops: Vec<LoopFrame<'ctx>>,
@@ -15561,6 +15568,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let v = if got != want {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
+                } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
+                    // F.20: a locus into an interface param, as a
+                    // non-fallible method's argument coerces.
+                    self.coerce_to_interface(v.into_pointer_value(), l, i)?.into()
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "locus `{}` method `{}`: arg {} type mismatch: \
@@ -32197,6 +32208,106 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+
+    /// A call an interface `accept` / `release` monomorph makes through
+    /// its child to a method the interface declares `fallible(E)` and the
+    /// concrete locus implements infallibly (GH #732's satisfaction rule):
+    /// the call keeps the interface's contract, as the checker typed it.
+    /// The method is called directly and the call always takes the
+    /// success path (the path is the constant 0, so the `or`'s error arm
+    /// folds away); the error slot is the interface's `E`, never written.
+    /// `None` outside such a body, or when the interface does not declare
+    /// the method fallible.
+    pub(crate) fn try_lower_known_success_iface_call(
+        &mut self,
+        self_ptr: PointerValue<'ctx>,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(iface) = self.current_accept_interface.clone() else { return Ok(None) };
+        if self.locus_method_is_fallible(locus_name, method_name) {
+            return Ok(None);
+        }
+        let sig = hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Interface(i) if i.name.name == iface => {
+                i.methods.iter().find(|m| m.name.name == method_name).cloned()
+            }
+            _ => None,
+        });
+        let Some(sig) = sig else { return Ok(None) };
+        let Some(payload_te) = &sig.fallible else { return Ok(None) };
+        let Some(func) = info.user_methods.get(method_name).copied() else { return Ok(None) };
+        let fd = hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Locus(l) if l.name.name == locus_name => l.members.iter().find_map(|m| match m {
+                LocusMember::Fn(fd) if fd.name.name == method_name => Some(fd.clone()),
+                _ => None,
+            }),
+            _ => None,
+        });
+        let Some(fd) = fd else { return Ok(None) };
+        if args.len() != fd.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "locus `{}` method `{}`: expects {} args, got {}",
+                locus_name,
+                method_name,
+                fd.params.len(),
+                args.len()
+            )));
+        }
+        let payload_ty = self.type_expr_to_codegen_ty(payload_te)?;
+        let success_ty: Option<CodegenTy> = match &fd.ret {
+            None => None,
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+        let out_val_slot = match &success_ty {
+            Some(st) => Some(self.alloca_for(st, "iface.known.out_val.slot")?),
+            None => None,
+        };
+        let out_err_slot = self.alloca_for(&payload_ty, "iface.known.out_err.slot")?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(args.len() + 1);
+        llvm_args.push(self_ptr.into());
+        for (i, a) in args.iter().enumerate() {
+            let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
+            let (v, got) = self.lower_expr(a, scope)?;
+            let v = if got != want {
+                if view_coerces_to(&got, &want) {
+                    self.unpack_view_if_needed(v, &got)?
+                } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
+                    // F.20: a locus into an interface param, as a
+                    // non-fallible method's argument coerces.
+                    self.coerce_to_interface(v.into_pointer_value(), l, i)?.into()
+                } else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "locus `{}` method `{}`: arg {} type mismatch: expected {:?}, got {:?}",
+                        locus_name, method_name, i, want, got
+                    )));
+                }
+            } else {
+                v
+            };
+            llvm_args.push(v.into());
+        }
+        self.emit_set_caller_arena()?;
+        let call = self
+            .builder
+            .build_call(func, &llvm_args, &format!("{}.{}.known_success.call", locus_name, method_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(slot) = out_val_slot {
+            let v = call.try_as_basic_value().left().expect("a method with a success value returns one");
+            self.builder.build_store(slot, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(Some(FallibleCallResult {
+            i1_path: self.context.bool_type().const_zero(),
+            out_val_slot,
+            out_err_slot,
+            success_ty,
+            payload_ty,
+        }))
+    }
 
     /// Whether the locus declares `method_name` with `fallible(E)`.
     fn locus_method_is_fallible(&self, locus_name: &str, method_name: &str) -> bool {

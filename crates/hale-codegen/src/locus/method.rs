@@ -169,7 +169,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                 }
 
-                let end = self.in_body(lc.id, |cx| cx.lower_block(&lc.body, &mut scope))?;
+                // An interface clause's monomorph keeps the interface's
+                // contract for the calls the checker typed through it.
+                let prev_iface = std::mem::replace(
+                    &mut self.current_accept_interface,
+                    match (&target_child, kind) {
+                        (Some(child), "accept" | "release") => {
+                            let written = if kind == "accept" { &info.accept_param } else { &info.release_param };
+                            written.as_ref().map(|(_, w)| w.clone()).filter(|w| w != child)
+                        }
+                        _ => None,
+                    },
+                );
+                let end = self.in_body(lc.id, |cx| cx.lower_block(&lc.body, &mut scope));
+                self.current_accept_interface = prev_iface;
+                let end = end?;
                 if end == BlockEnd::Open {
                     self.flush_dissolve_frame()?;
                     self.close_method_scratch()?;
