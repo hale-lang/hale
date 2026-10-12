@@ -2712,6 +2712,12 @@ row	~.qs	QS	main	inherited
 row	~	H	main	default
 row	~.q	Q	main	inherited
 
+== crates/hale-codegen/tests/form_vec_pop_retire.rs#a81d4f8d
+-- H@main1	H
+row	~	H	main	default
+row	~.qm	QM	main	inherited
+row	~.qt	QT	main	inherited
+
 == crates/hale-codegen/tests/form_vec_set_retire.rs#abb621d8
 root	App	the entry
 row	App@literal1	App	main	default

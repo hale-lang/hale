@@ -58,6 +58,9 @@ fn assert_vec_flat(name: &str, vec_decl: &str, body: &str) {
         type Out {{ n: Int = 0; tag: String = ""; inner: In = In {{ }}; }}
         type Deep {{ id: Int = 0; mid: Out = Out {{ }}; note: String = ""; }}
         type Pair {{ p: (String, Bytes) = ("", b""); n: Int = 0; }}
+        type TA {{ pair: ([Int; 2], String) = ([0, 0], ""); n: Int = 0; }}
+        type MA {{ m: [[Int; 2]; 2] = [[0, 0], [0, 0]]; tag: String = ""; }}
+        type SM {{ m: [[String; 2]; 2] = [["", ""], ["", ""]]; }}
         {vec_decl}
         locus H {{
             params {{ v: V = V {{ }}; }}
@@ -179,6 +182,54 @@ fn set_frees_a_replaced_tuple_field() {
         "set_tuple",
         "@form(vec) locus V { capacity { heap items of Pair; } }",
         "let q = Pair { p: (x, b), n: 3 }; if self.v.len() == 0 { self.v.push(q); } self.v.set(0, q) or discard;",
+    );
+}
+
+// A scalar fixed array is inline only as a record's field; in a tuple or
+// in another array it is a pointer to its own block, which the descriptor
+// used to skip (the record-field guard applied at every depth).
+#[test]
+fn set_frees_a_scalar_array_inside_a_tuple_field() {
+    assert_vec_flat(
+        "set_tuparr",
+        "@form(vec) locus V { capacity { heap items of TA; } }",
+        "let q = TA { pair: ([1, 2], x), n: 3 }; if self.v.len() == 0 { self.v.push(q); } self.v.set(0, q) or discard;",
+    );
+}
+
+#[test]
+fn pop_frees_a_scalar_array_inside_a_tuple_field() {
+    assert_vec_flat(
+        "pop_tuparr",
+        "@form(vec) locus V { capacity { heap items of TA; } }",
+        "self.v.push(TA { pair: ([1, 2], x), n: 3 }); let g = self.v.pop() or TA { };",
+    );
+}
+
+#[test]
+fn set_frees_the_inner_arrays_of_an_array_field() {
+    assert_vec_flat(
+        "set_mat",
+        "@form(vec) locus V { capacity { heap items of MA; } }",
+        "let q = MA { m: [[1, 2], [3, 4]], tag: x }; if self.v.len() == 0 { self.v.push(q); } self.v.set(0, q) or discard;",
+    );
+}
+
+#[test]
+fn pop_frees_the_inner_arrays_of_an_array_field() {
+    assert_vec_flat(
+        "pop_mat",
+        "@form(vec) locus V { capacity { heap items of MA; } }",
+        "self.v.push(MA { m: [[1, 2], [3, 4]], tag: x }); let g = self.v.pop() or MA { };",
+    );
+}
+
+#[test]
+fn set_and_pop_free_an_array_of_string_arrays() {
+    assert_vec_flat(
+        "setpop_smat",
+        "@form(vec) locus V { capacity { heap items of SM; } }",
+        "let q = SM { m: [[x, x], [x, x]] }; self.v.push(q); self.v.set(0, q) or discard; let g = self.v.pop() or SM { };",
     );
 }
 
@@ -314,6 +365,71 @@ fn nested_values_outlive_their_slots() {
     // list, not to the allocator).
     assert!(
         stdout.contains("out=s2000|n2000 last=s3000 kept=s2999/t2999 seen=105418"),
+        "stdout: {stdout}; stderr: {stderr}"
+    );
+}
+
+/// The array side of `nested_values_outlive_their_slots`: scalar arrays
+/// inside a tuple field and inside an array field, whose blocks the vec
+/// now frees on `set` and `pop`, while the values read out of them stay
+/// intact, under ASan.
+#[test]
+fn array_blocks_outlive_their_slots() {
+    let src = r#"
+        type TA { pair: ([Int; 2], String) = ([0, 0], ""); n: Int = 0; }
+        type MA { m: [[Int; 2]; 2] = [[0, 0], [0, 0]]; tag: String = ""; }
+        @form(vec) locus QT { capacity { heap items of TA; } }
+        @form(vec) locus QM { capacity { heap items of MA; } }
+        locus H {
+            params { qt: QT = QT { }; qm: QM = QM { }; lt: TA = TA { }; lm: MA = MA { }; seen: Int = 0; }
+            fn enqueue(i: Int) {
+                self.qt.push(TA { pair: ([i, i + 1], "t" + to_string(i)), n: i });
+                self.qm.push(MA { m: [[i, i * 2], [i * 3, i * 4]], tag: "m" + to_string(i) });
+                if self.qt.len() > 1 {
+                    let g = self.qt.get(0) or TA { };
+                    self.lt = g;
+                    self.qt.set(0, TA { pair: ([i + 7, i + 8], "s" + to_string(i)), n: i + 1 }) or discard;
+                    let h = self.qm.get(0) or MA { };
+                    self.lm = h;
+                    self.qm.set(0, MA { m: [[i + 5, i + 6], [i + 7, i + 8]], tag: "r" + to_string(i) }) or discard;
+                }
+            }
+            fn take() -> Int {
+                let t = self.qt.pop() or TA { };
+                let m = self.qm.pop() or MA { };
+                self.seen = self.seen + t.pair.0[0] + t.pair.0[1] + len(t.pair.1) + m.m[0][1] + m.m[1][0] + len(m.tag);
+                return t.pair.0[1] + m.m[1][1];
+            }
+        }
+        fn main() {
+            let h = H { };
+            let mut i = 0;
+            let mut last = 0;
+            while i < 2000 {
+                h.enqueue(i);
+                h.enqueue(i + 1);
+                last = h.take();
+                if i % 50 == 49 {
+                    while h.qt.len() > 0 { let _t = h.take(); }
+                }
+                i = i + 1;
+            }
+            println("last=" + to_string(last) + " lt=" + to_string(h.lt.pair.0[0]) + "/" + h.lt.pair.1 + " lm=" + to_string(h.lm.m[1][1]) + "/" + h.lm.tag + " seen=" + to_string(h.seen));
+        }
+    "#;
+    let bin = harness::unique_bin("hale_vec_array_blocks_outlive");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    // What a build that freed none of these blocks prints.
+    assert!(
+        stdout.contains("last=10001 lt=2006/s1999 lm=2007/r1999 seen=27931652"),
         "stdout: {stdout}; stderr: {stderr}"
     );
 }

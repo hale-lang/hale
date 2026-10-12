@@ -125,28 +125,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// The retire descriptor of a block of type `ty` (a record, a tuple,
-    /// an out-of-line fixed array): its size and the flat entries
+    /// a fixed array's block): its size and the flat entries
     /// `emit_vec_retire` documents — a String field's offset, a Bytes
     /// field's tagged `LOTUS_RETIRE_OFF_BYTES`, and a field pointing at
     /// a block of its own tagged `LOTUS_RETIRE_OFF_NESTED`, followed by
     /// that block's size, its descriptor's length, and its descriptor.
-    /// `None` for a type that is not such a block. Depth-capped, as a
-    /// guard: a value type cannot contain itself.
+    /// `None` for a type that is not such a block. Each slot is read as
+    /// it is stored: a record field of a scalar fixed-array type inline
+    /// (no entry), while an array in a tuple or in another array is a
+    /// pointer to its own block (an entry with that block's size, and an
+    /// empty descriptor for scalar elements). Depth-capped, as a guard: a
+    /// value type cannot contain itself.
     fn retire_desc_for(&self, ty: &CodegenTy, depth: u32) -> Option<(u64, Vec<u32>)> {
         const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
         const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         if depth > 16 {
             return None;
         }
-        // (offset, type) of every slot of the block.
-        let (size, slots): (u64, Vec<(u64, CodegenTy)>) = match ty {
+        // (offset, type, inline) of every slot of the block. A record
+        // field of a scalar fixed-array type is laid out inline (its
+        // `[N x T]` bytes are the field's own, `llvm_field_storage_type`);
+        // a tuple element and an array element are always the value's
+        // SSA representation, `llvm_basic_type` — for an array, a pointer
+        // to its own block, whatever its element type.
+        let (size, slots): (u64, Vec<(u64, CodegenTy, bool)>) = match ty {
             CodegenTy::TypeRef(tn) => {
                 let ti = self.user_types.get(tn)?;
                 let mut slots = Vec::new();
                 for fname in &ti.field_order {
                     let Some((idx, fty)) = ti.fields.get(fname) else { continue };
                     if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
-                        slots.push((o, fty.clone()));
+                        let inline = Self::array_inline_spec(fty).is_some();
+                        slots.push((o, fty.clone(), inline));
                     }
                 }
                 (self.target_data.get_abi_size(&ti.struct_ty), slots)
@@ -156,27 +166,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut slots = Vec::new();
                 for (i, ety) in elems.iter().enumerate() {
                     if let Some(o) = self.target_data.offset_of_element(&st, i as u32) {
-                        slots.push((o, ety.clone()));
+                        slots.push((o, ety.clone(), false));
                     }
                 }
                 (self.target_data.get_abi_size(&st), slots)
             }
-            CodegenTy::Array(elem, n) if Self::array_inline_spec(ty).is_none() => {
+            // The block an array pointer points at: `[N x T]`, its slots
+            // `T`'s SSA representation. A scalar element's block has no
+            // slots to walk, but is a block of its own all the same.
+            CodegenTy::Array(elem, n) => {
                 let at = self.llvm_array_storage_type(elem, *n);
                 let stride = self.target_data.get_abi_size(&self.llvm_basic_type(elem));
-                ((self.target_data.get_abi_size(&at)), (0..*n).map(|i| (i * stride, (**elem).clone())).collect())
+                ((self.target_data.get_abi_size(&at)), (0..*n).map(|i| (i * stride, (**elem).clone(), false)).collect())
             }
             _ => return None,
         };
         let mut desc = Vec::new();
-        for (off, fty) in slots {
+        for (off, fty, inline) in slots {
             let off = off as u32;
             match &fty {
                 CodegenTy::String => desc.push(off),
                 CodegenTy::Bytes => desc.push(off | LOTUS_RETIRE_OFF_BYTES),
-                // Only a slot holding a pointer to its own block; an
-                // inline fixed array or a bounded field is the slot's
-                // own bytes.
+                // An inline fixed array (a record field's) is the slot's
+                // own bytes; a bounded field is never a pointer slot.
+                CodegenTy::Array(_, _) if inline => {}
+                // A slot holding a pointer to a block of its own.
                 CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) => {
                     if let Some((sub_size, sub)) = self.retire_desc_for(&fty, depth + 1) {
                         desc.push(off | LOTUS_RETIRE_OFF_NESTED);
@@ -210,7 +224,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// struct carrying Bytes kept the old Bytes (~47 B a set).
     ///
     /// A field that points at a block of its own — a nested record, a
-    /// tuple, an out-of-line fixed array — is an entry tagged
+    /// tuple, a fixed array that is not a record's inline field — is an
+    /// entry tagged
     /// `LOTUS_RETIRE_OFF_NESTED` (bit 29) followed by the block's size
     /// and the length of its own descriptor, then that descriptor, so
     /// the walk frees the nested block and everything it owns, at any

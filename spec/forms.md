@@ -432,8 +432,10 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > progressively slower containment walk, pre-fix). Bytes fields
 > since GH #1037: before it a struct's replaced Bytes stayed (~47 B
 > a set). A field that holds a block of its own — a nested record, a
-> tuple, an out-of-line fixed array — retires with everything it
-> owns, at any depth: before, the walk stopped at the top-level
+> tuple, a fixed array (a record's field of scalars is inline and owns
+> no block; inside a tuple or another array, even a scalar array is a
+> block of its own) — retires with everything it owns, at any depth:
+> before, the walk stopped at the top-level
 > String and Bytes fields, so a replaced element's nested record (its
 > block and its own String and Bytes) stayed in the arena for good
 > (~110 B a set for one nested record carrying a String and Bytes,
