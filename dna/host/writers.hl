@@ -1392,17 +1392,6 @@ fn github_repo(root: String) -> String {
     return rec(root).setting("github");
 }
 
-// The review opened at the forge for a Review, "" when none.
-fn pr_of(p: Projection, id: String) -> String {
-    let mut i = p.rows() - 1;
-    while i >= 0 {
-        let e = p.row(i);
-        if e.kind == "github.pr" && e.entity == id { return e.body; }
-        i = i - 1;
-    }
-    return "";
-}
-
 fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool {
     let mut i = 0;
     while i < p.rows() {
@@ -1413,21 +1402,89 @@ fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool 
     return false;
 }
 
-// The projection a wait marked, read again in place: its merged order
-// only grows, so a row that lands after the mark is after it (GH #1182).
-fn watch(p: Projection) -> Bool { return p.j.refresh(); }
+// What forge_sync reads of the record, in one pass. It used to ask per
+// Review: every pass of the sync read the whole record once for the
+// Review itself, once for its review at the forge, once for its route
+// and up to three times for its rows, per Review, on every tick of the
+// body; an idle organism's body spent most of a core reading the same
+// rows (an organism of ~1900 rows and ~40 Reviews: ~11 s a tick).
+type ForgeIndex {
+    // Reviews a request names a mutation of, sorted: the only ones the
+    // forge mirrors (a superset: `review_of` still says what each is)
+    mutations: String = "\n";
+    // `<id>\t<body>` of each Review's latest `github.pr` row
+    prs: String = "\n";
+    // `<id>\t<gates>` of each Review's latest `review.routed` row
+    routes: String = "\n";
+    // Reviews whose mutation was applied, or failed
+    landed: String = "\n";
+    // Reviews whose outcome the forge was told
+    commented: String = "\n";
+    // Reviews whose latest request is settled, and every Review met
+    settled: String = "\n";
+    met: String = "\n";
+}
 
-// The gates a Review's route requires (its latest `review.routed` row),
-// space-separated.
-fn routed_gates(p: Projection, id: String) -> String {
+// The record read backwards once: a Review's latest row of a kind is the
+// first one met.
+fn forge_index(p: Projection) -> ForgeIndex {
+    let mut x = ForgeIndex { };
     let mut i = p.rows() - 1;
     while i >= 0 {
         let e = p.row(i);
-        if e.kind == "review.routed" && e.entity == id { return dna::native_json_string(e.body, "gates"); }
         i = i - 1;
+        if e.kind == "review.requested" {
+            let id = p.review_id_of(e);
+            if !listed(x.met, id) { x.met = x.met + id + "\n"; }
+            if len(std::json::find_string_field(e.body, "mutation_id")) > 0 { x.mutations = insert_sorted(x.mutations, id); }
+        } else if e.kind == "review.settled" {
+            let id = p.review_id_of(e);
+            if !listed(x.met, id) { x.met = x.met + id + "\n"; x.settled = x.settled + id + "\n"; }
+        } else if e.kind == "github.pr" {
+            if !indexed(x.prs, e.entity) { x.prs = x.prs + e.entity + "\t" + std::str::replace(e.body, "\n", " ") + "\n"; }
+        } else if e.kind == "review.routed" {
+            if !indexed(x.routes, e.entity) { x.routes = x.routes + e.entity + "\t" + std::str::replace(dna::native_json_string(e.body, "gates"), "\n", " ") + "\n"; }
+        } else if e.kind == "mutation.applied" || e.kind == "mutation.failed" {
+            if !listed(x.landed, e.entity) { x.landed = x.landed + e.entity + "\n"; }
+        } else if e.kind == "github.commented" {
+            if !listed(x.commented, e.entity) { x.commented = x.commented + e.entity + "\n"; }
+        }
     }
-    return "";
+    return x;
 }
+
+// The mutation Reviews the forge still has something to do for: a
+// settled one with no review at the forge, or whose outcome the forge was
+// told, has nothing left, and is not read again (they accumulate for the
+// organization's life, and each read is a whole record).
+fn forge_open(x: ForgeIndex) -> String {
+    let mut out = "\n";
+    let n = list_len(x.mutations);
+    let mut i = 0;
+    while i < n {
+        let id = nth(x.mutations, i);
+        i = i + 1;
+        if listed(x.settled, id) && (!indexed(x.prs, id) || listed(x.commented, id)) { continue; }
+        out = out + id + "\n";
+    }
+    return out;
+}
+
+fn listed(list: String, id: String) -> Bool { return std::str::contains(list, "\n" + id + "\n"); }
+fn indexed(index: String, id: String) -> Bool { return std::str::contains(index, "\n" + id + "\t"); }
+
+// What `index` holds for `id`, "" when nothing.
+fn index_value(index: String, id: String) -> String {
+    let at = std::str::index_of(index, "\n" + id + "\t");
+    if at < 0 { return ""; }
+    let rest = index[(at + len(id) + 2)..len(index)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The projection a wait marked, read again in place: its merged order
+// only grows, so a row that lands after the mark is after it (GH #1182).
+fn watch(p: Projection) -> Bool { return p.j.refresh(); }
 
 // The gate among `gates` (`gate:<workflow>/<job>`) a check run `name`d
 // for its job is the run of, "" when none: a gate is a workflow's job,
@@ -1447,10 +1504,17 @@ fn gate_of_run(gates: String, name: String) -> String {
     return "";
 }
 
+// Every Review of the record, with the verdicts and check runs the forge
+// reports for each.
+fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
+    let p = open_projection(root, seed, "", memory);
+    return forge_sync_on(p, root, seed, forge, memory);
+}
+
 // Every Review of the projection `p`, with the verdicts and check runs
 // the forge reports for each: one projection per one written.
 @bounded_by(p)
-fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
+fn forge_sync_on(p: Projection, root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
     if !forge.present() { return fail("no forge: " + forge.name()); }
     let board = "," + std::str::replace(rec(root).setting("github.board"), " ", "") + ",";
     let remote_named = record_remote(root);
@@ -1458,14 +1522,16 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
     let branch_named = genome_branch(root);
     let branch = if len(branch_named) == 0 { "main" } else { branch_named };
     let mut out = "";
-    let p = open_projection(root, seed, "", memory);
-    let ids = p.review_ids();
+    // the Reviews the forge mirrors are the mutation Reviews; the rest
+    // are never read past the index (an idle body runs this every tick)
+    let x = forge_index(p);
+    let ids = forge_open(x);
     let n = list_len(ids);
     // 1. out: a review at the forge per pending mutation Review
     let mut i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        if r.state == "pending" && r.is_mutation && len(pr_of(p, r.id)) == 0 {
+        if r.state == "pending" && r.is_mutation && len(index_value(x.prs, r.id)) == 0 {
             let head = "dna/" + r.id;
             if forge.kind() == "github" {
                 let e = genome_push_branch(root, remote, r.candidate_commit, head, true);
@@ -1494,7 +1560,7 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
     i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        let pr = pr_of(p, r.id);
+        let pr = index_value(x.prs, r.id);
         if r.state == "pending" && r.is_mutation && len(pr) > 0 {
             let ref = std::json::find_string_field(pr, "url");
             let number = to_string(std::json::find_int_field(pr, "number"));
@@ -1536,8 +1602,8 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
     i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        let pr = pr_of(p, r.id);
-        let gates = routed_gates(p, r.id);
+        let pr = index_value(x.prs, r.id);
+        let gates = index_value(x.routes, r.id);
         if r.state == "pending" && r.is_mutation && len(pr) > 0 && len(gates) > 0 {
             let ref = std::json::find_string_field(pr, "url");
             let mut rest = forge.checks(ref, r.candidate_commit);
@@ -1576,14 +1642,14 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
     i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        let pr = pr_of(p, r.id);
+        let pr = index_value(x.prs, r.id);
         // an approval is told, and its genome pushed, once the Mutation is
         // applied (or failed): the Review settles before the organization
         // applies it, and a push in between sends the base and is never
         // made again
         let approved = std::str::starts_with(r.settled, "approve");
-        let landed = has_row(p, "mutation.applied", r.id, "") || has_row(p, "mutation.failed", r.id, "");
-        if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") && (!approved || landed) {
+        let landed = listed(x.landed, r.id);
+        if r.state == "settled" && r.is_mutation && len(pr) > 0 && !listed(x.commented, r.id) && (!approved || landed) {
             let ref = std::json::find_string_field(pr, "url");
             let number = to_string(std::json::find_int_field(pr, "number"));
             if std::str::starts_with(r.settled, "approve") && forge.kind() == "github" { let pushed = genome_push_branch(root, remote, branch, branch, false); }
@@ -1615,19 +1681,26 @@ fn tab_field(line: String, n: Int) -> String {
 // parameter: constructed inline as the argument it reaches the callee
 // unborn)
 fn github_sync(root: String, seed: String, memory: dna::Memory) -> Answer {
+    let p = open_projection(root, seed, "", memory);
+    return github_sync_of(p, root, seed, memory);
+}
+
+// The same over a projection the caller already holds: the host's tick
+// reads one for the whole of its pass.
+fn github_sync_of(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
     let k = forge_kind(root);
     if k == "github" {
         let branch = genome_branch(root);
         let gh_forge = GitHubForge { repo: github_repo(root), base: (if len(branch) == 0 { "main" } else { branch }) };
-        return forge_sync(root, seed, gh_forge, memory);
+        return forge_sync_on(p, root, seed, gh_forge, memory);
     }
     if k == "file" {
         let forge_dir = root + "/.hale/dna/forge";
         let file_forge = FileForge { dir: forge_dir };
-        return forge_sync(root, seed, file_forge, memory);
+        return forge_sync_on(p, root, seed, file_forge, memory);
     }
     let none = dna::NoForge { };
-    return forge_sync(root, seed, none, memory);
+    return forge_sync_on(p, root, seed, none, memory);
 }
 
 fn github_verb(root: String, seed: String, sub: String, memory: dna::Memory) -> Answer {

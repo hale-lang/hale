@@ -21,21 +21,39 @@ locus NativeJson {
         }
         return cp;
     }
+    // Every row of the record is decoded here each time a journal loads.
+    // The bytes between escapes go into the result a run at a time, and a
+    // string with no escape is its own bytes: appended a byte at a time, a
+    // body of a few hundred bytes cost as many calls into the builder, and
+    // an idle body, which loads its record several times a tick, spent
+    // most of a core here.
     fn decode(raw: String) -> String {
         let size = len(raw);
         if size < 2 || std::str::byte_at_unchecked(raw, 0) != 34 || std::str::byte_at_unchecked(raw, size - 1) != 34 { return ""; }
+        if std::str::index_of(raw, "\\") < 0 {
+            let mut k = 1;
+            while k < size - 1 {
+                let c = std::str::byte_at_unchecked(raw, k);
+                if c < 32 || c == 34 { return ""; }
+                k = k + 1;
+            }
+            return raw[1..(size - 1)];
+        }
         let bytes = std::bytes::BytesBuilder { };
+        // where the bytes not yet in `bytes` begin
+        let mut mark = 1;
         let mut i = 1;
         while i < size - 1 {
             let c = std::str::byte_at_unchecked(raw, i);
             if c < 32 || c == 34 { return ""; }
-            if c != 92 { bytes.append_u8(c); i = i + 1; continue; }
+            if c != 92 { i = i + 1; continue; }
+            if i > mark { bytes.append_str(raw[mark..i]); }
             if i + 1 >= size - 1 { return ""; }
             let escaped = std::str::byte_at_unchecked(raw, i + 1);
             if escaped != 117 {
                 if escaped != 34 && escaped != 92 && escaped != 47 && escaped != 98 && escaped != 102 && escaped != 110 && escaped != 114 && escaped != 116 { return ""; }
                 let decoded = if escaped == 98 { 8 } else if escaped == 102 { 12 } else if escaped == 110 { 10 } else if escaped == 114 { 13 } else if escaped == 116 { 9 } else { escaped };
-                bytes.append_u8(decoded); i = i + 2; continue;
+                bytes.append_u8(decoded); i = i + 2; mark = i; continue;
             }
             let mut cp = self.codepoint(raw, i + 2, size - 1);
             if cp <= 0 || (cp >= 56320 && cp <= 57343) { return ""; }
@@ -54,7 +72,9 @@ locus NativeJson {
                 bytes.append_u8(240 + cp / 262144); bytes.append_u8(128 + (cp / 4096) % 64); bytes.append_u8(128 + (cp / 64) % 64); bytes.append_u8(128 + cp % 64);
             }
             i = i + 6;
+            mark = i;
         }
+        if i > mark { bytes.append_str(raw[mark..i]); }
         return std::str::from_bytes(bytes.snapshot() or raise);
     }
 }

@@ -9792,6 +9792,14 @@ dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #a037c975
 
+== dna/tests/idle_body_cpu_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+shared	dynamic	sites in core #d0e27670
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__RowBatch	on main
+
 == dna/tests/ingest_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

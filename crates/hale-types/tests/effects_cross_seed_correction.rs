@@ -202,13 +202,13 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 98 of 485 rows.
+/// host: 98 of 494 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        479,
-        485,
+        488,
+        494,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
