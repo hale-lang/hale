@@ -1,0 +1,26 @@
+// tests/hale/process_close_stdin_test.hl — a child fed through
+// `write_stdin` reads EOF when `close_stdin` closes the parent's end
+// of its stdin. Without it a tool that reads to the end (`/bin/cat`)
+// never finished and `wait` hung (downstream handoff): writing "" was
+// documented as the EOF and closes nothing.
+
+fn main() {
+    let c = std::process::spawn("/bin/cat") or std::process::Child { };
+    std::test::assert(c.pid > 0, "cat spawned");
+    let n = std::process::write_stdin(c, "hello\n") or 0;
+    std::test::assert_eq_int(n, 6, "six bytes written");
+    std::process::write_stdin(c, "world\n") or 0;
+    std::process::close_stdin(c);
+    std::test::assert_eq_int(c.stdin_fd, -1, "the handle no longer holds the fd");
+    // cat sees EOF, echoes what it read and exits 0; `wait` returns.
+    let code = std::process::wait(c) or 99;
+    std::test::assert_eq_int(code, 0, "cat exited 0 after EOF");
+    // The pipe holds all of it (one read takes up to 64 KiB), and the
+    // next read is the EOF.
+    std::test::assert_eq_str(std::process::read_stdout(c) or "", "hello\nworld\n", "everything written came back");
+    std::test::assert_eq_str(std::process::read_stdout(c) or "x", "", "then EOF");
+    // Idempotent, and a write after it is the closed fd's IoError.
+    std::process::close_stdin(c);
+    let late = std::process::write_stdin(c, "late\n") or 0;
+    std::test::assert_eq_int(late, 0, "write_stdin after close_stdin fails");
+}

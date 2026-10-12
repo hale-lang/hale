@@ -9,8 +9,8 @@
 //    (no .hl wrapper) — see `lower_std_process_run_fallible`.
 //
 // 2. `std::process::spawn(argv) -> Child fallible(IoError)` plus
-//    free fns `wait` / `kill` / `write_stdin` / `read_stdout` /
-//    `read_stderr` / `adopt` — async lifecycle for long-running
+//    free fns `wait` / `kill` / `write_stdin` / `close_stdin` /
+//    `read_stdout` / `read_stderr` / `adopt` — async lifecycle for long-running
 //    children (a build job, a TUI process, etc.). Each of these is
 //    the user-facing path-call surface; codegen routes it to the
 //    bare `__std_process_*` fn declared below (same pattern as
@@ -357,11 +357,31 @@ fn __std_process_kill(c: std::process::Child) -> () fallible(IoError) {
 // The pipe is blocking (an SO_RCVBUF-sized backlog will pause
 // the write); SIGPIPE is ignored process-wide so a write after
 // the child closed its read end returns EPIPE via the IoError
-// channel instead of killing the parent.
-/// Write bytes to the child's stdin (close it by writing ""
-/// after — EOF signals many tools to proceed).
+// channel instead of killing the parent. Writing "" writes
+// nothing and closes nothing: `close_stdin` is the EOF.
+/// Write bytes to the child's stdin. A tool that reads to EOF
+/// (`cat`, `sort`, a JSON filter) waits for `close_stdin`.
 fn __std_process_write_stdin(c: std::process::Child, s: String) -> Int fallible(IoError) {
     return std::process::__pipe_write(c.stdin_fd, s) or raise;
+}
+
+// Close the parent's end of the child's stdin, so the child reads
+// EOF. Surfaced as `std::process::close_stdin`. Without it a child
+// that reads its input to the end (`cat`, `sort`, `wc`) never
+// finishes, and a `wait` on it never returns (downstream handoff):
+// the only close was the handle's teardown.
+//
+// Idempotent and infallible, like `adopt`: the fd goes back to the
+// -1 sentinel the moment it is closed, so a second call, the
+// handle's dissolve and an `adopt` release close nothing twice, and a
+// `write_stdin` after it fails with the IoError of a closed fd
+// rather than writing to a descriptor the kernel may have reissued.
+/// Close the child's stdin so it reads EOF — the end of input for a
+/// tool that reads to the end. Idempotent; `write_stdin` after it
+/// fails.
+fn __std_process_close_stdin(c: std::process::Child) {
+    std::io::tcp::__close_fd(c.stdin_fd);
+    c.stdin_fd = -1;
 }
 
 // Read available bytes from the child's stdout (non-blocking).

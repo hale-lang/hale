@@ -187,9 +187,20 @@ or `-1` if killed by a signal), `signal: Int` (the killing signal,
 fork failure raises rather than returning a bogus output.
 
 For a long-running child you drive incrementally, the lower-level
-`spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` /
-`read_stderr` surface over a `Child` handle is in
+`spawn` / `wait` / `kill` / `write_stdin` / `close_stdin` /
+`read_stdout` / `read_stderr` surface over a `Child` handle is in
 [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md).
+A child that reads its input to the end — `cat`, `sort`, a filter —
+finishes only when it sees EOF, and `close_stdin` is that EOF; until
+it, `wait` on such a child waits forever:
+
+```hale,fragment
+let c = std::process::spawn("/usr/bin/sort") or raise;
+std::process::write_stdin(c, "b\na\n") or raise;
+std::process::close_stdin(c);           // sort reads EOF, sorts, exits
+let code = std::process::wait(c) or raise;
+let sorted = std::process::read_stdout(c) or "";
+```
 
 ### Keeping the child: `adopt`
 

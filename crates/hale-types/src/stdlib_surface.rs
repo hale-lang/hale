@@ -1181,6 +1181,9 @@ pub const SURFACES: &[NsSurface] = &[
             // wrappers: a statement calls a body that returns nothing (F.40
             // phase 4, S5; a hand-kept statement branch until then).
             row!("adopt", SYSCALL, _, Renamed),
+            // Closes the parent's end of the child's stdin (its EOF);
+            // a statement, through its rename like `adopt`.
+            row!("close_stdin", SYSCALL, _, Renamed),
             row!("dump_arena_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
             row!("dump_pool_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),

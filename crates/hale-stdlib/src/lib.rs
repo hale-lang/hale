@@ -494,6 +494,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // is deliberately absent — it is the shared teardown spine of
     // dissolve and adopt, called bare inside process.hl only.
     (&["std", "process", "adopt"], "__std_process_adopt"),
+    // The child's EOF: closes the parent's end of its stdin.
+    (&["std", "process", "close_stdin"], "__std_process_close_stdin"),
     (&["std", "process", "kill"], "__std_process_kill"),
     (&["std", "process", "read_stderr"], "__std_process_read_stderr"),
     (&["std", "process", "read_stdout"], "__std_process_read_stdout"),
