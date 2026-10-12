@@ -14345,15 +14345,27 @@ impl<'a> Checker<'a> {
                 // a malformed one is the author's error, not the
                 // program's at runtime.
                 if let Literal::Time(s) = lit {
-                    if hale_syntax::time_literal::parse_iso8601_utc_ns(s).is_none() {
-                        self.diags.push(Diag::ty(
+                    use hale_syntax::time_literal::{
+                        parse_iso8601_utc, TimeLiteralError, TIME_MAX_TEXT, TIME_MIN_TEXT,
+                    };
+                    match parse_iso8601_utc(s) {
+                        Ok(_) => {}
+                        Err(TimeLiteralError::Malformed) => self.diags.push(Diag::ty(
                             *span,
                             format!(
                                 "time literal `{s}` is not an ISO-8601 UTC instant \
                                  (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`; an offset such as \
                                  `+01:00` is rejected, UTC only)"
                             ),
-                        ));
+                        )),
+                        Err(TimeLiteralError::OutOfRange) => self.diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "time literal `{s}` is outside `Time`'s range: a `Time` \
+                                 is i64 nanoseconds since the epoch, {TIME_MIN_TEXT} \
+                                 through {TIME_MAX_TEXT}"
+                            ),
+                        )),
                     }
                 }
                 // GH #1076 (U3): a quantity literal is its component's

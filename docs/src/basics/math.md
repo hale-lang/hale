@@ -238,6 +238,15 @@ malformed string is an `or` branch, not a sentinel); `unix(t)`,
 views. `now()` keeps returning epoch seconds as an `Int` for code that
 wants a number.
 
+A `Time` is 64 bits of nanoseconds, so it holds the years 1677 through
+2262 and no others. Past either end is refused, never wrapped into
+another century: a literal like `` `2999-01-01T00:00:00Z` `` is a
+compile error, `parse_time` of that text takes its `or` branch, and
+`time_from_unix(n)` or `t + d` that would leave the range stops the
+program with a `violation:` that names the operation. A date that far
+out is a number of seconds: `parse_iso8601(s)` still reads it as an
+`Int`.
+
 For *measuring elapsed time*, reach for the monotonic clock —
 it never jumps backward when the wall clock is adjusted:
 

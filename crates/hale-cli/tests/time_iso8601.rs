@@ -116,3 +116,83 @@ fn parsing_is_pure() {
     );
     assert_eq!(out.trim(), "1", "must certify as pure: {}", out);
 }
+
+/// The whole run: exit status, stdout and stderr, for the refusals
+/// below that end the program or never let it build.
+fn run_full(verb: &str, src: &str, tag: &str) -> std::process::Output {
+    let dir = std::env::temp_dir()
+        .join(format!("hale-iso-{}-{}", std::process::id(), tag));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let f = dir.join("main.hl");
+    std::fs::write(&f, src).expect("write");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg(verb)
+        .arg(&f)
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+/// A `Time` is i64 nanoseconds, 1677-09-21 through 2262-04-11. A
+/// literal past either end is the author's error at the literal, named
+/// as a range and not as a malformed date. It used to build and wrap:
+/// `2999-01-01` was an instant in 1829.
+#[test]
+fn a_time_literal_past_the_range_is_refused_at_check() {
+    let out = run_full(
+        "check",
+        "fn main() { let t = `2999-01-01T00:00:00Z`; println(t); }",
+        "lit-range",
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string()
+        + &String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "the literal must not check: {err}");
+    assert!(
+        err.contains("time literal `2999-01-01T00:00:00Z` is outside `Time`'s range")
+            && err.contains("2262-04-11T23:47:16.854775807Z"),
+        "the diagnostic names the range: {err}"
+    );
+}
+
+/// `time_from_unix(n)` is `n × 10⁹`, and `Time ± Duration` is an
+/// instant; neither has a caller frame for an error, so a result no
+/// i64 holds is a violation where it would be made, never a wrapped
+/// instant in another century.
+#[test]
+fn a_time_past_the_range_is_a_violation_not_a_wrap() {
+    for (tag, body, what) in [
+        (
+            "from-unix",
+            "let n = std::str::parse_int(\"32503680000\") or 0;\n\
+             println(std::time::time_from_unix(n));",
+            "time_from_unix(32503680000)",
+        ),
+        (
+            "plus",
+            "let t = `2262-04-11T00:00:00Z`;\n\
+             let d = 1day;\n\
+             println(t + d);",
+            "+ 86400000000000ns",
+        ),
+        (
+            "minus",
+            "let t = `1677-09-22T00:00:00Z`;\n\
+             let d = 2day;\n\
+             println(t - d);",
+            "- 172800000000000ns",
+        ),
+    ] {
+        let out = run_full("run", &format!("fn main() {{\n{body}\n}}"), tag);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{tag}: exits 1: {stdout}{stderr}");
+        assert!(stdout.trim().is_empty(), "{tag}: no wrapped instant printed: {stdout}");
+        assert!(
+            stderr.contains("violation: ")
+                && stderr.contains(what)
+                && stderr.contains("is outside Time's range"),
+            "{tag}: names the operation and the range: {stderr}"
+        );
+    }
+}

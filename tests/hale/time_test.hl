@@ -27,6 +27,21 @@ fn main() {
     std::test::assert(q == f, "and a fraction");
     let bad = std::time::parse_time("2026-05-08T12:00:00+01:00") or zero;
     std::test::assert(bad == zero, "an offset is refused, not read as UTC");
+    // A Time is i64 nanoseconds: 1677-09-21 through 2262-04-11. A date
+    // past either end fails the parse; it used to wrap (2999 read as
+    // 1829). The seconds-valued parse still reads it.
+    let far = std::time::parse_time("2999-01-01T00:00:00Z") or zero;
+    std::test::assert(far == zero, "a date past 2262 is refused, not wrapped");
+    let early = std::time::parse_time("1600-01-01T00:00:00Z") or zero;
+    std::test::assert(early == zero, "a date before 1677 is refused, not wrapped");
+    std::test::assert_eq_int(std::time::parse_iso8601("2999-01-01T00:00:00Z") or 0, 32472144000, "parse_iso8601 is seconds and reads it");
+    let last = std::time::parse_time("2262-04-11T23:47:16.854775807Z") or zero;
+    std::test::assert_eq_int(std::time::nanos(last), 9223372036854775807, "the last instant parses");
+    let first = std::time::parse_time("1677-09-21T00:12:43.145224192Z") or zero;
+    std::test::assert(std::time::nanos(first) < 0 - 9223372036854775807, "the first instant parses");
+    std::test::assert_eq_str(std::time::iso8601(first), "1677-09-21T00:12:43.145224192Z", "and formats");
+    let past_last = std::time::parse_time("2262-04-11T23:47:16.854775808Z") or zero;
+    std::test::assert(past_last == zero, "one nanosecond past the last is refused");
     let now_s = std::time::now();
     let cur = std::time::current();
     std::test::assert(cur > `2026-01-01T00:00:00Z`, "the wall clock reads as an instant");

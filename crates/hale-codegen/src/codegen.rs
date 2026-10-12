@@ -24921,17 +24921,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), CodegenTy::Duration))
             }
             // GH #607: Time ± Duration → Time (routed here by
-            // Expr::Binary), plain i64 arithmetic.
+            // Expr::Binary). An instant past either end of i64 is a
+            // violation where it would be made, never a wrap into
+            // another century (`lotus_time_offset_checked`).
             (BinOp::Add | BinOp::Sub, CodegenTy::Time) => {
-                let l = lv.into_int_value();
-                let r = rv.into_int_value();
-                let v = match op {
-                    BinOp::Add => self.builder.build_int_add(l, r, "tadd"),
-                    BinOp::Sub => self.builder.build_int_sub(l, r, "tsub"),
-                    _ => unreachable!(),
-                };
-                let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), CodegenTy::Time))
+                let f = self
+                    .module
+                    .get_function("lotus_time_offset_checked")
+                    .expect("lotus_time_offset_checked declared");
+                let sub = self
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(op == BinOp::Sub), false);
+                let v = self
+                    .builder
+                    .build_call(f, &[lv.into(), rv.into(), sub.into()], "toffset")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Time))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
                 CodegenTy::Duration | CodegenTy::Time) =>

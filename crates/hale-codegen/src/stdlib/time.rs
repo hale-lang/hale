@@ -276,15 +276,20 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 n_ty
             )));
         }
+        // `n × 10⁹`, refused (a violation) when no Time holds it rather
+        // than wrapped into another century.
+        let f = self
+            .module
+            .get_function("lotus_time_from_unix_checked")
+            .expect("lotus_time_from_unix_checked declared");
         let ns = self
             .builder
-            .build_int_mul(
-                n_val.into_int_value(),
-                self.context.i64_type().const_int(1_000_000_000, false),
-                "time.from_unix",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ns.into(), CodegenTy::Time))
+            .build_call(f, &[n_val.into()], "time.from_unix")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((ns, CodegenTy::Time))
     }
 
     /// `std::time::current() -> Time` — the wall clock as an instant
@@ -386,7 +391,9 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
     }
 
     /// `std::time::parse_time(s) -> Time fallible(ParseError)` — the
-    /// same parse as `parse_iso8601`, yielding the instant.
+    /// same parse as `parse_iso8601`, yielding the instant. A date no
+    /// `Time` holds (before 1677-09-21 or after 2262-04-11) fails like
+    /// a malformed one: it used to wrap (`2999-01-01` read as 1829).
     fn lower_std_time_parse_time_fallible(
         &mut self,
         args: &[Expr],
@@ -402,8 +409,8 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let s_val = self.unpack_view_if_needed(v, &ty)?;
         let can_fn = self
             .module
-            .get_function("lotus_time_can_parse_iso8601")
-            .expect("lotus_time_can_parse_iso8601 declared");
+            .get_function("lotus_time_can_parse_time")
+            .expect("lotus_time_can_parse_time declared");
         let can = self
             .builder
             .build_call(can_fn, &[s_val.into()], "time.can")
