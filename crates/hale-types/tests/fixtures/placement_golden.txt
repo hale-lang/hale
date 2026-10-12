@@ -2707,6 +2707,17 @@ row	~.q	Q	main	inherited
 row	~.qb	QB	main	inherited
 row	~.qs	QS	main	inherited
 
+== crates/hale-codegen/tests/form_vec_pop_retire.rs#f5a683be
+-- H@main1	H
+row	~	H	main	default
+row	~.q	Q	main	inherited
+
+== crates/hale-codegen/tests/form_vec_pop_retire.rs#a81d4f8d
+-- H@main1	H
+row	~	H	main	default
+row	~.qm	QM	main	inherited
+row	~.qt	QT	main	inherited
+
 == crates/hale-codegen/tests/form_vec_set_retire.rs#abb621d8
 root	App	the entry
 row	App@literal1	App	main	default
@@ -6737,12 +6748,37 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 
+== tests/hale/pinned_birth_restart_test.hl
+root	App	the entry
+domain	pinned:App@literal1.held
+domain	pinned:App@literal1.twice
+domain	pinned:App@literal1.late
+domain	pinned:App@literal1.fresh
+row	App@literal1	App	main	default
+row	App@literal1.fresh	Fresh	pinned:App@literal1.fresh	entry	off owner
+row	App@literal1.held	Kid	pinned:App@literal1.held	entry	off owner
+row	App@literal1.late	Kid	pinned:App@literal1.late	entry	off owner
+row	App@literal1.slow	Slow	main	default
+row	App@literal1.twice	Kid	pinned:App@literal1.twice	entry	off owner
+
 == tests/hale/pinned_restart_test.hl
 root	App	the entry
 domain	pinned:App@literal1.pump
 row	App@literal1	App	main	default
 row	App@literal1.pump	Pump	pinned:App@literal1.pump	entry	off owner
 row	App@literal1.slow	Slow	main	default
+
+== tests/hale/pool_birth_restart_test.hl
+root	App	the entry
+domain	pool:a
+domain	pool:b	async_io
+domain	pool:c
+domain	pool:d
+row	App@literal1	App	main	default
+row	App@literal1.classic	Kid	pool:a	entry	off owner
+row	App@literal1.fresh	Fresh	pool:d	entry	off owner
+row	App@literal1.parked	Kid	pool:b	entry	off owner
+row	App@literal1.twice	Kid	pool:c	entry	off owner
 
 == tests/hale/process_child_adopt_test.hl
 shared	Job@main1	Job #01dd0b0d
@@ -6753,6 +6789,18 @@ dynamic	__StdProcessChild	on main
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
+
+== tests/hale/restart_birth_failure_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.checked	Checked	main	default
+row	App@literal1.fresh	Fresh	main	default
+row	App@literal1.held	Kid	main	default
+row	App@literal1.held_twice	Kid	main	default
+-- dynamic	sites in the seed
+dynamic	Checked	on main
+dynamic	Fresh	on main
+dynamic	Kid	on main
 
 == tests/hale/restart_resumes_run_test.hl
 root	App	the entry

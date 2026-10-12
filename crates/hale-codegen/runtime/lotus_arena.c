@@ -1934,6 +1934,11 @@ typedef struct lotus_held_failure {
      * the handler. */
     lotus_resume_fn resume;
     int64_t phase, pre;
+    /* The worker pool the child was placed on, when the resume must run
+     * there rather than on the settling thread: a pool-placed root's
+     * birth ran on its pool's worker, so its restart's birth and its
+     * run() do too (`lotus_failure_resume_post`). NULL: on this thread. */
+    void *resume_pool;
     int state;
     int waiters;               /* threads blocked in lotus_failure_await */
     /* A posted delivery (decision L0-1, below): the owner's domain it
@@ -2117,8 +2122,21 @@ static void lotus_pool_start_run_pending(void);
  *       child failing during its parent's params loop), so waiting
  *       would never end. `resume` runs at settle, right after the
  *       handler, on this thread; the caller stops here. */
+int64_t lotus_failure_await_on(void *child, void *resume, int64_t phase,
+                               int64_t pre, void *pool);
+
 int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
                             int64_t pre) {
+    return lotus_failure_await_on(child, resume, phase, pre, NULL);
+}
+
+/* `lotus_failure_await` for a child placed on a worker pool whose birth
+ * the instantiating thread waited for (a pool-placed root): a resume at
+ * settle (2) is posted to `pool`, so the restarted birth and the run()
+ * run on the child's own placement, as its first start did, never on
+ * the settling thread. */
+int64_t lotus_failure_await_on(void *child, void *resume, int64_t phase,
+                               int64_t pre, void *pool) {
     if (__atomic_load_n(&lotus_held_failure_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
     pthread_mutex_lock(&g_params_open_lock);
@@ -2133,6 +2151,7 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
             node->resume = (lotus_resume_fn)resume;
             node->phase = phase;
             node->pre = pre;
+            node->resume_pool = pool;
             r = 2;
         }
         pthread_mutex_unlock(&g_params_open_lock);
@@ -2168,6 +2187,9 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
     return 1;
 #endif
 }
+
+void lotus_failure_resume_post(void *pool, void *resume, void *child,
+                               int64_t phase, int64_t pre);
 
 void lotus_params_settle(void *parent) {
     pthread_mutex_lock(&g_params_open_lock);
@@ -2216,6 +2238,7 @@ void lotus_params_settle(void *parent) {
         void *err = node->err;
         lotus_resume_fn resume = node->resume;
         int64_t phase = node->phase, pre = node->pre;
+        void *resume_pool = node->resume_pool;
         void (*reclaim)(void *) = node->reclaim;
         node->state = LOTUS_DELIVERED;
         lotus_held_unlink(node);
@@ -2233,6 +2256,8 @@ void lotus_params_settle(void *parent) {
          * (restart, or carry on) for a child on this thread. */
         if (reclaim)
             reclaim(child);
+        else if (resume && resume_pool)
+            lotus_failure_resume_post(resume_pool, (void *)resume, child, phase, pre);
         else if (resume)
             resume(child, phase, pre);
     }
@@ -6016,18 +6041,110 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
 }
 
 /* GH iris-handoff P1: retire everything a REPLACED pointer-storage
- * form element owned — its top-level String and Bytes fields
- * (surviving pointers excluded, intra-call aliasing deduped: the
- * hashmap retire-cell discipline) and then the element block itself.
+ * form element owned — its String and Bytes fields, the blocks of its
+ * nested records (tuples, out-of-line arrays) and everything those own,
+ * at any depth — and then the element block itself. A block the new
+ * element still reaches survives, and one reached twice is freed once.
  * GH #1037: also a POPPED element, against the owned copy pop hands
  * back, and Bytes fields — the descriptor tags a Bytes field's
  * offset with LOTUS_RETIRE_OFF_BYTES and frees it at 8 + len (it used
  * to list String fields only, so a replaced struct's Bytes stayed).
+ * A field pointing at a block of its own is tagged
+ * LOTUS_RETIRE_OFF_NESTED, followed by the block's size, the length of
+ * its descriptor and that descriptor (it used to be skipped, so a nested
+ * record's block and its String/Bytes stayed in the arena for good).
  * `size` sentinels: -1 = old_blob is a NUL-terminated String
  * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
- * struct block of that many bytes. All guards live here so the
- * publish-site IR is two loads + one call. */
+ * struct block of that many bytes. `n_offs` counts the descriptor's
+ * int32 words. All guards live here so the publish-site IR is two
+ * loads + one call. */
 #define LOTUS_RETIRE_OFF_BYTES ((int32_t)1 << 30)
+#define LOTUS_RETIRE_OFF_NESTED ((int32_t)1 << 29)
+#define LOTUS_RETIRE_OFF_MASK (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED))
+
+/* The blocks one element reaches through its descriptor. Small and on
+ * the stack for the common shapes; grown on the heap past that. */
+typedef struct {
+    void **p;
+    size_t *size;
+    size_t n, cap;
+    void *p_inline[32];
+    size_t size_inline[32];
+} lotus_retire_blocks_t;
+
+static void lotus_retire_blocks_init(lotus_retire_blocks_t *b) {
+    b->p = b->p_inline;
+    b->size = b->size_inline;
+    b->n = 0;
+    b->cap = 32;
+}
+
+static void lotus_retire_blocks_free(lotus_retire_blocks_t *b) {
+    if (b->p != b->p_inline) free(b->p);
+    if (b->size != b->size_inline) free(b->size);
+}
+
+static int lotus_retire_blocks_has(const lotus_retire_blocks_t *b, const void *p) {
+    for (size_t i = 0; i < b->n; i++)
+        if (b->p[i] == p) return 1;
+    return 0;
+}
+
+/* 0 when out of memory: the caller then frees nothing (a leak, never a
+ * double free). */
+static int lotus_retire_blocks_push(lotus_retire_blocks_t *b, void *p, size_t size) {
+    if (b->n == b->cap) {
+        size_t cap = b->cap * 2;
+        void **np = malloc(cap * sizeof *np);
+        size_t *ns = malloc(cap * sizeof *ns);
+        if (!np || !ns) { free(np); free(ns); return 0; }
+        memcpy(np, b->p, b->n * sizeof *np);
+        memcpy(ns, b->size, b->n * sizeof *ns);
+        lotus_retire_blocks_free(b);
+        b->p = np;
+        b->size = ns;
+        b->cap = cap;
+    }
+    b->p[b->n] = p;
+    b->size[b->n] = size;
+    b->n++;
+    return 1;
+}
+
+/* Walk `n` descriptor words over the block at `base`, collecting every
+ * block it reaches. `sized`: compute each block's size (the old
+ * element's walk, whose blocks are freed; the new element's only needs
+ * the pointers). A block is descended into whatever arena it is in; the
+ * caller frees only those in its own. */
+static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
+                                const int32_t *desc, int64_t n, int sized) {
+    for (int64_t i = 0; i < n; i++) {
+        int32_t e = desc[i];
+        int32_t off = e & LOTUS_RETIRE_OFF_MASK;
+        char *p;
+        memcpy(&p, base + off, sizeof(char *));
+        if (e & LOTUS_RETIRE_OFF_NESTED) {
+            if (i + 2 >= n) return 1;          /* malformed: stop */
+            size_t bsize = (size_t)(uint32_t)desc[i + 1];
+            int64_t sub_n = desc[i + 2];
+            const int32_t *sub = desc + i + 3;
+            i += 2 + sub_n;
+            if (!p) continue;
+            if (!lotus_retire_blocks_push(b, p, bsize)) return 0;
+            if (!lotus_retire_collect(b, p, sub, sub_n, sized)) return 0;
+            continue;
+        }
+        if (!p) continue;
+        size_t fsize = 0;
+        if (sized)
+            fsize = (e & LOTUS_RETIRE_OFF_BYTES)
+                ? (size_t)lotus_bytes_len(p) + sizeof(int64_t)
+                : strlen(p) + 1;
+        if (!lotus_retire_blocks_push(b, p, fsize)) return 0;
+    }
+    return 1;
+}
+
 void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
                                 void *new_blob, int64_t size,
                                 const int32_t *str_offs,
@@ -6035,32 +6152,31 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a || !old_blob || old_blob == new_blob) return;
     if (!lotus_arena_contains_ptr(a, old_blob)) return;
-    const char *old_v = (const char *)old_blob;
-    const char *new_v = (const char *)new_blob;
-    for (int64_t i = 0; i < n_offs; i++) {
-        int32_t off = str_offs[i] & ~LOTUS_RETIRE_OFF_BYTES;
-        int is_bytes = (str_offs[i] & LOTUS_RETIRE_OFF_BYTES) != 0;
-        char *oldp;
-        memcpy(&oldp, old_v + off, sizeof(char *));
-        if (!oldp) continue;
-        if (new_v) {
-            char *newp;
-            memcpy(&newp, new_v + off, sizeof(char *));
-            if (oldp == newp) continue; /* survives into the new elem */
+    if (n_offs > 0) {
+        lotus_retire_blocks_t olds, news;
+        lotus_retire_blocks_init(&olds);
+        lotus_retire_blocks_init(&news);
+        int ok = lotus_retire_collect(&olds, (const char *)old_blob, str_offs, n_offs, 1);
+        if (ok && new_blob) {
+            if (!lotus_retire_blocks_push(&news, new_blob, 0)) ok = 0;
+            if (ok) ok = lotus_retire_collect(&news, (const char *)new_blob, str_offs, n_offs, 0);
         }
-        int dup = 0;
-        for (int64_t j = 0; j < i; j++) {
-            char *pj;
-            memcpy(&pj, old_v + (str_offs[j] & ~LOTUS_RETIRE_OFF_BYTES),
-                   sizeof(char *));
-            if (pj == oldp) { dup = 1; break; }
+        if (ok) {
+            for (size_t i = 0; i < olds.n; i++) {
+                void *p = olds.p[i];
+                if (p == old_blob) continue;              /* freed last */
+                if (lotus_retire_blocks_has(&news, p)) continue; /* survives */
+                int dup = 0;
+                for (size_t j = 0; j < i; j++)
+                    if (olds.p[j] == p) { dup = 1; break; }
+                if (dup) continue;
+                if (!lotus_arena_contains_ptr(a, p)) continue;
+                lotus_arena_free_block_now(a, p, olds.size[i]);
+            }
         }
-        if (dup) continue;
-        if (!lotus_arena_contains_ptr(a, oldp)) continue;
-        size_t fsize = is_bytes
-            ? (size_t)lotus_bytes_len(oldp) + sizeof(int64_t)
-            : strlen(oldp) + 1;
-        lotus_arena_free_block_now(a, oldp, fsize);
+        lotus_retire_blocks_free(&olds);
+        lotus_retire_blocks_free(&news);
+        if (!ok) return;
     }
     size_t block_size;
     if (size == -1) {
@@ -10355,6 +10471,35 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
                           int64_t payload_size) {
     lotus_coop_pool_post_cell(p, handler, self_ptr, payload_src,
                               (size_t)payload_size, 1);
+}
+
+/* A held failure's resume (`__resume_<L>`) for a child placed on a
+ * worker pool, posted to that pool as the child's run (it takes the run
+ * ticket a first start's posted run() takes): the restart's birth and
+ * the run() that follows it execute on the child's placement, never on
+ * the thread that decided. */
+typedef struct {
+    lotus_resume_fn resume;
+    int64_t phase, pre;
+} lotus_resume_job_t;
+
+static void lotus_failure_resume_job(void *child, void *payload) {
+    lotus_resume_job_t job;
+    memcpy(&job, payload, sizeof job);
+    job.resume(child, job.phase, job.pre);
+}
+
+void lotus_failure_resume_post(void *pool, void *resume, void *child,
+                               int64_t phase, int64_t pre) {
+    lotus_resume_job_t job = { (lotus_resume_fn)resume, phase, pre };
+    if (!pool) {
+        /* No pool registered under the placement's name (none on a
+         * target without threads): the one thread there is runs it. */
+        job.resume(child, phase, pre);
+        return;
+    }
+    lotus_coop_pool_post((lotus_coop_pool_t *)pool, (void *)lotus_failure_resume_job,
+                         child, &job, (int64_t)sizeof job);
 }
 
 /* A bus delivery to a subscriber on a cooperative pool. */

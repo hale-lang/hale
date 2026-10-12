@@ -1,5 +1,5 @@
 // Decision line 13, resume through placement and admission (Resume,
-// RunAdmission). Known open at inventory row C43.
+// RunAdmission). Shipped (inventory row C43).
 //
 // `Kid` is placed on pool `side`; its birth closure fails while App's
 // params are open, so the failure is held and its run() waits. App's
@@ -8,7 +8,7 @@
 // takes 100ms; App's birth() reads whether it has finished.
 //
 // Expected terminal outcome: run() is posted and App's birth() does not
-// wait for it, `outcome: resumed-posted`. Today run() is called inline
+// wait for it, `outcome: resumed-posted`. Before, run() was called inline
 // on the settling thread, before App's birth(): `resumed-inline`.
 
 locus Kid {

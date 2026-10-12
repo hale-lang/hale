@@ -146,8 +146,12 @@ The recovery primitives:
   The child stops, but a child the parent holds in a field (or a
   binding holds) stays readable until the parent tears it down.
 - **`restart(child)`** — run it again: `birth()`, then `run()`,
-  on the same instance. A child whose `run()` failed restarts once
-  that `run()` has returned — a pinned child on its own thread. It
+  on the same instance, and where it ran the first time: a pinned
+  child on its own thread, a child placed on a pool on that pool's
+  worker. A child whose `birth()` failed (a `violate` in it, or a
+  `birth_check`) is restarted before its `run()` starts, and again
+  if the new `birth()` fails too, within the bound. A child whose
+  `run()` failed restarts once that `run()` has returned. It
   hears its subscriptions again, even when one of its handlers
   returned while the parent was still deciding and stopped it.
 - **`restart_in_place(child)`** — the same, after putting every

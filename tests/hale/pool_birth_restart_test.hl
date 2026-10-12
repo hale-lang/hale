@@ -1,0 +1,102 @@
+// A child placed on a worker pool whose birth fails is restarted on its
+// pool: birth() runs again on the pool's worker, then run(), as its first
+// start did, and its owner's run() keeps running beside it.
+//
+// A pool-placed root's birth runs on its pool's worker, but its failure
+// is held until its owner's params settle, and the restart it asks for
+// was performed where the owner settled: the re-birth and the run() ran
+// on the owner's thread. A run() that never returns (a server's accept
+// loop) then kept the owner's own run() from ever starting.
+//
+// `classic` is on a classic pool and `parked` on an async_io pool; `twice`
+// fails its re-birth too; `fresh` is restarted in place. Each child records
+// `std::io::tcp::__on_pool()` (1 on a pool's worker, 0 on the main thread)
+// in every birth() and in run().
+
+locus Kid {
+    params { births: Int = 0; ticks: Int = 0; fail_until: Int = 1; birth_off_pool: Int = 0; run_on_pool: Int = 0; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if std::io::tcp::__on_pool() == 0 { self.birth_off_pool = self.birth_off_pool + 1; }
+        if self.births <= self.fail_until { violate fuse; }
+    }
+    @unbounded
+    run() {
+        self.run_on_pool = std::io::tcp::__on_pool();
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+locus Fresh {
+    params { births: Int = 0; ticks: Int = 0; mark: Int = 0; off_pool: Int = 0; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if std::io::tcp::__on_pool() == 0 { self.off_pool = 1; }
+        if self.mark == 0 { self.mark = 7; violate fuse; }
+    }
+    @unbounded
+    run() {
+        if std::io::tcp::__on_pool() == 0 { self.off_pool = 1; }
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+main locus App {
+    params {
+        classic: Kid = Kid { };
+        parked: Kid = Kid { };
+        twice: Kid = Kid { fail_until: 2 };
+        fresh: Fresh = Fresh { };
+        kid_failures: Int = 0;
+        fresh_failures: Int = 0;
+    }
+    placement {
+        classic: cooperative(pool = a);
+        parked: cooperative(pool = b) where async_io;
+        twice: cooperative(pool = c);
+        fresh: cooperative(pool = d);
+    }
+    on_failure(c: Kid, err: ClosureViolation) {
+        self.kid_failures = self.kid_failures + 1;
+        restart (c) for 3;
+    }
+    on_failure(c: Fresh, err: ClosureViolation) {
+        self.fresh_failures = self.fresh_failures + 1;
+        restart_in_place (c);
+    }
+    run() {
+        std::test::assert_eq_int(std::io::tcp::__on_pool(), 0, "App's run() is on the main thread");
+        let mut i = 0;
+        while (self.classic.ticks == 0 || self.parked.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0) && i < 400 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.classic.births, 2, "a classic pool child's failed birth ran again");
+        std::test::assert_eq_int(self.classic.birth_off_pool, 0, "every birth on the pool's worker");
+        std::test::assert_eq_int(self.classic.run_on_pool, 1, "and its run() too");
+        std::test::assert_eq_int(self.parked.births, 2, "an async_io pool child's failed birth ran again");
+        std::test::assert_eq_int(self.parked.birth_off_pool, 0, "every birth on the pool's worker");
+        std::test::assert_eq_int(self.parked.run_on_pool, 1, "and its run() too");
+        std::test::assert_eq_int(self.twice.births, 3, "a re-birth that failed again was restarted again");
+        std::test::assert_eq_int(self.twice.birth_off_pool, 0, "on the pool's worker");
+        std::test::assert_eq_int(self.twice.run_on_pool, 1, "and its run() too");
+        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran the birth from its built params");
+        std::test::assert_eq_int(self.fresh.off_pool, 0, "on the pool's worker, run() too");
+        std::test::assert_eq_int(self.kid_failures, 1 + 1 + 2, "every Kid failure reached the handler");
+        let a = self.classic.ticks + self.parked.ticks + self.twice.ticks + self.fresh.ticks;
+        std::time::sleep(100ms);
+        let b = self.classic.ticks + self.parked.ticks + self.twice.ticks + self.fresh.ticks;
+        std::test::assert(b > a, "the restarted children's run() loops run on their pools, beside this one");
+        std::process::exit(0);
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,103 @@
+// A child whose birth fails is restarted by its owner: birth() runs
+// again, then run() — for a `violate` in birth() and a failed
+// `birth_check` alike, whether the failure is held (the owner's params
+// still open) or delivered in place (the owner settled).
+//
+// The restart decision is read against the restart count as the birth
+// began. Read at the run gate instead, it missed every failure whose
+// handler had already run by then — any failure delivered in place, the
+// owner being settled — so `restart(c)` was asked for and never
+// performed: birth() never ran again and run() started on the failed
+// birth. A restart whose birth fails again is decided the same way
+// before run() starts (`fail_until: 2`).
+//
+// The pinned and pool placements are pinned_birth_restart_test.hl and
+// pool_birth_restart_test.hl.
+
+locus Kid {
+    params { tag: String = ""; births: Int = 0; runs: Int = 0; fail_until: Int = 1; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if self.births <= self.fail_until { violate fuse; }
+    }
+    run() { self.runs = self.runs + 1; }
+}
+
+locus Checked {
+    params { births: Int = 0; runs: Int = 0; }
+    closure bad { captures: births; epoch inline; }
+    birth_check { self.births == 1 } -> violate bad;
+    birth() { self.births = self.births + 1; }
+    run() { self.runs = self.runs + 1; }
+}
+
+// restart_in_place puts the params back to their built values before
+// each re-birth, so `mark` is 0 again and the birth fails again: birth()
+// runs three times (the first, then the default cap's two restarts),
+// each from `births` 0, and the child is left live, so run() starts.
+locus Fresh {
+    params { births: Int = 0; runs: Int = 0; mark: Int = 0; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if self.mark == 0 { self.mark = 7; violate fuse; }
+    }
+    run() { self.runs = self.runs + 1; }
+}
+
+main locus App {
+    params {
+        held: Kid = Kid { tag: "held" };
+        held_twice: Kid = Kid { tag: "held_twice", fail_until: 2 };
+        checked: Checked = Checked { };
+        fresh: Fresh = Fresh { };
+        kid_failures: Int = 0;
+        checked_failures: Int = 0;
+        fresh_failures: Int = 0;
+    }
+    on_failure(c: Kid, err: ClosureViolation) {
+        self.kid_failures = self.kid_failures + 1;
+        restart (c) for 3;
+    }
+    on_failure(c: Checked, err: ClosureViolation) {
+        self.checked_failures = self.checked_failures + 1;
+        restart (c) for 1;
+    }
+    on_failure(c: Fresh, err: ClosureViolation) {
+        self.fresh_failures = self.fresh_failures + 1;
+        restart_in_place (c);
+    }
+    run() {
+        std::test::assert_eq_int(self.held.births, 2, "a held birth failure re-ran birth()");
+        std::test::assert_eq_int(self.held.runs, 1, "then run(), once");
+        std::test::assert_eq_int(self.held_twice.births, 3, "a re-birth that fails again is restarted again");
+        std::test::assert_eq_int(self.held_twice.runs, 1, "and run() starts after the birth that passed");
+        std::test::assert_eq_int(self.checked.births, 2, "a held birth_check failure re-ran birth()");
+        std::test::assert_eq_int(self.checked.runs, 1, "then run()");
+        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran a held failed birth, which failed again from its built params");
+        std::test::assert_eq_int(self.fresh.births, 1, "each re-birth started from births 0");
+        std::test::assert_eq_int(self.fresh.runs, 1, "and past the cap the child runs");
+
+        let late = Kid { tag: "late" };
+        std::test::assert_eq_int(late.births, 2, "a birth failure delivered in place re-runs birth()");
+        std::test::assert_eq_int(late.runs, 1, "then run()");
+        let late_twice = Kid { tag: "late_twice", fail_until: 2 };
+        std::test::assert_eq_int(late_twice.births, 3, "and again when the re-birth fails too");
+        std::test::assert_eq_int(late_twice.runs, 1, "run() after the birth that passed");
+        let late_bounded = Kid { tag: "late_bounded", fail_until: 9 };
+        std::test::assert_eq_int(late_bounded.births, 4, "`for 3` admits three restarts");
+        std::test::assert_eq_int(late_bounded.runs, 0, "and the failure after them quarantines: no run()");
+        let late_checked = Checked { };
+        std::test::assert_eq_int(late_checked.births, 2, "a birth_check failure delivered in place re-runs birth()");
+        std::test::assert_eq_int(late_checked.runs, 1, "then run()");
+        let late_fresh = Fresh { };
+        std::test::assert_eq_int(self.fresh_failures, 6, "restart_in_place re-runs a birth failed in place");
+        std::test::assert_eq_int(late_fresh.births, 1, "from its built params");
+        std::test::assert_eq_int(late_fresh.runs, 1, "then run()");
+        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1 + 2 + 4, "every Kid failure reached the handler");
+        std::test::assert_eq_int(self.checked_failures, 2, "every Checked failure reached the handler");
+    }
+}
+
+fn main() { App { }; }

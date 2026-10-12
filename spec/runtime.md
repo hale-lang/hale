@@ -2132,9 +2132,10 @@ its `KNOWN_OPEN` table, which is empty today.
   the job, as before. Shipped (L4's fifth part,
   `l03_pool_birth_domain.hl`: the birth and a handler that touch one
   field run on the worker's one thread; before, the birth ran on the
-  instantiating thread beside them). A restart of that birth decided
-  at settle still runs on the settling thread (inventory rows C42 and
-  C43, line 13). **Pending:** the decisions choose no option for the rest: a
+  instantiating thread beside them). A restart of that birth, and the
+  `run()` after it, run on the worker too: a resume at settle, and a
+  restart the run gate decides, are posted to the pool as the child's
+  run (inventory rows C42 and C43, line 13). **Pending:** the decisions choose no option for the rest: a
   pool-placed locus's `accept` runs on the instantiating thread, its
   `run()` on the pool's worker, and its `dissolve()` on the teardown
   thread. Everything nested under it is built, registered, born and
@@ -2349,9 +2350,13 @@ its `KNOWN_OPEN` table, which is empty today.
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown
-  the resumed run may end in line 19's not-started outcome. Not yet
-  shipped (inventory row C43): the resume calls `run()` inline on
-  the settling thread (`l13_resume_pool_child.hl`). A locus that
+  the resumed run may end in line 19's not-started outcome. Shipped
+  (inventory row C43): the resume itself is posted to the child's
+  pool as its run (`lotus_failure_resume_post`, taking the run ticket
+  a first start's posted run takes), so its restart's `birth()` and its
+  `run()` execute on the worker and the parent's `birth()` does not
+  wait for them (`l13_resume_pool_child.hl`; before, the resume ran
+  both inline on the settling thread). A locus that
   declares no `run()` owes none on any incarnation, and the trace
   shows none. A `Run` is owed exactly where the compiler calls
   `run()`, by one test both read (inventory row C53): a `run()` with

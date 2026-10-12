@@ -124,6 +124,87 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.emit_owned_store_copy_ptr(loaded, elem_ty, dest)
     }
 
+    /// The retire descriptor of a block of type `ty` (a record, a tuple,
+    /// a fixed array's block): its size and the flat entries
+    /// `emit_vec_retire` documents — a String field's offset, a Bytes
+    /// field's tagged `LOTUS_RETIRE_OFF_BYTES`, and a field pointing at
+    /// a block of its own tagged `LOTUS_RETIRE_OFF_NESTED`, followed by
+    /// that block's size, its descriptor's length, and its descriptor.
+    /// `None` for a type that is not such a block. Each slot is read as
+    /// it is stored: a record field of a scalar fixed-array type inline
+    /// (no entry), while an array in a tuple or in another array is a
+    /// pointer to its own block (an entry with that block's size, and an
+    /// empty descriptor for scalar elements). Depth-capped, as a guard: a
+    /// value type cannot contain itself.
+    fn retire_desc_for(&self, ty: &CodegenTy, depth: u32) -> Option<(u64, Vec<u32>)> {
+        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
+        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
+        if depth > 16 {
+            return None;
+        }
+        // (offset, type, inline) of every slot of the block. A record
+        // field of a scalar fixed-array type is laid out inline (its
+        // `[N x T]` bytes are the field's own, `llvm_field_storage_type`);
+        // a tuple element and an array element are always the value's
+        // SSA representation, `llvm_basic_type` — for an array, a pointer
+        // to its own block, whatever its element type.
+        let (size, slots): (u64, Vec<(u64, CodegenTy, bool)>) = match ty {
+            CodegenTy::TypeRef(tn) => {
+                let ti = self.user_types.get(tn)?;
+                let mut slots = Vec::new();
+                for fname in &ti.field_order {
+                    let Some((idx, fty)) = ti.fields.get(fname) else { continue };
+                    if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
+                        let inline = Self::array_inline_spec(fty).is_some();
+                        slots.push((o, fty.clone(), inline));
+                    }
+                }
+                (self.target_data.get_abi_size(&ti.struct_ty), slots)
+            }
+            CodegenTy::Tuple(elems) => {
+                let st = self.llvm_tuple_storage_type(elems);
+                let mut slots = Vec::new();
+                for (i, ety) in elems.iter().enumerate() {
+                    if let Some(o) = self.target_data.offset_of_element(&st, i as u32) {
+                        slots.push((o, ety.clone(), false));
+                    }
+                }
+                (self.target_data.get_abi_size(&st), slots)
+            }
+            // The block an array pointer points at: `[N x T]`, its slots
+            // `T`'s SSA representation. A scalar element's block has no
+            // slots to walk, but is a block of its own all the same.
+            CodegenTy::Array(elem, n) => {
+                let at = self.llvm_array_storage_type(elem, *n);
+                let stride = self.target_data.get_abi_size(&self.llvm_basic_type(elem));
+                ((self.target_data.get_abi_size(&at)), (0..*n).map(|i| (i * stride, (**elem).clone(), false)).collect())
+            }
+            _ => return None,
+        };
+        let mut desc = Vec::new();
+        for (off, fty, inline) in slots {
+            let off = off as u32;
+            match &fty {
+                CodegenTy::String => desc.push(off),
+                CodegenTy::Bytes => desc.push(off | LOTUS_RETIRE_OFF_BYTES),
+                // An inline fixed array (a record field's) is the slot's
+                // own bytes; a bounded field is never a pointer slot.
+                CodegenTy::Array(_, _) if inline => {}
+                // A slot holding a pointer to a block of its own.
+                CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) => {
+                    if let Some((sub_size, sub)) = self.retire_desc_for(&fty, depth + 1) {
+                        desc.push(off | LOTUS_RETIRE_OFF_NESTED);
+                        desc.push(sub_size as u32);
+                        desc.push(sub.len() as u32);
+                        desc.extend(sub);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some((size, desc))
+    }
+
     /// Free a vec element the vec no longer holds — the one `set`
     /// replaces (iris handoff P1, 2026-07-27) or the one `pop` removes
     /// (GH #1037). Pointer-storage elements (structs / String / Bytes)
@@ -141,6 +222,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// is freed at its length-prefixed size rather than by strlen.
     /// GH #1037: it used to list String fields only, so `set` over a
     /// struct carrying Bytes kept the old Bytes (~47 B a set).
+    ///
+    /// A field that points at a block of its own — a nested record, a
+    /// tuple, a fixed array that is not a record's inline field — is an
+    /// entry tagged
+    /// `LOTUS_RETIRE_OFF_NESTED` (bit 29) followed by the block's size
+    /// and the length of its own descriptor, then that descriptor, so
+    /// the walk frees the nested block and everything it owns, at any
+    /// depth. It used to be skipped: a replaced or popped element left
+    /// its nested record's block, and that record's String and Bytes,
+    /// in the vec's arena for good (~260 B a replace in a pending
+    /// table, worked around by flattening the record).
     fn emit_vec_retire(
         &mut self,
         locus_name: &str,
@@ -150,7 +242,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         new_val: BasicValueEnum<'ctx>,
         tag: &str,
     ) -> Result<(), CodegenError> {
-        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
@@ -160,21 +251,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::TypeRef(tn) => match self.user_types.get(tn) {
                 Some(ti) => {
                     let sz = self.target_data.get_abi_size(&ti.struct_ty) as i64;
-                    let mut offs = Vec::new();
-                    for fname in &ti.field_order {
-                        let Some((idx, fty)) = ti.fields.get(fname) else { continue };
-                        let kind = match fty {
-                            CodegenTy::String => 0,
-                            CodegenTy::Bytes => LOTUS_RETIRE_OFF_BYTES,
-                            _ => continue,
-                        };
-                        if let Some(o) =
-                            self.target_data.offset_of_element(&ti.struct_ty, *idx)
-                        {
-                            offs.push(o as u32 | kind);
-                        }
-                    }
-                    (sz, offs)
+                    (sz, self.retire_desc_for(elem_ty, 0).map(|(_, d)| d).unwrap_or_default())
                 }
                 None => return Ok(()),
             },
