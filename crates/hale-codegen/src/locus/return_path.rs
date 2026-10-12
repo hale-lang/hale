@@ -152,6 +152,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A field of a retiring `@form(hashmap)` cell that points at a
+    /// block of its own (a nested record, a tuple, an out-of-line fixed
+    /// array): the cell's own deep copy, since the retire frees the
+    /// block when the cell is replaced or removed and a block shared
+    /// with another owner would be freed under it. With `old_field`
+    /// (`sync = none`: the value the key's cell holds now, its struct
+    /// type and the field's index) a field still carrying that cell's
+    /// own block at the same field keeps it — the get-modify-set of a
+    /// cell with a large nested field stays allocation-free, and the
+    /// retire sees the block survive.
+    pub(crate) fn emit_cell_owned_block_store(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+        old_field: Option<(PointerValue<'ctx>, inkwell::types::StructType<'ctx>, u32)>,
+        site_name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let Some((old_v, struct_ty, idx)) = old_field else {
+            return self.emit_return_value_deep_copy(value, ty, dest_arena);
+        };
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let src = value.into_pointer_value();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let current_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let has_old_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.has_old", site_name));
+        let keep_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.keep", site_name));
+        let copy_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.copy", site_name));
+        let join_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.join", site_name));
+        let no_old = self
+            .builder
+            .build_is_null(old_v, &format!("{}.own.no_old", site_name))
+            .map_err(err)?;
+        self.builder
+            .build_conditional_branch(no_old, copy_bb, has_old_bb)
+            .map_err(err)?;
+
+        self.builder.position_at_end(has_old_bb);
+        let old_slot = self
+            .builder
+            .build_struct_gep(struct_ty, old_v, idx, &format!("{}.own.old.ptr", site_name))
+            .map_err(err)?;
+        let old_block = self
+            .builder
+            .build_load(ptr_t, old_slot, &format!("{}.own.old", site_name))
+            .map_err(err)?
+            .into_pointer_value();
+        let same = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                src,
+                old_block,
+                &format!("{}.own.same", site_name),
+            )
+            .map_err(err)?;
+        self.builder
+            .build_conditional_branch(same, keep_bb, copy_bb)
+            .map_err(err)?;
+
+        self.builder.position_at_end(keep_bb);
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(copy_bb);
+        let copied = self.emit_return_value_deep_copy(value, ty, dest_arena)?;
+        let copy_end = self
+            .builder
+            .get_insert_block()
+            .expect("copy block still positioned");
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(join_bb);
+        let phi = self
+            .builder
+            .build_phi(ptr_t, &format!("{}.own.phi", site_name))
+            .map_err(err)?;
+        let src_basic: BasicValueEnum = src.into();
+        phi.add_incoming(&[(&src_basic, keep_bb), (&copied, copy_end)]);
+        Ok(phi.as_basic_value())
+    }
+
     pub(crate) fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,

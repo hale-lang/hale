@@ -1939,10 +1939,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                     // Anchor retirement (2026-07-03, notes/anchor-
-                    // retirement.md): install the String-field
-                    // offset descriptor so the C set path can
-                    // retire the OLD slot's clones when an occupied
-                    // slot is overwritten with different pointers.
+                    // retirement.md): install the cell's retire
+                    // descriptor so the C set and remove paths can
+                    // retire what the OLD cell owned when an
+                    // occupied slot is overwritten or removed.
                     // The offsets come from TargetData (exact ABI
                     // layout, Decimal i128 padding included).
                     {
@@ -2020,26 +2020,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 })?;
                         }
                         if let Some(cn) = cell_name {
-                            if let Some(ci) = self.user_types.get(&cn) {
-                                let mut offs: Vec<u32> = Vec::new();
-                                for fname in &ci.field_order {
-                                    let (idx, fty) = ci
-                                        .fields
-                                        .get(fname)
-                                        .cloned()
-                                        .expect("declared field");
-                                    if matches!(fty, CodegenTy::String) {
-                                        if let Some(off) = self
-                                            .target_data
-                                            .offset_of_element(
-                                                &ci.struct_ty,
-                                                idx,
-                                            )
-                                        {
-                                            offs.push(off as u32);
-                                        }
-                                    }
-                                }
+                            if self.user_types.contains_key(&cn) {
+                                // The form retire descriptor (String
+                                // and Bytes fields, nested records /
+                                // tuples / out-of-line arrays with
+                                // their own descriptors, at any
+                                // depth). It used to list top-level
+                                // String fields only, so a replaced
+                                // cell's Bytes and nested records
+                                // stayed in the map's arena.
+                                let offs: Vec<u32> = self
+                                    .retire_desc_for(&CodegenTy::TypeRef(cn.clone()), 0)
+                                    .map(|(_, d)| d)
+                                    .unwrap_or_default();
                                 if !offs.is_empty() {
                                     let i32_t = self.context.i32_type();
                                     let vals: Vec<_> = offs

@@ -3893,10 +3893,12 @@ typedef struct {
     int64_t lf_writers_in_flight;
     /* 2026-07-03 anchor retirement (TAIL fields — the LLVM inline
      * mirror in locus/decl.rs appends matching entries; mid-struct
-     * insertion would shift every offset). String-field byte
-     * offsets within the VALUE, installed once by codegen via
-     * lotus_hashmap_set_retire_desc; set_unlocked/remove retire
-     * the old cell's string clones into retire_arena. */
+     * insertion would shift every offset). The VALUE's retire
+     * descriptor (the form one, lotus_form_retire_replaced: String
+     * and Bytes field offsets, nested blocks with their own
+     * descriptors), `retire_n` int32 words, installed once by codegen
+     * via lotus_hashmap_set_retire_desc; set_unlocked/remove retire
+     * what the old cell owns into retire_arena. */
     const int32_t *retire_offsets;
     int32_t retire_n;
     void *retire_arena;
@@ -4198,89 +4200,12 @@ static void lotus_hashmap_grow(lotus_hashmap_t *m) {
     free(old_slots);
 }
 
-void lotus_arena_retire_str(void *arena_ptr, char *s);
-
-/* Does one of the OLD cell's String fields in [0, upto) retire the
- * blob `p`? A field retires its old pointer iff it changed (overwrite
- * path) or this is the remove path (new_v == NULL). Used to dedup the
- * key clone and any repeated value-field pointers within a single
- * retire_cell call: a blob that is reachable from more than one field
- * — or from both the map key AND a value field (see the aliasing note
- * in lotus_hashmap_retire_cell) — must be retired exactly ONCE.
- * Retiring it twice pushes it onto retire_pending twice, which
- * self-links the freelist node at flush (header.next = itself) and
- * hands the same block to two owners → freelist corruption / SEGV.
- * O(upto); upto is the value struct's String-field count (small) and
- * this runs only on the cold retire path. */
-static int lotus_cell_field_retires_ptr(const lotus_hashmap_t *m,
-                                         const char *old_v,
-                                         const char *new_v,
-                                         const char *p, int32_t upto) {
-    for (int32_t ri = 0; ri < upto; ri++) {
-        int32_t off = m->retire_offsets[ri];
-        char *oldp;
-        memcpy(&oldp, old_v + off, sizeof(char *));
-        if (oldp != p) continue;
-        if (new_v) {
-            char *newp;
-            memcpy(&newp, new_v + off, sizeof(char *));
-            if (oldp == newp) continue; /* survives → not retired here */
-        }
-        return 1;
-    }
-    return 0;
-}
-
-/* Retire every string blob a dying/overwritten cell owns: the
- * descriptor's value fields plus (for string-keyed maps) the key
- * clone itself. `new_v`/`new_key` non-NULL = overwrite path, and
- * a pointer that survives into the new cell is NOT retired (the
- * RMW key-reuse idiom, the grow-rebuild re-insert). NULL = remove
- * path, everything retires.
- *
- * Aliasing (2026-07-06 fix): for a String-keyed map whose value
- * struct carries the `indexed_by` field, codegen clones the key ONCE
- * and stores the same pointer as both the map key (slot+1) and that
- * value field. The value-field loop and the key-clone block would
- * then each retire it — a double-push. So every retire is guarded
- * against a prior retire of the same blob within this call: value
- * fields dedup against earlier value fields, and the key clone dedups
- * against all value fields. */
-__attribute__((noinline, cold))
+/* Retire everything a dying or overwritten cell owns; defined with
+ * the descriptor walk it shares with the form retire (see the
+ * definition below lotus_retire_collect). */
 static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
                                       const char *new_key,
-                                      const char *new_v) {
-    if (!m->retire_arena) return;
-    const char *old_v = slot + 1 + m->key_size;
-    for (int32_t ri = 0; ri < m->retire_n; ri++) {
-        int32_t off = m->retire_offsets[ri];
-        char *oldp;
-        memcpy(&oldp, old_v + off, sizeof(char *));
-        if (!oldp) continue;
-        if (new_v) {
-            char *newp;
-            memcpy(&newp, new_v + off, sizeof(char *));
-            if (oldp == newp) continue;
-        }
-        /* dedup vs an earlier field aliasing the same blob */
-        if (lotus_cell_field_retires_ptr(m, old_v, new_v, oldp, ri))
-            continue;
-        lotus_arena_retire_str(m->retire_arena, oldp);
-    }
-    if (m->key_type_tag == LOTUS_HASHMAP_KEY_STRING) {
-        char *oldk;
-        memcpy(&oldk, slot + 1, sizeof(char *));
-        if (oldk) {
-            char *newk = NULL;
-            if (new_key) memcpy(&newk, new_key, sizeof(char *));
-            if (oldk != newk &&
-                !lotus_cell_field_retires_ptr(m, old_v, new_v, oldk,
-                                              m->retire_n)) {
-                lotus_arena_retire_str(m->retire_arena, oldk);
-            }
-        }
-    }
-}
+                                      const char *new_v);
 
 static void lotus_hashmap_set_unlocked(lotus_hashmap_t *m,
                                         const void *key,
@@ -4862,27 +4787,11 @@ static size_t lotus_hashmap_find_slot_striped(lotus_hashmap_t *m,
  * practice), which is where the returned cell buffer already lives —
  * so the clone shares the lifetime of the struct that holds it.
  * `dest == NULL`, or a map with no String fields, is a plain get. */
-char *lotus_str_clone(lotus_arena_t *a, const char *s);
-
-static void lotus_hashmap_clone_out_strings(const lotus_hashmap_t *m,
+/* Defined below lotus_retire_collect: the walk follows the retire
+ * descriptor, so Bytes fields and nested blocks come out owned too. */
+static void lotus_hashmap_clone_out_owned(const lotus_hashmap_t *m,
                                             void *out_value,
-                                            void *dest_arena) {
-    if (!dest_arena || m->retire_n == 0) return;
-    char *v = (char *)out_value;
-    for (int32_t ri = 0; ri < m->retire_n; ri++) {
-        int32_t off = m->retire_offsets[ri];
-        char *p;
-        memcpy(&p, v + off, sizeof(char *));
-        if (!p) continue;
-        /* Static literals and pointers already in `dest` pass
-         * through untouched (lotus_str_clone's own fast paths).
-         * Two fields aliasing one blob become two blobs — that is
-         * the single-owner rule, not a regression. */
-        char *c = lotus_str_clone((lotus_arena_t *)dest_arena, p);
-        if (!c) continue;
-        memcpy(v + off, &c, sizeof(char *));
-    }
-}
+                                            void *dest_arena);
 
 static int lotus_hashmap_get_into(void *map_ptr, const void *key,
                                   void *out_value, void *dest_arena) {
@@ -4898,7 +4807,7 @@ static int lotus_hashmap_get_into(void *map_ptr, const void *key,
             if (i < m->cap) {
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -4913,7 +4822,7 @@ static int lotus_hashmap_get_into(void *map_ptr, const void *key,
             if (i < m->cap) {
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -4932,7 +4841,7 @@ static int lotus_hashmap_get_into(void *map_ptr, const void *key,
             r = 0;
         } else {
             memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-            lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+            lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
             r = 1;
         }
     }
@@ -5817,7 +5726,7 @@ static int64_t lotus_hashmap_iter_batch_into(void *map_ptr,
                 __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
             if (occ == LOTUS_CELL_COMMITTED) {
                 memcpy(dst, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, dst, dest_arena);
+                lotus_hashmap_clone_out_owned(m, dst, dest_arena);
                 dst += m->value_size;
                 n++;
             }
@@ -5832,7 +5741,7 @@ static int64_t lotus_hashmap_iter_batch_into(void *map_ptr,
         char *slot = m->slots + s * es;
         if (*(unsigned char *)slot) {
             memcpy(dst, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, dst, dest_arena);
+                lotus_hashmap_clone_out_owned(m, dst, dest_arena);
             dst += m->value_size;
             n++;
         }
@@ -6192,6 +6101,169 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_free_block_now(a, old_blob, block_size);
 }
 
+/* Retire everything a dying or overwritten @form(hashmap) cell owns:
+ * what the retire descriptor reaches from the old value — String and
+ * Bytes fields, the blocks of nested records, tuples and out-of-line
+ * arrays and everything those own, at any depth — plus, for a
+ * String-keyed map, the key clone. `new_key`/`new_v` non-NULL = the
+ * overwrite path: a block the new cell still reaches survives (the RMW
+ * key reuse, the grow-rebuild re-insert, a nested record the new value
+ * carries over from this key's own cell). NULL = the remove path,
+ * everything retires.
+ *
+ * A block reached twice is retired ONCE. For a String-keyed map whose
+ * value struct carries the `indexed_by` field, codegen clones the key
+ * once and stores the same pointer as both the map key (slot+1) and
+ * that field (2026-07-06); retiring it twice pushes it onto
+ * retire_pending twice, which self-links the freelist node at the
+ * flush and hands one block to two owners.
+ *
+ * Retirement is deferred to the arena's activation boundary
+ * (lotus_arena_flush_retired), as it always was for a top-level
+ * String: a plain `get` on a `sync = none` map hands out the cell's own
+ * pointers, valid for the rest of the activation, and a synced map's
+ * reads take owned copies (lotus_hashmap_clone_out_owned). It used to
+ * walk top-level String fields only, so a replaced cell's Bytes and its
+ * nested records (their blocks and their own String and Bytes) stayed
+ * in the map's arena for good. */
+__attribute__((noinline, cold))
+static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
+                                      const char *new_key,
+                                      const char *new_v) {
+    lotus_arena_t *a = (lotus_arena_t *)m->retire_arena;
+    if (!a) return;
+    const char *old_v = slot + 1 + m->key_size;
+    int string_key = m->key_type_tag == LOTUS_HASHMAP_KEY_STRING;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = 1;
+    if (string_key) {
+        char *k;
+        memcpy(&k, slot + 1, sizeof k);
+        if (k) ok = lotus_retire_blocks_push(&olds, k, strlen(k) + 1);
+    }
+    if (ok)
+        ok = lotus_retire_collect(&olds, old_v, m->retire_offsets,
+                                  m->retire_n, 1);
+    if (ok && new_v) {
+        if (string_key && new_key) {
+            char *k;
+            memcpy(&k, new_key, sizeof k);
+            if (k) ok = lotus_retire_blocks_push(&news, k, 0);
+        }
+        if (ok)
+            ok = lotus_retire_collect(&news, new_v, m->retire_offsets,
+                                      m->retire_n, 0);
+    }
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (lotus_retire_blocks_has(&news, p)) continue; /* survives */
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            /* Gates inside: NULL, static literals and blocks of other
+             * arenas are skipped. */
+            lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* Clone-on-read for SYNCED maps (2026-08-03, downstream handoff P1).
+ *
+ * A plain get memcpy's the cell, so its pointer fields come out as raw
+ * pointers into the MAP's arena. For `sync = none` that is fine: one
+ * thread, and retirement is deferred to that thread's activation
+ * boundary, so the pointer stays valid for exactly as long as the
+ * reader can hold it. For a SYNCED map it is not — the reader is on
+ * another pool and can hold the pointer across the writer's
+ * boundaries.
+ *
+ * Copying out everything the retire descriptor reaches, under the same
+ * lock that read the cell, makes the reader own its copy: String and
+ * Bytes fields, and each nested record, tuple or out-of-line array
+ * block (a fresh block, then its own fields, at any depth). The
+ * writer's blocks then have no off-thread readers and retire exactly as
+ * under `sync = none`, with no epoch scheme. The copy MUST happen
+ * inside the critical section: between an unlock and the copy, a writer
+ * could overwrite the slot, retire the old block, and flush it onto the
+ * reuse freelist.
+ *
+ * Destination is the CALLER's arena (its method scratch, in practice),
+ * which is where the returned cell buffer already lives — so the copy
+ * shares the lifetime of the struct that holds it. `dest == NULL`, or a
+ * map with an empty descriptor, is a plain get. (Until the descriptor
+ * covered Bytes and nested blocks it copied String fields only — the
+ * rest was never retired, so a raw pointer to it could not dangle.) */
+char *lotus_str_clone(lotus_arena_t *a, const char *s);
+void *lotus_bytes_clone(lotus_arena_t *a, const void *src);
+
+static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
+                                 const int32_t *desc, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        int32_t e = desc[i];
+        int32_t off = e & LOTUS_RETIRE_OFF_MASK;
+        char *p;
+        memcpy(&p, v + off, sizeof p);
+        if (e & LOTUS_RETIRE_OFF_NESTED) {
+            if (i + 2 >= n) return;            /* malformed: stop */
+            size_t bsize = (size_t)(uint32_t)desc[i + 1];
+            int64_t sub_n = desc[i + 2];
+            const int32_t *sub = desc + i + 3;
+            i += 2 + sub_n;
+            if (!p) continue;
+            /* 16-byte aligned, as codegen allocates a record: an i128
+             * Decimal field needs it. */
+            char *c = (char *)lotus_arena_alloc(dest, bsize, 16);
+            if (!c) continue;
+            memcpy(c, p, bsize);
+            lotus_clone_out_walk(dest, c, sub, sub_n);
+            memcpy(v + off, &c, sizeof c);
+            continue;
+        }
+        if (!p) continue;
+        /* Static literals and pointers already in `dest` pass through
+         * untouched (the clones' own fast paths). Two fields aliasing
+         * one blob become two blobs — the single-owner rule. */
+        void *c = (e & LOTUS_RETIRE_OFF_BYTES)
+            ? lotus_bytes_clone(dest, p)
+            : (void *)lotus_str_clone(dest, p);
+        if (!c) continue;
+        memcpy(v + off, &c, sizeof c);
+    }
+}
+
+static void lotus_hashmap_clone_out_owned(const lotus_hashmap_t *m,
+                                          void *out_value,
+                                          void *dest_arena) {
+    if (!dest_arena || m->retire_n == 0) return;
+    lotus_clone_out_walk((lotus_arena_t *)dest_arena, (char *)out_value,
+                         m->retire_offsets, m->retire_n);
+}
+
+/* @form(hashmap).set's anchor walk on a `sync = none` map: the value
+ * bytes of the cell `key` holds now, or NULL. A nested record (tuple,
+ * out-of-line array) the new value carries over from this very cell —
+ * the same pointer at the same field — is kept, which is what makes a
+ * get-modify-set of a cell with a large nested field allocate nothing;
+ * every other one is copied, so no two cells (and no cell and another
+ * owner) ever share a block the retire would free. NULL on a synced
+ * map: a writer on another pool could replace the cell between this
+ * read and the set, so there everything is copied. */
+void *lotus_hashmap_peek(void *map_ptr, const void *key) {
+    if (!map_ptr || !key) return NULL;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if (m->sync_mode != LOTUS_HASHMAP_SYNC_NONE || m->len == 0) return NULL;
+    size_t i = lotus_hashmap_find_slot(m, key);
+    char *slot = m->slots + i * lotus_hashmap_entry_size(m);
+    if (!slot[0]) return NULL;
+    return slot + 1 + m->key_size;
+}
+
 void lotus_arena_flush_retired(void *arena_ptr) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return;
@@ -6405,7 +6477,7 @@ static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -6422,7 +6494,7 @@ static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -6437,7 +6509,7 @@ static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
             size_t es = lotus_hashmap_entry_size(m);
             char *slot = m->slots + s * es;
             memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
+                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
             r = 1;
         }
     }
