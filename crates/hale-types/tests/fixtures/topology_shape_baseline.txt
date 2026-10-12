@@ -494,8 +494,9 @@ crates/hale-codegen/tests/deferred_slot_per_iteration.rs#10 f1400473ef11e19d
 crates/hale-codegen/tests/drain_elision.rs#0 8dbd2b3a0de2ee5b
 crates/hale-codegen/tests/drain_elision.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#0 ba8576b3a6a69d7f
-crates/hale-codegen/tests/drain_grace_names_the_wait.rs#1 13f189cff0982ac7
-crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 f93ba90ecbf2502e
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#1 546011eca41c2186
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 13f189cff0982ac7
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#3 f93ba90ecbf2502e
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
 crates/hale-codegen/tests/dump_pool_residency.rs#1 7d5cf57defcf548e
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 1da3ae7aef880cc6
@@ -1206,6 +1207,7 @@ crates/hale-codegen/tests/shm_ring_layout_codegen.rs#1 5ff26f708d1054b9
 crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#0 5d70771a8fa601af
 crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#1 a18cddfb716e5782
 crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#2 d37f9aa7766cde13
+crates/hale-codegen/tests/shm_ring_teardown_wait.rs#0 04cfd81aee6c2af4
 crates/hale-codegen/tests/shm_write_topic_mangle.rs#0 a58aaaa9c9b2fa60
 crates/hale-codegen/tests/sibling_field_forward_ref.rs#0 fb39e236b5857b2f
 crates/hale-codegen/tests/sibling_field_forward_ref.rs#1 3df45548c02ee998

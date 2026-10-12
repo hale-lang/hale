@@ -2240,6 +2240,13 @@ domain	pool:io
 row	Root@literal1	Root	main	default
 row	Root@literal1.s	Stuck	pool:io	entry	off owner
 
+== crates/hale-codegen/tests/drain_grace_names_the_wait.rs#287c9f13
+root	Root	the entry
+domain	pool:io
+row	Root@literal1	Root	main	default
+row	Root@literal1.s	Stuck	pool:io	entry	off owner
+row	Root@literal1.slow	Slow	main	default
+
 == crates/hale-codegen/tests/drain_grace_names_the_wait.rs#037122a7
 root	Root	the entry
 domain	pinned:Root@literal1.n
@@ -4054,6 +4061,13 @@ row	App@literal1	App	main	default
 -- Parent@main1	Parent
 row	~	Parent	main	default
 row	~.sub	Sub	main	inherited
+
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#dee756b9
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.fwd	Fwd	main	default
+row	App@literal1.tally	Tally	main	default
+dynamic	Producer	on main	in the seed
 
 == crates/hale-codegen/tests/sibling_field_forward_ref.rs#2c26373a
 root	Workbench	the entry
