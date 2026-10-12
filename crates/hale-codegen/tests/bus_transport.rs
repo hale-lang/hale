@@ -45,6 +45,8 @@ mod bus_idle_wait;
 mod io_h2_server;
 #[path = "io_h2_session.rs"]
 mod io_h2_session;
+#[path = "io_h2_substrate.rs"]
+mod io_h2_substrate;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]
