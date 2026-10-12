@@ -14,13 +14,15 @@
 //! deterministic.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/shm_lockstep.rs"]
+mod shm_lockstep;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -96,7 +98,10 @@ fn hale_layout_lotus_ring_reads_native_producer() {
         fn main() {{
             App {{ }};
             Sub {{ }};
-            time::sleep(1200ms);
+            // subscribed: the reader starts at the ring's cursor now, and
+            // the producer sends its first record only once it has read this
+            println("ready");
+            let _end = std::io::stdin::read_line();
         }}
     "#,
         shm_name = shm_name,
@@ -107,34 +112,19 @@ fn hale_layout_lotus_ring_reads_native_producer() {
 
     let producer_bin = build_native_producer();
 
-    // Producer creates the native ring + waits ~250ms before publishing;
-    // spawn it first so the ring exists, then the consumer attaches.
-    let mut producer = Command::new(&producer_bin)
-        .arg("produce_native_external")
-        .arg(&shm_name)
-        .spawn()
-        .expect("spawn producer");
-
-    std::thread::sleep(std::time::Duration::from_millis(80));
-
-    let consumer_out = Command::new(&consumer_bin)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run consumer");
-
-    let producer_status = producer.wait().expect("wait producer");
+    // in lockstep with the producer: no clock (support/shm_lockstep.rs)
+    let run = shm_lockstep::run(&producer_bin, "produce_native_external", &shm_name, &consumer_bin, 6);
     let _ = std::fs::remove_file(&producer_bin);
     let _ = std::fs::remove_file(&consumer_bin);
 
-    assert!(producer_status.success(), "producer failed: {:?}", producer_status);
+    assert!(run.producer.success(), "producer failed: {:?}", run.producer);
     assert!(
-        consumer_out.status.success(),
+        run.consumer.success(),
         "consumer failed: status={:?}\nstderr: {}",
-        consumer_out.status,
-        String::from_utf8_lossy(&consumer_out.stderr)
+        run.consumer,
+        run.stderr
     );
-    let stdout = String::from_utf8_lossy(&consumer_out.stdout);
+    let stdout = &run.stdout;
 
     // seq 1..6, value = seq * 7.
     for seq in 1..=6 {

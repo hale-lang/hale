@@ -14,13 +14,15 @@
 //! post_copy` reads each i64 payload in order.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/shm_lockstep.rs"]
+mod shm_lockstep;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -99,7 +101,10 @@ fn hale_subscriber_reads_record_header_ring_with_post_copy() {
         fn main() {{
             App {{ }};
             Sub {{ }};
-            time::sleep(1500ms);
+            // subscribed: the reader starts at the ring's cursor now, and
+            // the producer sends its first record only once it has read this
+            println("ready");
+            let _end = std::io::stdin::read_line();
         }}
     "#,
         shm_name = shm_name,
@@ -110,32 +115,20 @@ fn hale_subscriber_reads_record_header_ring_with_post_copy() {
 
     let producer_bin = build_producer();
 
-    let mut producer = Command::new(&producer_bin)
-        .arg("produce_record_header")
-        .arg(&shm_name)
-        .spawn()
-        .expect("spawn producer");
 
-    std::thread::sleep(std::time::Duration::from_millis(80));
-
-    let consumer_out = Command::new(&consumer_bin)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run consumer");
-
-    let producer_status = producer.wait().expect("wait producer");
+    // in lockstep with the producer: no clock (support/shm_lockstep.rs)
+    let run = shm_lockstep::run(&producer_bin, "produce_record_header", &shm_name, &consumer_bin, 40);
     let _ = std::fs::remove_file(&producer_bin);
     let _ = std::fs::remove_file(&consumer_bin);
 
-    assert!(producer_status.success(), "producer failed: {:?}", producer_status);
+    assert!(run.producer.success(), "producer failed: {:?}", run.producer);
     assert!(
-        consumer_out.status.success(),
+        run.consumer.success(),
         "consumer failed: status={:?}\nstderr: {}",
-        consumer_out.status,
-        String::from_utf8_lossy(&consumer_out.stderr)
+        run.consumer,
+        run.stderr
     );
-    let stdout = String::from_utf8_lossy(&consumer_out.stdout);
+    let stdout = &run.stdout;
 
     // val = (i+1)*7 for i in 0..40 → 7, 14, ..., 280. If the stride or
     // payload offset were wrong the reader would desync after the first
