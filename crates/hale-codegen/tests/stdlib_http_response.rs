@@ -8,15 +8,15 @@
 //! body separator, body content.
 
 use std::io::{Read, Write};
-use std::process::Command;
-use std::thread;
+use std::net::TcpStream;
+use std::process::{Child, Command, Stdio};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/connect.rs"]
-mod connect;
+#[path = "support/child.rs"]
+mod child;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_http_resp_{}", name));
@@ -24,28 +24,35 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
+/// Start the listener and read back the port it was given. The programs
+/// bind port 0 and the kernel picks: a port drawn here and handed over is
+/// free, not reserved, and another test of a parallel run can bind it
+/// before the program does. Reading it from `/proc` costs no accept, so
+/// a `max_accepts: 1` listener still serves the test's one connection.
+fn spawn_server(bin: &std::path::Path) -> (Child, u16) {
+    let mut child = Command::new(bin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run listener");
+    let port = child::tcp_port(&mut child);
+    (child, port)
 }
 
 fn run_server_collect_response(
     bin: &std::path::Path,
-    port: u16,
     request: &[u8],
 ) -> String {
-    let bin_path = bin.to_path_buf();
-    let server_handle = thread::spawn(move || {
-        Command::new(&bin_path).output().expect("run listener")
-    });
+    let (server, port) = spawn_server(bin);
 
-    let mut client = connect::connect_when_listening(port);
+    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     client.write_all(request).expect("client write");
     let mut buf = Vec::new();
     let _ = client.read_to_end(&mut buf);
     drop(client);
 
-    let _ = server_handle.join();
+    let _ = server.wait_with_output();
     String::from_utf8_lossy(&buf).to_string()
 }
 
@@ -54,7 +61,6 @@ fn write_response_emits_http_1_1_status_line() {
     // 200 OK with text/plain body. Verifies: status line shape,
     // Content-Type header, Content-Length matches body bytes,
     // Connection: close header, blank-line separator, body.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handler(s: std::io::tcp::Stream) {{
@@ -69,18 +75,16 @@ fn write_response_emits_http_1_1_status_line() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("status_200", &src);
     let response = run_server_collect_response(
         &bin,
-        port,
         b"GET / HTTP/1.1\r\n\r\n",
     );
     let _ = std::fs::remove_file(&bin);
@@ -117,7 +121,6 @@ fn write_response_404_with_canonical_phrase() {
     // 404 Not Found — verifies the status-phrase table covers
     // the most common error path. Body and Content-Length still
     // match conventional expectations.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handler(s: std::io::tcp::Stream) {{
@@ -132,18 +135,16 @@ fn write_response_404_with_canonical_phrase() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("status_404", &src);
     let response = run_server_collect_response(
         &bin,
-        port,
         b"GET /missing HTTP/1.1\r\n\r\n",
     );
     let _ = std::fs::remove_file(&bin);
@@ -170,7 +171,6 @@ fn write_response_with_html_content_type() {
     // text/html — the doc server's primary content type.
     // Body has a `<` character to confirm string content with
     // html-shape characters round-trips through the wire.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handler(s: std::io::tcp::Stream) {{
@@ -185,18 +185,16 @@ fn write_response_with_html_content_type() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("html", &src);
     let response = run_server_collect_response(
         &bin,
-        port,
         b"GET / HTTP/1.1\r\n\r\n",
     );
     let _ = std::fs::remove_file(&bin);

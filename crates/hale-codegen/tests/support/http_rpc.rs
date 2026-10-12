@@ -70,8 +70,8 @@ pub struct Server {
 /// Where `BIND` and `BIND2` listen.
 pub const BIND_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 pub const BIND2_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
-/// `BIND` and `BIND2` as the program reads them, and as a description
-/// states a listener's address (its `bind:`, as written).
+/// `BIND` and `BIND2` as the program reads them. A description states the
+/// address the listener was bound to (`127.0.0.1:<port>`), not these.
 pub const BIND_ADDR: &str = "127.0.0.1:0";
 pub const BIND2_ADDR: &str = "127.0.0.2:0";
 
@@ -214,9 +214,7 @@ pub fn listener_of(pid: u32, host: Ipv4Addr) -> Option<SocketAddrV4> {
         if let Some(a) = on.first() {
             return Some(*a);
         }
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        let state = stat.rsplit_once(") ").map(|(_, rest)| rest.chars().next().unwrap_or('?')).unwrap_or('X');
-        if state == 'Z' || state == 'X' {
+        if child::exited(pid) {
             return None;
         }
         assert!(start.elapsed() < Duration::from_secs(60), "nothing listens on {host} within 60 s");

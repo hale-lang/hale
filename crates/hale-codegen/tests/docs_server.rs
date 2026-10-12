@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/connect.rs"]
-mod connect;
+#[path = "support/child.rs"]
+mod child;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -29,14 +29,18 @@ fn examples_dir() -> PathBuf {
     p
 }
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
+/// The example, built to listen on port 0 when told port 0. As written
+/// it takes only a positive port from its argv and otherwise serves on
+/// 8080, so the test turns that default into 0 and the kernel picks the
+/// port, which the test reads back: a port drawn here and handed over is
+/// free, not reserved, and another test of a parallel run can bind it
+/// before the server does.
 fn build_docs_server() -> PathBuf {
     let src_path = examples_dir().join("docs-server").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
+    let default = "let mut port: Int = 8080;";
+    assert!(src.contains(default), "the example's default port moved: {}", src_path.display());
+    let src = src.replacen(default, "let mut port: Int = 0;", 1);
     let bin = harness::unique_bin("docs_server");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build example");
     bin
@@ -58,7 +62,7 @@ fn unique_dir(tag: &str) -> PathBuf {
 }
 
 fn http_get(port: u16, path: &str) -> String {
-    let mut sock = connect::connect_when_listening(port);
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
     sock.write_all(format!("GET {} HTTP/1.1\r\n\r\n", path).as_bytes())
         .expect("client write");
     let mut buf = Vec::new();
@@ -84,16 +88,16 @@ fn docs_server_serves_index_and_one_doc_and_404s_correctly() {
     std::fs::write(dir.join("not-md.txt"), "ignore me\n")
         .expect("write txt");
 
-    let port = pick_free_port();
     let bin = build_docs_server();
-    let child = Command::new(&bin)
-        .arg(port.to_string())
+    let mut child = Command::new(&bin)
+        .arg("0")
         .arg(&dir)
         .arg("4") // index + alpha + missing + traversal = 4 requests
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn docs-server");
+    let port = child::tcp_port(&mut child);
 
     // Index request.
     let index = http_get(port, "/");

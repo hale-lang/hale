@@ -1,7 +1,7 @@
 //! m86: Phase 3 capstone — integration test for
 //! examples/http-hello/main.hl.
 //!
-//! Builds the example, runs it on a picked port with a
+//! Builds the example, runs it on a port the kernel picks with a
 //! bounded max_accepts, sends a real HTTP/1.1 request via
 //! TcpStream, and asserts on both the response wire format
 //! and the example's stderr/stdout. End-to-end exercise of
@@ -11,13 +11,13 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -27,14 +27,18 @@ fn examples_dir() -> PathBuf {
     p
 }
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
+/// The example, built to listen on port 0 when told port 0. As written
+/// it takes only a positive port from its argv and otherwise serves on
+/// 8080, so the test turns that default into 0 and the kernel picks the
+/// port, which the test reads back (`child::tcp_port`): a port drawn here
+/// and handed over is free, not reserved, and another test of a parallel
+/// run can bind it before the server does.
 fn build_http_hello() -> PathBuf {
     let src_path = examples_dir().join("http-hello").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
+    let default = "let mut port: Int = 8080;";
+    assert!(src.contains(default), "the example's default port moved: {}", src_path.display());
+    let src = src.replacen(default, "let mut port: Int = 0;", 1);
     let bin = harness::unique_bin(&format!(
         "hale_http_hello_{}",
         std::process::id()
@@ -52,29 +56,18 @@ fn http_hello_responds_to_get_with_html_body() {
     // it, and the client sees a well-formed HTTP/1.1
     // response.
     let bin = build_http_hello();
-    let port = pick_free_port();
-    let child = Command::new(&bin)
-        .arg(port.to_string())
+    let mut child = Command::new(&bin)
+        .arg("0")
         .arg("1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn http-hello");
+    // The port is read once the server listens, and reading it costs no
+    // accept from the max_accepts budget.
+    let port = child::tcp_port(&mut child);
 
-    // Retry-connect (no bind probe — burning a separate
-    // accept on a probe inflates the server's max_accepts
-    // budget for no visible reason in test code).
-    let mut sock = {
-        let mut s = None;
-        for _ in 0..100 {
-            if let Ok(c) = TcpStream::connect(("127.0.0.1", port)) {
-                s = Some(c);
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        s.expect("server didn't come up")
-    };
+    let mut sock = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     sock.write_all(b"GET /hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .expect("client write");
     let mut buf = Vec::new();
@@ -122,34 +115,26 @@ fn http_hello_responds_to_get_with_html_body() {
 
 #[test]
 fn http_hello_handles_three_requests_in_sequence() {
-    // max_accepts=3 with no bind-probe — each test client
-    // retries connect itself until success, so accept-budget
-    // is exactly 3 == iterations. Each iteration's Stream
+    // max_accepts=3 with no bind-probe — the port is read from
+    // /proc, not by a connect, so the accept budget is exactly
+    // 3 == iterations. Each iteration's Stream
     // dissolves between accepts so fds don't bleed.
     let bin = build_http_hello();
-    let port = pick_free_port();
-    let child = Command::new(&bin)
-        .arg(port.to_string())
+    let mut child = Command::new(&bin)
+        .arg("0")
         .arg("3")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn http-hello");
-
-    let connect_with_retry = |port: u16| -> TcpStream {
-        for _ in 0..100 {
-            if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
-                return s;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        panic!("failed to connect after 2s on port {}", port);
-    };
+    // The port is read once the server listens, and reading it costs no
+    // accept from the max_accepts budget.
+    let port = child::tcp_port(&mut child);
 
     let mut paths_seen = Vec::new();
     let mut responses: Vec<String> = Vec::new();
     for path in &["/one", "/two", "/three"] {
-        let mut sock = connect_with_retry(port);
+        let mut sock = TcpStream::connect(("127.0.0.1", port)).expect("connect");
         sock.write_all(
             format!("GET {} HTTP/1.1\r\n\r\n", path).as_bytes(),
         )

@@ -117,7 +117,22 @@ typedef struct {
     char shm_name[96];      /* for shm_unlink at close */
     int owns_unlink;        /* 1 if this handle should shm_unlink on close */
     lotus_shm_overflow_policy_t overflow_policy;  /* K7 */
+    /* This process's readers of the ring (a native ring has one consumer),
+     * in ONE word so a claim reads a consistent state with one load: the
+     * low bits count the live readers (a registration counts one in, the
+     * reader stop counts it out), and SHM_READERS_EVER says one ever
+     * registered. A `block` claim stops waiting only on EVER with a zero
+     * count: a reader was, none is, nothing here will advance the cursor
+     * again. A registration sets EVER and the count in a single RMW, so no
+     * claim can see "a reader was and none is" before the first reader's
+     * count (as two fields, written one after the other, could). A ring no
+     * reader of this process ever consumed waits for its consumer in
+     * another process. */
+    _Atomic uint32_t local_readers;
 } lotus_shm_ring_t;
+
+/* lotus_shm_ring_t.local_readers: a reader of the ring ever registered. */
+#define SHM_READERS_EVER 0x80000000u
 
 /* Open or attach to a SHM ring.
  *
@@ -650,8 +665,25 @@ void *lotus_shm_ring_claim(lotus_shm_ring_t *ring) {
             if (ring->overflow_policy == LOTUS_SHM_OVERFLOW_FAIL) {
                 return NULL;
             }
-            /* BLOCK: nanosleep until the consumer makes progress. */
+            /* BLOCK: nanosleep until the consumer makes progress. When
+             * the consumer is this process's reader, the wait is one only
+             * teardown ends (lifecycle line 7): once main's teardown has
+             * stopped the reader (after the pool join, so a pool's job
+             * finishes against it) and no other reader of the ring is
+             * live (a later main locus's reader counts again), nothing
+             * will advance the cursor, and the publish takes the
+             * wait-abort's raise. The wait-abort's
+             * flag does not end it: the reader still advances the cursor
+             * until its stop, and the flag is sticky from a main locus's
+             * eager teardown, which `fn main() { App { }; Pub { }; }`
+             * reaches before a publisher of another process's ring has
+             * even begun. A claim on a ring another process consumes
+             * waits for that consumer (a dead one deadlocks it, v1). */
             for (;;) {
+                uint32_t readers = atomic_load_explicit(&ring->local_readers, memory_order_acquire);
+                if (readers == SHM_READERS_EVER) {
+                    return NULL;
+                }
                 struct timespec ts = {0, 100 * 1000};  /* 100us */
                 nanosleep(&ts, NULL);
                 consumer = atomic_load_explicit(
@@ -796,6 +828,10 @@ static void ensure_shm_ring_atexit_registered(void) {
  * Idempotent across the process — registering the same subject
  * twice is a programmer bug (the typechecker catches duplicate
  * topic bindings); the runtime asserts on collision. */
+/* The subscriber registry, defined with the readers. */
+static void shm_count_local_readers(lotus_shm_ring_t *producer);
+static void shm_local_readers_add(const char *shm_name, int delta);
+
 void lotus_bus_register_shm_ring(const char *subject,
                                  uint64_t slot_size,
                                  uint64_t slot_count,
@@ -836,6 +872,7 @@ void lotus_bus_register_shm_ring(const char *subject,
     strncpy(b->subject, subject, sizeof(b->subject) - 1);
     b->subject[sizeof(b->subject) - 1] = '\0';
     b->ring = ring;
+    shm_count_local_readers(ring);
     b->slot_size = slot_size;
 }
 
@@ -844,7 +881,9 @@ void lotus_bus_register_shm_ring(const char *subject,
  * memcpy path: claim the next slot, copy the payload bytes into
  * it, commit. K2's bench measured this at ~7.3 ns/op.
  *
- * Returns 0 on success, -1 if the subject isn't registered
+ * Returns 0 on success, -2 when an `on_overflow: block` claim was ended
+ * by teardown (the caller raises BusWaitAborted), -1 if the subject
+ * isn't registered
  * (programmer bug — codegen should never emit this call for an
  * unregistered subject, but defence-in-depth). */
 int lotus_bus_publish_shm_ring(const char *subject,
@@ -864,6 +903,11 @@ int lotus_bus_publish_shm_ring(const char *subject,
             _exit(1);
         }
         void *slot = lotus_shm_ring_claim(b->ring);
+        if (!slot && b->ring->overflow_policy == LOTUS_SHM_OVERFLOW_BLOCK) {
+            /* a `block` claim teardown ended (above): not a success, the
+             * caller raises BusWaitAborted, as for an aborted `or wait` */
+            return -2;
+        }
         if (!slot) {
             /* Form K7 (2026-05-20): FAIL policy fired. v1 panics
              * with a clear diagnostic — process exits non-zero so
@@ -1207,6 +1251,18 @@ struct shm_ring_subscriber_t {
     char *scratch;
     size_t scratch_cap;
     pthread_t thread;
+    /* the reader thread has been joined (lotus_shm_ring_quiesce, at
+     * main's teardown); the atexit hook does not join it again */
+    int joined;
+    /* counted among its ring's live local readers (until its stop); set
+     * before the count goes up and exchanged before it goes down, so a
+     * stop racing a registration leaves the count right either way */
+    _Atomic int counted;
+    /* the reader's body, run by shm_reader_main, which sets `exited`
+     * once it returns: main's quiesce reaps a reader without blocking
+     * on it, so it can go on serving the reader meanwhile */
+    void *(*entry)(void *);
+    _Atomic int exited;
     /* Form K-cleanup (2026-05-20): atexit hook sets this to 1
      * before pthread_join. Reader loop checks each iteration
      * and exits cleanly when set. Acquire-load matches the
@@ -1215,11 +1271,21 @@ struct shm_ring_subscriber_t {
     _Atomic int should_stop;
 };
 
+static void *shm_reader_main(void *arg) {
+    shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
+    sub->entry(arg);
+    atomic_store_explicit(&sub->exited, 1, memory_order_release);
+    return NULL;
+}
+
 static void *shm_ring_reader_thread(void *arg) {
     shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
     uint64_t last_seen = 0;
-    while (!atomic_load_explicit(&sub->should_stop,
-                                  memory_order_acquire)) {
+    for (;;) {
+        /* Stopped (main's teardown): what was published when the stop was
+         * seen is still delivered, once, and then the reader ends. */
+        int stopping = atomic_load_explicit(&sub->should_stop,
+                                            memory_order_acquire);
         uint64_t pub = lotus_shm_ring_published(sub->ring);
         if (pub > last_seen) {
             while (last_seen < pub) {
@@ -1241,10 +1307,11 @@ static void *shm_ring_reader_thread(void *arg) {
              * pingponging this update. */
             atomic_store_explicit(&sub->ring->header->consumer_seqno,
                                     last_seen, memory_order_release);
-        } else {
+        } else if (!stopping) {
             struct timespec ts = {0, 100 * 1000};  /* 100us */
             nanosleep(&ts, NULL);
         }
+        if (stopping) break;
     }
     return NULL;
 }
@@ -1271,8 +1338,11 @@ typedef struct {
 static void *shm_ring_batch_reader_thread(void *arg) {
     shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
     uint64_t last_seen = 0;
-    while (!atomic_load_explicit(&sub->should_stop,
-                                  memory_order_acquire)) {
+    for (;;) {
+        /* as the per-record reader: the batch published when the stop
+         * was seen is delivered, then the reader ends */
+        int stopping = atomic_load_explicit(&sub->should_stop,
+                                            memory_order_acquire);
         uint64_t pub = lotus_shm_ring_published(sub->ring);
         if (pub > last_seen) {
             /* One handler call for the whole [last_seen+1, pub] batch.
@@ -1289,10 +1359,11 @@ static void *shm_ring_batch_reader_thread(void *arg) {
              * batch (back-pressure policies read it with acquire). */
             atomic_store_explicit(&sub->ring->header->consumer_seqno,
                                     last_seen, memory_order_release);
-        } else {
+        } else if (!stopping) {
             struct timespec ts = {0, 100 * 1000};  /* 100us */
             nanosleep(&ts, NULL);
         }
+        if (stopping) break;
     }
     return NULL;
 }
@@ -1676,8 +1747,8 @@ void lotus_bus_register_subscriber_shm_ring_layout(
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL,
-                            shm_ring_layout_reader_thread, sub);
+    sub->entry = shm_ring_layout_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring_layout(`%s`): "
@@ -1742,7 +1813,8 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL, shm_ring_reader_thread, sub);
+    sub->entry = shm_ring_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring(`%s`): pthread_create "
@@ -1765,6 +1837,9 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
         _exit(1);
     }
     g_shm_ring_subscribers[idx] = sub;
+    /* one live reader of the ring more, for its publishers' `block` claims */
+    atomic_store_explicit(&sub->counted, 1, memory_order_release);
+    shm_local_readers_add(sub->ring->shm_name, 1);
 }
 
 /* Drain<T> batch consumer (2026-06-26): identical to the per-record
@@ -1806,8 +1881,8 @@ void lotus_bus_register_subscriber_shm_ring_batch(
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL,
-                            shm_ring_batch_reader_thread, sub);
+    sub->entry = shm_ring_batch_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring_batch(`%s`): "
@@ -1826,6 +1901,9 @@ void lotus_bus_register_subscriber_shm_ring_batch(
         _exit(1);
     }
     g_shm_ring_subscribers[idx] = sub;
+    /* one live reader of the ring more, for its publishers' `block` claims */
+    atomic_store_explicit(&sub->counted, 1, memory_order_release);
+    shm_local_readers_add(sub->ring->shm_name, 1);
 }
 
 /* Form K-cleanup (2026-05-20) — atexit teardown. Signals all
@@ -1835,6 +1913,104 @@ void lotus_bus_register_subscriber_shm_ring_batch(
  * Two-pass on subscribers: first set should_stop on all, then
  * join + free. This lets all reader threads start winding down
  * in parallel instead of serially waiting for each. */
+/* One reader in: the count up and EVER set, in one RMW. (A stop that
+ * races a registration may count out first: the word passes through a
+ * value with a non-zero count, on which a claim keeps waiting, and ends
+ * where the count says.) */
+static void shm_readers_count_in(_Atomic uint32_t *w) {
+    uint32_t old = atomic_load_explicit(w, memory_order_relaxed);
+    while (!atomic_compare_exchange_weak_explicit(
+            w, &old, (old + 1) | SHM_READERS_EVER,
+            memory_order_acq_rel, memory_order_relaxed)) {
+    }
+}
+
+/* A producer binding registered after a reader of its ring (bindings
+ * normally come first, in main's prelude) starts with that count. */
+static void shm_count_local_readers(lotus_shm_ring_t *producer) {
+    int n_subs = atomic_load_explicit(&g_shm_ring_subscriber_count, memory_order_acquire);
+    if (n_subs > LOTUS_SHM_RING_MAX_SUBSCRIBERS) n_subs = LOTUS_SHM_RING_MAX_SUBSCRIBERS;
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub && atomic_load_explicit(&sub->counted, memory_order_acquire) && !sub->is_layout && sub->ring &&
+            strcmp(sub->ring->shm_name, producer->shm_name) == 0) {
+            shm_readers_count_in(&producer->local_readers);
+        }
+    }
+}
+
+/* Count a reader of ring `shm_name` in (1) or out (-1) on every
+ * publisher handle of this process for that ring. */
+static void shm_local_readers_add(const char *shm_name, int delta) {
+    for (int j = 0; j < g_shm_ring_binding_count; j++) {
+        lotus_shm_ring_t *pr = g_shm_ring_bindings[j].ring;
+        if (!pr || strcmp(pr->shm_name, shm_name) != 0) continue;
+        if (delta > 0) {
+            shm_readers_count_in(&pr->local_readers);
+        } else {
+            atomic_fetch_sub_explicit(&pr->local_readers, 1, memory_order_acq_rel);
+        }
+    }
+}
+
+/* A teardown spine's reader stop (lotus_shm_readers_stop, after the
+ * wait-abort and the pool join, before the pinned joins and the dissolve
+ * cascade): stop every reader registered so far and join it, so no
+ * handler runs on a reader thread while the loci it was registered for
+ * are freed. What was published when a reader sees the stop is delivered.
+ * The rings stay mapped until the atexit hook. A subscriber registered
+ * after this (a locus born later in fn main) reads until the next stop or
+ * exit.
+ *
+ * A reader's handler may be publishing to main's subscribers: main must
+ * not block in pthread_join while its queue is what the handler needs. It
+ * reaps the readers that have returned and calls `service(ctx)` between
+ * 1 ms polls (the caller drains its queue), until every reader has
+ * returned. A wait draining cannot end was aborted before this. */
+void lotus_shm_ring_quiesce(void (*service)(void *ctx), void *ctx) {
+    int n_subs = atomic_load_explicit(
+        &g_shm_ring_subscriber_count, memory_order_acquire);
+    if (n_subs > LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        n_subs = LOTUS_SHM_RING_MAX_SUBSCRIBERS;
+    }
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub && !sub->joined) {
+            atomic_store_explicit(
+                &sub->should_stop, 1, memory_order_release);
+        }
+    }
+    /* Each reader stopping here is counted out of its ring's live local
+     * readers: a publisher of this process blocked on a ring none of
+     * whose local readers is live would wait forever (and so would a
+     * pool or a pinned thread joining it), so its claim stops waiting. A
+     * reader registered later counts in again. */
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (!sub || sub->is_layout || !sub->ring) continue;
+        if (atomic_exchange_explicit(&sub->counted, 0, memory_order_acq_rel)) {
+            shm_local_readers_add(sub->ring->shm_name, -1);
+        }
+    }
+    for (;;) {
+        int running = 0;
+        for (int i = 0; i < n_subs; i++) {
+            shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+            if (!sub || sub->joined) continue;
+            if (atomic_load_explicit(&sub->exited, memory_order_acquire)) {
+                pthread_join(sub->thread, NULL);
+                sub->joined = 1;
+            } else {
+                running++;
+            }
+        }
+        if (running == 0) return;
+        if (service) service(ctx);
+        struct timespec ts = {0, 1000 * 1000};  /* 1ms */
+        nanosleep(&ts, NULL);
+    }
+}
+
 static void shm_ring_atexit_cleanup(void) {
     int n_subs = atomic_load_explicit(
         &g_shm_ring_subscriber_count, memory_order_acquire);
@@ -1854,7 +2030,7 @@ static void shm_ring_atexit_cleanup(void) {
     for (int i = 0; i < n_subs; i++) {
         shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
         if (sub) {
-            pthread_join(sub->thread, NULL);
+            if (!sub->joined) pthread_join(sub->thread, NULL);
             if (sub->is_layout) {
                 if (sub->lring) {
                     lotus_shm_ring_close_layout(sub->lring);

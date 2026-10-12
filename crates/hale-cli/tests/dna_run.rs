@@ -10,8 +10,11 @@
 mod vault;
 #[path = "support/reap.rs"]
 mod reap;
+// The codegen suite's: what a child listens on, read from `/proc`.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+mod child;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -19,6 +22,36 @@ use std::time::{Duration, Instant};
 fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
     let out = vault::hale().args(args).current_dir(cwd).output().expect("hale");
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+/// The port the organism's fuse-hl serves on, once it listens: the host
+/// runs `hale iris 0`, which runs fuse-hl, and the kernel picks the port.
+/// A port drawn here and handed over is free, not reserved: another
+/// test's server could take it first, and the snapshot polled would be a
+/// stranger's. The host starts iris in a session of its own (GH #970), so
+/// it is not under the test's child: the walk starts at the pid the host
+/// recorded for it.
+fn iris_port(app: &Path) -> Option<u16> {
+    let root: u32 = std::fs::read_to_string(app.join(".hale/dna/iris.pid")).ok()?.trim().parse().ok()?;
+    let mut parent_of = Vec::new();
+    for e in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        // pid (comm) state ppid …
+        let Some(close) = stat.rfind(')') else { continue };
+        let comm = stat.get(stat.find('(').unwrap_or(0) + 1..close).unwrap_or("").to_string();
+        let ppid: u32 = stat[close + 1..].split_whitespace().nth(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+        parent_of.push((pid, ppid, comm));
+    }
+    let mut under = vec![root];
+    let mut i = 0;
+    while i < under.len() {
+        let p = under[i];
+        under.extend(parent_of.iter().filter(|(_, pp, _)| *pp == p).map(|(c, _, _)| *c));
+        i += 1;
+    }
+    let fuse = parent_of.iter().find(|(pid, _, comm)| comm == "fuse-hl" && under.contains(pid))?.0;
+    child::listening_ports(fuse).first().copied()
 }
 
 fn http(port: u16, req: &str) -> String {
@@ -44,13 +77,12 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrun");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
     assert!(ok, "{migrated}");
     let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let mut host = vault::hale()
-        .args(["dna", "run", ".", "--port", &port.to_string()])
+        .args(["dna", "run", ".", "--port", "0"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
@@ -74,8 +106,12 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     // over its process: the bound dna_knowledge gives the same start
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut snap = String::new();
+    let mut port = None;
+    let mut last = String::new();
     while Instant::now() < deadline {
-        let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+        port = port.or_else(|| iris_port(&app));
+        let s = port.map(|port| http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n")).unwrap_or_default();
+        last = s.chars().take(600).collect();
         // the diff reports loaded, the law verified, and the organism's
         // own locus tree replayed (a process attaches before its births
         // are replayed, so wait for a type)
@@ -94,12 +130,17 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
             let _ = Command::new("kill").args(["-9", pid.trim()]).status();
         }
+        // iris runs in a session of its own, named by its pid: end that
+        // session only, never another test's fuse-hl
+        let iris = std::fs::read_to_string(app.join(".hale/dna/iris.pid")).unwrap_or_default();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "fuse-hl"]).status();
+        if !iris.trim().is_empty() {
+            let _ = Command::new("pkill").args(["-9", "-s", iris.trim()]).status();
+        }
     };
     if snap.is_empty() {
         finish(&mut host);
-        panic!("iris did not come up with law + review over the organism's process");
+        panic!("iris did not come up with law + review over the organism's process (iris port {port:?}; last snapshot: {last:?})");
     }
     assert!(app.join(".hale/dna/current.topology").is_file(), "a fresh artifact of what runs");
     // The baseline is the application as `init` found it, and init changes

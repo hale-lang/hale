@@ -19,15 +19,15 @@
 //! Response-side `header` call.
 
 use std::io::{Read, Write};
-use std::process::Command;
-use std::thread;
+use std::net::TcpStream;
+use std::process::{Child, Command, Stdio};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/connect.rs"]
-mod connect;
+#[path = "support/child.rs"]
+mod child;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_http_resp_headers_{}", name));
@@ -35,28 +35,35 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
+/// Start the listener and read back the port it was given. The programs
+/// bind port 0 and the kernel picks: a port drawn here and handed over is
+/// free, not reserved, and another test of a parallel run can bind it
+/// before the program does. Reading it from `/proc` costs no accept, so
+/// a `max_accepts: 1` listener still serves the test's one connection.
+fn spawn_server(bin: &std::path::Path) -> (Child, u16) {
+    let mut child = Command::new(bin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run listener");
+    let port = child::tcp_port(&mut child);
+    (child, port)
 }
 
 fn run_server_collect_response(
     bin: &std::path::Path,
-    port: u16,
     request: &[u8],
 ) -> String {
-    let bin_path = bin.to_path_buf();
-    let server_handle = thread::spawn(move || {
-        Command::new(&bin_path).output().expect("run listener")
-    });
+    let (server, port) = spawn_server(bin);
 
-    let mut client = connect::connect_when_listening(port);
+    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     client.write_all(request).expect("client write");
     let mut buf = Vec::new();
     let _ = client.read_to_end(&mut buf);
     drop(client);
 
-    let _ = server_handle.join();
+    let _ = server.wait_with_output();
     String::from_utf8_lossy(&buf).to_string()
 }
 
@@ -68,7 +75,6 @@ fn write_response_emits_user_supplied_headers_on_wire() {
     // Connection. The blank-line separator before the body
     // must remain exactly `\r\n\r\n` (no missing terminator,
     // no extra CRLF).
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handler(s: std::io::tcp::Stream) {{
@@ -84,18 +90,16 @@ fn write_response_emits_user_supplied_headers_on_wire() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("wire", &src);
     let response = run_server_collect_response(
         &bin,
-        port,
         b"GET / HTTP/1.1\r\n\r\n",
     );
     let _ = std::fs::remove_file(&bin);
@@ -145,7 +149,6 @@ fn empty_headers_field_preserves_v0_wire_shape() {
     // (no trailing extra CRLF after Connection: close). This
     // pins the empty-headers path so a future refactor can't
     // regress it.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handler(s: std::io::tcp::Stream) {{
@@ -160,18 +163,16 @@ fn empty_headers_field_preserves_v0_wire_shape() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("empty_headers", &src);
     let response = run_server_collect_response(
         &bin,
-        port,
         b"GET / HTTP/1.1\r\n\r\n",
     );
     let _ = std::fs::remove_file(&bin);

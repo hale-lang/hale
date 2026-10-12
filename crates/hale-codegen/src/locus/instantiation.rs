@@ -1397,6 +1397,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // swaps).
         let route = self.resolve_failure_route(locus_name);
         self.emit_instance_header(&info, self_ptr, locus_name, !is_bare_stmt, route, pending_recpool_release)?;
+        // GH #1077: one live drain observer more, if this locus's code
+        // reads `draining` (its arena destroy counts it out) — counted
+        // here, before any param is built: a param's run() starts while
+        // the params are built (a pool's is posted, a pinned one's thread
+        // created), and a signal it sees in that window must find this
+        // instance live, not "nothing can answer a drain" (the signal's
+        // default action at once, with no word said).
+        self.emit_drain_observer_count(locus_name, 1)?;
 
         // Interest-based ownership #2: if THIS locus is a bubble owner —
         // a SingletonConst `A` that some deeper site resolves to — stash
@@ -3277,9 +3285,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // right after the arena); nothing here writes it again, so a child
         // the params accepted stays accepted.
 
-        // GH #1077: one live drain observer more, if this locus's code
-        // reads `draining` (its arena destroy counts it out).
-        self.emit_drain_observer_count(locus_name, 1)?;
         // m43: init each __duration_last_fire_<i> field to
         // monotonic-now so the first fire happens after the
         // declared `N` elapses (not immediately at birth). The one

@@ -749,8 +749,15 @@ pub fn description(
 /// `,"schemas":{`, the schemas those streams reach, `},"notes":`, `notes`, `}`.
 #[derive(Debug, Clone)]
 pub struct HubPieces {
-    /// The document up to and including `"caller":{"principal":`.
+    /// The document up to and including `"caller":{"principal":`, its
+    /// listener's address the `bind:` as written (empty when the bind is
+    /// not a literal).
     pub head: String,
+    /// `head` up to and including the listener's `"address":`, and from
+    /// the end of that address on: the served description states the
+    /// address the hub's listener was bound to between the two.
+    pub head_pre: String,
+    pub head_post: String,
     /// Each stream, in binding order.
     pub streams: Vec<String>,
     /// Each type a stream reaches, by name in bytes order: its name, its
@@ -766,14 +773,16 @@ pub struct HubPieces {
 pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
     let t = &hub.transport;
     let name = t.name.as_deref().unwrap_or("");
-    let head = format!(
-        "{{\"description\":1,\"exposure\":{},\"name\":{},\"surface\":null,\"digest\":{},\"listener\":{},\"codec\":{},\"caller\":{{\"principal\":",
+    // `listener(kind, address)`, split around the address
+    let head_pre = format!(
+        "{{\"description\":1,\"exposure\":{},\"name\":{},\"surface\":null,\"digest\":{},\"listener\":{{\"transport\":{},\"address\":",
         s(&hub_id(hub)).compact(),
         s(name).compact(),
         s(&digest_text(hub.digest())).compact(),
-        listener(&t.kind, t.address.as_deref()).compact(),
-        s(&t.codec).compact(),
+        s(&t.kind).compact(),
     );
+    let head_post = format!("}},\"codec\":{},\"caller\":{{\"principal\":", s(&t.codec).compact());
+    let head = format!("{head_pre}{}{head_post}", s(t.address.as_deref().unwrap_or("")).compact());
     let mut streams = Vec::new();
     let mut types: BTreeMap<String, (String, u64)> = BTreeMap::new();
     for (i, st) in hub.streams.iter().enumerate() {
@@ -789,6 +798,8 @@ pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
         hub.streams.iter().flat_map(|st| st.requires.iter()).map(|(r, _)| r.as_str()).collect();
     HubPieces {
         head,
+        head_pre,
+        head_post,
         streams,
         types: types.into_iter().map(|(n, (j, m))| (n, j, m)).collect(),
         outcomes: outcomes(if t.kind == "udp" { "udp" } else { "ws" }).map(|j| j.compact()).unwrap_or_default(),

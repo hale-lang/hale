@@ -19,11 +19,8 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!(
@@ -37,8 +34,11 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
 
 /// A listener on an async_io pool whose connection handler does ONE
 /// `recv_into` and reports the result. `timeout_ms` argv arms
-/// `set_recv_timeout` on the conn fd first (0 = leave unset).
-fn server_src(port: u16) -> String {
+/// `set_recv_timeout` on the conn fd first (0 = leave unset). It binds
+/// port 0 and the test reads back the port the kernel gave it
+/// ([`child::tcp_port`]): a port drawn here and handed over is free, not
+/// reserved, and another test of a parallel run can bind it first.
+fn server_src() -> String {
     format!(
         r#"
         fn handle(s: std::io::tcp::Stream) {{
@@ -58,7 +58,7 @@ fn server_src(port: u16) -> String {
             params {{
                 l: std::io::tcp::Listener = std::io::tcp::Listener {{
                     host:          "127.0.0.1",
-                    port:          {port},
+                    port:          0,
                     max_accepts:   1,
                     on_connection: handle,
                 }};
@@ -81,17 +81,15 @@ fn recv_into_parks_until_readable_on_async_io() {
     // No recv timeout set: recv_into must park (indefinitely) until
     // the client's late bytes arrive — pre-fix it returned -2
     // instantly and the handler reported got=-2.
-    let port = pick_free_port();
-    let bin = build("parks", &server_src(port));
+    let bin = build("parks", &server_src());
     let mut child = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .arg("0")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
-    thread::sleep(Duration::from_millis(150));
-    let mut s = connect_when_up(port);
+    let mut s = connect(child::tcp_port(&mut child));
     // Idle for 300ms — the parked window — then send 5 bytes.
     thread::sleep(Duration::from_millis(300));
     s.write_all(b"hello").expect("write");
@@ -117,18 +115,17 @@ fn recv_into_honors_recv_deadline_on_async_io() {
     // 300ms recv timeout armed, client stays silent: recv_into must
     // return -2 AFTER ~300ms (genuine deadline expiry) — neither
     // instantly (the pre-fix bug) nor never (an unbounded park).
-    let port = pick_free_port();
-    let bin = build("deadline", &server_src(port));
+    let bin = build("deadline", &server_src());
     let mut child = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .arg("300")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
-    thread::sleep(Duration::from_millis(150));
+    let port = child::tcp_port(&mut child);
     let started = Instant::now();
-    let mut s = connect_when_up(port);
+    let mut s = connect(port);
     // Send nothing; wait for the handler's DONE response, which it
     // writes right after recv_into returns.
     let mut resp = Vec::new();
@@ -165,7 +162,7 @@ fn udp_recv_into_returns_minus_two_on_timeout() {
     // The udp sibling's contract alignment (blocking pool): a
     // SO_RCVTIMEO expiry now returns -2 retryable — it previously
     // fell into -1 fatal.
-    let port = pick_free_port();
+    // Nothing is sent to the socket, so it binds port 0.
     let src = r#"
         fn main() {
             let port = std::str::parse_int(std::env::arg(1)) or raise;
@@ -179,7 +176,7 @@ fn udp_recv_into_returns_minus_two_on_timeout() {
     "#;
     let bin = build("udp", src);
     let out = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .output()
         .expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -199,7 +196,6 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
     // set_recv_timeout on async_io pools. With the timed park it
     // returns the empty Bytes at ~deadline (its documented timeout
     // shape on blocking pools).
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn handle(s: std::io::tcp::Stream) {{
@@ -215,7 +211,7 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
             params {{
                 l: std::io::tcp::Listener = std::io::tcp::Listener {{
                     host:          "127.0.0.1",
-                    port:          {port},
+                    port:          0,
                     max_accepts:   1,
                     on_connection: handle,
                 }};
@@ -237,9 +233,9 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
-    thread::sleep(Duration::from_millis(150));
+    let port = child::tcp_port(&mut child);
     let started = Instant::now();
-    let mut s = connect_when_up(port);
+    let mut s = connect(port);
     let mut resp = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     use std::io::Read;
@@ -262,19 +258,8 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
     );
 }
 
-/// Connect once the program's listener is up. The tests sleep before
-/// connecting, but a freshly built binary's first launch on macOS is
-/// scanned before it runs and can outlast any fixed sleep; retrying for
-/// a bounded time keeps the test about the park, not about startup.
-fn connect_when_up(port: u16) -> TcpStream {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => return s,
-            Err(_) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            Err(e) => panic!("connect: {e:?}"),
-        }
-    }
+/// Connect to the program's listener, which is up: the port was read
+/// from its listening socket.
+fn connect(port: u16) -> TcpStream {
+    TcpStream::connect(("127.0.0.1", port)).unwrap_or_else(|e| panic!("connect 127.0.0.1:{port}: {e:?}"))
 }

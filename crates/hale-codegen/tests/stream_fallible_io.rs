@@ -16,10 +16,11 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+// A program here connects to its own listener: it binds port 0 and asks
+// the socket which port it was given (`__local_port`), so no port is drawn
+// in the test and handed over, free but not reserved, for another test of
+// a parallel run to take first.
+
 
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -76,11 +77,10 @@ fn bad_fd_send_and_recv_fail_with_io_error() {
 fn eof_is_empty_success_not_error() {
     // Peer closes cleanly: recv must return "" WITHOUT taking the
     // error path — `or "ERR"` must not fire.
-    let port = pick_free_port();
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::__close_fd(afd);
@@ -92,7 +92,7 @@ fn eof_is_empty_success_not_error() {
             std::io::tcp::__close_fd(cfd);
         }
     "#;
-    let (out, status) = build_and_run("eof", src, &[&port.to_string()]);
+    let (out, status) = build_and_run("eof", src, &[]);
     assert!(status.success(), "non-zero: {:?}\nstdout: {}", status, out);
     assert!(out.contains("eof=[] len=0"), "EOF must be empty success: {}", out);
     assert!(out.contains("eof_bytes_len=0"), "stdout: {}", out);
@@ -102,11 +102,10 @@ fn eof_is_empty_success_not_error() {
 fn recv_timeout_is_empty_success_not_error() {
     // Silent peer + 200ms SO_RCVTIMEO: recv returns "" at ~deadline
     // without raising — the timeout keeps its liveness-signal shape.
-    let port = pick_free_port();
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let _afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::set_recv_timeout(cfd, 200ms) or raise;
@@ -115,7 +114,7 @@ fn recv_timeout_is_empty_success_not_error() {
             println("timeout_len=", len(got));
         }
     "#;
-    let (out, status) = build_and_run("timeout", src, &[&port.to_string()]);
+    let (out, status) = build_and_run("timeout", src, &[]);
     assert!(status.success(), "non-zero: {:?}\nstdout: {}", status, out);
     assert!(out.contains("timeout_len=0"), "stdout: {}", out);
 }
@@ -125,14 +124,13 @@ fn send_to_closed_peer_eventually_breaks_pipe() {
     // First send may land in the kernel buffer before the RST is
     // observed (discarded); the second write hits EPIPE/ECONNRESET
     // and must fail with the mapped kind.
-    let port = pick_free_port();
     let src = r#"
         fn on_err(e: IoError) {
             println("late-send kind=", e.kind);
         }
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::__close_fd(afd);
@@ -143,7 +141,7 @@ fn send_to_closed_peer_eventually_breaks_pipe() {
             std::io::tcp::__close_fd(cfd);
         }
     "#;
-    let (out, status) = build_and_run("broken_pipe", src, &[&port.to_string()]);
+    let (out, status) = build_and_run("broken_pipe", src, &[]);
     assert!(status.success(), "non-zero: {:?}\nstdout: {}", status, out);
     assert!(
         out.contains("late-send kind=broken_pipe")

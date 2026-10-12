@@ -35,6 +35,8 @@ use hale_codegen::BuildOptions;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -290,19 +292,13 @@ fn expiry_fast_forwards_from_the_tape() {
 #[test]
 fn readiness_resumes_follow_the_tape_not_arrival_order() {
     use std::io::Write;
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpStream;
 
-    let (port_a, port_b) = {
-        let a = TcpListener::bind("127.0.0.1:0").unwrap();
-        let b = TcpListener::bind("127.0.0.1:0").unwrap();
-        let (pa, pb) = (
-            a.local_addr().unwrap().port(),
-            b.local_addr().unwrap().port(),
-        );
-        drop(a);
-        drop(b);
-        (pa, pb)
-    };
+    // The two listeners bind port 0, each on a loopback address of its
+    // own, and each run's ports are read back by address: a port drawn
+    // here and handed over is free, not reserved, and another test of a
+    // parallel run can bind it before the program does.
+    let (host_a, host_b) = (std::net::Ipv4Addr::new(127, 0, 0, 1), std::net::Ipv4Addr::new(127, 0, 0, 2));
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -337,14 +333,14 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
             params {{
                 t: Timer = Timer {{ }};
                 la: std::io::tcp::Listener = std::io::tcp::Listener {{
-                    host:          "127.0.0.1",
-                    port:          {port_a},
+                    host:          "{host_a}",
+                    port:          0,
                     max_accepts:   1,
                     on_connection: handle_a,
                 }};
                 lb: std::io::tcp::Listener = std::io::tcp::Listener {{
-                    host:          "127.0.0.1",
-                    port:          {port_b},
+                    host:          "{host_b}",
+                    port:          0,
                     max_accepts:   1,
                     on_connection: handle_b,
                 }};
@@ -380,12 +376,14 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
     };
     // drive(sends_a_first): connect A then B (accept order fixed),
     // then deliver DATA in the given order.
-    let drive = |a_first: bool| {
+    let drive = |child: &mut std::process::Child, a_first: bool| {
         wait_ready(&ready);
+        let port_a = child::tcp_port_on(child, host_a);
+        let port_b = child::tcp_port_on(child, host_b);
         let mut ca =
-            TcpStream::connect(("127.0.0.1", port_a)).expect("a");
+            TcpStream::connect((host_a, port_a)).expect("a");
         let mut cb =
-            TcpStream::connect(("127.0.0.1", port_b)).expect("b");
+            TcpStream::connect((host_b, port_b)).expect("b");
         std::thread::sleep(std::time::Duration::from_millis(150));
         let (first, second): (&mut TcpStream, &mut TcpStream) =
             if a_first {
@@ -402,13 +400,13 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
 
     // Record: A's data first — recorded resume order is A, B.
     let _ = std::fs::remove_file(&ready);
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .env("LOTUS_OBS_RECORD", &rec)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn recorded");
-    let _peers = drive(true);
+    let _peers = drive(&mut child, true);
     let recorded = child.wait_with_output().expect("recorded exit");
     assert!(
         recorded.status.success(),
@@ -436,13 +434,13 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
     // drain must hold it on ready_head and resume A at its recorded
     // turn. stdout must be byte-identical to the recording.
     let _ = std::fs::remove_file(&ready);
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .env("LOTUS_REPLAY", &rec)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn replay");
-    let _peers = drive(false);
+    let _peers = drive(&mut child, false);
     let replayed = child.wait_with_output().expect("replay exit");
     let err = String::from_utf8_lossy(&replayed.stderr);
     assert!(replayed.status.success(), "stderr:\n{}", err);

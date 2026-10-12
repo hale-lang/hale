@@ -338,7 +338,7 @@ fn fixture(name: &str) -> serde_json::Value {
 fn the_description_from_the_hubs_listener_is_the_fixture_for_the_caller() {
     // the witness's own address is in its fixtures; the program is built for
     // port 0 (a port drawn here could be another test's by the time the
-    // program binds it), which the description states as written
+    // program binds it), and the description states the port it was given
     let bind = "127.0.0.1:0";
     let src = WITNESS.replace("std::env::var(\"BIND\")", &format!("\"{bind}\""));
     let bin = harness::unique_bin("api_hub_streams_desc");
@@ -350,8 +350,8 @@ fn the_description_from_the_hubs_listener_is_the_fixture_for_the_caller() {
         assert_eq!(status, 200, "{body}");
         let got: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{e}: {body}"));
         let mut want = fixture(name);
-        // (the listener's address is the one this program was built for)
-        want["listener"]["address"] = serde_json::Value::String(bind.to_string());
+        // (the listener's address is the one the program was bound to)
+        want["listener"]["address"] = serde_json::Value::String(format!("127.0.0.1:{port}"));
         assert_eq!(got, want, "the description for {token}");
         // served as the compact document, keys in the schema's order
         assert!(body.starts_with("{\"description\":1,\"exposure\":\"hub@fnv1a64:26970854397ab154/fills\""), "{body}");

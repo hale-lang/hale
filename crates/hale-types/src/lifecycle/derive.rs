@@ -2124,6 +2124,21 @@ impl<'b, 'a> Builder<'b, 'a> {
         join
     }
 
+    /// A teardown spine's reader stop: this process's shm ring readers
+    /// stop, after the last of the wait-abort and the pool join, and
+    /// before anything they serve dies (line 7). A reader lives as long as
+    /// what it serves can still produce: a pool's job publishing to a ring
+    /// a local reader consumes is joined first, against a live reader; a
+    /// reader's handlers touch main's loci, so it stops before the pinned
+    /// joins and the cascade. A claim still waiting on a stopped reader is
+    /// a wait only teardown ends, and takes the wait-abort's raise.
+    fn reader_stop(&mut self, spine: Spine, prior: &[Prerequisite], last: ObligationId) -> ObligationId {
+        let mut o = Self::process_row(K::ReaderStop, spine, Some("7"), Status::Shipped);
+        o.edges.entry.extend_from_slice(prior);
+        o.edges.entry.push(after(last, Point::Completed, shipped("7")));
+        self.push(o)
+    }
+
     /// The head of the main locus's own teardown, eager or deferred: the
     /// quiesce, the wait-abort and, where the program has pools, the join,
     /// all before its fields' teardown (rule (b)), its pinned fields' joins
@@ -2137,27 +2152,29 @@ impl<'b, 'a> Builder<'b, 'a> {
         let q = self.quiesce(spine, &prior);
         let a = self.abort(spine, &prior, q);
         let join = pools.then(|| self.join(spine, &prior, q, a));
+        let stop = self.reader_stop(spine, &prior, join.unwrap_or(a));
         // Line 7, on every spine: the head before the joins of the pinned
         // threads the root's teardown joins (its pinned fields, and those
         // of its fields built on its instantiating thread), and before
         // their drains, which the join's mailbox shutdown begins.
-        let last = join.unwrap_or(a);
         for c in self.own_pinned(i) {
             for row in [self.rows[c].pinned_join, self.rows[c].drain].into_iter().flatten() {
-                self.get(row).edges.entry.push(after(last, Point::Completed, shipped("7")));
+                self.get(row).edges.entry.push(after(stop, Point::Completed, shipped("7")));
             }
         }
-        let join = join?;
         // Rule (b): the main locus joins the pools before its fields'
-        // teardown.
+        // teardown, and its readers stop before they die.
         let fields: Vec<usize> =
             (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
         for c in fields {
             if let Some(d) = self.rows[c].drain {
-                self.get(d).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+                self.get(d).edges.entry.push(after(stop, Point::Completed, shipped("7")));
+                if let Some(join) = join {
+                    self.get(d).edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
+                }
             }
         }
-        Some(join)
+        join
     }
 
     /// The pinned anchors `i`'s own teardown joins: its pinned fields, and
@@ -2196,8 +2213,11 @@ impl<'b, 'a> Builder<'b, 'a> {
     /// join (rule (b): before the frame's entries), then the pre-drain;
     /// without: the quiesce, the pre-drain, then the wait-abort (line 7:
     /// the pre-drain runs handlers, and a wait it can satisfy is not
-    /// aborted into a raise). Returns (the pre-drain, the join).
-    fn main_exit(&mut self, spine: Spine, pools: bool, prior: &[Prerequisite]) -> (ObligationId, Option<ObligationId>) {
+    /// aborted into a raise). The reader stop after the last of the
+    /// wait-abort and the join, before the frame's entries (with pools,
+    /// before the pre-drain too, which delivers what the readers left on
+    /// main's queue). Returns (the pre-drain, the join, the reader stop).
+    fn main_exit(&mut self, spine: Spine, pools: bool, prior: &[Prerequisite]) -> (ObligationId, Option<ObligationId>, ObligationId) {
         let q = self.quiesce(spine, prior);
         let mut pre = Self::process_row(K::PreDrain, spine, Some("18"), Status::Shipped);
         pre.edges.entry.extend_from_slice(prior);
@@ -2205,13 +2225,16 @@ impl<'b, 'a> Builder<'b, 'a> {
         if pools {
             let a = self.abort(spine, prior, q);
             let join = self.join(spine, prior, q, a);
+            let stop = self.reader_stop(spine, prior, join);
             pre.edges.entry.push(after(join, Point::Completed, Rule::SHIPPED));
-            (self.push(pre), Some(join))
+            pre.edges.entry.push(after(stop, Point::Completed, shipped("7")));
+            (self.push(pre), Some(join), stop)
         } else {
             let pre = self.push(pre);
             let a = self.abort(spine, prior, q);
             self.get(a).edges.entry.push(after(pre, Point::Completed, shipped("7")));
-            (pre, None)
+            let stop = self.reader_stop(spine, prior, a);
+            (pre, None, stop)
         }
     }
 
@@ -2307,24 +2330,29 @@ impl<'b, 'a> Builder<'b, 'a> {
             let last = (before..self.plan.obligations.len())
                 .rev()
                 .map(|n| ObligationId(n as u32))
-                .find(|&id| matches!(self.plan.obligations[id.0 as usize].kind, K::PoolJoin | K::WaitAbort));
+                .find(|&id| matches!(self.plan.obligations[id.0 as usize].kind, K::PoolJoin | K::WaitAbort | K::ReaderStop));
             heads_done.extend(last.map(|id| after(id, Point::Completed, Rule::SHIPPED)));
         }
         // `fn main`'s three exits, each its head and its frame's pre-drain;
         // a run takes one. The fall-through comes after every statement of
         // `fn main` has torn its literal down.
         let mut pres: Vec<ObligationId> = Vec::new();
+        // each exit's reader stop: the frame's entries come after it
+        let mut stops: Vec<ObligationId> = Vec::new();
         if has_fn_main {
             let mut statements: Vec<Prerequisite> =
                 statements_done.iter().map(|&r| after(r, Point::Completed, Rule::SHIPPED)).collect();
             statements.extend(heads_done.iter().copied());
-            let (pre, join) = self.main_exit(Spine::MainFallThrough, pools, &statements);
+            let (pre, join, stop) = self.main_exit(Spine::MainFallThrough, pools, &statements);
             if let Some(join) = join {
                 first_join.get_or_insert(join);
             }
             pres.push(pre);
+            stops.push(stop);
             for spine in [Spine::MainReturn, Spine::MainTestFailure] {
-                pres.push(self.main_exit(spine, pools, &heads_done).0);
+                let (pre, _, stop) = self.main_exit(spine, pools, &heads_done);
+                pres.push(pre);
+                stops.push(stop);
             }
         }
         // A let-bound literal of `fn main`: run at its statement, drained
@@ -2342,6 +2370,11 @@ impl<'b, 'a> Builder<'b, 'a> {
                     }
                     if let Some(d) = self.rows[i].drain {
                         self.get(d).edges.entry.push(after(pre, Point::Completed, shipped("11")));
+                    }
+                }
+                for &stop in &stops {
+                    for row in [self.rows[i].pinned_join, self.rows[i].drain].into_iter().flatten() {
+                        self.get(row).edges.entry.push(after(stop, Point::Completed, shipped("7")));
                     }
                 }
             }

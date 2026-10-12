@@ -22,26 +22,19 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-/// Find two free TCP ports for the listeners.
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_two_free_ports() -> (u16, u16) {
-    use std::net::TcpListener;
-    let a = TcpListener::bind("127.0.0.1:0").expect("bind a");
-    let b = TcpListener::bind("127.0.0.1:0").expect("bind b");
-    let pa = a.local_addr().unwrap().port();
-    let pb = b.local_addr().unwrap().port();
-    drop(a);
-    drop(b);
-    (pa, pb)
-}
+#[path = "support/child.rs"]
+mod child;
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn async_io_pool_multiplexes_two_listeners() {
-    let (port_a, port_b) = pick_two_free_ports();
+    // The two listeners bind port 0, each on a loopback address of its
+    // own, and the test reads back the port the kernel gave each: a port
+    // drawn here and handed over is free, not reserved.
     // A minimal program: two listeners on the same async_io pool,
     // each accepts ONE connection, reads a request line, writes a
     // tagged response, then exits.
@@ -73,13 +66,13 @@ fn async_io_pool_multiplexes_two_listeners() {
             params {{
                 la: std::io::tcp::Listener = std::io::tcp::Listener {{
                     host:         "127.0.0.1",
-                    port:         {port_a},
+                    port:         0,
                     max_accepts:  1,
                     on_connection: handle_a,
                 }};
                 lb: std::io::tcp::Listener = std::io::tcp::Listener {{
-                    host:         "127.0.0.1",
-                    port:         {port_b},
+                    host:         "127.0.0.2",
+                    port:         0,
                     max_accepts:  1,
                     on_connection: handle_b,
                 }};
@@ -101,36 +94,23 @@ fn async_io_pool_multiplexes_two_listeners() {
         fn main() {{
             App {{ }};
         }}
-    "#,
-        port_a = port_a, port_b = port_b
+    "#
     );
     let bin = harness::unique_bin("hale_test_async_io_park_resume");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     // Spawn the binary in the background.
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
-    // Give the listeners ~100ms to bind.
-    thread::sleep(Duration::from_millis(150));
+    // Both listen once the kernel has given each its port.
+    let port_a = child::tcp_port_on(&mut child, std::net::Ipv4Addr::new(127, 0, 0, 1));
+    let port_b = child::tcp_port_on(&mut child, std::net::Ipv4Addr::new(127, 0, 0, 2));
     // Connect to A and B. Each connection: send a byte, read the
     // response. With async_io, both should succeed.
-    let connect = |port: u16, send_byte: u8| -> Vec<u8> {
-        // Retry until the listener is up rather than trusting the
-        // sleep above: a freshly built binary's first launch on macOS
-        // is scanned before it runs and can take longer than 150ms.
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let mut s = loop {
-            match TcpStream::connect(("127.0.0.1", port)) {
-                Ok(s) => break s,
-                Err(e) if std::time::Instant::now() < deadline => {
-                    let _ = e;
-                    thread::sleep(Duration::from_millis(25));
-                }
-                Err(e) => panic!("connect: {e:?}"),
-            }
-        };
+    let connect = |host: &str, port: u16, send_byte: u8| -> Vec<u8> {
+        let mut s = TcpStream::connect((host, port)).unwrap_or_else(|e| panic!("connect {host}:{port}: {e:?}"));
         s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         s.write_all(&[send_byte]).expect("write");
         let mut buf = vec![0u8; 16];
@@ -138,8 +118,8 @@ fn async_io_pool_multiplexes_two_listeners() {
         buf.truncate(n);
         buf
     };
-    let resp_a = connect(port_a, b'a');
-    let resp_b = connect(port_b, b'b');
+    let resp_a = connect("127.0.0.1", port_a, b'a');
+    let resp_b = connect("127.0.0.2", port_b, b'b');
     // Give the binary a moment to finish its accept counters and exit.
     thread::sleep(Duration::from_millis(100));
     let _ = child.kill();

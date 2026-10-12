@@ -15,10 +15,8 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_tcp_nodelay_{}", name));
@@ -33,7 +31,10 @@ fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::pro
 
 #[test]
 fn set_nodelay_toggles_and_reads_back() {
-    let port = pick_free_port();
+    // the program dials the port it listens on, so it is told the port
+    // before it binds: reserved for the test's length, since a port drawn
+    // and released could be bound by another test first
+    let at = child::Reserved::new();
     let src = r#"
         fn main() {
             let port = std::str::parse_int(std::env::arg(1)) or raise;
@@ -48,8 +49,9 @@ fn set_nodelay_toggles_and_reads_back() {
             let disabled = std::io::udp::get_option_int(cfd, lvl, opt) or raise;
             println("nodelay on=", enabled, " off=", disabled);
         }
-    "#;
-    let (stdout, status) = build_and_run_argv("toggle", src, &[&port.to_string()]);
+    "#
+    .replace("127.0.0.1", &at.host());
+    let (stdout, status) = build_and_run_argv("toggle", &src, &[&at.port().to_string()]);
     assert!(status.success(), "exit: {:?}\nstdout: {}", status, stdout);
     assert!(
         stdout.contains("nodelay on=1 off=0"),

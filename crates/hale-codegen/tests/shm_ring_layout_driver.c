@@ -544,6 +544,47 @@ static int run_heterogeneous(const char *name) {
  * header, waits for the consumer to attach, writes N records, waits for
  * it to drain, then unlinks. Used by the cross-process Hale-consumer
  * end-to-end test. */
+/* The external producers (produce_external, produce_record_header,
+ * produce_native_external) feed a SEPARATE Hale consumer process. Run
+ * with a third argument `step`, they keep in lockstep with the test
+ * instead of with the clock: "ring" on stdout once the ring exists, then
+ * one line on stdin before the first record (the consumer is attached)
+ * and one before each next (the consumer printed the last), and stdin's
+ * end before the ring is unlinked (the consumer has read everything).
+ * Without it they keep their sleeps — an attach wait, a pace per record,
+ * a drain — each of which a loaded machine can outlast: a consumer that
+ * attaches late misses the first records, and one descheduled for a few
+ * records' pace on a small ring is lapped and resyncs past them. */
+static int g_step = 0;
+
+static void step_line(void) {
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') { }
+}
+
+static void ext_attach(void) {
+    if (g_step) {
+        printf("ring\n");
+        fflush(stdout);
+        step_line();
+        return;
+    }
+    struct timespec t = {0, 250 * 1000 * 1000};  /* 250ms to attach */
+    nanosleep(&t, NULL);
+}
+
+static void ext_pace(long ns) {
+    if (g_step) { step_line(); return; }
+    struct timespec t = {0, ns};
+    nanosleep(&t, NULL);
+}
+
+static void ext_drain(void) {
+    if (g_step) { while (getchar() != EOF) { } return; }
+    struct timespec t = {0, 400 * 1000 * 1000};  /* 400ms to drain */
+    nanosleep(&t, NULL);
+}
+
 static int run_produce_external(const char *name) {
     uint64_t capacity = 4096;
     size_t total = DATA_AT + (size_t)capacity;
@@ -559,10 +600,9 @@ static int run_produce_external(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    /* Give the consumer time to attach + park at cursor 0 before we
-     * publish (it reads from the live cursor, no replay). */
-    struct timespec attach_wait = {0, 250 * 1000 * 1000};  /* 250ms */
-    nanosleep(&attach_wait, NULL);
+    /* The consumer attaches and starts at cursor 0 before we publish (it
+     * reads from the cursor at its attach, no replay). */
+    ext_attach();
 
     int n = 6;
     uint64_t local = 0;
@@ -578,12 +618,10 @@ static int run_produce_external(const char *name) {
         if (kind == 2) memcpy(p + 16, &b, sizeof(int64_t));
         local += align_up(LEN_WIDTH + plen, ALIGN);
         atomic_store_explicit(cursor, local, memory_order_release);
-        struct timespec pace = {0, 5 * 1000 * 1000};  /* 5ms */
-        nanosleep(&pace, NULL);
+        ext_pace(5 * 1000 * 1000);  /* 5ms */
     }
     /* Let the consumer finish reading before we unlink. */
-    struct timespec drain = {0, 400 * 1000 * 1000};  /* 400ms */
-    nanosleep(&drain, NULL);
+    ext_drain();
     munmap(map, total); close(fd); shm_unlink(name);
     return 0;
 }
@@ -597,8 +635,9 @@ static int run_produce_external(const char *name) {
  * record_header_bytes/pad_field/recheck and reads the i64 payload.
  * capacity 272 = 6*40 + 32: six 40-byte records then an exactly-32-byte
  * pad header at the tail, so the kind==1 pad path is exercised every
- * wrap. Paced 2ms/record (20x the reader's 100us poll) so it never
- * laps. */
+ * wrap. Paced 2ms/record (20x the reader's 100us poll), or in `step`
+ * with the test, which sends the next record only once the consumer has
+ * printed the last, so it never laps. */
 #define RH_BYTES 32
 #define RH_LEN_OFF 0
 #define RH_KIND_OFF 4
@@ -617,8 +656,7 @@ static int run_produce_record_header(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    struct timespec attach_wait = {0, 250 * 1000 * 1000};  /* 250ms */
-    nanosleep(&attach_wait, NULL);
+    ext_attach();
 
     int n = 40;
     uint64_t plen = 8;  /* one i64 payload */
@@ -633,8 +671,11 @@ static int run_produce_record_header(const char *name) {
             uint64_t rem = capacity - (local % capacity);
             local += rem;
             atomic_store_explicit(cursor, local, memory_order_release);
-            struct timespec p = {0, 2 * 1000 * 1000};
-            nanosleep(&p, NULL);
+            /* a pad prints nothing: no step for it */
+            if (!g_step) {
+                struct timespec p = {0, 2 * 1000 * 1000};
+                nanosleep(&p, NULL);
+            }
         }
         uint64_t off = DATA_AT + (local % capacity);
         *(uint32_t *)(base + off + RH_LEN_OFF) = (uint32_t)plen;
@@ -648,11 +689,9 @@ static int run_produce_record_header(const char *name) {
         memcpy(base + off + RH_BYTES, &val, sizeof(val));  /* payload @ 32 */
         local += step;
         atomic_store_explicit(cursor, local, memory_order_release);
-        struct timespec p = {0, 2 * 1000 * 1000};
-        nanosleep(&p, NULL);
+        ext_pace(2 * 1000 * 1000);
     }
-    struct timespec drain = {0, 400 * 1000 * 1000};
-    nanosleep(&drain, NULL);
+    ext_drain();
     munmap(map, total); close(fd); shm_unlink(name);
     return 0;
 }
@@ -730,19 +769,16 @@ static int run_produce_native_external(const char *name) {
         fprintf(stderr, "native lotus_shm_ring_open: %s\n", strerror(errno));
         return 2;
     }
-    struct timespec attach = {0, 250 * 1000 * 1000};  /* 250ms to attach */
-    nanosleep(&attach, NULL);
+    ext_attach();
     int n = 6;
     for (int i = 0; i < n; i++) {
         Payload *slot = (Payload *)lotus_shm_ring_claim(ring);
         slot->seq_id = i + 1;
         slot->value = (int64_t)(i + 1) * 7;
         lotus_shm_ring_commit(ring);
-        struct timespec pace = {0, 5 * 1000 * 1000};
-        nanosleep(&pace, NULL);
+        ext_pace(5 * 1000 * 1000);
     }
-    struct timespec drain = {0, 400 * 1000 * 1000};
-    nanosleep(&drain, NULL);
+    ext_drain();
     lotus_shm_ring_close(ring);
     return 0;
 }
@@ -940,6 +976,7 @@ static int run_clobber(const char *name) {
 }
 
 int main(int argc, char **argv) {
+    g_step = argc > 3 && strcmp(argv[3], "step") == 0;
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s <roundtrip|wrap|producer|producer_wrap|"

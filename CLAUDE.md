@@ -30,9 +30,15 @@ another test's binary.
 That is fixed structurally: every test builds through
 `harness::unique_bin` (pid + process-local counter), and
 `harness_paths_are_unique.rs` fails the build if a new test
-rolls its own. Ports come from `ports::free_port()` (its own
-`support/ports.rs`, so a binary that never asks for one carries no
-dead helper) rather than the hand-maintained 57xxx/47xxx registry. No test mutates
+rolls its own. No test hands a child a port it drew (bind `:0`,
+read the number, close — free, not reserved: another test can bind it
+before the child does). A program that serves binds port 0 and the
+test reads the port back from `/proc` (`support/child.rs`:
+`tcp_port`, `udp_port`, or the program asks
+`std::io::tcp::__local_port`); one that must know its address before
+it binds takes a `child::Reserved` one, which the test holds on
+`127.0.0.1` while handing out `127.0.0.100:<port>`. The same guard
+file refuses a new draw. No test mutates
 the process environment either — a build knob travels on
 `hale_codegen::BuildOptions` (every build knob is a field; codegen
 reads no environment variable, and `hale-cli`'s `build_env.rs` is the

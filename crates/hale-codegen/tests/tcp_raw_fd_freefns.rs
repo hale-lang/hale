@@ -26,11 +26,8 @@ use std::time::Duration;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!(
@@ -94,12 +91,12 @@ fn client_src(port: u16, rounds: u32) -> String {
 
 #[test]
 fn raw_fd_freefns_roundtrip_via_wrapper_fns() {
-    let port = pick_free_port();
     let rounds: u32 = 64;
 
     // Rust-side echo server (accept one conn, echo until EOF).
-    let listener =
-        std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    // the test's own listener, on the port the kernel picks
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let server = thread::spawn(move || {
         let (mut s, _) = listener.accept().expect("accept");
         s.set_read_timeout(Some(Duration::from_secs(8))).ok();
@@ -188,11 +185,11 @@ fn public_send_fd_src(port: u16, rounds: u32) -> String {
 
 #[test]
 fn public_send_fd_roundtrip() {
-    let port = pick_free_port();
     let rounds: u32 = 32;
 
-    let listener =
-        std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    // the test's own listener, on the port the kernel picks
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let server = thread::spawn(move || {
         let (mut s, _) = listener.accept().expect("accept");
         s.set_read_timeout(Some(Duration::from_secs(8))).ok();
@@ -238,11 +235,15 @@ fn public_send_fd_roundtrip() {
 /// only direct calls tripped it.
 #[test]
 fn direct_listen_socket_path_call_builds_and_runs() {
-    let port = pick_free_port();
+    // a real (high) port written into the call, not 0: the bug was the
+    // port argument's width. Reserved for the test's length, since a
+    // port drawn and released could be bound by another test first.
+    let at = child::Reserved::new();
+    let (host, port) = (at.host(), at.port());
     let src = format!(
         r#"
         fn main() {{
-            let lfd = std::io::tcp::listen_socket("127.0.0.1", {port}) or -1;
+            let lfd = std::io::tcp::listen_socket("{host}", {port}) or -1;
             if lfd < 0 {{
                 println("BIND FAILED");
                 std::process::exit(1);

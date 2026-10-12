@@ -318,7 +318,10 @@ main locus Desk {
 
 The listener is bound when the program boots (an address it cannot bind
 stops the program with a diagnostic) and, like the Unix socket's, runs on
-a pool of its own, so the serving locus is the main locus. Both are the
+a pool of its own, so the serving locus is the main locus. The
+description it serves states the address it was bound to: a
+`bind: "127.0.0.1:0"` lets the kernel pick a port, and a client that
+reads `/.description` sees `127.0.0.1:<that port>`, not `:0`. Both are the
 same listener `std::http::Server` is built from (see
 [HTTP](../everyday/http.md)): it accepts, hands each connection over the
 bus, and a connection nothing takes is closed. A call is

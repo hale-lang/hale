@@ -10,7 +10,6 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::thread;
 use std::time::Duration;
 
 #[path = "support/harness.rs"]
@@ -18,14 +17,11 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 #[test]
 fn takeover_answers_101_and_keeps_the_connection_live() {
-    let port = pick_free_port();
     let src = format!(
         r#"
         locus TakeoverHandler {{
@@ -43,9 +39,9 @@ fn takeover_answers_101_and_keeps_the_connection_live() {
         fn main() {{
             let h = TakeoverHandler {{ }};
             std::http::Server {{
-                // 2 accepts: the test's readiness probe consumes
-                // one (connect-and-drop), the real client the other.
-                port: {port}, max_accepts: 2, ready_signal: "READY",
+                // 1 accept: the real client's. The test reads the
+                // port from /proc, with no readiness probe to accept.
+                port: 0, max_accepts: 1, ready_signal: "READY",
                 handler: h
             }};
             // The accept loop is done; the connection is still
@@ -62,16 +58,10 @@ fn takeover_answers_101_and_keeps_the_connection_live() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("spawn server");
-
-    let mut ready = false;
-    for _ in 0..50 {
-        thread::sleep(Duration::from_millis(100));
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ready = true;
-            break;
-        }
-    }
-    assert!(ready, "server never started listening");
+    // The server binds port 0 and the test reads back the port it was
+    // given: a port drawn here and handed over is free, not reserved, and
+    // another test of a parallel run can bind it first.
+    let port = child::tcp_port(&mut child);
 
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(5))).ok();
@@ -120,7 +110,6 @@ fn takeover_answers_101_and_keeps_the_connection_live() {
 /// bytes — any Server-written prefix is the regression.
 #[test]
 fn takeover_raw_writes_nothing_and_defers_the_response() {
-    let port = pick_free_port();
     let src = format!(
         r#"
         locus RawHandler {{
@@ -139,7 +128,7 @@ fn takeover_raw_writes_nothing_and_defers_the_response() {
         fn main() {{
             let h = RawHandler {{ }};
             std::http::Server {{
-                port: {port}, max_accepts: 2, ready_signal: "READY",
+                port: 0, max_accepts: 1, ready_signal: "READY",
                 handler: h
             }};
             // The deferred answer: written well after handle()
@@ -156,16 +145,10 @@ fn takeover_raw_writes_nothing_and_defers_the_response() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("spawn server");
-
-    let mut ready = false;
-    for _ in 0..50 {
-        thread::sleep(Duration::from_millis(100));
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ready = true;
-            break;
-        }
-    }
-    assert!(ready, "server never started listening");
+    // The server binds port 0 and the test reads back the port it was
+    // given: a port drawn here and handed over is free, not reserved, and
+    // another test of a parallel run can bind it first.
+    let port = child::tcp_port(&mut child);
 
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(10))).ok();

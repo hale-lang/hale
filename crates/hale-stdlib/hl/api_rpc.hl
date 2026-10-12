@@ -465,7 +465,8 @@ locus __StdApiExposure {
         has_expiry: Bool = false;
         has_revised: Bool = false;
         via: String = "";
-        // the listener's address, as the description states it (`bind:`)
+        // the listener's address, as the description states it: the one
+        // it was bound to (`host:<bound port>`, a Unix path)
         address: String = "";
         accepting: Bool = true;
         stopped: Bool = false;

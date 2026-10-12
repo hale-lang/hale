@@ -324,7 +324,12 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
     loop {
         let mut changed = false;
         for i in 0..n {
-            if state[i] != State::Owed {
+            // An unchecked row (a kind the trace does not name: the ingress
+            // quiesce, the reader stop) is cut as an owed one is, so a row
+            // whose entry waits on it is cut through it: a run that ends
+            // inside a spine's join never reaches the reader stop after
+            // it, nor what waits for that.
+            if state[i] != State::Owed && state[i] != State::Unchecked {
                 continue;
             }
             let o = &plan.obligations[i];
@@ -339,7 +344,7 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             if o.edges.entry.iter().filter(|p| focus.holds(p.rule)).any(never) {
                 state[i] = State::Cut;
                 changed = true;
-            } else if !unended[i] && o.edges.completion.iter().filter(|p| focus.holds(p.rule)).any(never) {
+            } else if state[i] == State::Owed && !unended[i] && o.edges.completion.iter().filter(|p| focus.holds(p.rule)).any(never) {
                 unended[i] = true;
                 changed = true;
             }

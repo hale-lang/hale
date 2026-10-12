@@ -36,9 +36,14 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
+/// The test's own listener, which the program dials, and its port. Bound
+/// at port 0 and held, not drawn and bound again: a port drawn and
+/// released is free, not reserved, and another test of a parallel run
+/// can bind it in between.
+fn listen() -> (TcpListener, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
+    (listener, port)
 }
 
 #[test]
@@ -106,8 +111,7 @@ fn tcp_primitives_round_trip_via_connect_send_recv() {
     // server. This is the value m81 ships at the substrate
     // level; the Stream locus on top is a thin wrapper m82
     // exercises end-to-end.
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let (listener, port) = listen();
     let (server_done_tx, server_done_rx) = mpsc::channel::<()>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");
@@ -161,8 +165,7 @@ fn stream_let_binding_round_trips_via_send_recv() {
     // Round-trips through a real Rust echo server to prove the
     // fd is open across send + recv and only closes when main
     // returns.
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let (listener, port) = listen();
     let (server_done_tx, server_done_rx) = mpsc::channel::<()>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");
@@ -219,8 +222,7 @@ fn borrowed_stream_does_not_close_shared_fd() {
     // both reach the server. Pre-fix (unconditional __close_fd on
     // dissolve) the first ping closed the fd and the second send
     // hit a dead socket, so the server only ever saw "AAA".
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let (listener, port) = listen();
     let (got_tx, got_rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");

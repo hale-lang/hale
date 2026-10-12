@@ -11,30 +11,43 @@ use std::time::{Duration, Instant};
 use super::harness;
 use super::ws_hub::Server;
 
-/// A UDP port nothing holds (a draw another process takes first is drawn again by
-/// [`start`]).
-pub fn free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port").local_addr().expect("addr").port()
+#[path = "child.rs"]
+mod child;
+
+/// Where the hub listens: a [`child::Reserved`] address, on
+/// [`child::reserved_host`]. The hub's port is in its `BIND` before it
+/// starts, and the reservation keeps every other test of a parallel run
+/// off it until the hub has bound it. (A port drawn here and handed over
+/// is free, not reserved: another test could take it first, and `start`
+/// used to draw again when one did.)
+pub fn hub_host() -> std::net::Ipv4Addr {
+    child::reserved_host()
 }
 
-/// Run `bin` with its hub on a free UDP port, and wait until it has bound it.
+/// A reserved address for a hub, as `BIND` states it, and the port.
+pub fn reserved_bind() -> (child::Reserved, String) {
+    let r = child::Reserved::new();
+    let bind = r.addr.to_string();
+    (r, bind)
+}
+
+/// Run `bin` with its hub on a reserved UDP address, and wait until it has
+/// bound it.
 pub fn start(bin: &Path, env: &[(&str, &str)]) -> Server {
-    for _ in 0..10 {
-        let port = free_udp_port();
-        let dir = harness::unique_dir("udphub");
-        let mut s = Server::start_on(bin, env, port, dir);
-        let begin = Instant::now();
-        loop {
-            if s.stat("made").is_some() {
-                return s;
-            }
-            if s.exited() || begin.elapsed() > Duration::from_secs(30) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+    let (reserved, bind) = reserved_bind();
+    let mut all: Vec<(&str, &str)> = env.to_vec();
+    all.push(("BIND", &bind));
+    let mut s = Server::start_on(bin, &all, reserved.port(), harness::unique_dir("udphub"));
+    let begin = Instant::now();
+    while s.stat("made").is_none() {
+        if s.exited() {
+            let done = s.wait(Duration::from_secs(5));
+            panic!("the program never bound its datagram port: {:?}\n{}{}", done.status, done.stdout, done.stderr);
         }
+        assert!(begin.elapsed() < Duration::from_secs(30), "the program never bound its datagram port within 30 s");
+        std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("the program never bound its datagram port");
+    s
 }
 
 pub struct Udp {
@@ -43,10 +56,10 @@ pub struct Udp {
 }
 
 impl Udp {
-    /// A client socket, sending to the hub on `port`.
+    /// A client socket, sending to the hub on `port` (at [`hub_host`]).
     pub fn to(port: u16) -> Udp {
         let s = UdpSocket::bind("127.0.0.1:0").expect("bind a client socket");
-        s.connect(("127.0.0.1", port)).expect("connect");
+        s.connect((hub_host(), port)).expect("connect");
         Udp { s, port }
     }
 

@@ -335,7 +335,7 @@ fn the_description_is_a_reserved_method_and_is_the_fixture_for_the_caller() {
         assert_eq!(got.status(), 200, "{caller}: {got:?}");
         assert_eq!(got.header("content-type"), Some(JSON));
         assert_eq!(got.header("grpc-status"), Some("0"), "{caller}: {got:?}");
-        assert_eq!(text_of(&got), description_over_grpc(&format!("public.{caller}.description.json"), BIND_ADDR, "public"), "{caller}: the description differs from the fixture");
+        assert_eq!(text_of(&got), description_over_grpc(&format!("public.{caller}.description.json"), &format!("127.0.0.1:{}", server.port), "public"), "{caller}: the description differs from the fixture");
     }
     // a caller nobody names is refused, not described
     for (stream, token) in [(5u32, Some("t-mallory")), (7, None)] {

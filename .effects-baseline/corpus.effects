@@ -407,6 +407,7 @@ Shop::on_restock  does={alloc}
 Tokens::principal  does={alloc}
 __ApiHubCodec_1_0::decode  does={alloc}
 __ApiHubCodec_1_0::encode  does={alloc}
+__HubRows_1::head  does={alloc}
 __RpcSurface_1::check  does={alloc}
 __RpcSurface_2::check  does={alloc}
 __api_decode_OrderRequest  does={alloc}

@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -31,20 +33,21 @@ fn unique_path(tag: &str) -> PathBuf {
     p
 }
 
-fn free_udp_port() -> u16 {
-    let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe");
-    s.local_addr().expect("local_addr").port()
-}
+// The sender in each program is told the Reader's address before either
+// is up, so the address is reserved for the run (`child::Reserved`): a
+// port drawn here and handed over is free, not reserved, and another test
+// of a parallel run can bind it first.
 
 #[test]
 fn reader_receives_datagrams_via_zero_copy_view() {
-    let port = free_udp_port();
+    let reserved = child::Reserved::new();
+    let (host, port) = (reserved.host(), reserved.port());
     let src = format!(
         r#"
         locus Ingest {{
             params {{
                 r: std::io::udp::Reader =
-                    std::io::udp::Reader {{ addr: "127.0.0.1", port: {port}, cap: 2048 }};
+                    std::io::udp::Reader {{ addr: "{host}", port: {port}, cap: 2048 }};
                 total: Int = 0;
             }}
             run() {{
@@ -65,7 +68,7 @@ fn reader_receives_datagrams_via_zero_copy_view() {
                 let fd = std::io::udp::bind("127.0.0.1", 0) or raise;
                 let mut i = 0;
                 while i < 5 {{
-                    std::io::udp::send(fd, "127.0.0.1", {port}, "hello-datagram") or discard;
+                    std::io::udp::send(fd, "{host}", {port}, "hello-datagram") or discard;
                     std::time::sleep(20ms);
                     i = i + 1;
                 }}
@@ -87,6 +90,7 @@ fn reader_receives_datagrams_via_zero_copy_view() {
     let bin = unique_path("recv");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
+    drop(reserved);
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
@@ -111,13 +115,14 @@ fn reader_recv_loop_is_rss_flat() {
     // through one Reader must not grow resident memory. A per-datagram
     // allocation into a never-returning run() loop would show as RSS
     // growth; the reused buffer keeps it flat.
-    let port = free_udp_port();
+    let reserved = child::Reserved::new();
+    let (host, port) = (reserved.host(), reserved.port());
     let src = format!(
         r#"
         locus Ingest {{
             params {{
                 r: std::io::udp::Reader =
-                    std::io::udp::Reader {{ addr: "127.0.0.1", port: {port}, cap: 2048 }};
+                    std::io::udp::Reader {{ addr: "{host}", port: {port}, cap: 2048 }};
                 acc: Int = 0;
             }}
             run() {{
@@ -139,7 +144,7 @@ fn reader_recv_loop_is_rss_flat() {
                 let fd = std::io::udp::bind("127.0.0.1", 0) or raise;
                 let mut i = 0;
                 while i < 41000 {{
-                    std::io::udp::send(fd, "127.0.0.1", {port}, "payload-bytes-abcdef0123") or discard;
+                    std::io::udp::send(fd, "{host}", {port}, "payload-bytes-abcdef0123") or discard;
                     // Pace so the kernel recv buffer doesn't overflow and
                     // drop everything before the reader drains it.
                     if i - (i / 20) * 20 == 0 {{ std::time::sleep(1ms); }}
@@ -169,6 +174,7 @@ fn reader_recv_loop_is_rss_flat() {
     let bin = unique_path("rss");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
+    drop(reserved);
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
 

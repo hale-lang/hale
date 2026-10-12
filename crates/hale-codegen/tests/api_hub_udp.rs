@@ -198,8 +198,9 @@ fn stop_sends_closed_to_every_subscriber() {
 #[test]
 fn a_datagram_asks_for_the_description() {
     // built for a literal address, as the description names it (and the witness's fixtures have it)
-    let port = free_udp_port();
-    let src = program().replace("std::env::var(\"BIND\")", &format!("\"127.0.0.1:{port}\""));
+    let (reserved, bind) = reserved_bind();
+    let port = reserved.port();
+    let src = program().replace("std::env::var(\"BIND\")", &format!("\"{bind}\""));
     let bin = harness::unique_bin("api_hub_udp_desc");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let server = ws_hub::Server::start_on(&bin, &[], port, harness::unique_dir("udphub_desc"));
@@ -222,7 +223,7 @@ fn a_datagram_asks_for_the_description() {
         // the fixtures are the `ws` hub's: the udp form differs in its listener, its outcome frames and its loss statement
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/api-contract").join(name);
         let mut want: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(doc["listener"], serde_json::json!({"transport": "udp", "address": format!("127.0.0.1:{port}")}));
+        assert_eq!(doc["listener"], serde_json::json!({"transport": "udp", "address": bind}));
         assert_eq!(doc["outcomes"]["transport"], "udp");
         assert_eq!(doc["outcomes"]["subscribe"]["fields"], serde_json::json!(["topic", "id", "token"]));
         assert_eq!(doc["outcomes"]["event"]["fields"], serde_json::json!(["topic", "id", "seq", "payload"]));

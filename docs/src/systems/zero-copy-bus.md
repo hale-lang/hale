@@ -128,7 +128,12 @@ A `shm_ring` binding must declare `on_overflow:` — slot
 exhaustion needs a policy the substrate can't guess:
 
 - **`block`** — the publisher spins until a slot frees.
-  Right for control-plane data that must not be lost.
+  Right for control-plane data that must not be lost. When the
+  reader is in the same program, it keeps reading while the program
+  tears down until the pools' jobs are joined, so a job publishing
+  as `main` returns finishes and is delivered; a publish still
+  waiting once the reader has stopped fails with `BusWaitAborted`,
+  never silently.
 - **`drop`** — overwrite the next slot; slow consumers miss
   messages. Right for stale-is-worthless feeds.
 - **`fail`** — panic with a clear diagnostic. Process-level

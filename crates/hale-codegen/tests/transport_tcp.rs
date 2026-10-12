@@ -27,6 +27,8 @@ use std::process::{Command, Stdio};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/child.rs"]
+mod child;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -61,31 +63,29 @@ fn build_driver(name: &str) -> PathBuf {
     bin
 }
 
-/// Find a free localhost port by binding `127.0.0.1:0`, reading
-/// the OS-assigned port, then releasing the binding. The C
-/// listener that follows uses SO_REUSEADDR so the brief
-/// TIME_WAIT / rebind race doesn't break the test.
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let port = probe.local_addr().expect("local_addr").port();
-    drop(probe);
-    port
+/// Start the driver's listener on `127.0.0.1:0` and read back the port
+/// the kernel gave it. A port drawn here (bind `:0`, read it, close) and
+/// handed over is free, not reserved: under a parallel run another test
+/// can bind it before the listener does.
+fn listen(driver: &std::path::Path) -> (std::process::Child, u16) {
+    let mut listener = Command::new(driver)
+        .arg("listen")
+        .arg("127.0.0.1")
+        .arg("0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn listener");
+    let port = child::tcp_port(&mut listener);
+    (listener, port)
 }
 
 #[test]
 fn tcp_round_trip_short_message() {
     let driver = build_driver("short");
-    let port = pick_free_port();
     let payload = "hello, hale";
 
-    let listener = Command::new(&driver)
-        .arg("listen")
-        .arg("127.0.0.1")
-        .arg(port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn listener");
+    let (listener, port) = listen(&driver);
 
     let connector = Command::new(&driver)
         .arg("connect")
@@ -129,17 +129,9 @@ fn tcp_preserves_message_boundaries_across_three_sends() {
     // that mirrors transport.rs's `transport_preserves_message
     // _boundaries` for the SEQPACKET adapter.
     let driver = build_driver("boundary");
-    let port = pick_free_port();
     let payloads = ["alpha beta gamma\n", "second\n\nmessage", "third"];
 
-    let listener = Command::new(&driver)
-        .arg("listen")
-        .arg("127.0.0.1")
-        .arg(port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn listener");
+    let (listener, port) = listen(&driver);
 
     let mut connector = Command::new(&driver);
     connector
@@ -205,17 +197,9 @@ fn tcp_recv_rejects_messages_larger_than_caller_cap() {
     // until 8MB); listener's recv returns -1 → loop exits with
     // zero messages written to stdout.
     let driver = build_driver("oversize");
-    let port = pick_free_port();
     let big_payload = "x".repeat(64 * 1024 + 1); // BUF_CAP + 1
 
-    let listener = Command::new(&driver)
-        .arg("listen")
-        .arg("127.0.0.1")
-        .arg(port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn listener");
+    let (listener, port) = listen(&driver);
 
     let connector = Command::new(&driver)
         .arg("connect")
@@ -258,12 +242,17 @@ fn tcp_connector_retries_when_listener_is_slow_to_bind() {
     // If the retry was missing the connector would fail
     // immediately and the test would catch it.
     let driver = build_driver("retry");
-    let port = pick_free_port();
+    // The connector dials before anything listens, so the address is
+    // fixed before either starts: a reserved one, which no other test of
+    // a parallel run can bind in between (and which refuses until the
+    // listener binds it, as the retry needs).
+    let reserved = child::Reserved::new();
+    let (host, port) = (reserved.host(), reserved.port());
     let payload = "retry-ok";
 
     let connector = Command::new(&driver)
         .arg("connect")
-        .arg("127.0.0.1")
+        .arg(&host)
         .arg(port.to_string())
         .arg(payload)
         .stdout(Stdio::piped())
@@ -275,7 +264,7 @@ fn tcp_connector_retries_when_listener_is_slow_to_bind() {
 
     let listener = Command::new(&driver)
         .arg("listen")
-        .arg("127.0.0.1")
+        .arg(&host)
         .arg(port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

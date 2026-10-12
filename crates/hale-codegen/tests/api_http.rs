@@ -213,7 +213,7 @@ fn a_description_over_http_is_the_fixture_for_the_caller() {
         let got = request(server.port, "GET", "/.description", &[bearer(token)], None);
         assert_eq!(got.status, 200, "{caller}: {}", got.body);
         assert_eq!(got.header("Content-Type"), Some("application/json"));
-        let want = description_fixture(&format!("public.{caller}.description.json")).replace("127.0.0.1:8080", BIND_ADDR);
+        let want = description_fixture(&format!("public.{caller}.description.json")).replace("127.0.0.1:8080", &format!("127.0.0.1:{}", server.port));
         assert_eq!(got.body, want, "{caller}: the description differs from the fixture");
     }
     // a caller nobody names is refused, not described

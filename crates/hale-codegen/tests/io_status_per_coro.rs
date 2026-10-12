@@ -14,14 +14,15 @@ use std::net::TcpStream;
 use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::net::Ipv4Addr;
+use std::time::Duration;
 
 #[path = "support/build.rs"]
 mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
 
 /// Close with an RST rather than a FIN: the peer's read fails ECONNRESET.
 fn reset(s: TcpStream) {
@@ -39,20 +40,19 @@ fn reset(s: TcpStream) {
     drop(s);
 }
 
-fn connect(port: u16) -> TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => return s,
-            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            Err(e) => panic!("connect: {e:?}"),
-        }
-    }
+fn connect(host: Ipv4Addr, port: u16) -> TcpStream {
+    TcpStream::connect((host, port)).unwrap_or_else(|e| panic!("connect {host}:{port}: {e:?}"))
 }
 
+/// Where the two listeners bind: port 0, each on a loopback address of
+/// its own, so the port the kernel gave each is read back by address. A
+/// port drawn here and handed over is free, not reserved.
+const HOST_A: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+const HOST_B: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_good_read_does_not_see_a_neighbours_reset() {
-    let (port_a, port_b) = (ports::free_port(), ports::free_port());
     let src = format!(
         r#"
         fn handle(s: std::io::tcp::Stream) {{
@@ -64,14 +64,14 @@ fn a_good_read_does_not_see_a_neighbours_reset() {
         main locus App {{
             params {{
                 la: std::io::tcp::Listener = std::io::tcp::Listener {{
-                    host: "127.0.0.1",
-                    port: {port_a},
+                    host: "{HOST_A}",
+                    port: 0,
                     max_accepts: 1,
                     on_connection: handle,
                 }};
                 lb: std::io::tcp::Listener = std::io::tcp::Listener {{
-                    host: "127.0.0.1",
-                    port: {port_b},
+                    host: "{HOST_B}",
+                    port: 0,
                     max_accepts: 1,
                     on_connection: handle,
                 }};
@@ -94,15 +94,17 @@ fn a_good_read_does_not_see_a_neighbours_reset() {
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
+    let port_a = child::tcp_port_on(&mut child, HOST_A);
+    let port_b = child::tcp_port_on(&mut child, HOST_B);
 
     // the good one connects first and sits in its read
-    let mut good = connect(port_a);
+    let mut good = connect(HOST_A, port_a);
     thread::sleep(Duration::from_millis(200));
     // the second connection is in its read too, and then resets
-    let bad = connect(port_b);
+    let bad = connect(HOST_B, port_b);
     thread::sleep(Duration::from_millis(200));
     reset(bad);
     thread::sleep(Duration::from_millis(300));

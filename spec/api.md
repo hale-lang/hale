@@ -1781,7 +1781,11 @@ caller's `Context` under that exposure's role source:
 
 - the identity: `"description": 1`, the exposure, its name, the surface
   and its digest;
-- the listener (transport and address) and the codec;
+- the listener (transport and address) and the codec. The address is
+  the one the listener was bound to, not its `bind:` as written: a TCP
+  listener's `host:<bound port>`, so a `bind:` of port 0 (or a bind
+  read from the environment) is described by the port the kernel gave
+  it; a Unix listener's path; a UDP hub's `host:<bound port>`;
 - the caller: the principal the exposure established, and the roles it
   holds among those the exposure's rows and streams require;
 - the **members** the caller may call: name, request, response and
@@ -1845,7 +1849,9 @@ fixtures beside it, byte for byte.
 
 What R1 reads of a serve site, and only that: its surface (its first
 argument, a surface's name); its transport instance's kind (the
-literal's namespace, `http`, `unix`), its address (`bind:` or `path:`),
+literal's namespace, `http`, `unix`), its address (`bind:` or `path:`,
+as written: the compiler binds nothing, so its document states a
+`bind:` of port 0 as port 0 where the served one states the bound port),
 its codec (`codec:`, `json` when it names none) and its bearer and role
 sources (`principals:` and `roles:`, each a `self.<param>` named with
 the param's type, `kernel` for the Unix transport's peer when it names
