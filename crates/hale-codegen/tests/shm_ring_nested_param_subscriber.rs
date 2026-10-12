@@ -72,8 +72,12 @@ const SUBSCRIBER_MAIN_PARAM: &str = r#"
     main locus App {
         params { sub: Sub = Sub { }; }
         bindings { Tick: shm_ring("__NAME__", slot_count: 8, on_overflow: drop) where zero_copy; }
+        // App lives while it runs: a statement `App { };` with no run()
+        // is torn down at once, its `sub` with it, and the readers stop
+        // at that teardown (a handler never runs on a dissolved locus)
+        run() { time::sleep(500ms); }
     }
-    fn main() { App { }; time::sleep(500ms); }
+    fn main() { App { }; }
 "#;
 
 /// Subscriber whose `Sub` is a param of an **intermediate** locus

@@ -26666,8 +26666,25 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
  * Everything after this point (a peer racing more data into a
  * half-closed socket) arrived after exit and is dropped by the
  * existing paths — that is the documented boundary of the
- * delivery contract. */
+ * delivery contract.
+ *
+ * Shared-memory ring readers stop here too, first: their handlers
+ * run on the reader thread itself, so a reader still live when the
+ * dissolve cascade runs could be inside (or about to enter) a
+ * handler of a locus that cascade frees — the handler's scratch
+ * arena, a subregion of the subscriber's, then returned its slot
+ * to a destroyed parent (a SIGSEGV at exit in ~6% of loaded runs of
+ * a ring consumer that exits right after its last record). Joining
+ * them waits out a handler in flight; a record published after this
+ * point arrived after exit, as for the sockets. (Weak: a helper
+ * test that links this TU without lotus_shm_ring.c has no rings.) */
+#ifndef __wasm__
+extern void lotus_shm_ring_quiesce(void) __attribute__((weak));
+#endif
 void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
+#ifndef __wasm__
+    if (lotus_shm_ring_quiesce) lotus_shm_ring_quiesce();
+#endif
     if (g_bus_remote_count == 0) return;
     long budget_ms = 500;
     const char *env = getenv("LOTUS_BUS_QUIESCE_MS");

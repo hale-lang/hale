@@ -1207,6 +1207,9 @@ struct shm_ring_subscriber_t {
     char *scratch;
     size_t scratch_cap;
     pthread_t thread;
+    /* the reader thread has been joined (lotus_shm_ring_quiesce, at
+     * main's teardown); the atexit hook does not join it again */
+    int joined;
     /* Form K-cleanup (2026-05-20): atexit hook sets this to 1
      * before pthread_join. Reader loop checks each iteration
      * and exits cleanly when set. Acquire-load matches the
@@ -1835,6 +1838,34 @@ void lotus_bus_register_subscriber_shm_ring_batch(
  * Two-pass on subscribers: first set should_stop on all, then
  * join + free. This lets all reader threads start winding down
  * in parallel instead of serially waiting for each. */
+/* Main's teardown, before the dissolve cascade
+ * (lotus_bus_ingress_quiesce): stop every reader registered so far and
+ * join it, so no handler runs on a reader thread while the loci it was
+ * registered for are freed. The rings stay mapped until the atexit hook.
+ * A subscriber registered after this (a locus born later in fn main)
+ * reads until the next quiesce or exit. */
+void lotus_shm_ring_quiesce(void) {
+    int n_subs = atomic_load_explicit(
+        &g_shm_ring_subscriber_count, memory_order_acquire);
+    if (n_subs > LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        n_subs = LOTUS_SHM_RING_MAX_SUBSCRIBERS;
+    }
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub && !sub->joined) {
+            atomic_store_explicit(
+                &sub->should_stop, 1, memory_order_release);
+        }
+    }
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub && !sub->joined) {
+            pthread_join(sub->thread, NULL);
+            sub->joined = 1;
+        }
+    }
+}
+
 static void shm_ring_atexit_cleanup(void) {
     int n_subs = atomic_load_explicit(
         &g_shm_ring_subscriber_count, memory_order_acquire);
@@ -1854,7 +1885,7 @@ static void shm_ring_atexit_cleanup(void) {
     for (int i = 0; i < n_subs; i++) {
         shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
         if (sub) {
-            pthread_join(sub->thread, NULL);
+            if (!sub->joined) pthread_join(sub->thread, NULL);
             if (sub->is_layout) {
                 if (sub->lring) {
                     lotus_shm_ring_close_layout(sub->lring);

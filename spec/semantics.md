@@ -2461,7 +2461,11 @@ handling is lossy + safe: if the producer runs more than `capacity`
 bytes ahead, the missed bytes are gone, so the reader resyncs to the
 producer's cursor (a commit boundary) and resumes rather than
 reading a torn record. Handlers run on the reader thread (same
-constraint as the native subscriber). The `slots` (fixed-stride)
+constraint as the native subscriber), so the readers stop at the
+program's main teardown, before its loci dissolve: a handler in
+flight finishes, and a record published after that is not delivered
+(a main locus built as a statement with no `run()` is torn down at
+once, and its subscribers with it). The `slots` (fixed-stride)
 framing kind ships for *consumers*, and the zero-copy writable
 producer view ships as `Topic.write(max) { w => … }` (A1 — fields
 written directly into the reserved slot, no intermediate copy). What
