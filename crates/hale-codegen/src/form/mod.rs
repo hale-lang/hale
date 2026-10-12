@@ -141,11 +141,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// it is stored: a record field of a scalar fixed-array type inline
     /// (no entry), while an array in a tuple or in another array is a
     /// pointer to its own block (an entry with that block's size, and an
-    /// empty descriptor for scalar elements). Depth-capped, as a guard: a
-    /// value type cannot contain itself.
+    /// empty descriptor for scalar elements). A field holding a
+    /// payload-bearing enum points at the enum's storage block; its
+    /// entry is tagged `LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM`
+    /// and its descriptor is a variant table the walk indexes by the
+    /// block's tag (the enum arm below). A unit-only enum is an inline
+    /// `i32` tag and has no entry. Depth-capped, as a guard: a value type
+    /// cannot contain itself.
     pub(crate) fn retire_desc_for(&self, ty: &CodegenTy, depth: u32) -> Option<(u64, Vec<u32>)> {
-        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
-        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         if depth > 16 {
             return None;
         }
@@ -186,8 +189,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let stride = self.target_data.get_abi_size(&self.llvm_basic_type(elem));
                 ((self.target_data.get_abi_size(&at)), (0..*n).map(|i| (i * stride, (**elem).clone(), false)).collect())
             }
+            // A payload-bearing enum's storage block, `{ i32 tag, [N x
+            // i8] body }`: what it owns depends on the variant it holds,
+            // so its descriptor is a variant table — the variant count,
+            // then per variant (in tag order) its descriptor's length
+            // and the descriptor over the block. Each variant's payload
+            // fields sit in the body at the strides
+            // `lower_enum_variant_alloc` stores them at, each its SSA
+            // representation (an array a pointer to its own block).
+            CodegenTy::Enum(name) => {
+                let info = self.user_enums.get(name.as_str())?;
+                if !info.has_payload {
+                    return None;
+                }
+                let st = self.enum_storage_struct(info);
+                let body = self.target_data.offset_of_element(&st, 1)?;
+                let mut table = vec![info.variants.len() as u32];
+                for v in &info.variants {
+                    let mut off = body;
+                    let mut slots = Vec::new();
+                    for fty in &v.field_tys {
+                        slots.push((off, fty.clone(), false));
+                        off += crate::codegen::codegen_ty_size_bytes(self.context, fty);
+                    }
+                    let sub = self.retire_slots_desc(slots, depth);
+                    table.push(sub.len() as u32);
+                    table.extend(sub);
+                }
+                return Some((self.target_data.get_abi_size(&st), table));
+            }
             _ => return None,
         };
+        Some((size, self.retire_slots_desc(slots, depth)))
+    }
+
+    /// The descriptor words over a block's `(offset, type, inline)`
+    /// slots (`retire_desc_for`).
+    fn retire_slots_desc(&self, slots: Vec<(u64, CodegenTy, bool)>, depth: u32) -> Vec<u32> {
+        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
+        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
+        const LOTUS_RETIRE_OFF_ENUM: u32 = 1 << 28;
         let mut desc = Vec::new();
         for (off, fty, inline) in slots {
             let off = off as u32;
@@ -206,10 +247,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         desc.extend(sub);
                     }
                 }
+                // A payload enum's block: its descriptor is the variant
+                // table the walk picks from by the block's tag. A
+                // unit-only enum is an inline i32 tag (`None` here).
+                CodegenTy::Enum(_) => {
+                    if let Some((sub_size, sub)) = self.retire_desc_for(&fty, depth + 1) {
+                        desc.push(off | LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM);
+                        desc.push(sub_size as u32);
+                        desc.push(sub.len() as u32);
+                        desc.extend(sub);
+                    }
+                }
                 _ => {}
             }
         }
-        Some((size, desc))
+        desc
     }
 
     /// Does a `@form(hashmap)` cell with these fields own anything its
@@ -252,8 +304,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// bytes, not a block (`array_inline_spec`), as `retire_desc_for`
     /// reads a record's slots.
     pub(crate) fn record_field_owns_block(&self, fty: &CodegenTy) -> bool {
-        matches!(fty, CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _))
-            && Self::array_inline_spec(fty).is_none()
+        matches!(
+            fty,
+            CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) | CodegenTy::Enum(_)
+        ) && Self::array_inline_spec(fty).is_none()
             && self.retire_desc_for(fty, 1).is_some()
     }
 
@@ -647,6 +701,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(out_val_slot_opt.unwrap(), loaded)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // The owned copy may have added blocks (a payload enum
+                // field's copy switches on the variant): the phi below
+                // takes this edge from wherever the builder now stands,
+                // as `pop`'s does. Naming `load_bb` there handed the phi
+                // an edge from a block that no longer branched to
+                // `cont_bb`, and every `get` of an element with a payload
+                // enum field came back as an error.
+                let load_end = self
+                    .builder
+                    .get_insert_block()
+                    .expect("builder positioned in vec.get");
                 self.builder
                     .build_unconditional_branch(cont_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -665,7 +730,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_phi(i32_t, &format!("{}.vec.get.cret", locus_name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 cret_phi.add_incoming(&[
-                    (&one_i32, load_bb),
+                    (&one_i32, load_end),
                     (&zero_i32, oob_bb),
                 ]);
                 let c_ret = cret_phi.as_basic_value().into_int_value();

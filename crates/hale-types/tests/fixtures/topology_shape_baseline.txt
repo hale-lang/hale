@@ -537,6 +537,7 @@ crates/hale-codegen/tests/factory_field_ownership.rs#3 3d81d0f4d8450a29
 crates/hale-codegen/tests/factory_field_ownership.rs#4 f24113b45434ab5a
 crates/hale-codegen/tests/factory_field_ownership.rs#5 d5aa2c0aad4d9767
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
+crates/hale-codegen/tests/factory_return_through_call.rs#0 82e9878a4509948b
 crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
 crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
 crates/hale-codegen/tests/failed_child_kept_by_owner.rs#0 80225cf743c34c98
@@ -668,6 +669,7 @@ crates/hale-codegen/tests/fn_ptr.rs#1 2614aea9c3d65b9c
 crates/hale-codegen/tests/fn_ptr.rs#2 069c3e38557b62ab
 crates/hale-codegen/tests/fn_ptr.rs#3 0c916a6f12500186
 crates/hale-codegen/tests/fn_ptr.rs#4 e995132598780f27
+crates/hale-codegen/tests/form_enum_cells.rs#0 67e1fcf10e1bf0b7
 crates/hale-codegen/tests/form_hashmap_codegen.rs#0 520433ac25303232
 crates/hale-codegen/tests/form_hashmap_codegen.rs#1 c95eecab336a0816
 crates/hale-codegen/tests/form_hashmap_codegen.rs#10 c95eecab336a0816

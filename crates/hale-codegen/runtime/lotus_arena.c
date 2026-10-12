@@ -5967,6 +5967,9 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
  * LOTUS_RETIRE_OFF_NESTED, followed by the block's size, the length of
  * its descriptor and that descriptor (it used to be skipped, so a nested
  * record's block and its String/Bytes stayed in the arena for good).
+ * A payload-bearing enum's block is a NESTED entry also tagged
+ * LOTUS_RETIRE_OFF_ENUM, whose descriptor is a variant table
+ * (lotus_retire_variant).
  * `size` sentinels: -1 = old_blob is a NUL-terminated String
  * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
  * struct block of that many bytes. `n_offs` counts the descriptor's
@@ -5974,7 +5977,40 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
  * loads + one call. */
 #define LOTUS_RETIRE_OFF_BYTES ((int32_t)1 << 30)
 #define LOTUS_RETIRE_OFF_NESTED ((int32_t)1 << 29)
-#define LOTUS_RETIRE_OFF_MASK (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED))
+#define LOTUS_RETIRE_OFF_ENUM ((int32_t)1 << 28)
+#define LOTUS_RETIRE_OFF_MASK \
+    (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM))
+
+/* A NESTED entry also tagged LOTUS_RETIRE_OFF_ENUM points at a
+ * payload-bearing enum's storage block, `{ int32 tag, body }`: what the
+ * block owns depends on the variant it holds, so its descriptor is a
+ * variant table — the variant count, then per variant, in tag order,
+ * that variant's descriptor length and descriptor (over the block).
+ * The descriptor of the variant `block` holds, or NULL (an empty
+ * variant, a tag out of range, a malformed table). */
+static const int32_t *lotus_retire_variant(const char *block,
+                                           const int32_t *table,
+                                           int64_t table_n,
+                                           int64_t *out_n) {
+    *out_n = 0;
+    if (table_n < 1) return NULL;
+    int32_t tag;
+    memcpy(&tag, block, sizeof tag);
+    int64_t variants = table[0];
+    if (tag < 0 || tag >= variants) return NULL;
+    int64_t j = 1;
+    for (int32_t v = 0; v < variants; v++) {
+        if (j >= table_n) return NULL;
+        int64_t len = table[j];
+        if (len < 0 || j + 1 + len > table_n) return NULL;
+        if (v == tag) {
+            *out_n = len;
+            return table + j + 1;
+        }
+        j += 1 + len;
+    }
+    return NULL;
+}
 
 /* The blocks one element reaches through its descriptor. Small and on
  * the stack for the common shapes; grown on the heap past that. */
@@ -6045,7 +6081,9 @@ static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
             i += 2 + sub_n;
             if (!p) continue;
             if (!lotus_retire_blocks_push(b, p, bsize)) return 0;
-            if (!lotus_retire_collect(b, p, sub, sub_n, sized)) return 0;
+            if (e & LOTUS_RETIRE_OFF_ENUM)
+                sub = lotus_retire_variant(p, sub, sub_n, &sub_n);
+            if (sub && !lotus_retire_collect(b, p, sub, sub_n, sized)) return 0;
             continue;
         }
         if (!p) continue;
@@ -6226,7 +6264,9 @@ static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
             char *c = (char *)lotus_arena_alloc(dest, bsize, 16);
             if (!c) continue;
             memcpy(c, p, bsize);
-            lotus_clone_out_walk(dest, c, sub, sub_n);
+            if (e & LOTUS_RETIRE_OFF_ENUM)
+                sub = lotus_retire_variant(c, sub, sub_n, &sub_n);
+            if (sub) lotus_clone_out_walk(dest, c, sub, sub_n);
             memcpy(v + off, &c, sizeof c);
             continue;
         }

@@ -1,4 +1,4 @@
-//! The `ownership_owners` integration-test binary: 17 test files of this area, kept
+//! The `ownership_owners` integration-test binary: 18 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -17,6 +17,8 @@ mod conformance_routing_correction;
 mod factory_field_ownership;
 #[path = "factory_locus_reclaim.rs"]
 mod factory_locus_reclaim;
+#[path = "factory_return_through_call.rs"]
+mod factory_return_through_call;
 #[path = "factory_returned_binding.rs"]
 mod factory_returned_binding;
 #[path = "fresh_temp_attribution.rs"]

@@ -1229,6 +1229,19 @@ String fields retired: a replaced cell's Bytes and its nested records
 cell holding a nested record carrying a String and Bytes grew the
 arena from 64 KiB to 10.7 MiB over 100,000 sets.
 
+An enum field follows its representation. A unit-only enum
+(`enum { Bid, Ask }`) is an inline tag, part of the cell like an
+`Int`. An enum with a payload variant points at its own block (the tag
+and the payload), which the cell owns and retires like a nested record:
+the descriptor carries one sub-descriptor per variant and the walk
+takes the one the block's tag names, so a replaced `Named(String)`
+frees its String and a replaced `Num(Int)` only its block; a
+`@form(vec)` element's enum is retired the same way. (Before, a
+hashmap `set` of a cell with a unit-only enum field was an internal
+compiler error, a replaced payload enum's block was never retired —
+at least 16 bytes a replace, in a map or a vec — and a vec `get` of
+an element holding one always failed.)
+
 A nested block in the cell belongs to that cell alone. A value that
 carries a nested block from the same key's current cell, at the same
 field (`let e = m.get(k); m.set(Cell { k: k, big: e.big, ... })`),

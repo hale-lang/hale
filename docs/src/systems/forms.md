@@ -53,8 +53,8 @@ form inside the body — a grow would rehash under the cursor.)
 
 A form owns what it holds. A `vec`'s `push` / `set` and a
 `hashmap`'s `set` store the form's own copy of the value —
-its Strings and Bytes, and any nested record, tuple or array with
-what that owns — and when a `set` replaces an element or cell, or a
+its Strings and Bytes, and any nested record, tuple, array or
+payload-carrying enum with what that owns — and when a `set` replaces an element or cell, or a
 `pop` / `remove` drops one, all of it is reclaimed and reused, at
 any depth, so a map or vec churned for hours keeps a flat arena (a
 `striped` or `lockfree` map does not reclaim yet). A

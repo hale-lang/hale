@@ -1558,6 +1558,7 @@ pub fn build_resolved(
         deferred_dissolves: Vec::new(),
         pinned_owner: Vec::new(),
         hoisted_heads: Vec::new(),
+        frame_returned_locus: None,
         in_main: false,
         main_exit: None,
         dispatch_trace: options.dispatch_trace,
@@ -3805,6 +3806,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// already emitted ahead of their pinned joins: their own teardown
     /// skips it (`emit_deferred_entry_teardown`).
     hoisted_heads: Vec<PointerValue<'ctx>>,
+    /// The locus a free fn hands back, while its exit flush is emitted:
+    /// a deferred entry holding that very locus is the caller's now and
+    /// is skipped (`emit_deferred_entry_teardown`). `None` everywhere
+    /// else.
+    pub(crate) frame_returned_locus: Option<PointerValue<'ctx>>,
     /// True while lowering the body of the entry row's `fn main`
     /// (`entry_fn`). `return` is treated as an exit-code return
     /// (truncated to i32) when this is set, rather than the user-fn
@@ -6626,6 +6632,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.dissolve.self_null", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // 3. The entry holds the locus this fn hands back. A value
+            //    this frame owns can leave it through a call that
+            //    returns its argument — `let x = make(); return
+            //    pass(x);`, `return pass(make())` — which no binding or
+            //    `return` names, so the frame registered it and would
+            //    reclaim it on the way out: the caller got a dissolved
+            //    locus whose capacity buffer was gone (len 0, every get
+            //    failing; friction sweep 2026-10-12, downstream
+            //    handoff). It is the caller's now: the caller owns it
+            //    when this fn is a fresh factory (a call that returns
+            //    its argument is that argument to the factory walk), and
+            //    otherwise nobody reclaims it, the old leak and never a
+            //    double teardown.
+            let self_is_null = match self.frame_returned_locus {
+                Some(ret) => {
+                    let handed_back = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            self_ptr,
+                            ret,
+                            &format!("{}.dissolve.handed_back", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_or(
+                            self_is_null,
+                            handed_back,
+                            &format!("{}.dissolve.skip_entry", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                }
+                None => self_is_null,
+            };
             let skip_bb = self
                 .context
                 .append_basic_block(func, &format!("{}.dissolve.skip", locus_name));
@@ -14328,6 +14368,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // field read of one of those). Skip the deep-copy and
         // just load the ret_alloca directly — same as the
         // non-heap-typed return path takes for primitives.
+        let mut returned_locus = None;
         let copied_ret: Option<BasicValueEnum<'ctx>> = match &sig.ret {
             None => None,
             Some(ret_ty) => {
@@ -14339,6 +14380,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                returned_locus = self.returned_locus_ptr(ret_ty, raw_ret)?;
                 if sig.non_allocating {
                     Some(raw_ret)
                 } else {
@@ -14373,7 +14415,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // semantics is uniform across all fn flavors. Runs after
         // the return-value deep-copy so freeing sub-locus arenas
         // here can't strand a String the caller is about to read.
-        self.flush_dissolve_frame()?;
+        // A deferred entry holding the returned locus is skipped
+        // (`frame_returned_locus`).
+        self.frame_returned_locus = returned_locus;
+        let flushed = self.flush_dissolve_frame();
+        self.frame_returned_locus = None;
+        flushed?;
 
         // Destroy the per-call subregion AFTER the deep-copy so the
         // copy reads from valid memory. The subregion's chunk list
@@ -14579,7 +14626,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(fname)
                 .cloned()
                 .expect("field_order lists declared fields");
-            if !Self::field_needs_anchor(&fty) {
+            if !self.field_needs_anchor(&fty) {
                 continue;
             }
             let field_slot = self
@@ -14685,9 +14732,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// element bytes as an address (the pre-inline walk did chase a
     /// real pointer here). Out-of-line arrays (non-scalar elements)
     /// still anchor.
-    fn field_needs_anchor(ty: &CodegenTy) -> bool {
+    ///
+    /// A unit-only enum is an inline `i32` tag, not a pointer: it
+    /// travels with the parent's memcpy like an `Int`. Only an enum
+    /// with a payload variant is a pointer to its storage block and
+    /// anchors. Treating every enum as a pointer loaded the tag as an
+    /// `i32` and handed it to the pointer-shaped deep copy — an ICE on
+    /// any `@form(hashmap)` cell with an enum field (friction sweep
+    /// 2026-10-12, downstream handoff).
+    fn field_needs_anchor(&self, ty: &CodegenTy) -> bool {
         if Self::array_inline_spec(ty).is_some() {
             return false;
+        }
+        if let CodegenTy::Enum(name) = ty {
+            return self
+                .user_enums
+                .get(name.as_str())
+                .map(|i| i.has_payload)
+                .unwrap_or(false);
         }
         // bounded[T; N]: scalar elems are inline bytes that travel
         // with the parent's memcpy — nothing to anchor. Pointer
@@ -14715,6 +14777,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
+
+    /// The locus a free fn's return value `raw` hands back: the
+    /// pointer itself for a locus return, the data half of the fat
+    /// pointer for an interface return, `None` for any other type.
+    /// What the exit flush compares its entries against
+    /// (`frame_returned_locus`).
+    pub(crate) fn returned_locus_ptr(
+        &mut self,
+        ret_ty: &CodegenTy,
+        raw: BasicValueEnum<'ctx>,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        match ret_ty {
+            CodegenTy::LocusRef(_) => Ok(Some(raw.into_pointer_value())),
+            CodegenTy::Interface(_) => {
+                let fat_ty = self.iface_fat_struct_ty();
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let slot = self
+                    .builder
+                    .build_struct_gep(fat_ty, raw.into_pointer_value(), 0, "fn.ret.iface.data.ptr")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let data = self
+                    .builder
+                    .build_load(ptr_t, slot, "fn.ret.iface.data")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                Ok(Some(data))
+            }
+            _ => Ok(None),
+        }
+    }
 
     /// Emit a call to a user-defined fn. Returns the lowered value
     /// + type when the fn has a return type, or `None` for void
@@ -31791,11 +31883,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         tag: u32,
         field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.lower_enum_variant_alloc_in(info, tag, field_vals, None)
+    }
+
+    /// `lower_enum_variant_alloc`, the block taken from `reusable`'s
+    /// retire freelist when one fits (`lotus_arena_alloc_reusable`, as
+    /// the record and tuple deep copies allocate): a deep copy into a
+    /// form's arena, whose replaced cells free their enum blocks, then
+    /// reuses what they freed.
+    pub(crate) fn lower_enum_variant_alloc_in(
+        &mut self,
+        info: &EnumInfo,
+        tag: u32,
+        field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
+        reusable: Option<PointerValue<'ctx>>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
         let storage_ty = self.enum_storage_struct(info);
         let size = storage_ty
             .size_of()
             .expect("enum storage struct has known size");
-        let ptr = self.arena_alloc(size, "enum.alloc")?;
+        let ptr = match reusable {
+            None => self.arena_alloc(size, "enum.alloc")?,
+            Some(dest) => {
+                let alloc_fn = self
+                    .module
+                    .get_function("lotus_arena_alloc_reusable")
+                    .expect("lotus_arena_alloc_reusable declared");
+                let i64_t = self.context.i64_type();
+                self.builder
+                    .build_call(
+                        alloc_fn,
+                        &[dest.into(), size.into(), i64_t.const_int(16, false).into()],
+                        "enum.alloc",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_arena_alloc_reusable returns ptr")
+                    .into_pointer_value()
+            }
+        };
         let i32_t = self.context.i32_type();
         let tag_ptr = self
             .builder

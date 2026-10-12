@@ -182,10 +182,10 @@ LOTUS_ASAN=1 cargo test --release -p hale-codegen \
 
 Locus ownership has a generated matrix rather than hand-written
 cases: `crates/hale-codegen/tests/ownership_matrix.rs` builds every
-position × type × context (1323 cells) and runs four oracles on each
+position × type × context (1470 cells) and runs four oracles on each
 — `dissolve()` tag counts, `LOTUS_ARENA_RESIDENCY=1`, an ASan run,
 and the inline-vs-`let` differential. The default is a ~90-cell
-sample (~16 s); `HALE_MATRIX=full` runs all 1323 (~140 s) and belongs
+sample (~16 s); `HALE_MATRIX=full` runs all 1470 (~160 s) and belongs
 in a nightly job:
 
 ```sh

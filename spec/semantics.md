@@ -523,7 +523,20 @@ lowered in (`spec/decisions.md` F.39).
   or interface-typed **field of a locus literal**, which the
   literal owns (F.17), and a binding the enclosing fn **returns**,
   which the caller owns — dissolving either would free a value
-  another owner still holds. The first of those two is an
+  another owner still holds. A value the fn returns **through a
+  call that hands back its argument** is the caller's in the same
+  way, whichever binding or temporary of the frame held it: with
+  `fn pass(a: T) -> T { return a; }`, both `let x = make(1);
+  return pass(x);` and `return pass(make(1));` hand `make`'s
+  result to the caller, and the frame does not reclaim the locus
+  it returns. Read through such calls, a fn whose every return is
+  fresh is a factory like any other, so its caller's binding owns
+  the result; a call that can hand back one of several arguments
+  (`return pick(x, y, c);`) hands back the one it returned, and
+  the frame reclaims the rest. (Until the friction sweep of
+  2026-10-12 the frame reclaimed it on the way out, and a caller
+  outside `main` read a dissolved locus: a `@form(vec)` whose
+  buffer was gone, `len()` 0.) The first of those two is an
   ownership *transfer*, not an exemption: `Router { quick:
   make(5) }` is the same program as `Router { quick: Quick { } }`
   — the field's value is reclaimed by the owner's teardown
