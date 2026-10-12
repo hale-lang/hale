@@ -88,6 +88,18 @@ main locus App {
         return there;
     }
     fn log() -> String { return std::io::fs::read_file(self.app + "/.hale/dev.log") or ""; }
+    // The board once it lists `row`, or as it last read after `secs`. The
+    // host says a violation in its log before it appends the row, so the
+    // board read at the log line can come before the record has it.
+    fn board_with(row: String, secs: Int) -> dna::RunResult {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        let mut board = in_dir(self.app, toolchain() + "\ndna\nboard\n.");
+        while !std::str::contains(board.stdout, row) && std::time::now() <= deadline {
+            std::time::sleep(500ms);
+            board = in_dir(self.app, toolchain() + "\ndna\nboard\n.");
+        }
+        return board;
+    }
     // Whether the host's log comes to say `text` within `secs`.
     // Whether `text` reaches dev's log within `secs`. A dev that cannot
     // start compose, or that has ended, never will: that is known at once,
@@ -160,7 +172,7 @@ main locus App {
         let hp = dna::trim_nl(in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\nport\nnerves\n4222").stdout);
         let stopped_the_heart = if reading { self.stop_the_heart(org, scratch, hp) } else { "not reading" };
         let pulse_said = reading && len(stopped_the_heart) == 0 && self.logged("the heart's pull on its durable heart was refused", 60, host);
-        let board = in_dir(self.app, toolchain() + "\ndna\nboard\n.");
+        let board = if pulse_said { self.board_with("pulse_stopped heart (", 30) } else { in_dir(self.app, toolchain() + "\ndna\nboard\n.") };
         let remade = reading && len(stopped_the_heart) == 0 && self.heart_again(org, hp);
 
         // ---- GH #989: the application's own account publishes under its
