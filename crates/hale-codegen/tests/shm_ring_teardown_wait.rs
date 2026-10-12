@@ -282,3 +282,67 @@ fn a_second_main_instance_waits_on_its_own_live_reader_under_asan() {
     harness::build_source_asan(&TWICE.replace("__NAME__", &shm_name("twiceasan")), &bin);
     both_delivered(&ends(&bin, &[("LOTUS_NO_CHUNK_POOL", "1")]));
 }
+
+/// A pinned producer that fills a two-slot `on_overflow: block` ring
+/// before the ring's first local reader registers (review finding): an
+/// earlier field's birth holds the subscriber's construction back while the
+/// producer's third claim waits. Its claim must keep waiting through the
+/// registration, not read a half-made "a reader was, and none is" (two
+/// fields written one after the other could show it; the state is one word,
+/// set by one RMW), and then everything it published is delivered.
+const FILLED_FIRST: &str = r#"
+type M { n: Int = 0; }
+topic Ms { payload: M; }
+locus Sink {
+    params { got: Int = 0; }
+    bus { subscribe Ms as on_m; }
+    fn on_m(m: M) { self.got = self.got + 1; }
+    dissolve() { println("got ", self.got); }
+}
+locus Burst {
+    params { _u: Int = 0; }
+    bus { publish Ms; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Ms <- M { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+locus Slow {
+    params { _u: Int = 0; }
+    birth() { std::time::sleep(300ms); }
+}
+main locus App {
+    params {
+        burst: Burst = Burst { };
+        slow: Slow = Slow { };
+        sink: Sink = Sink { };
+    }
+    placement { burst: pinned; }
+    bindings { Ms: shm_ring("__NAME__", slot_count: 2, on_overflow: block) where zero_copy; }
+    run() { std::time::sleep(300ms); }
+}
+fn main() { App { }; }
+"#;
+
+fn filled_first(e: &Ended) {
+    assert!(e.status.success(), "{:?}\nstdout:\n{}\nstderr:\n{}", e.status, e.stdout, e.stderr);
+    assert!(e.stdout.contains("published") && e.stdout.contains("got 10"), "{}", e.stdout);
+}
+
+#[test]
+fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it() {
+    let bin = harness::unique_bin("shm_teardown_filled_first");
+    build_opts::build_source(&FILLED_FIRST.replace("__NAME__", &shm_name("filled")), &bin, &build_opts::options()).expect("build");
+    filled_first(&ends(&bin, &[]));
+}
+
+#[test]
+fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it_under_asan() {
+    let bin = harness::unique_bin("shm_teardown_filled_first_asan");
+    harness::build_source_asan(&FILLED_FIRST.replace("__NAME__", &shm_name("filledasan")), &bin);
+    filled_first(&ends(&bin, &[("LOTUS_NO_CHUNK_POOL", "1")]));
+}

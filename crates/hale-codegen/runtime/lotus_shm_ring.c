@@ -117,15 +117,22 @@ typedef struct {
     char shm_name[96];      /* for shm_unlink at close */
     int owns_unlink;        /* 1 if this handle should shm_unlink on close */
     lotus_shm_overflow_policy_t overflow_policy;  /* K7 */
-    /* This process's readers of the ring (a native ring has one consumer):
-     * how many are live (a registration counts one in, the reader stop
-     * counts it out), and whether one ever was. A `block` claim stops
-     * waiting only when one was and none is: nothing here will advance
-     * the cursor again. A ring no reader of this process ever consumed
-     * waits for its consumer in another process. */
-    _Atomic int live_local_readers;
-    _Atomic int had_local_reader;
+    /* This process's readers of the ring (a native ring has one consumer),
+     * in ONE word so a claim reads a consistent state with one load: the
+     * low bits count the live readers (a registration counts one in, the
+     * reader stop counts it out), and SHM_READERS_EVER says one ever
+     * registered. A `block` claim stops waiting only on EVER with a zero
+     * count: a reader was, none is, nothing here will advance the cursor
+     * again. A registration sets EVER and the count in a single RMW, so no
+     * claim can see "a reader was and none is" before the first reader's
+     * count (as two fields, written one after the other, could). A ring no
+     * reader of this process ever consumed waits for its consumer in
+     * another process. */
+    _Atomic uint32_t local_readers;
 } lotus_shm_ring_t;
+
+/* lotus_shm_ring_t.local_readers: a reader of the ring ever registered. */
+#define SHM_READERS_EVER 0x80000000u
 
 /* Open or attach to a SHM ring.
  *
@@ -673,8 +680,8 @@ void *lotus_shm_ring_claim(lotus_shm_ring_t *ring) {
              * even begun. A claim on a ring another process consumes
              * waits for that consumer (a dead one deadlocks it, v1). */
             for (;;) {
-                if (atomic_load_explicit(&ring->had_local_reader, memory_order_acquire) &&
-                    atomic_load_explicit(&ring->live_local_readers, memory_order_acquire) == 0) {
+                uint32_t readers = atomic_load_explicit(&ring->local_readers, memory_order_acquire);
+                if (readers == SHM_READERS_EVER) {
                     return NULL;
                 }
                 struct timespec ts = {0, 100 * 1000};  /* 100us */
@@ -1906,6 +1913,18 @@ void lotus_bus_register_subscriber_shm_ring_batch(
  * Two-pass on subscribers: first set should_stop on all, then
  * join + free. This lets all reader threads start winding down
  * in parallel instead of serially waiting for each. */
+/* One reader in: the count up and EVER set, in one RMW. (A stop that
+ * races a registration may count out first: the word passes through a
+ * value with a non-zero count, on which a claim keeps waiting, and ends
+ * where the count says.) */
+static void shm_readers_count_in(_Atomic uint32_t *w) {
+    uint32_t old = atomic_load_explicit(w, memory_order_relaxed);
+    while (!atomic_compare_exchange_weak_explicit(
+            w, &old, (old + 1) | SHM_READERS_EVER,
+            memory_order_acq_rel, memory_order_relaxed)) {
+    }
+}
+
 /* A producer binding registered after a reader of its ring (bindings
  * normally come first, in main's prelude) starts with that count. */
 static void shm_count_local_readers(lotus_shm_ring_t *producer) {
@@ -1915,8 +1934,7 @@ static void shm_count_local_readers(lotus_shm_ring_t *producer) {
         shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
         if (sub && atomic_load_explicit(&sub->counted, memory_order_acquire) && !sub->is_layout && sub->ring &&
             strcmp(sub->ring->shm_name, producer->shm_name) == 0) {
-            atomic_fetch_add_explicit(&producer->live_local_readers, 1, memory_order_acq_rel);
-            atomic_store_explicit(&producer->had_local_reader, 1, memory_order_release);
+            shm_readers_count_in(&producer->local_readers);
         }
     }
 }
@@ -1927,8 +1945,11 @@ static void shm_local_readers_add(const char *shm_name, int delta) {
     for (int j = 0; j < g_shm_ring_binding_count; j++) {
         lotus_shm_ring_t *pr = g_shm_ring_bindings[j].ring;
         if (!pr || strcmp(pr->shm_name, shm_name) != 0) continue;
-        if (delta > 0) atomic_store_explicit(&pr->had_local_reader, 1, memory_order_release);
-        atomic_fetch_add_explicit(&pr->live_local_readers, delta, memory_order_acq_rel);
+        if (delta > 0) {
+            shm_readers_count_in(&pr->local_readers);
+        } else {
+            atomic_fetch_sub_explicit(&pr->local_readers, 1, memory_order_acq_rel);
+        }
     }
 }
 
