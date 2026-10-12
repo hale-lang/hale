@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#3eb0a967
+== crates/hale-stdlib/hl/http_client.hl#299b071b
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
