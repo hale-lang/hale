@@ -87,6 +87,14 @@ fn unique_dir(tag: &str) -> PathBuf {
     dir
 }
 
+static BUILD_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+extern "C" fn remove_build_dir() {
+    if let Some(dir) = BUILD_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// The fixture program's addresses, as one run of it bound them.
 #[derive(Clone)]
 struct Addrs {
@@ -102,6 +110,13 @@ fn built() -> &'static (PathBuf, PathBuf) {
     static BUILT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = unique_dir("build");
+        // the binary is this process's for its whole life (the `OnceLock`
+        // never drops it): it goes when the process exits, passed or panicked
+        BUILD_DIR.set(dir.clone()).expect("built once");
+        // SAFETY: registers a plain function with no captured state.
+        unsafe {
+            libc::atexit(remove_build_dir);
+        }
         // a Unix socket path is at most ~100 bytes: keep it short
         let sock = std::env::temp_dir().join(format!("hc{}.sock", std::process::id()));
         let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api_clients/main.hl")).expect("fixture");
