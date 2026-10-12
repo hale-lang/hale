@@ -199,6 +199,7 @@ fn wait_closed(port: impl Reach, what: &str) {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     let w = start(&build(), &[]);
     let (public, partner) = (w.server.port, w.server.port2());
@@ -534,6 +535,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn the_contracts_program_runs_clean_under_asan() {
     // the same program under AddressSanitizer with the arena's chunk recycling
     // off: both transports of the rpc half and the stream half in one process,

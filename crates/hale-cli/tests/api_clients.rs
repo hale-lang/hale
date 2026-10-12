@@ -8,6 +8,10 @@
 //! exposure's own bytes, a call names the digest it read, a member the caller
 //! may not call is not listed, and a stream is reached through the hub.
 
+
+// The codegen suite's: what a child listens on.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+mod child;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
@@ -34,33 +38,7 @@ const HUB_BIND: &str = "127.0.0.4:0";
 /// not one this process holds too (a child that has not finished its exec
 /// still holds ours).
 fn listening(pid: u32) -> Vec<SocketAddrV4> {
-    let sockets = |pid: &str| -> std::collections::BTreeSet<String> {
-        std::fs::read_dir(format!("/proc/{pid}/fd"))
-            .map(|d| {
-                d.flatten()
-                    .filter_map(|e| std::fs::read_link(e.path()).ok())
-                    .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let ours = sockets("self");
-    let theirs = sockets(&pid.to_string());
-    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
-    table
-        .lines()
-        .skip(1)
-        .filter_map(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            if f.len() > 9 && f[3] == "0A" && theirs.contains(f[9]) && !ours.contains(f[9]) {
-                let (ip, port) = f[1].split_once(':')?;
-                let ip = u32::from_str_radix(ip, 16).ok()?;
-                Some(SocketAddrV4::new(Ipv4Addr::from(u32::from_be(ip)), u16::from_str_radix(port, 16).ok()?))
-            } else {
-                None
-            }
-        })
-        .collect()
+    child::listening_addrs(pid)
 }
 
 /// The port `hale admin --port 0` was given, from its banner
@@ -247,6 +225,7 @@ impl Drop for Lines {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn watch_subscribes_through_the_hub_and_prints_the_frames() {
     let _g = exclusive();
     let app = Running::start();
@@ -263,6 +242,7 @@ fn watch_subscribes_through_the_hub_and_prints_the_frames() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn watch_refuses_what_the_description_does_not_list() {
     let _g = exclusive();
     let app = Running::start();
@@ -311,6 +291,7 @@ fn tool_names(v: &Value) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn mcp_app_lists_the_members_as_tools_and_calls_through() {
     let _g = exclusive();
     let app = Running::start();
@@ -375,6 +356,7 @@ fn admin_request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], 
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn admin_serves_the_description_calls_through_and_refuses_other_sites() {
     let _g = exclusive();
     let app = Running::start();
@@ -428,6 +410,7 @@ fn admin_serves_the_description_calls_through_and_refuses_other_sites() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn admin_over_a_hub_tails_a_stream() {
     let _g = exclusive();
     let app = Running::start();

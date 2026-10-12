@@ -9,10 +9,14 @@
 //! before it starts takes a [`Reserved`] one; one that must find nothing
 //! listening takes a [`Refusing`] one.
 //!
-//! Linux: everything here reads `/proc`.
+//! Linux reads the sockets from `/proc`; elsewhere (macOS) from `lsof`.
+//! A test that binds 127.0.0.2 and up is Linux's alone: macOS carries only
+//! 127.0.0.1 on its loopback unless aliases are added, and such a test is
+//! `ignore`d there with that reason.
 
 #![allow(dead_code)]
 
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
@@ -81,18 +85,72 @@ pub fn listening_ports(pid: u32) -> Vec<u16> {
 /// not finished its exec still holds the test's descriptors (the test's
 /// own listener, say, created before the spawn), and `spawn` can return
 /// while the kernel is still closing them.
+#[cfg(target_os = "linux")]
 pub fn listening_addrs(pid: u32) -> Vec<SocketAddrV4> {
     sockets_of(pid, "tcp").into_iter().filter(|s| s.state == "0A").map(|s| s.local).collect()
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn listening_addrs(pid: u32) -> Vec<SocketAddrV4> {
+    lsof_addrs(pid, &["-i4TCP", "-sTCP:LISTEN"])
+}
+
 /// The local addresses of the process's bound, unconnected UDP (IPv4)
 /// sockets: the ones that receive what is sent to them.
+#[cfg(not(target_os = "linux"))]
+pub fn udp_addrs(pid: u32) -> Vec<SocketAddrV4> {
+    lsof_addrs(pid, &["-i4UDP"])
+}
+
+/// The local addresses `lsof` lists for process `pid` under `select`,
+/// less those this process holds too (see [`listening_addrs`]). Its `-Fn`
+/// field is `n<local>` (`127.0.0.1:5000`, `*:5000` for the wildcard) or
+/// `n<local>-><remote>` for a connected socket, which is not one that
+/// listens or receives from anyone.
+#[cfg(not(target_os = "linux"))]
+fn lsof_addrs(pid: u32, select: &[&str]) -> Vec<SocketAddrV4> {
+    let of = |pid: u32| -> Vec<SocketAddrV4> {
+        let Ok(out) = std::process::Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string()]).args(select).arg("-Fn").output() else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix('n'))
+            .filter(|n| !n.contains("->"))
+            .filter_map(|n| match n.strip_prefix("*:") {
+                Some(port) => port.parse().ok().map(|p| SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p)),
+                None => n.parse().ok(),
+            })
+            .collect()
+    };
+    let ours = of(std::process::id());
+    of(pid).into_iter().filter(|a| !ours.contains(a)).collect()
+}
+
+#[cfg(target_os = "linux")]
 pub fn udp_addrs(pid: u32) -> Vec<SocketAddrV4> {
     sockets_of(pid, "udp")
         .into_iter()
         .filter(|s| s.local.port() != 0 && s.remote.port() == 0)
         .map(|s| s.local)
         .collect()
+}
+
+/// Whether process `pid` has exited: gone, or a zombie not yet reaped
+/// (which holds no descriptors). Linux reads `/proc/<pid>/stat`;
+/// elsewhere `ps -o stat=` (empty once it is gone, `Z…` for a zombie).
+pub fn exited(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()));
+    #[cfg(not(target_os = "linux"))]
+    let state = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().chars().next());
+    matches!(state, None | Some('Z') | Some('X'))
 }
 
 /// The port `child`'s one listening TCP socket was given, once it listens.
@@ -160,7 +218,15 @@ fn wait_for(child: &mut Child, what: &str, limit: Duration, probe: impl Fn(u32) 
 
 /// The loopback address a [`Reserved`] port is handed out on. Nothing
 /// else in the suite binds it.
-pub const RESERVED_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 100);
+const RESERVED_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 100);
+
+/// Where [`Reserved`] addresses are: [`RESERVED_HOST`] where the
+/// loopback carries it (Linux routes all of 127/8 there), else
+/// `127.0.0.1` (macOS, which carries only that one by default).
+pub fn reserved_host() -> Ipv4Addr {
+    static HOST: std::sync::OnceLock<Ipv4Addr> = std::sync::OnceLock::new();
+    *HOST.get_or_init(|| if UdpSocket::bind((RESERVED_HOST, 0)).is_ok() { RESERVED_HOST } else { Ipv4Addr::LOCALHOST })
+}
 
 /// An address a program can be told before it starts and bind once it
 /// does, which no other test of the run can take in between: the test
@@ -171,13 +237,17 @@ pub const RESERVED_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 100);
 /// (`0.0.0.0:<port>`) does conflict, so no other test's listener can
 /// cover the address; and nothing else binds [`RESERVED_HOST`].
 ///
+/// Where the loopback does not carry [`RESERVED_HOST`] (macOS), nothing
+/// can be held that leaves the port bindable on the one loopback address,
+/// so the port is drawn and handed out on `127.0.0.1` unheld: free, not
+/// reserved, as before this helper. Only such a host keeps that race.
+///
 /// For a program that must know its peer's address before the peer is up
 /// (a client that dials a listener started later, a listener the program
 /// opens twice). A program that only serves binds port 0 instead and the
 /// test reads the port back ([`tcp_port`]).
 pub struct Reserved {
-    _tcp: TcpListener,
-    _udp: UdpSocket,
+    _held: Option<(TcpListener, UdpSocket)>,
     pub addr: SocketAddrV4,
 }
 
@@ -188,7 +258,10 @@ impl Reserved {
             let tcp = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
             let port = tcp.local_addr().expect("the held address").port();
             if let Ok(udp) = UdpSocket::bind(("127.0.0.1", port)) {
-                return Reserved { _tcp: tcp, _udp: udp, addr: SocketAddrV4::new(RESERVED_HOST, port) };
+                let host = reserved_host();
+                // on 127.0.0.1 itself the held sockets would be the program's bind's conflict
+                let held = (host != Ipv4Addr::LOCALHOST).then_some((tcp, udp));
+                return Reserved { _held: held, addr: SocketAddrV4::new(host, port) };
             }
         }
         panic!("no port free for both TCP and UDP in 64 tries");
@@ -226,6 +299,7 @@ impl Refusing {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct Socket {
     local: SocketAddrV4,
     remote: SocketAddrV4,
@@ -239,6 +313,7 @@ struct Socket {
 /// not finished its exec still holds the test's descriptors (the test's
 /// own listener, say, created before the spawn), and `spawn` can return
 /// while the kernel is still closing them.
+#[cfg(target_os = "linux")]
 fn sockets_of(pid: u32, proto: &str) -> Vec<Socket> {
     let sockets = |pid: &str| -> BTreeSet<String> {
         std::fs::read_dir(format!("/proc/{pid}/fd"))

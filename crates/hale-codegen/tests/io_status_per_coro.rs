@@ -51,6 +51,7 @@ const HOST_A: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const HOST_B: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_good_read_does_not_see_a_neighbours_reset() {
     let src = format!(
         r#"

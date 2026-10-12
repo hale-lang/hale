@@ -247,6 +247,7 @@ fn start(bound: u32, env: &[(&str, &str)]) -> Server {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn every_member_reaches_its_own_receiver_and_its_own_pool() {
     let server = start(64, &[("BUSY_MS", "700")]);
     // two instances of one receiver type, one per exposure: each hands out
@@ -286,6 +287,7 @@ fn every_member_reaches_its_own_receiver_and_its_own_pool() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_shared_handler_meets_each_surfaces_requires() {
     let server = start(64, &[]);
     let order = place(server.port, "t-alice", "ACME");
@@ -313,6 +315,7 @@ fn a_shared_handler_meets_each_surfaces_requires() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_digest_mismatch_names_the_served_digest_on_each_transport() {
     let server = start(64, &[]);
     for (port, served) in [(server.port.addr(), PUBLIC_DIGEST), (server.port2(), PUBLIC_DIGEST)] {
@@ -332,6 +335,7 @@ fn a_digest_mismatch_names_the_served_digest_on_each_transport() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn every_outcome_on_each_transport() {
     let server = start(64, &[]);
     // the HTTP exposures (public is replayed byte for byte in api_http.rs; the
@@ -371,6 +375,7 @@ fn every_outcome_on_each_transport() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn stopping_one_exposure_leaves_the_others_serving() {
     let server = start(64, &[]);
     assert_eq!(place(server.port, "t-alice", "ACME").status, 200);
@@ -407,6 +412,7 @@ fn stopping_one_exposure_leaves_the_others_serving() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_connection_that_breaks_while_the_listeners_serve_others() {
     let server = start(64, &[]);
     // cut requests on both HTTP listeners, and a unix client that vanishes
@@ -426,6 +432,7 @@ fn a_connection_that_breaks_while_the_listeners_serve_others() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_client_that_goes_away_after_its_call_started_leaves_the_work_to_finish() {
     // bound 1: the call that was started holds the exposure's only place
     // until the handler returns, though nobody is waiting for it
@@ -458,6 +465,7 @@ fn a_client_that_goes_away_after_its_call_started_leaves_the_work_to_finish() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn the_desk_program_runs_clean_under_asan() {
     // the same program under AddressSanitizer with the arena's chunk
     // recycling off: a connection that outlives its request, a request

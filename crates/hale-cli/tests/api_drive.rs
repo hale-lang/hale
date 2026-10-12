@@ -189,6 +189,7 @@ fn exported_members(surface: &str) -> Vec<String> {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn describe_over_unix_answers_the_surface_digest_and_its_members() {
     let w = Witness::start();
     let o = run(&["api", "describe", &w.unix(), "--json"]);
@@ -208,6 +209,7 @@ fn describe_over_unix_answers_the_surface_digest_and_its_members() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn describe_over_http_answers_the_callers_slice_by_bearer() {
     let w = Witness::start();
     let alice = run(&["api", "describe", &w.http(), "--json", "--bearer", "t-alice"]);
@@ -521,6 +523,7 @@ fn a_reply_that_is_not_the_requests_or_never_comes_is_a_transport_failure() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn call_over_unix_prints_each_outcome_with_its_exit_code() {
     let w = Witness::start();
     let u = w.unix();
@@ -578,6 +581,7 @@ fn call_over_unix_prints_each_outcome_with_its_exit_code() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn call_over_unix_by_a_caller_the_roles_do_not_admit_is_unauthorized() {
     let w = Witness::start_as("uid:4242424");
     // the description shows this caller nothing, and says so
@@ -592,6 +596,7 @@ fn call_over_unix_by_a_caller_the_roles_do_not_admit_is_unauthorized() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn call_over_http_prints_each_outcome_with_its_exit_code() {
     let w = Witness::start();
     let h = w.http();
@@ -651,6 +656,7 @@ fn call_over_http_prints_each_outcome_with_its_exit_code() {
 /// `hale describe` and `hale call` are the `api` verbs under their old names: a bare path is
 /// `unix:<path>`, a bare payload after the member is `--json`, and nothing else differs.
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn the_short_forms_are_the_api_verbs_with_two_conveniences() {
     let w = Witness::start();
     let (bare, u) = (w.sock.clone(), w.unix());

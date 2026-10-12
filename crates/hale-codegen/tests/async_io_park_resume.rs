@@ -30,6 +30,7 @@ mod build_opts;
 mod child;
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn async_io_pool_multiplexes_two_listeners() {
     // The two listeners bind port 0, each on a loopback address of its
     // own, and the test reads back the port the kernel gave each: a port

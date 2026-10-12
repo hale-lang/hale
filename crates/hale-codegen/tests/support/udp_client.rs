@@ -15,12 +15,14 @@ use super::ws_hub::Server;
 mod child;
 
 /// Where the hub listens: a [`child::Reserved`] address, on
-/// [`child::RESERVED_HOST`]. The hub's port is in its `BIND` before it
+/// [`child::reserved_host`]. The hub's port is in its `BIND` before it
 /// starts, and the reservation keeps every other test of a parallel run
 /// off it until the hub has bound it. (A port drawn here and handed over
 /// is free, not reserved: another test could take it first, and `start`
 /// used to draw again when one did.)
-pub const HUB_HOST: std::net::Ipv4Addr = child::RESERVED_HOST;
+pub fn hub_host() -> std::net::Ipv4Addr {
+    child::reserved_host()
+}
 
 /// A reserved address for a hub, as `BIND` states it, and the port.
 pub fn reserved_bind() -> (child::Reserved, String) {
@@ -54,10 +56,10 @@ pub struct Udp {
 }
 
 impl Udp {
-    /// A client socket, sending to the hub on `port` (at [`HUB_HOST`]).
+    /// A client socket, sending to the hub on `port` (at [`hub_host`]).
     pub fn to(port: u16) -> Udp {
         let s = UdpSocket::bind("127.0.0.1:0").expect("bind a client socket");
-        s.connect((HUB_HOST, port)).expect("connect");
+        s.connect((hub_host(), port)).expect("connect");
         Udp { s, port }
     }
 
