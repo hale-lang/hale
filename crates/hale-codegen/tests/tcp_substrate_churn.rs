@@ -23,16 +23,16 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
 
 const WARM: usize = 300;
 const MORE: usize = 3000;
 
 // The client: a connection, a request, the answer read to its close.
 const CLIENT: &str = r#"
-    fn one(port: Int) {
-        let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    fn one(host: String, port: Int) {
+        let fd = std::io::tcp::connect(host, port) or - 1;
         if fd < 0 {
             println("connect failed");
             return;
@@ -48,10 +48,10 @@ const CLIENT: &str = r#"
             n = n + 1;
         }
     }
-    fn churn(port: Int, n: Int) {
+    fn churn(host: String, port: Int, n: Int) {
         let mut i = 0;
         while i < n {
-            one(port);
+            one(host, port);
             i = i + 1;
         }
         std::time::sleep(100ms);
@@ -69,14 +69,15 @@ const CLIENT: &str = r#"
     }
     main locus App {
         params {
-            port: Int = std::str::parse_int(std::env::arg(1)) or 0;
+            host: String = std::env::arg(1);
+            port: Int = std::str::parse_int(std::env::arg(2)) or 0;
             SERVER
         }
         placement { PLACEMENT }
         run() {
             std::time::sleep(200ms);
-            churn(self.port, WARM);
-            churn(self.port, MORE);
+            churn(self.host, self.port, WARM);
+            churn(self.host, self.port, MORE);
             std::process::exit(0);
         }
     }
@@ -105,10 +106,12 @@ fn churn_case(tag: &str, server: &str, placement: &str) {
         .replace("MORE", &MORE.to_string());
     let bin = harness::unique_bin(tag);
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
-    // the program is its own client, so it is handed its port
-    let port = ports::free_port();
+    // the program is its own client, so it is handed the address it
+    // serves on: one the test holds, so nothing else takes it meanwhile
+    let at = child::Reserved::new();
     let out = Command::new(&bin)
-        .arg(port.to_string())
+        .arg(at.host())
+        .arg(at.port().to_string())
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()
         .expect("run");
@@ -134,7 +137,7 @@ fn churn_case(tag: &str, server: &str, placement: &str) {
 fn an_async_io_servers_consumer_stays_flat_under_churn() {
     churn_case(
         "tcp_churn_server",
-        "web: std::http::Server = std::http::Server { port: self.port, handler: Hello { } };",
+        "web: std::http::Server = std::http::Server { host: self.host, port: self.port, handler: Hello { } };",
         "web: cooperative(pool = web) where async_io;",
     );
 }
@@ -144,7 +147,7 @@ fn a_consumer_on_its_acceptors_pool_stays_flat_under_churn() {
     churn_case(
         "tcp_churn_acceptor",
         "c: std::io::tcp::Connections = std::io::tcp::Connections { listener: \"web\", handler: std::http::Responder { handler: Hello { } } };\n\
-         a: std::io::tcp::Acceptor = std::io::tcp::Acceptor { port: self.port, name: \"web\" };",
+         a: std::io::tcp::Acceptor = std::io::tcp::Acceptor { host: self.host, port: self.port, name: \"web\" };",
         "c: cooperative(pool = web) where async_io; a: cooperative(pool = web) where async_io;",
     );
 }
@@ -153,7 +156,7 @@ fn a_consumer_on_its_acceptors_pool_stays_flat_under_churn() {
 fn an_async_io_listeners_consumer_stays_flat_under_churn() {
     churn_case(
         "tcp_churn_listener",
-        "l: std::io::tcp::Listener = std::io::tcp::Listener { port: self.port, max_accepts: -1, on_connection: echo };",
+        "l: std::io::tcp::Listener = std::io::tcp::Listener { host: self.host, port: self.port, max_accepts: -1, on_connection: echo };",
         "l: cooperative(pool = web) where async_io;",
     );
 }
