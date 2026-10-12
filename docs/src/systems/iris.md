@@ -16,6 +16,10 @@ open http://127.0.0.1:8787
 `--observe` sets `LOTUS_OBS=1` on the program and launches
 `hale iris` beside it for the program's lifetime. Nothing reaches
 the program's own argv; the flag is consumed by `hale run`.
+`--observe=<port>` serves the session on `<port>` instead of 8787
+(`0` asks the kernel for a free one: what a script or a test that
+runs beside others wants, since a fixed port is one someone else
+may hold).
 
 The session's lifetime is bounded by `hale`'s. Kill the `hale run`
 — `timeout`, a CI cancel, Ctrl-C — and the observer goes with it;

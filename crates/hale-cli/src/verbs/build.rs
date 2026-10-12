@@ -462,11 +462,15 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
     // whatever kills it (GH #905) — the program's stdout stays
     // the command's output, and there is no orphan left holding
     // it open.
-    let mut observe = before.iter().any(|f| f == "--observe");
+    let mut observe = before.iter().any(|f| f == "--observe" || f.starts_with("--observe="));
     if !observe && user_args.first().map(String::as_str) == Some("--observe") {
         observe = true;
         user_args.remove(0);
     }
+    // `--observe=<port>`: the session serves there (`0`: a port the
+    // kernel picks, as a test running beside others needs); 8787
+    // without it, `hale iris`'s own default.
+    let observe_port = before.iter().rev().find_map(|f| f.strip_prefix("--observe=")).map(str::to_string);
     // GH #904: everything else before the target is a BUILD
     // option, parsed by the parser `hale build` uses and
     // honored. `run` used to compile with `BuildOptions::
@@ -477,7 +481,7 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
     // program. One parser, so `build` and `run` cannot drift.
     let build_flags: Vec<String> = before
         .iter()
-        .filter(|f| *f != "--observe")
+        .filter(|f| *f != "--observe" && !f.starts_with("--observe="))
         .cloned()
         .collect();
     let options = match parse_exec_build_options("run", &build_flags) {
@@ -499,7 +503,7 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
         // the next line starts one — so it travels on the child's
         // own `Command` instead, which is where it was always
         // meant to arrive. Nothing in this process reads it.
-        let session = iris::spawn_session();
+        let session = iris::spawn_session(observe_port.as_deref());
         let code = run_program(&target, &user_args, options, true);
         if let Some(mut s) = session {
             let _ = s.kill();

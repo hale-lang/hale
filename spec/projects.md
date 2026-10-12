@@ -798,7 +798,9 @@ flags — `--link`, `--csrc`, `--target`, `--target-cpu`,
 argument is never mistaken for the target. `hale run` follows the
 same rule up to the target and then stops: everything after the
 target is the PROGRAM's argv, which is why `run`'s own `--observe`
-goes in front of it.
+goes in front of it. `--observe=<port>` is `--observe` with the
+session serving on `<port>` — the `[port]` of `hale iris`, so `0` is
+a port the kernel picks — in place of iris's default 8787.
 
 `run` takes the same build options `build` does, from the same
 parser (2026-09-20, GH #904; before it, `run` compiled with

@@ -363,10 +363,17 @@ fn write_pair_diff(a: &str, b: &str) -> Result<String, String> {
 ///     on. The relay is a second, portable layer under the
 ///     parent-death signal: when we die the read end closes, so the
 ///     session's writes fail even where `prctl` does not exist.
-pub fn spawn_session() -> Option<std::process::Child> {
+///
+/// `port` is the session's (`hale run --observe=<port>`); `None` is
+/// `hale iris`'s default.
+pub fn spawn_session(port: Option<&str>) -> Option<std::process::Child> {
     let me = std::env::current_exe().ok()?;
     let mut cmd = Command::new(me);
-    cmd.arg("iris").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.arg("iris");
+    if let Some(port) = port {
+        cmd.arg(port);
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     crate::shared::process::dies_with_us(&mut cmd);
     match cmd.spawn() {
         Ok(mut c) => {
