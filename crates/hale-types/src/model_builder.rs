@@ -112,7 +112,7 @@ fn type_descriptor(ty: &TypeExpr) -> String {
             P::Uint => "Uint",
             P::Float => "Float",
             P::Bool => "Bool",
-            P::Decimal => "Decimal",
+            P::Decimal(s) => crate::ty::decimal_name(*s),
             P::Time => "Time",
             P::Duration => "Duration",
             P::String => "String",
@@ -458,7 +458,7 @@ pub fn derive_application_model_over(
                     PrimType::Bool => "Bool",
                     PrimType::Time => "Time",
                     PrimType::Duration => "Duration",
-                    PrimType::Decimal => "Decimal",
+                    PrimType::Decimal(s) => crate::ty::decimal_name(*s),
                     PrimType::String | PrimType::StringView => "String",
                     _ => "?",
                 }

@@ -6676,6 +6676,37 @@ impl Parser {
             TokenKind::Ident(name) if PRIMITIVE_TYPE_NAMES.contains(&name.as_str()) => {
                 let prim = primitive_from_name(name).expect("prim_type lookup");
                 self.bump();
+                // `Decimal<S>`: the scale is part of the type, an integer
+                // literal from 0 to 18. Plain `Decimal` is `Decimal<9>`.
+                if prim == PrimType::DECIMAL && self.at(&TokenKind::Lt) {
+                    self.bump();
+                    let at = self.peek_token().span;
+                    let scale = match self.peek() {
+                        TokenKind::IntLit(n) => {
+                            let n = *n;
+                            self.bump();
+                            n
+                        }
+                        _ => {
+                            return Err(Diag::parse(
+                                at,
+                                "`Decimal<S>`: the scale `S` is an integer literal from 0 to 18".to_string(),
+                            ))
+                        }
+                    };
+                    let max = crate::decimal_literal::MAX_SCALE;
+                    if !(0..=i64::from(max)).contains(&scale) {
+                        return Err(Diag::parse(
+                            at,
+                            format!(
+                                "`Decimal<{scale}>`: a Decimal's scale is from 0 to {max} (an i128 mantissa \
+                                 at scale {max} still holds twenty integer digits)"
+                            ),
+                        ));
+                    }
+                    let close = self.expect_gt_or_split_shr()?;
+                    return Ok(TypeExpr::Primitive(PrimType::Decimal(scale as u8), start.merge(close.span)));
+                }
                 Ok(TypeExpr::Primitive(prim, start))
             }
             // Phase 2a: `perspective(P)` — a handle to contract P.
@@ -8823,7 +8854,7 @@ pub fn primitive_from_name(name: &str) -> Option<PrimType> {
         "Int" => PrimType::Int,
         "Uint" => PrimType::Uint,
         "Float" => PrimType::Float,
-        "Decimal" => PrimType::Decimal,
+        "Decimal" => PrimType::DECIMAL,
         "String" => PrimType::String,
         "Bool" => PrimType::Bool,
         "Time" => PrimType::Time,

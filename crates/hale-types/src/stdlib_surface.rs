@@ -72,7 +72,7 @@ impl SigTy {
             SigTy::Str => Ty::Prim(PrimType::String),
             SigTy::Bytes => Ty::Prim(PrimType::Bytes),
             SigTy::BytesMut => Ty::Prim(PrimType::BytesMut),
-            SigTy::Decimal => Ty::Prim(PrimType::Decimal),
+            SigTy::Decimal => Ty::Prim(PrimType::DECIMAL),
             SigTy::Duration => Ty::Prim(PrimType::Duration),
             SigTy::Time => Ty::Prim(PrimType::Time),
             SigTy::Unit => Ty::Unit,
@@ -112,6 +112,10 @@ impl SigTy {
                     PrimType::Float | PrimType::Int | PrimType::Uint,
                 ),
             ) => true,
+            // A `Decimal` parameter reads every scale: the lowering
+            // takes the scale from the argument's type
+            // (`std::decimal::format`, `to_float`).
+            (SigTy::Decimal, Ty::Prim(PrimType::Decimal(_))) => true,
             _ => self.to_ty().assignable_from(got),
         }
     }

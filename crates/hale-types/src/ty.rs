@@ -132,7 +132,7 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::Int => "Int",
         PrimType::Uint => "Uint",
         PrimType::Float => "Float",
-        PrimType::Decimal => "Decimal",
+        PrimType::Decimal(scale) => decimal_name(scale),
         PrimType::String => "String",
         PrimType::Bool => "Bool",
         PrimType::Time => "Time",
@@ -142,6 +142,57 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::BytesMut => "BytesMut",
         PrimType::StringView => "StringView",
     }
+}
+
+/// The name of `Decimal<scale>` as a program spells it: plain `Decimal`
+/// at the default scale (the same type), `Decimal<S>` at any other.
+pub fn decimal_name(scale: u8) -> &'static str {
+    const NAMES: [&str; 19] = [
+        "Decimal<0>",
+        "Decimal<1>",
+        "Decimal<2>",
+        "Decimal<3>",
+        "Decimal<4>",
+        "Decimal<5>",
+        "Decimal<6>",
+        "Decimal<7>",
+        "Decimal<8>",
+        "Decimal",
+        "Decimal<10>",
+        "Decimal<11>",
+        "Decimal<12>",
+        "Decimal<13>",
+        "Decimal<14>",
+        "Decimal<15>",
+        "Decimal<16>",
+        "Decimal<17>",
+        "Decimal<18>",
+    ];
+    NAMES.get(usize::from(scale)).copied().unwrap_or("Decimal<?>")
+}
+
+/// The token `Decimal<scale>` contributes to a monomorph's name: plain
+/// `Decimal` at the default scale, as before `Decimal<S>`, so no
+/// existing monomorph is renamed; `Decimal18` at any other.
+pub fn decimal_mangle_token(scale: u8) -> &'static str {
+    const TOKENS: [&str; 19] = [
+        "Decimal0", "Decimal1", "Decimal2", "Decimal3", "Decimal4", "Decimal5", "Decimal6", "Decimal7", "Decimal8",
+        "Decimal", "Decimal10", "Decimal11", "Decimal12", "Decimal13", "Decimal14", "Decimal15", "Decimal16",
+        "Decimal17", "Decimal18",
+    ];
+    TOKENS.get(usize::from(scale)).copied().unwrap_or("DecimalX")
+}
+
+/// The primitive a monomorph-name token names, the inverse of
+/// [`generic_arg_mangle_token`]: every scale of `Decimal` included.
+pub fn prim_of_mangle_token(tok: &str) -> Option<PrimType> {
+    if let Some(p) = GENERIC_ARG_PRIMS.iter().copied().find(|p| generic_arg_mangle_token(*p) == Some(tok)) {
+        return Some(p);
+    }
+    let digits = tok.strip_prefix("Decimal")?;
+    let scale: u8 = digits.parse().ok()?;
+    (scale <= hale_syntax::decimal_literal::MAX_SCALE && decimal_mangle_token(scale) == tok)
+        .then_some(PrimType::Decimal(scale))
 }
 
 /// The primitives that may be a GENERIC ARGUMENT, in the order the
@@ -174,7 +225,7 @@ pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
     PrimType::Bool,
     PrimType::String,
     PrimType::Duration,
-    PrimType::Decimal,
+    PrimType::DECIMAL,
     PrimType::Time,
     PrimType::Bytes,
     PrimType::BytesView,
@@ -195,12 +246,14 @@ pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
         | PrimType::Bool
         | PrimType::String
         | PrimType::Duration
-        | PrimType::Decimal
         | PrimType::Time
         | PrimType::Bytes
         | PrimType::BytesView
         | PrimType::BytesMut
         | PrimType::StringView => Some(prim_name(p)),
+        // Every scale is its own monomorph (`Box<Decimal<18>>` is
+        // `Box_Decimal18`); the default scale keeps the name it had.
+        PrimType::Decimal(scale) => Some(decimal_mangle_token(scale)),
         // No storage representation at all (spec/types.md), so there
         // is nothing to mangle. Add it to `GENERIC_ARG_PRIMS` the day
         // `Uint` lowers.
@@ -270,7 +323,7 @@ fn is_flat_shapeable_inner(
             PrimType::Int
             | PrimType::Uint
             | PrimType::Float
-            | PrimType::Decimal
+            | PrimType::Decimal(_)
             | PrimType::Bool
             | PrimType::Time
             | PrimType::Duration => true,
@@ -291,7 +344,7 @@ fn is_flat_shapeable_inner(
                     | PrimType::Uint
                     | PrimType::Float
                     | PrimType::Bool
-                    | PrimType::Decimal
+                    | PrimType::Decimal(_)
                     | PrimType::Duration
             )
         ),
@@ -312,7 +365,7 @@ fn is_flat_shapeable_inner(
                 PrimType::Int
                     | PrimType::Float
                     | PrimType::Bool
-                    | PrimType::Decimal
+                    | PrimType::Decimal(_)
                     | PrimType::Duration
             )
         ),
@@ -378,7 +431,7 @@ pub fn is_key_eligible(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
         Ty::Prim(p) => matches!(
             p,
             PrimType::Int
-                | PrimType::Decimal
+                | PrimType::Decimal(_)
                 | PrimType::Time
                 | PrimType::Duration
                 | PrimType::Bool
