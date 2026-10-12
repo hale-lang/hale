@@ -394,14 +394,32 @@ fn sync_failed(why: String) -> SyncResult {
 // at the remote; the record's identity is published.
 fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
     let s = sync_record_rows(repo);
-    if s.ok {
-        let w = apply_withdrawals(repo, memory);
-        // a remote that had no record had no identity either, whatever this
-        // clone published to the remote it had before
-        if std::str::contains(s.summary, "(the remote had none)") { let u = rec(repo).unset_setting("identitypublished"); }
-        if !publish_identity(repo) && len(record_remote(repo)) > 0 && len(record_identity(repo)) > 0 {
-            return SyncResult { ok: true, summary: s.summary + "; the record's identity (" + IDENTITY_REF + ") could not be published to " + record_remote(repo) + " — no other record can connect to this one until a sync publishes it" };
-        }
+    if !s.ok { return s; }
+    // the record and the ledger read as one (nothing of the ledger is read
+    // on routing 0); each locus built in place, never handed back by a factory
+    let record = dna::GitJournal { repo: repo, author: "host" };
+    let j = dna::RoutedJournal { record: record, ledger: memory.ledger };
+    return synced(repo, s, j);
+}
+
+// The same over a journal the caller keeps (a body's view, for its life),
+// read again after the sync: only what the sync and the tick added is read.
+fn sync_record_over(repo: String, j: dna::RoutedJournal) -> SyncResult {
+    let s = sync_record_rows(repo);
+    if !s.ok { return s; }
+    let moved = j.refresh();
+    return synced(repo, s, j);
+}
+
+// What a sync that moved the rows does after: the withdrawals the record
+// `j` (read as it is now) asks for, and the record's identity published.
+fn synced(repo: String, s: SyncResult, j: dna::RoutedJournal) -> SyncResult {
+    let w = apply_withdrawals(repo, j);
+    // a remote that had no record had no identity either, whatever this
+    // clone published to the remote it had before
+    if std::str::contains(s.summary, "(the remote had none)") { let u = rec(repo).unset_setting("identitypublished"); }
+    if !publish_identity(repo) && len(record_remote(repo)) > 0 && len(record_identity(repo)) > 0 {
+        return SyncResult { ok: true, summary: s.summary + "; the record's identity (" + IDENTITY_REF + ") could not be published to " + record_remote(repo) + " — no other record can connect to this one until a sync publishes it" };
     }
     return s;
 }
@@ -460,14 +478,12 @@ fn redact_here(r: dna::GitRecord, remote: String, digest: String) -> Int {
 // (GH #646 stage 4: a redaction is a row of the ledger once the record is
 // adopted, and a body filed before adoption is still a blob here — so
 // the rows are read from both memories as one.) A dropped candidate goes
-// the same way (apply_drops, below); both are found in one read of the
-// record, which the sync makes on every tick of a body.
-fn apply_withdrawals(repo: String, memory: dna::Memory) -> Int {
+// the same way (apply_drops, below); both are found in one pass over the
+// rows of `j`, which a body's sync makes on every tick over its view.
+fn apply_withdrawals(repo: String, j: dna::RoutedJournal) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
     let mut n = 0;
-    let record = dna::GitJournal { repo: repo, author: "host" };
-    let j = dna::RoutedJournal { record: record, ledger: memory.ledger };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);

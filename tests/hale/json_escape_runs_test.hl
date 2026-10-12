@@ -1,0 +1,249 @@
+// The JSON string escaper and unescaper append the bytes that need no
+// escape a run at a time (one slice append per stretch between escapes,
+// and a string with nothing to escape returned as it is), where they
+// used to append each byte by itself. The output is the same bytes: this
+// file carries the per-byte forms as they were (`old_*`, copied from
+// crates/hale-stdlib/hl/json.hl before the change) and holds the two to
+// each other over random strings — control bytes, quotes, backslashes,
+// `\u` escapes with and without surrogates, malformed escapes, a
+// backslash in the last byte, and multi-byte UTF-8 — short and long.
+
+locus Rng {
+    params { state: Int = 12345; }
+    fn below(m: Int) -> Int {
+        self.state = (self.state * 1103515245 + 12345) % 2147483648;
+        return (self.state / 65536) % m;
+    }
+}
+
+// One piece of text to escape: a plain byte, a control byte, a quote,
+// a backslash, or a multi-byte UTF-8 sequence.
+fn raw_piece(b: std::bytes::BytesBuilder, r: Rng) {
+    let k = r.below(12);
+    if k < 4 { b.append_u8(97 + r.below(26)); }
+    else if k == 4 { b.append_u8(1 + r.below(31)); }
+    else if k == 5 { b.append_u8(34); }
+    else if k == 6 { b.append_u8(92); }
+    else if k == 7 { b.append_u8(32 + r.below(95)); }
+    else if k == 8 { b.append_str("é"); }
+    else if k == 9 { b.append_str("中"); }
+    else if k == 10 { b.append_str("😀"); }
+    else { b.append_u8(127 + r.below(2)); }
+}
+
+// One piece of text to unescape: plain text, a two-character escape
+// (known or not), or a `\u` escape whose digits are hex, surrogate
+// halves, or not hex at all.
+fn escaped_piece(b: std::bytes::BytesBuilder, r: Rng) {
+    let k = r.below(10);
+    if k < 3 { raw_piece(b, r); }
+    else if k < 6 {
+        b.append_u8(92);
+        b.append_u8(std::str::byte_at_unchecked("\"\\/bfnrtuxq0", r.below(12)));
+    } else {
+        b.append_str("\\u");
+        let shape = r.below(4);
+        if shape == 0 { b.append_str("d83d"); }
+        else if shape == 1 { b.append_str("DE00"); }
+        let mut j = 0;
+        let digits = if shape < 2 { 0 } else { 4 };
+        while j < digits {
+            b.append_u8(std::str::byte_at_unchecked("0123456789abcdefABCDEFdDgz", r.below(26)));
+            j = j + 1;
+        }
+    }
+}
+
+fn random_text(r: Rng, pieces: Int, escaped: Bool) -> String {
+    let b = std::bytes::BytesBuilder { };
+    let mut i = 0;
+    while i < pieces {
+        if escaped { escaped_piece(b, r); } else { raw_piece(b, r); }
+        i = i + 1;
+    }
+    // now and then, a backslash in the last byte
+    if escaped && r.below(8) == 0 { b.append_u8(92); }
+    return std::str::clone(b.text_view());
+}
+
+fn check(s: String, what: String) {
+    std::test::assert_eq_str(std::json::escape_string(s), old_escape_string(s), "escape: " + what);
+    std::test::assert_eq_str(std::json::unescape_string(s), old_unescape_string(s), "unescape: " + what);
+}
+
+fn main() {
+    let r = Rng { };
+    let mut n = 0;
+    while n < 3000 {
+        let pieces = if n % 100 == 99 { 2000 } else { r.below(40) };
+        check(random_text(r, pieces, false), "raw text " + to_string(n));
+        check(random_text(r, pieces, true), "escaped text " + to_string(n));
+        let raw = random_text(r, pieces, false);
+        std::test::assert_eq_str(std::json::unescape_string(std::json::escape_string(raw)), raw, "round trip " + to_string(n));
+        n = n + 1;
+    }
+    // the edges: empty, nothing to escape, only escapes, one byte
+    check("", "empty");
+    check("plain ascii and é", "nothing to escape");
+    check("\"\\\n\t", "only escapes");
+    check("\\", "a lone backslash");
+    check("ab\\", "a backslash in the last byte");
+    check("\\u12", "a truncated \\u");
+}
+
+fn old_escape_string(s: String) -> String {
+    let n = len(s);
+    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
+    let mut i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 92 { out.append_str("\\\\"); }
+        else if c == 34 { out.append_str("\\\""); }
+        else if c == 8 { out.append_str("\\b"); }
+        else if c == 12 { out.append_str("\\f"); }
+        else if c == 10 { out.append_str("\\n"); }
+        else if c == 13 { out.append_str("\\r"); }
+        else if c == 9 { out.append_str("\\t"); }
+        else if c < 32 {
+            // \u00XX for remaining control bytes. Hex via
+            // a tiny nibble table — keeps the helper free of
+            // arithmetic-to-hex helpers that aren't yet stdlib.
+            out.append_str("\\u00");
+            out.append_str(old_hex_byte(c));
+        } else {
+            out.append_u8(c);
+        }
+        i = i + 1;
+    }
+    return std::str::clone(out.text_view());
+}
+
+fn old_unescape_string(s: String) -> String {
+    let n = len(s);
+    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
+    let mut i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 92 && i + 1 < n {
+            let nx = std::str::byte_at_unchecked(s, i + 1);
+            if nx == 34 { out.append_u8(34); i = i + 2; }
+            else if nx == 92 { out.append_u8(92); i = i + 2; }
+            else if nx == 47 { out.append_u8(47); i = i + 2; }
+            else if nx == 98 { out.append_u8(8); i = i + 2; }
+            else if nx == 102 { out.append_u8(12); i = i + 2; }
+            else if nx == 110 { out.append_u8(10); i = i + 2; }
+            else if nx == 114 { out.append_u8(13); i = i + 2; }
+            else if nx == 116 { out.append_u8(9); i = i + 2; }
+            else if nx == 117 && i + 5 < n {
+                i = old_unescape_u(out, s, n, i);
+            }
+            else {
+                // Unknown escape: emit verbatim (lenient).
+                out.append_u8(c);
+                out.append_u8(nx);
+                i = i + 2;
+            }
+        } else {
+            out.append_u8(c);
+            i = i + 1;
+        }
+    }
+    return std::str::clone(out.text_view());
+}
+
+fn old_unescape_u(
+    out: std::bytes::BytesBuilder, s: String, n: Int, i: Int
+) -> Int {
+    let hi = old_hex4(s, i + 2);
+    if hi < 0 {
+        out.append_u8(92);
+        out.append_u8(117);
+        return i + 2;
+    }
+    if hi >= 55296 && hi <= 56319 {
+        // High surrogate — a low one must follow, as its own
+        // escape, for the pair to denote an astral scalar. The
+        // in-range test guards the two reads: && stops at the
+        // first false (GH #643).
+        let has_esc = i + 11 < n
+            && std::str::byte_at_unchecked(s, i + 6) == 92
+            && std::str::byte_at_unchecked(s, i + 7) == 117;
+        if has_esc {
+            let lo = old_hex4(s, i + 8);
+            if lo >= 56320 && lo <= 57343 {
+                old_codepoint_utf8(
+                    out, 65536 + (hi - 55296) * 1024 + (lo - 56320));
+                return i + 12;
+            }
+        }
+        old_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    if hi >= 56320 && hi <= 57343 {
+        // A low surrogate with no high one before it.
+        old_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    if hi == 0 {
+        // No representation in a NUL-terminated String — see
+        // the contract on old_unescape_string.
+        old_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    old_codepoint_utf8(out, hi);
+    return i + 6;
+}
+
+fn old_hex4(s: String, at: Int) -> Int {
+    let h0 = old_hex_nibble(std::str::byte_at_unchecked(s, at));
+    let h1 = old_hex_nibble(std::str::byte_at_unchecked(s, at + 1));
+    let h2 = old_hex_nibble(std::str::byte_at_unchecked(s, at + 2));
+    let h3 = old_hex_nibble(std::str::byte_at_unchecked(s, at + 3));
+    if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 { return -1; }
+    return h0 * 4096 + h1 * 256 + h2 * 16 + h3;
+}
+
+fn old_hex_byte(b: Int) -> String {
+    let hi = b / 16;
+    let lo = b - hi * 16;
+    return old_hex_char(hi) + old_hex_char(lo);
+}
+
+fn old_hex_char(nibble: Int) -> String {
+    if nibble < 10 { return to_string(nibble); }
+    if nibble == 10 { return "a"; }
+    if nibble == 11 { return "b"; }
+    if nibble == 12 { return "c"; }
+    if nibble == 13 { return "d"; }
+    if nibble == 14 { return "e"; }
+    return "f";
+}
+
+fn old_hex_nibble(b: Int) -> Int {
+    if b >= 48 && b <= 57 { return b - 48; }
+    if b >= 97 && b <= 102 { return b - 97 + 10; }
+    if b >= 65 && b <= 70 { return b - 65 + 10; }
+    return -1;
+}
+
+fn old_codepoint_utf8(out: std::bytes::BytesBuilder, cp: Int) {
+    if cp < 128 {
+        out.append_u8(cp);
+        return;
+    }
+    if cp < 2048 {
+        out.append_u8(192 + cp / 64);
+        out.append_u8(128 + cp % 64);
+        return;
+    }
+    if cp < 65536 {
+        out.append_u8(224 + cp / 4096);
+        out.append_u8(128 + (cp / 64) % 64);
+        out.append_u8(128 + cp % 64);
+        return;
+    }
+    out.append_u8(240 + cp / 262144);
+    out.append_u8(128 + (cp / 4096) % 64);
+    out.append_u8(128 + (cp / 64) % 64);
+    out.append_u8(128 + cp % 64);
+}

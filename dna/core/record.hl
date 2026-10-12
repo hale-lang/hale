@@ -265,6 +265,19 @@ fn last_line(text: String) -> String {
     return std::str::slice(v, from, to);
 }
 
+// The non-empty lines of `text` from the offset `from` on.
+fn lines_from(text: String, from: Int) -> Int {
+    let v = std::str::bytes_view(text);
+    let mut at = from;
+    let mut n = 0;
+    while at < v.n {
+        let end = line_end(v, at);
+        if end > at { n = n + 1; }
+        at = end + 1;
+    }
+    return n;
+}
+
 fn count_lines(text: String) -> Int {
     let v = std::str::bytes_view(text);
     let mut at = 0;
@@ -769,6 +782,17 @@ locus GitRecord {
     // fails anywhere leaves the chain and its file as they were. A
     // signing writer signs each commit, which a stream cannot: it appends
     // one by one.
+    //
+    // Every commit of the stream carries the whole journal, so the stream
+    // is quadratic in the batch: it goes to its file a few MiB at a time,
+    // and the journal grows in one buffer. The file must hold every byte
+    // given to it, checked by its size after each write: a stream cut
+    // short at a commit boundary is still a valid stream, and fast-import
+    // would land the commits before the cut, so a write that did not land
+    // whole ends the batch before fast-import runs. The stream also asks
+    // for `done` and ends with it, so git itself refuses one cut short. Built whole in memory, with the
+    // journal re-concatenated per row, a batch of 2,000 rows onto an empty
+    // record peaked near 3 GB and one of 12,000 was killed for memory.
     fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
         let n = rows.len();
         if n == 0 { return Appended { ok: true, id: at }; }
@@ -799,9 +823,18 @@ locus GitRecord {
         let stream = self.tmp("batch");
         let tip = self.ref_of("batch." + to_string(std::process::pid()));
         let user = self.git_out("config\nuser.name");
-        let mut text = self.text_at(at);
-        let mut seq = count_lines(text);
+        let start = self.text_at(at);
+        let mut seq = count_lines(start);
+        // the journal as it stands after the row being written
+        let text = std::bytes::BytesBuilder { };
+        text.append_str(start);
+        // the stream not yet in its file
         let b = std::bytes::BytesBuilder { };
+        b.append_str("feature done\n");
+        // the bytes the file holds
+        let mut written = 0;
+        std::io::fs::write_file(stream, "") or self.io_failed(err);
+        if (std::io::fs::file_size(stream) or - 1) != 0 { return self.batch_refused(stream, "the batch's stream could not be created"); }
         // `key<TAB>author<TAB>committer` a line: the identities git stamps
         let mut idents = "";
         let mut nonce = "";
@@ -833,16 +866,25 @@ locus GitRecord {
             let t1 = std::str::index_of(found, "\t");
             let t2 = std::str::index_of(found[(t1 + 1)..len(found)], "\t") + t1 + 1;
             let msg = row.kind + " " + row.entity + "\n" + (if len(note) > 0 { "\n" + note + "\n" } else { "" }) + (if i == 0 && len(nonce) > 0 { "\n" + RECORD_NONCE + ": " + nonce + "\n" } else { "" });
-            text = text + row_line(seq, row, who);
+            text.append_str(row_line(seq, row, who));
             seq = seq + 1;
             b.append_str("commit " + tip + "\nauthor " + found[(t1 + 1)..t2] + "\ncommitter " + found[(t2 + 1)..len(found)] + "\ndata " + to_string(len(msg)) + "\n" + msg + "\n");
             if i == 0 && len(at) > 0 { b.append_str("from " + at + "\n"); }
-            b.append_str("M 100644 inline journal.jsonl\ndata " + to_string(len(text)) + "\n");
-            b.append_str(text);
+            b.append_str("M 100644 inline journal.jsonl\ndata " + to_string(text.len()) + "\n");
+            b.append(text.view());
             b.append_str("\n\n");
+            if b.len() >= BATCH_FLUSH_AT {
+                written = written + b.len();
+                std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
+                if (std::io::fs::file_size(stream) or - 1) != written { return self.batch_refused(stream, "the batch's stream could not be written"); }
+                b.clear();
+            }
             i = i + 1;
         }
-        std::io::fs::write_file(stream, std::str::from_bytes(b.snapshot() or raise)) or self.io_failed(err);
+        b.append_str("done\n");
+        written = written + b.len();
+        std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
+        if (std::io::fs::file_size(stream) or - 1) != written { return self.batch_refused(stream, "the batch's stream could not be written"); }
         let fi = run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + self.repo + "\n" + stream);
         std::io::fs::unlink(stream) or discard;
         if fi.code != 0 {
@@ -854,6 +896,12 @@ locus GitRecord {
         if len(id) == 0 { return Appended { error: "io: the batch could not be read back" }; }
         if !self.move_chain(chain, id, at) { return Appended { error: "stale" }; }
         return Appended { ok: true, id: id };
+    }
+    // A batch given up before fast-import ran: its stream removed, the
+    // chain untouched.
+    fn batch_refused(stream: String, why: String) -> Appended {
+        std::io::fs::unlink(stream) or discard;
+        return Appended { error: "io: " + why };
     }
     // One commit for `journal.jsonl` + the row's line on top of `at`.
     // Touches no ref. Under a signing writer the commit is signed (GH #604
@@ -1162,6 +1210,10 @@ locus GitRecord {
     fn unset_setting(name: String) -> Bool { return self.git_ok("config\n--unset\ndna." + name); }
 }
 
+// How much of a batch's fast-import stream is held before it goes to its
+// file (`GitRecord.append_batch`).
+const BATCH_FLUSH_AT: Int = 4194304;
+
 // ---- the record as the core's storage interfaces see it -------------------
 
 // `Journal` over the record's `journal` chain: one row per commit, the
@@ -1186,6 +1238,9 @@ locus GitJournal {
         // reloads that came back with fewer rows than this journal holds:
         // a read of the record that failed, never a shorter record (#748)
         reads_refused: Int = 0;
+        // reads of the chain whole; a refresh after rows were appended
+        // reads those rows alone (`load_after`)
+        reads_whole: Int = 0;
         last_error: String = "";
     }
     birth() {
@@ -1217,8 +1272,6 @@ locus GitJournal {
     // never reached the threshold, and it never became a proposal
     // (GH #748). A stale view is recoverable; an empty one is not.
     @effects(is: { journal_io })
-    // The rows mirror the record's chain, read whole.
-    @bounded_by(self.record)
     fn load() -> Bool {
         let read = self.record.head(self.chain());
         if !read.ok { self.read_failed("the chain's head could not be read: " + read.why); return false; }
@@ -1232,6 +1285,8 @@ locus GitJournal {
             self.loaded = 0;
             return true;
         }
+        // a chain that grew from the rows held: only its new rows are read
+        if self.rows.len() > 0 && len(self.head_sha) > 0 && head != self.head_sha && self.load_after(head) { return true; }
         let text = self.record.text_at(head);
         let shas = self.record.ids(self.chain());
         if len(text) == 0 || len(shas) == 0 {
@@ -1245,15 +1300,52 @@ locus GitJournal {
         while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
         self.loaded = 0;
+        self.reads_whole = self.reads_whole + 1;
         self.head_sha = head;
         self.text = text;
         let first_nl = std::str::index_of(shas, "\n");
         self.root_sha = if first_nl < 0 { shas } else { shas[0..first_nl] };
+        self.take_rows(text, 0, shas, "genesis");
+        return true;
+    }
+    // The rows appended since the ones held, read alone: the chain at
+    // `head` is the chain held with rows on top when `head_sha` is an
+    // ancestor of `head`, the text at `head` begins with the text held,
+    // and it has one more line per id between them. The record is
+    // append-only and a reconcile rebuilds the local rows beside the
+    // chain rather than rewinding it, so anything else — a chain rebuilt
+    // onto the remote's head, a read that failed — answers false with
+    // nothing here changed, and the chain is read whole. An idle body
+    // refreshes its view every tick; reading the whole record for every
+    // row a tick added cost it time in the record's size.
+    @effects(is: { journal_io })
+    fn load_after(head: String) -> Bool {
+        if !self.record.precedes(self.head_sha, head) { return false; }
+        let shas = self.record.between(self.head_sha, head);
+        let text = self.record.text_at(head);
+        let have = len(self.text);
+        if len(shas) == 0 || len(text) <= have || !std::str::starts_with(text, self.text) { return false; }
+        if lines_from(text, have) != lines_from(shas, 0) { return false; }
+        // a copy: the field is rewritten in place just below
+        let prev = std::str::clone(self.head_sha);
+        self.head_sha = head;
+        self.text = text;
+        // a journal that appended the chain's first row learns its identity
+        // here, as a whole read would (its first row is the root commit)
+        if len(self.root_sha) == 0 { self.root_sha = self.read(0).digest; }
+        self.take_rows(text, have, shas, prev);
+        return true;
+    }
+    // One row per line of `text` from `from` on, paired in order with the
+    // ids of `shas`; `prev` is the row before the first. The rows mirror
+    // the record's chain.
+    @bounded_by(self.record)
+    fn take_rows(text: String, from: Int, shas: String, first_prev: String) {
         let tv = std::str::bytes_view(text);
         let sv = std::str::bytes_view(shas);
-        let mut at = 0;
+        let mut at = from;
         let mut sat = 0;
-        let mut prev = "genesis";
+        let mut prev = first_prev;
         while at < tv.n {
             let end = line_end(tv, at);
             let line = std::str::slice(tv, at, end);
@@ -1275,7 +1367,6 @@ locus GitJournal {
             at = end + 1;
             sat = send + 1;
         }
-        return true;
     }
     // A read of the record that came back short: counted and named, and
     // nothing here is changed by it, so the next refresh tries again.

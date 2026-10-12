@@ -1135,7 +1135,18 @@ allocate nothing that returns a by-value scalar (or Unit), where
 the scratch is elided entirely. Eliding is sound
 because there is nothing to reclaim and no return value to
 deep-copy: it removes a `malloc`/`free` per call with no
-observable change to lifetimes or bounds. Before this, every
+observable change to lifetimes or bounds. A payload-less `violate`
+counts as allocating nothing: its one fixed-size
+`ClosureViolation` record, made once per failure (the violation
+latches the locus failed), lands in `self.__arena` when the body
+has no scratch — longer-lived than the scratch, never per call. So
+does a call to a `BytesBuilder` primitive
+(`std::bytes::builder::__append*`, `__len`, `__clear`,
+`__shift_front`, `__xor_mask_into`), which grows the builder's own
+malloc'd buffer and touches no arena: the builder's `append*`
+methods, which guard such a call with `violate alloc_failed`, run
+with no scratch, and a byte appended costs a call instead of a
+subregion create, destroy and bus drain. Before this, every
 allocation made by a long-running `run()` loop (JSON parse
 strings, format-string concats, metric-label entries, every
 stdlib primitive that lands on `lotus_caller_arena_or_global`)
