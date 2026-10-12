@@ -1581,14 +1581,15 @@ struct Resolver<'s> {
     locus_fields: BTreeMap<String, BTreeMap<String, FieldKind>>,
     /// locus -> the fields its `placement { }` names.
     placed_fields: BTreeMap<String, BTreeSet<String>>,
-    /// locus -> the child locus its `accept(c: C)` takes. A literal
-    /// of `C` written inside one of its member bodies is retained on
-    /// the acceptor's `__children[]` spine and reclaimed by its
-    /// cascade, not by the frame that wrote it.
-    accepts: BTreeMap<String, String>,
-    /// The child type the locus whose member body is being walked
+    /// locus -> the child loci its `accept(c: C)` takes: `C`, or each
+    /// locus an interface `accept(c: I)` admits. A literal of one written
+    /// inside one of its member bodies is retained on the acceptor's
+    /// `__children[]` spine and reclaimed by its cascade, not by the
+    /// frame that wrote it.
+    accepts: BTreeMap<String, BTreeSet<String>>,
+    /// The child types the locus whose member body is being walked
     /// accepts, if any.
-    accepting: Option<String>,
+    accepting: Option<BTreeSet<String>>,
     /// The EXTENDED proven-fresh factory set: fn name -> locus.
     fresh: BTreeMap<String, String>,
     table: OwnerTable,
@@ -1645,11 +1646,18 @@ impl std::error::Error for OwnershipError {}
 /// The pass numbers nothing: a locus-producing `Struct` or `Call` node
 /// with a `NONE` id is [`OwnershipError::Unminted`], naming the node's
 /// span.
+///
+/// `admitted` is the ownership graph's `accepts` relation over the
+/// checked programs: an owner whose `accept` names an interface accepts
+/// each locus the graph admitted for it (`check::interface_admits`),
+/// which the program's own declarations cannot say. A concrete `accept`
+/// is read from the program either way.
 pub fn resolve_owners(
     program: &Program,
     ids: &crate::snapshot::Snapshot,
     fresh_factories: &BTreeMap<String, (String, Option<String>)>,
     import_renames: &[(Vec<String>, String)],
+    admitted: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<OwnerTable, OwnershipError> {
     use hale_syntax::sites::SiteKind;
     let mut unminted = None;
@@ -1683,7 +1691,10 @@ pub fn resolve_owners(
         import_renames,
         &mut locus_fields,
     );
-    let accepts = collect_accepts(program, import_renames);
+    let mut accepts = collect_accepts(program, import_renames);
+    for (owner, children) in admitted {
+        accepts.entry(owner.clone()).or_default().extend(children.iter().cloned());
+    }
 
     let fresh = extend_fresh_factories(
         &[program],
@@ -1830,7 +1841,7 @@ fn refine_field_kinds(
 fn collect_accepts(
     program: &Program,
     renames: &[(Vec<String>, String)],
-) -> BTreeMap<String, String> {
+) -> BTreeMap<String, BTreeSet<String>> {
     use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
     use hale_syntax::ast::LifecycleKind;
     let declared = DeclaredNames::of(&[program]);
@@ -1844,7 +1855,7 @@ fn collect_accepts(
             }
             let Some(p) = lc.params.first() else { continue };
             if let ChildRef::Locus(name) = child_locus_name(&p.ty, &declared, renames) {
-                out.insert(l.name.name.clone(), name);
+                out.entry(l.name.name.clone()).or_insert_with(BTreeSet::new).insert(name);
             }
         }
     }
@@ -3004,9 +3015,7 @@ impl Resolver<'_> {
                         // appended to `__children[]` and reclaimed by
                         // the acceptor's cascade, whatever the
                         // position says (GH #253's spine).
-                        let owner = if self.accepting.as_deref()
-                            == Some(lname.as_str())
-                        {
+                        let owner = if self.accepting.as_ref().is_some_and(|a| a.contains(lname.as_str())) {
                             Owner::Field {
                                 owner: ExprId::DECLARED,
                                 field: "__children".to_string(),

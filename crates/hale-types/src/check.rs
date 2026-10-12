@@ -586,7 +586,7 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let flows = crate::bundle_flow_rows(bundle);
+    let flows = crate::bundle_flow_rows(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -1453,6 +1453,33 @@ pub(crate) fn conformance_witness(
         }
     }
     Ok(())
+}
+
+/// The loci among `candidates` that an `accept(c: I)` or `release(c: I)`
+/// naming `iface_name` admits: each one that satisfies the interface by
+/// [`conformance_witness`], error channels judged, as a coercion into
+/// `I` would require. Empty when `iface_name` names no interface.
+///
+/// An owner's interface clause is resolved statically, per concrete
+/// type (spec/semantics.md § Locus instantiation, "An interface
+/// `accept`"): every locus is born from a literal of a concrete type, so
+/// the clause stands for one concrete clause per admitted locus, and the
+/// ownership graph's `accepts` relation, the flow rows and lowering all
+/// read the concrete loci this answers.
+pub fn interface_admits<'a>(
+    top: &TopScope,
+    iface_name: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<String> {
+    if !matches!(top.lookup(iface_name), Some(TopSymbol::Interface(_))) {
+        return BTreeSet::new();
+    }
+    candidates
+        .into_iter()
+        .filter(|l| matches!(top.lookup(l), Some(TopSymbol::Locus(_))))
+        .filter(|l| conformance_witness(top, l, iface_name, true).is_ok())
+        .map(str::to_string)
+        .collect()
 }
 
 /// [`conformance_witness`] with the error channel judged, its witness
@@ -9858,7 +9885,15 @@ impl<'a> Checker<'a> {
                     // locus; an undeclared name is the same typo in
                     // the same position.
                     self.check_type_annotation(&p.ty);
-                    let ty = self.resolve_te(&p.ty);
+                    let ty = match self.interface_named(&p.ty) {
+                        // An interface `accept` / `release` is lowered once
+                        // per admitted locus, the child typed as that
+                        // locus: the body may use what every admitted
+                        // locus has, the interface's methods, and nothing
+                        // else (spec/semantics.md § Locus instantiation).
+                        Some(iface) => Ty::Named(iface),
+                        None => self.resolve_te(&p.ty),
+                    };
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -12136,6 +12171,16 @@ impl<'a> Checker<'a> {
     /// A type expression the walk resolves: through the scope's names,
     /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
+    /// The interface a one-segment type expression names, if it names one.
+    fn interface_named(&self, te: &TypeExpr) -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if path.segments.len() != 1 || !generic_args.is_empty() {
+            return None;
+        }
+        let name = &path.segments[0].name;
+        matches!(self.top.lookup(name), Some(TopSymbol::Interface(_))).then(|| name.clone())
+    }
+
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
             .map(|name| (name.clone(), Ty::Unknown)).collect();
@@ -15603,6 +15648,25 @@ impl<'a> Checker<'a> {
                         } else {
                             Ty::Prim(PrimType::Bool)
                         };
+                    }
+                }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == "children" {
+                    if let Some(iface) = self
+                        .current_locus
+                        .and_then(|li| li.accept_written.as_deref())
+                        .filter(|w| matches!(self.top.lookup(w), Some(TopSymbol::Interface(_))))
+                    {
+                        self.diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "`self.children` is one child type's collection, and `{}` accepts through the \
+                                 interface `{}`: its children are of every locus that satisfies it, each kept \
+                                 apart. Read `self.children.count` or `self.children.is_empty`, or keep what the \
+                                 children need in `accept(c)`.",
+                                self.current_locus.map(|l| l.name.as_str()).unwrap_or_default(),
+                                iface
+                            ),
+                        ));
                     }
                 }
                 let rt = self.check_expr(receiver);

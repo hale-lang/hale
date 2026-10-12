@@ -995,6 +995,7 @@ fn register_locus(
     let mut bus_publishes: Vec<BusPublishInfo> = Vec::new();
     let mut bus_subscribes: Vec<BusSubscribeInfo> = Vec::new();
     let mut accept_param: Option<(String, Ty)> = None;
+    let mut accept_written: Option<String> = None;
     // GH #525 item 1: a locus accepts exactly one child type
     // (`spec/types.md`, single-accept-type per parent). The
     // singular `accept_param` used to be overwritten by a second
@@ -1123,6 +1124,11 @@ fn register_locus(
                     if let Some(p) = lc.params.first() {
                         let ty = resolve_type_expr(&p.ty, known);
                         accept_param = Some((p.name.name.clone(), ty));
+                        if let TypeExpr::Named { path, .. } = &p.ty {
+                            accept_written = Some(
+                                path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+                            );
+                        }
                     }
                 }
             }
@@ -1297,6 +1303,7 @@ fn register_locus(
         bus_publishes,
         bus_subscribes,
         accept_param,
+        accept_written,
         mode_returns,
         annotations,
         contract_expose,
