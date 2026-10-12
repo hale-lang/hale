@@ -819,8 +819,8 @@ slot_kind         = "pool" | "heap" ;
    the cell type (which must be a user-declared struct) to serve
    as the key for `@form(hashmap)` lowering. Only valid on a
    `pool` slot in a `@form(hashmap)` locus; rejected at typecheck
-   elsewhere. The `indexed_by` keyword is reserved at the lexer
-   level (TokenKind::IndexedBy). *)
+   elsewhere. `indexed_by` is a contextual keyword, recognized in
+   this clause position (F.43). *)
 
 
 (* === 6. Lifecycle blocks ======================================= *)
@@ -858,9 +858,13 @@ lifecycle_keyword = "birth"
 
 (* Three modes (bulk / harmonic / resolution) project the same
    underlying kernel three ways. A locus may declare any subset.
-   The compiler emits one implementation per declared mode. *)
+   The compiler emits one implementation per declared mode. A mode
+   takes what a lifecycle hook takes, `@unbounded` or
+   `@bounded_by(<name>)`, once (friction sweep 2026-10-12): the
+   unbounded-allocation warning in a mode body asks for one. *)
 
-mode_decl         = "mode" , mode_name , [ "(" , [ param_list ] , ")" ] ,
+mode_decl         = [ unbounded_annotation | bounded_by_annotation ] ,
+                    "mode" , mode_name , [ "(" , [ param_list ] , ")" ] ,
                     [ "->" , type_expr ] , block ;
 mode_name         = "bulk"
                   | "harmonic"

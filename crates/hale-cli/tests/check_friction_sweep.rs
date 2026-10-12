@@ -15,6 +15,9 @@
 //! - A topic named after its payload type is a duplicate top-level name
 //!   whose message says topics and types share one namespace, and names
 //!   the rename.
+//! - `@unbounded` / `@bounded_by(<name>)` may precede a `mode`, which
+//!   is where the unbounded-allocation warning in a mode body asks for
+//!   one; any other decorator there is refused.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -123,4 +126,27 @@ fn a_topic_named_after_its_payload_says_the_namespace_is_shared() {
     let src = "type Tick { p: Int; }\nlocus Tick { }\nfn main() { }\n";
     let (checked, out, _, _) = check_and_build(src, "locusdup");
     assert!(!checked && out.contains("`Tick` is declared as a type and as a locus"), "{out}");
+}
+
+#[test]
+fn a_mode_takes_the_unbounded_acknowledgement_its_warning_asks_for() {
+    let program = |deco: &str| {
+        format!(
+            "@form(vec)\nlocus V {{ capacity {{ heap items of String; }} }}\n\
+             locus L {{\n    params {{ v: V = V {{ }}; n: Int = 3; }}\n    {deco}\n    mode bulk() {{\n        let mut i = 0;\n        \
+             while i < self.n {{ self.v.push(\"x\" + to_string(i)); i = i + 1; }}\n    }}\n    run() {{ self.bulk(); }}\n}}\n\
+             fn main() {{ let l = L {{ }}; }}\n"
+        )
+    };
+    const WARNING: &str = "unbounded allocation: this vec-insert inside an unbounded loop accumulates in `L::bulk`'s region";
+    let (checked, out, _, _) = check_and_build(&program(""), "mode_bare");
+    assert!(checked && out.contains(WARNING), "{out}");
+    assert!(out.contains("`@unbounded` on the enclosing fn, lifecycle hook or mode"), "{out}");
+    for deco in ["@unbounded", "@bounded_by(n)"] {
+        let (checked, out, built, bout) = check_and_build(&program(deco), "mode_ack");
+        assert!(checked && !out.contains("unbounded allocation"), "{deco}: {out}");
+        assert!(built, "{deco}: {bout}");
+    }
+    let (checked, out, _, _) = check_and_build(&program("@hot"), "mode_hot");
+    assert!(!checked && out.contains("`@hot` can't precede a mode — a mode takes `@unbounded`"), "{out}");
 }

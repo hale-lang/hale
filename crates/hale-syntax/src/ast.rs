@@ -2142,6 +2142,13 @@ pub struct ModeDecl {
     pub kind: ModeKind,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
+    /// Friction sweep 2026-10-12: `@unbounded mode bulk() { … }` — the
+    /// mode body's acknowledged unbounded allocation, as on a lifecycle
+    /// hook ([`LifecycleDecl::unbounded`]): the unbounded-allocation
+    /// warning in a mode body says to annotate it, and now it can be.
+    pub unbounded: bool,
+    /// `@bounded_by(<name>) mode bulk() { … }`, as on a hook.
+    pub bounded_by: Option<String>,
     pub body: Block,
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.

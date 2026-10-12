@@ -4020,8 +4020,11 @@ impl Parser {
                         decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
-                    TokenKind::Ident(kw) if is_lifecycle_word(kw) => {
-                        // A lifecycle hook takes `@unbounded` or
+                    TokenKind::Ident(kw) if is_lifecycle_word(kw) || kw == "mode" => {
+                        let is_mode = kw == "mode";
+                        // A lifecycle hook — and a `mode`, whose body is
+                        // one the unbounded-allocation warning asks to
+                        // annotate (friction sweep 2026-10-12) — takes `@unbounded` or
                         // `@bounded_by(<name>)` (GH #1490) and nothing
                         // else: a hook is one-shot (so a per-call ceiling
                         // has no calls to divide by) and it is not a fn a
@@ -4030,16 +4033,18 @@ impl Parser {
                         // than a decorator list, which is also why a
                         // repeat or the pair is caught here instead of at
                         // check time.
+                        let what = if is_mode { "a mode" } else { "a lifecycle hook" };
+                        let (who, it) = if is_mode { ("a mode", "the mode") } else { ("a hook", "the hook") };
                         let silencer = |n: &str| n == "unbounded" || n == "bounded_by";
                         if let Some(d) = decos.written.iter().find(|d| !silencer(&d.name)) {
                             return Err(Diag::parse(
                                 d.span,
                                 format!(
-                                    "`@{}` can't precede a lifecycle hook \
-                                     — a hook takes `@unbounded` or \
+                                    "`@{}` can't precede {what} \
+                                     — {who} takes `@unbounded` or \
                                      `@bounded_by(<name>)` and nothing \
                                      else. Put the other contracts on a \
-                                     `fn` the hook calls.",
+                                     `fn` {it} calls.",
                                     d.name
                                 ),
                             ));
@@ -4050,14 +4055,23 @@ impl Parser {
                                 d.span,
                                 if &d.name == first {
                                     format!(
-                                        "duplicate `@{}` on a lifecycle \
-                                         hook — state it once",
+                                        "duplicate `@{}` on {what} \
+                                         — state it once",
                                         d.name
                                     )
                                 } else {
-                                    bounded_by_with_unbounded("this hook")
+                                    bounded_by_with_unbounded(if is_mode { "this mode" } else { "this hook" })
                                 },
                             ));
+                        }
+                        if is_mode {
+                            let mut md = self.parse_mode_decl()?;
+                            md.unbounded = decos.unbounded;
+                            md.bounded_by = decos.bounded_by;
+                            if let Some(s) = decos.span {
+                                md.span = s.merge(md.span);
+                            }
+                            return Ok(LocusMember::Mode(md));
                         }
                         let mut lc = self.parse_lifecycle_decl()?;
                         lc.unbounded = decos.unbounded;
@@ -4071,8 +4085,8 @@ impl Parser {
                         self.peek_token().span,
                         format!(
                             "expected `fn` after {} (or a lifecycle hook \
-                             — `run`, `birth`, … — after `@unbounded` or \
-                             `@bounded_by(<name>)`)",
+                             — `run`, `birth`, … — or a `mode` after \
+                             `@unbounded` or `@bounded_by(<name>)`)",
                             decos.written_list()
                         ),
                     )),
@@ -5805,6 +5819,8 @@ impl Parser {
             kind,
             params,
             ret,
+            unbounded: false,
+            bounded_by: None,
             span: kw.span.merge(body.span),
             body,
             id: NodeId::NONE,
