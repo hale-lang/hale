@@ -1914,7 +1914,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         o.source = Some(source);
         o.guard = PathGuard::DrainInFlight;
         o.line = Some("RD");
-        o.status = Status::KnownOpen { inventory_row: "C42" };
         o.multiplicity = Multiplicity::AtMostOncePerInstance;
         o.terminals = vec![
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
@@ -2139,8 +2138,21 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.push(o)
     }
 
+    /// A main locus's tree drain (line 15): once its `run()` has returned,
+    /// the first step of its teardown raises the drain every locus of its
+    /// tree reads as `self.draining`, before anything is quiesced or
+    /// joined, so a child's `run()` on a pinned thread or a pool that
+    /// watches it returns and its join completes. Teardown follows the
+    /// ownership tree: the root's end is its children's.
+    fn tree_drain(&mut self, spine: Spine, prior: &[Prerequisite]) -> ObligationId {
+        let mut o = Self::process_row(K::TreeDrain, spine, Some("15"), Status::Shipped);
+        o.edges.entry.extend_from_slice(prior);
+        self.push(o)
+    }
+
     /// The head of the main locus's own teardown, eager or deferred: the
-    /// quiesce, the wait-abort and, where the program has pools, the join,
+    /// tree drain, then the quiesce, the wait-abort and, where the program
+    /// has pools, the join,
     /// all before its fields' teardown (rule (b)), its pinned fields' joins
     /// included (line 7: a pinned thread parked in a wait is joined only
     /// once the wait is aborted). Returns the join.
@@ -2149,6 +2161,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let Some(run) = self.rows[i].run {
             prior.push(after(run, Point::Completed, Rule::SHIPPED));
         }
+        let drain = self.tree_drain(spine, &prior);
+        prior.push(after(drain, Point::Completed, shipped("15")));
         let q = self.quiesce(spine, &prior);
         let a = self.abort(spine, &prior, q);
         let join = pools.then(|| self.join(spine, &prior, q, a));

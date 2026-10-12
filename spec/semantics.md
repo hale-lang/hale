@@ -4721,18 +4721,26 @@ disposition. (GH #1039: before 2026-09-24 the runtime caught
 neither signal, so every program ended at the signal and a
 `while !self.draining` loop never saw a drain.)
 
-**When `main`'s `run()` ends first.** A `main` locus whose `run()`
-returns while a child's `run()` still loops keeps the process alive
-until that `run()` returns — when the child is pinned or on a
-classic cooperative pool (`main`'s own included): a pinned receive
-loop, a server whose `main` has no `run()` at all. Ending such a
-program is what SIGINT / SIGTERM are for; the drain reaches the
-child the same way whether `main`'s `run()` is still running or has
-returned. An **`async_io`** child is the exception: its `run()`
-parked on a timer or an fd when `main`'s `run()` ends does not keep
-the process alive — the pool shuts down, the parked coroutine is
-abandoned (`runtime.md` § the wakeable park) without seeing a drain,
-and the child dissolves with the rest of the tree.
+**When `main`'s `run()` ends first.** Teardown follows the
+ownership tree: when a `main` locus's `run()` returns, the first step
+of its teardown raises the drain for its tree, steps 1–3 above
+without a signal (`runtime.md` § "Lifecycle obligations", line 15).
+A child whose `run()` still loops on `while !self.draining` — pinned,
+on a classic cooperative pool or on an `async_io` one — sees it, a
+timed wait it is in returns early, its `run()` returns and it is
+joined; the tree then dissolves, leaves first. So a `main` whose
+`run()` returns at once — or that declares none — ends its program
+once its children's loops see the drain: a server stays up because
+`main`'s `run()` waits (`while !self.draining { std::time::sleep(…); }`,
+or `std::api::run_until_stopped`), and SIGINT / SIGTERM end that wait.
+A child's `run()` that never reads `self.draining` keeps the process
+alive until it returns, as under a signal; an `async_io` child parked
+on an untimed wait (a plain `accept`) is abandoned at its pool's
+shutdown (`runtime.md` § the wakeable park). The tree's drain ends
+with its teardown: a `main` locus built afterwards starts undrained,
+and a signal's drain is neither masked nor ended by it. (Before
+2026-10-12 a pinned or classic child's loop kept the process alive
+after `main`'s `run()` returned, until a signal ended it.)
 
 **Under `hale run`.** `hale run` stands aside for the program's
 drain: it ignores SIGINT (a terminal's Ctrl-C reaches the program

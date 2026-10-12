@@ -1874,7 +1874,13 @@ static inline int lotus_runtime_multithreaded(void) {
  * leaves-first, and main returns 0. Exported, not static: codegen
  * loads it directly (an atomic monotonic load, no call) so a
  * `self.draining` read in a hot handler stays one load. */
+/* Two causes share the word, one bit each, so a reader still tests it
+ * `!= 0`: a signal's drain (LOTUS_DRAIN_SIGNAL, never lowered) and a
+ * main locus's tree drain (LOTUS_DRAIN_TREE, raised at the head of its
+ * teardown and lowered once its tree is gone, lifecycle line 15). */
 int64_t lotus_process_draining_flag = 0;
+#define LOTUS_DRAIN_SIGNAL ((int64_t)1)
+#define LOTUS_DRAIN_TREE   ((int64_t)2)
 
 static inline int lotus_process_draining(void) {
     return __atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) != 0;
@@ -13156,7 +13162,7 @@ static void *lotus_drain_watcher(void *arg) {
         lotus_drain_die_by((int)g_drain_signal);
         _exit(128 + (int)g_drain_signal);
     }
-    __atomic_store_n(&lotus_process_draining_flag, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_SIGNAL, __ATOMIC_RELEASE);
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -13230,6 +13236,33 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
     (void)delta; (void)label;
 }
 #endif /* __wasm__ */
+
+/* A main locus's tree drain (spec/runtime.md § "Lifecycle obligations",
+ * line 15): the first step of its teardown, once its run() has
+ * returned. Every locus reads `self.draining` as true from here, as for
+ * a signal's drain: a sleep in progress returns at its next slice, a
+ * timed park on an async_io pool expires (its worker is woken to see
+ * it), and a run() that watches the drain returns, so the joins that
+ * follow end. The runs of the tree are the only ones off main while it
+ * is torn down: main loci are built one after another. */
+void lotus_tree_drain_raise(void) {
+    __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TREE, __ATOMIC_RELEASE);
+#if LOTUS_HAVE_ASYNC_IO
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (p && __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE) &&
+            p->wake_fd >= 0) {
+            lotus_wake_post(p);
+        }
+    }
+#endif
+}
+
+/* The tree is gone: a main locus built after it starts undrained. A
+ * signal's drain stays up. */
+void lotus_tree_drain_end(void) {
+    __atomic_fetch_and(&lotus_process_draining_flag, ~LOTUS_DRAIN_TREE, __ATOMIC_RELEASE);
+}
 
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;

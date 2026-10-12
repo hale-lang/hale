@@ -6174,11 +6174,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
                 ObligationKind::ReaderStop if self.cells.emits(Obligation::ReaderStop)? => self.emit_shm_readers_stop()?,
+                ObligationKind::TreeDrain if self.cells.emits(Obligation::TreeDrain)? => self.emit_tree_drain_raise()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// A main locus's tree drain (lifecycle line 15), the first step of its
+    /// teardown's head: once its `run()` has returned, every locus of its
+    /// tree reads `self.draining` as true, so a child's `run()` on a pinned
+    /// thread or a pool that watches it returns and the joins after it
+    /// complete (`lotus_tree_drain_raise`).
+    pub(crate) fn emit_tree_drain_raise(&mut self) -> Result<(), CodegenError> {
+        let f = self.module.get_function("lotus_tree_drain_raise").expect("lotus_tree_drain_raise declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.raise")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The tree drain's end, once the main locus that raised it is torn
+    /// down: a main locus built after it starts undrained
+    /// (`lotus_tree_drain_end`; a signal's drain stays up).
+    pub(crate) fn emit_tree_drain_end(&mut self) -> Result<(), CodegenError> {
+        if !self.cells.emits(Obligation::TreeDrain)? {
+            return Ok(());
+        }
+        let f = self.module.get_function("lotus_tree_drain_end").expect("lotus_tree_drain_end declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.end")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -6787,6 +6815,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // — the single teardown chokepoint — so every dissolve
             // path picks it up, not just this one.)
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
+            // The main locus's tree is gone: its drain ends (line 15).
+            if is_main_entry {
+                self.emit_tree_drain_end()?;
+            }
             // m52: drain again after each dissolve. The dissolve
             // method may publish — those cells enqueue for
             // still-alive subscribers later in the reverse-iter

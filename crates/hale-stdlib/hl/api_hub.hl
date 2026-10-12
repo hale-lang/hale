@@ -265,6 +265,7 @@ locus __StdApiWsPeer {
             if nap < 1000000 { nap = 1000000; }
             std::time::sleep(nap * 1ns);
         }
+        self.drained();
         if self.connected {
             self.say(4, 0, "");
             self.connected = false;
@@ -421,6 +422,15 @@ locus __StdApiWsPeer {
                 self.parse_frames();
             }
         }
+        self.drained();
+    }
+    // The drain reached this connection while it was still open (a signal,
+    // or its program's teardown, which drains the tree before the hub's own
+    // stop comes round): it is told so, as a stop tells it, after what is
+    // already queued for it, rather than being dropped without a word.
+    fn drained() {
+        if !self.draining || !self.live || !self.open { return; }
+        self.control(1, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}", true);
     }
     fn parse_frames() {
         let mut more = true;

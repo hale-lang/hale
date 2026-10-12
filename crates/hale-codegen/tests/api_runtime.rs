@@ -5,8 +5,12 @@
 //!   returns from `run()` with one call executing on a pool of its own and
 //!   two queued. Its teardown is the shutdown: the queued two are refused
 //!   `shutting_down` (they did not run) and the listener is released once.
-//!   The executing call is another matter: the process's teardown shuts the
-//!   receiver's pool down under it, so it can no longer be answered, and
+//!   The executing call is another matter. The teardown raises its tree's
+//!   drain first (spec/runtime.md § "Lifecycle obligations", line 15), so a
+//!   wait the call has in progress returns early, and the exposure hands no
+//!   queued call over once it drains; the call here keeps working past
+//!   that, and the process's teardown shuts the receiver's pool down under
+//!   it, so it can no longer be answered, and
 //!   its caller is told nothing (it may have run; it is never reported as a
 //!   refusal); the shutdown waits for it a bounded while and does not hang.
 //!   (A call executing while a serving locus is replaced, whose receivers
@@ -35,9 +39,12 @@ type Res { n: Int; }
 
 locus Svc {
     params { started: Int = 0; }
+    // a call that keeps working past the drain: each slice begun after it
+    // runs its full length, so the teardown's drain does not end the call
     fn slow(r: Req) -> Res {
         self.started = self.started + 1;
-        std::time::sleep(80ms);
+        let t0 = std::time::monotonic_ns();
+        while std::time::monotonic_ns() - t0 < 400000000 { std::time::sleep(5ms); }
         return Res { n: r.n };
     }
 }

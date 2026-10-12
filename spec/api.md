@@ -597,6 +597,9 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 - **`stop()`** closes the listener and every connection after the replies
   already sent: the queued requests are refused `shutting_down` and the
   executing ones are answered first, as § The request lifecycle states.
+  Once the exposure is draining (a signal, or its owner's teardown, which
+  drains the tree first: `runtime.md` § "Lifecycle obligations", line 15)
+  it hands no queued request to a receiver; its shutdown refuses them.
   A program that ends without `stop()` is torn down by its owner and
   releases its sockets, but the pools of the listener and its connections
   are stopped before the exposure's shutdown can write to them, so a
@@ -1628,7 +1631,7 @@ form a hub exposure's description states:
 | refusal | hub | `{"type": "refusal", "topic": T, "refusal": {"kind": K, "reason": …}}`: the subscription is not admitted |
 | event | hub | `{"type": "event", "topic": T, "seq": N, "payload": P}` |
 | unauthorized | hub | `{"type": "unauthorized", "topic": T, "reason": R}`, `R` being `"expired"` or `"revoked"`, once; then the subscription is gone |
-| closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`; then the connection closes |
+| closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`, or when the drain reaches a connection still open (a signal, or its program's teardown, which drains the tree before the hub's own stop comes round: `runtime.md` § "Lifecycle obligations", line 15), after what is already queued for it; then the connection closes |
 
 A refusal's object is § Outcomes', its kind one of `unauthenticated`
 (the sources named nobody at connect: no credential was presented, or the

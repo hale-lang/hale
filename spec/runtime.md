@@ -161,7 +161,9 @@ the model: runtime is automatic; stdlib is explicit.
   the process's draining flag and call no `drain()`: the `run()`s
   that read `self.draining` return, and the ordinary teardown
   follows (§ "Process control", § "Lifecycle obligations",
-  line 15). No separate cascade syntax — `drain()` is always
+  line 15). A main locus's teardown raises the same drain for its
+  tree once its `run()` has returned, before it joins anything
+  (line 15). No separate cascade syntax — `drain()` is always
   cascading. For locus-typed param fields specifically
   (F.29), the codegen walks `LocusRef` fields in declaration
   order at the cascade-teardown sites (ephemeral scope-exit
@@ -1849,9 +1851,12 @@ zero_copy binding produces.
     while `lotus_process_draining_flag` is up). For an owner's
     teardown it is shipped where the owner's reclaim reaches the
     child while the failure is outstanding (the reclaim wins, below),
-    and not yet where the teardown joins the child's pool first and
-    reaches its reclaim only after the delivery (inventory row C42,
-    `rd_restart_during_teardown.hl`).
+    and where the teardown joins the child's pool first and reaches
+    its reclaim only after the delivery: a main locus's teardown
+    raises its tree's drain before it joins (§ "Lifecycle
+    obligations", line 15), so the restart gate reads the drain up
+    (inventory row C42, `rd_restart_during_teardown.hl`, shipped
+    2026-10-12).
   - A failure held while the owner's params are open is still
     delivered when they settle (`spec/semantics.md` §
     "on_failure(c, err)"). One subcase was open: an owner placed
@@ -2250,7 +2255,9 @@ its `KNOWN_OPEN` table, which is empty today.
   it raises `BusWaitAborted`. Shipped in all five spines: each runs
   the ingress quiesce, then the wait-abort, then the pool join, then
   the reader stop (the edges between the process rows the lifecycle
-  plan states for every teardown spine, which emission reads). The
+  plan states for every teardown spine, which emission reads); a main
+  locus's own spine, eager or deferred, raises its tree's drain before
+  all four (line 15). The
   reader stop ends this process's shm ring readers
   (`lotus_shm_readers_stop`): after the join, since a reader lives
   as long as anything it serves can still produce (a pool's job
@@ -2435,10 +2442,11 @@ its `KNOWN_OPEN` table, which is empty today.
   birth-closure check, decides a restart only while the child's
   reclaim claim is clear (the reclaim wins). The trace build holds
   the resume and the restart to the plan over every fixture, with
-  three departures named: a held `run()` failure's resume, which the
-  plan does not yet state (C43); a held failure's restart performed
-  by the resume at settle where the plan places it on the posted run
-  (C42); and the restart under an owner's teardown (below).
+  two departures named: a held `run()` failure's resume, which the
+  plan does not yet state (C43); and a held failure's restart
+  performed by the resume at settle where the plan places it on the
+  posted run (C42). A restart under an owner's teardown is refused,
+  as the plan states (below).
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped
@@ -2448,11 +2456,30 @@ its `KNOWN_OPEN` table, which is empty today.
   instance is reclaimed once, and only after it was born; no step is
   taken on an instance nothing built; every step entered ends), and
   each adopted line's fixture against its plan.
-- **Line 15, signals.** SIGINT and SIGTERM raise the process's
-  draining flag, from a watcher thread; nothing on the signal path
-  calls a lifecycle method. The `run()`s that read `self.draining`
-  return, and the ordinary teardown follows, `drain()` and
-  `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+- **Line 15, signals, and the tree drain.** SIGINT and SIGTERM raise
+  the process's draining flag, from a watcher thread; nothing on the
+  signal path calls a lifecycle method. The `run()`s that read
+  `self.draining` return, and the ordinary teardown follows, `drain()`
+  and `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+  Teardown follows the ownership tree: once a main locus's `run()`
+  has returned, the first step of its teardown, eager or deferred,
+  raises the same drain for its tree (`TreeDrain`, the capability
+  matrix's obligation of that name, before the ingress quiesce, the
+  wait-abort, the pool join, the reader stop and its pinned fields'
+  joins; `lotus_tree_drain_raise`). Every locus then reads
+  `self.draining` as true, a timed wait in progress returns early (an
+  `async_io` pool's worker is woken to expire its timed parks), and a
+  child's `run()` that watches the drain returns, so the joins after it
+  complete: a pinned or pool-placed child's `while !self.draining`
+  loop no longer holds the process once `main`'s `run()` has returned.
+  A `run()` that does not watch it keeps running, as under a signal.
+  The tree drain is the flag's second bit, so a signal's drain is
+  neither masked nor ended by it; it ends with the main locus's
+  teardown (`lotus_tree_drain_end`), so a main locus built afterwards
+  starts undrained. The runs of the tree are the only ones off main
+  while it is torn down: main loci are built one after another.
+  Shipped 2026-10-12 (`crates/hale-codegen/tests/tree_drain.rs`, plain
+  and under AddressSanitizer; the lifecycle plan's `TreeDrain` row).
 - **Line 16, a target without threads.** The capability matrix
   selects which of the three process-wide obligations a target owes
   (its `PoolJoin`, `WaitAbort` and `IngressQuiesce` cells), and the
@@ -2707,12 +2734,13 @@ its `KNOWN_OPEN` table, which is empty today.
   is owed or claimed when it reads the decision: its handler replaced
   it, or its owner's reclaim reached it while the failure was
   outstanding (the reclaim wins, § "Failure handling", decision
-  L0-1). Not yet shipped for an owner's teardown that reaches the
-  child through a pool join (inventory row C42): a pool-placed child
-  that fails while `fn main`'s exit joins the pools is restarted,
-  because the join runs the delivery before the cascade reaches the
-  child's reclaim, so nothing is owed or claimed when the child reads
-  the decision (`rd_restart_during_teardown.hl`).
+  L0-1). Shipped too for an owner's teardown that reaches the child
+  through a pool join (inventory row C42, 2026-10-12): the join runs
+  the delivery before the cascade reaches the child's reclaim, so
+  nothing is owed or claimed when the child reads the decision, but
+  the main locus's teardown raised its tree's drain before the join
+  (line 15), and the restart gate refuses a restart while it is up
+  (`rd_restart_during_teardown.hl`; before, the child was restarted).
 - **Join progress.** An owner keeps completing the outstanding
   failure decisions of its children until the children it waits
   for have quiesced, and a pool worker that supervises children

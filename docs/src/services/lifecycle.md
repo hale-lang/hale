@@ -478,12 +478,25 @@ out. Under `hale run` the same holds:
 `hale` waits for the drain instead of dying first, and passes a
 SIGTERM sent to it on to the program.
 
-A program's life is the life of its `run()`s, not just `main`'s:
-if `main`'s `run()` returns while a pinned (or cooperative) child's
-loop is still going, the process keeps running until that loop ends
-— which is how a server stays up — and SIGTERM is how you end it. A
-child on an `async_io` pool is different: when `main`'s `run()` ends,
-its pool shuts down and a `run()` parked there is abandoned.
+A program's life is `main`'s `run()`: teardown follows the
+ownership tree. When `main`'s `run()` returns, its teardown first
+drains the whole tree the way Ctrl-C does — every `self.draining`
+turns true, a `sleep` in progress returns early — so a pinned or
+pooled child whose loop watches the flag ends, is joined, and the
+tree dissolves. A server stays up because `main`'s `run()` waits:
+
+```hale,fragment
+main locus App {
+    params { api: Gateway = Gateway { }; }
+    placement { api: pinned; }
+    run() { while !self.draining { std::time::sleep(100ms); } }
+}
+```
+
+and Ctrl-C (or SIGTERM) ends that wait. A `main` with no `run()`
+ends as soon as its children's loops have seen the drain. A child
+loop that never checks the flag still holds the process until it
+returns.
 
 ## The order, rule by rule
 
@@ -548,7 +561,8 @@ so nothing tears it down twice. The rules that order gives you:
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.
 - **No restart during a drain.** A handler that asks for `restart`
-  while the process drains gets no restart: the child ends as if
+  while the process drains — or once `main`'s `run()` has returned
+  and its teardown has begun — gets no restart: the child ends as if
   the handler had returned without asking.
 
 A few rules are decided and not yet true of every program;
@@ -556,8 +570,6 @@ A few rules are decided and not yet true of every program;
 the compiler's test suite carries a program that shows today's
 behaviour until it changes:
 
-- a restart asked for while `main`'s exit is already joining the
-  pools still runs;
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
   parent's handler;

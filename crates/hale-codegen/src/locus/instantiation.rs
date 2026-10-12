@@ -4787,6 +4787,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(eager_skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(eager_skip_bb);
+            // The main locus's tree is gone: the drain its head raised
+            // ends (lifecycle line 15).
+            if is_main_locus {
+                self.emit_tree_drain_end()?;
+            }
             self.lc_spine = lc_outer;
         } else if returns_this_locus {
             // Intentionally no-op: see m90 note above. The locus

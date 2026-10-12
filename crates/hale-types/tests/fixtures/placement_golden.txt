@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#7c06c0fc
+== crates/hale-stdlib/hl/api_rpc.hl#9153fc42
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1372,7 +1372,7 @@ dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
-== crates/hale-codegen/tests/api_runtime.rs#9876407f
+== crates/hale-codegen/tests/api_runtime.rs#c9cabfaf
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
