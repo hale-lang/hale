@@ -14,6 +14,12 @@
 //
 // The body is `hale dna run`, which execs the host in its own process,
 // without nerves: the relay still weighs every request, which is the cost.
+//
+// The record is built here in one batch, whose fast-import stream carries
+// the whole journal per commit — quadratic in the batch. It was built
+// whole in memory: this fixture peaked near 3 GB building its 2,200 rows,
+// and a copy scaled to 12,000 was killed for memory and took its session
+// with it. It now asserts its own peak.
 
 import "../core" as dna;
 
@@ -38,6 +44,16 @@ const IDLE_ORG: String = "fn main() {\n    let r = std::process::run(\"sleep\\n1
 // and a settlement; and how many rows besides.
 const REVIEWS: Int = 40;
 const FILLER: Int = 1600;
+
+// This process's peak resident set, in kB (`VmHWM`); -1 where there is
+// no /proc to read it from.
+fn peak_kb() -> Int {
+    let st = std::io::fs::read_file("/proc/self/status") or "";
+    let at = std::str::index_of(st, "VmHWM:");
+    if at < 0 { return -1; }
+    let rest = st[(at + 6)..len(st)];
+    return std::str::parse_int(dna::nth_word(std::str::trim(rest), 0)) or - 1;
+}
 
 // The CPU process `pid` has used, user and system, in clock ticks; -1
 // where there is no /proc to read it from.
@@ -100,6 +116,8 @@ main locus App {
         }
         let landed = j.append_batch(j.revision(), rows);
         std::test::assert(landed.ok, "the record grew: " + landed.error);
+        let peak = peak_kb();
+        std::test::assert(peak < 262144, "building the record stays small: a peak of " + to_string(peak) + " kB");
 
         // the body, under a forge of files with nothing on it
         std::io::fs::mkdir(a + "/.hale") or discard;

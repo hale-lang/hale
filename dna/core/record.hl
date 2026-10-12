@@ -769,6 +769,12 @@ locus GitRecord {
     // fails anywhere leaves the chain and its file as they were. A
     // signing writer signs each commit, which a stream cannot: it appends
     // one by one.
+    //
+    // Every commit of the stream carries the whole journal, so the stream
+    // is quadratic in the batch: it goes to its file a few MiB at a time,
+    // and the journal grows in one buffer. Built whole in memory, with the
+    // journal re-concatenated per row, a batch of 2,000 rows onto an empty
+    // record peaked near 3 GB and one of 12,000 was killed for memory.
     fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
         let n = rows.len();
         if n == 0 { return Appended { ok: true, id: at }; }
@@ -799,9 +805,14 @@ locus GitRecord {
         let stream = self.tmp("batch");
         let tip = self.ref_of("batch." + to_string(std::process::pid()));
         let user = self.git_out("config\nuser.name");
-        let mut text = self.text_at(at);
-        let mut seq = count_lines(text);
+        let start = self.text_at(at);
+        let mut seq = count_lines(start);
+        // the journal as it stands after the row being written
+        let text = std::bytes::BytesBuilder { };
+        text.append_str(start);
+        // the stream not yet in its file
         let b = std::bytes::BytesBuilder { };
+        std::io::fs::write_file(stream, "") or self.io_failed(err);
         // `key<TAB>author<TAB>committer` a line: the identities git stamps
         let mut idents = "";
         let mut nonce = "";
@@ -833,16 +844,20 @@ locus GitRecord {
             let t1 = std::str::index_of(found, "\t");
             let t2 = std::str::index_of(found[(t1 + 1)..len(found)], "\t") + t1 + 1;
             let msg = row.kind + " " + row.entity + "\n" + (if len(note) > 0 { "\n" + note + "\n" } else { "" }) + (if i == 0 && len(nonce) > 0 { "\n" + RECORD_NONCE + ": " + nonce + "\n" } else { "" });
-            text = text + row_line(seq, row, who);
+            text.append_str(row_line(seq, row, who));
             seq = seq + 1;
             b.append_str("commit " + tip + "\nauthor " + found[(t1 + 1)..t2] + "\ncommitter " + found[(t2 + 1)..len(found)] + "\ndata " + to_string(len(msg)) + "\n" + msg + "\n");
             if i == 0 && len(at) > 0 { b.append_str("from " + at + "\n"); }
-            b.append_str("M 100644 inline journal.jsonl\ndata " + to_string(len(text)) + "\n");
-            b.append_str(text);
+            b.append_str("M 100644 inline journal.jsonl\ndata " + to_string(text.len()) + "\n");
+            b.append(text.view());
             b.append_str("\n\n");
+            if b.len() >= BATCH_FLUSH_AT {
+                std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
+                b.clear();
+            }
             i = i + 1;
         }
-        std::io::fs::write_file(stream, std::str::from_bytes(b.snapshot() or raise)) or self.io_failed(err);
+        std::io::fs::write_file_append(stream, b.text_view()) or self.io_failed(err);
         let fi = run_tool("sh\n-c\nexec git -C \"$1\" fast-import --quiet < \"$2\"\nsh\n" + self.repo + "\n" + stream);
         std::io::fs::unlink(stream) or discard;
         if fi.code != 0 {
@@ -1161,6 +1176,10 @@ locus GitRecord {
     fn set_setting(name: String, value: String) -> Bool { return self.git_ok("config\ndna." + name + "\n" + value); }
     fn unset_setting(name: String) -> Bool { return self.git_ok("config\n--unset\ndna." + name); }
 }
+
+// How much of a batch's fast-import stream is held before it goes to its
+// file (`GitRecord.append_batch`).
+const BATCH_FLUSH_AT: Int = 4194304;
 
 // ---- the record as the core's storage interfaces see it -------------------
 
