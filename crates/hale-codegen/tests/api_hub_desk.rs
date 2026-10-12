@@ -52,8 +52,9 @@ locus Tokens {
 }
 
 locus Grants {
-    params { operator: String = ""; }
+    params { operator: String = ""; checks: Int = 0; }
     fn holds(p: std::api::Principal, r: String) -> Bool {
+        self.checks = self.checks + 1;
         if r == "operator" { return len(self.operator) > 0 && p.name == self.operator; }
         return false;
     }
@@ -97,7 +98,7 @@ main locus Desk {
         Ticks: self.hub requires: [operator], bound: 4, on_full: drop_new;
     }
     fn stats(ctl: String) {
-        std::io::fs::write_file(ctl + "/stats.tmp", "made=" + to_string(self.maker.made) + "\nsubs=" + to_string(self.hub.subscribers()) + "\nconns=" + to_string(self.hub.connections()) + "\nplaced=" + to_string(self.orders.placed) + "\n") or discard;
+        std::io::fs::write_file(ctl + "/stats.tmp", "made=" + to_string(self.maker.made) + "\nsubs=" + to_string(self.hub.subscribers()) + "\nconns=" + to_string(self.hub.connections()) + "\nplaced=" + to_string(self.orders.placed) + "\nchecks=" + to_string(self.hub_roles.checks) + "\n") or discard;
         std::io::fs::rename(ctl + "/stats.tmp", ctl + "/stats") or discard;
     }
     // `blobs N SIZE`, `ticks N SIZE`, `stop`. A burst writes the stats as
@@ -121,6 +122,12 @@ main locus Desk {
                 if i % 20 == 0 { self.stats(ctl); }
                 i = i + 1;
             }
+            // a revision announced behind the burst: each connection takes it
+            // after every event of the burst (one sender, one mailbox, in
+            // order) and asks the core to recheck its grants, which reads
+            // `hub_roles` (`checks`): the test's sign that the connection
+            // has offered itself the whole burst
+            self.hub.announce(i);
         }
         return false;
     }
@@ -180,6 +187,7 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     dave.subscribe(topic);
     assert_eq!(dave.text(), format!("{{\"type\":\"subscribed\",\"topic\":\"{topic}\"}}"));
     server.await_stat("subs", 1);
+    let checks = server.stat("checks").expect("checks");
     // the client does not read while the program publishes
     server.command(command);
     // the burst is CPU work on the program's main thread (each event's
@@ -187,6 +195,19 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     // several times that under ASan): on a loaded machine it takes longer
     // than any fixed deadline, so the wait is on the count moving
     server.await_stat_progressing("made", 400);
+    // ... nor until the connection has offered itself every event of the
+    // burst. The events reach it as cells it takes in turn, behind the
+    // publisher, and a read begun while some still waited made room for
+    // them: the newest frame then arrived through a drop_new queue (a CI
+    // run, once the burst's encoding got fast enough to outrun the
+    // connection). The revision the program announces after the burst
+    // reaches the connection after the burst's last event, and its recheck
+    // reads the role source, which counts it.
+    let start = std::time::Instant::now();
+    while server.stat("checks").unwrap_or(checks) <= checks {
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "the connection never took the revision behind the burst: {:?}", server.stats());
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let mut got = Vec::new();
     // the pong is written after the frames queued before the ping: once it
     // arrives the connection's queue is empty, and what was shed is shed
