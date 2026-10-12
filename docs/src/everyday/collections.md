@@ -52,6 +52,11 @@ for name in names.items {
 }
 ```
 
+`.items` is the vec's own name for its elements, whatever you called
+the slot: a list declared `capacity { heap cells of Int; }` is still
+walked as `for c in list.items`, and the compiler points there if you
+write `list.cells`.
+
 (The indexed `while i < names.len()` + `.get(i)` walk also works,
 and is what you want when you need the index — but prefer `.items`
 as the default: it reads better and, on hashmaps especially, it's

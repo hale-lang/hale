@@ -16137,6 +16137,30 @@ impl<'a> Checker<'a> {
                                     hint = format!(" — {}", advice);
                                 }
                             }
+                            // Friction sweep 2026-10-12: a `@form`
+                            // locus's capacity slot read from outside
+                            // (`for c in v.cells`, the slot declared
+                            // `heap cells of Int`). The iteration
+                            // surface is the form's fixed pseudo-field,
+                            // whatever the slot is called (spec/forms.md
+                            // § Iteration surface).
+                            if hint.is_empty() {
+                                if let Ty::Named(tn) = &rt {
+                                    if let Some(TopSymbol::Locus(li)) = self.top.symbols.get(tn) {
+                                        if li.capacity_slot_names.iter().any(|n| n == &name.name) {
+                                            hint = format!(
+                                                " — `{f}` is `{tn}`'s capacity slot, and \
+                                                 a slot is not a field: a `@form(vec)` \
+                                                 is iterated as `.items` (`for x in \
+                                                 ….items {{ … }}`, `….items.filter(…)`), \
+                                                 a `@form(hashmap)` as `.entries`, \
+                                                 whatever the slot is named",
+                                                f = name.name
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             // Friction sweep 2026-10-12: a chain
                             // terminal with no stage before it
                             // (`xs.sum(0.0d)`) is not a chain — chains

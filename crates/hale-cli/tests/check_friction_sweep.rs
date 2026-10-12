@@ -23,6 +23,8 @@
 //! - `const X = 1;` takes the literal's type; a non-literal initializer
 //!   without a type says the annotation is required.
 //! - A trailing comma in call arguments is accepted.
+//! - A `@form(vec)` walked by its declared slot name (`v.cells`) is
+//!   refused with a hint naming `.items`, the form's iteration surface.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -196,4 +198,18 @@ fn a_trailing_comma_in_call_arguments_is_accepted() {
     // A lone comma is still not an argument list.
     let (checked, out, _, _) = check_and_build("fn f() { }\nfn main() { f(,); }\n", "lone_comma");
     assert!(!checked, "{out}");
+}
+
+#[test]
+fn a_vec_walked_by_its_slot_name_is_pointed_at_items() {
+    let src = "@form(vec)\nlocus V { capacity { heap cells of Int; } }\nfn main() { let v = V { }; v.push(1); v.push(2); for c in v.cells { println(c); } }\n";
+    let (checked, out, _, _) = check_and_build(src, "slot_name");
+    assert!(!checked, "{out}");
+    assert!(
+        out.contains("no field `cells` on `V` — `cells` is `V`'s capacity slot, and a slot is not a field: a `@form(vec)` is iterated as `.items`"),
+        "{out}"
+    );
+    let (checked, out, built, bout) = check_and_build(&src.replace("v.cells", "v.items"), "slot_items");
+    assert!(checked, "{out}");
+    assert!(built, "{bout}");
 }
