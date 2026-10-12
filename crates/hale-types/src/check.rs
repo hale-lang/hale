@@ -14338,6 +14338,27 @@ impl<'a> Checker<'a> {
         ty
     }
 
+    /// Refuse a `Decimal` literal no `Decimal` represents, at its span.
+    fn check_decimal_literal(&mut self, s: &str, span: Span) {
+        use hale_syntax::decimal_literal::{parse_scale9, DecimalLiteralError};
+        // The lexer keeps the digits; the spelling had its `d`.
+        let shown = if s.ends_with('d') { s.to_string() } else { format!("{s}d") };
+        let s = shown.as_str();
+        let msg = match parse_scale9(s) {
+            Ok(_) | Err(DecimalLiteralError::Malformed) => return,
+            Err(DecimalLiteralError::TooPrecise) => format!(
+                "Decimal literal `{s}` cannot be represented: a `Decimal` has 9 \
+                 fractional digits, and this one has a nonzero digit past the ninth \
+                 (it would be truncated); round it to 9 places"
+            ),
+            Err(DecimalLiteralError::Overflow) => format!(
+                "Decimal literal `{s}` cannot be represented: its mantissa at scale 9 \
+                 does not fit an i128"
+            ),
+        };
+        self.diags.push(Diag::ty(span, msg));
+    }
+
     fn check_expr_at(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
@@ -14345,16 +14366,35 @@ impl<'a> Checker<'a> {
                 // a malformed one is the author's error, not the
                 // program's at runtime.
                 if let Literal::Time(s) = lit {
-                    if hale_syntax::time_literal::parse_iso8601_utc_ns(s).is_none() {
-                        self.diags.push(Diag::ty(
+                    use hale_syntax::time_literal::{
+                        parse_iso8601_utc, TimeLiteralError, TIME_MAX_TEXT, TIME_MIN_TEXT,
+                    };
+                    match parse_iso8601_utc(s) {
+                        Ok(_) => {}
+                        Err(TimeLiteralError::Malformed) => self.diags.push(Diag::ty(
                             *span,
                             format!(
                                 "time literal `{s}` is not an ISO-8601 UTC instant \
                                  (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`; an offset such as \
                                  `+01:00` is rejected, UTC only)"
                             ),
-                        ));
+                        )),
+                        Err(TimeLiteralError::OutOfRange) => self.diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "time literal `{s}` is outside `Time`'s range: a `Time` \
+                                 is i64 nanoseconds since the epoch, {TIME_MIN_TEXT} \
+                                 through {TIME_MAX_TEXT}"
+                            ),
+                        )),
                     }
+                }
+                // A Decimal is an i128 mantissa at scale 9: a literal
+                // with a nonzero digit past the ninth fractional place
+                // (or past i128) names a value no Decimal holds, and
+                // used to lose the digits in silence.
+                if let Literal::Decimal(s) = lit {
+                    self.check_decimal_literal(s, *span);
                 }
                 // GH #1076 (U3): a quantity literal is its component's
                 // quantity at its own unit.

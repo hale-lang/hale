@@ -25013,17 +25013,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), CodegenTy::Duration))
             }
             // GH #607: Time ± Duration → Time (routed here by
-            // Expr::Binary), plain i64 arithmetic.
+            // Expr::Binary). An instant past either end of i64 is a
+            // violation where it would be made, never a wrap into
+            // another century (`lotus_time_offset_checked`).
             (BinOp::Add | BinOp::Sub, CodegenTy::Time) => {
-                let l = lv.into_int_value();
-                let r = rv.into_int_value();
-                let v = match op {
-                    BinOp::Add => self.builder.build_int_add(l, r, "tadd"),
-                    BinOp::Sub => self.builder.build_int_sub(l, r, "tsub"),
-                    _ => unreachable!(),
-                };
-                let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), CodegenTy::Time))
+                let f = self
+                    .module
+                    .get_function("lotus_time_offset_checked")
+                    .expect("lotus_time_offset_checked declared");
+                let sub = self
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(op == BinOp::Sub), false);
+                let v = self
+                    .builder
+                    .build_call(f, &[lv.into(), rv.into(), sub.into()], "toffset")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Time))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
                 CodegenTy::Duration | CodegenTy::Time) =>
@@ -34091,46 +34100,9 @@ fn escape_format(s: &str) -> String {
 /// Strips an optional trailing `d`, an optional leading sign,
 /// underscores. Returns None on malformed input.
 fn parse_decimal_to_i128_scale9(s: &str) -> Option<i128> {
-    let s = s.strip_suffix('d').unwrap_or(s);
-    let (sign, rest) = match s.as_bytes().first() {
-        Some(b'-') => (-1i128, &s[1..]),
-        Some(b'+') => (1i128, &s[1..]),
-        _ => (1i128, s),
-    };
-    if rest.is_empty() {
-        return None;
-    }
-    let mut mantissa: i128 = 0;
-    let mut frac_digits: u32 = 0;
-    let mut seen_dot = false;
-    let mut seen_digit = false;
-    for c in rest.chars() {
-        match c {
-            '0'..='9' => {
-                seen_digit = true;
-                if !seen_dot || frac_digits < 9 {
-                    mantissa = mantissa.checked_mul(10)?;
-                    mantissa = mantissa.checked_add((c as u8 - b'0') as i128)?;
-                    if seen_dot {
-                        frac_digits += 1;
-                    }
-                }
-                // Drops digits past 9 fractional places (codegen
-                // truncates at scale 9; no rounding for v0.1).
-            }
-            '.' if !seen_dot => seen_dot = true,
-            '_' => {}
-            _ => return None,
-        }
-    }
-    if !seen_digit {
-        return None;
-    }
-    while frac_digits < 9 {
-        mantissa = mantissa.checked_mul(10)?;
-        frac_digits += 1;
-    }
-    Some(sign * mantissa)
+    // The checker has refused a literal this cannot represent (past
+    // scale 9, or past i128), with its span; this is the same parse.
+    hale_syntax::decimal_literal::parse_scale9(s).ok()
 }
 
 /// Cheap edit-distance close-match for a "did you mean" hint on

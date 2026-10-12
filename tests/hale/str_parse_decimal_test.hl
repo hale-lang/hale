@@ -9,13 +9,39 @@ fn main() {
         "" + (std::str::parse_decimal("0") or raise), "0", "zero");
     std::test::assert_eq_str(
         "" + (std::str::parse_decimal("-7.25") or raise), "-7.25", "negative");
-    // Past 9 fractional digits truncates; 8 round-trip.
+    // Trailing zeros trim at display; nine places round-trip.
     std::test::assert_eq_str(
         "" + (std::str::parse_decimal("0.00005100") or raise),
-        "0.000051", "trailing zeros truncate at scale 9");
+        "0.000051", "trailing zeros trim at display");
     std::test::assert_eq_str(
         "" + (std::str::parse_decimal("12345.678901234") or raise),
         "12345.678901234", "full scale-9 precision");
+    // A nonzero digit past the ninth place is a value no Decimal holds:
+    // the parse fails rather than dropping it (it used to truncate in
+    // silence). Zeros past the ninth place are the same value.
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.123456789012") or 9.0d), "9",
+        "past scale 9 is a parse failure, not a truncation");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.0000000001") or 9.0d), "9",
+        "a value below one unit of scale 9 is not read as zero");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.1234567890000") or raise), "0.123456789",
+        "zeros past the ninth place are accepted");
+    let far = std::str::parse_decimal("1.0000000001") or {
+        std::test::assert_eq_str(err.kind, "parse_decimal", "the refusal's kind");
+        std::test::assert_eq_str(err.input, "1.0000000001", "and its input");
+            -1.0d
+    };
+    std::test::assert_eq_str("" + far, "-1", "refused");
+
+    // Arithmetic stays at scale 9 and truncates toward zero past it —
+    // the documented semantics, not a parse: 1/3 and a product below
+    // one unit of scale 9.
+    std::test::assert_eq_str("" + (1.0d / 3.0d), "0.333333333", "1/3 truncates");
+    std::test::assert_eq_str("" + (0.0d - 1.0d) / 3.0d, "-0.333333333", "toward zero");
+    std::test::assert_eq_str("" + (0.00000001d * 0.123456789d), "0.000000001", "a tiny product truncates");
+    std::test::assert_eq_str("" + (0.000000001d * 0.5d), "0", "below one unit is zero");
 
     // Garbage substitutes rather than silently yielding a value.
     std::test::assert_eq_str(

@@ -130,6 +130,16 @@ value is the same number); when a display needs fixed places,
 `std::decimal::format(price, 2)` renders exactly two fraction
 digits with half-up rounding.
 
+A `Decimal` has exactly nine digits after the point. A literal with
+a nonzero digit past the ninth, like `0.1234567891d`, is a compile
+error at the literal, and `std::str::parse_decimal` of such text
+takes its `or` branch: neither drops the digit in silence. Arithmetic
+stays at nine places and truncates toward zero past them, so
+`1.0d / 3.0d` is `0.333333333` and a product smaller than
+`0.000000001d` is `0`. Where the tenth digit matters, scale the
+quantity (count in micro-units) or round explicitly with
+`std::decimal::format`.
+
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,
 ratios, and math where approximation is fine. The two never mix
@@ -237,6 +247,15 @@ malformed string is an `or` branch, not a sentinel); `unix(t)`,
 `nanos(t)`, `from_nanos(n)` and `time_from_unix(secs)` are the integer
 views. `now()` keeps returning epoch seconds as an `Int` for code that
 wants a number.
+
+A `Time` is 64 bits of nanoseconds, so it holds the years 1677 through
+2262 and no others. Past either end is refused, never wrapped into
+another century: a literal like `` `2999-01-01T00:00:00Z` `` is a
+compile error, `parse_time` of that text takes its `or` branch, and
+`time_from_unix(n)` or `t + d` that would leave the range stops the
+program with a `violation:` that names the operation. A date that far
+out is a number of seconds: `parse_iso8601(s)` still reads it as an
+`Int`.
 
 For *measuring elapsed time*, reach for the monotonic clock —
 it never jumps backward when the wall clock is adjusted:

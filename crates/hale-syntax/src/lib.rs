@@ -11,6 +11,7 @@
 pub mod api_names;
 pub mod ast;
 pub mod chains;
+pub mod decimal_literal;
 pub mod desugar;
 pub mod error;
 pub mod fmt;

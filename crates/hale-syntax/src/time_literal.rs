@@ -37,9 +37,41 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Why a time literal names no `Time`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeLiteralError {
+    /// Not an ISO-8601 UTC instant of the shape above.
+    Malformed,
+    /// Well-formed, but a date no i64 of nanoseconds holds: before
+    /// 1677-09-21T00:12:43.145224192Z or after
+    /// 2262-04-11T23:47:16.854775807Z. Refused, never wrapped (it used
+    /// to read `2999-01-01` as a date in 1829).
+    OutOfRange,
+}
+
+/// The first and last instants a `Time` holds, as text.
+pub const TIME_MIN_TEXT: &str = "1677-09-21T00:12:43.145224192Z";
+pub const TIME_MAX_TEXT: &str = "2262-04-11T23:47:16.854775807Z";
+
 /// Nanoseconds since the epoch, or None when `s` is not an ISO-8601
-/// UTC instant of the shape above.
+/// UTC instant of the shape above or names a date past Time's range.
 pub fn parse_iso8601_utc_ns(s: &str) -> Option<i64> {
+    parse_iso8601_utc(s).ok()
+}
+
+/// Nanoseconds since the epoch, or why `s` names none.
+pub fn parse_iso8601_utc(s: &str) -> Result<i64, TimeLiteralError> {
+    let (secs, frac) = parse_parts(s).ok_or(TimeLiteralError::Malformed)?;
+    // Before the epoch with a fraction, borrow a second first so the
+    // earliest instant (`secs × 10⁹` alone is past i64::MIN) still fits.
+    let (secs, frac) = if secs < 0 && frac > 0 { (secs + 1, frac - NS_PER_SEC) } else { (secs, frac) };
+    secs.checked_mul(NS_PER_SEC)
+        .and_then(|ns| ns.checked_add(frac))
+        .ok_or(TimeLiteralError::OutOfRange)
+}
+
+/// Unix seconds and the fraction's nanoseconds, apart.
+fn parse_parts(s: &str) -> Option<(i64, i64)> {
     let b = s.as_bytes();
     if b.len() < 19 {
         return None;
@@ -92,7 +124,7 @@ pub fn parse_iso8601_utc_ns(s: &str) -> Option<i64> {
         return None;
     }
     let secs = days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + se;
-    Some(secs * NS_PER_SEC + frac)
+    Some((secs, frac))
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fraction]Z`; the fraction only when it is not
@@ -136,6 +168,13 @@ mod tests {
         assert_eq!(parse_iso8601_utc_ns("1970-01-01T00:00:00"), Some(0));
         assert_eq!(parse_iso8601_utc_ns("1970-01-01T00:00:01Z"), Some(NS_PER_SEC));
         assert_eq!(parse_iso8601_utc_ns("1969-12-31T23:59:59Z"), Some(-NS_PER_SEC));
+        assert_eq!(parse_iso8601_utc_ns(TIME_MIN_TEXT), Some(i64::MIN));
+        assert_eq!(parse_iso8601_utc_ns(TIME_MAX_TEXT), Some(i64::MAX));
+        assert_eq!(format_iso8601_utc_ns(i64::MIN), TIME_MIN_TEXT);
+        assert_eq!(format_iso8601_utc_ns(i64::MAX), TIME_MAX_TEXT);
+        for far in ["2999-01-01T00:00:00Z", "2262-04-11T23:47:17Z", "1677-09-21T00:12:43.145224191Z", "0001-01-01T00:00:00Z"] {
+            assert_eq!(parse_iso8601_utc(far), Err(TimeLiteralError::OutOfRange), "{far}");
+        }
         for bad in ["2026-05-08 12:00:00Z", "2026-13-01T00:00:00Z", "2026-05-08T12:00:00+01:00", "2026-05-08T12:00:00.Z", "2026-05-08T12:00:00.1234567891Z", "now"] {
             assert!(parse_iso8601_utc_ns(bad).is_none(), "{bad}");
         }

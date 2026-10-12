@@ -270,3 +270,74 @@ fn oneshot_get_post_and_error_channel() {
     assert!(out.contains("post=[echo:hi]"), "got:\n{}", out);
     assert!(out.contains("bad-url-handled=true"), "got:\n{}", out);
 }
+
+/// A 5xx the retries cannot get past reaches the caller whole: the
+/// error carries the final response's status, headers and body. The
+/// retry path used to drop the body, and the keep-alive (pooled) path
+/// dropped the status too (status 0), so a service answering
+/// `503 {"retry_after": 30}` was indistinguishable from a dead host
+/// (downstream handoff). A one-shot `get` returns the 5xx as the
+/// response, as it always has.
+#[test]
+fn a_5xx_after_retries_keeps_its_status_and_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    // Two attempts for each Client (max_retries: 1), one for get.
+    let expected = 5;
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let a2 = accepts.clone();
+    let server = thread::spawn(move || {
+        for _ in 0..expected {
+            let (mut s, _) = match listener.accept() {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let n = a2.fetch_add(1, Ordering::SeqCst) + 1;
+            s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let _ = read_one_request(&mut s);
+            let body = format!("overloaded attempt {n}");
+            let resp = format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nRetry-After: 30\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+
+    let src = format!(
+        r#"
+        fn report(tag: String, e: std::http::HttpError) -> std::http::ClientResponse {{
+            println(tag, " kind=", e.kind, " status=", to_string(e.status),
+                    " retry_after=", std::str::contains(e.headers, "Retry-After: 30"),
+                    " body=[", std::str::from_bytes(e.body), "]");
+            return std::http::ClientResponse {{ status: -1, headers: "", body: b"" }};
+        }}
+        fn main() {{
+            let c = std::http::Client {{ max_retries: 1 }};
+            let r1 = c.get("http://127.0.0.1:{port}/a") or report("retry", err);
+            println("retry-returned=", to_string(r1.status));
+            let k = std::http::Client {{ keep_alive: true, max_retries: 1 }};
+            let r2 = k.get("http://127.0.0.1:{port}/b") or report("pooled", err);
+            println("pooled-returned=", to_string(r2.status));
+            let r3 = std::http::get("http://127.0.0.1:{port}/c") or report("oneshot", err);
+            println("oneshot status=", to_string(r3.status), " body=[", std::str::from_bytes(r3.body), "]");
+        }}
+    "#
+    );
+    let (out, status) = build_and_run("fivexx", &src);
+    let _ = server.join();
+    assert!(status.success(), "exit: {:?}\n{}", status, out);
+    assert!(
+        out.contains("retry kind=retries_exhausted status=503 retry_after=true body=[overloaded attempt 2]"),
+        "the retry path keeps the final 503's status, headers and body:\n{out}"
+    );
+    assert!(out.contains("retry-returned=-1"), "{out}");
+    assert!(
+        out.contains("pooled kind=retries_exhausted status=503 retry_after=true body=[overloaded attempt 4]"),
+        "the pooled path keeps them too (it answered status 0):\n{out}"
+    );
+    assert!(out.contains("pooled-returned=-1"), "{out}");
+    assert!(out.contains("oneshot status=503 body=[overloaded attempt 5]"), "{out}");
+    assert_eq!(accepts.load(Ordering::SeqCst), expected);
+}

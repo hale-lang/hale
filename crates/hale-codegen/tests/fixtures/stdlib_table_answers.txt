@@ -380,6 +380,7 @@ ns std::process open_prefixes=[]
   __try_wait_pid syscall
   __wait_pid syscall|block
   adopt syscall
+  close_stdin syscall
   dump_arena_residency syscall
   dump_pool_residency syscall
   exit syscall
@@ -949,6 +950,7 @@ std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(
 std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
 std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
 std::process::adopt | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=adopt
+std::process::close_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=close_stdin
 std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_arena_residency
 std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency
 std::process::exit | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=exit

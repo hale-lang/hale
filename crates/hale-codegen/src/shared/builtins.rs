@@ -903,6 +903,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_time_parse_iso8601_ns", parse_iso_ty, None);
         self.mark_pure_read(parse_iso_ns_fn);
+        // `parse_time`'s gate: well-formed AND a date a Time holds.
+        let can_parse_time_fn = self.module.add_function(
+            "lotus_time_can_parse_time",
+            can_parse_iso_ty,
+            None,
+        );
+        self.mark_pure_read(can_parse_time_fn);
+        // A Time no i64 holds is a violation where it would be made,
+        // never a wrap: `time_from_unix(n)` and `Time ± Duration`.
+        // Not pure: the out-of-range path exits.
+        // declare i64 @lotus_time_from_unix_checked(i64 secs)
+        // declare i64 @lotus_time_offset_checked(i64 t, i64 d, i32 sub)
+        self.module.add_function(
+            "lotus_time_from_unix_checked",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_time_offset_checked",
+            i64_t.fn_type(&[i64_t.into(), i64_t.into(), i32_t_local.into()], false),
+            None,
+        );
 
         // m38: starts_with / contains string predicates.
         // declare i32 @lotus_str_starts_with(ptr s, ptr prefix)
