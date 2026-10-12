@@ -78,6 +78,19 @@ fn run_scope_local(tag: &str, placement: &str) -> String {
     stdout
 }
 
+/// What the reader thread has still to deliver once the child has exited:
+/// every line up to the end of its stdout. `try_iter` would take only the
+/// lines already sent, and the reader may still be delivering the child's
+/// last ones (the reply to `bye`, seen missing on a loaded runner). Bounded:
+/// a grandchild could hold the pipe open.
+fn the_rest(lines: &std::sync::mpsc::Receiver<String>) -> Vec<String> {
+    let mut rest = Vec::new();
+    while let Ok(l) = lines.recv_timeout(Duration::from_secs(10)) {
+        rest.push(l);
+    }
+    rest
+}
+
 #[test]
 fn an_async_io_pool_serves_its_scope_local_subscriber() {
     // the handler runs on the worker while the body that built the
@@ -174,7 +187,7 @@ fn a_pinned_thread_serves_its_scope_local_subscriber_while_main_blocks() {
     stdin.write_all(b"bye\n").unwrap();
     drop(stdin);
     let status = child.wait().expect("wait");
-    seen.extend(lines.try_iter());
+    seen.extend(the_rest(&lines));
     let mut err = String::new();
     let _ = child.stderr.take().unwrap().read_to_string(&mut err);
     let _ = std::fs::remove_file(&bin);
@@ -609,7 +622,7 @@ fn pinned_mailbox_case(tag: &str, src: &str) {
     stdin.write_all(b"bye\n").unwrap();
     drop(stdin);
     let status = child.wait().expect("wait");
-    seen.extend(lines.try_iter());
+    seen.extend(the_rest(&lines));
     let mut err = String::new();
     let _ = child.stderr.take().unwrap().read_to_string(&mut err);
     let _ = std::fs::remove_file(&bin);
