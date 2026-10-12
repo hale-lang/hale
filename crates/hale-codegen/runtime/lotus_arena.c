@@ -20663,10 +20663,13 @@ int lotus_str_can_parse_float(const char *s) {
 
 /*
  * Parse a Decimal literal source spelling into an i128 mantissa
- * with implicit scale 9. Mirrors parse_decimal_to_i128_scale9 in
- * codegen.rs — accepts optional trailing 'd', optional leading
- * sign, '_' digit separators, and truncates at exactly 9 fractional
- * digits (pads with zeros below 9). The i128 result is split into
+ * with implicit scale 9. Mirrors hale-syntax's decimal_literal.rs
+ * (the literal's parse) — accepts optional trailing 'd', optional
+ * leading sign, '_' digit separators, pads with zeros below 9
+ * fractional digits, and REFUSES a nonzero digit past the ninth:
+ * that is a value no Decimal holds, and it used to be truncated in
+ * silence (`parse_decimal("0.123456789012")` was 0.123456789).
+ * Zeros past the ninth place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
  * used by lotus_decimal_to_string for the print path.
  *
@@ -20699,6 +20702,8 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
                 /* overflow guard: re-divide and compare */
                 if (mantissa / 10 != prev) return 0;
                 if (seen_dot) frac_digits += 1;
+            } else if (c != '0') {
+                return 0;  /* past scale 9: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;

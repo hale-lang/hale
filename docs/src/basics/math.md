@@ -130,6 +130,16 @@ value is the same number); when a display needs fixed places,
 `std::decimal::format(price, 2)` renders exactly two fraction
 digits with half-up rounding.
 
+A `Decimal` has exactly nine digits after the point. A literal with
+a nonzero digit past the ninth, like `0.1234567891d`, is a compile
+error at the literal, and `std::str::parse_decimal` of such text
+takes its `or` branch: neither drops the digit in silence. Arithmetic
+stays at nine places and truncates toward zero past them, so
+`1.0d / 3.0d` is `0.333333333` and a product smaller than
+`0.000000001d` is `0`. Where the tenth digit matters, scale the
+quantity (count in micro-units) or round explicitly with
+`std::decimal::format`.
+
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,
 ratios, and math where approximation is fine. The two never mix
