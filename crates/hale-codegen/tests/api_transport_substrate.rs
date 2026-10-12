@@ -30,8 +30,6 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
 
@@ -41,7 +39,9 @@ use http_rpc::*;
 /// `$BIND` and over a Unix socket at `$SOCK`. A call holds its receiver for
 /// `$SLOW_MS`. With `$STRAY_PORT` and `$STRAY_UNIX_PORT` set, once `$GO`
 /// appears the program connects to each and relays the descriptor on route
-/// `#1` of the HTTP and the Unix listener, which no consumer takes.
+/// `#1` of the HTTP and the Unix listener, which no consumer takes. `$GO`
+/// holds the HTTP listener's name (`127.0.0.1:<the port it was given>`:
+/// `$BIND` asks for port 0).
 const BENCH: &str = r##"
 type Ping { n: Int; }
 type Pong { n: Int; }
@@ -107,7 +107,7 @@ main locus Desk {
             while !self.draining && (std::io::fs::read_file(go) or "") == "" {
                 std::time::sleep(5ms);
             }
-            self.stray(stray, std::env::var("BIND"));
+            self.stray(stray, std::io::fs::read_file(go) or "");
             self.stray(std::str::parse_int(std::env::var("STRAY_UNIX_PORT")) or 0, "unix:" + std::env::var("SOCK"));
             println("relayed");
         }
@@ -178,7 +178,7 @@ fn a_connection_no_consumer_takes_is_closed_by_the_api_listener() {
     );
     server.ready();
     wait_accepting_unix(&server.sock());
-    std::fs::write(server_go(), "go").expect("write GO");
+    std::fs::write(server_go(), format!("127.0.0.1:{}", server.port)).expect("write GO");
     for (what, end) in [("the HTTP listener", &tcp_end), ("the Unix listener", &unix_end)] {
         end.set_nonblocking(false).unwrap();
         let (mut far, _) = end.accept().expect("the program dials");
@@ -267,7 +267,7 @@ fn the_bench_program_runs_clean_under_asan() {
     );
     server.ready();
     wait_accepting_unix(&server.sock());
-    std::fs::write(&go, "go").expect("write GO");
+    std::fs::write(&go, format!("127.0.0.1:{}", server.port)).expect("write GO");
     for end in [&tcp_end, &unix_end] {
         let (mut far, _) = end.accept().expect("the program dials");
         far.set_read_timeout(Some(Duration::from_secs(10))).unwrap();

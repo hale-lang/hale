@@ -31,8 +31,6 @@ mod h2_client;
 mod harness;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
-#[path = "support/ports.rs"]
-mod ports;
 
 use h2_client::*;
 use http_rpc::*;
@@ -41,6 +39,8 @@ use http_rpc::*;
 /// `$GO` appearing relays a connection to `$STRAY_PORT` on route `#1` of the
 /// listener, which no consumer takes; `$STOPNAME` appearing stops the
 /// listener by its name (the bound address); `$TRIGGER` stops the transport.
+/// `$GO` and `$STOPNAME` hold the listener's name (`127.0.0.1:<the port it
+/// was given>`: `$BIND` asks for port 0).
 const ECHO: &str = r##"
 @unbounded
 fn written(path: String) -> Bool {
@@ -77,9 +77,9 @@ main locus App {
     bus {
         publish __TcpAcceptedT;
     }
-    // A connection relayed on a route of the listener that no consumer takes.
-    fn stray() {
-        let listener = std::env::var("BIND");
+    // A connection relayed on a route of the listener (`listener`, its name)
+    // that no consumer takes.
+    fn stray(listener: String) {
         let fd = std::io::tcp::__connect("127.0.0.1", std::str::parse_int(std::env::var("STRAY_PORT")) or 0);
         __TcpAcceptedT <- std::io::tcp::Accepted { listener: listener, route: listener + "#1", fd: fd, seq: 0 };
         println("relayed");
@@ -91,11 +91,11 @@ main locus App {
         while !self.draining && !written(all) {
             if !strayed && written(std::env::var("GO")) {
                 strayed = true;
-                self.stray();
+                self.stray(std::io::fs::read_file(std::env::var("GO")) or "");
             }
             if !named && written(std::env::var("STOPNAME")) {
                 named = true;
-                println("named=", std::io::tcp::stop(std::env::var("BIND")));
+                println("named=", std::io::tcp::stop(std::io::fs::read_file(std::env::var("STOPNAME")) or ""));
             }
             std::time::sleep(10ms);
         }
@@ -147,7 +147,7 @@ fn a_connection_no_consumer_takes_is_closed_by_the_h2_listener() {
         ],
     );
     server.ready();
-    std::fs::write(&go, "go").expect("write GO");
+    std::fs::write(&go, format!("127.0.0.1:{}", server.port)).expect("write GO");
     let (mut far, _) = end.accept().expect("the program dials");
     far.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let t0 = Instant::now();
@@ -171,7 +171,7 @@ fn stop_by_name_closes_the_h2_listener_and_its_connections_are_served_on() {
     server.ready();
     let mut c = Client::connect(server.port);
     assert_eq!(hello(&mut c, 1), 200);
-    std::fs::write(&stopname, "stop").expect("write STOPNAME");
+    std::fs::write(&stopname, format!("127.0.0.1:{}", server.port)).expect("write STOPNAME");
     let start = Instant::now();
     while !closed(server.port) {
         assert!(start.elapsed() < WAIT, "stop(name) closes the listener");
@@ -253,7 +253,7 @@ fn the_h2_listener_runs_clean_under_asan() {
         ],
     );
     server.ready();
-    std::fs::write(&go, "go").expect("write GO");
+    std::fs::write(&go, format!("127.0.0.1:{}", server.port)).expect("write GO");
     let (mut far, _) = end.accept().expect("the program dials");
     far.set_read_timeout(Some(WAIT)).unwrap();
     assert!(matches!(far.read(&mut [0u8; 16]), Ok(0)), "the stray connection is closed");
@@ -263,7 +263,7 @@ fn the_h2_listener_runs_clean_under_asan() {
         let mut gone = Client::connect(server.port);
         assert_eq!(hello(&mut gone, 1), 200);
     }
-    std::fs::write(&stopname, "stop").expect("write STOPNAME");
+    std::fs::write(&stopname, format!("127.0.0.1:{}", server.port)).expect("write STOPNAME");
     let start = Instant::now();
     while !closed(server.port) {
         assert!(start.elapsed() < WAIT, "stop(name) closes the listener");

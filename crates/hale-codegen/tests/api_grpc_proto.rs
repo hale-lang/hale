@@ -393,12 +393,12 @@ fn the_description_is_a_document_message_under_protobuf() {
             }
         }
         assert_eq!(rest.len(), len, "{ctype}: the string runs to the end of the message");
-        assert_eq!(String::from_utf8(rest.to_vec()).unwrap(), description_over_grpc("public.alice.description.json", server.port, "public"));
+        assert_eq!(String::from_utf8(rest.to_vec()).unwrap(), description_over_grpc("public.alice.description.json", super::api_grpc::http_rpc::BIND_ADDR, "public"));
     }
     // and a JSON caller still gets the document itself
     call(&mut c, 5, "/hale.api.Description/Describe", Some("t-alice"), None, JSON, &super::api_grpc::message("{}"));
     let got = c.response(5, WAIT);
-    assert_eq!(super::api_grpc::text_of(&got), description_over_grpc("public.alice.description.json", server.port, "public"));
+    assert_eq!(super::api_grpc::text_of(&got), description_over_grpc("public.alice.description.json", super::api_grpc::http_rpc::BIND_ADDR, "public"));
     assert!(server.finish().status.success());
 }
 

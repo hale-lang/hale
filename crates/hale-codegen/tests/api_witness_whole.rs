@@ -24,6 +24,7 @@
 //! revision, a credential that expires) stays in the tests that build their
 //! own.
 
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -32,8 +33,6 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
 #[path = "support/unix_rpc.rs"]
@@ -53,18 +52,30 @@ fn swap(src: &str, from: &str, to: &str) -> String {
     src.replacen(from, to, 1)
 }
 
+/// Where the hub, the MCP endpoint and the gRPC endpoint listen: port 0, each
+/// on a loopback address of its own, so the port the kernel gave each is
+/// read back by address (`Server::listening_on`). Written into the program
+/// (a bind read from the environment states no address in the hub's
+/// description), and stated by the descriptions as written.
+const HUB_BIND: &str = "127.0.0.3:0";
+const MCP_BIND: &str = "127.0.0.4:0";
+const GRPC_BIND: &str = "127.0.0.5:0";
+
+fn host_of(bind: &str) -> std::net::Ipv4Addr {
+    bind.split(':').next().unwrap().parse().expect("an IPv4 bind")
+}
+
 /// The contract's program for a test: its addresses from `$BIND`, `$BIND2`,
-/// `$SOCK` and `$OPERATOR`, the hub's at `hub` (a bind read from the
-/// environment states no address in the description), `Public` also served
+/// `$SOCK` and `$OPERATOR`, the hub's at `HUB_BIND`, `Public` also served
 /// over the hub, and a
 /// run loop that stops `public`, `partner` and `admin` on `$TRIGGER_PUBLIC`,
 /// `$TRIGGER_PARTNER` and `$TRIGGER_ADMIN` and everything on `$TRIGGER`.
-fn witness_whole(hub: u16, mcp: u16, grpc: u16) -> String {
+fn witness_whole() -> String {
     let s = CONTRACT;
     let s = swap(&s, "bind: \"127.0.0.1:8080\"", "bind: std::env::var(\"BIND\")");
     let s = swap(&s, "bind: \"127.0.0.1:8081\"", "bind: std::env::var(\"BIND2\")");
     let s = swap(&s, "path: \"/run/desk/admin.sock\"", "path: std::env::var(\"SOCK\")");
-    let s = swap(&s, "bind: \"127.0.0.1:9000\"", &format!("bind: \"127.0.0.1:{hub}\""));
+    let s = swap(&s, "bind: \"127.0.0.1:9000\"", &format!("bind: \"{HUB_BIND}\""));
     let s = swap(&s, "operator: \"uid:1000\"", "operator: std::env::var(\"OPERATOR\")");
     let s = swap(
         &s,
@@ -74,7 +85,7 @@ fn witness_whole(hub: u16, mcp: u16, grpc: u16) -> String {
     let s = swap(
         &s,
         "        let feed = api::serve(",
-        &format!("        let agent = api::serve(Public, mcp::Rpc {{ bind: \"127.0.0.1:{mcp}\", principals: self.bearer, roles: self.public_roles }}, as: \"agent\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let wire = api::serve(Public, grpc::Rpc {{ bind: \"127.0.0.1:{grpc}\", principals: self.bearer, roles: self.public_roles }}, as: \"wire\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let feed = api::serve("),
+        &format!("        let agent = api::serve(Public, mcp::Rpc {{ bind: \"{MCP_BIND}\", principals: self.bearer, roles: self.public_roles }}, as: \"agent\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let wire = api::serve(Public, grpc::Rpc {{ bind: \"{GRPC_BIND}\", principals: self.bearer, roles: self.public_roles }}, as: \"wire\", receivers: {{ Orders: self.orders }}, bound: 16, on_full: refuse);\n        let feed = api::serve("),
     );
     let s = swap(
         &s,
@@ -112,15 +123,13 @@ fn witness_whole(hub: u16, mcp: u16, grpc: u16) -> String {
     )
 }
 
-/// The program built once per process, and the ports its hub, its MCP
-/// endpoint and its gRPC endpoint were built for.
-fn build() -> (PathBuf, u16, u16, u16) {
-    static BIN: OnceLock<(PathBuf, u16, u16, u16)> = OnceLock::new();
+/// The program, built once per process.
+fn build() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         let bin = harness::unique_bin("api_witness_whole");
-        let (hub, mcp, grpc) = (ports::free_port(), ports::free_port(), ports::free_port());
-        build_opts::build_source(&witness_whole(hub, mcp, grpc), &bin, &build_opts::options()).expect("build the contract's program");
-        (bin, hub, mcp, grpc)
+        build_opts::build_source(&witness_whole(), &bin, &build_opts::options()).expect("build the contract's program");
+        bin
     })
     .clone()
 }
@@ -128,34 +137,36 @@ fn build() -> (PathBuf, u16, u16, u16) {
 const PUBLIC_DIGEST: &str = "fnv1a64:a8930d6e7998e986";
 const ADMIN_DIGEST: &str = "fnv1a64:40381db6685c9f75";
 
-/// The program, running: the http server (`port`, `port2`, the socket), and
-/// the ports of its hub and its MCP endpoint.
+/// The program, running: the http server (`port`, `port2()`, the socket),
+/// and the addresses of its hub, its MCP endpoint and its gRPC endpoint.
 struct Whole {
     server: Server,
-    hub: u16,
-    mcp: u16,
-    grpc: u16,
+    hub: SocketAddrV4,
+    mcp: SocketAddrV4,
+    grpc: SocketAddrV4,
 }
 
-fn start(bin: &std::path::Path, hub: u16, mcp: u16, grpc: u16, env: &[(&str, &str)]) -> Whole {
+fn start(bin: &std::path::Path, env: &[(&str, &str)]) -> Whole {
     let operator = format!("uid:{}", unix_rpc::me().0);
     let mut all: Vec<(&str, &str)> = vec![("OPERATOR", &operator)];
     all.extend_from_slice(env);
     let server = Server::start(bin, &all);
     server.ready();
-    wait_listening(server.port2);
+    wait_listening(server.port2());
     wait_accepting_unix(&server.sock());
-    wait_listening(hub);
-    wait_listening(mcp);
-    wait_listening(grpc);
+    let at = |bind: &str| server.listening_on(host_of(bind)).unwrap_or_else(|| panic!("the program exited before it listened on {bind}"));
+    let (hub, mcp, grpc) = (at(HUB_BIND), at(MCP_BIND), at(GRPC_BIND));
+    for a in [hub, mcp, grpc] {
+        wait_listening(a);
+    }
     Whole { server, hub, mcp, grpc }
 }
 
-fn place(port: u16, token: &str) -> Response {
+fn place(port: impl Reach, token: &str) -> Response {
     request(port, "POST", "/call/Orders::place", &[bearer(token), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some("{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}"))
 }
 
-fn cancel(port: u16, token: &str, order: i64) -> Response {
+fn cancel(port: impl Reach, token: &str, order: i64) -> Response {
     let body = format!("{{\"order\":{order}}}");
     request(port, "POST", "/call/Orders::cancel", &[bearer(token), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some(&body))
 }
@@ -180,7 +191,7 @@ fn fixture(name: &str) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).expect("json")
 }
 
-fn wait_closed(port: u16, what: &str) {
+fn wait_closed(port: impl Reach, what: &str) {
     let start = Instant::now();
     while !closed(port) {
         assert!(start.elapsed() < Duration::from_secs(10), "{what}");
@@ -190,9 +201,8 @@ fn wait_closed(port: u16, what: &str) {
 
 #[test]
 fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
-    let (bin, hub, mcp, grpc) = build();
-    let w = start(&bin, hub, mcp, grpc, &[]);
-    let (public, partner) = (w.server.port, w.server.port2);
+    let w = start(&build(), &[]);
+    let (public, partner) = (w.server.port, w.server.port2());
 
     // ---- the stream half: admission, in the contract's words ----
     let mut dave = Ws::connect(w.hub, Some("t-dave"));
@@ -228,7 +238,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
         assert_eq!(status, 200, "{body}");
         let got: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{e}: {body}"));
         let mut want = fixture(name);
-        want["listener"]["address"] = serde_json::Value::String(format!("127.0.0.1:{}", w.hub));
+        want["listener"]["address"] = serde_json::Value::String(HUB_BIND.to_string());
         assert_eq!(got, want, "the description for {token}");
         assert_eq!(body.contains("\"topic\":\"Fills\""), token == "t-dave", "{token}: {body}");
     }
@@ -265,16 +275,16 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     let line = unix(&w, &format!("{{\"call\":\"Orders::cancel\",\"payload\":{{\"order\":999}},\"id\":\"a-3\",\"digest\":\"{ADMIN_DIGEST}\"}}"));
     assert!(line.contains("\"ok\":false,\"error\":{\"code\":\"unknown_order\""), "the operator is let through to the handler: {line}");
     // the descriptions differ with the exposure's source, and are the fixtures'
-    for (port, token, name, bound) in [
-        (public, "t-alice", "public.alice.description.json", "127.0.0.1:8080"),
-        (public, "t-bob", "public.bob.description.json", "127.0.0.1:8080"),
-        (partner, "t-carol", "partner.carol.description.json", "127.0.0.1:8081"),
-        (partner, "t-alice", "partner.alice.description.json", "127.0.0.1:8081"),
+    for (port, token, name, bound, stated) in [
+        (public.addr(), "t-alice", "public.alice.description.json", "127.0.0.1:8080", BIND_ADDR),
+        (public.addr(), "t-bob", "public.bob.description.json", "127.0.0.1:8080", BIND_ADDR),
+        (partner, "t-carol", "partner.carol.description.json", "127.0.0.1:8081", BIND2_ADDR),
+        (partner, "t-alice", "partner.alice.description.json", "127.0.0.1:8081", BIND2_ADDR),
     ] {
         let got = request(port, "GET", "/.description", &[bearer(token)], None);
         assert_eq!(got.status, 200, "{}", got.body);
-        let want = description_fixture(name).replace(bound, &format!("127.0.0.1:{port}"));
-        assert_eq!(got.body, want, "{token}: the description of :{port} differs from {name}");
+        let want = description_fixture(name).replace(bound, stated);
+        assert_eq!(got.body, want, "{token}: the description of {port} differs from {name}");
     }
     let nobody = request(public, "GET", "/.description", &[bearer("t-mallory")], None);
     assert_eq!(nobody.status, 401, "{}", nobody.body);
@@ -282,7 +292,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert!(line.contains("\"ok\":true"), "{line}");
 
     // ---- a digest mismatch names the served digest, on each transport ----
-    for port in [public, partner] {
+    for port in [public.addr(), partner] {
         let got = request(port, "POST", "/call/Orders::place", &[bearer("t-alice"), h("Hale-Surface-Digest", "fnv1a64:0123456789abcdef")], Some("{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}"));
         assert_eq!(got.status, 409, "{}", got.body);
         assert_eq!(
@@ -434,12 +444,12 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
 
     // ---- `Public` over gRPC, beside the rest, in the same run ----
     // (the connection stays open: the final stop says GOAWAY on it)
-    let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
+    let mut g = super::api_grpc::h2_client::Client::connect_at(w.grpc);
     {
         use super::api_grpc::{description_over_grpc, text_of, unary};
         let described = unary(&mut g, 1, "/hale.api.Description/Describe", Some("t-alice"), "{}");
         assert_eq!(described.header("grpc-status"), Some("0"), "{described:?}");
-        assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", w.grpc, "wire"), "alice's description over gRPC is the fixture's");
+        assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", GRPC_BIND, "wire"), "alice's description over gRPC is the fixture's");
         // a call is a call: the same receiver, the same handler, the same stream
         let placed = unary(&mut g, 3, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
         assert_eq!(placed.header("grpc-status"), Some("0"), "{placed:?}");
@@ -509,8 +519,8 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     let (hub, mcp, grpc) = (w.hub, w.mcp, w.grpc);
     let done = w.server.finish();
     assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
-    assert!(std::net::TcpStream::connect(("127.0.0.1", mcp)).is_err(), "the MCP endpoint's address is released");
-    assert!(std::net::TcpStream::connect(("127.0.0.1", grpc)).is_err(), "the gRPC endpoint's address is released");
+    assert!(std::net::TcpStream::connect(mcp).is_err(), "the MCP endpoint's address is released");
+    assert!(std::net::TcpStream::connect(grpc).is_err(), "the gRPC endpoint's address is released");
     let go = g.goaway_within(Duration::from_secs(15)).expect("wire's stop says GOAWAY on the open connection");
     assert_eq!(go.1, 0, "NO_ERROR");
     for line in ["public stopped", "partner stopped", "admin stopped", "stopped"] {
@@ -520,7 +530,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert_eq!(dave.text(), "{\"type\":\"closed\",\"reason\":\"shutting_down\"}");
     assert!(matches!(dave.recv_within(5000), Frame::Close(_)));
     assert_eq!(dave.recv_within(5000), Frame::Eof);
-    assert!(std::net::TcpStream::connect(("127.0.0.1", hub)).is_err(), "the hub's address is released");
+    assert!(std::net::TcpStream::connect(hub).is_err(), "the hub's address is released");
 }
 
 #[test]
@@ -530,10 +540,9 @@ fn the_contracts_program_runs_clean_under_asan() {
     // a connection that outlives its request, a subscriber that goes away, a
     // listener released at stop(), a peer locus per connection
     let bin = harness::unique_bin("api_witness_whole_asan");
-    let (hub, mcp, grpc) = (ports::free_port(), ports::free_port(), ports::free_port());
-    harness::build_source_asan(&witness_whole(hub, mcp, grpc), &bin);
-    let w = start(&bin, hub, mcp, grpc, &[("LOTUS_NO_CHUNK_POOL", "1")]);
-    let (public, partner) = (w.server.port, w.server.port2);
+    harness::build_source_asan(&witness_whole(), &bin);
+    let w = start(&bin, &[("LOTUS_NO_CHUNK_POOL", "1")]);
+    let (public, partner) = (w.server.port, w.server.port2());
     let mut dave = Ws::connect(w.hub, Some("t-dave"));
     dave.subscribe("Fills");
     assert_eq!(dave.text(), "{\"type\":\"subscribed\",\"topic\":\"Fills\"}");
@@ -573,7 +582,7 @@ fn the_contracts_program_runs_clean_under_asan() {
     );
     assert!(placed.body.contains(r#""isError":false"#), "{}", placed.body);
     {
-        let mut g = super::api_grpc::h2_client::Client::connect(w.grpc);
+        let mut g = super::api_grpc::h2_client::Client::connect_at(w.grpc);
         let r = super::api_grpc::unary(&mut g, 1, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
         assert_eq!(r.header("grpc-status"), Some("0"), "{r:?}");
         let r = super::api_grpc::unary(&mut g, 3, "/Public/Orders.cancel", Some("t-bob"), "{\"order\":41}");

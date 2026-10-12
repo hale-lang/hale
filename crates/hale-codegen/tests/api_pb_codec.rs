@@ -23,8 +23,6 @@ mod build_opts;
 mod harness;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
-#[path = "support/ports.rs"]
-mod ports;
 
 use http_rpc::{contract_dir, recording};
 

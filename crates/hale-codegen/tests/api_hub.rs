@@ -16,8 +16,6 @@ use std::sync::OnceLock;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/ws_hub.rs"]
 mod ws_hub;
 

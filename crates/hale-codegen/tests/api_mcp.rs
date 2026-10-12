@@ -22,8 +22,6 @@ use std::time::Duration;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
 
