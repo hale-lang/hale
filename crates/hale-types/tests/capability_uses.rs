@@ -91,18 +91,59 @@ fn a_construction_is_refused_at_the_literal_with_its_lifecycle() {
                main locus App {\n    params {\n        l: std::io::tcp::Listener = std::io::tcp::Listener {\n            \
                host: \"127.0.0.1\",\n            port: 0,\n            max_accepts: -1,\n            on_connection: ignore_conn,\n        };\n    }\n}\n\n\
                fn main() { App { }; }\n";
+    // The Listener is the TCP connection substrate's (appended stdlib
+    // source, beyond the horizon): its lifecycle's requirements are
+    // refused at the literal, one per capability. Its consumer serves
+    // through the `ConnHandler` interface, whose dispatch reaches every
+    // handler the substrate declares — `std::http::Responder`'s too.
+    let http = "the `std::http` server is built on raw TCP and isn't available in the browser";
+    let time = "the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and \
+                `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep \
+                never waits";
+    let take = "`std::io::tcp::Listener` → `birth()` → `std::io::tcp::Connections` → `on_conn()` → \
+                `std::io::tcp::Connections::take`";
     refused_on_wasm32(
         src,
-        &[(
-            5,
-            37,
-            &format!(
-                "`std::io::tcp` is unavailable under {{selector}}: {TCP} — witness: `std::io::tcp::Listener` → `birth()` \
-                 → `std::io::tcp::__listen_socket`"
+        &[
+            (
+                5,
+                37,
+                &format!(
+                    "`std::http` is unavailable under {{selector}}: {http} — witness: {take} → `__StdIoTcpConnInline` \
+                     → `birth()` → `std::http::Responder::serve` → `__http_handle_one_conn` → `std::http::parse_request`"
+                ),
             ),
-        )],
+            (
+                5,
+                37,
+                &format!(
+                    "`std::io::tcp` is unavailable under {{selector}}: {TCP} — witness: `std::io::tcp::Listener` → \
+                     `birth()` → `std::io::tcp::__close_fd`"
+                ),
+            ),
+            (5, 37, &format!("`std::time` is unavailable under {{selector}}: {time} — witness: {take} → `std::time::sleep`")),
+        ],
     );
     admitted("fn keep(l: std::io::tcp::Listener) { }\n\nfn main() { }\n");
+}
+
+/// `std::http::Server` is the TCP connection substrate's, appended to the
+/// program that names it: beyond the horizon like the stdlib, so what its
+/// lifecycle needs is refused at the program's literal, one refusal per
+/// namespace, never inside the substrate's own bodies.
+#[test]
+fn a_substrate_server_is_refused_at_its_literal() {
+    let src = "locus Hello {\n    fn handle(req: std::http::Request) -> std::http::Response {\n        \
+               return std::http::Response { status: 200, body: \"ok\" };\n    }\n}\n\n\
+               main locus App {\n    params {\n        s: std::http::Server = std::http::Server { port: 0, handler: Hello { } };\n    }\n}\n\n\
+               fn main() { App { }; }\n";
+    let got = check(src, Some("wasm32"));
+    let at: std::collections::BTreeSet<(usize, usize)> = got.iter().map(|(l, c, _)| (*l, *c)).collect();
+    assert_eq!(at, [(9, 32)].into_iter().collect(), "every refusal is at the literal: {got:?}");
+    let namespaces: Vec<&str> = got.iter().map(|(_, _, m)| m.split('`').nth(1).unwrap_or("")).collect();
+    assert_eq!(namespaces, ["std::http", "std::io::tcp", "std::io::unix", "std::time"], "{got:?}");
+    assert!(got.iter().all(|(_, _, m)| m.contains("witness: `std::http::Server` → `birth()`")), "{got:?}");
+    assert_eq!(check(src, None), vec![], "the host admits it");
 }
 
 /// Paired case 11: a method on a handle, resolved through the receiver's

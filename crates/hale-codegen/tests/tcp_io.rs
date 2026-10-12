@@ -1,4 +1,4 @@
-//! The `tcp_io` integration-test binary: 13 test files of this area, kept
+//! The `tcp_io` integration-test binary: 14 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -19,6 +19,8 @@ mod io_tls;
 mod tcp_connect_refused;
 #[path = "tcp_dns_connect.rs"]
 mod tcp_dns_connect;
+#[path = "tcp_listener.rs"]
+mod tcp_listener;
 #[path = "tcp_listener_exclusive_bind.rs"]
 mod tcp_listener_exclusive_bind;
 #[path = "tcp_raw_fd_freefns.rs"]

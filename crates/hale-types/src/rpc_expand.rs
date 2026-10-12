@@ -501,25 +501,23 @@ const H2_NAMES: &[&str] = &["Listener", "Conn", "Event", "Cmd"];
 /// Whether any name sequence the programs spell satisfies `pred`, given the
 /// last four names of the walk, the oldest first.
 fn spells(programs: &[&mut Program], pred: &dyn Fn(&[&str; 4]) -> bool) -> bool {
+    programs.iter().any(|p| p.items.iter().any(|item| item_spells(item, pred)))
+}
+
+/// [`spells`], over one item.
+fn item_spells(item: &TopDecl, pred: &dyn Fn(&[&str; 4]) -> bool) -> bool {
     use hale_syntax::names::{for_each_spelled_in_item, Spelled};
     let mut found = false;
-    for p in programs {
-        for item in &p.items {
-            let mut window: [&str; 4] = ["", "", "", ""];
-            for_each_spelled_in_item(item, &mut |s| {
-                if let Spelled::Name(n) = s {
-                    window = [window[1], window[2], window[3], n];
-                    if pred(&window) {
-                        found = true;
-                    }
-                }
-            });
-            if found {
-                return true;
+    let mut window: [&str; 4] = ["", "", "", ""];
+    for_each_spelled_in_item(item, &mut |s| {
+        if let Spelled::Name(n) = s {
+            window = [window[1], window[2], window[3], n];
+            if pred(&window) {
+                found = true;
             }
         }
-    }
-    false
+    });
+    found
 }
 
 /// Whether the programs need the HTTP/2 server: a `grpc::Rpc` transport (at
@@ -544,16 +542,18 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 
 /// The stdlib file an offset of the appended runtime lies in: the file's
 /// name as `crates/hale-stdlib/hl/` spells it, its text, and the offset
-/// within it. Each of the runtime's five files parses in a window of its
+/// within it. Each of the runtime's six files parses in a window of its
 /// own ([`inject_runtime`], [`inject_hub`], [`inject_h2`],
-/// [`inject_grpc`], [`inject_tcp_serve`]); `None` outside them.
+/// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`]);
+/// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 5] = [
+    let windows: [(u32, &'static str, &'static str); 6] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
         (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
         (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
+        (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
@@ -714,23 +714,90 @@ topic __ApiHubOutT { payload: __StdApiHubOut; subject: \"__api.hub.out\"; keyed_
 
 /// The names of the TCP connection substrate a program may spell under
 /// `std::io::tcp`.
-const TCP_SERVE_NAMES: &[&str] = &["Acceptor", "Connections", "Accepted", "ConnHandler"];
+const TCP_SERVE_NAMES: &[&str] = &["Listener", "Acceptor", "Connections", "Accepted", "ConnHandler"];
 
-/// Whether the programs name the TCP connection substrate: `std::http::Server`
-/// (or `std::http::Responder`), or one of `std::io::tcp`'s substrate names.
+/// Whether a name sequence names the TCP connection substrate:
+/// `std::http::Server` (or `std::http::Responder`), or one of
+/// `std::io::tcp`'s substrate names (its `Listener` among them).
+fn names_tcp_serve(w: &[&str; 4]) -> bool {
+    (w[1] == "std" && w[2] == "http" && (w[3] == "Server" || w[3] == "Responder"))
+        || (w[0] == "std" && w[1] == "io" && w[2] == "tcp" && TCP_SERVE_NAMES.contains(&w[3]))
+}
+
+/// Whether the programs name the TCP connection substrate.
 fn mentions_tcp_serve(programs: &[&mut Program]) -> bool {
-    spells(programs, &|w| {
-        (w[1] == "std" && w[2] == "http" && (w[3] == "Server" || w[3] == "Responder"))
-            || (w[0] == "std" && w[1] == "io" && w[2] == "tcp" && TCP_SERVE_NAMES.contains(&w[3]))
-    })
+    spells(programs, &names_tcp_serve)
+}
+
+/// Whether a declaration names the TCP connection substrate: one that
+/// brings it into the program, so the substrate's declarations
+/// ([`is_tcp_serve_appended_pos`]) are there because it, or another
+/// declaration that names it, is.
+pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
+    item_spells(item, &names_tcp_serve)
 }
 
 /// Where the substrate parses: the last window of the runtime's space.
 const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 
-/// Whether an offset is in the TCP substrate's appended source.
+/// Where `std::io::tcp::Listener` parses: past the substrate, in the same
+/// last window of the runtime's space.
+const TCP_LISTENER_BASE: u32 = TCP_SERVE_BASE + 0x0008_0000;
+
+/// Whether an offset is in the TCP substrate's appended source, or the
+/// `std::io::tcp::Listener` built on it.
 pub fn is_tcp_serve_pos(pos: u32) -> bool {
     (TCP_SERVE_BASE..TCP_SERVE_BASE + hale_stdlib::TCP_SERVE_SOURCE.len() as u32).contains(&pos)
+        || (TCP_LISTENER_BASE..TCP_LISTENER_BASE + hale_stdlib::TCP_LISTENER_SOURCE.len() as u32).contains(&pos)
+}
+
+/// The TCP substrate's declarations in the programs, by name: its loci and
+/// its free fns. Appended to the program's own seed, they are stdlib source
+/// the program names by its paths (`std::io::tcp::Listener`,
+/// `std::http::Server`); a judgment that leaves the stdlib out leaves
+/// them out too.
+#[derive(Debug, Default, Clone)]
+pub struct TcpServeDecls {
+    pub loci: BTreeSet<String>,
+    pub fns: BTreeSet<String>,
+}
+
+impl TcpServeDecls {
+    pub fn of(programs: &[&Program]) -> Self {
+        let mut out = TcpServeDecls::default();
+        for p in programs {
+            for item in flat_decls(&p.items) {
+                match item {
+                    TopDecl::Locus(l) if is_tcp_serve_pos(l.name.span.start.0) => {
+                        out.loci.insert(l.name.name.clone());
+                    }
+                    TopDecl::Fn(f) if is_tcp_serve_pos(f.name.span.start.0) => {
+                        out.fns.insert(f.name.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a fn row (`locus` its locus, `None` for a free fn) is one of
+    /// the substrate's.
+    pub fn holds(&self, locus: Option<&str>, fn_name: &str) -> bool {
+        match locus {
+            Some(l) => self.loci.contains(l),
+            None => self.fns.contains(fn_name),
+        }
+    }
+}
+
+/// Where the substrate's topic parses.
+const TCP_TOPICS_BASE: u32 = API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000;
+
+/// Whether an offset is in the TCP substrate's appended source or its
+/// topic's: a declaration [`inject_tcp_serve`] appended.
+pub fn is_tcp_serve_appended_pos(pos: u32) -> bool {
+    is_tcp_serve_pos(pos) || (TCP_TOPICS_BASE..TCP_TOPICS_BASE + TCP_TOPICS_SRC.len() as u32).contains(&pos)
 }
 
 const TCP_TOPICS_SRC: &str = "topic __TcpAcceptedT { payload: __StdIoTcpAccepted; subject: \"__tcp.accepted\"; keyed_by route; on_unmatched: fallback; }
@@ -761,10 +828,34 @@ fn inject_tcp_serve(programs: &mut [&mut Program]) {
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
         ),
     }
-    match parse_source_at(TCP_TOPICS_SRC, API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000) {
+    match parse_source_at(TCP_TOPICS_SRC, TCP_TOPICS_BASE) {
         Ok(t) => programs[0].items.extend(t.items),
         Err(ds) => eprintln!(
             "rpc_expand: the TCP substrate's topic did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+/// Whether the programs name `std::io::tcp::Listener`.
+fn mentions_tcp_listener(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[0] == "std" && w[1] == "io" && w[2] == "tcp" && w[3] == "Listener")
+}
+
+/// `std::io::tcp::Listener`, once, for a program that names it
+/// (`hale_stdlib::TCP_LISTENER_SOURCE`): built on the substrate of
+/// [`inject_tcp_serve`], which is injected first.
+fn inject_tcp_listener(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpListener")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::TCP_LISTENER_SOURCE, TCP_LISTENER_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the TCP Listener did not parse: {}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
         ),
     }
@@ -778,6 +869,9 @@ pub fn expand(
 ) -> Vec<Expansion> {
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
+    }
+    if mentions_tcp_listener(programs) {
+        inject_tcp_listener(programs);
     }
     let hubs = crate::hub_expand::binds_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {

@@ -34,6 +34,13 @@
 //!   are called by nothing), so each codec is the neighbour of every
 //!   locus carrying one of those params: an edit that takes the site out
 //!   re-derives them.
+//! - **The TCP connection substrate**: appended, with its topic, to a
+//!   program that names it (`std::io::tcp::Listener`,
+//!   `std::http::Server`, …; `rpc_expand::inject_tcp_serve`). It exists
+//!   because some declaration spells one of its names, and no call edge
+//!   says so, so each of its declarations is the neighbour of every
+//!   declaration that spells one: an edit that takes the last mention out
+//!   re-derives them.
 //! - **The ownership graph**: a locus and the loci it instantiates,
 //!   accepts or is instantiated by.
 //! - **The bus graph**: every publisher and subscriber of one subject,
@@ -317,6 +324,18 @@ impl DependencyIndex {
             }
         };
         join(&surfaced, &codecs);
+        // The TCP connection substrate and the declarations that name it.
+        let (mut substrate, mut naming): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+        for (i, d) in f.decls.iter().enumerate() {
+            if hale_types::rpc_expand::is_tcp_serve_appended_pos(d.span.start.0) {
+                substrate.push(i);
+            } else if hale_types::rpc_expand::item_names_tcp_serve(&f.programs[&d.program].items[d.index]) {
+                naming.push(i);
+            }
+        }
+        if !substrate.is_empty() {
+            join(&naming, &substrate);
+        }
         // The ownership graph: births, accepts, instantiations.
         for site in &f.ownership.sites {
             join(&named(&loci, &site.enclosing_locus), &named(&loci, &site.child_ty));

@@ -51,12 +51,21 @@ pub const API_H2_SOURCE: &str = include_str!("../hl/io_h2.hl");
 /// The TCP connection substrate (`io_tcp_serve.hl`): the acceptor that
 /// binds and accepts and relays each connection over the bus, the
 /// consumer that serves what it is handed, and `std::http::Server` built
-/// on the two. It declares a topic (`__TcpAcceptedT`, appended beside
-/// it), and every stdlib declaration is lowered into every program, so it
-/// is appended only to a program that names `std::http::Server` or one of
-/// `std::io::tcp::{Acceptor, Connections, Accepted, ConnHandler}`
+/// on the two (`std::io::tcp::Listener` is too: [`TCP_LISTENER_SOURCE`]).
+/// It declares a topic
+/// (`__TcpAcceptedT`, appended beside it), and every stdlib declaration is
+/// lowered into every program, so it is appended only to a program that
+/// names `std::http::Server` or one of `std::io::tcp::{Listener, Acceptor,
+/// Connections, Accepted, ConnHandler}`
 /// (`hale_types::rpc_expand`), as the api runtime is.
 pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
+
+/// `std::io::tcp::Listener` (`io_tcp_listener.hl`): a listener and a
+/// consumer of the TCP connection substrate whose connection handler calls
+/// the `on_connection` callback. Appended after [`TCP_SERVE_SOURCE`], and
+/// only to a program that names `std::io::tcp::Listener`, so a program
+/// serving with `std::http::Server` carries no Listener.
+pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 
 /// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
 /// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
@@ -74,9 +83,9 @@ pub const API_GRPC_SOURCE: &str = include_str!("../hl/api_grpc.hl");
 ///
 /// m93 split the single stdlib.hl into one file per domain.
 /// Order matters: pass A1 walks loci in source order and resolves
-/// each locus's param types as it goes. Listener references
-/// Stream, so io_tcp.hl (which declares both, Stream first) lands
-/// before http.hl (which references Stream in fn signatures).
+/// each locus's param types as it goes. io_tcp.hl declares Stream,
+/// so it lands before http.hl (which references Stream in fn
+/// signatures).
 /// core.hl lands first because text.hl depends on its
 /// __replace_all / __html_escape helpers. test.hl is standalone
 /// and could go anywhere — it ends up last by convention.

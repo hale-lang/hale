@@ -307,6 +307,7 @@ fn every_named_sig_type_is_declared_by_the_stdlib() {
         hale_stdlib::API_H2_SOURCE,
         hale_stdlib::API_GRPC_SOURCE,
         hale_stdlib::TCP_SERVE_SOURCE,
+        hale_stdlib::TCP_LISTENER_SOURCE,
     ] {
         let program = parse_source(source)
             .expect("the bundled stdlib source must parse");
