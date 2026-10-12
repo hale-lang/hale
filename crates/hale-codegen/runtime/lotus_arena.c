@@ -14738,17 +14738,24 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
     lotus_arena_t *sub_arena =
         c->self_ptr ? *(lotus_arena_t **)c->self_ptr : NULL;
     /* Deserialize the payload's owned fields (String / Bytes) into a
-     * fresh per-delivery subregion of the subscriber's arena, NOT the
-     * locus arena itself — otherwise every delivery's payload piles
-     * up in the program-lifetime locus arena (the P0 leak). The
-     * subregion is destroyed after the handler returns (see the drain
-     * paths); a self-field stash inside the handler deep-copies into
-     * the locus arena, just as it must on the inline path. If the
-     * subscriber has no arena (self_ptr NULL), fall back to the prior
-     * behavior (deserialize into the global arena) and leave
-     * payload_region NULL. */
-    lotus_arena_t *region =
-        sub_arena ? lotus_arena_create_subregion(sub_arena) : NULL;
+     * fresh per-delivery region, NOT the locus arena itself —
+     * otherwise every delivery's payload piles up in the program-
+     * lifetime locus arena (the P0 leak). The region is destroyed
+     * after the handler returns (see the drain paths); a self-field
+     * stash inside the handler deep-copies into the locus arena, just
+     * as it must on the inline path. It is NOT a subregion of the
+     * subscriber's arena: a handler may end its own locus
+     * (`terminate;`), which frees that arena before the drain destroys
+     * the region, and a subregion's destroy writes its parent's slot
+     * freelist. It takes the subscriber's NUMA node, as a subregion
+     * would. If the subscriber has no arena (self_ptr NULL), fall back
+     * to the prior behavior (deserialize into the global arena) and
+     * leave payload_region NULL. */
+    lotus_arena_t *region = NULL;
+    if (sub_arena) {
+        region = lotus_arena_alloc_struct(__builtin_return_address(0));
+        if (region) region->numa_node = sub_arena->numa_node;
+    }
     lotus_arena_t *prev = lotus_current_caller_arena;
     lotus_current_caller_arena = region ? region : sub_arena;
     ssize_t ssz = ((lotus_deserialize_fn)c->deserialize)(
@@ -14767,6 +14774,17 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
         }
         c->payload_size = 0;
         return 0;                       /* drop the cell */
+    }
+    if ((size_t)ssz <= LOTUS_PAYLOAD_INLINE) {
+        /* The struct fits the cell: no heap block (the wire bytes, inline
+         * or heap, were consumed by the deserialize above). */
+        if (c->payload_heap) {
+            free(c->payload_heap);
+            c->payload_heap = NULL;
+        }
+        memcpy(c->payload_inline, sbuf, (size_t)ssz);
+        c->payload_size = (size_t)ssz;
+        return 1;
     }
     void *out = malloc((size_t)ssz);
     if (!out) {
@@ -14788,19 +14806,30 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
     return 1;
 }
 
-/* Which thread runs a subscriber's handlers? Mailbox targets are
- * pinned loci (their own thread — the publisher is never it,
- * self-publish being devirtualized upstream). Pool targets run on
- * the pool's worker (current iff this thread IS that worker).
- * Global-queue targets run on the queue's owner (main). Used by
- * the non-flat dispatch paths to decide deserialize-now (owner)
- * vs post-wire-and-defer (foreign). */
-static int lotus_bus_target_owner_is_current(const lotus_bus_entry_t *e,
-                                             const lotus_bus_queue_t *q) {
-    if (e->mailbox) return 0;
-    if (e->coop_pool) return g_current_pool_tls == e->coop_pool;
-    if (q) return pthread_equal(pthread_self(), q->owner) != 0;
-    return 1;
+/* Post a wire-format payload to one subscriber: the WIRE bytes and
+ * the subscriber's deserialize fn. The owner thread materializes the
+ * cell at drain (lotus_bus_cell_materialize) into a per-delivery
+ * region (its own arena, not the subscriber's), which the drain destroys after
+ * the handler returns. Deserializing here instead (Bug 3) is legal
+ * only on the owner's thread and was kept for it: the
+ * owner's deserialize wrote the payload's String / Bytes fields
+ * straight into the program-lifetime locus arena, the P0 leak the
+ * per-delivery region exists to close — every same-thread delivery of
+ * a payload with owned fields stayed in the subscriber's arena for
+ * good (a served exposure's ingress grew it ~240 B a call). Every
+ * wire delivery takes this path now, on any thread. The cell carries
+ * the entry's incarnation like any post (lotus_bus_post_entry sets
+ * `g_bus_pending_gen`), so a wire cell for an incarnation that ended
+ * or was replaced is dropped at materialization before anything is
+ * deserialized. */
+static inline int lotus_bus_post_wire(lotus_bus_entry_t *e,
+                                      lotus_bus_queue_t *q,
+                                      const void *wire, size_t wire_size,
+                                      uint64_t rec_pub) {
+    g_bus_pending_wire_deser = (void *)e->deserialize;
+    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub);
+    g_bus_pending_wire_deser = NULL;
+    return posted;
 }
 
 /* m70: lotus_bus_dispatch's signature grew a 5th arg — a per-
@@ -23019,11 +23048,10 @@ int64_t lotus_bus_subject_wait_space(lotus_bus_queue_t *queue,
  * (declared just above) and the per-subject deserialize_fn from
  * the registration table. */
 /* Phase 3 keyed variant (2026-05-25). Mirrors
- * lotus_bus_dispatch_wire's per-subscriber-arena routing but
- * applies the routing-key filter at each entry. Same Task-9
- * arena-correctness story: deserialize INTO each subscriber's
- * own __arena via the TLS-routed allocator, so payload pointers
- * are bounded by the subscriber's lifecycle.
+ * lotus_bus_dispatch_wire's per-subscriber delivery but applies
+ * the routing-key filter at each entry: each match gets the wire
+ * bytes, deserialized by its owner at drain into a per-delivery
+ * region (lotus_bus_post_wire).
  *
  * v0.1: kind=1 entries fire on key match; kind=0 entries fire
  * on every keyed publish (audit-all sinks); kind=2 (catch-
@@ -23048,8 +23076,6 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     if (lotus_obs_bus_publish && lotus_obs_live) {
         obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
-    char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
-    lotus_arena_t *prev_tls = lotus_current_caller_arena;
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
@@ -23069,30 +23095,12 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             /* kind == 2: skip in the specific pass. */
             continue;
         }
-        /* Bug 3: cross-thread target — post WIRE bytes + deserialize
-         * fn; the owner thread materializes at drain. */
-        if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
-            g_bus_pending_wire_deser = (void *)e->deserialize;
-            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                wire_bytes, wire_size, rec_pub);
-            g_bus_pending_wire_deser = NULL;
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
-                lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size, obs_tok);
-            }
-            continue;
-        }
-        lotus_arena_t *sub_arena =
-            e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
-        lotus_current_caller_arena = sub_arena;
-        ssize_t struct_size = e->deserialize(
-            wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
-        if (struct_size <= 0) continue;
         /* The one per-entry post (R4): a pool-placed subscriber's
          * worker, a pinned one's mailbox, the cooperative queue
-         * (F.31 Phase 4), and readiness's gate (decision line 6). */
-        (void)lotus_bus_post_entry(e, g_bus_queue_for_remote, struct_buf,
-                                   (size_t)struct_size, rec_pub);
+         * (F.31 Phase 4), and readiness's gate (decision line 6) —
+         * the wire bytes, materialized by the owner at drain. */
+        (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
+                                  wire_bytes, wire_size, rec_pub);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -23106,27 +23114,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (!e->deserialize) continue;
             if (e->key_filter_kind != 2) continue;
-            /* Bug 3: cross-thread target — post WIRE bytes + deserialize
-             * fn; the owner thread materializes at drain. */
-            if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
-                g_bus_pending_wire_deser = (void *)e->deserialize;
-                (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                    wire_bytes, wire_size, rec_pub);
-                g_bus_pending_wire_deser = NULL;
-                if (lotus_obs_bus_deliver && lotus_obs_live) {
-                    lotus_obs_bus_deliver(subject, e->self_ptr,
-                                          (uint64_t)wire_size, obs_tok);
-                }
-                continue;
-            }
-            lotus_arena_t *sub_arena =
-                e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
-            lotus_current_caller_arena = sub_arena;
-            ssize_t struct_size = e->deserialize(
-                wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
-            if (struct_size <= 0) continue;
-            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote, struct_buf,
-                                       (size_t)struct_size, rec_pub);
+            (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
+                                      wire_bytes, wire_size, rec_pub);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
@@ -23143,7 +23132,6 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                     unkeyed_subs_on_subject);
         }
     }
-    lotus_current_caller_arena = prev_tls;
 }
 
 LOTUS_HOT_ALIGN
@@ -23163,27 +23151,16 @@ void lotus_bus_dispatch_wire(const char *subject,
     if (lotus_obs_bus_publish && lotus_obs_live) {
         obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
-    /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
-     * Previously this deserialize-once-then-fanout shape parked
-     * the deserialized String/Bytes pointers in the program-
-     * lifetime g_bus_payload_arena (leaky for long-running
-     * cross-process consumers). Now we iterate matching
-     * subscribers and deserialize INTO EACH SUBSCRIBER'S OWN
-     * arena via the TLS-routed allocator (Task 8 helpers); the
-     * payload pointers in the enqueued struct_buf alias the
-     * subscriber's own __arena, bounded by the subscriber's
-     * lifecycle. Cost: deserialize is called once per matching
-     * subscriber instead of once total — a real cost for high-
-     * fan-out subjects, but the structural correctness win is
-     * load-bearing for production daemons (a production daemon).
-     *
-     * The m20 spec's "subscriber's arena outlives the payload
-     * pointer" guarantee now holds end-to-end: the pointer was
-     * allocated in the subscriber's arena to begin with, so it
-     * stays valid until the subscriber dissolves. No more
-     * program-lifetime deposit. */
-    char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
-    lotus_arena_t *prev_tls = lotus_current_caller_arena;
+    /* Per-subscriber delivery. A deserialize-once-then-fanout
+     * shape parked the payload's String/Bytes in the program-
+     * lifetime g_bus_payload_arena (Phase-3 Task 9, 2026-05-20),
+     * and deserializing into each subscriber's own __arena parked
+     * them in the locus arena for the subscriber's life instead.
+     * Each matching subscriber gets the WIRE bytes; its owner
+     * deserializes at drain into a per-delivery region the drain
+     * destroys after the handler (lotus_bus_post_wire). Cost:
+     * deserialize runs once per matching subscriber, not once
+     * total. */
     size_t matched = 0;
     size_t delivered = 0;
     lotus_bus_view_t bv = lotus_bus_view();
@@ -23209,49 +23186,13 @@ void lotus_bus_dispatch_wire(const char *subject,
          * bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
         matched++;
-        /* Bug 3 (downstream handoff 2026-07-15): deserializing here
-         * writes the SUBSCRIBER's arena — legal only on the thread
-         * that owns it. For a cross-thread target, post the WIRE
-         * bytes + deserialize fn instead; the owner materializes at
-         * drain (lotus_bus_cell_materialize). */
-        if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
-            g_bus_pending_wire_deser = (void *)e->deserialize;
-            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                wire_bytes, wire_size, rec_pub);
-            g_bus_pending_wire_deser = NULL;
+        /* The wire bytes + deserialize fn; the owner materializes at
+         * drain (lotus_bus_post_wire). */
+        if (lotus_bus_post_wire(e, g_bus_queue_for_remote,
+                                wire_bytes, wire_size, rec_pub)) {
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
-                lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size, obs_tok);
-            }
-            delivered++;
-            continue;
-        }
-        /* Load the subscriber's __arena via the m20 fixed-offset
-         * GEP: slot 0 of every locus struct is `__arena: ptr`. */
-        lotus_arena_t *sub_arena =
-            e->self_ptr
-                ? *(lotus_arena_t **)e->self_ptr
-                : NULL;
-        lotus_current_caller_arena = sub_arena;
-        ssize_t struct_size = e->deserialize(
-            wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
-        if (struct_size <= 0) {
-            if (lotus_bus_log_drop_enabled()) {
-                fprintf(stderr,
-                        "[bus] publish dropped at entry %zu: subject=\"%s\" "
-                        "deserialize returned %zd (wire_size=%zu)\n",
-                        i, subject, struct_size, wire_size);
-            }
-            continue;
-        }
-        if (lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                                 struct_buf, (size_t)struct_size,
-                                 rec_pub)) {
-            /* handoff-8 P21: BUS_DELIVER per matched target (see the
-             * cross-thread branch above). */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
@@ -23272,7 +23213,6 @@ void lotus_bus_dispatch_wire(const char *subject,
                 subject, bv.n, wire_size);
     }
     (void)delivered;
-    lotus_current_caller_arena = prev_tls;
 }
 
 /* === Static-devirt dispatch (build #1b) ==========================
@@ -23291,9 +23231,10 @@ void lotus_bus_dispatch_wire(const char *subject,
  *   flat != 0  → mirror lotus_bus_dispatch_flat: verbatim cell copy
  *                for local fanout (the flat payload has no pointers
  *                to rebind), serialize once for remote fanout only.
- *   flat == 0  → mirror lotus_bus_dispatch: serialize once, then
- *                deserialize into EACH subscriber's own arena before
- *                enqueue (Task-11 arena isolation), then remote.
+ *   flat == 0  → mirror lotus_bus_dispatch: serialize once, post
+ *                the wire bytes to each subscriber (its owner
+ *                deserializes at drain into a per-delivery region of
+ *                its arena, lotus_bus_post_wire), then remote.
  *
  *   no_pinned != 0 → the whole program has no pinned / cross-pool
  *                placement (BusGraph-proven), so the cooperative-queue
@@ -23491,8 +23432,6 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         return;
     }
 
-    char *struct_buf = g_tls_bus_struct_buf;
-    lotus_arena_t *prev_tls = lotus_current_caller_arena;
     size_t delivered = 0;
     if (b) {
         lotus_bus_entry_t *const *at;
@@ -23511,55 +23450,41 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)struct_size, obs_tok);
             }
-            /* Bug 3: cross-thread target — post WIRE bytes +
-             * deserialize fn; the owner materializes at drain. */
-            if (!lotus_bus_target_owner_is_current(e,
-                                                   g_bus_queue_for_remote)) {
-                g_bus_pending_wire_deser = (void *)e->deserialize;
-                (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                                           wire_buf, (size_t)wire_size,
-                                           rec_pub);
-                g_bus_pending_wire_deser = NULL;
-                delivered++;
-                continue;
-            }
-            lotus_arena_t *sub_arena =
-                e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
-            lotus_current_caller_arena = sub_arena;
-            ssize_t ssz = e->deserialize(wire_buf, (size_t)wire_size,
-                                         struct_buf, LOTUS_PAYLOAD_MAX);
-            if (ssz <= 0) continue;
-            /* R4 exception: build #3 no-pinned _st fast path; the
-             * rest routes through lotus_bus_post_entry. */
-            /* GH #703: the cell, parked or queued, carries the entry's
-             * incarnation. */
+            /* The wire bytes + deserialize fn; the owner materializes
+             * at drain (lotus_bus_post_wire). R4 exception: build #3
+             * no-pinned _st fast path; the rest routes through
+             * lotus_bus_post_wire. GH #703: the cell, parked or
+             * queued, carries the entry's incarnation. */
             uint64_t prev_gen = g_bus_pending_gen;
             g_bus_pending_gen = e->gen;
-            if (no_pinned && !e->mailbox && !e->coop_pool && g_bus_queue_for_remote
-                && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, g_bus_queue_for_remote,
-                                             struct_buf, (size_t)ssz, rec_pub)) {
-                delivered++; /* decision line 6: parked until ready */
-            } else if (no_pinned && !e->mailbox && !e->coop_pool
+            if (no_pinned && !e->mailbox && !e->coop_pool
                 && g_bus_queue_for_remote) {
-                g_bus_pending_rec_pub = rec_pub;
-                lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
-                                           e->handler, e->self_ptr,
-                                           struct_buf, (size_t)ssz);
-                g_bus_pending_rec_pub = 0;
-                if (rec_pub && lotus_obs_record_enqueue &&
-                    lotus_obs_live) {
-                    lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+                g_bus_pending_wire_deser = (void *)e->deserialize;
+                if (lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL,
+                                              g_bus_queue_for_remote, wire_buf,
+                                              (size_t)wire_size, rec_pub)) {
+                    delivered++; /* decision line 6: parked until ready */
+                } else {
+                    g_bus_pending_rec_pub = rec_pub;
+                    lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
+                                               e->handler, e->self_ptr,
+                                               wire_buf, (size_t)wire_size);
+                    g_bus_pending_rec_pub = 0;
+                    if (rec_pub && lotus_obs_record_enqueue &&
+                        lotus_obs_live) {
+                        lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+                    }
+                    delivered++;
                 }
-                delivered++;
+                g_bus_pending_wire_deser = NULL;
             } else {
-                delivered += (size_t)lotus_bus_post_entry(
-                    e, g_bus_queue_for_remote, struct_buf, (size_t)ssz,
+                delivered += (size_t)lotus_bus_post_wire(
+                    e, g_bus_queue_for_remote, wire_buf, (size_t)wire_size,
                     rec_pub);
             }
             g_bus_pending_gen = prev_gen;
         }
     }
-    lotus_current_caller_arena = prev_tls;
     (void)delivered;
     /* Remote fanout: same wire bytes, mirror lotus_bus_dispatch. */
     if (lotus_bus_has_remote_entries()

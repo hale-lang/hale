@@ -704,8 +704,11 @@ direct calls, but two bus paths used to violate it under load
    publish enqueues the *wire bytes* plus the deserialize fn in
    the cell, and the owner materializes (deserializes into its
    own arena) at drain, just before invoking the handler.
-   Same-thread targets keep the deserialize-at-dispatch fast
-   path, so single-pool programs are unchanged.
+   Same-thread targets take the same wire cell (2026-10-11): the
+   deserialize-at-dispatch path they kept wrote the payload's
+   owned fields into the subscriber's locus arena for good
+   (spec/memory.md § Cross-thread wire cell per-delivery
+   reclaim).
 
 Consequences: a main-pool subscriber's handlers run **only on
 `main`** (at sleep-slice / yield / scope-exit drains — worst-case
