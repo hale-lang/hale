@@ -3319,6 +3319,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[self.context.ptr_type(inkwell::AddressSpace::default()).into(), i64_t.into()], false),
             None,
         );
+        // declare i64 @lotus_unix_release_path(ptr path, i64 fd)
+        self.module.add_function(
+            "lotus_unix_release_path",
+            i64_t.fn_type(&[self.context.ptr_type(inkwell::AddressSpace::default()).into(), i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tcp_local_port(i64 fd)
         self.module.add_function("lotus_tcp_local_port", i64_t.fn_type(&[i64_t.into()], false), None);
         // declare i64 @lotus_tcp_listener_stop(ptr name)

@@ -280,9 +280,12 @@ fn report_places_the_stdlib_decorators_a_program_reaches() {
         );
     }
     assert!(stdlib.iter().any(|r| r[1].starts_with("crates/hale-stdlib/hl/api_rpc.hl:")), "{stdout}");
+    // (The listener's accept loop is the TCP substrate's relay since the
+    // api transports moved onto it; the connection's read loop is the
+    // runtime's own.)
     assert!(
-        stdlib.iter().any(|r| r[2] == "std::api::unix::Listener::run" && r[3] != "0"),
-        "the unix listener's loop silences a survey site in a program that serves:\n{stdout}"
+        stdlib.iter().any(|r| r[2] == "__StdApiUnixPeer::run" && r[3] != "0"),
+        "the unix connection's loop silences a survey site in a program that serves:\n{stdout}"
     );
     let (code_without, _, without) = run_in_fixtures("unbounded-use-stdlib.hl", &[]);
     let (_, _, with) = report("unbounded-use-stdlib.hl");

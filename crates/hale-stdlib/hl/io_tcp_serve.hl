@@ -47,13 +47,16 @@ fn __tcp_route(listener: String, shard: Int) -> String {
     return listener + "#" + to_string(shard);
 }
 
-// The name a listener goes by: the one it was given, or its host and the
-// port its socket is bound to — the one a port-0 bind was given — so two
-// listeners never share a default name (two on one explicit host:port
-// cannot both bind).
-fn __tcp_listener_name(name: String, host: String, port: Int, listen_fd: Int) -> String {
+// The name a listener goes by: the one it was given, or `unix:<path>` for a
+// Unix socket, or its host and the port its socket is bound to — the one a
+// port-0 bind was given — so two listeners never share a default name (two
+// on one explicit host:port, or on one path, cannot both bind).
+fn __tcp_listener_name(name: String, host: String, port: Int, path: String, listen_fd: Int) -> String {
     if len(name) > 0 {
         return name;
+    }
+    if len(path) > 0 {
+        return "unix:" + path;
     }
     let bound = std::io::tcp::__local_port(listen_fd);
     if bound < 0 {
@@ -64,11 +67,17 @@ fn __tcp_listener_name(name: String, host: String, port: Int, listen_fd: Int) ->
 
 // A listener's socket, bound at each birth: a restart binds afresh (a
 // supervisor that corrected the host, or a port that came free), closing
-// the socket a previous birth left (its name leaves with it). -1 when it
-// cannot bind.
-fn __tcp_rebind(old_fd: Int, host: String, port: Int) -> Int {
+// the socket a previous birth left (its name leaves with it). A Unix
+// stream socket at `path` when it is set, else TCP on `host:port`: accept,
+// read, write and close are the same calls for both families, so the
+// relay, the handle and the consumers are one substrate over two address
+// families. -1 when it cannot bind.
+fn __tcp_rebind(old_fd: Int, host: String, port: Int, path: String) -> Int {
     if old_fd >= 0 {
         std::io::tcp::__close_fd(old_fd);
+    }
+    if len(path) > 0 {
+        return std::io::unix::listen_socket(path) or - 1;
     }
     return std::io::tcp::__listen_socket(host, port);
 }
@@ -90,8 +99,12 @@ locus __StdIoTcpRelay {
         publish __TcpAcceptedT;
         subscribe __TcpAcceptedT as on_unclaimed where key == _;
     }
-    // Accept until the socket is shut (`std::io::tcp::stop`, `shutdown()`)
-    // or `max_accepts` is reached, relaying each connection. Where a yield
+    // Accept until the socket is shut (`std::io::tcp::stop`, `shutdown()`),
+    // its pool shuts down, or `max_accepts` is reached, relaying each
+    // connection. A failed accept nobody asked for (out of descriptors, a
+    // connection aborted before it was taken: `__accept_one`'s -2) ends that
+    // connection and never the listener, which tries again 20 ms later.
+    // Where a yield
     // runs this thread's queued deliveries (main, a pinned thread) the
     // yield lets a consumer on the same thread serve before the next
     // accept: one connection at a time, as a blocking call there must be.
@@ -100,6 +113,10 @@ locus __StdIoTcpRelay {
     fn accept_all(listen_fd: Int, max_accepts: Int) {
         while max_accepts < 0 || self.sent < max_accepts {
             let conn = std::io::tcp::__accept_one(listen_fd);
+            if conn == -2 {
+                std::time::sleep(20ms);
+                continue;
+            }
             if conn < 0 {
                 break;
             }
@@ -129,14 +146,15 @@ locus __StdIoTcpRelay {
     }
 }
 
-/// A listener: binds `host:port` at birth, accepts, and relays each
+/// A listener: binds `host:port` (or the Unix socket `path`) at birth,
+/// accepts, and relays each
 /// connection as a `std::io::tcp::Accepted` to the consumers subscribed to
 /// its route (`std::io::tcp::Connections { listener: <name> }`). It serves
 /// nothing itself. Its name is its address in the process: the consumers'
 /// key and `std::io::tcp::stop(name)`'s argument. `name` gives it; left
 /// empty, the name is the host and the port the socket is bound to
-/// (`127.0.0.1:<port>`, the kernel's pick for `port: 0`), so default names
-/// never collide. The name it goes by is `listener`, set at birth. An
+/// (`127.0.0.1:<port>`, the kernel's pick for `port: 0`; `unix:<path>` for
+/// a Unix socket), so default names never collide. The name it goes by is `listener`, set at birth. An
 /// explicit name another live listener holds is the `name_taken` violation
 /// at birth, with the socket closed before anything runs. Birth binds, so
 /// `restart(acceptor)` binds afresh.
@@ -148,6 +166,10 @@ locus __StdIoTcpAcceptor {
     params {
         host: String = "127.0.0.1";
         port: Int = 0;
+        // a Unix stream socket's path: when set, the listener binds it in
+        // place of `host:port` (a stale socket file is replaced, one a live
+        // process holds is `listen_failed`) and removes it when it dissolves
+        path: String = "";
         // "" = the bound address
         name: String = "";
         shards: Int = 1;
@@ -160,7 +182,7 @@ locus __StdIoTcpAcceptor {
         relay: __StdIoTcpRelay = __StdIoTcpRelay { shards: self.shards };
     }
     closure listen_failed {
-        captures: host, port;
+        captures: host, port, path;
         epoch inline;
     }
     // An explicit `name` another live listener holds: two listeners would
@@ -170,15 +192,14 @@ locus __StdIoTcpAcceptor {
         epoch inline;
     }
     birth() {
-        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port, self.path);
         self.relay.armed = false;
         if self.listen_fd < 0 {
             violate listen_failed;
         }
-        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.path, self.listen_fd);
         if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
-            std::io::tcp::__close_fd(self.listen_fd);
-            self.listen_fd = -1;
+            self.release_socket();
             violate name_taken;
         }
         self.relay.name = self.listener;
@@ -195,8 +216,23 @@ locus __StdIoTcpAcceptor {
             self.relay.accept_all(self.listen_fd, self.max_accepts);
         }
     }
-    dissolve() {
+    // Close the socket, and remove a Unix socket's file if it is still the
+    // one this listener bound.
+    fn release_socket() {
+        if self.listen_fd < 0 {
+            return;
+        }
+        // the file goes only while the path still names the one this
+        // listener bound: after `stop(name)` a replacement may have found
+        // the path stale and bound a file of its own there
+        if len(self.path) > 0 {
+            std::io::unix::__release_path(self.path, self.listen_fd);
+        }
         std::io::tcp::__close_fd(self.listen_fd);
+        self.listen_fd = -1;
+    }
+    dissolve() {
+        self.release_socket();
     }
 }
 
@@ -488,7 +524,7 @@ locus __StdHttpServer {
         epoch inline;
     }
     birth() {
-        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port);
+        self.listen_fd = __tcp_rebind(self.listen_fd, self.host, self.port, "");
         self.relay.armed = false;
         if self.conns.armed {
             // a rebirth: the consumer a previous birth built leaves its
@@ -501,7 +537,7 @@ locus __StdHttpServer {
         if self.listen_fd < 0 {
             violate listen_failed;
         }
-        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.listen_fd);
+        self.listener = __tcp_listener_name(self.name, self.host, self.port, "", self.listen_fd);
         if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
             std::io::tcp::__close_fd(self.listen_fd);
             self.listen_fd = -1;
@@ -542,6 +578,10 @@ locus __StdHttpServer {
     fn accept_direct() {
         while self.max_accepts < 0 || self.relay.sent < self.max_accepts {
             let conn = std::io::tcp::__accept_one(self.listen_fd);
+            if conn == -2 {
+                std::time::sleep(20ms);
+                continue;
+            }
             if conn < 0 {
                 break;
             }

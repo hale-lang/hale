@@ -531,14 +531,24 @@ fn copied_api_binding_expressions_keep_params_birth_provenance() {
         "__RpcSurface_1 instance born outside the arrangement: owner and placement resolve at runtime",
         "__RpcSurface_2 instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiExposure instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiHttpConns instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiHttpRpc instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiNoExpiry instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiNoRevision instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiRpcEntries instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiUnixConns instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiUnixPeer instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiUnixPendings instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiUnixRpc instance born outside the arrangement: owner and placement resolve at runtime",
+        // the TCP connection substrate the runtime carries: a listener
+        // builds its consumer in birth(), on the route of its final name,
+        // and the consumer its per-connection children in a body
+        "__StdHttpResponder instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdIoTcpConnFlow instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdIoTcpConnInline instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdIoTcpConnections instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdIoTcpFlows instance born outside the arrangement: owner and placement resolve at runtime",
     ], "body births and the exposure's connection peers remain dynamic");
 }
 

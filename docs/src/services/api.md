@@ -268,6 +268,17 @@ handler that wants to know which exposure a call came through, and which
 generation of its receiver admitted it, declares `ctx:
 std::api::ServedContext` where it would declare `std::api::Context`.
 
+A receiver answers one call at a time. The transports read and write
+their connections concurrently, but the exposure hands each receiver one
+call and holds the rest in its queue, in the order they were accepted,
+so fifty one-second calls to one receiver take fifty seconds wherever
+it is placed; that is what lets `stop()` and a failed receiver refuse
+exactly what never ran. Calls to different receivers run at once. To
+answer a surface's work concurrently, bind its members to several
+receivers — instances of different types, each placed where its work
+belongs — or serve the surface through more than one exposure, each with
+a receiver of its own.
+
 ### Serving over HTTP
 
 `http::Rpc` takes a `bind:` (`host:port`), a `codec:` (`json`, the one v1
@@ -307,7 +318,10 @@ main locus Desk {
 
 The listener is bound when the program boots (an address it cannot bind
 stops the program with a diagnostic) and, like the Unix socket's, runs on
-a pool of its own, so the serving locus is the main locus. A call is
+a pool of its own, so the serving locus is the main locus. Both are the
+same listener `std::http::Server` is built from (see
+[HTTP](../everyday/http.md)): it accepts, hands each connection over the
+bus, and a connection nothing takes is closed. A call is
 `POST /call/<member>` whose body is the payload, with the surface digest
 you generated against in `Hale-Surface-Digest` (it is optional); the
 outcome is the status and the body of the contract, one request to a

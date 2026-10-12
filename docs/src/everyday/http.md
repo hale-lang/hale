@@ -190,6 +190,17 @@ owns `c.fd`). A connection no consumer takes is closed by its listener,
 never leaked, so `require no_silent_loss(topic __TcpAcceptedT)` holds
 in a program's `claims`.
 
+`std::io::tcp::Acceptor { path: "/run/app.sock" }` listens on a Unix
+socket instead of a port (its name is `unix:/run/app.sock`, and it
+removes the file when it goes); the consumers are the same, since a
+connection's descriptor reads and writes alike for both. The api
+runtime's `http::Rpc`, `mcp::Rpc` and `unix::Rpc` listeners are built
+this way too (see [The API surface](../services/api.md)). A handler whose
+per-connection work is a locus that subscribes to the bus starts it as
+a flow child of its own — declare `accept` and `release` for it on the
+handler — rather than building it inside `serve`: a locus born and gone
+within a method has its deliveries queued for the main thread.
+
 ## Routing
 
 When the `if` ladder in a handler grows past a few routes, hand

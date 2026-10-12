@@ -629,3 +629,132 @@ fn a_pinned_server_answers_while_main_blocks() {
 fn an_async_io_server_answers_while_main_blocks() {
     served_while_main_blocks("tcp_substrate_blocked_main_async", "cooperative(pool = web) where async_io");
 }
+
+// One substrate, two address families: an Acceptor on a Unix socket path
+// relays its connections to the same Connections and Responder an Acceptor
+// on a port does. Its name is `unix:<path>`, `stop` reaches it by that name,
+// and it removes the socket file when it goes.
+const UNIX_ACCEPTOR: &str = r#"
+    locus Api {
+        params { hits: Int = 0; }
+        fn handle(req: std::http::Request) -> std::http::Response {
+            self.hits = self.hits + 1;
+            return std::http::Response { status: 200, body: "unix " + to_string(self.hits) };
+        }
+    }
+    main locus App {
+        params {
+            path: String = std::env::arg(1);
+            conns: std::io::tcp::Connections = std::io::tcp::Connections { listener: "unix:" + self.path, handler: std::http::Responder { handler: Api { } } };
+            acceptor: std::io::tcp::Acceptor = std::io::tcp::Acceptor { path: self.path, ready_signal: "ready" };
+        }
+        placement {
+            conns: cooperative(pool = web) where async_io;
+            acceptor: pinned;
+        }
+        claims { handed_over: require no_silent_loss(topic __TcpAcceptedT); }
+        run() {
+            while !self.draining { std::time::sleep(20ms); }
+            println("listener " + self.acceptor.listener);
+            std::io::tcp::stop("unix:" + self.path);
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn an_acceptor_on_a_unix_socket_relays_to_the_same_consumers() {
+    let bin = build("tcp_substrate_unix", UNIX_ACCEPTOR);
+    let dir = harness::unique_dir("tcp_substrate_unix");
+    let path = dir.join("s.sock");
+    let mut child = Command::new(&bin).arg(&path).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    let _ = out.read_line(&mut line);
+    assert_eq!(line.trim(), "ready", "the listener did not come up on {}", path.display());
+    let ask = || {
+        let mut s = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        s.write_all(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n").unwrap();
+        let mut buf = String::new();
+        let _ = s.read_to_string(&mut buf);
+        buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
+    };
+    assert_eq!(ask(), "unix 1");
+    assert_eq!(ask(), "unix 2");
+    let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+    let status = child.wait().expect("wait");
+    let mut rest = String::new();
+    let _ = out.read_to_string(&mut rest);
+    let mut err = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut err);
+    assert!(status.success(), "{status:?}\n{err}");
+    assert!(rest.contains(&format!("listener unix:{}", path.display())), "its name is unix:<path>: {rest}");
+    assert!(!err.contains("lotus_tcp_accept_one"), "a deliberate stop is silent: {err}");
+    assert!(!path.exists(), "the socket file is removed when the listener goes");
+    let _ = std::fs::remove_file(&bin);
+}
+
+// A Unix Acceptor stopped by name keeps its fd until it goes, and a shut
+// Unix listener refuses connects, so a replacement may find the path stale
+// and bind a file of its own there. The old listener's cleanup removes the
+// path only while it still names the file the old one bound.
+const UNIX_STOPPED: &str = r#"
+    locus Api {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: "old" };
+        }
+    }
+    main locus App {
+        params {
+            path: String = std::env::arg(1);
+            conns: std::io::tcp::Connections = std::io::tcp::Connections { listener: "old", handler: std::http::Responder { handler: Api { } } };
+            acceptor: std::io::tcp::Acceptor = std::io::tcp::Acceptor { path: self.path, name: "old", ready_signal: "ready" };
+        }
+        placement {
+            conns: cooperative(pool = web) where async_io;
+            acceptor: pinned;
+        }
+        run() {
+            let stop = std::env::arg(2);
+            while (std::io::fs::read_file(stop) or "") == "" { std::time::sleep(5ms); }
+            std::io::tcp::stop("old");
+            println("stopped");
+            let leave = std::env::arg(3);
+            while (std::io::fs::read_file(leave) or "") == "" { std::time::sleep(5ms); }
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_stopped_unix_acceptor_leaves_a_replacements_socket_file_alone() {
+    let bin = build("tcp_substrate_unix_stopped", UNIX_STOPPED);
+    let dir = harness::unique_dir("tcp_substrate_unix_stopped");
+    let (path, stop, leave) = (dir.join("s.sock"), dir.join("stop"), dir.join("leave"));
+    let mut child = Command::new(&bin).arg(&path).arg(&stop).arg(&leave).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    let _ = out.read_line(&mut line);
+    assert_eq!(line.trim(), "ready");
+    std::fs::write(&stop, "x").unwrap();
+    line.clear();
+    let _ = out.read_line(&mut line);
+    assert_eq!(line.trim(), "stopped");
+    // the old listener's socket is shut and its fd still open: the path
+    // refuses, so a replacement takes it as stale
+    assert!(std::os::unix::net::UnixStream::connect(&path).is_err(), "a shut Unix listener refuses connects");
+    std::fs::remove_file(&path).unwrap();
+    let replacement = std::os::unix::net::UnixListener::bind(&path).expect("the replacement binds the path");
+    // the old listener goes: its cleanup must not take the replacement's file
+    std::fs::write(&leave, "x").unwrap();
+    let status = child.wait().expect("wait");
+    let mut err = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut err);
+    assert!(status.success(), "{status:?}\n{err}");
+    assert!(path.exists(), "the replacement's socket file survives the old listener's cleanup");
+    replacement.set_nonblocking(true).unwrap();
+    let _client = std::os::unix::net::UnixStream::connect(&path).expect("the replacement still accepts");
+    assert!(replacement.accept().is_ok(), "and takes the connection");
+    let _ = std::fs::remove_file(&bin);
+}
