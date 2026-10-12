@@ -1199,16 +1199,16 @@ absent thing means fighting the design, not waiting on it.
 
 Write the workaround knowing it's a placeholder.
 
-- **Nested-compound fields of a replaced struct don't retire**,
-  nor Bytes fields of a replaced `@form(hashmap)` cell: each
-  replace leaves the old one in the arena (measured on v0.22.0,
-  ~6 MiB and ~4.5 MiB of resident growth over 200 000 replaces,
-  where a String-only struct holds flat). String leaves retire
-  since v0.11.3; Bytes fields of a self-field struct store and of a
-  vec element since GH #1033 / #1037. Until then: a
-  genuinely-churning Bytes field of a map cell in a reused
-  `BytesBuilder`; nested compound fields in their own locus or
-  flattened.
+- **Nested-compound fields of a replaced struct don't retire**:
+  each replace leaves the old one in the arena (measured on v0.22.0,
+  ~6 MiB of resident growth over 200 000 replaces, where a
+  String-only struct holds flat). String leaves retire since
+  v0.11.3; Bytes fields of a self-field struct store and of a vec
+  element since GH #1033 / #1037; a replaced `@form(vec)` or
+  `@form(hashmap)` cell retires its whole value, nested records,
+  tuples, arrays and Bytes included (spec/forms.md, "Cell
+  reclamation"). Until then: nested compound fields of a self-field
+  struct in their own locus or flattened.
 - **`striped` / `lockfree` `@form` maps don't retire** replaced
   cells — a churned String-bearing cell on those modes still
   accumulates (~2.3 MiB over 200 000 replaces of 16 keys, on
