@@ -6816,6 +6816,10 @@ row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
 
+== tests/hale/decimal_scale_wire_test.hl
+row	Sink@main1	Sink	main	default
+row	Source@main2	Source	main	default
+
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
