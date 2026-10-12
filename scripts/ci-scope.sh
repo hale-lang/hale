@@ -4,18 +4,20 @@
 #   scripts/ci-scope.sh <base> <head>
 #
 # prints, on stdout, one line each:
-#   prose=true|false  every changed path is prose (docs, spec, notes, ...)
-#   dna=true|false    the diff can reach what the DNA and face jobs run
+#   prose=true|false   every changed path is prose (docs, spec, notes, ...)
+#   dna=true|false     the diff can reach what the DNA and face jobs run
+#   assets=true|false  every changed path is README art: assets/ or the
+#                      root README.md, which nothing builds or tests
 #
 # Fails SAFE: an unusable base or head, or an empty diff, is
-# prose=false dna=true. The workflow redirects the output into
+# prose=false dna=true assets=false. The workflow redirects the output into
 # $GITHUB_OUTPUT; run it by hand to see what a branch would trigger.
 set -uo pipefail
 
 base="${1:-}"
 head="${2:-HEAD}"
 
-verdict() { echo "prose=$1"; echo "dna=$2"; }
+verdict() { echo "prose=$1"; echo "dna=$2"; echo "assets=${3:-false}"; }
 
 if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null \
   || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
@@ -33,6 +35,9 @@ if [ -z "$changed" ]; then
 fi
 echo "changed files:" >&2; echo "$changed" >&2
 
+# Paths no build, test, model or embed reads: the README and its art.
+assets='^assets/|^README\.md$'
+
 # Paths that cannot reach the runtime, the models, or codegen.
 prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents|unreleased)/|\.md$'
 
@@ -46,6 +51,7 @@ dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hal
 dna_not='^crates/[^/]+/tests/'
 dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/|fixtures/)'
 
+nonassets=$(printf '%s\n' "$changed" | grep -cvE "$assets" || true)
 nonprose=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
 hit=$(printf '%s\n' "$changed" | grep -E "$dna" | grep -vE "$dna_not" | grep -c . || true)
 suite=$(printf '%s\n' "$changed" | grep -cE "$dna_suite" || true)
@@ -53,4 +59,5 @@ suite=$(printf '%s\n' "$changed" | grep -cE "$dna_suite" || true)
 p=false; [ "${nonprose:-1}" -eq 0 ] && p=true
 d=false
 if [ "${hit:-1}" -gt 0 ] || [ "${suite:-0}" -gt 0 ]; then d=true; fi
-verdict "$p" "$d"
+a=false; [ "${nonassets:-1}" -eq 0 ] && a=true
+verdict "$p" "$d" "$a"
