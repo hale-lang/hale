@@ -1210,6 +1210,11 @@ struct shm_ring_subscriber_t {
     /* the reader thread has been joined (lotus_shm_ring_quiesce, at
      * main's teardown); the atexit hook does not join it again */
     int joined;
+    /* the reader's body, run by shm_reader_main, which sets `exited`
+     * once it returns: main's quiesce reaps a reader without blocking
+     * on it, so it can go on serving the reader meanwhile */
+    void *(*entry)(void *);
+    _Atomic int exited;
     /* Form K-cleanup (2026-05-20): atexit hook sets this to 1
      * before pthread_join. Reader loop checks each iteration
      * and exits cleanly when set. Acquire-load matches the
@@ -1217,6 +1222,13 @@ struct shm_ring_subscriber_t {
      * the signal promptly. */
     _Atomic int should_stop;
 };
+
+static void *shm_reader_main(void *arg) {
+    shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
+    sub->entry(arg);
+    atomic_store_explicit(&sub->exited, 1, memory_order_release);
+    return NULL;
+}
 
 static void *shm_ring_reader_thread(void *arg) {
     shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
@@ -1679,8 +1691,8 @@ void lotus_bus_register_subscriber_shm_ring_layout(
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL,
-                            shm_ring_layout_reader_thread, sub);
+    sub->entry = shm_ring_layout_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring_layout(`%s`): "
@@ -1745,7 +1757,8 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL, shm_ring_reader_thread, sub);
+    sub->entry = shm_ring_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring(`%s`): pthread_create "
@@ -1809,8 +1822,8 @@ void lotus_bus_register_subscriber_shm_ring_batch(
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
     lotus_mark_multithreaded();
-    int rc = pthread_create(&sub->thread, NULL,
-                            shm_ring_batch_reader_thread, sub);
+    sub->entry = shm_ring_batch_reader_thread;
+    int rc = pthread_create(&sub->thread, NULL, shm_reader_main, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring_batch(`%s`): "
@@ -1843,8 +1856,16 @@ void lotus_bus_register_subscriber_shm_ring_batch(
  * join it, so no handler runs on a reader thread while the loci it was
  * registered for are freed. The rings stay mapped until the atexit hook.
  * A subscriber registered after this (a locus born later in fn main)
- * reads until the next quiesce or exit. */
-void lotus_shm_ring_quiesce(void) {
+ * reads until the next quiesce or exit.
+ *
+ * A reader's handler can be waiting on main: a publish `or wait` to a
+ * bounded topic whose queue main drains, or to a binding in its loss
+ * window. Setting should_stop does not interrupt that wait, so main
+ * must not block in pthread_join: it reaps the readers that have
+ * returned and calls `service(ctx)` between polls (the caller drains
+ * its queue, and aborts the bus waits once draining has not been
+ * enough), until every reader has returned. */
+void lotus_shm_ring_quiesce(void (*service)(void *ctx, long waited_ms), void *ctx) {
     int n_subs = atomic_load_explicit(
         &g_shm_ring_subscriber_count, memory_order_acquire);
     if (n_subs > LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
@@ -1857,12 +1878,22 @@ void lotus_shm_ring_quiesce(void) {
                 &sub->should_stop, 1, memory_order_release);
         }
     }
-    for (int i = 0; i < n_subs; i++) {
-        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
-        if (sub && !sub->joined) {
-            pthread_join(sub->thread, NULL);
-            sub->joined = 1;
+    for (long waited_ms = 0;; waited_ms++) {
+        int running = 0;
+        for (int i = 0; i < n_subs; i++) {
+            shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+            if (!sub || sub->joined) continue;
+            if (atomic_load_explicit(&sub->exited, memory_order_acquire)) {
+                pthread_join(sub->thread, NULL);
+                sub->joined = 1;
+            } else {
+                running++;
+            }
         }
+        if (running == 0) return;
+        if (service) service(ctx, waited_ms);
+        struct timespec ts = {0, 1000 * 1000};  /* 1ms */
+        nanosleep(&ts, NULL);
     }
 }
 

@@ -25,6 +25,8 @@ mod shm_ring_layout_record_header;
 mod shm_ring_layout_zerocopy_write;
 #[path = "shm_ring_nested_param_subscriber.rs"]
 mod shm_ring_nested_param_subscriber;
+#[path = "shm_ring_teardown_wait.rs"]
+mod shm_ring_teardown_wait;
 #[path = "shm_ring_overflow.rs"]
 mod shm_ring_overflow;
 #[path = "shm_ring_publish.rs"]

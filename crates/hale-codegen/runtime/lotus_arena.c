@@ -26679,11 +26679,23 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
  * point arrived after exit, as for the sockets. (Weak: a helper
  * test that links this TU without lotus_shm_ring.c has no rings.) */
 #ifndef __wasm__
-extern void lotus_shm_ring_quiesce(void) __attribute__((weak));
+extern void lotus_shm_ring_quiesce(void (*service)(void *ctx, long waited_ms), void *ctx)
+    __attribute__((weak));
+
+/* What main does while it waits for the shm ring readers: a reader's
+ * handler may be parked in `or wait` on a bounded topic whose queue is
+ * main's, so main drains it (to subscribers still live: the dissolve
+ * cascade has not run); a wait draining cannot end (a binding in its
+ * loss window) is aborted into the raise path after 500 ms, as main's
+ * teardown would abort it anyway right after. */
+static void shm_quiesce_service(void *ctx, long waited_ms) {
+    lotus_bus_queue_drain((lotus_bus_queue_t *)ctx);
+    if (waited_ms >= 500) lotus_bus_wait_abort_all();
+}
 #endif
 void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
 #ifndef __wasm__
-    if (lotus_shm_ring_quiesce) lotus_shm_ring_quiesce();
+    if (lotus_shm_ring_quiesce) lotus_shm_ring_quiesce(shm_quiesce_service, queue);
 #endif
     if (g_bus_remote_count == 0) return;
     long budget_ms = 500;
