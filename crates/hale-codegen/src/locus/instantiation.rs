@@ -3889,6 +3889,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_unconditional_branch(loop_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(loop_bb);
+                // m41 on this thread too: a child its owner quarantined
+                // — at the first birth, or a restart bound spent by a
+                // re-birth that failed again — does not run. The run
+                // section is skipped (tick and duration with it), as on
+                // the instantiating thread; the mailbox loop below
+                // still serves it until shutdown. It used to start
+                // run() regardless, once, after the bound had
+                // quarantined it.
+                let pinned_after_run_bb = self
+                    .context
+                    .append_basic_block(thread_main, "pinned.run.after");
+                {
+                    let i64_t = self.context.i64_type();
+                    let q_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            thread_self,
+                            info.quarantined_field_idx,
+                            "pinned.run.quarantined.ptr",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let q = self
+                        .builder
+                        .build_load(i64_t, q_ptr, "pinned.run.quarantined")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let active = self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, q, i64_t.const_zero(), "pinned.run.active")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let do_bb = self
+                        .context
+                        .append_basic_block(thread_main, "pinned.run.do");
+                    self.builder
+                        .build_conditional_branch(active, do_bb, pinned_after_run_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(do_bb);
+                }
                 let pre = match restart {
                     Some(_) => Some(self.emit_restart_count(&info, thread_self)?),
                     None => None,
@@ -3961,6 +4000,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(done_bb);
                 }
+                self.builder
+                    .build_unconditional_branch(pinned_after_run_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(pinned_after_run_bb);
             }
             }
             // The instantiating thread's steps, emitted above.

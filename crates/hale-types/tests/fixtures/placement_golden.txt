@@ -6777,10 +6777,12 @@ domain	pinned:App@literal1.held
 domain	pinned:App@literal1.twice
 domain	pinned:App@literal1.late
 domain	pinned:App@literal1.fresh
+domain	pinned:App@literal1.never
 row	App@literal1	App	main	default
 row	App@literal1.fresh	Fresh	pinned:App@literal1.fresh	entry	off owner
 row	App@literal1.held	Kid	pinned:App@literal1.held	entry	off owner
 row	App@literal1.late	Kid	pinned:App@literal1.late	entry	off owner
+row	App@literal1.never	Kid	pinned:App@literal1.never	entry	off owner
 row	App@literal1.slow	Slow	main	default
 row	App@literal1.twice	Kid	pinned:App@literal1.twice	entry	off owner
 

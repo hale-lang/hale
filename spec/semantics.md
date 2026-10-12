@@ -4457,7 +4457,8 @@ on the first failure without restarting.
 
 Exhaustion quarantines rather than falling through: a bounded
 supervisor has stated when to stop, and stopping means the child
-does not run. This is the difference from an unbounded
+does not run — on every placement (a pinned child's thread used to
+start its `run()` once anyway). This is the difference from an unbounded
 `restart(c)`, which stops re-running at the default cap of 2 but
 leaves the child live.
 
