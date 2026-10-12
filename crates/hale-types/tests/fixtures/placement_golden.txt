@@ -2362,6 +2362,9 @@ dynamic	Queries	on main
 
 == crates/hale-codegen/tests/factory_locus_reclaim.rs#6e4215bc
 
+== crates/hale-codegen/tests/factory_return_through_call.rs#7022c0b0
+dynamic	Buf	on main	in the seed
+
 == crates/hale-codegen/tests/factory_returned_binding.rs#7f632a40
 
 == crates/hale-codegen/tests/factory_returned_binding.rs#f6549d7f
@@ -2400,6 +2403,9 @@ dynamic	Box	on main	in the seed
 
 == crates/hale-codegen/tests/fn_ptr.rs#6f0a1541
 row	L@main1	L	main	default
+
+== crates/hale-codegen/tests/form_enum_cells.rs#8ffb188f
+row	Book@main1	Book	main	default
 
 == crates/hale-codegen/tests/form_hashmap_codegen.rs#e9ab2b42
 row	RegistryL@main1	RegistryL	main	default
