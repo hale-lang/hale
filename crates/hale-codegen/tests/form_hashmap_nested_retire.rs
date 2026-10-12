@@ -429,6 +429,92 @@ fn array_values_outlive_their_cells() {
     );
 }
 
+/// A form's own fields live in the arena its cells' nested blocks are
+/// retired from. A whole-record field store took the same-arena skip for
+/// a nested block, so `self.saved = self.get(1)` in the map's own method
+/// left the field sharing the cell's nested record: once the cell was
+/// replaced and the owner's activation flushed, a later set reused the
+/// block and the field read the new text. A vec form had the same hole
+/// through `for x in self.items { self.saved = x; }`, and worse: the
+/// walk rewrote the element it visited, so the element and the field
+/// shared the fresh copy, which the element's replace then freed. The
+/// field now takes its own deep copy, walked from a snapshot of the rhs.
+/// Under ASan, after 200 replaces, every retained field still reads OLD.
+#[test]
+fn a_forms_own_field_keeps_what_it_was_given() {
+    let src = r#"
+        type Leaf { text: String = ""; }
+        type Entry { key: Int = 0; leaf: Leaf = Leaf { }; }
+        type Wrap { inner: Entry = Entry { }; t: (Leaf, Int) = (Leaf { }, 0); }
+        @form(hashmap)
+        locus Map {
+            params { saved: Entry = Entry { }; leaf: Leaf = Leaf { }; w: Wrap = Wrap { }; again: Entry = Entry { }; }
+            capacity { pool entries of Entry indexed_by key; }
+            fn put(text: String) { self.set(Entry { key: 1, leaf: Leaf { text: text } }); }
+            fn remember() {
+                let row = self.get(1) or Entry { };
+                self.saved = row;
+                self.leaf = row.leaf;
+                self.w = Wrap { inner: row, t: (row.leaf, 1) };
+                self.again.leaf = row.leaf;
+            }
+            fn read() -> String {
+                return self.saved.leaf.text + "/" + self.leaf.text + "/" + self.w.inner.leaf.text + "/"
+                    + self.w.t.0.text + "/" + self.again.leaf.text;
+            }
+        }
+        @form(vec)
+        locus Vec {
+            params { got: Entry = Entry { }; seen: Entry = Entry { }; }
+            capacity { heap items of Entry; }
+            fn put(text: String) {
+                if self.len() == 0 { self.push(Entry { key: 1, leaf: Leaf { text: text } }); }
+                else { self.set(0, Entry { key: 1, leaf: Leaf { text: text } }) or discard; }
+            }
+            fn remember() {
+                let row = self.get(0) or Entry { };
+                self.got = row;
+                for x in self.items { self.seen = x; }
+            }
+            fn read() -> String { return self.got.leaf.text + "/" + self.seen.leaf.text; }
+        }
+        locus Holder {
+            params { map: Map = Map { }; v: Vec = Vec { }; mine: Entry = Entry { }; }
+            fn save() {
+                self.map.put(std::str::upper("old"));
+                self.map.remember();
+                self.v.put(std::str::upper("old"));
+                self.v.remember();
+                let r = self.map.get(1) or Entry { };
+                self.mine = r;
+            }
+            fn replace(text: String) { self.map.put(text); self.v.put(text); }
+            fn read() -> String { return self.map.read() + " v=" + self.v.read() + " mine=" + self.mine.leaf.text; }
+        }
+        fn main() {
+            let h = Holder { };
+            h.save();
+            let mut i = 0;
+            while i < 200 { h.replace(std::str::upper("new" + to_string(i))); i = i + 1; }
+            println(h.read());
+        }
+    "#;
+    let bin = harness::unique_bin("hale_hashmap_form_field_keeps");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    assert!(
+        stdout.contains("OLD/OLD/OLD/OLD/OLD v=OLD/OLD mine=OLD"),
+        "stdout: {stdout}; stderr: {stderr}"
+    );
+}
+
 /// The shape `sync = serialized` exists for, under ASan: a writer on
 /// another pool replaces nested cells (retiring them at its own
 /// activation boundaries) while the owner reads them. Every read is an

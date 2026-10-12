@@ -227,6 +227,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
+    /// Does the locus `name` hold form cells whose nested blocks are
+    /// retired from its own arena — a `@form(vec)` (`set` and `pop`
+    /// free a replaced or removed element), or a `@form(hashmap)` that
+    /// installs a retire descriptor (`sync = none` / `serialized`, a
+    /// record cell)? Such a locus's own field stores must not share a
+    /// block with a cell (`emit_self_field_inplace_assign`).
+    pub(crate) fn locus_retires_cell_blocks(&self, name: &str) -> bool {
+        self.user_loci.get(name).is_some_and(|info| {
+            info.capacity_slots.iter().any(|sl| match sl.form {
+                Some(SlotForm::Vec) => true,
+                Some(SlotForm::Hashmap) => {
+                    matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
+                        && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
+                }
+                _ => false,
+            })
+        })
+    }
+
     /// Is a record field of type `fty` a pointer to a block the retire
     /// descriptor frees (a nested record, a tuple, a fixed array stored
     /// out of line)? A scalar fixed array is the field's own inline

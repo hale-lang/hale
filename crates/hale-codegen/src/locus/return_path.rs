@@ -1216,6 +1216,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1490: the struct's top-level String fields — the ones
         // the fixups below retire — clone into field blocks.
         self.slot_field_clone = !retire_fields.is_empty();
+        // A form whose cells' nested blocks are retired (a `@form(vec)`
+        // element replaced or popped, a `@form(hashmap)` cell replaced
+        // or removed) keeps those blocks in this very arena. The walk's
+        // same-arena skip would store a block a cell still owns into
+        // this field — `self.saved = self.get(k)` in the map's own
+        // method, or a value visited in place by `for x in self.items` —
+        // and the cell's retire would then free it under the field.
+        // Here the field takes its own deep copy of every nested block
+        // (`cell_compound_owner`, always-copy), and the Strings and
+        // Bytes inside those copies are owned too (`cell_owned_clone`).
+        // The walk rewrites the struct it walks, field by field, so it
+        // walks a stack SNAPSHOT of the rhs, as `@form(hashmap).set`
+        // does: the rhs may be a cell itself (`for x in self.items {
+        // self.saved = x; }` visits the vec's elements in place), and
+        // rewriting it would hand the element and the field one fresh
+        // block, which the element's retire then frees under the field.
+        let owns_retiring_cells = self.locus_retires_cell_blocks(&cs.locus_name);
+        let prev_owned = self.cell_owned_clone;
+        let mut rhs = rhs;
+        if owns_retiring_cells {
+            self.cell_compound_owner = Some(None);
+            self.cell_owned_clone = true;
+            if let CodegenTy::TypeRef(tn) = slot_ty {
+                if let Some(tinfo) = self.user_types.get(tn).cloned() {
+                    let snap = self.alloca_in_entry(tinfo.struct_ty.into(), "self_field.snap")?;
+                    let snap_size = tinfo.struct_ty.size_of().expect("struct has known size");
+                    self.builder
+                        .build_memcpy(snap, 8, rhs.into_pointer_value(), 8, snap_size)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    rhs = snap.into();
+                }
+            }
+        }
         let anchored = self.emit_cross_arena_store_deep_copy(
             rhs,
             slot_ty,
@@ -1223,6 +1256,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "self_field_inplace",
         );
         self.slot_field_clone = false;
+        self.cell_compound_owner = None;
+        self.cell_owned_clone = prev_owned;
         let anchored = anchored?;
 
         let size = self.compound_storage_size(slot_ty)?;

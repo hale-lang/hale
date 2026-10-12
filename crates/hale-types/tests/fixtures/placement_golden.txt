@@ -2516,6 +2516,12 @@ row	~.mm	MM	main	inherited
 row	~.mt	MT	main	inherited
 row	~.sm	SM	main	inherited
 
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#637ddfed
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.map	Map	main	inherited
+row	~.v	Vec	main	inherited
+
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#a498151d
 root	App	the entry
 domain	pool:io

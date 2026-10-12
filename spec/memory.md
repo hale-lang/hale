@@ -1381,6 +1381,19 @@ reclaim on a real-world long-running workload:
      the block survive. Interface and payload-enum fields keep
      the identity-skip; they are not retired.
 
+     The same holds for a retiring form's OWN fields (a
+     `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's
+     `self.X = ...` in the form locus's methods): they live in
+     the arena the cells' nested blocks are retired from, so a
+     compound store into one copies every nested block (and the
+     String / Bytes inside) instead of skipping a same-arena one,
+     and walks a stack snapshot of the rhs, never the rhs itself —
+     `self.saved = self.get(k)` used to leave the field sharing
+     the cell's nested record, and `for x in self.items {
+     self.saved = x; }` rewrote the element it visited so the two
+     shared one block, which the next replace freed under the
+     field.
+
      Scalar-cell fast path (2026-08-03): the snapshot and the
      owned-clone walk exist solely to keep heap-pointer leaves
      un-aliased, so a cell with no String / Bytes field and no

@@ -696,7 +696,8 @@ crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#2 2b16ebb436826b0b
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#3 3bfb761139b92c4a
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#4 0434dc50afdb3fc4
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#5 72b8beb47e983ac8
-crates/hale-codegen/tests/form_hashmap_nested_retire.rs#6 a3ac1ba1fbdd33ae
+crates/hale-codegen/tests/form_hashmap_nested_retire.rs#6 baf13549c209822e
+crates/hale-codegen/tests/form_hashmap_nested_retire.rs#7 a3ac1ba1fbdd33ae
 crates/hale-codegen/tests/form_hashmap_serialized.rs#0 86c077b755e73a4a
 crates/hale-codegen/tests/form_hashmap_serialized.rs#1 2b16ebb436826b0b
 crates/hale-codegen/tests/form_hashmap_synced_retire.rs#0 c118440b08584a32
