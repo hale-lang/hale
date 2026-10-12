@@ -254,6 +254,71 @@ fn crosspool_bubble_is_clean_under_asan() {
     panic!("expected count=3 total=42 under ASan within 6 runs; last stdout: {last:?}");
 }
 
+/// The cross-pool bubble through an interface `accept`: a `Driver` on a
+/// worker pool spawns two types of `Vessel`, and the main-thread `World`
+/// that accepts any `Vessel` collects both, each posted to World's thread
+/// and accepted there by the accept fn of its own type (the dispatcher's
+/// Accept step looks the child's type up). Under ASan, chunk pooling off,
+/// and retried like the concrete case for a starved delivery thread.
+const XPOOL_IFACE_SRC: &str = r#"
+    interface Vessel { fn tonnage() -> Int; }
+    locus Ship { params { hull: Int = 0; } fn tonnage() -> Int { return self.hull; } }
+    locus Barge { params { deck: Int = 0; } fn tonnage() -> Int { return self.deck * 2; } }
+    locus Driver {
+        run() {
+            Ship { hull: 7 };
+            Barge { deck: 10 };
+            Ship { hull: 20 };
+        }
+    }
+    main locus World {
+        params {
+            driver: Driver = Driver { };
+            total: Int = 0;
+        }
+        placement {
+            driver: cooperative(pool = workers);
+        }
+        accept(v: Vessel) { self.total = self.total + v.tonnage(); }
+        run() {
+            let mut waited: Int = 0;
+            while self.children.count < 3 && waited < 120 {
+                std::time::sleep(100ms);
+                waited = waited + 1;
+            }
+            println(f"count={self.children.count} total={self.total}");
+        }
+    }
+    fn main() { World { }; }
+"#;
+
+#[test]
+fn world_collects_crosspool_children_through_an_interface_accept() {
+    let _lock = bubble_lock();
+    let bin = harness::unique_bin("hale_test_xpool_bubble_iface_asan");
+    harness::build_source_asan(XPOOL_IFACE_SRC, &bin);
+    let mut last = String::new();
+    for _ in 0..6 {
+        let out = Command::new(&bin)
+            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .env("LOTUS_NO_CHUNK_POOL", "1")
+            .output()
+            .expect("run the asan build");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        for marker in ["ERROR: AddressSanitizer", "ERROR: LeakSanitizer", "heap-use-after-free", "double-free"] {
+            assert!(!stderr.contains(marker), "the sanitizer reported `{marker}`:\n{stderr}");
+        }
+        assert!(out.status.success(), "non-zero exit: {:?}\nstderr: {stderr}", out.status);
+        last = String::from_utf8_lossy(&out.stdout).into_owned();
+        if last.contains("count=3 total=47") {
+            let _ = std::fs::remove_file(&bin);
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(&bin);
+    panic!("expected count=3 total=47 (7 + 10x2 + 20) within 6 runs; last stdout: {last:?}");
+}
+
 #[test]
 fn disable_flag_reverts_to_transient() {
     let _lock = bubble_lock();

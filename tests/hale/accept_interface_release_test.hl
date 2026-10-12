@@ -1,0 +1,50 @@
+// `release(c: I)` is the death-side bookend of an interface `accept`:
+// every locus satisfying `I` is a flow, released when its `run()`
+// completes, through the release monomorph of its own type, reading
+// its own final state. Over a churn of both types the owner's trackers
+// (one per admitted type) stay empty: each flow leaves its own tracker
+// when it is reclaimed.
+
+interface Job { fn weight() -> Int; }
+
+locus Small {
+    params { w: Int = 1; ran: Int = 0; tag: String = "s"; }
+    fn weight() -> Int { return self.w * self.ran; }
+    run() { self.ran = 1; }
+}
+
+locus Big {
+    params { w: Int = 10; ran: Int = 0; tag: String = "b"; }
+    fn weight() -> Int { return self.w * self.ran; }
+    run() { self.ran = 2; }
+}
+
+locus Pool {
+    params { accepted: Int = 0; released: Int = 0; weight: Int = 0; }
+    accept(c: Job) { self.accepted = self.accepted + 1; }
+    release (c: Job) {
+        self.released = self.released + 1;
+        self.weight = self.weight + c.weight();
+    }
+    run() {
+        Small { w: 3 };
+        Big { w: 5 };
+        std::test::assert_eq_int(self.released, 2, "both flows released at their run's end");
+        std::test::assert_eq_int(self.weight, 13, "each release read its own child's final state");
+        std::test::assert_eq_int(self.children.count, 0, "released flows leave their trackers");
+        let mut i = 0;
+        while i < 20000 {
+            Small { w: 1, tag: f"s{i}" };
+            Big { w: 1, tag: f"b{i}" };
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.accepted, 40002, "every churned child accepted");
+        std::test::assert_eq_int(self.released, 40002, "every churned flow released");
+        std::test::assert_eq_int(self.children.count, 0, "no churned flow left tracked");
+    }
+}
+
+fn main() {
+    let p = Pool { };
+    std::test::assert_eq_int(p.weight, 60013, "13, then 20000 x (1 + 2)");
+}
