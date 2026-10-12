@@ -226,7 +226,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 33 targets below are the only ones the correction changes.
+/// The 32 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -237,7 +237,14 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 20] = [
+const CALL_LINES_ONLY: [(&str, usize); 22] = [
+    // The two programs that start `std::io::tcp::Listener`: since it is
+    // the TCP connection substrate's, appended to the program that names
+    // it, the program alone holds its connection loop too, and its call
+    // of `on_conn` makes the handler invoked unboundedly on both sides
+    // (F.40 E5's verdict moves were pinned here while it was the copy's).
+    ("crates/hale-codegen/tests/fixtures/examples/docs-server", 1),
+    ("crates/hale-codegen/tests/fixtures/examples/http-hello", 1),
     ("dna/core", 1583),
     ("dna/oidc", 34),
     ("dna/organism", 1650),
@@ -271,11 +278,9 @@ const CALL_LINES_ONLY: [(&str, usize); 20] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 12] = [
+const VERDICT_TARGETS: [&str; 10] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
-    "crates/hale-codegen/tests/fixtures/examples/docs-server",
-    "crates/hale-codegen/tests/fixtures/examples/http-hello",
     "dna/api",
     "dna/host",
     "dna/host/verb",
@@ -324,41 +329,6 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> per-iteration-reclaim", 5),
-        ],
-        &[
-        ],
-    );
-    // F.40 E5: the stdlib listener's connection loop calls its
-    // `on_conn` parameter, which resolves to the program's handler (the
-    // one function value of its type), so the handler and what it calls
-    // are invoked unboundedly; the old summary saw neither the loop nor
-    // the call.
-    pinned(
-        "crates/hale-codegen/tests/fixtures/examples/docs-server",
-        1,
-        &[
-            "__docs_dir",
-            "__render_doc",
-            "__render_index",
-            "__safe_path",
-            "__strip_leading_slash",
-            "__wrap_html_page",
-            "handle_request",
-        ],
-        &[
-            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 1),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 5),
-        ],
-        &[
-        ],
-    );
-    pinned(
-        "crates/hale-codegen/tests/fixtures/examples/http-hello",
-        1,
-        &[
-            "handle_request",
-        ],
-        &[
         ],
         &[
         ],

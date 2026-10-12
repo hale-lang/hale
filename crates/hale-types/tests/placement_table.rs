@@ -211,7 +211,7 @@ fn two_universes_one_numeric_id_stay_two_identities() {
         LoweringRef::Site(stdlib_literal),
         LoweringRef::Site(user_literal),
     ];
-    let root_literals: Vec<SiteRef> = ["c", "u", "l"]
+    let root_literals: Vec<SiteRef> = ["c", "u"]
         .iter()
         .map(|f| SiteRef::user(user.site_id(default_literal(app, f)).unwrap()))
         .collect();
@@ -337,12 +337,12 @@ fn a_qualified_field_and_its_last_segment_twin_are_two_declarations() {
     let (_, l) = one(t, "l");
     let (_, own) = one(t, "own");
     let ld = l.realizes.as_ref().unwrap();
-    assert_eq!(ld.lowered, "__StdIoTcpListener");
+    assert_eq!(ld.lowered, "__StdIoUdpReader");
     assert_eq!(ld.site.universe, SiteUniverse::StdlibAnalysis);
     assert_eq!(pool_name(t, l.domain), Some("io"));
     let od = own.realizes.as_ref().unwrap();
-    assert_eq!((od.lowered.as_str(), od.site.universe), ("Listener", SiteUniverse::User));
-    assert_eq!(own.domain, PlacementTable::MAIN, "the user's `Listener` is placed by its own instance");
+    assert_eq!((od.lowered.as_str(), od.site.universe), ("Reader", SiteUniverse::User));
+    assert_eq!(own.domain, PlacementTable::MAIN, "the user's `Reader` is placed by its own instance");
 }
 
 /// Case 5: rule 3 admits an aliased placed field, and each row realizes

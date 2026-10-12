@@ -215,6 +215,12 @@ struct Graph<'a> {
     /// `on_failure` handler — as a node of the graph: its key, its link
     /// and what the graph's own walk met in it.
     members: BTreeMap<String, Vec<(FnKey, String, Vec<Met>)>>,
+    /// The TCP connection substrate's loci and free fns
+    /// (`rpc_expand::inject_tcp_serve`): appended to the program's own
+    /// seed, but stdlib source the program names by its paths
+    /// (`std::io::tcp::Listener`, `std::http::Server`), so beyond the
+    /// horizon as the stdlib's analysis copy is.
+    tcp_serve: crate::rpc_expand::TcpServeDecls,
 }
 
 impl<'a> Graph<'a> {
@@ -225,7 +231,8 @@ impl<'a> Graph<'a> {
             .filter_map(|(path, mangled)| std_namespace(&path.join("::")).map(|ns| (mangled.to_string(), ns)))
             .collect();
         let demangle = crate::stdlib_bodies::Demangler::new(import_renames);
-        let mut g = Graph { summary, renames, std_loci, demangle, members: BTreeMap::new() };
+        let tcp_serve = crate::rpc_expand::TcpServeDecls::of(programs);
+        let mut g = Graph { summary, renames, std_loci, demangle, members: BTreeMap::new(), tcp_serve };
         // The imported seeds' loci are in the bundle under their merged
         // names; the stdlib's are its analysis copy's.
         let stdlib = crate::stdlib_bodies::program().filter(|_| !summary.analysis_copy_loci.is_empty());
@@ -303,13 +310,16 @@ impl<'a> Graph<'a> {
     }
 
     /// Whether a fn is the program's own: neither the stdlib's analysis
-    /// copy nor an imported seed's merged decl.
+    /// copy, nor the TCP substrate's, nor an imported seed's merged decl.
     fn own(&self, k: &FnKey) -> bool {
-        !self.summary.analysis_copy.contains(k) && !k.locus.as_deref().is_some_and(merged) && !merged(&k.fn_name)
+        !self.summary.analysis_copy.contains(k)
+            && !self.tcp_serve.holds(k.locus.as_deref(), &k.fn_name)
+            && !k.locus.as_deref().is_some_and(merged)
+            && !merged(&k.fn_name)
     }
 
     fn own_locus(&self, name: &str) -> bool {
-        !self.summary.analysis_copy_loci.contains(name) && !merged(name)
+        !self.summary.analysis_copy_loci.contains(name) && !self.tcp_serve.loci.contains(name) && !merged(name)
     }
 
     /// The locus a struct literal's joined path names: a stdlib locus by

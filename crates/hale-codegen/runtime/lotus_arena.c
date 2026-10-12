@@ -734,7 +734,9 @@ static void lotus_chunk_pool_stats_install(void) {
  * at create time with a backtrace captured for the construction
  * site. At process exit (atexit), the dumper walks the live set
  * and emits one line per arena with chunk count, total bytes,
- * parent pointer, and the construction backtrace.
+ * parent pointer, the bytes its chunks hold (`used=`: what a churn
+ * leaves behind, to the byte, where `bytes=` moves a chunk at a
+ * time), and the construction backtrace.
  *
  * Subregions (`lotus_arena_create_subregion`) are intentionally
  * skipped — they're method scratch with method-bounded lifetimes,
@@ -880,6 +882,7 @@ void lotus_arena_residency_dump_fd(int fd) {
         lotus_arena_residency_entry_t *entry;
         size_t bytes;
         size_t chunks;
+        size_t used;
     } row_t;
     row_t *rows = (row_t *)malloc(n * sizeof(row_t));
     if (!rows) {
@@ -887,15 +890,17 @@ void lotus_arena_residency_dump_fd(int fd) {
         return;
     }
     for (size_t j = 0; j < n; j++) {
-        size_t bytes = 0, chunks = 0;
+        size_t bytes = 0, chunks = 0, used = 0;
         for (const lotus_arena_chunk_t *c = arr[j]->arena->head;
              c; c = c->next) {
             chunks++;
             bytes += c->cap;
+            used += c->used;
         }
         rows[j].entry = arr[j];
         rows[j].bytes = bytes;
         rows[j].chunks = chunks;
+        rows[j].used = used;
     }
     /* Insertion sort by bytes descending (n is small — handfuls
      * to tens of arenas in typical use). */
@@ -922,12 +927,12 @@ void lotus_arena_residency_dump_fd(int fd) {
         lotus_arena_residency_entry_t *e = rows[j].entry;
         fprintf(out,
                 "  [#%d arena=%p label=%s] chunks=%zu bytes=%zu "
-                "(%.2f MiB) parent=%p\n",
+                "(%.2f MiB) parent=%p used=%zu\n",
                 e->id, (void *)e->arena,
                 e->label ? e->label : "<unlabeled>",
                 rows[j].chunks, rows[j].bytes,
                 (double)rows[j].bytes / (1024.0 * 1024.0),
-                (void *)e->arena->parent);
+                (void *)e->arena->parent, rows[j].used);
 #if defined(__GLIBC__)
         if (e->birth_frame_count > 2) {
             fflush(out);

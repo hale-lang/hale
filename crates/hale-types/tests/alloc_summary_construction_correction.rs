@@ -275,12 +275,15 @@ fn own_scope_let_block_scope_test() {
             // the HTTP server and its connection helper left the bundled
             // stdlib for the TCP substrate (10 fns, 7 of them hooks, one
             // of them invoked unboundedly) and `std::io::tcp::stop`'s body
-            // joined it; 434 since the JSON escaper appends runs (its
-            // two hex-string helpers went, `__json_plain_byte` came)
+            // joined it; 430 since the TCP `Listener` followed them (its
+            // three hooks, its default callback and the connection helper
+            // that calls it, those two invoked unboundedly); 429 since the
+            // JSON escaper appends runs (its two hex-string helpers went,
+            // `__json_plain_byte` came)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 434 fns, 30 entry points, 116 invoked-unboundedly",
-                "+ # 434 fns, 30 entry points, 115 invoked-unboundedly",
+                "- # 429 fns, 27 entry points, 114 invoked-unboundedly",
+                "+ # 429 fns, 27 entry points, 113 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -421,7 +424,10 @@ fn reached_no_other_target_changes() {
 /// type, so the router's fn-route dispatch reaches `__http_fn_unset` and
 /// the listener's `on_conn` reaches `__default_on_connection`. One fewer
 /// since the HTTP server left the copy for the TCP substrate, appended to
-/// a program that names it: its accept loop's hand-off is no copy fn.
+/// a program that names it: its accept loop's hand-off is no copy fn. Two
+/// fewer since the TCP `Listener` followed it: `__handle_one_connection`
+/// and the `__default_on_connection` its `on_conn` reaches are no copy
+/// fns either.
 fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
     let u = unreached(target, &stdlib_fns()).expect("the target loads");
     let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
@@ -447,7 +453,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (117, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (115, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -457,7 +463,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (117, 0),
+        (115, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -477,7 +483,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (139, 2),
+        (137, 2),
         &[
             "b64",
             "decode",
@@ -541,7 +547,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (119, 0),
+        (117, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -578,7 +584,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (116, 0),
+        (114, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],
@@ -624,10 +630,10 @@ fn run_to_exit(target: &str) -> Option<(usize, Vec<String>)> {
 /// `list_item`, …), which GH #1490 (C2) judges once per call, so in a
 /// program that reaches none of them from a long-lived frame they are no
 /// leak sites at all, and the 84 programs that lost only those no longer
-/// move. What is left is the copy's one site the listener's `on_conn`
-/// call reaches (since F.40 E5 it resolves to the program's handler,
-/// which makes more of the copy invoked unboundedly), and the own `main`
-/// in-loop sites, and docs-server's handler's; no other target moves.
+/// move. What is left is the own `main` in-loop sites (the two programs
+/// that start `std::io::tcp::Listener` moved too while it was the copy's,
+/// and are no run-to-exit programs since it is the TCP connection
+/// substrate's); no other target moves.
 #[test]
 fn own_entries_run_to_exit_programs() {
     let mut moved = 0;
@@ -649,29 +655,17 @@ fn own_entries_run_to_exit_programs() {
     // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
     // `tests/hale/time_return_test.hl`; 89: `dna/api`, whose `Head::run` serves a
     // surface and is no longer a run-to-exit program (R4 B); 5: GH #1490
-    // (C2), the copy's 21 returned loop accumulators no longer leak; 6:
+    // (C2), the copy's 21 returned loop accumulators no longer leak; 3:
+    // `docs-server` and `http-hello` start `std::io::tcp::Listener`, a
+    // listener of the TCP connection substrate whose `run` is the
+    // program's, as `std::http::Server`'s is: neither is run-to-exit; 4:
     // `tests/hale/json_escape_runs_test.hl`, the property test of the
     // run-appending JSON escaper.
-    assert_eq!(moved, 6, "the run-to-exit programs among the targets that lose a site");
-    assert_eq!(
-        more,
-        [
-            ("crates/hale-codegen/tests/fixtures/examples/docs-server".to_string(), 1),
-            ("crates/hale-codegen/tests/fixtures/examples/http-hello".to_string(), 1),
-        ],
-        "the copy's leak sites"
-    );
+    assert_eq!(moved, 4, "the run-to-exit programs among the targets that lose a site");
+    assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
         [
-            // F.40 E5: the listener's `on_conn` call resolves to the
-            // program's handler, so these are invoked unboundedly first.
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4255 InUnboundedLoop",
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4239 InUnboundedLoop",
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4232 InUnboundedLoop",
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4224 InUnboundedLoop",
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __render_index StringConcat @4193..4217 InUnboundedLoop",
-            "crates/hale-codegen/tests/fixtures/examples/docs-server: __wrap_html_page StringConcat @3012..3462 InvokedUnboundedly",
             "tests/hale/api_context_test.hl: main StringConcat @12899..12990 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12899..12982 InUnboundedLoop",
             // GH #1490 (step 3): `self.buf = self.buf + chunk`, an

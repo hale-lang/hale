@@ -593,6 +593,13 @@ fn per_target_moves() {
 /// before the split, is verb code the body no longer reaches, and the
 /// verb program has no leak site to move); one more of the body's dump
 /// verdicts and nine of the verb program's move with them.
+///
+/// `docs-server` and `http-hello` serve their `on_connection` callback
+/// from `std::io::tcp::Listener`, which is the TCP connection substrate's
+/// since it left the copy: the callback runs in a per-connection child,
+/// so its sites are once per invocation with the frames or without, and
+/// no verdict moves (13 and 7 did while the copy's connection helper,
+/// freeing at return, was the callback's caller).
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -605,8 +612,7 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/74-effect-contracts: 0 go, 0 appear; dump 7 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
-    "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 13 verdicts",
-    "crates/hale-codegen/tests/fixtures/examples/http-hello: 0 go, 0 appear; dump 0 tags, 0 reclaim, 7 verdicts",
+    "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
     "dna/api: 0 go, 0 appear; dump 350 tags, 761 reclaim, 0 verdicts",
     "dna/core: 0 go, 0 appear; dump 282 tags, 662 reclaim, 0 verdicts",

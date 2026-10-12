@@ -45,9 +45,13 @@ this?* Hale answers it structurally instead:
   locus's region is never referenced by a sibling. So when a
   region frees, nothing dangles into it.
 - **Messages are copies, not pointers.** A payload crossing a
-  locus boundary is copied into the receiver's arena. Sender and
-  receiver have independent lifetimes; the sender can dissolve
-  while the receiver still holds its copy.
+  locus boundary is copied for the receiver, into storage of the
+  delivery's own that is freed when its handler returns; a field the
+  handler keeps (`self.last = msg.body`) is copied into the
+  receiver's arena as it is stored. Sender and receiver have
+  independent lifetimes; the sender can dissolve while the receiver
+  still holds what it kept, and a long-lived receiver grows only by
+  what it keeps, never by what it is sent.
 
 With those two invariants, wholesale-free-at-dissolve is sound
 with no tracing and no aliasing analysis. The discipline the

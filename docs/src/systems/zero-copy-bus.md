@@ -11,9 +11,9 @@
 
 ## The default copies; sometimes you can't afford it
 
-Every ordinary bus delivery copies the payload into the
-subscriber's arena — that's what keeps lifetimes independent and
-the memory model sound (see [Memory & lifetime](./memory.md)).
+Every ordinary bus delivery copies the payload for the subscriber
+(into storage the delivery owns until its handler returns) — that's
+what keeps lifetimes independent and the memory model sound (see [Memory & lifetime](./memory.md)).
 For the vast majority of topics that copy is free in the noise.
 For the hottest same-host routes it isn't, and you opt into a
 zero-copy path explicitly.
