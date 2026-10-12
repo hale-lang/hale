@@ -1212,6 +1212,18 @@ fn stmt_definitely_non_allocating(
         }
         Stmt::Block(b) => fn_body_definitely_non_allocating(&b.stmts, ctx, num),
         Stmt::Break(_) | Stmt::Continue(_) => true,
+        // A payload-less `violate` allocates one fixed-size
+        // `ClosureViolation` record and leaves the invocation. In a
+        // body that keeps its scratch the record lands there; in one
+        // that does not, it lands in `self.__arena` — the same record,
+        // living until the locus dissolves instead of until the call
+        // returns, made once per failure (the violation latches the
+        // locus failed), never once per call. Counting it allocating
+        // kept a scratch subregion, and its create, destroy and exit
+        // drain, around every call of every method that guards a
+        // primitive with `violate` — `BytesBuilder.append_u8` paid
+        // ~60 ns a byte for it in a threaded program.
+        Stmt::Violate { payload: None, .. } => true,
         // Conservative: for-loops, match, recovery, send, fail,
         // yield, let-tuple all touch machinery that may alloc.
         _ => false,
@@ -1227,7 +1239,13 @@ fn stmt_definitely_non_allocating(
 ///
 ///   - `byte_at_unchecked` lowers to a GEP + load;
 ///   - `byte_at` is `__str_byte_at` — a compare against the view's
-///     `n` plus that same load.
+///     `n` plus that same load;
+///   - the `std::bytes::builder::__*` writers and `__len` answer a
+///     status or a count and touch only the builder's own malloc'd
+///     buffer (grown by realloc, freed at the `BytesBuilder`'s
+///     dissolve) — never an arena. They are what `BytesBuilder`'s
+///     `append*` methods wrap, so a method that calls one and
+///     violates on failure drops its per-call scratch.
 ///
 /// A wrong entry does not dangle — an elided body's allocations
 /// route to the caller's arena rather than being freed at return —
@@ -1237,6 +1255,17 @@ fn stmt_definitely_non_allocating(
 const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "str", "byte_at_unchecked"],
     &["std", "str", "byte_at"],
+    &["std", "bytes", "builder", "__append"],
+    &["std", "bytes", "builder", "__append_f32"],
+    &["std", "bytes", "builder", "__append_f64"],
+    &["std", "bytes", "builder", "__append_pad"],
+    &["std", "bytes", "builder", "__append_scalar"],
+    &["std", "bytes", "builder", "__append_slice"],
+    &["std", "bytes", "builder", "__append_str"],
+    &["std", "bytes", "builder", "__clear"],
+    &["std", "bytes", "builder", "__len"],
+    &["std", "bytes", "builder", "__shift_front"],
+    &["std", "bytes", "builder", "__xor_mask_into"],
 ];
 
 fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {
