@@ -109,6 +109,27 @@ impl Server {
         panic!("`{key}` never read {want}; it reads {:?} in {:?}", self.stat(key), self.stats());
     }
 
+    /// Wait until the statistic `key` reads `want`, for as long as it keeps
+    /// moving: a step that is CPU work (a burst of large events) takes
+    /// what the machine gives it, so the bound is on progress, not on the
+    /// whole step. Fails when the value has not changed for 20 seconds.
+    pub fn await_stat_progressing(&self, key: &str, want: i64) {
+        let mut last = self.stat(key);
+        let mut moved = Instant::now();
+        while moved.elapsed() < Duration::from_secs(20) {
+            let now = self.stat(key);
+            if now == Some(want) {
+                return;
+            }
+            if now != last {
+                last = now;
+                moved = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("`{key}` never read {want}: it stopped at {last:?} in {:?}", self.stats());
+    }
+
     /// Whether the program has exited.
     pub fn exited(&mut self) -> bool {
         match self.child.as_mut() {
