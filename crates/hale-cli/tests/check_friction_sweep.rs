@@ -8,6 +8,10 @@
 //! - `or discard` on a value-bearing fallible is legal as a whole
 //!   statement (the value is thrown away with the error) and refused
 //!   where the value is used, with the default to write instead.
+//! - A topic that arrives only through an adapter's inbound side
+//!   (`std::bus::__local_dispatch`) is not "subscribed but never
+//!   published", at `hale check` or `hale build`; a truly unpublished
+//!   one still is.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -77,4 +81,26 @@ fn or_discard_drops_a_value_in_a_statement_and_is_refused_where_it_is_used() {
     );
     assert!(out.contains("Substitute a default (`or <default>`)"), "the fix: {out}");
     assert!(!built, "the build refuses it alike");
+}
+
+#[test]
+fn an_ingress_counts_as_a_publisher_at_check_and_build() {
+    let program = |dispatch: &str| {
+        format!(
+            "type Note {{ n: Int = 0; }}\n\
+             topic In {{ payload: Note; subject: \"in\"; }}\n\
+             locus Conn {{ fn send(subject: String, bytes: Bytes) {{ }} fn pump() {{ {dispatch} }} }}\n\
+             locus Sink {{ params {{ got: Int = 0; }} bus {{ subscribe In as on_in; }} fn on_in(n: Note) {{ self.got = self.got + 1; }} }}\n\
+             main locus App {{ params {{ s: Sink = Sink {{ }}; c: Conn = Conn {{ }}; }} run() {{ self.c.pump(); }} }}\n\
+             fn main() {{ App {{ }}; }}\n"
+        )
+    };
+    const WARNING: &str = "bus topic `In` is subscribed but never published";
+    let (checked, out, built, bout) =
+        check_and_build(&program("std::bus::__local_dispatch(\"in\", b\"x\");"), "ingress");
+    assert!(checked && !out.contains(WARNING), "check: {out}");
+    assert!(built && !bout.contains(WARNING), "build: {bout}");
+    let (checked, out, built, bout) = check_and_build(&program(""), "no_ingress");
+    assert!(checked && out.contains(WARNING), "check: {out}");
+    assert!(built && bout.contains(WARNING), "build: {bout}");
 }

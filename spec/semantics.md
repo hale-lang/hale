@@ -3285,8 +3285,13 @@ main locus App {
    plausibly external: a **transport binding** (`bindings { T: ... }`
    implies a cross-process peer), a **wildcard** subscriber/publisher
    covering the subject (`log.**` covers `log.app`), a **cross-seed**
-   reference (`alias::Foo` — the other seed owns the other half), or
-   the same locus being both publisher and subscriber. (A topic is
+   reference (`alias::Foo` — the other seed owns the other half), an
+   **external ingress** — a `std::bus::__local_dispatch(subject,
+   bytes)` call, the inbound side of an adapter, which publishes the
+   subject its literal names or, computing it (a NATS connection
+   dispatches whatever subject arrives), any subject (friction sweep
+   2026-10-12) — or the same locus being both publisher and
+   subscriber. (A topic is
    no longer reachable by a caller because a locus subscribes it: the
    retired api binding's lift of this rule went with it, and a served
    surface reaches handlers, not topics.) The closed-
@@ -3295,7 +3300,8 @@ main locus App {
    Rules 9 and 10 and the dead-receiver rule (7) are judged over
    the bus graph. The graph carries as columns what the walk
    computed: whether a topic is bound to a transport, whether a
-   subject crosses a seed, whether a subscription is a wildcard;
+   subject crosses a seed, whether a subscription is a wildcard,
+   whether an external ingress may deliver on it;
    rule 9's closed world is the entry row's. A subject is compared
    under the graph's canonical key, its wire subject (spec/model.md
    rule 8): a topic published by its declared name and subscribed

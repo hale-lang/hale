@@ -5254,9 +5254,11 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         })
         .flatten()
         .collect();
+    // An external ingress (`std::bus::__local_dispatch`, an adapter's
+    // inbound side) is a publisher too: the cells arrive from outside.
     let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         row.is_some_and(|r| {
-            r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
+            r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed || r.ingress
         })
     };
     let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
