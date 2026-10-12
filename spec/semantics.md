@@ -5026,11 +5026,18 @@ non-error value, that value is the expression's value
   { break; }` is the shape a generic desugar needs, since it
   cannot invent a typed default for an arbitrary element type.
 - **`or discard`** (added 2026-05-16) — swallows the error
-  and produces Unit. The underlying call's success type MUST
-  be Unit; the typechecker rejects `or discard` on
-  value-bearing calls with a message pointing at
-  `or <default>` or `or raise`. Sugar for the previously-
-  idiomatic `or noop(err)` pattern with a no-op handler fn.
+  and produces Unit. Sugar for the previously-idiomatic
+  `or noop(err)` pattern with a no-op handler fn. On a call
+  whose success type is Unit it is legal anywhere. On a
+  value-bearing call it is legal where the value is thrown
+  away anyway — the call is the whole statement
+  (`cache.put(k, v) or discard;`, friction sweep 2026-10-12:
+  there is no `or ignore` word) — and the success value is
+  dropped with the error. Where the value is used (`let x =
+  f() or discard;`, an argument, an operand) the discard
+  branch has no value to give, and the typechecker refuses
+  it with a message pointing at `or <default>`, `or raise`
+  and the statement form.
 - **`or fail <payload>`** (added 2026-05-17, B3 / G6) —
   symmetric to `or raise`, but the caller picks a fresh
   payload of the enclosing fallible fn's declared error type

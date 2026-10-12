@@ -432,11 +432,16 @@ fn an_entry_point_less_program_is_built() {
                   params { n: Int = 0; }\n\
                   fn bump() { self.n = self.n + 1; }\n\
                   }\n";
-    // `or discard` needs a Unit success type; `std::process::run`
-    // yields a value. The checker does not say so (that is GH #791's
-    // territory) and codegen does, with no span — a divergence.
-    let refused = "locus Runner {\n\
-                   fn go() { std::process::run(\"true\") or discard; }\n\
+    // `accept` takes a locus; an interface-typed child passes the
+    // checker and codegen refuses it ("accept() param must be a locus
+    // type"), with no span — a divergence. (This was `std::process::run
+    // (…) or discard;` until a statement-position `or discard` on a
+    // value-bearing call became legal, friction sweep 2026-10-12.)
+    let refused = "interface Tally {\n\
+                   fn x() -> Int;\n\
+                   }\n\
+                   locus Holder {\n\
+                   accept(c: Tally) { }\n\
                    }\n";
 
     for src in [lowers, refused] {
@@ -471,8 +476,8 @@ fn an_entry_point_less_program_is_built() {
 
     match sweep_verdict(refused, "hale_cb_ep_refused") {
         Verdict::Refused(e) => assert!(
-            e.contains("or discard"),
-            "expected the `or discard` refusal, got: {}",
+            e.contains("accept"),
+            "expected the `accept` refusal, got: {}",
             e
         ),
         other => panic!(

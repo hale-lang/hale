@@ -5,6 +5,9 @@
 //!   `restart`, `capacity`, `bulk` and the rest name fields, params,
 //!   locals and fns; a locus method named like a hook is still refused,
 //!   with a message that says the name IS the hook.
+//! - `or discard` on a value-bearing fallible is legal as a whole
+//!   statement (the value is thrown away with the error) and refused
+//!   where the value is used, with the default to write instead.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,4 +55,26 @@ fn a_locus_method_named_like_a_hook_is_refused_by_check_and_build() {
     assert!(!checked && out.contains("a locus method cannot be named `run`: that name is the `run` lifecycle hook"), "check: {out}");
     assert!(out.contains("declare the hook as `run() { … }` (no `fn`)"), "the fix: {out}");
     assert!(!built && bout.contains("cannot be named `run`"), "build: {bout}");
+}
+
+#[test]
+fn or_discard_drops_a_value_in_a_statement_and_is_refused_where_it_is_used() {
+    let stmt = "type Oops { why: String = \"\"; }\n\
+                fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+                fn main() { parse(\"bad\") or discard; parse(\"ok\") or discard; println(\"ok\"); }\n";
+    let (checked, out, built, bout) = check_and_build(stmt, "discard_stmt");
+    assert!(checked, "check: {out}");
+    assert!(built, "build: {bout}");
+
+    let used = "type Oops { why: String = \"\"; }\n\
+                fn parse(s: String) -> Int fallible(Oops) { return 7; }\n\
+                fn main() { let x = parse(\"1\") or discard; println(x); }\n";
+    let (checked, out, built, _) = check_and_build(used, "discard_used");
+    assert!(!checked, "a used value is refused: {out}");
+    assert!(
+        out.contains("`or discard` has no value to give where the result is used: the call succeeds with a `Int`"),
+        "{out}"
+    );
+    assert!(out.contains("Substitute a default (`or <default>`)"), "the fix: {out}");
+    assert!(!built, "the build refuses it alike");
 }

@@ -24524,6 +24524,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_or_expr(inner, disposition, scope)?;
                 match (v_opt, ty_opt) {
                     (Some(v), Some(ty)) => Ok((v, ty)),
+                    // The check refuses this first (a used `or
+                    // discard`); a harness build that skips the check
+                    // meets the same sentence here.
+                    _ if matches!(disposition, OrDisposition::Discard(_)) => {
+                        Err(CodegenError::UnsupportedAt(
+                            "`or discard` has no value to give where the \
+                             result is used; substitute a default (`or \
+                             <default>`), propagate with `or raise`, or write \
+                             the call as a statement (`call() or discard;`)"
+                                .into(),
+                            e.span(),
+                        ))
+                    }
                     _ => Err(CodegenError::Unsupported(
                         "`or` expression in value position has Unit \
                          success type — bare-statement use is fine, but \

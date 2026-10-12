@@ -433,9 +433,10 @@ admissible.
 - **`or`** — recognized as a postfix on any expression of
   fallible type (the `or_clause` production). Four RHS forms:
   `or raise` (propagate one frame up the call stack),
-  `or discard` (swallow the error and substitute Unit —
-  rejected at typecheck on calls whose success type is non-Unit;
-  sugar for the old `or noop(err)`), `or fail <expr>` (B3 / G6 —
+  `or discard` (swallow the error and produce Unit — on a
+  value-bearing call only as a whole statement, where the value
+  is dropped too; refused where the value is used; sugar for the
+  old `or noop(err)`), `or fail <expr>` (B3 / G6 —
   diverge like `raise` but with a fresh payload of the enclosing
   fallible fn's declared error type), `or <expression>`
   (substitute), `or <handler-call>` (hand off).

@@ -16392,19 +16392,27 @@ impl<'a> Checker<'a> {
                         success
                     }
                     OrDisposition::Discard(span) => {
-                        // `or discard` — swallow error, produce
-                        // Unit. Requires the underlying call's
-                        // success type to be Unit (since discard
-                        // doesn't carry a value).
-                        if !matches!(success, Ty::Unit | Ty::Unknown) {
+                        // `or discard` — swallow the error, produce
+                        // Unit. A value-bearing fallible may be
+                        // discarded where its value is thrown away
+                        // anyway: a statement (`cache.put(k, v) or
+                        // discard;`), the friction sweep's ruling
+                        // (2026-10-12: no `or ignore` keyword). Where
+                        // the value is USED the discard branch has
+                        // none to give, so the expression needs a
+                        // default instead.
+                        if !value_discarded && !matches!(success, Ty::Unit | Ty::Unknown) {
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
-                                    "`or discard` requires the underlying \
-                                     call's success type to be Unit (so the \
-                                     discard branch produces no value to \
-                                     bind); got `{}`. Use `or <default>` or \
-                                     `or raise` for value-bearing fallibles.",
+                                    "`or discard` has no value to give where \
+                                     the result is used: the call succeeds \
+                                     with a `{}`, and the discard branch \
+                                     produces none. Substitute a default \
+                                     (`or <default>`), propagate with `or \
+                                     raise`, or write the call as a statement \
+                                     (`call() or discard;`) to throw the \
+                                     value away.",
                                     success.display()
                                 ),
                             ));
