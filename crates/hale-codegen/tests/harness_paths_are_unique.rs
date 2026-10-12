@@ -315,6 +315,59 @@ fn collect_rs(
     }
 }
 
+/// No test hands a child a port it drew.
+///
+/// A port drawn by binding `:0`, reading the number and closing the
+/// socket is free, not reserved: under a parallel run another test's
+/// listener can take it between the draw and the child's bind, and
+/// then the test talks to a stranger or the child cannot listen. A
+/// program that serves binds port 0 and the test reads the port back
+/// (`support/child.rs`: `tcp_port`, `udp_port`, or the program's own
+/// `std::io::tcp::__local_port`); one that must be told its address
+/// before it binds takes a `child::Reserved` one. The scan covers both
+/// suites that start programs, support files included.
+#[test]
+fn no_test_hands_a_child_a_drawn_port() {
+    // This file names what it bans, so it cannot scan itself.
+    const SELF: &str = "harness_paths_are_unique.rs";
+    const DRAWS: &[&str] = &[
+        "fn free_port(",
+        "fn pick_free_port(",
+        "fn free_tcp_port(",
+        "fn free_udp_port(",
+        "fn pick_two_free_ports(",
+        "ports::free_port(",
+    ];
+    let cli = tests_dir().join("../../hale-cli/tests");
+    let mut offenders = Vec::new();
+    for dir in [tests_dir(), tests_dir().join("support"), cli.clone(), cli.join("support")] {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x != "rs").unwrap_or(true) || p.file_name().is_some_and(|n| n == SELF) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            for (n, line) in text.lines().enumerate() {
+                // a socket bound and dropped on one line: its number outlives it
+                let chained = line.contains("bind(") && line.contains(".local_addr()") && line.contains(".port()");
+                if chained || DRAWS.iter().any(|d| line.contains(d)) {
+                    offenders.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these lines draw a port to hand over ({} found):\n{:#?}\n\n\
+         Bind port 0 in the program and read the port back \
+         (`child::tcp_port`, `child::udp_port`), or hand over a \
+         `child::Reserved` address when the program must know it first.",
+        offenders.len(),
+        offenders
+    );
+}
+
 /// A scraper that matched nothing would make both checks above pass
 /// vacuously, which is exactly how the first registry-parity test
 /// shipped with a hole.

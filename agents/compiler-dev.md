@@ -304,9 +304,11 @@ Rules (CLAUDE.md has the reasons):
   group in `.config/nextest.toml` is only for shared state that
   cannot be removed.
 - Binary paths come from `harness::unique_bin`
-  (`crates/hale-codegen/tests/support/harness.rs`), ports from
-  `ports::free_port()` (`support/ports.rs`).
-  `harness_paths_are_unique.rs` enforces this and bans
+  (`crates/hale-codegen/tests/support/harness.rs`). A served program
+  binds port 0 and the test reads the port back
+  (`support/child.rs`: `tcp_port`, `udp_port`); an address a program
+  must know before it binds is a `child::Reserved` one.
+  `harness_paths_are_unique.rs` enforces this, bans a drawn port, and bans
   `set_var(` / `remove_var(` in `hale-codegen/tests/*.rs` and in all
   `crates/*/src`.
   Build knobs ride `hale_codegen::BuildOptions` (`dump_ir`, `asan`,
