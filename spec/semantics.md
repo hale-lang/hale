@@ -843,7 +843,7 @@ reclaims its children as a user owner's does), and a clause on a locus
 that is never instantiated counts all the same. `hale check --flows` reports every flow type with
 each `release(c: T)` clause that makes it one, by its declaring locus,
 file and line, as the declaring seed spells it, never a mangled symbol
-(GH #736); a qualified type is the whole path, so a local `Stream` is
+(GH #736), and an interface's clause with the loci it admits; a qualified type is the whole path, so a local `Stream` is
 never mistaken for `std::io::tcp::Stream`. It is an
 opt-in report, never a diagnostic, since a release declaration is
 legitimate. It lists the program's own clauses: a stdlib child type is
