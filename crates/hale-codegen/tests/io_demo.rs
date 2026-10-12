@@ -2,12 +2,15 @@
 //! examples/io-demo, parameterized via env + argv (m78
 //! follow-up).
 //!
-//! Each test picks a free localhost port and unique /tmp
+//! Each test takes a reserved loopback address and unique /tmp
 //! paths, passes them to the example via argv[1] +
-//! HALE_IO_DEMO_{CONFIG,LOG}_PATH. Parallel cargo test
-//! threads no longer collide on a hardcoded port — the
-//! example consumes std::env / std::str::parse_int from
-//! the v1.x stdlib to wire its parameters.
+//! HALE_IO_DEMO_{CONFIG,LOG}_PATH. The example reads a port from
+//! argv and binds `127.0.0.1` as written, and a port of 0 means
+//! its default — so it cannot bind port 0 for the test to read
+//! back. Instead the test holds a [`child::Reserved`] port and
+//! builds the example with its host swapped for the reserved one:
+//! a port drawn and released could be bound by another test of a
+//! parallel run before the example binds it.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -17,6 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -24,13 +29,6 @@ fn examples_dir() -> PathBuf {
     p.push("fixtures");
     p.push("examples");
     p
-}
-
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let port = probe.local_addr().expect("local_addr").port();
-    drop(probe);
-    port
 }
 
 fn unique_path(tag: &str) -> PathBuf {
@@ -47,9 +45,9 @@ fn unique_path(tag: &str) -> PathBuf {
     p
 }
 
-fn wait_until_listening(port: u16) -> bool {
+fn wait_until_listening(addr: impl std::net::ToSocketAddrs + Copy) -> bool {
     for _ in 0..50 {
-        if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+        if let Ok(s) = std::net::TcpStream::connect(addr) {
             drop(s);
             return true;
         }
@@ -59,7 +57,8 @@ fn wait_until_listening(port: u16) -> bool {
 }
 
 struct Demo {
-    port: u16,
+    /// Where the example listens, held for the test's length.
+    at: child::Reserved,
     config_path: PathBuf,
     log_path: PathBuf,
     bin: PathBuf,
@@ -71,10 +70,13 @@ impl Demo {
         src_path.push("io-demo");
         src_path.push("main.hl");
         let source = std::fs::read_to_string(&src_path).expect("read source");
+        let at = child::Reserved::new();
+        assert!(source.contains("host: \"127.0.0.1\","), "io-demo binds 127.0.0.1 as written");
+        let source = source.replace("127.0.0.1", &at.host());
         let bin = harness::unique_bin(&format!("hale_io_demo_bin_{}_{}", std::process::id(), tag));
         build_opts::build_source(&source, &bin, &build_opts::options()).expect("build");
         Self {
-            port: pick_free_port(),
+            at,
             config_path: unique_path(&format!("{}_config", tag)),
             log_path: unique_path(&format!("{}_log", tag)),
             bin,
@@ -83,7 +85,7 @@ impl Demo {
 
     fn run(&self) -> (String, String, std::process::ExitStatus) {
         let listener_proc = Command::new(&self.bin)
-            .arg(self.port.to_string())
+            .arg(self.at.port().to_string())
             .env("HALE_IO_DEMO_CONFIG_PATH", &self.config_path)
             .env("HALE_IO_DEMO_LOG_PATH", &self.log_path)
             .stdout(Stdio::piped())
@@ -100,11 +102,7 @@ impl Demo {
         // version of this helper did a second connect+write here
         // and raced the listener's exit on slow CI, getting
         // ECONNRESET. The probe alone is sufficient.
-        assert!(
-            wait_until_listening(self.port),
-            "io-demo never bound to 127.0.0.1:{}",
-            self.port
-        );
+        assert!(wait_until_listening(self.at.addr), "io-demo never bound to {}", self.at.addr);
 
         let out = listener_proc.wait_with_output().expect("listener wait");
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -137,7 +135,7 @@ fn io_demo_default_config_writes_default_payload() {
         stdout
     );
     assert!(
-        stdout.contains(&format!("io-demo: listening on 127.0.0.1:{}", demo.port)),
+        stdout.contains(&format!("io-demo: listening on {}", demo.at.addr)),
         "expected listening diagnostic with picked port; got: {:?}",
         stdout
     );
@@ -177,18 +175,11 @@ fn io_demo_with_config_writes_config_payload() {
 #[test]
 fn io_demo_falls_back_to_default_port_on_garbage_argv() {
     // Pass a non-numeric argv[1]; parse_int returns 0; the
-    // example sees `parsed > 0` is false and keeps the default
-    // (9876). To avoid collision with any hardcoded-port test
-    // we set the demo's HALE_IO_DEMO_PORT env... wait, the
-    // example doesn't read env for port. Skip this case OR
-    // accept that we're testing argv-fallback specifically and
-    // it'll bind 9876.
-    //
-    // Compromise: build with garbage argv[1], let the binary
-    // bind its DEFAULT port (9876), connect to that. We
-    // serialize this test against the default-port collision
-    // by NOT running other 9876-bound tests in this file —
-    // the other two tests use unique picked ports.
+    // example sees `parsed > 0` is false and keeps its default
+    // (9876) — the default is what is under test, so this one
+    // binds a fixed port. Nothing else in the suite names 9876,
+    // and the kernel never hands it out for a bind of port 0
+    // (it is below the ephemeral range).
     let mut src_path = examples_dir();
     src_path.push("io-demo");
     src_path.push("main.hl");
@@ -207,7 +198,7 @@ fn io_demo_falls_back_to_default_port_on_garbage_argv() {
         .expect("spawn");
 
     assert!(
-        wait_until_listening(9876),
+        wait_until_listening(("127.0.0.1", 9876)),
         "io-demo didn't bind default port 9876"
     );
 

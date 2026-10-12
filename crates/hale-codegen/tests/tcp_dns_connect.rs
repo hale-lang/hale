@@ -34,18 +34,15 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
 #[test]
 fn connect_numeric_host_still_uses_fast_path() {
     // Fast-path regression guard: `127.0.0.1` is dotted-quad, so
     // inet_pton matches and getaddrinfo is never called. If this
     // breaks, the C6 refactor lost the numeric branch.
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    // the test's own listener, on the port the kernel picks: a port drawn
+    // and then bound could be taken in between by another test
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let (got_tx, got_rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");
@@ -87,8 +84,10 @@ fn connect_localhost_resolves_via_getaddrinfo() {
     // to 127.0.0.1 from /etc/hosts; if a sandbox has no nsswitch
     // hosts entry this would fail — but that's the exact case
     // we want to surface as IoError below).
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    // the test's own listener, on the port the kernel picks: a port drawn
+    // and then bound could be taken in between by another test
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let (got_tx, got_rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");

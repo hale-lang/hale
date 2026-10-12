@@ -47,11 +47,6 @@ fn unique_path(tag: &str) -> PathBuf {
     p
 }
 
-fn pick_free_port() -> u16 {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
 #[test]
 fn read_bytes_returns_full_length_with_embedded_nuls() {
     // Write a file whose contents contain NUL bytes. read_file
@@ -147,8 +142,8 @@ fn stream_send_bytes_ships_full_body_through_tcp() {
     let payload: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x00, 0x00, 0x00, 0x0D]; // PNG header-ish bytes with embedded NULs
     std::fs::write(&path, payload).expect("write payload");
 
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let (server_done_tx, server_done_rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");

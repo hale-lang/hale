@@ -4,7 +4,7 @@
 //! they never touch the developer's cache.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -45,23 +45,34 @@ fn assert_no_signal_death(log: &str) {
     }
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+// The codegen suite's: what a child listens on, read from `/proc`.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+mod child;
+
+/// A running `hale iris`: its child, the port its fuse-hl serves on, the
+/// log both streams go to, and the private registry it discovers in.
+struct Iris {
+    child: std::process::Child,
+    port: u16,
+    log: PathBuf,
+    runtime: PathBuf,
 }
 
-/// Start `hale iris <port> <args…>` on a free port and wait until OUR
-/// server says it is listening. A port picked with bind(0) and released
-/// can be taken before fuse-hl binds it — under a loaded shard, by
-/// another test's server — and then a connect to the port succeeds
-/// against a stranger whose snapshot never loads our diff, which a poll
-/// loop waits 300 s for. So: stderr captured, the ready line
-/// (`fuse-hl: listening`) awaited from our own child, an early exit or
-/// a silent child retried on a fresh port, and the failure named.
-fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
+/// Start `hale iris 0 <args…>` and wait until OUR server says it is
+/// listening, then read the port the kernel gave its fuse-hl. A port
+/// drawn here and handed over is free, not reserved: under a loaded
+/// shard another test's server could take it first, and then a connect
+/// to the port succeeds against a stranger whose snapshot never loads our
+/// diff, which a poll loop waits 300 s for. So: port 0, stderr captured,
+/// the ready line (`fuse-hl: listening`) awaited from our own child, an
+/// early exit or a silent child retried, and the failure named.
+fn spawn_iris(cache: &Path, args: &[&str]) -> Iris {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
     let mut last = String::new();
     for _ in 0..4 {
-        let port = free_port();
-        let log = cache.join(format!("iris-{port}.stderr"));
+        let key = format!("{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed));
+        let log = cache.join(format!("iris-{key}.stderr"));
         // both streams into one log: the ready line is printed, the
         // build banner and a bind failure are eprinted
         let out = std::fs::File::create(&log).unwrap();
@@ -69,10 +80,10 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
         // a private registry: this iris discovers no other test's observed
         // processes, whose segments come and go under it on a loaded
         // shard — what it serves here needs none of them
-        let runtime = cache.join(format!("iris-{port}-runtime"));
+        let runtime = cache.join(format!("iris-{key}-runtime"));
         let _ = std::fs::create_dir_all(&runtime);
         let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
-            .args(["iris", &port.to_string()])
+            .args(["iris", "0"])
             .args(args)
             .env("XDG_CACHE_HOME", cache)
             .env("XDG_RUNTIME_DIR", &runtime)
@@ -86,22 +97,26 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
                 let said = std::fs::read_to_string(&log).unwrap_or_default();
                 // a death is the failure, not a reason to retry (GH #578)
                 assert_no_signal_death(&said);
-                last = format!("hale iris exited {st} before serving on {port}:\n{said}");
+                last = format!("hale iris exited {st} before serving:\n{said}");
                 break;
             }
             let said = std::fs::read_to_string(&log).unwrap_or_default();
-            if said.contains("fuse-hl: listening") && TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return (child, port);
+            if said.contains("fuse-hl: listening") {
+                if let Some(&port) = fuse_hl_of(child.id()).map(child::listening_ports).as_deref().and_then(|p| p.first()) {
+                    if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                        return Iris { child, port, log, runtime };
+                    }
+                }
             }
             if Instant::now() > deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                last = format!("hale iris did not accept on {port} within 240s:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+                last = format!("hale iris did not accept within 240s:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        eprintln!("{last}; retrying on another port");
+        eprintln!("{last}; retrying");
     }
     panic!("{last}");
 }
@@ -130,7 +145,7 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
     assert!(!err.contains("building the observer"), "second launch must not rebuild: {err}");
 
     // Launch and fetch /snapshot.
-    let (mut child, port) = spawn_iris(&cache, &[]);
+    let Iris { mut child, port, .. } = spawn_iris(&cache, &[]);
     let deadline = Instant::now() + Duration::from_secs(300);
     let mut body = String::new();
     while Instant::now() < deadline {
@@ -222,12 +237,12 @@ fn iris_diff_pair_rides_into_the_snapshot() {
     // On a loaded CI shard the server has exited 1 within seconds of
     // `fuse-hl: listening`, printing nothing (GH #578); a workstation
     // never sees it. A server that dies before the diff loads is
-    // retried on a fresh port, with what it printed kept; a server that
+    // retried, with what it printed kept; a server that
     // lives and never loads the diff is the failure this test is for.
     let mut body = String::new();
     let mut attempts: Vec<String> = Vec::new();
     for attempt in 0..3 {
-        let (mut child, port) = spawn_iris(&cache, &["--diff", &artifacts[0].to_string_lossy(), &artifacts[1].to_string_lossy()]);
+        let Iris { mut child, port, log, .. } = spawn_iris(&cache, &["--diff", &artifacts[0].to_string_lossy(), &artifacts[1].to_string_lossy()]);
         let deadline = Instant::now() + Duration::from_secs(300);
         let mut exited: Option<String> = None;
         while Instant::now() < deadline {
@@ -250,7 +265,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         }
         let _ = child.kill();
         let _ = child.wait();
-        let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+        let log = std::fs::read_to_string(&log).unwrap_or_default();
         if !body.is_empty() {
             break;
         }
@@ -362,9 +377,8 @@ fn fuse_hl_stays_flat_under_locus_churn_and_requests() {
     std::fs::write(seed.join("main.hl"), CHURN).unwrap();
     let (ok, _, err) = hale(&cache, &["build", &seed.join("main.hl").to_string_lossy()]);
     assert!(ok, "the churn program builds: {err}");
-    let (iris, port) = spawn_iris(&cache, &[]);
+    let Iris { child: iris, port, log, runtime } = spawn_iris(&cache, &[]);
     let iris = Stopped(iris);
-    let runtime = cache.join(format!("iris-{port}-runtime"));
     let churn = Command::new(seed.join("main"))
         .env("XDG_RUNTIME_DIR", &runtime)
         .env("LOTUS_OBS", "1")
@@ -395,7 +409,7 @@ fn fuse_hl_stays_flat_under_locus_churn_and_requests() {
     let after = rss_kb(fuse);
     drop(churn);
     drop(iris);
-    let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+    let log = std::fs::read_to_string(&log).unwrap_or_default();
     assert_no_signal_death(&log);
     assert!(full, "the churn never filled the table:\n{log}");
     assert_eq!(rows, 8192, "a full table shows its bound");
@@ -416,12 +430,12 @@ fn fuse_hl_stays_flat_under_locus_churn_and_requests() {
 #[cfg(target_os = "linux")]
 fn a_killed_observer_names_the_signal() {
     let cache = cache_root();
-    let (mut iris, port) = spawn_iris(&cache, &[]);
+    let Iris { child: mut iris, log, .. } = spawn_iris(&cache, &[]);
     let fuse = fuse_hl_of(iris.id()).expect("hale iris runs fuse-hl");
     // this test's own fuse-hl, by its pid
     let _ = Command::new("kill").args(["-KILL", &fuse.to_string()]).status();
     let status = iris.wait().expect("hale iris exits");
-    let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+    let log = std::fs::read_to_string(&log).unwrap_or_default();
     assert_eq!(status.code(), Some(128 + 9), "exits as a shell would: {log}");
     assert!(log.contains("hale iris: fuse-hl was killed by signal 9 (SIGKILL"), "and says so: {log}");
 }

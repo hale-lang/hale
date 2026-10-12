@@ -17,15 +17,15 @@
 //!    iteration's fd closes after the callback returns.
 
 use std::io::{Read, Write};
-use std::process::Command;
-use std::thread;
+use std::net::TcpStream;
+use std::process::{Child, Command, Stdio};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/connect.rs"]
-mod connect;
+#[path = "support/child.rs"]
+mod child;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_listener_multi_{}", name));
@@ -33,9 +33,20 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
+/// Start the listener and read back the port it was given. The programs
+/// bind port 0 and the kernel picks: a port drawn here and handed over is
+/// free, not reserved, and another test of a parallel run can bind it
+/// before the program does. Reading it from `/proc` costs no accept, so
+/// a `max_accepts: 1` listener still serves the test's one connection.
+fn spawn_server(bin: &std::path::Path) -> (Child, u16) {
+    let mut child = Command::new(bin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run listener");
+    let port = child::tcp_port(&mut child);
+    (child, port)
 }
 
 #[test]
@@ -45,33 +56,28 @@ fn listener_default_callback_handles_one_connection() {
     // callback, the Listener accepts exactly one connection,
     // runs the default callback (which logs the fd), and the
     // per-connection Stream's dissolve closes the fd.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("default_cb", &src);
 
     // Spawn the Hale Listener; connect once it listens.
-    let bin_path = bin.clone();
-    let server_handle = thread::spawn(move || {
-        Command::new(&bin_path).output().expect("run listener")
-    });
+    let (server, port) = spawn_server(&bin);
 
     // One client connection, then close.
-    let mut client = connect::connect_when_listening(port);
+    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     let _ = client.write_all(b"hi");
     drop(client);
 
-    let out = server_handle.join().expect("listener thread joined");
+    let out = server.wait_with_output().expect("wait for the listener");
     let _ = std::fs::remove_file(&bin);
     assert!(
         out.status.success(),
@@ -97,7 +103,6 @@ fn listener_user_callback_receives_usable_stream() {
     // is alive across method calls (m82 scope-bound dissolve),
     // (c) m81 send/recv primitives round-trip through real
     // socket I/O.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn echo_handler(s: std::io::tcp::Stream) {{
@@ -109,29 +114,25 @@ fn listener_user_callback_receives_usable_stream() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 1,
                 on_connection: echo_handler
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("user_cb", &src);
 
-    let bin_path = bin.clone();
-    let server_handle = thread::spawn(move || {
-        Command::new(&bin_path).output().expect("run listener")
-    });
+    let (server, port) = spawn_server(&bin);
 
-    let mut client = connect::connect_when_listening(port);
+    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     client.write_all(b"hello-server").expect("client write");
     let mut buf = [0u8; 64];
     let n = client.read(&mut buf).expect("client read");
     let response = String::from_utf8_lossy(&buf[..n]).to_string();
     drop(client);
 
-    let out = server_handle.join().expect("listener thread joined");
+    let out = server.wait_with_output().expect("wait for the listener");
     let _ = std::fs::remove_file(&bin);
     assert!(
         out.status.success(),
@@ -160,7 +161,6 @@ fn listener_handles_multiple_connections_in_sequence() {
     // __handle_one_connection (closing the fd) before the
     // next accept begins. All three clients see their unique
     // response, proving fds don't bleed between iterations.
-    let port = pick_free_port();
     let src = format!(
         r#"
         fn counted(s: std::io::tcp::Stream) {{
@@ -172,24 +172,20 @@ fn listener_handles_multiple_connections_in_sequence() {
         fn main() {{
             std::io::tcp::Listener {{
                 host: "127.0.0.1",
-                port: {},
+                port: 0,
                 max_accepts: 3,
                 on_connection: counted
             }};
         }}
-        "#,
-        port
+        "#
     );
     let bin = build_hale("multi", &src);
 
-    let bin_path = bin.clone();
-    let server_handle = thread::spawn(move || {
-        Command::new(&bin_path).output().expect("run listener")
-    });
+    let (server, port) = spawn_server(&bin);
 
     let mut acks = Vec::new();
     for tag in &["one", "two", "three"] {
-        let mut client = connect::connect_when_listening(port);
+        let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
         client
             .write_all(format!("conn-{}", tag).as_bytes())
             .expect("client write");
@@ -199,7 +195,7 @@ fn listener_handles_multiple_connections_in_sequence() {
         drop(client);
     }
 
-    let out = server_handle.join().expect("listener thread joined");
+    let out = server.wait_with_output().expect("wait for the listener");
     let _ = std::fs::remove_file(&bin);
     assert!(
         out.status.success(),

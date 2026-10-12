@@ -8,8 +8,11 @@
 mod vault;
 #[path = "support/reap.rs"]
 mod reap;
+// The codegen suite's: what a child listens on, read from `/proc`.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+mod child;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -84,10 +87,10 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     std::fs::write(app.join("mutate/main.hl"), DRIVER).unwrap();
     let (ok, out) = hale(&["run", "mutate"], &app);
     assert!(ok && out.contains("m1: review"), "driver:\n{out}");
-    // the surface, with no organization anywhere
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // the surface, with no organization anywhere, on the port the kernel
+    // gives it (`hale dna ui` execs in place: its pid is the surface's)
     let mut ui = vault::hale()
-        .args(["dna", "ui", ".", "--port", &port.to_string()])
+        .args(["dna", "ui", ".", "--port", "0"])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         // GH #989: trusted-local is a fixture's mode alone
@@ -98,6 +101,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
         .stderr(Stdio::null())
         .spawn()
         .expect("hale dna ui");
+    let port = child::tcp_port_within(&mut ui, Duration::from_secs(120));
     let dl = Instant::now() + Duration::from_secs(120);
     let mut page = None;
     while Instant::now() < dl {

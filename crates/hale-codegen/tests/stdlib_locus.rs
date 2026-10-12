@@ -23,13 +23,8 @@ use std::process::{Command, Stdio};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let port = probe.local_addr().expect("local_addr").port();
-    drop(probe);
-    port
-}
+#[path = "support/child.rs"]
+mod child;
 
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_stdlib_locus_{}", name));
@@ -46,42 +41,30 @@ fn listener_binds_accepts_a_connection_and_exits_cleanly() {
     // run() blocks on lotus_tcp_accept_one; this test process
     // plays the connecting peer; run() prints the accepted fd
     // and returns; dissolve() closes the listen fd; main() exits.
-    let port = pick_free_port();
-    let source = format!(
-        r#"
-        fn main() {{
-            std::io::tcp::Listener {{ host: "127.0.0.1", port: {} }};
-        }}
-        "#,
-        port
-    );
-    let bin = build_hale_binary("listener_accepts", &source);
+    // Port 0, and the test reads back the port the kernel gave it: a
+    // port drawn here and handed over is free, not reserved, and another
+    // test of a parallel run can bind it first.
+    let source = r#"
+        fn main() {
+            std::io::tcp::Listener { host: "127.0.0.1", port: 0 };
+        }
+        "#;
+    let bin = build_hale_binary("listener_accepts", source);
 
-    let listener_proc = Command::new(&bin)
+    let mut listener_proc = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn listener binary");
+    let port = child::tcp_port(&mut listener_proc);
 
     // Connect, send a noop byte so the kernel completes the
     // handshake, then drop. The listener prints + closes the
     // accepted fd regardless of whether bytes flow on it; our
     // job here is just to satisfy the accept() blocking on it.
-    // Retry the connect briefly because there's a race between
-    // process spawn and the listener's bind+listen.
-    let mut connected = None;
-    for _ in 0..50 {
-        match std::net::TcpStream::connect(("127.0.0.1", port)) {
-            Ok(mut s) => {
-                let _ = s.write_all(b"x");
-                drop(s);
-                connected = Some(());
-                break;
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
-    }
-    assert!(connected.is_some(), "could not connect to listener on port {}", port);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to the listener");
+    let _ = s.write_all(b"x");
+    drop(s);
 
     let out = listener_proc.wait_with_output().expect("listener wait");
     let _ = std::fs::remove_file(&bin);
@@ -94,7 +77,7 @@ fn listener_binds_accepts_a_connection_and_exits_cleanly() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains(&format!("__StdIoTcpListener.birth host=127.0.0.1 port={}", port)),
+        stdout.contains("__StdIoTcpListener.birth host=127.0.0.1 port=0"),
         "birth diagnostic missing; got: {:?}",
         stdout
     );
@@ -109,7 +92,7 @@ fn listener_binds_accepts_a_connection_and_exits_cleanly() {
         stdout
     );
     assert!(
-        stdout.contains(&format!("__StdIoTcpListener.dissolve host=127.0.0.1 port={}", port)),
+        stdout.contains("__StdIoTcpListener.dissolve host=127.0.0.1 port=0"),
         "dissolve diagnostic missing; got: {:?}",
         stdout
     );
@@ -120,32 +103,20 @@ fn listener_uses_default_host_when_omitted() {
     // Standard locus default-params mechanism applies to stdlib
     // loci unchanged: omitting `host` falls back to the
     // "127.0.0.1" default declared in the bundled source.
-    let port = pick_free_port();
-    let source = format!(
-        r#"
-        fn main() {{
-            std::io::tcp::Listener {{ port: {} }};
-        }}
-        "#,
-        port
-    );
-    let bin = build_hale_binary("default_host", &source);
+    let source = r#"
+        fn main() {
+            std::io::tcp::Listener { port: 0 };
+        }
+        "#;
+    let bin = build_hale_binary("default_host", source);
 
-    let listener_proc = Command::new(&bin)
+    let mut listener_proc = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn listener");
-
-    let mut connected = false;
-    for _ in 0..50 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            connected = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(connected, "could not connect on default-host port {}", port);
+    let port = child::tcp_port(&mut listener_proc);
+    std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect on the default host");
 
     let out = listener_proc.wait_with_output().expect("listener wait");
     let _ = std::fs::remove_file(&bin);

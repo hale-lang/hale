@@ -32,11 +32,6 @@ fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn pick_free_port() -> u16 {
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
 #[test]
 fn recv_bytes_preserves_nul_in_payload() {
     // The headline test. Rust server sends a binary payload that
@@ -45,8 +40,8 @@ fn recv_bytes_preserves_nul_in_payload() {
     // side would see len=3 / "DEA". With recv_bytes the explicit
     // length comes back through the wire-shape (length-prefixed
     // blob) and the Hale side sees the full 8 bytes.
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let payload: [u8; 8] = [0xDE, 0xAD, 0xBE, 0x00, 0x01, 0x02, 0x03, 0xFF];
     let (done_tx, done_rx) = mpsc::channel::<()>();
     thread::spawn(move || {
@@ -176,8 +171,8 @@ fn recv_bytes_on_eof_returns_zero_len() {
     // Peer closes immediately after accept. recv_bytes should see
     // EOF (read() returns 0) and return an empty (len=0) Bytes
     // rather than blocking or surfacing an error.
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     thread::spawn(move || {
         let (sock, _) = listener.accept().expect("accept");
         // Immediate drop — peer sees clean EOF.
@@ -211,8 +206,8 @@ fn from_string_then_send_bytes_round_trips_via_tcp() {
     // shipping text payloads through the binary-safe surface
     // (e.g. when the protocol layer wants explicit length on the
     // wire).
-    let port = pick_free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
     let (got_tx, got_rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         let (mut sock, _) = listener.accept().expect("accept");

@@ -2,14 +2,20 @@
 //! listens on.
 //!
 //! A program a test serves binds port 0 and the test reads back the port
-//! the kernel gave it ([`bound_port`]). A port the test draws
-//! (`ports::free_port`) and hands over is free, not reserved: under a
-//! parallel run another test can bind it before the program does.
+//! the kernel gave it ([`tcp_port`], [`udp_port`], [`bound_port`]). A
+//! port a test draws (bind `:0`, read the number, close) and hands over
+//! is free, not reserved: under a parallel run another test can bind it
+//! before the program does. A program that must be told its address
+//! before it starts takes a [`Reserved`] one; one that must find nothing
+//! listening takes a [`Refusing`] one.
+//!
+//! Linux: everything here reads `/proc`.
 
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
 use std::io::Read;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
@@ -53,11 +59,8 @@ impl Stderr {
 }
 
 /// The port the process listens on: its one listening TCP socket. The
-/// programs here bind port 0 and the kernel picks; a port the test drew
-/// (`ports::free_port`) and handed over could be bound by another test of
-/// the run before the program bound it. Read once the program has said
-/// it is up, so the socket is there.
-/// Linux: read from `/proc`.
+/// programs here bind port 0 and the kernel picks. Read once the program
+/// has said it is up, so the socket is there ([`tcp_port`] waits for it).
 pub fn bound_port(pid: u32, err: &Stderr) -> u16 {
     let ports = listening_ports(pid);
     assert_eq!(ports.len(), 1, "one listening socket: {ports:?}; stderr:\n{}", err.text());
@@ -78,7 +81,165 @@ pub fn listening_ports(pid: u32) -> Vec<u16> {
 /// not finished its exec still holds the test's descriptors (the test's
 /// own listener, say, created before the spawn), and `spawn` can return
 /// while the kernel is still closing them.
-pub fn listening_addrs(pid: u32) -> Vec<std::net::SocketAddrV4> {
+pub fn listening_addrs(pid: u32) -> Vec<SocketAddrV4> {
+    sockets_of(pid, "tcp").into_iter().filter(|s| s.state == "0A").map(|s| s.local).collect()
+}
+
+/// The local addresses of the process's bound, unconnected UDP (IPv4)
+/// sockets: the ones that receive what is sent to them.
+pub fn udp_addrs(pid: u32) -> Vec<SocketAddrV4> {
+    sockets_of(pid, "udp")
+        .into_iter()
+        .filter(|s| s.local.port() != 0 && s.remote.port() == 0)
+        .map(|s| s.local)
+        .collect()
+}
+
+/// The port `child`'s one listening TCP socket was given, once it listens.
+/// A child that exits first fails the test with what it printed.
+pub fn tcp_port(child: &mut Child) -> u16 {
+    tcp_port_within(child, Duration::from_secs(60))
+}
+
+/// [`tcp_port`], for a child that may first build what it serves (a
+/// toolchain cache that is cold on a fresh box).
+pub fn tcp_port_within(child: &mut Child, limit: Duration) -> u16 {
+    wait_for(child, "a listening TCP socket", limit, |pid| listening_addrs(pid)).port()
+}
+
+/// The port `child`'s one listening TCP socket on `host` was given (a
+/// program with several listeners binds each on a loopback address of
+/// its own: `127.0.0.1:0`, `127.0.0.2:0`, …).
+pub fn tcp_port_on(child: &mut Child, host: Ipv4Addr) -> u16 {
+    wait_for(child, &format!("a listening TCP socket on {host}"), Duration::from_secs(60), |pid| {
+        listening_addrs(pid).into_iter().filter(|a| *a.ip() == host).collect()
+    })
+    .port()
+}
+
+/// The port `child`'s one bound, unconnected UDP socket was given, once
+/// it has one.
+pub fn udp_port(child: &mut Child) -> u16 {
+    wait_for(child, "a bound UDP socket", Duration::from_secs(60), |pid| udp_addrs(pid)).port()
+}
+
+/// The port `child`'s one bound, unconnected UDP socket on `host` was
+/// given.
+pub fn udp_port_on(child: &mut Child, host: Ipv4Addr) -> u16 {
+    wait_for(child, &format!("a bound UDP socket on {host}"), Duration::from_secs(60), |pid| {
+        udp_addrs(pid).into_iter().filter(|a| *a.ip() == host).collect()
+    })
+    .port()
+}
+
+/// Poll `probe` until it finds exactly one socket. The child exiting
+/// first, or two sockets where one was meant, fails the test.
+fn wait_for(child: &mut Child, what: &str, limit: Duration, probe: impl Fn(u32) -> Vec<SocketAddrV4>) -> SocketAddrV4 {
+    let start = Instant::now();
+    loop {
+        let found = probe(child.id());
+        assert!(found.len() <= 1, "{what}, not several: {found:?}");
+        if let Some(a) = found.first() {
+            return *a;
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut out = String::new();
+            let mut err = String::new();
+            if let Some(mut o) = child.stdout.take() {
+                let _ = o.read_to_string(&mut out);
+            }
+            if let Some(mut e) = child.stderr.take() {
+                let _ = e.read_to_string(&mut err);
+            }
+            panic!("the program exited ({status}) before it had {what}\nstdout:\n{out}\nstderr:\n{err}");
+        }
+        assert!(start.elapsed() < limit, "no {what} within {limit:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The loopback address a [`Reserved`] port is handed out on. Nothing
+/// else in the suite binds it.
+pub const RESERVED_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 100);
+
+/// An address a program can be told before it starts and bind once it
+/// does, which no other test of the run can take in between: the test
+/// holds `127.0.0.1:<port>` (TCP and UDP, kernel-picked) for as long as
+/// this lives, and hands out [`RESERVED_HOST`]`:<port>`. A bind of the
+/// same port on any address but `127.0.0.1` itself does not conflict with
+/// the held one, so the program's bind succeeds; a wildcard bind
+/// (`0.0.0.0:<port>`) does conflict, so no other test's listener can
+/// cover the address; and nothing else binds [`RESERVED_HOST`].
+///
+/// For a program that must know its peer's address before the peer is up
+/// (a client that dials a listener started later, a listener the program
+/// opens twice). A program that only serves binds port 0 instead and the
+/// test reads the port back ([`tcp_port`]).
+pub struct Reserved {
+    _tcp: TcpListener,
+    _udp: UdpSocket,
+    pub addr: SocketAddrV4,
+}
+
+impl Reserved {
+    pub fn new() -> Reserved {
+        // the same port held for both protocols, so either is reserved
+        for _ in 0..64 {
+            let tcp = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
+            let port = tcp.local_addr().expect("the held address").port();
+            if let Ok(udp) = UdpSocket::bind(("127.0.0.1", port)) {
+                return Reserved { _tcp: tcp, _udp: udp, addr: SocketAddrV4::new(RESERVED_HOST, port) };
+            }
+        }
+        panic!("no port free for both TCP and UDP in 64 tries");
+    }
+
+    pub fn host(&self) -> String {
+        self.addr.ip().to_string()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.addr.port()
+    }
+}
+
+/// An address nothing listens on, and nothing can while this lives: a
+/// connect to it is refused. It is a [`Reserved`] address the test never
+/// hands to anything that binds.
+pub struct Refusing(Reserved);
+
+impl Refusing {
+    pub fn new() -> Refusing {
+        Refusing(Reserved::new())
+    }
+
+    pub fn addr(&self) -> SocketAddrV4 {
+        self.0.addr
+    }
+
+    pub fn host(&self) -> String {
+        self.0.host()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.0.port()
+    }
+}
+
+struct Socket {
+    local: SocketAddrV4,
+    remote: SocketAddrV4,
+    state: String,
+}
+
+/// The process's sockets of `proto` (`tcp`, `udp`) from its network
+/// namespace's table, those whose descriptors it holds.
+///
+/// A socket this process holds too is not the child's: a child that has
+/// not finished its exec still holds the test's descriptors (the test's
+/// own listener, say, created before the spawn), and `spawn` can return
+/// while the kernel is still closing them.
+fn sockets_of(pid: u32, proto: &str) -> Vec<Socket> {
     let sockets = |pid: &str| -> BTreeSet<String> {
         std::fs::read_dir(format!("/proc/{pid}/fd"))
             .map(|d| {
@@ -91,19 +252,22 @@ pub fn listening_addrs(pid: u32) -> Vec<std::net::SocketAddrV4> {
     };
     let ours = sockets("self");
     let inodes: BTreeSet<String> = sockets(&pid.to_string()).difference(&ours).cloned().collect();
-    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
+    // `0100007F:1F90`: the address's bytes in network order, printed as
+    // a host-order word, then the port
+    let addr = |a: &str| -> Option<SocketAddrV4> {
+        let (ip, port) = a.split_once(':')?;
+        let ip = u32::from_str_radix(ip, 16).ok()?;
+        let port = u16::from_str_radix(port, 16).ok()?;
+        Some(SocketAddrV4::new(Ipv4Addr::from(u32::from_be(ip)), port))
+    };
+    let table = std::fs::read_to_string(format!("/proc/{pid}/net/{proto}")).unwrap_or_default();
     table
         .lines()
         .skip(1)
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
-            if f.len() > 9 && f[3] == "0A" && inodes.contains(f[9]) {
-                // `0100007F:1F90`: the address's bytes in network order,
-                // printed as a host-order word, then the port
-                let (ip, port) = f[1].split_once(':')?;
-                let ip = u32::from_str_radix(ip, 16).ok()?;
-                let port = u16::from_str_radix(port, 16).ok()?;
-                Some(std::net::SocketAddrV4::new(std::net::Ipv4Addr::from(u32::from_be(ip)), port))
+            if f.len() > 9 && inodes.contains(f[9]) {
+                Some(Socket { local: addr(f[1])?, remote: addr(f[2])?, state: f[3].to_string() })
             } else {
                 None
             }

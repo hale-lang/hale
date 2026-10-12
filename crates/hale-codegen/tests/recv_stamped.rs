@@ -22,10 +22,11 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+// A program here connects to its own listener: it binds port 0 and asks
+// the socket which port it was given (`__local_port`), so no port is drawn
+// in the test and handed over, free but not reserved, for another test of
+// a parallel run to take first.
+
 
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_recv_stamped_{}", name));
@@ -40,11 +41,10 @@ fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::pro
 
 #[test]
 fn recv_stamped_one_recvmsg_with_kernel_timestamp() {
-    let port = pick_free_port();
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::set_rx_timestamps(afd, true) or raise;
@@ -60,7 +60,7 @@ fn recv_stamped_one_recvmsg_with_kernel_timestamp() {
                     " kernel_nonneg=", kns >= 0, " user_ok=", uns > 0);
         }
     "#;
-    let (stdout, status) = build_and_run_argv("basic", src, &[&port.to_string()]);
+    let (stdout, status) = build_and_run_argv("basic", src, &[]);
     assert!(status.success(), "exit: {:?}\nstdout: {}", status, stdout);
     assert!(stdout.contains("got=13"), "should receive the 13-byte message; got: {:?}", stdout);
     assert!(

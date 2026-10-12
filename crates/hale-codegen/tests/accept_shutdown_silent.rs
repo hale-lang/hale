@@ -17,12 +17,11 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
 
 #[test]
 fn a_deliberate_server_shutdown_is_silent() {
-    let port = ports::free_port();
     let src = format!(
         r#"
 locus Hello {{ fn handle(req: std::http::Request) -> std::http::Response {{ return std::http::Response {{ status: 200, body: "hi" }}; }} }}
@@ -31,17 +30,18 @@ main locus App {{
     placement {{ srv: cooperative(pool = io); }}
     run() {{ while !self.draining {{ std::time::sleep(20ms); }} self.srv.shutdown(); }}
 }}
-fn main() {{ App {{ srv: std::http::Server {{ host: "127.0.0.1", port: {port}, ready_signal: "up", handler: Hello {{ }} }} }}; }}
+fn main() {{ App {{ srv: std::http::Server {{ host: "127.0.0.1", port: 0, ready_signal: "up", handler: Hello {{ }} }} }}; }}
 "#
     );
     let bin = harness::unique_bin("hale_1081_accept_shutdown");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
-    // up once the port answers
+    // the server binds port 0; up once the port the kernel gave it answers
+    let port = child::tcp_port(&mut child);
     let t0 = Instant::now();
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
         && t0.elapsed() < Duration::from_secs(10)

@@ -17,10 +17,11 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
+// A program here connects to its own listener: it binds port 0 and asks
+// the socket which port it was given (`__local_port`), so no port is drawn
+// in the test and handed over, free but not reserved, for another test of
+// a parallel run to take first.
+
 
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_recv_timeout_{}", name));
@@ -35,15 +36,14 @@ fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::pro
 
 #[test]
 fn tcp_recv_into_returns_minus_two_on_timeout() {
-    let port = pick_free_port();
     // Loopback: listen, connect, accept (single-threaded — connect
     // completes via the listen backlog before accept returns). Set a
     // 200ms recv timeout on the connected fd, then recv with nothing
     // sent → SO_RCVTIMEO fires → recv_into returns -2.
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::set_recv_timeout(cfd, 200ms) or raise;
@@ -52,7 +52,7 @@ fn tcp_recv_into_returns_minus_two_on_timeout() {
             println("got=", got);
         }
     "#;
-    let (stdout, status) = build_and_run_argv("tcp_timeout", src, &[&port.to_string()]);
+    let (stdout, status) = build_and_run_argv("tcp_timeout", src, &[]);
     assert!(status.success(), "exit: {:?}\nstdout: {}", status, stdout);
     assert!(
         stdout.contains("got=-2"),

@@ -19,8 +19,8 @@ use std::time::Duration;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/connect.rs"]
-mod connect;
+#[path = "support/child.rs"]
+mod child;
 
 const ECHO_SERVER: &str = r#"
     locus Echo {
@@ -40,11 +40,6 @@ const ECHO_SERVER: &str = r#"
     }
 "#;
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
-
 fn build_echo(name: &str) -> PathBuf {
     let bin = harness::unique_bin(&format!("hale_http_split_write_{}_{}", name, std::process::id()));
     build_opts::build_source(ECHO_SERVER, &bin, &build_opts::options()).expect("build");
@@ -53,16 +48,19 @@ fn build_echo(name: &str) -> PathBuf {
 
 fn run_one(name: &str, client: impl FnOnce(&mut TcpStream)) -> String {
     let bin = build_echo(name);
-    let port = pick_free_port();
-    let child = Command::new(&bin)
-        .arg(port.to_string())
+    // Port 0, read back once the server listens: a port drawn here and
+    // handed over is free, not reserved, and another test of a parallel
+    // run can bind it first.
+    let mut child = Command::new(&bin)
+        .arg("0")
         .arg("1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn echo server");
+    let port = child::tcp_port(&mut child);
 
-    let mut sock = connect::connect_when_listening(port);
+    let mut sock = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     client(&mut sock);
     let mut buf = Vec::new();
     let _ = sock.read_to_end(&mut buf);

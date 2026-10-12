@@ -11,13 +11,12 @@ use std::process::{Command, Stdio};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let port = probe.local_addr().expect("local_addr").port();
-    drop(probe);
-    port
-}
+// The servers here bind port 0 and the test reads back the port the kernel
+// gave them (`child::tcp_port`): a port drawn here and handed over is free,
+// not reserved, and another test of a parallel run can bind it first.
 
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_recv_into_{}", name));
@@ -28,7 +27,7 @@ fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
 #[test]
 fn tcp_recv_into_accumulates_across_calls() {
     // A small server binary that:
-    //   1. Binds on a chosen port
+    //   1. Binds on port 0
     //   2. Accepts one client
     //   3. Reads two chunks via recv_into into ONE builder
     //   4. Prints the accumulated snapshot + length per step
@@ -40,11 +39,10 @@ fn tcp_recv_into_accumulates_across_calls() {
     // assertion is that the builder's accumulated contents match
     // both chunks joined — proving recv_into appends to the
     // existing buffer rather than replacing.
-    let port = pick_free_port();
     let source = format!(
         r#"
         fn main() {{
-            let listen = std::io::tcp::listen_socket("127.0.0.1", {}) or raise;
+            let listen = std::io::tcp::listen_socket("127.0.0.1", 0) or raise;
             let conn = std::io::tcp::accept_one(listen) or raise;
             let buf = std::bytes::BytesBuilder {{ initial_cap: 1024 }};
             let n1 = std::io::tcp::recv_into(conn, buf, 1024);
@@ -58,29 +56,19 @@ fn tcp_recv_into_accumulates_across_calls() {
             std::io::tcp::close_fd(conn);
             std::io::tcp::close_fd(listen);
         }}
-    "#,
-        port
+    "#
     );
     let bin = build_hale_binary("tcp_accumulates", &source);
 
-    let server_proc = Command::new(&bin)
+    let mut server_proc = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn server");
 
-    // Race: connect once the server is ready.
-    let mut stream = None;
-    for _ in 0..50 {
-        match std::net::TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
-    }
-    let mut s = stream.expect("connect");
+    // Connect once the server listens.
+    let port = child::tcp_port(&mut server_proc);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.write_all(b"hello").expect("write 1");
     s.flush().expect("flush 1");
     // Small pause so the server sees two distinct read()s.
@@ -114,11 +102,10 @@ fn tcp_recv_into_zero_on_peer_close() {
     // The receiver's third recv_into after the peer disconnects
     // should return 0 (clean EOF), not error. Builder unchanged
     // on the EOF return.
-    let port = pick_free_port();
     let source = format!(
         r#"
         fn main() {{
-            let listen = std::io::tcp::listen_socket("127.0.0.1", {}) or raise;
+            let listen = std::io::tcp::listen_socket("127.0.0.1", 0) or raise;
             let conn = std::io::tcp::accept_one(listen) or raise;
             let buf = std::bytes::BytesBuilder {{ initial_cap: 1024 }};
             let n1 = std::io::tcp::recv_into(conn, buf, 1024);
@@ -129,28 +116,18 @@ fn tcp_recv_into_zero_on_peer_close() {
             std::io::tcp::close_fd(conn);
             std::io::tcp::close_fd(listen);
         }}
-    "#,
-        port
+    "#
     );
     let bin = build_hale_binary("tcp_eof", &source);
 
-    let server_proc = Command::new(&bin)
+    let mut server_proc = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn server");
 
-    let mut stream = None;
-    for _ in 0..50 {
-        match std::net::TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
-    }
-    let mut s = stream.expect("connect");
+    let port = child::tcp_port(&mut server_proc);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.write_all(b"bye").expect("write");
     s.flush().expect("flush");
     // Half-close write side so the server's second read returns 0.

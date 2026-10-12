@@ -18,6 +18,8 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale-async-udp-handler-{}-{}", name, std::process::id()));
@@ -25,11 +27,6 @@ fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)
-}
-
-fn free_udp_port() -> u16 {
-    let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe");
-    s.local_addr().expect("local_addr").port()
 }
 
 #[test]
@@ -40,7 +37,12 @@ fn udp_recv_in_async_bus_handler_does_not_smash_the_coro_stack() {
     // handler doing udp recv is the exact path that overflowed the coro
     // stack. Success = it runs to completion (no crash) and the handler
     // saw the payloads.
-    let rport = free_udp_port();
+    // The sender is told the reader's address before either is up, so
+    // the address is reserved for the run (`child::Reserved`): a port
+    // drawn here and handed over is free, not reserved, and another test
+    // of a parallel run can bind it first.
+    let reserved = child::Reserved::new();
+    let (rhost, rport) = (reserved.host(), reserved.port());
     let src = format!(
         r#"
         type Tick {{ n: Int; }}
@@ -60,7 +62,7 @@ fn udp_recv_in_async_bus_handler_does_not_smash_the_coro_stack() {
                 if self.seen == 4 {{ println("reader saw 4"); }}
             }}
             run() {{
-                self.sock = std::io::udp::bind("127.0.0.1", {rport}) or raise;
+                self.sock = std::io::udp::bind("{rhost}", {rport}) or raise;
                 std::io::udp::set_recv_timeout(self.sock, 200ms) or discard;
                 let mut n = 0;
                 while n < 1000000 {{
@@ -77,7 +79,7 @@ fn udp_recv_in_async_bus_handler_does_not_smash_the_coro_stack() {
                 let fd = std::io::udp::bind("", 0) or raise;
                 let mut i = 0;
                 while i < 8 {{
-                    std::io::udp::send(fd, "127.0.0.1", {rport}, "payload-xyz") or discard;
+                    std::io::udp::send(fd, "{rhost}", {rport}, "payload-xyz") or discard;
                     "tick" <- Tick {{ n: i }};
                     std::time::sleep(20ms);
                     i = i + 1;
@@ -95,6 +97,7 @@ fn udp_recv_in_async_bus_handler_does_not_smash_the_coro_stack() {
         "#,
     );
     let (out, status) = build_and_run("recv_in_handler", &src);
+    drop(reserved);
     // The crash was a SIGSEGV; assert a clean exit (not signalled).
     assert!(
         status.success(),

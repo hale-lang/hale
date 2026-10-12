@@ -24,21 +24,17 @@ fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::pro
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)
 }
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
-
 #[test]
 fn recv_from_fills_the_ring_and_parses() {
-    let port = pick_free_port();
     // Loopback: send a line-delimited message, recv it straight into the
     // mirror ring's free window (recv_from auto-commits), then scan it
     // zero-copy with find_byte over the readable window.
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            // port 0: the kernel picks, and the program reads it back, so
+            // no other test of a parallel run can take it in between
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::__send(cfd, "hello\nworld\n");
@@ -51,7 +47,7 @@ fn recv_from_fills_the_ring_and_parses() {
             println("n=", n, " len=", ring.len(), " nl=", nl, " c0=", c0);
         }
     "#;
-    let (out, status) = build_and_run_argv("recv", src, &[&port.to_string()]);
+    let (out, status) = build_and_run("recv", src);
     assert!(status.success(), "exit {:?}\n{}", status, out);
     // "hello\nworld\n" = 12 bytes; first '\n' (10) at index 5; 'h' = 104.
     assert!(out.contains("n=12 len=12 nl=5 c0=104"),

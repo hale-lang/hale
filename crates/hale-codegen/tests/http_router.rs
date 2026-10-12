@@ -11,18 +11,14 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::thread;
 use std::time::Duration;
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_http_router_{}_{}", name, std::process::id()));
@@ -107,7 +103,6 @@ fn dispatch_routes_captures_middleware_and_404() {
 
 #[test]
 fn router_serves_through_server_over_tcp() {
-    let port = pick_free_port();
     let src = format!(
         r#"
         locus Hello {{
@@ -130,7 +125,7 @@ fn router_serves_through_server_over_tcp() {
         }}
         fn main() {{
             std::http::Server {{
-                port: {port}, max_accepts: 2, ready_signal: "READY",
+                port: 0, max_accepts: 1, ready_signal: "READY",
                 handler: Routes {{ }}
             }};
         }}
@@ -142,17 +137,11 @@ fn router_serves_through_server_over_tcp() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("spawn server");
-
-    // Wait for READY (bounded).
-    let mut ready = false;
-    for _ in 0..50 {
-        thread::sleep(Duration::from_millis(100));
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ready = true;
-            break;
-        }
-    }
-    assert!(ready, "server never started listening");
+    // The server binds port 0 and the test reads back the port the kernel
+    // gave it: a port drawn here and handed over is free, not reserved,
+    // and another test of a parallel run can bind it first. Reading it
+    // takes no probe connect, so the one request is the one accept.
+    let port = child::tcp_port(&mut child);
 
     let fetch = |path: &str| -> String {
         let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
@@ -162,11 +151,6 @@ fn router_serves_through_server_over_tcp() {
         let _ = s.read_to_string(&mut buf);
         buf
     };
-    // The probe connect above consumed one accept only if it sent a
-    // request; it sent nothing and closed — the Server's conn
-    // handler serves what it has (no complete header -> close), so
-    // budget an extra accept isn't needed: max_accepts counts
-    // accepts, and the probe consumed one. Use the remaining one.
     let r1 = fetch("/hello/wire");
     assert!(r1.starts_with("HTTP/1.1 200"), "got:\n{}", r1);
     assert!(r1.contains("hi wire"), "got:\n{}", r1);

@@ -11,11 +11,6 @@ mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    l.local_addr().expect("local_addr").port()
-}
-
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_gate_{}", name));
     build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
@@ -76,15 +71,16 @@ fn heap_alloc_gate_zero_in_arithmetic_loop_nonzero_when_allocating() {
 
 #[test]
 fn syscall_gate_counts_one_read_per_recv_into() {
-    let port = pick_free_port();
     // Loopback connect + accept, set a short recv timeout on the accepted
     // fd, then one recv_into with no data pending: recv_into does exactly
     // one read() (EAGAIN → the -2 timeout sentinel, no retry loop), so the
     // read counter moves by exactly 1.
     let src = r#"
         fn main() {
-            let port = std::str::parse_int(std::env::arg(1)) or raise;
-            let lfd = std::io::tcp::__listen_socket("127.0.0.1", port);
+            // port 0: the kernel picks, and the program reads it back, so
+            // no other test of a parallel run can take it in between
+            let lfd = std::io::tcp::__listen_socket("127.0.0.1", 0);
+            let port = std::io::tcp::__local_port(lfd);
             let cfd = std::io::tcp::__connect("127.0.0.1", port);
             let afd = std::io::tcp::__accept_one(lfd);
             std::io::tcp::set_recv_timeout(afd, 150ms) or raise;
@@ -95,7 +91,7 @@ fn syscall_gate_counts_one_read_per_recv_into() {
             println("reads=", r1 - r0, " got=", got);
         }
     "#;
-    let (stdout, status) = build_and_run_argv("syscall", src, &[&port.to_string()]);
+    let (stdout, status) = build_and_run_argv("syscall", src, &[]);
     assert!(status.success(), "exit: {:?}\nstdout: {}", status, stdout);
     assert!(
         stdout.contains("reads=1"),

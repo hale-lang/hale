@@ -13,8 +13,8 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
+#[path = "support/child.rs"]
+mod child;
 
 fn run(name: &str, src: &str) -> String {
     let bin = harness::unique_bin(name);
@@ -33,19 +33,22 @@ fn run(name: &str, src: &str) -> String {
 
 #[test]
 fn a_refused_connect_answers_at_once_and_connect_wait_waits() {
-    let port = ports::free_port();
+    // an address nothing listens on for the whole run: a port drawn and
+    // released could be bound by another test before the dial
+    let nobody = child::Refusing::new();
+    let (host, port) = (nobody.host(), nobody.port());
     let src = format!(
         r#"
 fn main() {{
     let mut kind = "";
     let t0 = std::time::monotonic();
-    let fd = std::io::tcp::connect("127.0.0.1", {port}) or {{ kind = err.kind; - 1 }};
+    let fd = std::io::tcp::connect("{host}", {port}) or {{ kind = err.kind; - 1 }};
     let fast = std::time::monotonic() - t0;
     println("connect fd=" + to_string(fd) + " kind=" + kind + " fast=" + to_string(fast < 100ms));
 
     kind = "";
     let t1 = std::time::monotonic();
-    let fd2 = std::io::tcp::connect_wait("127.0.0.1", {port}, 150ms) or {{ kind = err.kind; - 1 }};
+    let fd2 = std::io::tcp::connect_wait("{host}", {port}, 150ms) or {{ kind = err.kind; - 1 }};
     let waited = std::time::monotonic() - t1;
     println("wait fd=" + to_string(fd2) + " kind=" + kind + " waited=" + to_string(waited >= 150ms && waited < 1s));
 }}
@@ -63,13 +66,17 @@ fn main() {{
 
 #[test]
 fn connect_wait_reaches_a_listener_that_comes_up_during_the_wait() {
-    let port = ports::free_port();
+    // the dialer is told the address before the listener binds it, so
+    // the program cannot bind port 0: the address is reserved for the
+    // test's length instead of drawn and released
+    let late = child::Reserved::new();
+    let (host, port) = (late.host(), late.port());
     let src = format!(
         r#"
 locus Late {{
     run() {{
         std::time::sleep(100ms);
-        let l = std::io::tcp::listen_socket("127.0.0.1", {port}) or - 1;
+        let l = std::io::tcp::listen_socket("{host}", {port}) or - 1;
         let c = std::io::tcp::accept_one(l) or - 1;
         let _c = std::io::tcp::close_fd(c);
         let _l = std::io::tcp::close_fd(l);
@@ -79,7 +86,7 @@ main locus App {{
     params {{ late: Late = Late {{ }}; }}
     placement {{ late: pinned; }}
     run() {{
-        let fd = std::io::tcp::connect_wait("127.0.0.1", {port}, 3s) or - 1;
+        let fd = std::io::tcp::connect_wait("{host}", {port}, 3s) or - 1;
         println("connected=" + to_string(fd >= 0));
         let _f = std::io::tcp::close_fd(fd);
     }}

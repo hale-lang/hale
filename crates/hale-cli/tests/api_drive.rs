@@ -4,7 +4,10 @@
 //! The witness, `tests/api-contract/program.hl`, is built once per process
 //! with the addresses a test cannot fix (the two HTTP binds, the Unix path, the
 //! hub's bind, the Unix operator) read from the environment, and run by each
-//! test that drives it. What the verbs print is held to what the program
+//! test that drives it. Its listeners bind port 0, each on a loopback address
+//! of its own, and the test reads back the port the kernel gave each: a port
+//! drawn here and handed over is free, not reserved, and under a parallel run
+//! another test can bind it first. What the verbs print is held to what the program
 //! serves and to `hale api export --surface`, the description the compiler
 //! writes from the rows.
 
@@ -26,9 +29,14 @@ fn hale() -> Command {
     c
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port()
-}
+// The codegen suite's: what a child listens on, read from `/proc`.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+mod child;
+
+/// Where the witness's `BIND`, `BIND2` and hub listen.
+const BIND_HOST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(127, 0, 0, 1);
+const BIND2_HOST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(127, 0, 0, 2);
+const HUB_BIND: &str = "127.0.0.3:0";
 
 fn uid() -> u32 {
     // SAFETY: getuid cannot fail.
@@ -100,11 +108,10 @@ impl Witness {
         let dir = unique_dir("run");
         let sock = dir.join("a.sock");
         assert!(sock.as_os_str().len() < 100, "the socket path is too long for sockaddr_un");
-        let (p1, p2) = (free_port(), free_port());
-        let child = Command::new(&bin)
-            .env("BIND", format!("127.0.0.1:{p1}"))
-            .env("BIND2", format!("127.0.0.1:{p2}"))
-            .env("HUB", format!("127.0.0.1:{}", free_port()))
+        let mut child = Command::new(&bin)
+            .env("BIND", format!("{BIND_HOST}:0"))
+            .env("BIND2", format!("{BIND2_HOST}:0"))
+            .env("HUB", HUB_BIND)
             .env("SOCK", &sock)
             .env("OPERATOR", operator)
             .env("TRIGGER", dir.join("stop"))
@@ -112,7 +119,9 @@ impl Witness {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("run the witness");
-        let w = Witness { child, dir, sock: sock.display().to_string(), public: format!("127.0.0.1:{p1}"), partner: format!("127.0.0.1:{p2}") };
+        let p1 = child::tcp_port_on(&mut child, BIND_HOST);
+        let p2 = child::tcp_port_on(&mut child, BIND2_HOST);
+        let w = Witness { child, dir, sock: sock.display().to_string(), public: format!("{BIND_HOST}:{p1}"), partner: format!("{BIND2_HOST}:{p2}") };
         let start = Instant::now();
         while !(sock.exists() && TcpStream::connect(&w.public).is_ok() && TcpStream::connect(&w.partner).is_ok()) {
             assert!(start.elapsed() < Duration::from_secs(30), "the witness never began listening");
@@ -245,7 +254,8 @@ fn describe_of_an_endpoint_that_does_not_answer_exits_four_and_says_which() {
     assert_eq!(none.code, 4, "{}", none.stderr);
     assert!(none.stderr.contains("could not connect"), "{}", none.stderr);
 
-    let closed = run(&["api", "describe", &format!("http://127.0.0.1:{}", free_port())]);
+    let refusing = child::Refusing::new();
+    let closed = run(&["api", "describe", &format!("http://{}", refusing.addr())]);
     assert_eq!(closed.code, 4, "{}", closed.stderr);
     assert!(closed.stderr.contains("could not connect"), "{}", closed.stderr);
 

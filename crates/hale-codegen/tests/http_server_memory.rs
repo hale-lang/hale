@@ -21,6 +21,8 @@ use std::time::Duration;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/child.rs"]
+mod child;
 
 // A handler answering every request with the same ~450 KB body, held in
 // its params: nothing grows but what a request leaves behind.
@@ -127,19 +129,22 @@ fn a_concurrent_server_answering_large_bodies_keeps_its_memory_flat() {
 fn memory_stays_flat(source: &str, name: &str, parallel: usize) {
     let bin = harness::unique_bin(name);
     build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // port 0, read back once the server says it listens: a port drawn
+    // here and handed over is free, not reserved, and another test of a
+    // parallel run can bind it first
     let mut child = Command::new(&bin)
-        .arg(port.to_string())
+        .arg("0")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn the server");
     // the server's own word that it listens, never a guess
     let stdout = child.stdout.take().unwrap();
-    let child = Stopped(child);
+    let mut child = Stopped(child);
     let mut ready = String::new();
     let _ = BufReader::new(stdout).read_line(&mut ready);
-    assert_eq!(ready.trim(), "ready", "the server did not start on {port}");
+    assert_eq!(ready.trim(), "ready", "the server did not start");
+    let port = child::tcp_port(&mut child.0);
     let pid = child.0.id();
 
     let round = |n: usize| -> Vec<usize> {

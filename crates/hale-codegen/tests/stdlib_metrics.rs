@@ -11,18 +11,14 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::thread;
 use std::time::Duration;
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-
-fn pick_free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    probe.local_addr().expect("local_addr").port()
-}
+#[path = "support/child.rs"]
+mod child;
 
 #[test]
 fn registry_renders_counter_gauge_histogram() {
@@ -122,7 +118,10 @@ fn render_keeps_every_digit() {
 
 #[test]
 fn endpoint_scrapes_through_server_over_tcp() {
-    let port = pick_free_port();
+    // port 0, read back from the listening socket: a port drawn here and
+    // handed over is free, not reserved, and another test of a parallel
+    // run can bind it first. Read from `/proc`, not a probe connect, so
+    // the one accept is the scrape's.
     let src = format!(
         r#"
         fn build_reg() -> std::metrics::Registry {{
@@ -134,7 +133,7 @@ fn endpoint_scrapes_through_server_over_tcp() {
         }}
         fn main() {{
             std::http::Server {{
-                port: {port}, max_accepts: 2, ready_signal: "READY",
+                port: 0, max_accepts: 1, ready_signal: "READY",
                 handler: std::metrics::Endpoint {{ registry: build_reg() }}
             }};
         }}
@@ -147,15 +146,7 @@ fn endpoint_scrapes_through_server_over_tcp() {
         .spawn()
         .expect("spawn server");
 
-    let mut ready = false;
-    for _ in 0..50 {
-        thread::sleep(Duration::from_millis(100));
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ready = true;
-            break;
-        }
-    }
-    assert!(ready, "server never started listening");
+    let port = child::tcp_port(&mut child);
 
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     write!(s, "GET /metrics HTTP/1.1\r\nHost: t\r\n\r\n").expect("send");
