@@ -431,7 +431,16 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > blocks instead of growing the arena (~33 B/set and a
 > progressively slower containment walk, pre-fix). Bytes fields
 > since GH #1037: before it a struct's replaced Bytes stayed (~47 B
-> a set).
+> a set). A field that holds a block of its own — a nested record, a
+> tuple, an out-of-line fixed array — retires with everything it
+> owns, at any depth: before, the walk stopped at the top-level
+> String and Bytes fields, so a replaced element's nested record (its
+> block and its own String and Bytes) stayed in the arena for good
+> (~110 B a set for one nested record carrying a String and Bytes,
+> ~210 B for two levels). A block the new element still reaches
+> survives, wherever in it, and a block reached twice is freed once.
+> (`@form(hashmap)` cells keep their own retire discipline, which
+> covers top-level String fields only.)
 >
 > **The vec owns its elements (GH #577).** `get` returns the
 > CALLER's copy of a heap-bearing element (a String, Bytes, a
@@ -466,9 +475,9 @@ with `IndexError { kind: "empty", index: 0, len: 0 }`.
 
 Like `get`, `pop` returns the CALLER's copy of a heap-bearing
 element, allocated in the caller's current arena; the element the
-vec held — its block and its String and Bytes fields — is then
-freed onto the arena's reuse freelist, as a replaced element is on
-`set` (GH #1037). A vec used as a queue (push, then pop once
+vec held — its block, its String and Bytes fields, and its nested
+records' blocks with what they own — is then freed onto the arena's
+reuse freelist, as a replaced element is on `set` (GH #1037). A vec used as a queue (push, then pop once
 handled) therefore holds its arena flat. (Before this, `pop` handed
 back the slot's own pointer and freed nothing: ~40 B a cycle for a
 bare String cell, ~62 B for a struct carrying one, for as long as

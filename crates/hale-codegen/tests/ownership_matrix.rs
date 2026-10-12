@@ -25,7 +25,8 @@
 //!     factory into a `perspective(P)`-typed one, `if` / `match` /
 //!     block tails, array and tuple elements);
 //!   * **type** — the shape of the tree being instantiated (plain,
-//!     a `@form(vec)` child, a grandchild, an interface-typed child,
+//!     a `@form(vec)` child, one whose elements carry a nested
+//!     record, a grandchild, an interface-typed child,
 //!     a `perspective(P)` child);
 //!   * **context** — the frame the payload runs in (`fn main`, a
 //!     free fn, a locus METHOD, a `while` loop of four iterations, a
@@ -75,7 +76,7 @@
 //!
 //! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
 //! four families; GH #921 A3 closed all four, and every one of the
-//! 945 cells is now held to every oracle. An entry here is asserted
+//! 1134 cells is now held to every oracle. An entry here is asserted
 //! to FAIL, not skipped — so a cell that is listed and then passes
 //! fails the matrix just as a cell that is not listed and fails
 //! does. Adding one means a shape regressed, and it needs a reason
@@ -83,7 +84,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (27 × 5 × 7 = 945 cells, ~100 s on seven threads)
+//! The full matrix (27 × 6 × 7 = 1134 cells, ~120 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -155,7 +156,7 @@ const DEADLINE: Duration = Duration::from_secs(90);
 
 /// Every shape declares a locus called `Subj` with a `params` field
 /// `n: Int` and a method `probe() -> Int` answering `n + 1`, so one
-/// set of positions is written against all five.
+/// set of positions is written against all six.
 struct Shape {
     id: &'static str,
     decls: &'static str,
@@ -187,6 +188,39 @@ locus Subj {
     birth() { self.rows.push(Row { v: 3 }); }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.rows.len(); }
+}
+";
+
+/// A `@form(vec)` child whose elements carry a nested record (with a
+/// String and Bytes of its own): birth replaces one element and pops
+/// another, so the vec frees nested blocks — the record's own and what
+/// it owns — while the subject's teardown and every position around it
+/// run. The values are built at run time: a literal's String is static
+/// and would hide a use-after-free from the sanitizer.
+const SHAPE_VEC_NESTED: &str = "
+type Leaf { s: String = \"\"; b: Bytes = b\"\"; }
+type Item { v: Int = 0; tag: String = \"\"; leaf: Leaf = Leaf { }; }
+
+@form(vec)
+locus Items {
+    capacity { heap items of Item; }
+}
+
+locus Subj {
+    params { n: Int = 0; items: Items = Items { }; }
+    fn item(v: Int) -> Item {
+        let t = \"t\" + to_string(v + self.n);
+        return Item { v: v, tag: t, leaf: Leaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+    }
+    birth() {
+        self.items.push(self.item(1));
+        self.items.push(self.item(2));
+        self.items.set(0, self.item(3)) or discard;
+        let gone = self.items.pop() or Item { };
+        self.n = self.n + gone.v - 2;
+    }
+    dissolve() { println(\"D:subj\"); }
+    fn probe() -> Int { return self.n + self.items.len(); }
 }
 ";
 
@@ -251,6 +285,7 @@ locus Subj {
 const SHAPES: &[Shape] = &[
     Shape { id: "plain", decls: SHAPE_PLAIN, tags: &["D:subj"] },
     Shape { id: "vec_child", decls: SHAPE_VEC_CHILD, tags: &["D:subj"] },
+    Shape { id: "vec_nested", decls: SHAPE_VEC_NESTED, tags: &["D:subj"] },
     Shape {
         id: "grandchild",
         decls: SHAPE_GRANDCHILD,
@@ -268,7 +303,7 @@ const SHAPES: &[Shape] = &[
     },
 ];
 
-/// Everything the positions lean on, shared by all five shapes.
+/// Everything the positions lean on, shared by all six shapes.
 ///
 /// Only `Subj` (and its own children) and `Cfg` print at dissolve:
 /// the holders are deliberately silent so a cell's tag counts speak
@@ -1286,11 +1321,11 @@ fn matrix_behind_an_untaken_guard() {
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
     assert_eq!(POSITIONS.len(), 27, "position axis changed size");
-    assert_eq!(SHAPES.len(), 5, "type axis changed size");
+    assert_eq!(SHAPES.len(), 6, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 27 * 5 * 7);
+    assert_eq!(all.len(), 27 * 6 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 

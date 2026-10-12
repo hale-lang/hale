@@ -269,8 +269,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::Tuple(elem_tys) => {
                 // Allocate a fresh tuple-storage struct in
-                // dest_arena, then recursively deep-copy each
-                // element. Layout matches Expr::Tuple lowering so
+                // dest_arena (from the retire freelist when a block
+                // fits, as the struct arm does: a vec element's tuple
+                // field is freed when the element is replaced), then
+                // recursively deep-copy each element. Layout matches Expr::Tuple lowering so
                 // tup.0 / tup.1 reads work identically on the
                 // returned tuple.
                 let storage_ty = self.llvm_tuple_storage_type(elem_tys);
@@ -279,8 +281,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("tuple storage type has known size");
                 let alloc_fn = self
                     .module
-                    .get_function("lotus_arena_alloc")
-                    .expect("lotus_arena_alloc declared");
+                    .get_function("lotus_arena_alloc_reusable")
+                    .expect("lotus_arena_alloc_reusable declared");
                 let i64_t = self.context.i64_type();
                 let new_tup = self
                     .builder
@@ -371,8 +373,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("array storage type has known size");
                 let alloc_fn = self
                     .module
-                    .get_function("lotus_arena_alloc")
-                    .expect("lotus_arena_alloc declared");
+                    .get_function("lotus_arena_alloc_reusable")
+                    .expect("lotus_arena_alloc_reusable declared");
                 let i64_t = self.context.i64_type();
                 let new_arr = self
                     .builder
