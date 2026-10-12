@@ -5,8 +5,9 @@
 // param the program writes: it holds the sources, admits subscriptions
 // against the rows of the topics bound to it, and is the `Rpc` a surface
 // is served over. The listener and a locus per connection run on an
-// `async_io` pool of their own (as `unix::Rpc`'s do; over UDP the listener
-// is one socket and a locus per subscriber), and the two talk
+// `async_io` pool of their own (as `unix::Rpc`'s do: over WebSocket the
+// listener is one of the TCP connection substrate, io_tcp_serve.hl; over
+// UDP it is one socket and a locus per subscriber), and the two talk
 // over the bus: peers publish what a connection says (`__ApiHubUpT`),
 // the core answers (`__ApiHubOutT`), and each topic bound to the hub is an
 // adapter binding (`__StdApiHubStream`) that publishes the encoded event
@@ -762,8 +763,34 @@ locus __StdApiWsPeer {
     }
 }
 
+/// The hub's connections: what the substrate's consumer serves each accepted
+/// connection with (a `std::io::tcp::ConnHandler`). Each is a peer of its
+/// own, numbered by the listener's count, a flow child of this locus as the
+/// api transports' peers are (accepted and released, a coroutine of its own
+/// on the hub's `async_io` pool, reclaimed when its run() returns); the peer
+/// owns the descriptor and closes it. A peer subscribes to the bus, so it is
+/// a flow child and not a local of `serve`: a locus born in a method body
+/// and gone at its end has its deliveries queued for the main thread.
+locus __StdApiWsConns {
+    params {
+        tid: Int = 0;
+    }
+    fn serve(c: __StdIoTcpAccepted) {
+        __StdApiWsPeer { conn: c.seq, tid: self.tid, route: self.tid * 4294967296 + c.seq, fd: c.fd };
+    }
+    accept(p: __StdApiWsPeer) { }
+    release (p: __StdApiWsPeer) { }
+}
+
 /// The hub's listening socket, on its own pool (`std::api::ws::Listener`;
-/// the compiler adds one to the main locus per `ws::Hub`).
+/// the compiler adds one to the main locus per `ws::Hub`). A listener of the
+/// TCP connection substrate (spec/stdlib.md § "The TCP connection
+/// substrate"), as the api transports' are: `relay` accepts and relays each
+/// connection as a `std::io::tcp::Accepted`, and `conns`, the consumer on the
+/// route of the listener's name (`host:<bound port>`), serves each on a
+/// coroutine of its own with `__StdApiWsConns`. What is the hub's own is the
+/// policy around them: the bind's structural failure, and no connection
+/// taken before the hub's core is there.
 locus __StdApiWsListener {
     params {
         bind: String = "";
@@ -771,7 +798,12 @@ locus __StdApiWsListener {
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
-        next_conn: Int = 1;
+        // the name it goes by in the process: the route its connections are
+        // relayed on. Set at birth, with the consumer on it (an inert one on
+        // no route until then)
+        listener: String = "";
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiWsConns { tid: self.tid }, armed: false };
     }
     bus {
         subscribe __ApiHubOutT as on_ctl where key == self.tid;
@@ -785,15 +817,18 @@ locus __StdApiWsListener {
             host = self.bind[0..colon];
             port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or 0;
         }
-        self.fd = std::io::tcp::__listen_socket(host, port);
-        if self.fd < 0 {
+        self.fd = __tcp_rebind(-1, host, port, "");
+        self.listener = __tcp_listener_name("", host, port, "", self.fd);
+        if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
             eprintln("api: ws::Hub could not listen on " + self.bind);
             std::process::exit(2);
         }
+        self.relay.name = self.listener;
+        self.relay.armed = true;
+        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiWsConns { tid: self.tid } };
     }
-    @unbounded
     run() {
         // A connection accepted before the hub's core is subscribed would
         // publish to nobody: the core answers the listener's asking (kind 8)
@@ -803,31 +838,21 @@ locus __StdApiWsListener {
             __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
             std::time::sleep(2ms);
         }
-        while !self.stopped && !self.draining {
-            let conn = std::io::tcp::__accept_one(self.fd);
-            if conn < 0 {
-                if self.stopped || self.draining { break; }
-                // a failed accept ends one connection, never the listener
-                std::time::sleep(20ms);
-                continue;
-            }
-            let n = self.next_conn;
-            self.next_conn = n + 1;
-            __StdApiWsPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        if !self.stopped && !self.draining {
+            self.relay.accept_all(self.fd, -1);
         }
+        self.release_socket();
     }
-    accept(c: __StdApiWsPeer) { }
-    release (c: __StdApiWsPeer) { }
     fn on_ctl(o: __StdApiHubOut) {
         if o.kind == 7 { self.started = true; }
         if o.kind == 1 {
+            // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
-            self.release_socket();
+            if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
         }
     }
     fn release_socket() {
         if self.fd < 0 { return; }
-        std::io::tcp::__shutdown_listen_socket(self.fd);
         std::io::tcp::__close_fd(self.fd);
         self.fd = -1;
     }

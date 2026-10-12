@@ -15,6 +15,8 @@ mod api_hub;
 mod api_hub_desk;
 #[path = "api_hub_streams.rs"]
 mod api_hub_streams;
+#[path = "api_hub_substrate.rs"]
+mod api_hub_substrate;
 #[path = "api_hub_udp.rs"]
 mod api_hub_udp;
 #[path = "api_http.rs"]
