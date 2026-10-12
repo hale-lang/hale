@@ -304,9 +304,10 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    of m27 + m28a); the field's own `birth()` still runs where
    the literal is.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
-   for the child's interface is the **owner** (innermost-wins —
-   interest-based ownership / accept bubbling; see below and
-   `runtime.md`). Its `accept(c)` runs once the child's region
+   for the child's type — the type itself, or an interface the type
+   satisfies (see "An interface `accept`" below) — is the **owner**
+   (innermost-wins — interest-based ownership / accept bubbling; see
+   below and `runtime.md`). Its `accept(c)` runs once the child's region
    exists and its params are built, before the child's `birth()`,
    and it cannot reject (`runtime.md` § "Lifecycle obligations",
    line 5). With no accepting ancestor the child is a transient
@@ -372,6 +373,45 @@ not rejected. Chains of defaults of either kind are followed. A
 use, under whichever locus uses them, so one that builds an `I{}`
 some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
+
+**An interface `accept`.** `accept(c: I)` may name an interface
+(`spec/types.md` § Interface types). It accepts every locus that
+satisfies `I` — conformance as a coercion into `I` judges it, error
+channels included — and nothing else. Resolution is static, like
+every owner edge: every locus is born from a literal of a concrete
+type, so the clause stands for one concrete `accept(c: L)` per locus
+`L` it admits, and the ownership relation holds those concrete edges.
+There is no runtime type test and no dispatch through a vtable:
+
+- **Precedence.** A locus declares one `accept` (§ `accept(c)`), so
+  the only choice between clauses is by depth, and innermost-wins
+  decides it whatever the clauses' kinds: the nearest ancestor whose
+  clause admits the child's type owns it, whether that clause names
+  the type or an interface it satisfies. A concrete owner below an
+  interface owner keeps its own type and lets every other type
+  bubble past it; an interface owner below a concrete one keeps every
+  type it admits. A type satisfying two interfaces is owned by the
+  nearer ancestor accepting either.
+- **Monomorphization.** The body is compiled once per admitted type,
+  the child typed as that type, so a call through it is a direct call
+  to that type's method. The checker types the child as the interface,
+  so the body may use only the interface's methods — the members every
+  admitted type has — and passing the child on as an `I` value
+  coerces it as any locus does. `release(c: I)` is compiled the same
+  way.
+- **Children.** The owner keeps its children one type at a time: each
+  child is tracked, removed when it completes (a flow) and reclaimed
+  in the owner's cascade by its own type's teardown; the cascade walks
+  one type's tracker after another, the types in name order.
+  `self.children.count` and `self.children.is_empty` read the sum.
+  `for c in self.children` is refused at the check, since the children
+  share no element type.
+- **Unchanged.** The child's region is a sub-region of the owner's
+  (step 3), its placement is its own type's, a cross-pool owner is
+  served by the handoff below, and the model's owner edges and call
+  edges name the concrete owner and the concrete callee. A generic
+  locus's specializations are no interface's: an interface `accept`
+  admits none of them.
 
 Whether the owner is on another pool is a fact of each *instance*
 of the enclosing locus, not of its type: a locus nested under a
@@ -779,6 +819,12 @@ parent has two effects:
    parent, recorded at accept time; `release` does not fire if a
    flow-typed locus is instantiated outside an accept context
    (no owner).
+
+`release(c: I)` naming an interface makes every locus that satisfies
+`I` a flow, as `accept(c: I)` accepts each, and is compiled once per
+such type (§ Locus instantiation, "An interface `accept`"). The clause
+must name the same type as the locus's `accept` (the validity rule
+below).
 
 Several parent types may accept the same child type; each child
 carries its accept'ing owner AND that owner type's `release` fn
@@ -1317,7 +1363,9 @@ After accept returns, the child registers in `self.children`
 A locus declares **at most one** `accept` (single-accept-type per
 parent, `types.md` F.11). A second `accept` clause is a typecheck
 error naming both clauses; the first clause remains the locus's
-accept type. A parent that must own two child types gives one of
+accept type. The one clause may name an interface, accepting every
+locus that satisfies it (§ Locus instantiation, "An interface
+`accept`"). A parent that must own two child types gives one of
 them a different owner. (2026-09-04, GH #525: a second clause used
 to overwrite the first silently.)
 

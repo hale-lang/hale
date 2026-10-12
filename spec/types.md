@@ -383,6 +383,12 @@ declares an interface-typed param: missing-method, arity-
 mismatch, param-type, or return-type mismatches all produce
 typed diagnostics at typecheck time.
 
+An interface may also be the type of a locus's `accept` and
+`release` param (`accept(c: I)`): the locus then accepts every locus
+satisfying `I`, by the same rule, resolved statically per concrete
+type, never through a vtable (`semantics.md` § Locus instantiation,
+"An interface `accept`").
+
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:
 
