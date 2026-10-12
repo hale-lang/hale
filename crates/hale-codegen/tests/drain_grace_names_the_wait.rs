@@ -112,6 +112,51 @@ fn main() { Root { }; }
     );
 }
 
+/// A signal that lands while the root's params are still being built
+/// finds the root live. A param's run() starts as the params are built
+/// (a pool's is posted), so it can say "up" before the root's own birth;
+/// the root used to be counted as a drain observer only after its params,
+/// and a SIGTERM in that window found nothing that could answer a drain
+/// and took the default action at once, with no line (a CI flake of the
+/// test above). Here a second param's birth holds the window open for a
+/// second: the drain begins, waits out the grace on the stuck pool, and
+/// says so.
+#[test]
+fn a_signal_while_the_params_are_built_finds_the_root_live() {
+    let ran = term_after_up(
+        "drain_grace_params",
+        r#"
+locus Stuck {
+    params { _u: Int = 0; }
+    run() {
+        println("up");
+        let mut i = 0;
+        while i < 100000 { std::time::sleep(20ms); i = i + 1; }
+    }
+}
+locus Slow {
+    params { _u: Int = 0; }
+    birth() { std::time::sleep(1s); }
+}
+main locus Root {
+    params {
+        s: Stuck = Stuck { };
+        slow: Slow = Slow { };
+    }
+    placement { s: cooperative(pool = io); }
+    run() { while !self.draining { std::time::sleep(10ms); } }
+}
+fn main() { Root { }; }
+"#,
+    );
+    let e = &ran.stderr;
+    assert_eq!(ran.status.signal(), Some(15), "{:?}\n{e}", ran.status);
+    assert!(
+        e.contains(&format!("did not finish within {GRACE_MS} ms")),
+        "the drain began and waited out its grace; it did not end at once as if nothing could answer it: {e}"
+    );
+}
+
 /// The same wait on a pinned thread, which is on no pool: the report says
 /// so and still names the locus that reads `draining` and has not ended.
 #[test]
