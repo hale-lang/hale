@@ -168,7 +168,10 @@ interface_method_sig
    and inherit the payload type. `topic` is a contextual keyword
    (lexed as IDENTIFIER) — only the top-level decl position
    recognizes it, so `topic` remains usable as a struct field or
-   local name.
+   local name. A topic's name shares the one top-level namespace with
+   types, loci, perspectives and interfaces: `topic Tick { payload:
+   Tick; }` beside `type Tick` is a duplicate top-level name, and the
+   diagnostic says so and names the rename.
 
    Phase 2:
      - Optional `: ParentTopic` declares a hierarchy. Wire subject

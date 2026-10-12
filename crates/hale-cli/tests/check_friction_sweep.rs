@@ -12,6 +12,9 @@
 //!   (`std::bus::__local_dispatch`) is not "subscribed but never
 //!   published", at `hale check` or `hale build`; a truly unpublished
 //!   one still is.
+//! - A topic named after its payload type is a duplicate top-level name
+//!   whose message says topics and types share one namespace, and names
+//!   the rename.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -103,4 +106,21 @@ fn an_ingress_counts_as_a_publisher_at_check_and_build() {
     let (checked, out, built, bout) = check_and_build(&program(""), "no_ingress");
     assert!(checked && out.contains(WARNING), "check: {out}");
     assert!(built && bout.contains(WARNING), "build: {bout}");
+}
+
+#[test]
+fn a_topic_named_after_its_payload_says_the_namespace_is_shared() {
+    let src = "type Tick { p: Int; }\ntopic Tick { payload: Tick; }\nfn main() { println(\"ok\"); }\n";
+    let (checked, out, built, bout) = check_and_build(src, "topicdup");
+    assert!(!checked, "{out}");
+    assert!(
+        out.contains("duplicate top-level name `Tick`: a topic and its payload type share one namespace, so `Tick` cannot name both"),
+        "{out}"
+    );
+    assert!(out.contains("`topic TickTopic { payload: Tick; … }`"), "the rename: {out}");
+    assert!(!built && bout.contains("share one namespace"), "build: {bout}");
+    // Another pair names both kinds.
+    let src = "type Tick { p: Int; }\nlocus Tick { }\nfn main() { }\n";
+    let (checked, out, _, _) = check_and_build(src, "locusdup");
+    assert!(!checked && out.contains("`Tick` is declared as a type and as a locus"), "{out}");
 }
