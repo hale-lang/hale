@@ -3865,7 +3865,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // C38 (L4): the birth_check runs on this thread, after
             // birth() and before run(), as on the instantiating thread
             // for every other locus.
-            self.emit_pinned_birth_checks(&checks, &info, thread_self, thread_main, locus_name)?;
+            self.emit_birth_checks_in_fn(&checks, &info, thread_self, thread_main, locus_name)?;
             }
             ObligationKind::Readiness => {
                 self.emit_readiness(thread_self, locus_name, "PinnedMain")?;

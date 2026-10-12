@@ -6815,6 +6815,21 @@ dynamic	__StdProcessChild	on main
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
 
+== tests/hale/restart_birth_check_test.hl
+root	App	the entry
+domain	pool:a
+domain	pool:b
+domain	pinned:App@literal1.pinned
+domain	pinned:App@literal1.pinned_never
+row	App@literal1	App	main	default
+row	App@literal1.held	Checked	main	default
+row	App@literal1.held_never	Checked	main	default
+row	App@literal1.pinned	Checked	pinned:App@literal1.pinned	entry	off owner
+row	App@literal1.pinned_never	Checked	pinned:App@literal1.pinned_never	entry	off owner
+row	App@literal1.pooled	Checked	pool:a	entry	off owner
+row	App@literal1.pooled_never	Checked	pool:b	entry	off owner
+dynamic	Checked	on main	in the seed
+
 == tests/hale/restart_birth_failure_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

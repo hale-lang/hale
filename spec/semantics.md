@@ -4162,8 +4162,9 @@ locus L {
 ```
 
 After `birth()` body completes and birth-epoch closures have
-fired, each declared `birth_check` clause's `cond` expression is
-evaluated. A `true` result fires the named closure with the
+fired — at the first birth and at every restart's re-birth (§
+"`restart(child)`") — each declared `birth_check` clause's `cond`
+expression is evaluated. A `true` result fires the named closure with the
 locus's fully-constructed state — every field reads its
 declared post-birth value, so the on_failure handler's
 capture-snapshot sees coherent state. Multiple clauses evaluate
@@ -4423,7 +4424,9 @@ subscriptions and its param values as they stand (a restart never
 re-evaluates a default):
 
 1. The failure's drain request is lowered: the child is live again.
-2. `birth()` runs again, then the birth-epoch closures.
+2. `birth()` runs again, then the birth-epoch closures, then the
+   `birth_check` clauses — every birth is checked, the first and each
+   restart's alike.
 3. `run()` runs again.
 
 When it takes effect depends on where the failure came from. A
@@ -4433,8 +4436,12 @@ failure of the birth — a `violate` in `birth()`, a failed
 `birth_check` — whether its handler ran in place or was held: the
 decision is read against the restart count as the birth began, so a
 handler that had already returned by the time `birth()` did is not
-missed, and a restart whose birth fails again is decided the same
-way before `run()` starts. The restart runs on the child's own
+missed, and a restart whose birth fails again — a `violate` in its
+`birth()`, a birth-epoch closure, a `birth_check` it no longer passes
+— is decided the same way before `run()` starts: restarted again
+within the bound, quarantined at it. (A restart used to skip the
+`birth_check` clauses, so a re-birth that broke its invariant ran
+on.) The restart runs on the child's own
 placement — its pinned thread, its pool's worker — as its first
 `birth()` and `run()` did. A failure raised
 while `run()` executes — a `violate` in it, or for a pinned child
