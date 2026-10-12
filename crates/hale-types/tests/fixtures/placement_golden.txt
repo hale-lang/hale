@@ -1425,16 +1425,16 @@ row	Holder@main1	Holder	main	default
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.la	__StdIoTcpListener	pool:io	entry	off owner
-row	App@literal1.lb	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.la	__StdIoTcpListener #010dcce2
+shared	App@literal1.lb	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/async_io_recv_into_park.rs#bbdbfdc9
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.l	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/async_io_recv_into_park.rs#f0abc6d8
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -1443,8 +1443,8 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.l	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/async_io_shutdown_parked.rs#9ba7c88f
 root	App	the entry
@@ -2895,12 +2895,12 @@ row	App@literal1	App	main	default
 row	App@literal1.b	Boom	main	default
 
 == crates/hale-codegen/tests/http_response_headers.rs#b03484a8
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/http_response_headers.rs#efeb1acc
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/http_router.rs#8554b629
 row	Count@main3	Count	main	default
@@ -4095,16 +4095,16 @@ row	__StdCliResolver@main1	__StdCliResolver	main	default
 row	__StdCliResolver@main1	__StdCliResolver	main	default
 
 == crates/hale-codegen/tests/stdlib_http_response.rs#04502c50
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_http_response.rs#95050f8a
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_http_response.rs#47a401c5
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_iter.rs#b15975c3
 row	__StdIterLines@main1	__StdIterLines	main	default
@@ -4148,24 +4148,24 @@ row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/stdlib_listener_multi.rs#a0d2c41c
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_listener_multi.rs#ef3dcd69
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_listener_multi.rs#5b12582a
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_locus.rs#0233ef73
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_locus.rs#799bd7ba
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/stdlib_log.rs#b043be5b
 row	__StdLogLogger@main2	__StdLogLogger	main	default
