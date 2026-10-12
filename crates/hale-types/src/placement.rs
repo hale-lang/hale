@@ -2043,72 +2043,68 @@ impl<'d, 'a> Builder<'d, 'a> {
         }
         // Whether building a locus may put a bus subscriber on the thread
         // that builds it: it subscribes, or a locus its template or its
-        // bodies build may, or a fn its bodies call does (a closure over
-        // the declarations and fns, memoized by scope; a cycle answers
-        // no on its back edge). A body's literals are dynamic sites of
-        // their own once the body's scope is reached, but the scope of a
-        // locus only a template builds never is, so the closure follows
-        // them.
-        struct Closure<'s, 'a> {
-            scopes: &'s Scopes<'a>,
-            decls: &'s Decls<'a>,
-            defaults_of: &'s BTreeMap<SiteRef, Vec<(&'s str, &'s Literal<'a>)>>,
-            decl_memo: BTreeMap<SiteRef, bool>,
-            scope_memo: BTreeMap<usize, bool>,
-        }
-        impl Closure<'_, '_> {
-            fn subscribes(&self, decl: SiteRef) -> bool {
-                self.scopes.decl_entry(self.decls, decl).is_some_and(|e| {
-                    e.decl.members.iter().any(|m| {
-                        matches!(m, LocusMember::Bus(b)
-                            if b.members.iter().any(|bm| matches!(bm, hale_syntax::ast::BusMember::Subscribe { .. })))
-                    })
+        // bodies build may, or a fn its bodies call does. A body's
+        // literals are dynamic sites of their own once the body's scope
+        // is reached, but the scope of a locus only a template builds
+        // never is, so the closure follows them. Computed to a fixed
+        // point over every declaration and scope (a flag only ever turns
+        // on), so no answer depends on the order the program declares
+        // them in or on where a cycle is entered.
+        let subscribes = |decl: SiteRef| {
+            scopes.decl_entry(self.decls, decl).is_some_and(|e| {
+                e.decl.members.iter().any(|m| {
+                    matches!(m, LocusMember::Bus(b)
+                        if b.members.iter().any(|bm| matches!(bm, hale_syntax::ast::BusMember::Subscribe { .. })))
                 })
-            }
-            fn decl(&mut self, decl: SiteRef) -> bool {
-                if let Some(b) = self.decl_memo.get(&decl) {
-                    return *b;
+            })
+        };
+        let mut all_decls: BTreeSet<SiteRef> = scopes.loci.keys().copied().collect();
+        for s in &scopes.scopes {
+            all_decls.extend(s.literals.iter().filter_map(|l| l.decl));
+        }
+        for (holder, ls) in &defaults_of {
+            all_decls.insert(*holder);
+            all_decls.extend(ls.iter().filter_map(|(_, l)| l.decl));
+        }
+        let mut decl_flag: BTreeMap<SiteRef, bool> = all_decls.iter().map(|d| (*d, subscribes(*d))).collect();
+        let mut scope_flag: Vec<bool> = vec![false; scopes.scopes.len()];
+        loop {
+            let mut changed = false;
+            for (i, s) in scopes.scopes.iter().enumerate() {
+                if scope_flag[i] {
+                    continue;
                 }
-                self.decl_memo.insert(decl, false);
-                let defaults: Vec<SiteRef> = self
-                    .defaults_of
-                    .get(&decl)
-                    .map(|ls| ls.iter().filter_map(|(_, l)| l.decl).collect())
-                    .unwrap_or_default();
-                let b = self.subscribes(decl)
-                    || self.scopes.locus_scope(decl).is_some_and(|i| self.scope(i))
-                    || defaults.into_iter().any(|d| self.decl(d));
-                self.decl_memo.insert(decl, b);
-                b
-            }
-            fn scope(&mut self, i: usize) -> bool {
-                if let Some(b) = self.scope_memo.get(&i) {
-                    return *b;
+                let on = s.literals.iter().filter_map(|l| l.decl).any(|d| decl_flag.get(&d).copied().unwrap_or(false))
+                    || s.calls.iter().filter_map(|(f, _)| scopes.fn_named(s.universe, f)).any(|c| scope_flag[c]);
+                if on {
+                    scope_flag[i] = true;
+                    changed = true;
                 }
-                self.scope_memo.insert(i, false);
-                let s = &self.scopes.scopes[i];
-                let lits: Vec<SiteRef> = s.literals.iter().filter_map(|l| l.decl).collect();
-                let callees: Vec<usize> =
-                    s.calls.iter().filter_map(|(f, _)| self.scopes.fn_named(s.universe, f)).collect();
-                let b = lits.into_iter().any(|d| self.decl(d)) || callees.into_iter().any(|c| self.scope(c));
-                self.scope_memo.insert(i, b);
-                b
             }
-            /// A literal: its declaration's own subscription and bodies,
-            /// and the template it does not override.
-            fn literal(&mut self, l: &Literal<'_>, template_of: &[SiteRef]) -> bool {
-                let Some(d) = l.decl else { return false };
-                self.subscribes(d)
-                    || self.scopes.locus_scope(d).is_some_and(|i| self.scope(i))
-                    || template_of.iter().any(|t| self.decl(*t))
+            for d in &all_decls {
+                if decl_flag[d] {
+                    continue;
+                }
+                let on = scopes.locus_scope(*d).is_some_and(|i| scope_flag[i])
+                    || defaults_of.get(d).is_some_and(|ls| {
+                        ls.iter().filter_map(|(_, l)| l.decl).any(|dd| decl_flag.get(&dd).copied().unwrap_or(false))
+                    });
+                if on {
+                    decl_flag.insert(*d, true);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
             }
         }
-        let mut closure = Closure {
-            scopes,
-            decls: self.decls,
-            defaults_of: &defaults_of,
-            decl_memo: BTreeMap::new(),
-            scope_memo: BTreeMap::new(),
+        // A literal: its declaration's own subscription and bodies, and the
+        // template it does not override.
+        let literal_builds = |l: &Literal<'_>, template_of: &[SiteRef]| {
+            let Some(d) = l.decl else { return false };
+            subscribes(d)
+                || scopes.locus_scope(d).is_some_and(|i| scope_flag[i])
+                || template_of.iter().any(|t| decl_flag.get(t).copied().unwrap_or(false))
         };
         for (i, s) in scopes.scopes.iter().enumerate() {
             if !reached[i] {
@@ -2154,7 +2150,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 };
                 let mut built = Vec::new();
                 template(l, &defaults_of, &mut built);
-                let builds_subscriber = closure.literal(l, &built);
+                let builds_subscriber = literal_builds(l, &built);
                 self.table.dynamic.push(DynamicSite {
                     literal: l.site,
                     realizes,

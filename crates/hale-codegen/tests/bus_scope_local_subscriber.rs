@@ -542,6 +542,37 @@ fn a_subscriber_a_default_built_child_builds_gets_its_pinned_thread_a_mailbox() 
     pinned_mailbox_case("pinned_default_child_body", &src);
 }
 
+// Review of #1513, round 2: the closure is a fixed point, not a memoized
+// walk. `A` builds the subscriber in its default and, through `make_b`,
+// `B`, whose birth builds `A` again: a cycle. A walk entered at `A`
+// (through `main_first`, declared first and never called) cached `B` as
+// building no subscriber while `A` was still open, so `WrapB`, the only
+// thing the pinned host builds, was judged not to either, and the host
+// got no mailbox; declared after, it did. Both orders give it one now.
+const CYCLE_FIRST: &str = "    fn main_first() { WrapA { }; }
+";
+const CYCLE_REST: &str = "    locus A {
+        params { p: Peer = Peer { }; recurse: Bool = false; }
+        birth() { if self.recurse { make_b(); } }
+    }
+    locus B { birth() { make_a(); } }
+    locus WrapA { params { a: A = A { }; } }
+    locus WrapB { params { b: B = B { }; } }
+    fn make_a() {
+        let a = A { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(a.p.got));
+    }
+    fn make_b() { B { }; }
+    fn serve_once() { WrapB { }; std::time::sleep(300ms); }
+";
+
+#[test]
+fn a_construction_cycle_gets_its_pinned_thread_a_mailbox_in_either_declaration_order() {
+    pinned_mailbox_case("pinned_cycle_first", &pinned_with_serve(&format!("{CYCLE_FIRST}{CYCLE_REST}")));
+    pinned_mailbox_case("pinned_cycle_last", &pinned_with_serve(&format!("{CYCLE_REST}{CYCLE_FIRST}")));
+}
+
 /// Build `src`, check that the pinned `Host` has the mailbox loop and the
 /// pinned `Pub` none, and run it with main blocked on stdin: the free fn
 /// sees its delivery before main unblocks, `Pub` dissolves as its run()
