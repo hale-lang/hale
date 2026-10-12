@@ -305,7 +305,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
     // A yield inside a handler on a pinned thread runs the owner's
     // handler that reclaims the suspended one's subscriber, which no hold
@@ -640,7 +639,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
     ),
-    ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
     (

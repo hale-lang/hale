@@ -13,8 +13,8 @@
 //! run's loop, a pinned locus's thread, the resume at settle. Each shape
 //! is held here, step by step, in the function that emits it: a root
 //! child, a nested child, each replica, a pinned child, a pool-placed
-//! child (whose resumed `run()` is still called inline on the settling
-//! thread: C43, known open), and `restart_in_place` under a generic
+//! child (whose resume at settle, and a restart its run gate decides,
+//! are posted to its pool: line 13, C43), and `restart_in_place` under a generic
 //! supervisor. A locus that declares no `run()` is resumed without one
 //! (line 13, C48). Every decision reads the child's reclaim claim, one
 //! acquire load (`clear`): a child whose reclaim is owed or begun is not
@@ -190,8 +190,9 @@ fn each_replica_reads_the_same_order() {
 }
 
 /// A pool-placed child: its run is posted, and the posted run's loop
-/// decides after it. Its resume still runs `run()` inline on the
-/// settling thread (C43, known open), through the same wrapper.
+/// decides after it. A resume at settle is posted to its pool as its
+/// run (line 13, C43), and runs `run()` there through the same
+/// wrapper; so is a restart its run gate decides.
 #[test]
 fn a_pool_placed_child_decides_in_its_posted_run() {
     let ir = ir(
@@ -201,6 +202,9 @@ fn a_pool_placed_child_decides_in_its_posted_run() {
     check(&ir, "__restart_Worker", &RESTART_BODY);
     check(&ir, "__resume_Worker", &RESUME_BODY);
     check(&ir, "__coop_pool_run_Worker", &POOL_RUN_BODY);
+    let gate = body(&ir, "main");
+    assert!(gate.contains("@lotus_failure_await_on("), "the gate's resume at settle names the pool:\n{gate}");
+    assert!(gate.contains("@lotus_failure_resume_post("), "a restart the gate decides is posted to the pool:\n{gate}");
 }
 
 /// `restart_in_place` under a generic supervisor: each specialization's

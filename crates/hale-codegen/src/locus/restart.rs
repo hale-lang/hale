@@ -323,6 +323,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         phase: u64,
         pre: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>, CodegenError> {
+        self.emit_failure_await_on(self_ptr, resume, phase, pre, None)
+    }
+
+    /// [`Cx::emit_failure_await`] for a child placed on the worker pool
+    /// `pool` (a pool-placed root, whose birth ran on that pool's worker):
+    /// a resume at settle is posted to the pool
+    /// (`lotus_failure_await_on`), so the restart's birth and the run()
+    /// after it run there, as the child's first start did.
+    pub(crate) fn emit_failure_await_on(
+        &mut self,
+        self_ptr: PointerValue<'ctx>,
+        resume: Option<FunctionValue<'ctx>>,
+        phase: u64,
+        pre: IntValue<'ctx>,
+        pool: Option<&str>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
@@ -354,26 +370,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let join_bb = self.context.append_basic_block(func, "await.join");
         self.builder.build_conditional_branch(any, ask_bb, join_bb).map_err(e)?;
         self.builder.position_at_end(ask_bb);
-        let await_fn = self
-            .module
-            .get_function("lotus_failure_await")
-            .expect("lotus_failure_await declared");
         let resume_ptr = match resume {
             Some(f) => f.as_global_value().as_pointer_value(),
             None => ptr_t.const_null(),
         };
+        let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![self_ptr.into(), resume_ptr.into(), i64_t.const_int(phase, false).into(), pre.into()];
+        let await_fn = match pool {
+            Some(name) => {
+                args.push(self.emit_pool_lookup(name, "await.pool")?.into());
+                self.module.get_function("lotus_failure_await_on").unwrap_or_else(|| {
+                    let ty = i64_t
+                        .fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()], false);
+                    self.module.add_function("lotus_failure_await_on", ty, None)
+                })
+            }
+            None => self
+                .module
+                .get_function("lotus_failure_await")
+                .expect("lotus_failure_await declared"),
+        };
         let asked = self
             .builder
-            .build_call(
-                await_fn,
-                &[
-                    self_ptr.into(),
-                    resume_ptr.into(),
-                    i64_t.const_int(phase, false).into(),
-                    pre.into(),
-                ],
-                "await.call",
-            )
+            .build_call(await_fn, &args, "await.call")
             .map_err(e)?
             .try_as_basic_value()
             .left()
@@ -385,6 +404,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let phi = self.builder.build_phi(i64_t, "await.result").map_err(e)?;
         phi.add_incoming(&[(&i64_t.const_zero(), from_bb), (&asked, ask_end)]);
         Ok(phi.as_basic_value().into_int_value())
+    }
+
+    /// The worker pool named `name`, looked up now.
+    fn emit_pool_lookup(&mut self, name: &str, tag: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        let name_str = self.global_string(name);
+        let lookup = self
+            .module
+            .get_function("lotus_coop_pool_lookup")
+            .expect("lotus_coop_pool_lookup declared");
+        Ok(self
+            .builder
+            .build_call(lookup, &[name_str.into()], tag)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_coop_pool_lookup returns ptr")
+            .into_pointer_value())
+    }
+
+    /// Post `__resume_<L>(self, phase, pre)` to the worker pool `pool`
+    /// as the child's run (`lotus_failure_resume_post`): a restart a
+    /// pool-placed root's run gate decides re-runs its birth, and starts
+    /// its run(), on its own placement rather than on the instantiating
+    /// thread.
+    pub(crate) fn emit_resume_post(
+        &mut self,
+        pool: &str,
+        resume: FunctionValue<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        phase: u64,
+        pre: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let pool_ptr = self.emit_pool_lookup(pool, "resume.pool")?;
+        let post = self.module.get_function("lotus_failure_resume_post").unwrap_or_else(|| {
+            let ty = self
+                .context
+                .void_type()
+                .fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into()], false);
+            self.module.add_function("lotus_failure_resume_post", ty, None)
+        });
+        self.builder
+            .build_call(
+                post,
+                &[
+                    pool_ptr.into(),
+                    resume.as_global_value().as_pointer_value().into(),
+                    self_ptr.into(),
+                    i64_t.const_int(phase, false).into(),
+                    pre.into(),
+                ],
+                "resume.post",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     /// Before a child's birth, for a locus a failure can come from: a

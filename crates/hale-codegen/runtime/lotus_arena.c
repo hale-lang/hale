@@ -1934,6 +1934,11 @@ typedef struct lotus_held_failure {
      * the handler. */
     lotus_resume_fn resume;
     int64_t phase, pre;
+    /* The worker pool the child was placed on, when the resume must run
+     * there rather than on the settling thread: a pool-placed root's
+     * birth ran on its pool's worker, so its restart's birth and its
+     * run() do too (`lotus_failure_resume_post`). NULL: on this thread. */
+    void *resume_pool;
     int state;
     int waiters;               /* threads blocked in lotus_failure_await */
     /* A posted delivery (decision L0-1, below): the owner's domain it
@@ -2117,8 +2122,21 @@ static void lotus_pool_start_run_pending(void);
  *       child failing during its parent's params loop), so waiting
  *       would never end. `resume` runs at settle, right after the
  *       handler, on this thread; the caller stops here. */
+int64_t lotus_failure_await_on(void *child, void *resume, int64_t phase,
+                               int64_t pre, void *pool);
+
 int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
                             int64_t pre) {
+    return lotus_failure_await_on(child, resume, phase, pre, NULL);
+}
+
+/* `lotus_failure_await` for a child placed on a worker pool whose birth
+ * the instantiating thread waited for (a pool-placed root): a resume at
+ * settle (2) is posted to `pool`, so the restarted birth and the run()
+ * run on the child's own placement, as its first start did, never on
+ * the settling thread. */
+int64_t lotus_failure_await_on(void *child, void *resume, int64_t phase,
+                               int64_t pre, void *pool) {
     if (__atomic_load_n(&lotus_held_failure_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
     pthread_mutex_lock(&g_params_open_lock);
@@ -2133,6 +2151,7 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
             node->resume = (lotus_resume_fn)resume;
             node->phase = phase;
             node->pre = pre;
+            node->resume_pool = pool;
             r = 2;
         }
         pthread_mutex_unlock(&g_params_open_lock);
@@ -2168,6 +2187,9 @@ int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
     return 1;
 #endif
 }
+
+void lotus_failure_resume_post(void *pool, void *resume, void *child,
+                               int64_t phase, int64_t pre);
 
 void lotus_params_settle(void *parent) {
     pthread_mutex_lock(&g_params_open_lock);
@@ -2216,6 +2238,7 @@ void lotus_params_settle(void *parent) {
         void *err = node->err;
         lotus_resume_fn resume = node->resume;
         int64_t phase = node->phase, pre = node->pre;
+        void *resume_pool = node->resume_pool;
         void (*reclaim)(void *) = node->reclaim;
         node->state = LOTUS_DELIVERED;
         lotus_held_unlink(node);
@@ -2233,6 +2256,8 @@ void lotus_params_settle(void *parent) {
          * (restart, or carry on) for a child on this thread. */
         if (reclaim)
             reclaim(child);
+        else if (resume && resume_pool)
+            lotus_failure_resume_post(resume_pool, (void *)resume, child, phase, pre);
         else if (resume)
             resume(child, phase, pre);
     }
@@ -10355,6 +10380,35 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
                           int64_t payload_size) {
     lotus_coop_pool_post_cell(p, handler, self_ptr, payload_src,
                               (size_t)payload_size, 1);
+}
+
+/* A held failure's resume (`__resume_<L>`) for a child placed on a
+ * worker pool, posted to that pool as the child's run (it takes the run
+ * ticket a first start's posted run() takes): the restart's birth and
+ * the run() that follows it execute on the child's placement, never on
+ * the thread that decided. */
+typedef struct {
+    lotus_resume_fn resume;
+    int64_t phase, pre;
+} lotus_resume_job_t;
+
+static void lotus_failure_resume_job(void *child, void *payload) {
+    lotus_resume_job_t job;
+    memcpy(&job, payload, sizeof job);
+    job.resume(child, job.phase, job.pre);
+}
+
+void lotus_failure_resume_post(void *pool, void *resume, void *child,
+                               int64_t phase, int64_t pre) {
+    lotus_resume_job_t job = { (lotus_resume_fn)resume, phase, pre };
+    if (!pool) {
+        /* No pool registered under the placement's name (none on a
+         * target without threads): the one thread there is runs it. */
+        job.resume(child, phase, pre);
+        return;
+    }
+    lotus_coop_pool_post((lotus_coop_pool_t *)pool, (void *)lotus_failure_resume_job,
+                         child, &job, (int64_t)sizeof job);
 }
 
 /* A bus delivery to a subscriber on a cooperative pool. */

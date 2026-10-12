@@ -6757,6 +6757,18 @@ row	App@literal1	App	main	default
 row	App@literal1.pump	Pump	pinned:App@literal1.pump	entry	off owner
 row	App@literal1.slow	Slow	main	default
 
+== tests/hale/pool_birth_restart_test.hl
+root	App	the entry
+domain	pool:a
+domain	pool:b	async_io
+domain	pool:c
+domain	pool:d
+row	App@literal1	App	main	default
+row	App@literal1.classic	Kid	pool:a	entry	off owner
+row	App@literal1.fresh	Fresh	pool:d	entry	off owner
+row	App@literal1.parked	Kid	pool:b	entry	off owner
+row	App@literal1.twice	Kid	pool:c	entry	off owner
+
 == tests/hale/process_child_adopt_test.hl
 shared	Job@main1	Job #01dd0b0d
 -- dynamic	sites in the seed

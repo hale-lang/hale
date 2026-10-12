@@ -4234,7 +4234,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //
         // The gate decides against the count as the birth began (its
         // slot), and loops: a restart whose birth fails again is decided
-        // the same way before run() starts.
+        // the same way before run() starts. A pool-placed root's birth
+        // ran on its pool's worker, and so do its restarts and the run()
+        // after one: the restart is posted there as the child's run
+        // (`__resume_<L>`, phase 1), and a resume at settle likewise
+        // (`lotus_failure_await_on`) — never on this thread.
         gate_skip_bb = match self.restart_fns.get(locus_name).copied() {
             Some(rf) => {
                 let func = self.current_fn.expect("current_fn set");
@@ -4259,7 +4263,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 pre_phi.add_incoming(&[(&pre0, entry_bb)]);
                 let pre = pre_phi.as_basic_value().into_int_value();
-                let a = self.emit_failure_await(self_ptr, Some(rf.resume), 1, pre)?;
+                let a = self.emit_failure_await_on(self_ptr, Some(rf.resume), 1, pre, pool_init.as_deref())?;
                 let resumed_later = self
                     .builder
                     .build_int_compare(
@@ -4282,14 +4286,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(restart_bb);
-                let next = self.emit_restart_count(&info, self_ptr)?;
-                let spine = self.lc_spine;
-                self.emit_restart_call(rf.restart, self_ptr, locus_name, spine, "gate.restart.call")?;
-                let restart_end = self.builder.get_insert_block().expect("inside a block");
-                pre_phi.add_incoming(&[(&next, restart_end)]);
-                self.builder
-                    .build_unconditional_branch(loop_bb)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                match pool_init.as_deref() {
+                    Some(pool) => {
+                        self.emit_resume_post(pool, rf.resume, self_ptr, 1, pre)?;
+                        self.builder
+                            .build_unconditional_branch(skip_bb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    None => {
+                        let next = self.emit_restart_count(&info, self_ptr)?;
+                        let spine = self.lc_spine;
+                        self.emit_restart_call(rf.restart, self_ptr, locus_name, spine, "gate.restart.call")?;
+                        let restart_end = self.builder.get_insert_block().expect("inside a block");
+                        pre_phi.add_incoming(&[(&next, restart_end)]);
+                        self.builder
+                            .build_unconditional_branch(loop_bb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                }
                 self.builder.position_at_end(go_bb);
                 Some(skip_bb)
             }
