@@ -69,6 +69,22 @@ fn an_uncarried_topic_payload_is_refused_where_it_is_delivered() {
 }
 
 #[test]
+fn an_unlowered_recovery_modifier_is_refused_at_the_statement() {
+    let desk = |stmt: &str| {
+        format!(
+            "locus Book {{\n    params {{ credits: Int = 0; debits: Int = 0; }}\n    closure balanced {{ self.credits ~~ self.debits within 0; }}\n}}\nlocus Desk {{\n    params {{ n: Int = 0; }}\n    on_failure(c: Book, err: ClosureViolation) {{ {stmt} }}\n    run() {{ Book {{ credits: 100, debits: 93 }}; }}\n}}\nfn main() {{ let d = Desk {{ }}; }}\n"
+        )
+    };
+    refused(
+        &desk("quarantine(c) for 5s;"),
+        "quarantine_for",
+        "7:50",
+        "`quarantine(c) for d` (an automatic restart after a duration) is specified but not implemented: `quarantine(c)` itself ships, the `for d` clause does not.",
+    );
+    refused(&desk("quarantine(c) until self.n > 1;"), "until", "7:50", "`until` (restart while a condition holds) is specified but not implemented");
+    refused(&desk("reorganize(c);"), "reorganize", "7:50", "`reorganize(...)` is reserved syntax with no semantics yet");
+}
+#[test]
 fn a_return_in_an_on_failure_body_checks_and_builds() {
     let src = "locus Book {\n    params { credits: Int = 0; debits: Int = 0; }\n    closure balanced { self.credits ~~ self.debits within 0; }\n}\nlocus Desk {\n    params { seen: Int = 0; }\n    on_failure(c: Book, err: ClosureViolation) {\n        if self.seen > 2 { return; }\n        self.seen = self.seen + 1;\n    }\n    run() { Book { credits: 100, debits: 93 }; }\n}\nfn main() { let d = Desk { }; }\n";
     let ((ok, out), (built, bout)) = check_and_build(src, "on_failure_return");

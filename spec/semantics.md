@@ -4544,17 +4544,31 @@ fine; just had a bad message).
 4. Otherwise wait until parent explicitly resolves.
 
 **Not lowered:** the `for d` duration clause. `quarantine(c)`
-itself ships; `quarantine(c) for d` is refused by codegen. Note
-that this `for` is a *duration* before an automatic restart — a
-different modifier from `restart(c) for N`, which is a retry
-count.
+itself ships; `quarantine(c) for d` is refused by the check, at the
+statement. Note that this `for` is a *duration* before an automatic
+restart — a different modifier from `restart(c) for N`, which is a
+retry count.
 
-Also not lowered: the `until` modifier on any recovery op.
+```text
+main.hl:6:50: type error: `quarantine(c) for d` (an automatic restart
+after a duration) is specified but not implemented: `quarantine(c)`
+itself ships, the `for d` clause does not. Note that this `for` is a
+duration before an automatic restart, a different modifier from
+`restart(c) for N`, which is a retry count.
+```
+
+Also not lowered: the `until` modifier on any recovery op, refused
+by the check at the statement (`` `until` (restart while a condition
+holds) is specified but not implemented ``), and a `for` on `bubble`,
+which restarts nothing. Each of these passed the check and stopped
+the build in codegen with no location before.
 
 ### `reorganize(child, ...)`
 
 Reserved syntax. Semantics TBD; expected: relocate child's
-sub-children to a sibling. Not in v0.
+sub-children to a sibling. Not in v0: the check refuses the
+statement (`` `reorganize(...)` is reserved syntax with no semantics
+yet ``).
 
 ### `bubble(err)`
 

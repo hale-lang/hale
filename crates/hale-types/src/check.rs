@@ -11141,6 +11141,7 @@ impl<'a> Checker<'a> {
                 if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
                     let _ = self.check_expr(e);
                 }
+                self.refuse_unlowered_recovery(*op, modifier.as_ref(), *span);
                 // A handler's statements are its handler row's ops, on the
                 // handler's child.
                 if !self.in_on_failure {
@@ -12231,6 +12232,52 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The recovery statements the spec names but lowering does not
+    /// implement (spec/semantics.md § Recovery primitives): the `for d`
+    /// duration on `quarantine`, the `until` modifier on any op, a `for`
+    /// on an op that restarts nothing, and the reserved `reorganize`.
+    /// Each passed the check and was refused by codegen with no span.
+    fn refuse_unlowered_recovery(
+        &mut self,
+        op: RecoveryOp,
+        modifier: Option<&RecoveryModifier>,
+        span: Span,
+    ) {
+        let message = match (op, modifier) {
+            (RecoveryOp::Reorganize, _) => {
+                "`reorganize(...)` is reserved syntax with no semantics yet \
+                 (spec/semantics.md § `reorganize`): it is not implemented. \
+                 Use `restart`, `restart_in_place`, `quarantine` or \
+                 `bubble`."
+                    .to_string()
+            }
+            (_, Some(RecoveryModifier::Until(_))) => {
+                "`until` (restart while a condition holds) is specified but \
+                 not implemented, on any recovery op. Bound restarts with \
+                 `restart(c) for N` — a retry count — or test the condition \
+                 in the handler before recovering."
+                    .to_string()
+            }
+            (RecoveryOp::Quarantine, Some(RecoveryModifier::For(_))) => {
+                "`quarantine(c) for d` (an automatic restart after a \
+                 duration) is specified but not implemented: `quarantine(c)` \
+                 itself ships, the `for d` clause does not. Note that this \
+                 `for` is a duration before an automatic restart, a \
+                 different modifier from `restart(c) for N`, which is a \
+                 retry count."
+                    .to_string()
+            }
+            (RecoveryOp::Bubble, Some(RecoveryModifier::For(_))) => {
+                "`for` bounds how many times a child is restarted \
+                 (`restart(c) for N`), so it does not apply to `bubble`, \
+                 which restarts nothing."
+                    .to_string()
+            }
+            _ => return,
+        };
+        self.diags.push(Diag::ty(span, message));
     }
 
     /// A `type` is plain data: copied by value, with no lifecycle, so a

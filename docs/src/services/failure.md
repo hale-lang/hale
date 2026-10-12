@@ -163,7 +163,9 @@ The recovery primitives:
   literal said, or its default as it evaluated then). A child held in
   a param stays the same child.
 - **`quarantine(child)`** — pause it, preserving state for
-  inspection.
+  inspection. The specified `quarantine(child) for d` (restart
+  automatically after `d`) and the `until` modifier are not
+  implemented, and the compiler refuses them at the statement.
 - **`bubble(err)`** — pass it up to *this* locus's parent.
 - **`dissolve(child)`** — force it down.
 

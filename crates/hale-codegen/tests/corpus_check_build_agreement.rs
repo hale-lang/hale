@@ -1909,6 +1909,43 @@ fn an_uncarried_topic_payload_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// The recovery modifiers lowering does not implement: `quarantine(c)
+/// for d` (spec/semantics.md § `quarantine(child) [for d]`) and
+/// `until`, refused by codegen with no span.
+#[test]
+fn an_unlowered_recovery_modifier_is_refused_by_the_check_not_the_build() {
+    let desk = |stmt: &str| {
+        format!(
+            "locus Book {{\n\
+             params {{ credits: Int = 0; debits: Int = 0; }}\n\
+             closure balanced {{ self.credits ~~ self.debits within 0; }}\n\
+             }}\n\
+             locus Desk {{\n\
+             params {{ n: Int = 0; }}\n\
+             on_failure(c: Book, err: ClosureViolation) {{ {stmt} }}\n\
+             run() {{ Book {{ credits: 100, debits: 93 }}; }}\n\
+             }}\n\
+             fn main() {{ let d = Desk {{ }}; }}\n"
+        )
+    };
+    let quarantine = desk("quarantine(c) for 5s;");
+    let until = desk("restart(c) until self.n < 3;");
+    let bubble = desk("bubble(err) for 2;");
+    assert_refused_by_the_check(
+        &[
+            (
+                &quarantine,
+                "quarantine(c) for 5s;",
+                "`quarantine(c) for d` (an automatic restart after a duration) is specified but not implemented",
+            ),
+            (&until, "restart(c) until self.n < 3;", "`until` (restart while a condition holds) is specified but not implemented"),
+            (&bubble, "bubble(err) for 2;", "`for` bounds how many times a child is restarted"),
+        ],
+        "recovery_modifier",
+    );
+    assert_built(&desk("restart(c) for 2;"), "hale_cb_restart_for_n");
+}
+
 /// `return;` in an `on_failure` body checked clean and the build
 /// refused it ("`return` outside a user fn"), though the same statement
 /// lowered in `accept()` and `drain()`. It is lowered now, as the
