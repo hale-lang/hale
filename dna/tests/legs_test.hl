@@ -175,6 +175,11 @@ locus App {
             },
             verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
+            // one allowance for the record's lifetime, as the other budget
+            // fixtures have: the gate steps below set the allowance from what
+            // is spent and read the grant back, and a daily window that rolls
+            // over at midnight UTC between the two resets the spend under them
+            budget: dna::Budget { policy: dna::BudgetPolicy { window: "none" } },
             org_id: "legs"
         };
         std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
