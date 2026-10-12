@@ -4076,6 +4076,14 @@ row	App@literal2	App	main	default
 row	App@literal1.sink	Sink	main	default
 row	App@literal2.sink	Sink	main	default
 
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#8264962d
+root	App	the entry
+domain	pinned:App@literal1.burst
+row	App@literal1	App	main	default
+row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
+row	App@literal1.sink	Sink	main	default
+row	App@literal1.slow	Slow	main	default
+
 == crates/hale-codegen/tests/sibling_field_forward_ref.rs#2c26373a
 root	Workbench	the entry
 hole	Workbench@literal1.dispatcher.gate	reuse `self.gate`
