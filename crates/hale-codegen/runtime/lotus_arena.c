@@ -6946,6 +6946,13 @@ typedef struct lotus_bus_queue {
  * three hot post entry points. NULL for every other caller. */
 static __thread void *g_bus_pending_wire_deser = NULL;
 
+/* The publish-side serialize buffer (see g_tls_bus_struct_buf's comment
+ * for why it is thread-local). A publisher reads it after a post
+ * returns (its next subscriber, its remote routes), and a post at the
+ * cooperative queue's cap runs handlers inline that may publish, so
+ * the at-cap drain gives it back as it found it. */
+static __thread char g_tls_bus_wire_buf[LOTUS_PAYLOAD_MAX];
+
 /* GH #296 Phase 2: TLS side-channel feeding
  * lotus_bus_cell_t.rec_pub_id, exactly the wire-deser pattern
  * above — set by a fanout for the duration of its post calls
@@ -7543,9 +7550,14 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
                                     size_t payload_size,
                                     int locked) {
     if (!q) return;
-    /* Read before an at-cap inline drain below can run a handler that
-     * publishes (and so sets and restores the TLS) on this thread. */
+    /* The post's metadata, read before an at-cap inline drain below can
+     * run a handler that publishes (and so sets and clears the TLS) on
+     * this thread: a nested post_wire leaves the wire deserializer
+     * NULL, which would stamp this wire cell as an already-materialized
+     * struct. */
     uint64_t sub_gen = g_bus_pending_gen;
+    void *deser = g_bus_pending_wire_deser;
+    uint64_t rec_pub = g_bus_pending_rec_pub;
     /* Two-tier payload storage. Small payloads land in the
      * cell's inline buffer (no malloc on the hot path); large
      * ones spill to a per-cell malloc that the drain path
@@ -7612,9 +7624,28 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
          * burst makes the next compaction amortize over the freed slots
          * (~⅓ cell moved per enqueue). The handlers run interleaved with the
          * flooding producer rather than buffering the entire backlog. */
+        /* The handlers below may publish on this thread, and a publish
+         * encodes into the thread's wire buffer: the bytes this post
+         * carries (a small payload not copied yet) and the bytes the
+         * publisher still fans out after this post returns (its next
+         * subscriber, its remote routes) may both live there. Own this
+         * post's payload first, and give the buffer back as it was
+         * once the batch is done — nested batches restore theirs
+         * first, so every publisher sees its own bytes. */
+        if (!heap_buf && payload_size > 0 && payload_src) {
+            heap_buf = malloc(payload_size);
+            if (!heap_buf) return;      /* drop on OOM */
+            memcpy(heap_buf, payload_src, payload_size);
+        }
+        char *saved_wire = (char *)malloc(LOTUS_PAYLOAD_MAX);
+        if (saved_wire) memcpy(saved_wire, g_tls_bus_wire_buf, LOTUS_PAYLOAD_MAX);
         size_t watermark = q->cap / 4;
         while (q->head < q->tail && (q->tail - q->head) > watermark) {
             bus_inline_drain_one(q);
+        }
+        if (saved_wire) {
+            memcpy(g_tls_bus_wire_buf, saved_wire, LOTUS_PAYLOAD_MAX);
+            free(saved_wire);
         }
     }
     lotus_bus_cell_t *slot = &q->cells[q->tail++];
@@ -7627,8 +7658,8 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
      * queued cell's region before that: NULL, not the slot's last
      * occupant's (or realloc's) bytes. */
     slot->payload_region = NULL;
-    slot->deserialize  = g_bus_pending_wire_deser;
-    slot->rec_pub_id   = g_bus_pending_rec_pub;
+    slot->deserialize  = deser;
+    slot->rec_pub_id   = rec_pub;
     slot->run_ticket   = NULL;
     slot->sub_gen      = sub_gen;
     if (!heap_buf && payload_size > 0 && payload_src) {
@@ -7752,13 +7783,22 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     g_bus_inline_drain_depth++;
     lotus_bus_note_consume(handler_self, rec_pub_id);
     /* GH #703: this runs inside an enqueue, within a post that set the
-     * incarnation TLS for ITS cell: a cell the handler builds outside a
-     * post of its own (a cross-pool create, a failure) is for no
-     * registration. */
+     * post TLS for ITS cell — the incarnation, the wire deserializer,
+     * the publish identity. A cell the handler builds outside a post of
+     * its own (a cross-pool create, a failure, a flat publish) is for no
+     * registration, carries no wire, and has no publish identity: the
+     * handler runs with all three cleared, and the outer post gets its
+     * own back. */
     uint64_t outer_gen = g_bus_pending_gen;
+    void *outer_deser = g_bus_pending_wire_deser;
+    uint64_t outer_rec_pub = g_bus_pending_rec_pub;
     g_bus_pending_gen = 0;
+    g_bus_pending_wire_deser = NULL;
+    g_bus_pending_rec_pub = 0;
     ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
     g_bus_pending_gen = outer_gen;
+    g_bus_pending_wire_deser = outer_deser;
+    g_bus_pending_rec_pub = outer_rec_pub;
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
     if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
@@ -13437,8 +13477,9 @@ static inline size_t lotus_bus_bucket_view(const lotus_bus_static_bucket_t *b,
  * (per-sub deserialize) are distinct because the dispatch ->
  * dispatch_wire chain holds both live at once. Reader threads keep
  * their own stack arrays (they run on full-size pthreads). */
-static __thread char g_tls_bus_wire_buf[LOTUS_PAYLOAD_MAX];
 static __thread char g_tls_bus_struct_buf[LOTUS_PAYLOAD_MAX];
+/* g_tls_bus_wire_buf is defined with the post TLS (the queue's at-cap
+ * inline drain saves and restores it). */
 
 /* m94: subject wildcard matching.
  *
