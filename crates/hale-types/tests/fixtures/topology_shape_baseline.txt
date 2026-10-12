@@ -199,6 +199,7 @@ crates/hale-cli/tests/wasm_link_is_quiet.rs#0 f2c1228edb650960
 crates/hale-cli/tests/workspace_check.rs#0 f428caff9d863411
 crates/hale-codegen/tests/accept_interface.rs#0 9d18436f477d055c
 crates/hale-codegen/tests/accept_interface.rs#1 63a1bc8e40875228
+crates/hale-codegen/tests/accept_interface.rs#2 46b9714cb15f32a5
 crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#0 878ce3ead1cfc606
 crates/hale-codegen/tests/alloc_model_rss.rs#0 24127672b40393ac
 crates/hale-codegen/tests/alloc_model_rss.rs#1 277078abb218a919
@@ -1521,6 +1522,7 @@ crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6
 crates/hale-types/tests/accept_interface.rs#0 3bf9bd52a850a921
 crates/hale-types/tests/accept_interface.rs#1 5ce01e4fb1d38105
 crates/hale-types/tests/accept_interface.rs#4 fea5ca7870373122
+crates/hale-types/tests/accept_interface.rs#5 761a88edace86511
 crates/hale-types/tests/alloc_summary_construction_correction.rs#1 8b8b4884fce28645
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#0 07485b203c148070
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2 f7961b180a777bce

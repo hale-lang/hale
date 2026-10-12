@@ -1256,6 +1256,10 @@ dynamic	B	on main
 row	Pool@main1	Pool	main	default
 shared	dynamic	sites in the seed #0ae7b8f9
 
+== crates/hale-codegen/tests/accept_interface.rs#7808dcc7
+dynamic	Small	on main	in the seed
+shared	Outer@main1	Outer #1047d3f2
+
 == crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#edd7d385
 root	App	the entry
 domain	pinned:Drop@binding1
@@ -3745,9 +3749,7 @@ dynamic	Conn	on main	in the seed
 row	L@main1	L	main	default
 
 == crates/hale-codegen/tests/params_default_scalar_self_ref.rs#2ebd91ab
--- Outer@main1	Outer
-row	~	Outer	main	default
-row	~.inner	Inner	main	inherited
+shared	Outer@main1	Outer #1047d3f2
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#5e42f66f
 dynamic	Counter	on main	in the seed
@@ -4769,6 +4771,12 @@ row	Pool@main1	Pool	main	default
 -- dynamic	sites in the seed
 dynamic	Big	on main
 dynamic	Idle	on main
+dynamic	Small	on main
+
+== crates/hale-types/tests/accept_interface.rs#fcc51924
+row	Pool@main1	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Plain	on main
 dynamic	Small	on main
 
 == crates/hale-types/tests/alloc_summary_construction_correction.rs#8735a49c
@@ -6532,6 +6540,17 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 == crates/hale-types/tests/wasm_target_gating.rs#d6c9c505
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
+== tests/hale/accept_interface_alias_test.hl
+row	Flows@main2	Flows	main	default
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== tests/hale/accept_interface_fallible_test.hl
+row	Owner@main1	Owner	main	default
+-- dynamic	sites in the seed
+dynamic	Lenient	on main
+dynamic	Strict	on main
+
 == tests/hale/accept_interface_release_test.hl
 row	Pool@main1	Pool	main	default
 shared	dynamic	sites in the seed #0ae7b8f9
@@ -6550,6 +6569,13 @@ dynamic	NameOwner	on main
 dynamic	OnlySized	on main
 dynamic	Rect	on main
 dynamic	Sq	on main
+
+== tests/hale/accept_interface_two_owners_test.hl
+-- Outer@main1	Outer
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
+row	~.side	Side	main	inherited
+shared	dynamic	sites in the seed #0ae7b8f9
 
 == tests/hale/accept_spelled_or_monomorphised_test.hl
 row	ByAlias@main1	ByAlias	main	default
@@ -14877,6 +14903,10 @@ row	~.seg	Segment	main	inherited
 == shared M #9add580c
 row	~	M	pinned:~	entry	off owner
 row	~.s	S	pinned:~	inherited
+
+== shared Outer #1047d3f2
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
 
 == shared Owner #415028ff
 row	~	Owner	pinned:~	entry	off owner
