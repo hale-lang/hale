@@ -831,7 +831,12 @@ carries its accept'ing owner AND that owner type's `release` fn
 (stored at accept dispatch), so the body that fires is the actual
 owner's own, never another parent type's (2026-09-05, GH #526 F.6:
 the reclaim spine used to pick the first declared `release(c: T)`
-program-wide). Whether `T` is a flow remains a type-wide fact: if
+program-wide). Where more than one owner type tracks `T` (two
+concrete owners, or an interface owner beside another), the child also
+carries the accepting owner's children tracker, so a completed flow
+leaves the tracker of the owner that accepted it, never none (the
+removal used to be skipped there, and the tracker grew without bound
+under churn). Whether `T` is a flow remains a type-wide fact: if
 any parent declares `release(c: T)`, every `T` reclaims on
 run-completion, and an owner that declares no `release` simply has
 no bookend called.

@@ -650,6 +650,26 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let owner_release_field_idx = idx;
         llvm_field_tys.push(ptr_field_t.into());
         idx += 1;
+        // Synthetic `__owner_tracker: ptr` — the accepting owner's
+        // children tracker for this type (the address of its `__children`
+        // field, the count beside it), stored at accept dispatch, for a
+        // type more than one owner type tracks: which owner accepted an
+        // instance is then a fact of the instance, and a completed flow
+        // leaves that owner's tracker, never none. A type one owner type
+        // tracks finds it statically and carries no field.
+        let owner_types = self
+            .ownership_accepts
+            .values()
+            .chain(self.specialized_accepts.values())
+            .filter(|accepted| accepted.contains(&l.name.name))
+            .count();
+        let owner_tracker_field_idx = if owner_types > 1 {
+            llvm_field_tys.push(ptr_field_t.into());
+            idx += 1;
+            Some(idx - 1)
+        } else {
+            None
+        };
         // Interest-based ownership, artifact #2b: append one
         // `__owner_for_<I>: ptr` field per interest-type `I` this locus
         // must forward (its entry in the whole-program forwarding sets).
@@ -1324,6 +1344,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 parent_self_field_idx,
                 owner_self_field_idx,
                 owner_release_field_idx,
+                owner_tracker_field_idx,
                 owner_forward_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,

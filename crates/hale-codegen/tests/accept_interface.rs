@@ -140,3 +140,40 @@ fn churned_flows_of_two_types_are_released_and_untracked() {
     let stdout = run_asan("hale_test_accept_iface_flows", FLOWS);
     assert!(stdout.contains("released=10000 weight=35000 tracked=0"), "{stdout}");
 }
+
+/// A flow type two owner types track (a concrete owner nested under an
+/// interface owner), churned: each instance leaves the tracker of the
+/// owner that accepted it, recorded on it at accept, so both trackers
+/// stay empty and nothing is reported.
+const TWO_OWNERS: &str = r#"
+interface Job { fn weight() -> Int; }
+locus Small { params { tag: String = "s"; } fn weight() -> Int { return 3; } run() { } }
+locus Inner {
+    params { released: Int = 0; }
+    accept(c: Small) { }
+    release (c: Small) { self.released = self.released + 1; }
+    fn go() {
+        let mut i = 0;
+        while i < 5000 { Small { tag: f"s{i}" }; i = i + 1; }
+        println(f"inner released={self.released} tracked={self.children.count}");
+    }
+}
+locus Outer {
+    params { inner: Inner = Inner { }; released: Int = 0; }
+    accept(c: Job) { }
+    release (c: Job) { self.released = self.released + c.weight(); }
+    run() {
+        self.inner.go();
+        Small { };
+        println(f"outer released={self.released} tracked={self.children.count}");
+    }
+}
+fn main() { Outer { }; }
+"#;
+
+#[test]
+fn a_flow_two_owner_types_track_leaves_its_own_owners_tracker() {
+    let stdout = run_asan("hale_test_accept_iface_two_owners", TWO_OWNERS);
+    assert!(stdout.contains("inner released=5000 tracked=0"), "{stdout}");
+    assert!(stdout.contains("outer released=3 tracked=0"), "{stdout}");
+}

@@ -1,0 +1,72 @@
+// A flow type that more than one owner type tracks leaves the tracker
+// of the owner that actually accepted it when its run completes. Here
+// `Small` is tracked by a concrete owner (`Inner`, `accept(c: Small)`)
+// and by two interface owners (`Outer`, `accept(c: Job)`, and `Side`,
+// `accept(c: Sized)`); `Big` by `Outer` and `Side`. Each instance
+// records its accepting owner's tracker at accept, and its run's end
+// removes it from that one, so over a churn every tracker stays empty.
+
+interface Job { fn weight() -> Int; }
+interface Sized { fn weight() -> Int; }
+
+locus Small {
+    params { w: Int = 1; tag: String = "s"; }
+    fn weight() -> Int { return self.w; }
+    run() { }
+}
+
+locus Big {
+    params { w: Int = 5; tag: String = "b"; }
+    fn weight() -> Int { return self.w; }
+    run() { }
+}
+
+locus Inner {
+    params { released: Int = 0; }
+    accept(c: Small) { }
+    release (c: Small) { self.released = self.released + 1; }
+    fn churn(n: Int) {
+        let mut i = 0;
+        while i < n {
+            Small { tag: f"i{i}" };
+            Big { tag: f"i{i}" };
+            i = i + 1;
+        }
+    }
+    fn tracked() -> Int { return self.children.count; }
+}
+
+locus Side {
+    params { released: Int = 0; }
+    accept(c: Sized) { }
+    release (c: Sized) { self.released = self.released + c.weight(); }
+    fn churn(n: Int) {
+        let mut i = 0;
+        while i < n {
+            Small { w: 2, tag: f"s{i}" };
+            Big { w: 3, tag: f"s{i}" };
+            i = i + 1;
+        }
+    }
+    fn tracked() -> Int { return self.children.count; }
+}
+
+locus Outer {
+    params { inner: Inner = Inner { }; side: Side = Side { }; released: Int = 0; }
+    accept(c: Job) { }
+    release (c: Job) { self.released = self.released + c.weight(); }
+    run() {
+        self.inner.churn(10000);
+        self.side.churn(10000);
+        Small { w: 7 };
+        std::test::assert_eq_int(self.inner.released, 10000, "Inner released each Small it accepted");
+        std::test::assert_eq_int(self.inner.tracked(), 0, "and none stays on Inner's tracker");
+        std::test::assert_eq_int(self.side.released, 50000, "Side released each Small (2) and Big (3) born in it");
+        std::test::assert_eq_int(self.side.tracked(), 0, "none stays on Side's trackers");
+        // The Bigs born in Inner bubbled to Outer (5 each), and its own Small (7).
+        std::test::assert_eq_int(self.released, 50007, "Outer released what reached it");
+        std::test::assert_eq_int(self.children.count, 0, "none stays on Outer's trackers");
+    }
+}
+
+fn main() { Outer { }; }
