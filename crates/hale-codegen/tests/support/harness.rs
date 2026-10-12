@@ -183,6 +183,12 @@ pub fn statm_resident_bytes(line: &str) -> i64 {
 /// copy counts from 0: two files asking for `unique_bin("basic")` would
 /// draw the same path. There the file's module name joins the path. A
 /// binary of one file (`<file>::harness`) keeps the plain shape.
+///
+/// The path is the process's to clean up, and it does: the path, and
+/// what a build writes beside it (`<path>.o`, `<path>.mjs`, …), are
+/// removed when the process exits ([`remove_at_exit`]) — whether the
+/// test passed or panicked, and whether the path went to a test's
+/// stack or to a `OnceLock` that never drops.
 pub fn unique_bin(name: &str) -> PathBuf {
     let module: Vec<&str> = module_path!().split("::").collect();
     let file = if module.len() >= 3 { format!("{}_", module[module.len() - 2]) } else { String::new() };
@@ -194,7 +200,66 @@ pub fn unique_bin(name: &str) -> PathBuf {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
+    remove_at_exit(&p);
     p
+}
+
+/// The paths [`unique_bin`] handed out in this process.
+static MADE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static AT_EXIT: std::sync::Once = std::sync::Once::new();
+
+/// Remove `path`, and every file beside it named `<path>.<anything>`,
+/// when the process exits.
+///
+/// ## Why at exit
+///
+/// Most programs a test builds are built once per process and kept in a
+/// `static OnceLock<PathBuf>` so the tests of one file share them under
+/// libtest; a static never drops, so no guard value could remove them,
+/// and under nextest every test is a process of its own. Each left a
+/// 7–14 MB binary in the temp dir: 38 GB of `hale_t_*` on one machine.
+/// libtest ends the process through `exit`, after a failing test as
+/// after a passing one, and `exit` runs what `atexit` registered. A
+/// process killed outright (a nextest timeout) still leaves its paths.
+pub fn remove_at_exit(path: &Path) {
+    extern "C" {
+        fn atexit(f: extern "C" fn()) -> std::os::raw::c_int;
+    }
+    AT_EXIT.call_once(|| {
+        // SAFETY: registers a plain function with no captured state.
+        unsafe {
+            atexit(remove_made);
+        }
+    });
+    MADE.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_path_buf());
+}
+
+extern "C" fn remove_made() {
+    let made = std::mem::take(&mut *MADE.lock().unwrap_or_else(|e| e.into_inner()));
+    if made.is_empty() {
+        return;
+    }
+    let remove = |p: &Path| match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => drop(std::fs::remove_dir_all(p)),
+        Ok(_) => drop(std::fs::remove_file(p)),
+        Err(_) => {}
+    };
+    let mut beside: std::collections::BTreeMap<PathBuf, Vec<String>> = std::collections::BTreeMap::new();
+    for p in &made {
+        remove(p);
+        if let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
+            beside.entry(dir.to_path_buf()).or_default().push(format!("{}.", name.to_string_lossy()));
+        }
+    }
+    for (dir, prefixes) in beside {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if prefixes.iter().any(|pre| name.starts_with(pre.as_str())) {
+                remove(&e.path());
+            }
+        }
+    }
 }
 
 /// A scratch directory for a test that builds a seed spanning files
