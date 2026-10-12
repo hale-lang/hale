@@ -223,3 +223,62 @@ fn a_pinned_producer_blocked_on_a_stopped_reader_sees_the_abort_under_asan() {
     harness::build_source_asan(&block_ring("pinnedasan", "pinned"), &bin);
     aborted_claim(&ends(&bin, &[("LOTUS_NO_CHUNK_POOL", "1")]));
 }
+
+/// A main locus built twice, each instance subscribing to a two-slot
+/// `on_overflow: block` ring and publishing ten records onto it (review
+/// finding): the first instance's teardown stops its reader, and the
+/// second instance's fresh reader is live. The publisher handle, registered
+/// once in main's prelude, used to keep a stopped-consumer flag from the
+/// first teardown, so the second instance's full-ring claim refused and
+/// raised BusWaitAborted though its reader would advance the cursor. A
+/// claim now refuses only when no local reader of the ring is live: each
+/// reader counts itself in at registration and out at its stop.
+const TWICE: &str = r#"
+type M { n: Int = 0; }
+topic Ms { payload: M; }
+locus Sink {
+    params { got: Int = 0; }
+    bus { subscribe Ms as on_m; }
+    fn on_m(m: M) { self.got = self.got + 1; }
+    dissolve() { println("got ", self.got); }
+}
+main locus App {
+    params { sink: Sink = Sink { }; }
+    bus { publish Ms; }
+    bindings { Ms: shm_ring("__NAME__", slot_count: 2, on_overflow: block) where zero_copy; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Ms <- M { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+fn main() { App { }; App { }; }
+"#;
+
+/// Both instances published all ten and their readers delivered them (the
+/// second instance's fresh reader may also replay the two records the
+/// first left in the ring).
+fn both_delivered(e: &Ended) {
+    assert!(e.status.success(), "{:?}\nstdout:\n{}\nstderr:\n{}", e.status, e.stdout, e.stderr);
+    assert_eq!(e.stdout.matches("published").count(), 2, "{}", e.stdout);
+    let got: Vec<i64> = e.stdout.lines().filter_map(|l| l.strip_prefix("got ")).filter_map(|n| n.trim().parse().ok()).collect();
+    assert_eq!(got.len(), 2, "{}", e.stdout);
+    assert!(got.iter().all(|&n| n >= 10), "each instance's reader took all ten: {got:?}");
+}
+
+#[test]
+fn a_second_main_instance_waits_on_its_own_live_reader() {
+    let bin = harness::unique_bin("shm_teardown_twice");
+    build_opts::build_source(&TWICE.replace("__NAME__", &shm_name("twice")), &bin, &build_opts::options()).expect("build");
+    both_delivered(&ends(&bin, &[]));
+}
+
+#[test]
+fn a_second_main_instance_waits_on_its_own_live_reader_under_asan() {
+    let bin = harness::unique_bin("shm_teardown_twice_asan");
+    harness::build_source_asan(&TWICE.replace("__NAME__", &shm_name("twiceasan")), &bin);
+    both_delivered(&ends(&bin, &[("LOTUS_NO_CHUNK_POOL", "1")]));
+}
