@@ -2099,7 +2099,8 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function(publish_fn_name)
             .unwrap_or_else(|| panic!("{} declared", publish_fn_name));
-        self.builder
+        let ret = self
+            .builder
             .build_call(
                 publish_fn,
                 &[
@@ -2110,6 +2111,34 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 "bus.shm_ring.publish.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if !is_layout {
+            // -2: an `on_overflow: block` claim teardown ended (the ring's
+            // reader in this process stopped; lifecycle line 7). Not a
+            // success: BusWaitAborted, as for an aborted `or wait`.
+            let ret = ret.try_as_basic_value().left().expect("returns i32").into_int_value();
+            let aborted = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, ret, ret.get_type().const_int((-2i64) as u64, true), "bus.shm_ring.aborted")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let current_fn = self.builder.get_insert_block().and_then(|bb| bb.get_parent()).expect("inside a function");
+            let raise_bb = self.context.append_basic_block(current_fn, "bus.shm_ring.raise");
+            let cont_bb = self.context.append_basic_block(current_fn, "bus.shm_ring.cont");
+            self.builder
+                .build_conditional_branch(aborted, raise_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(raise_bb);
+            let panic_fn = self.module.get_function("lotus_root_panic").expect("lotus_root_panic declared");
+            let ptr_t = self.context.ptr_type(inkwell::AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let typename_str = self.global_string(
+                "BusWaitAborted (an `on_overflow: block` ring claim parked past main teardown — no reader will advance the ring again)",
+            );
+            self.builder
+                .build_call(panic_fn, &[ptr_t.const_null().into(), i64_t.const_zero().into(), typename_str.into()], "bus.shm_ring.raise.call")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_unreachable().map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
+        }
         Ok(())
     }
 

@@ -6157,11 +6157,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.emit_coop_pool_shutdown_all()?
                 }
                 ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
+                ObligationKind::ReaderStop if self.cells.emits(Obligation::ReaderStop)? => self.emit_shm_readers_stop()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// A teardown spine's reader stop (lifecycle line 7): this process's
+    /// shm ring readers stop, after the pool join and before the loci they
+    /// serve die (`lotus_shm_readers_stop`; a no-op with no ring reader).
+    pub(crate) fn emit_shm_readers_stop(&mut self) -> Result<(), CodegenError> {
+        let f = self.module.get_function("lotus_shm_readers_stop").expect("lotus_shm_readers_stop declared");
+        self.builder
+            .build_call(f, &[], "shm.readers.stop")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 

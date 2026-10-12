@@ -285,7 +285,7 @@ impl LifecyclePlan {
                     && o.holder.spine == spine
                     && o.guard == PathGuard::Normal
                     && o.source.is_none()
-                    && matches!(o.kind, ObligationKind::IngressQuiesce | ObligationKind::WaitAbort | ObligationKind::PoolJoin)
+                    && matches!(o.kind, ObligationKind::IngressQuiesce | ObligationKind::WaitAbort | ObligationKind::PoolJoin | ObligationKind::ReaderStop)
             })
             .map(|(id, _)| id)
             .collect();

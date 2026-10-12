@@ -480,8 +480,8 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
 fn the_main_locus_head_precedes_its_pinned_fields_join() {
     use hale_types::lifecycle::spine::EntryStep as E;
     for (src, spine, last) in [
-        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_deferred_pinned_field.hl"), Spine::DeferredMainEntry, K::WaitAbort),
-        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l17_pinned_join_eager.hl"), Spine::EagerTeardown, K::WaitAbort),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l07_or_wait_deferred_pinned_field.hl"), Spine::DeferredMainEntry, K::ReaderStop),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l17_pinned_join_eager.hl"), Spine::EagerTeardown, K::ReaderStop),
     ] {
         let s = snapshot(src);
         let p = plan(&s);
@@ -1136,22 +1136,30 @@ fn every_teardown_spine_states_its_process_rows() {
     let eager = "fn main() { App { }; }\n";
     let deferred = "fn start() { let app = App { }; }\nfn main() { start(); }\n";
     let let_bound = "fn main() { let app = App { }; }\n";
-    let head = [K::IngressQuiesce, K::WaitAbort, K::PoolJoin, K::JoinProgress];
+    // the reader stop after the last of the wait-abort and the join
+    // (line 7), on every spine
+    let head = [K::IngressQuiesce, K::WaitAbort, K::PoolJoin, K::JoinProgress, K::ReaderStop];
     assert_eq!(order(pool_app, eager, Spine::EagerTeardown), [&[K::PreDrain][..], &head].concat());
-    assert_eq!(order(bare_app, eager, Spine::EagerTeardown), vec![K::PreDrain, K::IngressQuiesce, K::WaitAbort]);
+    assert_eq!(order(bare_app, eager, Spine::EagerTeardown), vec![K::PreDrain, K::IngressQuiesce, K::WaitAbort, K::ReaderStop]);
     assert_eq!(order(pool_app, deferred, Spine::DeferredMainEntry), head.to_vec());
     assert_eq!(order(pool_app, let_bound, Spine::DeferredMainEntry), head.to_vec());
     for spine in [Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure] {
         assert_eq!(order(pool_app, let_bound, spine), [&head[..], &[K::PreDrain]].concat(), "{}", spine.name());
-        assert_eq!(order(bare_app, let_bound, spine), vec![K::IngressQuiesce, K::PreDrain, K::WaitAbort], "{}", spine.name());
+        assert_eq!(
+            order(bare_app, let_bound, spine),
+            vec![K::IngressQuiesce, K::PreDrain, K::WaitAbort, K::ReaderStop],
+            "{}",
+            spine.name()
+        );
     }
     // A main locus built by another fn is torn down at that fn's exit,
     // before `fn main`'s: its head comes first.
     let s = snapshot(&format!("{pool_app}{deferred}"));
     let p = plan(&s);
     let row = |kind: K, spine: Spine| p.iter().find(|(_, o)| o.site.is_none() && o.kind == kind && o.holder.spine == spine).expect("a row").0;
-    let (entry_join, exit_quiesce) = (row(K::PoolJoin, Spine::DeferredMainEntry), row(K::IngressQuiesce, Spine::MainFallThrough));
-    assert!(p.get(exit_quiesce).expect("a row").edges.entry.iter().any(|pr| pr.event.obligation == entry_join));
+    // (the head's last step, its reader stop, which follows its join)
+    let (entry_stop, exit_quiesce) = (row(K::ReaderStop, Spine::DeferredMainEntry), row(K::IngressQuiesce, Spine::MainFallThrough));
+    assert!(p.get(exit_quiesce).expect("a row").edges.entry.iter().any(|pr| pr.event.obligation == entry_stop));
     let eager_pre = p.iter().find(|(_, o)| o.kind == K::PreDrain && o.holder.spine == Spine::EagerTeardown);
     assert!(eager_pre.is_none(), "no eager statement here");
     let s = snapshot(&format!("{pool_app}{eager}"));

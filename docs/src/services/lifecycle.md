@@ -536,7 +536,10 @@ so nothing tears it down twice. The rules that order gives you:
   before its thread is joined, and its publish fails with
   `BusWaitAborted`; it is not counted as sent. This holds however
   `main` is torn down, a `main` built and torn down in a function
-  other than `fn main` included.
+  other than `fn main` included. A `shm_ring` reader in the same
+  program stops after the pools are joined and before any locus is
+  torn down; a publish still waiting for room on its
+  `on_overflow: block` ring then fails the same way.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
   the `run()`s that watch `self.draining` return, and the ordinary
   teardown follows.

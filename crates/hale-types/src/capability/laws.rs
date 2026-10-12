@@ -546,7 +546,7 @@ fn the_tables_have_the_reviewed_shape() {
         .collect();
     assert_eq!((m.behaviours.len(), std), (105, 48), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
-    assert_eq!(m.obligations.len(), 9);
+    assert_eq!(m.obligations.len(), 10);
     // On wasm32: 18 namespaces (the 10 browser-unavailable, T3's 7, R7's HTTP/2 server),
     // `[ffi] link`, `@export locus` with `run()`, ProcessSignals, and
     // T2's pinned threads, pools, `async_io` and the three transports;

@@ -442,10 +442,13 @@ pub enum Obligation {
     WaitAbort,
     /// `lotus_bus_ingress_quiesce` (R35) in a teardown spine.
     IngressQuiesce,
+    /// `lotus_shm_readers_stop` in a teardown spine: this process's shm
+    /// ring readers stop, after the pool join and before the loci die.
+    ReaderStop,
 }
 
 impl Obligation {
-    pub const ALL: [Obligation; 9] = [
+    pub const ALL: [Obligation; 10] = [
         Obligation::ReplayIngress,
         Obligation::ObservationIdentity,
         Obligation::SignalInstall,
@@ -455,6 +458,7 @@ impl Obligation {
         Obligation::PoolJoin,
         Obligation::WaitAbort,
         Obligation::IngressQuiesce,
+        Obligation::ReaderStop,
     ];
 
     pub fn name(self) -> &'static str {
@@ -468,6 +472,7 @@ impl Obligation {
             Obligation::PoolJoin => "PoolJoin",
             Obligation::WaitAbort => "WaitAbort",
             Obligation::IngressQuiesce => "IngressQuiesce",
+            Obligation::ReaderStop => "ReaderStop",
         }
     }
 }
@@ -1720,6 +1725,11 @@ const INGRESS_QUIESCE: ObligationCell = emit(
     "a teardown spine drains kernel-accepted listen ingress first",
     SPEC_OBLIGATIONS,
 );
+const READER_STOP: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::emit_shm_readers_stop",
+    "a teardown spine stops the shm ring readers after the pool join, before the loci die",
+    SPEC_OBLIGATIONS,
+);
 
 const SIGNALS: Premise = Premise::Rejects(Capability::ProcessSignals);
 const LISTEN_TRANSPORTS: &[Premise] = &[
@@ -1813,6 +1823,17 @@ pub const OBLIGATIONS: &[ObligationRow] = &[
             Premise::All(LISTEN_TRANSPORTS),
             "crates/hale-codegen/src/codegen.rs::emit_bus_ingress_quiesce",
             "no listen binding exists to quiesce",
+            SPEC_OBLIGATIONS,
+        ),
+    ),
+    ob_row(
+        Obligation::ReaderStop,
+        READER_STOP,
+        READER_STOP,
+        omit(
+            Premise::Rejects(Capability::RemoteTransport(Transport::ShmRing)),
+            "crates/hale-codegen/src/codegen.rs::emit_shm_readers_stop",
+            "no shm ring binding exists to read",
             SPEC_OBLIGATIONS,
         ),
     ),

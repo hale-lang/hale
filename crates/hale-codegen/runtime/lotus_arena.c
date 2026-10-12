@@ -23250,6 +23250,7 @@ void lotus_bus_wait_abort_all(void) {
     __atomic_store_n(&g_bus_wait_abort, 1, __ATOMIC_RELEASE);
 }
 
+
 int64_t lotus_bus_binding_wait_ready(lotus_bus_queue_t *queue,
                                      const char *subject) {
     if (!subject) return 0;
@@ -26666,37 +26667,41 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
  * Everything after this point (a peer racing more data into a
  * half-closed socket) arrived after exit and is dropped by the
  * existing paths — that is the documented boundary of the
- * delivery contract.
- *
- * Shared-memory ring readers stop here too, first: their handlers
- * run on the reader thread itself, so a reader still live when the
- * dissolve cascade runs could be inside (or about to enter) a
- * handler of a locus that cascade frees — the handler's scratch
- * arena, a subregion of the subscriber's, then returned its slot
- * to a destroyed parent (a SIGSEGV at exit in ~6% of loaded runs of
- * a ring consumer that exits right after its last record). Joining
- * them waits out a handler in flight; a record published after this
- * point arrived after exit, as for the sockets. (Weak: a helper
- * test that links this TU without lotus_shm_ring.c has no rings.) */
+ * delivery contract. */
 #ifndef __wasm__
-extern void lotus_shm_ring_quiesce(void (*service)(void *ctx, long waited_ms), void *ctx)
+extern void lotus_shm_ring_quiesce(void (*service)(void *ctx), void *ctx)
     __attribute__((weak));
 
-/* What main does while it waits for the shm ring readers: a reader's
- * handler may be parked in `or wait` on a bounded topic whose queue is
- * main's, so main drains it (to subscribers still live: the dissolve
- * cascade has not run); a wait draining cannot end (a binding in its
- * loss window) is aborted into the raise path after 500 ms, as main's
- * teardown would abort it anyway right after. */
-static void shm_quiesce_service(void *ctx, long waited_ms) {
+/* What main does while it waits for the shm ring readers: drain its own
+ * queue, so a reader's handler publishing to main's subscribers (still
+ * live: the dissolve cascade has not run) is not left waiting on it. A
+ * wait draining cannot end was already aborted: the reader stop comes
+ * after the wait-abort in every teardown spine. */
+static void shm_quiesce_service(void *ctx) {
     lotus_bus_queue_drain((lotus_bus_queue_t *)ctx);
-    if (waited_ms >= 500) lotus_bus_wait_abort_all();
 }
 #endif
-void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
+
+/* A teardown spine's reader stop (lifecycle line 7, codegen's
+ * emit_shm_readers_stop): this process's shm ring readers stop, after the
+ * wait-abort and the pool join and before the pinned joins and the
+ * dissolve cascade. A reader lives as long as what it serves can still
+ * produce (a pool's job publishing to a ring it consumes has been joined
+ * against it), and no longer than what it serves: its handlers run on
+ * the reader thread itself, so a reader still live during the cascade
+ * could run (or finish) a handler of a locus the cascade frees (a
+ * SIGSEGV at exit in ~6% of loaded runs of a ring consumer that ended
+ * right after its last record). What was published when a reader stops
+ * is delivered; a `block` claim still waiting on it then takes the
+ * wait-abort's raise. (Weak: a helper test that links this TU without
+ * lotus_shm_ring.c has no rings.) */
+void lotus_shm_readers_stop(void) {
 #ifndef __wasm__
-    if (lotus_shm_ring_quiesce) lotus_shm_ring_quiesce(shm_quiesce_service, queue);
+    if (lotus_shm_ring_quiesce) lotus_shm_ring_quiesce(shm_quiesce_service, g_bus_queue_for_remote);
 #endif
+}
+
+void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
     if (g_bus_remote_count == 0) return;
     long budget_ms = 500;
     const char *env = getenv("LOTUS_BUS_QUIESCE_MS");

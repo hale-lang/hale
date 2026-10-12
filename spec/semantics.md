@@ -2179,7 +2179,16 @@ Transport surface:
     `consumer_seqno` advances enough for a free slot.
     No timeout in v1; deadlocks if the consumer dies.
     Right for control-plane topics where latency tolerates
-    backpressure but data must not be lost.
+    backpressure but data must not be lost. When the consumer
+    is a reader of this process, the wait is one only
+    teardown ends: the reader runs until the teardown spine's
+    reader stop, after the pool join (a pool's job publishing
+    onto the ring finishes against it), and a claim still
+    waiting once it has stopped ends like an aborted
+    `or wait` — the publish is not a success and raises
+    `BusWaitAborted` (a producer on a pinned thread, joined
+    after the reader stop, can meet this). A claim on a ring
+    another process consumes waits for that consumer.
   - `drop` — publisher's `claim()` returns the next slot
     unconditionally (pre-K7 behavior). Slow consumers
     silently miss messages. Right for stale-is-worthless
@@ -2462,10 +2471,14 @@ bytes ahead, the missed bytes are gone, so the reader resyncs to the
 producer's cursor (a commit boundary) and resumes rather than
 reading a torn record. Handlers run on the reader thread (same
 constraint as the native subscriber), so the readers stop at the
-program's main teardown, before its loci dissolve: a handler in
-flight finishes, and a record published after that is not delivered
-(a main locus built as a statement with no `run()` is torn down at
-once, and its subscribers with it). The `slots` (fixed-stride)
+teardown spine's reader stop (spec/runtime.md § Lifecycle
+obligations, line 7): after the wait-abort and the cooperative pools'
+join (a pool's job still publishing finishes against a live reader),
+and before the pinned joins and the dissolve cascade. A handler in
+flight finishes, what was published when a reader stops is
+delivered, and a record published after that is not (a main locus
+built as a statement with no `run()` is torn down at once, and its
+subscribers with it). The `slots` (fixed-stride)
 framing kind ships for *consumers*, and the zero-copy writable
 producer view ships as `Topic.write(max) { w => … }` (A1 — fields
 written directly into the reserved slot, no intermediate copy). What

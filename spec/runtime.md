@@ -2214,9 +2214,20 @@ its `KNOWN_OPEN` table, which is empty today.
   aborts the `or wait`s it would otherwise wait on before it joins
   the workers they block, and an aborted publish is not a success:
   it raises `BusWaitAborted`. Shipped in all five spines: each runs
-  the ingress quiesce, then the wait-abort, then the pool join (the
-  edges between the process rows the lifecycle plan states for every
-  teardown spine, which emission reads), so a pool-placed
+  the ingress quiesce, then the wait-abort, then the pool join, then
+  the reader stop (the edges between the process rows the lifecycle
+  plan states for every teardown spine, which emission reads). The
+  reader stop ends this process's shm ring readers
+  (`lotus_shm_readers_stop`): after the join, since a reader lives
+  as long as anything it serves can still produce (a pool's job
+  publishing onto a ring it consumes is joined against it), and
+  before the pinned joins and the dissolve cascade, since its
+  handlers run on the reader's own thread and touch the loci the
+  cascade frees. While it waits for the readers, main drains its own
+  queue. An `on_overflow: block` claim on a ring whose reader has
+  stopped is a wait only teardown ends, and takes the same raise
+  (`shm_ring_teardown_wait.rs`, a pinned producer). No wait at
+  teardown ends on a timer. So a pool-placed
   publisher waiting for space on a queue only `main` drains takes the
   raise path and the join returns (`l07_pool_or_wait_teardown.hl`,
   and one fixture per other spine: `l07_or_wait_deferred_main_entry`,

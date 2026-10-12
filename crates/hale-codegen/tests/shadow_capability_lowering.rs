@@ -87,6 +87,7 @@ fn symbols(o: Obligation) -> &'static [&'static str] {
         Obligation::PoolJoin => &["lotus_coop_pool_shutdown_all"],
         Obligation::WaitAbort => &["lotus_bus_wait_abort_all"],
         Obligation::IngressQuiesce => &["lotus_bus_ingress_quiesce"],
+        Obligation::ReaderStop => &["lotus_shm_readers_stop"],
     }
 }
 
@@ -647,6 +648,7 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     // The five spines' heads and the frame teardown's wait-abort, all
     // through the plan's steps in `emit_teardown_obligations`.
     (CG, "Obligation::IngressQuiesce", 1),
+    (CG, "Obligation::ReaderStop", 1),
     (CG, "Obligation::PoolJoin", 1),
     (CG, "Obligation::WaitAbort", 1),
     (INST, "Obligation::ReplayIngress", 1),

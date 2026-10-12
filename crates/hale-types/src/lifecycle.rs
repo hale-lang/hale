@@ -108,7 +108,7 @@
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; Shipped (L4)
-//! 7     WaitAbort PoolJoin                       Shipped
+//! 7     WaitAbort PoolJoin ReaderStop            Shipped
 //! 8     FailureDelivery Birth                    Shipped
 //! 9     FailureDelivery Closures                 Shipped
 //! 10    Closures Dissolve                        Shipped
@@ -478,6 +478,10 @@ pub enum ObligationKind {
     IngressQuiesce,
     /// Waking every `or wait` that only teardown ends.
     WaitAbort,
+    /// Stopping this process's shm ring readers: after the pool join,
+    /// before the loci they serve die. A `block` claim left waiting on a
+    /// stopped reader takes the wait-abort's raise.
+    ReaderStop,
     /// Joining an owned pinned child: mailbox shutdown, the join, the
     /// mailbox's destroy.
     PinnedJoin,
@@ -526,6 +530,7 @@ impl ObligationKind {
         ObligationKind::PreDrain,
         ObligationKind::IngressQuiesce,
         ObligationKind::WaitAbort,
+        ObligationKind::ReaderStop,
         ObligationKind::PinnedJoin,
         ObligationKind::PoolJoin,
         ObligationKind::JoinProgress,
@@ -562,6 +567,7 @@ impl ObligationKind {
             ObligationKind::PreDrain => "PreDrain",
             ObligationKind::IngressQuiesce => "IngressQuiesce",
             ObligationKind::WaitAbort => "WaitAbort",
+            ObligationKind::ReaderStop => "ReaderStop",
             ObligationKind::PinnedJoin => "PinnedJoin",
             ObligationKind::PoolJoin => "PoolJoin",
             ObligationKind::JoinProgress => "JoinProgress",
@@ -595,6 +601,7 @@ impl ObligationKind {
             ObligationKind::PreDrain => &["C16", "R29"],
             ObligationKind::IngressQuiesce => &["R35"],
             ObligationKind::WaitAbort => &["C17", "R34"],
+            ObligationKind::ReaderStop => &["R34", "R20"],
             ObligationKind::PinnedJoin => &["C13", "C16", "C18", "C52", "R26", "R27"],
             ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
             ObligationKind::JoinProgress => &["C18", "R20"],
@@ -614,6 +621,7 @@ impl ObligationKind {
             ObligationKind::IngressQuiesce => Some(crate::capability::Obligation::IngressQuiesce),
             ObligationKind::WaitAbort => Some(crate::capability::Obligation::WaitAbort),
             ObligationKind::PoolJoin => Some(crate::capability::Obligation::PoolJoin),
+            ObligationKind::ReaderStop => Some(crate::capability::Obligation::ReaderStop),
             _ => None,
         }
     }
@@ -1098,8 +1106,11 @@ pub const DECISION_LINES: &[DecisionLine] = &[
     DecisionLine {
         line: "7",
         title: "abort unsatisfiable waits before the join",
-        kinds: &[K::WaitAbort, K::PoolJoin],
-        statuses: &[(Status::Shipped, "the wait-abort before the pool join, in every teardown spine (the plan's process rows)")],
+        kinds: &[K::WaitAbort, K::PoolJoin, K::ReaderStop],
+        statuses: &[(
+            Status::Shipped,
+            "the wait-abort before the pool join, then the shm ring readers' stop, in every teardown spine (the plan's process rows)",
+        )],
     },
     DecisionLine {
         line: "8",
@@ -1167,7 +1178,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::PoolJoin, K::WaitAbort],
         statuses: &[(
             Status::Shipped,
-            "every teardown spine emits the pool join, the wait-abort and the ingress quiesce its target's cells select",
+            "every teardown spine emits the pool join, the wait-abort, the ingress quiesce and the reader stop its target's cells select",
         )],
     },
     DecisionLine {
@@ -1278,12 +1289,12 @@ mod tests {
     }
 
     /// Every obligation a teardown spine's cells select is a kind of the
-    /// plan, and only those three are.
+    /// plan, and only those four are.
     #[test]
     fn the_spine_obligations_are_kinds_of_the_plan() {
         use crate::capability::Obligation as O;
         let selected: Vec<O> = ObligationKind::ALL.iter().filter_map(|k| k.capability()).collect();
-        assert_eq!(selected, vec![O::IngressQuiesce, O::WaitAbort, O::PoolJoin]);
+        assert_eq!(selected, vec![O::IngressQuiesce, O::WaitAbort, O::ReaderStop, O::PoolJoin]);
     }
 
     #[test]
