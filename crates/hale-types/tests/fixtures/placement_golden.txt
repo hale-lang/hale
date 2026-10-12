@@ -686,7 +686,7 @@ shared	App@literal1.one	__StdIoTcpConnections #1e22aa30
 shared	App@literal1.zero	__StdIoTcpConnections #7f78c9f3
 shared	dynamic	sites in the seed #3837ddcb
 
-== crates/hale-cli/tests/check_tcp_substrate.rs#205ef77d
+== crates/hale-cli/tests/check_tcp_substrate.rs#63188846
 root	App	the entry
 domain	pool:web	async_io
 hole	App@literal1.web.conns.handler.handler	reuse `self.handler`

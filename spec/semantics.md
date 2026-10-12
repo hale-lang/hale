@@ -155,6 +155,28 @@ ignore.
 `match {` is not ambiguous with matching on a block expression:
 that shape is written `match (…) { … }`.
 
+## Expression statements
+
+An expression followed by `;` is a statement only when evaluating
+it does something: a call (a fn, a method, a builtin — its value,
+if any, is discarded), a locus literal (an instance built in
+statement position, § "Locus instantiation"), or an `or` over a
+fallible call. Any other expression — an arithmetic or comparison,
+a name, a field read, an index, a literal — only computes a value
+and discards it, and is a type error at the expression:
+
+```text
+main.hl:1:24: type error: this expression's value is unused: a
+statement that only computes a value does nothing. Bind it
+(`let v = ...;`), assign it (`self.f = ...;`), pass it to a call, or
+delete the statement.
+```
+
+A block's trailing expression with no `;` is not a statement and
+is not judged here (§ "Expressions — `if` and block tails"). Before
+this rule the checker accepted `a + 2;` and the backend refused it
+with no file or line.
+
 ## Binary data — Bytes and conversion
 
 `Bytes` is the binary-safe sibling of `String`. Same

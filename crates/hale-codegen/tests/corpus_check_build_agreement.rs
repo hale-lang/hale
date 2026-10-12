@@ -1946,6 +1946,26 @@ fn an_unlowered_recovery_modifier_is_refused_by_the_check_not_the_build() {
     assert_built(&desk("restart(c) for 2;"), "hale_cb_restart_for_n");
 }
 
+/// A bare expression statement: codegen refused it with no file or
+/// line ("expression statement other than locus literal or builtin
+/// call"). A call in statement position lowers.
+#[test]
+fn an_unused_expression_statement_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            ("fn main() { let a = 1; a + 2; println(\"x\"); }\n", "a + 2", "this expression's value is unused"),
+            (
+                "type T { a: Int = 0; }\n\
+                 fn main() { let t = T { }; t.a; println(\"x\"); }\n",
+                "t.a",
+                "this expression's value is unused",
+            ),
+        ],
+        "unused_expression",
+    );
+    assert_built("fn ping() -> Int { return 1; }\nfn main() { ping(); println(\"x\"); }\n", "hale_cb_discarded_call");
+}
+
 /// `return;` in an `on_failure` body checked clean and the build
 /// refused it ("`return` outside a user fn"), though the same statement
 /// lowered in `accept()` and `drain()`. It is lowered now, as the

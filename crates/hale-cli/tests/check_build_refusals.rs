@@ -84,6 +84,13 @@ fn an_unlowered_recovery_modifier_is_refused_at_the_statement() {
     refused(&desk("quarantine(c) until self.n > 1;"), "until", "7:50", "`until` (restart while a condition holds) is specified but not implemented");
     refused(&desk("reorganize(c);"), "reorganize", "7:50", "`reorganize(...)` is reserved syntax with no semantics yet");
 }
+
+#[test]
+fn an_unused_expression_statement_is_refused_at_the_expression() {
+    refused("fn main() { let a = 1; a + 2; println(\"x\"); }\n", "binary", "1:24", "this expression's value is unused");
+    refused("type T { a: Int = 0; }\nfn main() { let t = T { }; t.a; println(\"x\"); }\n", "field", "2:28", "this expression's value is unused");
+}
+
 #[test]
 fn a_return_in_an_on_failure_body_checks_and_builds() {
     let src = "locus Book {\n    params { credits: Int = 0; debits: Int = 0; }\n    closure balanced { self.credits ~~ self.debits within 0; }\n}\nlocus Desk {\n    params { seen: Int = 0; }\n    on_failure(c: Book, err: ClosureViolation) {\n        if self.seen > 2 { return; }\n        self.seen = self.seen + 1;\n    }\n    run() { Book { credits: 100, debits: 93 }; }\n}\nfn main() { let d = Desk { }; }\n";

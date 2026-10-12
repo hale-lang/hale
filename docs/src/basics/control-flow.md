@@ -156,5 +156,13 @@ let label = {
 };
 ```
 
+The other side of that rule: a statement has to *do* something.
+A call (whose value, if any, is dropped), a locus literal, or an
+`or` over a fallible call can stand on its own followed by `;`. An
+expression that only computes a value cannot — `total + 1;` or
+`p.name;` throws its value away, which is almost always a slip, and
+the compiler says so at the expression: *this expression's value is
+unused*. Bind it, assign it, or delete it.
+
 That's the whole control-flow surface. Next we look at working
 with text: [Strings & text](./strings.md).

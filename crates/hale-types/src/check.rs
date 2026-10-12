@@ -11226,6 +11226,26 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
+                // A statement that only computes a value does nothing.
+                // Lowering takes a call (a fn, a method, a builtin), a
+                // literal (a locus instantiated in statement position),
+                // or an `or` over a fallible call; anything else used
+                // to pass the check and stop the build with no file or
+                // line (downstream handoff). Refused here, at the
+                // expression, after it is typed.
+                let used = matches!(e, Expr::Call { .. } | Expr::Struct { .. } | Expr::Or { .. });
+                if !used {
+                    let _ = self.check_expr(e);
+                    self.diags.push(Diag::ty(
+                        e.span(),
+                        "this expression's value is unused: a statement that \
+                         only computes a value does nothing. Bind it \
+                         (`let v = ...;`), assign it (`self.f = ...;`), pass it \
+                         to a call, or delete the statement."
+                            .to_string(),
+                    ));
+                    return;
+                }
                 // M3 stage 2 (2026-07-02): a statement-position
                 // `call() or fallback` discards its value, so the
                 // fallback's type needn't match the success type —
