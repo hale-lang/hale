@@ -831,8 +831,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Allocate the new enum value in dest_arena (the
             // override routes lower_enum_variant_alloc's
             // arena_alloc there).
-            let new_ptr =
-                self.lower_enum_variant_alloc(info, i as u32, &copied_fields)?;
+            let new_ptr = self.lower_enum_variant_alloc_in(
+                info,
+                i as u32,
+                &copied_fields,
+                Some(dest_arena),
+            )?;
             self.current_arena_override = prev_override;
             self.builder
                 .build_unconditional_branch(cont_bb)

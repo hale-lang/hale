@@ -14579,7 +14579,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(fname)
                 .cloned()
                 .expect("field_order lists declared fields");
-            if !Self::field_needs_anchor(&fty) {
+            if !self.field_needs_anchor(&fty) {
                 continue;
             }
             let field_slot = self
@@ -14685,9 +14685,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// element bytes as an address (the pre-inline walk did chase a
     /// real pointer here). Out-of-line arrays (non-scalar elements)
     /// still anchor.
-    fn field_needs_anchor(ty: &CodegenTy) -> bool {
+    ///
+    /// A unit-only enum is an inline `i32` tag, not a pointer: it
+    /// travels with the parent's memcpy like an `Int`. Only an enum
+    /// with a payload variant is a pointer to its storage block and
+    /// anchors. Treating every enum as a pointer loaded the tag as an
+    /// `i32` and handed it to the pointer-shaped deep copy — an ICE on
+    /// any `@form(hashmap)` cell with an enum field (friction sweep
+    /// 2026-10-12, downstream handoff).
+    fn field_needs_anchor(&self, ty: &CodegenTy) -> bool {
         if Self::array_inline_spec(ty).is_some() {
             return false;
+        }
+        if let CodegenTy::Enum(name) = ty {
+            return self
+                .user_enums
+                .get(name.as_str())
+                .map(|i| i.has_payload)
+                .unwrap_or(false);
         }
         // bounded[T; N]: scalar elems are inline bytes that travel
         // with the parent's memcpy — nothing to anchor. Pointer
@@ -31791,11 +31806,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         tag: u32,
         field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.lower_enum_variant_alloc_in(info, tag, field_vals, None)
+    }
+
+    /// `lower_enum_variant_alloc`, the block taken from `reusable`'s
+    /// retire freelist when one fits (`lotus_arena_alloc_reusable`, as
+    /// the record and tuple deep copies allocate): a deep copy into a
+    /// form's arena, whose replaced cells free their enum blocks, then
+    /// reuses what they freed.
+    pub(crate) fn lower_enum_variant_alloc_in(
+        &mut self,
+        info: &EnumInfo,
+        tag: u32,
+        field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
+        reusable: Option<PointerValue<'ctx>>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
         let storage_ty = self.enum_storage_struct(info);
         let size = storage_ty
             .size_of()
             .expect("enum storage struct has known size");
-        let ptr = self.arena_alloc(size, "enum.alloc")?;
+        let ptr = match reusable {
+            None => self.arena_alloc(size, "enum.alloc")?,
+            Some(dest) => {
+                let alloc_fn = self
+                    .module
+                    .get_function("lotus_arena_alloc_reusable")
+                    .expect("lotus_arena_alloc_reusable declared");
+                let i64_t = self.context.i64_type();
+                self.builder
+                    .build_call(
+                        alloc_fn,
+                        &[dest.into(), size.into(), i64_t.const_int(16, false).into()],
+                        "enum.alloc",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_arena_alloc_reusable returns ptr")
+                    .into_pointer_value()
+            }
+        };
         let i32_t = self.context.i32_type();
         let tag_ptr = self
             .builder
