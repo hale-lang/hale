@@ -1917,14 +1917,16 @@ impl<'d, 'a> Builder<'d, 'a> {
     }
 
     /// Every locus literal outside the static tower, with the domains its
-    /// enclosing scope runs in and its bound. A scope of the stdlib is
-    /// listed only once the program reaches it: a stdlib locus some row
-    /// or reached literal realizes, a stdlib fn a reached scope calls.
+    /// enclosing scope runs in and its bound. A scope of the stdlib (or of
+    /// the TCP connection substrate appended to the program) is listed
+    /// only once the program reaches it: a stdlib locus some row or
+    /// reached literal realizes, a stdlib fn a reached scope calls.
     fn dynamic_sites(&mut self, scopes: &Scopes<'a>) {
         let n = scopes.scopes.len();
         // The domains each scope runs in; `None` once unknown.
         let mut dom: Vec<Result<BTreeSet<DomainId>, String>> = vec![Ok(BTreeSet::new()); n];
-        let mut reached: Vec<bool> = scopes.scopes.iter().map(|s| s.universe == SiteUniverse::User).collect();
+        let mut reached: Vec<bool> =
+            scopes.scopes.iter().map(|s| s.universe == SiteUniverse::User && !s.appended).collect();
         for (i, s) in scopes.scopes.iter().enumerate() {
             match &s.kind {
                 ScopeKind::Fn { is_main: true, .. } => {
@@ -2214,6 +2216,10 @@ enum ScopeKind {
 struct Scope<'a> {
     universe: SiteUniverse,
     kind: ScopeKind,
+    /// A scope of the TCP connection substrate, appended to the program
+    /// that names it (`rpc_expand::inject_tcp_serve`): stdlib source,
+    /// listed, like the stdlib's, only once the program reaches it.
+    appended: bool,
     literals: Vec<Literal<'a>>,
     calls: Vec<(String, bool)>,
     escapes: BTreeSet<String>,
@@ -2391,7 +2397,9 @@ impl<'a> Scopes<'a> {
                     w.block(&fd.body);
                     let is_main = top && universe == SiteUniverse::User && fd.name.name == "main";
                     self.fns.entry((universe, fd.name.name.clone())).or_insert(self.scopes.len());
-                    self.scopes.push(w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main }));
+                    let mut scope = w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main });
+                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(fd.name.span.start.0);
+                    self.scopes.push(scope);
                 }
                 TopDecl::Locus(l) => {
                     let Some(id) = ids.site_id(l.id) else { continue };
@@ -2425,7 +2433,9 @@ impl<'a> Scopes<'a> {
                         }
                     }
                     self.loci.insert(decl, self.scopes.len());
-                    self.scopes.push(w.finish(ScopeKind::Locus { decl }));
+                    let mut scope = w.finish(ScopeKind::Locus { decl });
+                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(l.name.span.start.0);
+                    self.scopes.push(scope);
                 }
                 TopDecl::Module(m) => self.collect(&m.items, ids, universe, decls, false),
                 _ => {}
@@ -2592,6 +2602,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         Scope {
             universe: self.universe,
             kind,
+            appended: false,
             literals: self.literals,
             calls: self.calls,
             escapes: self.escapes,

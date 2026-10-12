@@ -288,17 +288,23 @@ pub fn budget_for_programs(bundle: &Bundle<'_>, table: &PlacementTable, summary:
     // unambiguous (qualified paths → zero FP): fd-opening *calls*
     // (open/connect/accept) and direct held-fd *locus instantiations*
     // (`tcp::Listener { }`). The program's own: the stdlib's analysis
-    // copy opens fds inside the loci the program starts.
+    // copy opens fds inside the loci the program starts, and so does the
+    // TCP connection substrate, stdlib source appended to the program.
     let summary = summary.program_rows();
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let tcp_serve = crate::rpc_expand::TcpServeDecls::of(&programs);
+    let own = |f: &&crate::alloc_summary::FnSummary| !tcp_serve.holds(f.key.locus.as_deref(), &f.key.fn_name);
     let calls = summary
         .fns
         .values()
+        .filter(own)
         .flat_map(|f| f.calls.iter())
         .filter(|c| matches!(&c.callee, Callee::Unresolved(p) if FD_ACQUIRING_PATHS.contains(&p.as_str())))
         .count();
     let loci = summary
         .fns
         .values()
+        .filter(own)
         .flat_map(|f| f.sites.iter())
         .filter(|s| matches!(&s.kind, AllocKind::StructLit(n) if HELD_FD_LOCUS_PATHS.contains(&n.as_str())))
         .count();

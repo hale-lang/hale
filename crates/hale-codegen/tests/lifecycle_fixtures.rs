@@ -305,7 +305,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
     // A yield inside a handler on a pinned thread runs the owner's
     // handler that reclaims the suspended one's subscriber, which no hold
@@ -497,6 +496,10 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         "l18_eager_pre_drain.hl" => &["18"],
         "l19_parked_started_coroutine.hl" => {
             p.abandoned.insert("__StdIoTcpListener".to_string());
+            // the listener's consumer (and its children) is built twice:
+            // inert at params, then on its route by birth, which reclaims
+            // the first (the TCP connection substrate's shape)
+            p.occurrences = count(&[("__StdIoTcpConnections", 2), ("__StdIoTcpFlows", 2), ("__StdIoTcpCallback", 2)]);
             &["19"]
         }
         "l19_self_post_overflow.hl" => {
@@ -640,7 +643,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         "C31",
         &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
     ),
-    ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
     (
@@ -1942,6 +1944,10 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l08_sibling_replaced_kept.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_pinned_yield_replaces_child.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
+        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
+    // the Listener's birth replaces its inert consumer with the one on its
+    // route (the TCP connection substrate's shape)
+    ("l19_parked_started_coroutine.hl", "__StdIoTcpConnections@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     // L4's restart and resume spine: the producer owes no resume for a
     // held run() failure, whose phase-0 resume C43 names.

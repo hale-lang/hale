@@ -284,13 +284,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         out
     }
 
-    /// On a pinned locus's thread, between its birth checks and its run
-    /// (C38, L4): a check's failure its owner is still holding (the
-    /// owner's params open on the instantiating thread) is waited for, so
-    /// the decision is the handler's; a restart the handler asked for
-    /// takes effect before `run()`. The same gate the instantiating
-    /// thread emits before a cooperative child's run, with nothing to
-    /// resume at settle: this thread never holds its owner open.
+    /// On a pinned locus's thread, between its birth (and checks) and its
+    /// run (C38, L4): a failure of the birth its owner is still holding
+    /// (the owner's params open on the instantiating thread) is waited
+    /// for, so the decision is the handler's; a restart the handler asked
+    /// for takes effect before `run()`, re-running birth on this thread.
+    /// `pre` is the count as the birth began. The gate loops, so a
+    /// restart whose birth fails again is decided the same way. The same
+    /// gate the instantiating thread emits before a cooperative child's
+    /// run, with nothing to resume at settle: this thread never holds its
+    /// owner open.
     pub(crate) fn emit_pinned_birth_gate(
         &mut self,
         info: &LocusInfo<'ctx>,
@@ -305,14 +308,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get_insert_block()
             .and_then(|bb| bb.get_parent())
             .expect("inside the pinned thread function");
+        let entry_bb = self.builder.get_insert_block().expect("inside a block");
+        let loop_bb = self.context.append_basic_block(func, "pinned.gate.loop");
+        self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
+        self.builder.position_at_end(loop_bb);
+        let pre_phi = self.builder.build_phi(self.context.i64_type(), "pinned.gate.pre").map_err(e)?;
+        pre_phi.add_incoming(&[(&pre, entry_bb)]);
+        let pre = pre_phi.as_basic_value().into_int_value();
         let _ = self.emit_failure_await(thread_self, None, 1, pre)?;
         let req = self.emit_restart_requested(info, thread_self, pre)?;
         let restart_bb = self.context.append_basic_block(func, "pinned.gate.restart");
         let go_bb = self.context.append_basic_block(func, "pinned.gate.go");
         self.builder.build_conditional_branch(req, restart_bb, go_bb).map_err(e)?;
         self.builder.position_at_end(restart_bb);
+        let next = self.emit_restart_count(info, thread_self)?;
         self.emit_restart_call(restart, thread_self, locus_name, "PinnedMain", "pinned.gate.restart.call")?;
-        self.builder.build_unconditional_branch(go_bb).map_err(e)?;
+        let restart_end = self.builder.get_insert_block().expect("inside a block");
+        pre_phi.add_incoming(&[(&next, restart_end)]);
+        self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
         self.builder.position_at_end(go_bb);
         Ok(())
     }

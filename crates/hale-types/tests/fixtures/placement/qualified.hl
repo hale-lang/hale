@@ -1,8 +1,6 @@
 // Case 4: a qualified stdlib type beside a user locus whose name is
 // its last segment. Each declaration is placed by its own instances.
-fn ignore_conn(s: std::io::tcp::Stream) { }
-
-locus Listener {
+locus Reader {
     params {
         n: Int = 0;
     }
@@ -10,13 +8,8 @@ locus Listener {
 
 main locus App {
     params {
-        l: std::io::tcp::Listener = std::io::tcp::Listener {
-            host: "127.0.0.1",
-            port: 0,
-            max_accepts: -1,
-            on_connection: ignore_conn,
-        };
-        own: Listener = Listener { };
+        l: std::io::udp::Reader = std::io::udp::Reader { port: 0 };
+        own: Reader = Reader { };
     }
     placement {
         l: cooperative(pool = io);

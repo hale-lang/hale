@@ -542,11 +542,13 @@ fn restart_case(tag: &str, source: &str) {
     for _ in 0..3 {
         assert_eq!(get(port), Some((200, "served".to_string())), "{tag}: the restart bound the corrected host and serves");
     }
-    // Not a SIGTERM exit: the restart runs the listener's `run()` on the
-    // supervisor's thread, so the main locus's `run()` (which would stop
-    // it) does not start — the runtime's restart placement, not the
-    // substrate's; the harness kills the process.
-    drop(running);
+    // The restart re-runs the listener's birth and its `run()` on its own
+    // pool, as its first start did, so the main locus's `run()` starts
+    // too and stops it on SIGTERM: a clean exit. (When the restart ran on
+    // the supervisor's thread, the accept loop kept the main locus's
+    // `run()` from ever starting, and only a kill ended the program.)
+    let (status, stderr) = running.term();
+    assert!(status.success(), "{tag}: the main locus's run() stops the restarted listener on SIGTERM: {status:?}\n{stderr}");
     let _ = std::fs::remove_file(&bin);
 }
 

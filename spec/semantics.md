@@ -1455,11 +1455,16 @@ handler returns**, in the same delivery step: on the parent's
 thread for a cooperative child (the one settling the parent, which
 the child was running on), on the child's own thread for a pinned
 one — that thread waits for the handler's decision rather than
-deciding by timing. The child the handler restarts is the one it
-was handed, kept alive for it. A birth-epoch failure is held like
-any other: a child whose birth failed does not start `run()` until
-its handler has returned, and then starts it, restarts, or stays
-quarantined as the handler decided.
+deciding by timing — and on its pool for a child placed on a worker
+pool, whose birth ran on the pool's worker: the restart is posted
+there as the child's run, so the re-run `birth()` and the `run()`
+after it execute where the first ones did, never on the thread
+settling the parent (whose own `run()` would otherwise wait behind
+a child `run()` that never returns). The child the handler restarts
+is the one it was handed, kept alive for it. A birth-epoch failure
+is held like any other: a child whose birth failed does not start
+`run()` until its handler has returned, and then starts it,
+restarts, or stays quarantined as the handler decided.
 
 **A handler may replace a sibling whose own failure is still
 outstanding** (`self.b = Kid { … }` in the handler for `a`, with
@@ -4424,7 +4429,15 @@ re-evaluates a default):
 
 When it takes effect depends on where the failure came from. A
 birth-epoch closure's failure re-runs birth right after the
-handler returns, before `run()` has started. A failure raised
+handler returns, before `run()` has started. So does any other
+failure of the birth — a `violate` in `birth()`, a failed
+`birth_check` — whether its handler ran in place or was held: the
+decision is read against the restart count as the birth began, so a
+handler that had already returned by the time `birth()` did is not
+missed, and a restart whose birth fails again is decided the same
+way before `run()` starts. The restart runs on the child's own
+placement — its pinned thread, its pool's worker — as its first
+`birth()` and `run()` did. A failure raised
 while `run()` executes — a `violate` in it, or for a pinned child
 the tick and duration closures its thread checks after it —
 restarts once `run()` has returned, on the thread that ran it (a

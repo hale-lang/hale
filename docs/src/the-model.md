@@ -197,7 +197,7 @@ thread *has*, never a thread itself.
 
 Some instances are deliberately not arranged, and the gap is stated
 rather than hidden. An instance of a standard-library locus (a
-`std::io::tcp::Listener` field) is placed by the compiler but not
+`std::io::udp::Reader` field) is placed by the compiler but not
 arranged, since the model's declarations are the program's own. An
 imported library's `main locus` is never the root. A locus `fn main`
 builds besides the root is a birth outside the arrangement, recorded

@@ -417,8 +417,8 @@ dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no caller)
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
 
 == crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#c12c5daf
 row	Book@main1	Book	main	default
@@ -438,8 +438,8 @@ row	App@literal1.b	Billing	main	default
 row	App@literal1.r	Research	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl#b881e05d
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/fixtures/examples/fitter-applier-demo/main.hl#3fb485a9
 row	ActionLogL@main1	ActionLogL	main	default
@@ -451,15 +451,15 @@ row	ObservationSourceL@main4	ObservationSourceL	main	default
 row	HelloL@main1	HelloL	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/http-hello/main.hl#c773d662
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/fixtures/examples/interface-fallible.hl#b5605767
 row	Mem@main1	Mem	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/io-demo/main.hl#0fcb0063
-row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
-dynamic	__StdIoTcpStream	on main	in the stdlib
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/fixtures/examples/multi-file-seed/main.hl#578d5311
 row	AppL@main1	AppL	main	default
@@ -502,8 +502,8 @@ dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws|unknown (no caller)
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
 
 == crates/hale-cli/tests/fixtures/api_description/main.hl#d536b3f3
 root	Shop	the entry
@@ -513,7 +513,7 @@ row	Shop@literal1	Shop	main	default
 row	Shop@literal1.billing	Billing	pool:work	entry	off owner
 row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	dynamic	sites in the seed #a058d397
+shared	dynamic	sites in the seed #38292389
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
@@ -538,7 +538,7 @@ domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
 row	App@literal1.echo	Echo	main	default
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	dynamic	sites in the seed #a058d397
+shared	dynamic	sites in the seed #38292389
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3
 row	Acc@main1	Acc	main	default
@@ -657,8 +657,6 @@ row	~.acc	Acc	main	inherited
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
 == crates/hale-stdlib/hl/http_client.hl#3eb0a967
-
-== crates/hale-stdlib/hl/io_tcp.hl#adb3647c
 
 == crates/hale-stdlib/hl/json.hl#993fa30a
 
@@ -1092,8 +1090,8 @@ row	App@literal1.st	Str	main	default
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.listener	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.listener	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-cli/tests/topology_artifact_contract.rs#b56f7db2
 root	App	the entry
@@ -1319,7 +1317,7 @@ dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdIoTcpConnFlow	on pool:__api_http
 dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
 root	Desk	the entry
@@ -1331,7 +1329,7 @@ row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.maker	Maker	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
-shared	dynamic	sites in the seed #8b78e915
+shared	dynamic	sites in the seed #648c1683
 
 == crates/hale-codegen/tests/api_hub_desk.rs#2963f39c
 root	Desk	the entry
@@ -1355,7 +1353,7 @@ dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpConnFlow	on pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 
 == crates/hale-codegen/tests/api_mcp.rs#206f7719
 root	D	the entry
@@ -1372,7 +1370,7 @@ dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdIoTcpConnFlow	on pool:__api_http
 dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
 == crates/hale-codegen/tests/api_runtime.rs#9876407f
 root	App	the entry
@@ -1418,7 +1416,7 @@ dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdIoTcpConnFlow	on pool:__api_unix
 dynamic	__StdIoTcpConnInline	on pool:__api_unix
 dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
@@ -1430,8 +1428,8 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.srv	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.srv	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/asyncio_sleep_park.rs#a3450c8c
 root	App	the entry
@@ -2707,6 +2705,17 @@ row	~.q	Q	main	inherited
 row	~.qb	QB	main	inherited
 row	~.qs	QS	main	inherited
 
+== crates/hale-codegen/tests/form_vec_pop_retire.rs#f5a683be
+-- H@main1	H
+row	~	H	main	default
+row	~.q	Q	main	inherited
+
+== crates/hale-codegen/tests/form_vec_pop_retire.rs#a81d4f8d
+-- H@main1	H
+row	~	H	main	default
+row	~.qm	QM	main	inherited
+row	~.qt	QT	main	inherited
+
 == crates/hale-codegen/tests/form_vec_set_retire.rs#abb621d8
 root	App	the entry
 row	App@literal1	App	main	default
@@ -3009,7 +3018,7 @@ dynamic	__StdIoH2Conns	on pool:h2
 dynamic	__StdIoTcpConnFlow	on pool:h2
 dynamic	__StdIoTcpConnInline	on pool:h2
 dynamic	__StdIoTcpConnections	on pool:h2|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:h2|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:h2|unknown (no instance)
 
 == crates/hale-codegen/tests/io_tcp_recv_timeout.rs#52b73291
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
@@ -3649,8 +3658,8 @@ row	App@literal1.o	Worker	pinned:App@literal1.o	entry	off owner
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.listener	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.listener	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/placement_where_async_io.rs#d96ff717
 root	App	the entry
@@ -3660,8 +3669,8 @@ row	App@literal1	App	main	default
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.listener	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.listener	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/pool_affinity.rs#207d6d94
 root	App	the entry
@@ -3691,8 +3700,8 @@ row	__StdProcessChild@main1	__StdProcessChild	main	default
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-row	App@literal1.listener	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.listener	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-codegen/tests/reclamation_spine.rs#69afa738
 root	App	the entry
@@ -4176,7 +4185,11 @@ row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.maker	Maker	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
-shared	dynamic	sites in the seed #8b78e915
+shared	dynamic	sites in the seed #648c1683
+
+== crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db
+shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
+shared	dynamic	sites in the seed #a76c74f1
 
 == crates/hale-codegen/tests/tcp_substrate.rs#142fa461
 root	App	the entry
@@ -4708,9 +4721,9 @@ row	__lib_App@entry.w	W	pinned:__lib_App@entry.w	entry	off owner
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
 row	App@literal1.u	Listener	main	default
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.l	__StdIoTcpListener #010dcce2
+shared	dynamic	sites in the seed #b39898f4
 
 == crates/hale-types/tests/bus_graph.rs#6986772c
 root	App	the entry
@@ -5382,14 +5395,13 @@ row	Sink@main1	Sink	main	default
 == crates/hale-types/tests/lowering_correspondence.rs#0685e192
 row	Solo@main1	Solo	main	default
 
-== crates/hale-types/tests/model_arrangement.rs#77a41871
+== crates/hale-types/tests/model_arrangement.rs#97b09b80
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-row	App@literal1.a	Listener	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
+row	App@literal1.a	Reader	main	default
 row	App@literal1.z	Tail	main	default
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+shared	App@literal1.l	__StdIoUdpReader #d7d66dfc
 
 == crates/hale-types/tests/model_arrangement.rs#8915bc27
 root	App	the entry
@@ -6177,7 +6189,7 @@ dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdIoTcpConnFlow	on pool:__api_unix
 dynamic	__StdIoTcpConnInline	on pool:__api_unix
 dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 
 == crates/hale-types/tests/stdlib_name_check.rs#445e7d87
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -6368,7 +6380,7 @@ dynamic	__StdIoH2Conns	on pool:__api_grpc
 dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
 dynamic	__StdIoTcpConnInline	on pool:__api_grpc
 dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
 
 == tests/hale/api/pending_test.hl
 root	Desk	the entry
@@ -6517,8 +6529,8 @@ dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix
-dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|unknown (no instance)
-dynamic	__StdIoTcpStream	on main|pool:__api_http|pool:__api_unix|unknown (no caller)
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpStream	on main|pool:__api_http|pool:__api_unix
 
 == tests/hale/api_binding_test.hl
 shared	Api@main2	Api #a23e2495
@@ -6737,12 +6749,37 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 
+== tests/hale/pinned_birth_restart_test.hl
+root	App	the entry
+domain	pinned:App@literal1.held
+domain	pinned:App@literal1.twice
+domain	pinned:App@literal1.late
+domain	pinned:App@literal1.fresh
+row	App@literal1	App	main	default
+row	App@literal1.fresh	Fresh	pinned:App@literal1.fresh	entry	off owner
+row	App@literal1.held	Kid	pinned:App@literal1.held	entry	off owner
+row	App@literal1.late	Kid	pinned:App@literal1.late	entry	off owner
+row	App@literal1.slow	Slow	main	default
+row	App@literal1.twice	Kid	pinned:App@literal1.twice	entry	off owner
+
 == tests/hale/pinned_restart_test.hl
 root	App	the entry
 domain	pinned:App@literal1.pump
 row	App@literal1	App	main	default
 row	App@literal1.pump	Pump	pinned:App@literal1.pump	entry	off owner
 row	App@literal1.slow	Slow	main	default
+
+== tests/hale/pool_birth_restart_test.hl
+root	App	the entry
+domain	pool:a
+domain	pool:b	async_io
+domain	pool:c
+domain	pool:d
+row	App@literal1	App	main	default
+row	App@literal1.classic	Kid	pool:a	entry	off owner
+row	App@literal1.fresh	Fresh	pool:d	entry	off owner
+row	App@literal1.parked	Kid	pool:b	entry	off owner
+row	App@literal1.twice	Kid	pool:c	entry	off owner
 
 == tests/hale/process_child_adopt_test.hl
 shared	Job@main1	Job #01dd0b0d
@@ -6753,6 +6790,18 @@ dynamic	__StdProcessChild	on main
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
+
+== tests/hale/restart_birth_failure_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.checked	Checked	main	default
+row	App@literal1.fresh	Fresh	main	default
+row	App@literal1.held	Kid	main	default
+row	App@literal1.held_twice	Kid	main	default
+-- dynamic	sites in the seed
+dynamic	Checked	on main
+dynamic	Fresh	on main
+dynamic	Kid	on main
 
 == tests/hale/restart_resumes_run_test.hl
 root	App	the entry
@@ -13869,7 +13918,7 @@ dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no instance)
 
 == dna/tests/onboarding/voice/node
 root	Node	the entry
@@ -14105,9 +14154,8 @@ row	App@literal1.s	__StdLogStdoutSink	pinned:App@literal1.s	entry	off owner
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
-row	App@literal1.own	Listener	main	default
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+row	App@literal1.own	Reader	main	default
+shared	App@literal1.l	__StdIoUdpReader #d7d66dfc
 
 == crates/hale-types/tests/fixtures/placement/reuse.hl
 root	App	the entry
@@ -14226,14 +14274,10 @@ row	Mine@literal1.w	__lib_tests__fixtures__placement__imported__lib___lib__Worke
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
-dynamic	__StdIoTcpStream	on pool:io	in the stdlib
 -- App@literal1.c	Collider
 row	~	Collider	main	default
 row	~.inner	Inner	main	inherited
--- App@literal1.u	__StdIoUdpReader
-row	~	__StdIoUdpReader	pool:io	entry	off owner
-row	~.buf	__StdBytesBytesBuilder	pool:io	inherited
+shared	App@literal1.u	__StdIoUdpReader #d7d66dfc
 
 == shared A #16a5b9f9
 row	~	A	main	default
@@ -14769,6 +14813,24 @@ row	~	__StdIoTcpConnections	pool:web	entry	off owner
 row	~.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.handler	__StdHttpResponder	pool:web	inherited
 row	~.handler.handler	Api	pool:web	inherited
+
+== shared __StdIoTcpListener #010dcce2
+row	~	__StdIoTcpListener	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdIoTcpCallback	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdIoTcpListener #0b638db1
+row	~	__StdIoTcpListener	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdIoTcpCallback	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+
+== shared __StdIoUdpReader #d7d66dfc
+row	~	__StdIoUdpReader	pool:io	entry	off owner
+row	~.buf	__StdBytesBytesBuilder	pool:io	inherited
 
 == shared __StdJsonBuilder #6efd4260
 row	~	__StdJsonBuilder	main	default
@@ -16490,6 +16552,15 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
+== shared sites in the seed #38292389
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
+dynamic	__StdApiUnixConns	on pool:__api_unix
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+
 == shared sites in the seed #3837ddcb
 dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
 dynamic	__StdIoTcpConnInline	on pool:one|pool:zero
@@ -16500,20 +16571,20 @@ dynamic	__StdIoTcpConnFlow	on pool:web
 dynamic	__StdIoTcpConnInline	on pool:web
 dynamic	__StdIoTcpStream	on pool:web
 
-== shared sites in the seed #8900d651
-dynamic	Child	on pinned:App@literal1.w
-dynamic	Grand	on main|pinned:App@literal1.s
-dynamic	Leaf	on pool:io
-dynamic	Shared	on main
-
-== shared sites in the seed #8b78e915
+== shared sites in the seed #648c1683
 dynamic	__StdApiWsConns	on pool:__api_ws
 dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
 dynamic	__StdBytesBytesBuilder	on pool:__api_ws
 dynamic	__StdIoTcpConnFlow	on pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no caller)|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
+
+== shared sites in the seed #8900d651
+dynamic	Child	on pinned:App@literal1.w
+dynamic	Grand	on main|pinned:App@literal1.s
+dynamic	Leaf	on pool:io
+dynamic	Shared	on main
 
 == shared sites in the seed #8c882889
 dynamic	__StdIoTcpStream	on main
@@ -16526,15 +16597,6 @@ dynamic	__StdIoTcpConnInline	on main
 dynamic	__StdIoTcpConnections	on main
 dynamic	__StdIoTcpStream	on main
 
-== shared sites in the seed #a058d397
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
-dynamic	__StdApiUnixConns	on pool:__api_unix
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpConnFlow	on pool:__api_unix
-dynamic	__StdIoTcpConnInline	on pool:__api_unix
-dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
-
 == shared sites in the seed #a43e7c60
 dynamic	B	on main
 dynamic	I	on main
@@ -16545,6 +16607,20 @@ dynamic	__StdIoTcpConnFlow	on pool:web
 dynamic	__StdIoTcpConnInline	on pool:web
 dynamic	__StdIoTcpConnections	on pool:web
 dynamic	__StdIoTcpStream	on pool:web
+
+== shared sites in the seed #a76c74f1
+dynamic	__StdIoTcpCallback	on main
+dynamic	__StdIoTcpConnFlow	on main
+dynamic	__StdIoTcpConnInline	on main
+dynamic	__StdIoTcpConnections	on main
+dynamic	__StdIoTcpStream	on main
+
+== shared sites in the seed #b39898f4
+dynamic	__StdIoTcpCallback	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
 
 == shared sites in the stdlib #017b2abb
 dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)

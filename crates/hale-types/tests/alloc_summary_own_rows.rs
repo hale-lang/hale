@@ -198,8 +198,8 @@ fn the_own_rows_are_the_program_alone_on_every_corpus_program() {
 
 /// `http-hello` starts the TCP `Listener`, so the summary reaches the
 /// Listener's hooks; its resource budget counts its own `Listener { }`
-/// alone, never the fd-acquiring sites in the copy's bodies, and no fd
-/// leak.
+/// alone, never the fd-acquiring sites in the copy's or the TCP
+/// substrate's bodies, and no fd leak.
 #[test]
 fn the_resource_budget_counts_the_programs_own_fd_sites() {
     let path = root().join("crates/hale-codegen/tests/fixtures/examples/http-hello");
@@ -220,9 +220,11 @@ fn the_resource_budget_counts_the_programs_own_fd_sites() {
     whole.analysis_copy_loci.clear();
     whole.analysis_copy_interfaces.clear();
     let read_whole = hale_types::resource_budget::budget_for_programs(&bundle, table, &whole);
-    // 5 since the HTTP server's three fd-acquiring sites left the bundled
-    // stdlib for the TCP substrate, which joins only a program that names it
-    assert_eq!(read_whole.fd_open_sites, 6, "the copy's bodies hold 5 more, which are not the program's");
+    // 2: the HTTP server's fd-acquiring sites, then the Listener's own,
+    // left the bundled stdlib for the TCP substrate, which joins only a
+    // program that names it and is stdlib source there too (the budget
+    // leaves its bodies out as it does the copy's)
+    assert_eq!(read_whole.fd_open_sites, 3, "the copy's bodies hold 2 more, which are not the program's");
     assert!(hale_types::resource_budget::resource_leak_diags(summary).is_empty(), "no fd leak");
 }
 

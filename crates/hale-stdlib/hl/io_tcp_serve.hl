@@ -1,5 +1,6 @@
 // The TCP connection substrate (spec/stdlib.md § "The TCP connection
-// substrate"), and `std::http::Server` built on it.
+// substrate"), and `std::http::Server` built on it (`std::io::tcp::Listener`,
+// a callback per connection, is too: io_tcp_listener.hl).
 //
 // One shape for every server: a listener binds and accepts, and relays
 // each connection over the bus as an owned handle (`std::io::tcp::Accepted`,
@@ -18,9 +19,9 @@
 // fallback`, so `require no_silent_loss` holds over it).
 //
 // This file is appended to a program that names `std::http::Server` or
-// one of `std::io::tcp::{Acceptor, Connections, Accepted, ConnHandler}`
-// (`hale_stdlib::TCP_SERVE_SOURCE`); `__TcpAcceptedT` is declared beside
-// it by the pass that appends it.
+// one of `std::io::tcp::{Listener, Acceptor, Connections, Accepted,
+// ConnHandler}` (`hale_stdlib::TCP_SERVE_SOURCE`); `__TcpAcceptedT` is
+// declared beside it by the pass that appends it.
 
 /// A connection a listener accepted, handed over the bus to the consumer
 /// that serves it. Whoever takes it owns `fd` and closes it (a
@@ -101,28 +102,34 @@ locus __StdIoTcpRelay {
     }
     // Accept until the socket is shut (`std::io::tcp::stop`, `shutdown()`),
     // its pool shuts down, or `max_accepts` is reached, relaying each
-    // connection. A failed accept nobody asked for (out of descriptors, a
-    // connection aborted before it was taken: `__accept_one`'s -2) ends that
-    // connection and never the listener, which tries again 20 ms later.
-    // Where a yield
-    // runs this thread's queued deliveries (main, a pinned thread) the
-    // yield lets a consumer on the same thread serve before the next
-    // accept: one connection at a time, as a blocking call there must be.
-    // On an async_io pool the accept parks instead, and the consumer's
-    // deliveries run then.
+    // connection. Where a yield runs this thread's queued deliveries (main,
+    // a pinned thread) the yield lets a consumer on the same thread serve
+    // before the next accept: one connection at a time, as a blocking call
+    // there must be. On an async_io pool the accept parks instead, and the
+    // consumer's deliveries run then.
     fn accept_all(listen_fd: Int, max_accepts: Int) {
         while max_accepts < 0 || self.sent < max_accepts {
-            let conn = std::io::tcp::__accept_one(listen_fd);
-            if conn == -2 {
-                std::time::sleep(20ms);
-                continue;
-            }
+            let conn = self.accept_next(listen_fd);
             if conn < 0 {
                 break;
             }
             self.relay(conn);
             yield;
         }
+    }
+    // The next connection on `listen_fd`, or -1 once the wait ended on
+    // purpose (the socket shut, the pool shutting down). The one accept
+    // every listener makes: a failed accept nobody asked for (out of
+    // descriptors, a connection aborted before it was taken:
+    // `__accept_one`'s -2) ends that connection and never the listener,
+    // which tries again 20 ms later.
+    fn accept_next(listen_fd: Int) -> Int {
+        let mut conn = std::io::tcp::__accept_one(listen_fd);
+        while conn == -2 {
+            std::time::sleep(20ms);
+            conn = std::io::tcp::__accept_one(listen_fd);
+        }
+        return conn;
     }
     // One connection onto the bus: a method of its own, so what the handle
     // takes to build dies with the call and not in the loop above.
@@ -577,11 +584,7 @@ locus __StdHttpServer {
     }
     fn accept_direct() {
         while self.max_accepts < 0 || self.relay.sent < self.max_accepts {
-            let conn = std::io::tcp::__accept_one(self.listen_fd);
-            if conn == -2 {
-                std::time::sleep(20ms);
-                continue;
-            }
+            let conn = self.relay.accept_next(self.listen_fd);
             if conn < 0 {
                 break;
             }

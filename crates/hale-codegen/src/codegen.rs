@@ -8108,9 +8108,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_conditional_branch(req, restart_bb, end_bb)
                     .map_err(e)?;
+                // A restart whose birth fails again is decided before
+                // run() starts again: waited for, or — held on this
+                // thread — left to the resume at settle (phase 1).
                 self.builder.position_at_end(restart_bb);
+                let next = self.emit_restart_count(&info, self_arg)?;
                 self.emit_restart_call(rf.restart, self_arg, locus_name, "PoolRun", "run.restart.call")?;
-                self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
+                let a2 = self.emit_failure_await(self_arg, Some(rf.resume), 1, next)?;
+                let later2 = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        a2,
+                        self.context.i64_type().const_int(2, false),
+                        "run.rebirth_resumed_at_settle",
+                    )
+                    .map_err(e)?;
+                let again_bb = self.context.append_basic_block(wrapper, "run.rebirth.decide");
+                self.builder.build_conditional_branch(later2, out_bb, again_bb).map_err(e)?;
+                self.builder.position_at_end(again_bb);
+                let again = self.emit_restart_requested(&info, self_arg, next)?;
+                self.builder.build_conditional_branch(again, restart_bb, loop_bb).map_err(e)?;
                 self.builder.position_at_end(end_bb);
                 self.builder
                     .build_call(run_end, &[self_arg.into()], "run.end.call")
