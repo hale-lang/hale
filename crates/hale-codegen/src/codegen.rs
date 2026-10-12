@@ -5011,6 +5011,15 @@ pub(crate) struct FallibleCtx<'ctx> {
     pub(crate) payload_ty: CodegenTy,
 }
 
+/// One accepted child type's tracker: the indices of its `__children`
+/// buffer pointer, count and capacity fields in the owner's struct.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChildBuffer {
+    pub(crate) arr: u32,
+    pub(crate) cnt: u32,
+    pub(crate) cap: u32,
+}
+
 /// Compiled locus type. Lifecycle methods take `self_ptr` as their
 /// first arg; field access in their bodies lowers to GEPs against
 /// `struct_ty` using the index from `fields`.
@@ -5047,6 +5056,18 @@ pub(crate) struct LocusInfo<'ctx> {
     /// declares `release` of it, to fire `parent.release(owner, child)`
     /// on completion.
     pub(crate) release_param: Option<(String, String)>,
+    /// The `accept` fn for each child locus this locus accepts: the one
+    /// `accept` for a concrete `accept(c: C)`, keyed by `C`; for an
+    /// interface `accept(c: I)`, one fn per locus the ownership graph
+    /// admits (`<L>.accept.<C>`), each lowered with the child typed as
+    /// that locus. Every dispatch looks its child up here.
+    pub(crate) accept_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// The `release` fns, keyed as `accept_fns`.
+    pub(crate) release_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// The children tracker of each accepted child locus: one for a
+    /// concrete `accept` (the `children_field_idx` triple), one per
+    /// admitted locus for an interface's.
+    pub(crate) child_buffers: BTreeMap<String, ChildBuffer>,
     /// User-defined `fn` members on the locus (called as bus
     /// handlers, mode dispatchers, etc.). Each entry is
     /// (method name → LLVM function value). Methods take
@@ -7737,28 +7758,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 cs.locus_name
             ))
         })?;
-        let cnt_idx = info.child_count_field_idx.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
+        if info.accept_param.is_none() {
+            return Err(CodegenError::Unsupported(format!(
                 "locus `{}` has no children tracker — `self.children.{}` \
                  needs the locus to `accept` a child type",
                 cs.locus_name, which
-            ))
-        })?;
+            )));
+        }
+        // The sum over the trackers: one for a concrete `accept`, one per
+        // admitted locus for an interface's.
         let i64_t = self.context.i64_type();
-        let ptr = self
-            .builder
-            .build_struct_gep(
-                cs.struct_ty,
-                cs.self_ptr,
-                cnt_idx,
-                "self.children.count.ptr",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let cnt = self
-            .builder
-            .build_load(i64_t, ptr, "self.children.count")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
+        let mut cnt = i64_t.const_zero();
+        for b in info.child_buffers.values() {
+            let ptr = self
+                .builder
+                .build_struct_gep(cs.struct_ty, cs.self_ptr, b.cnt, "self.children.count.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let one = self
+                .builder
+                .build_load(i64_t, ptr, "self.children.count")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            cnt = self
+                .builder
+                .build_int_add(cnt, one, "self.children.count.sum")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         if which == "is_empty" {
             let zero = i64_t.const_int(0, false);
             let z = self
@@ -7785,10 +7810,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // Find the parent locus type(s) that accept this locus AND
         // track children in a buffer.
-        let mut accepters = self.user_loci.values().filter(|p| {
-            p.accept_param.as_ref().map(|(_, c)| c == locus_name).unwrap_or(false)
-                && p.children_field_idx.is_some()
-        });
+        let mut accepters = self.user_loci.values().filter(|p| p.child_buffers.contains_key(locus_name));
         let owner_info = match accepters.next() {
             Some(p) => p.clone(),
             None => return Ok(()),
@@ -7799,12 +7821,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // accepting the same child type and both iterating).
             return Ok(());
         }
-        let children_idx = owner_info
-            .children_field_idx
-            .expect("filtered to Some");
-        let count_idx = owner_info
-            .child_count_field_idx
-            .expect("paired with children_field_idx");
+        // The owner's tracker for THIS child type (an interface owner
+        // keeps one per admitted locus).
+        let buffer = owner_info.child_buffers[locus_name];
+        let children_idx = buffer.arr;
+        let count_idx = buffer.cnt;
         let fn_for_blocks = self.current_fn.expect("reclaim current fn");
         // owner = self.__owner_self
         let owner_field = self
@@ -7897,23 +7918,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let (children_idx, count_idx) =
-            match (info.children_field_idx, info.child_count_field_idx) {
-                (Some(a), Some(b)) => (a, b),
-                _ => return Ok(()),
-            };
-        let child_type = match &info.accept_param {
-            Some((_, c)) => c.clone(),
-            None => return Ok(()),
-        };
-        let reclaim_fn = match self.reclaim_fns.get(&child_type).copied() {
-            Some(f) => f,
-            None => return Ok(()),
-        };
+        // One tracker per accepted child type (several for an interface
+        // `accept`), each walked with its own type's reclaim fn.
+        let buffers: Vec<(u32, u32, FunctionValue<'ctx>)> = info
+            .child_buffers
+            .iter()
+            .filter_map(|(child, b)| self.reclaim_fns.get(child).map(|f| (b.arr, b.cnt, *f)))
+            .collect();
+        if buffers.is_empty() {
+            return Ok(());
+        }
         let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let func = self.current_fn.expect("dissolve frame current fn");
+        for (children_idx, count_idx, reclaim_fn) in buffers {
         // count = self.__child_count
         let count_ptr = self
             .builder
@@ -8021,6 +8040,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(header)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(cont);
+        }
         self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
@@ -20965,11 +20985,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&cs.locus_name)
             .cloned()
             .expect("current_self points to a declared locus");
-        let arr_idx = info.children_field_idx.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
+        let arr_idx = info.children_field_idx.ok_or_else(|| match &info.accept_param {
+            // The checker refuses it first, with the same reason.
+            Some((_, iface)) => CodegenError::Unsupported(format!(
+                "locus `{}` accepts through the interface `{}`: its children are of several types, \
+                 so `self.children` has no one element type to iterate",
+                cs.locus_name, iface
+            )),
+            None => CodegenError::Unsupported(format!(
                 "locus `{}` has no children (no accept declared)",
                 cs.locus_name
-            ))
+            )),
         })?;
         let cnt_idx = info.child_count_field_idx.expect("paired");
         let child_locus = info

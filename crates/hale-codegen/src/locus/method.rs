@@ -6,6 +6,7 @@
 use hale_syntax::ast::{
     EpochSpec, LifecycleKind, LocusDecl, LocusMember, ModeKind,
 };
+use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
 use crate::codegen::{BlockEnd, CodegenError, CodegenTy, Cx, Scope, SelfCx};
@@ -72,10 +73,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     LifecycleKind::Drain => "drain",
                     LifecycleKind::Dissolve => "dissolve",
                 };
-                let func = *info
-                    .methods
-                    .get(kind)
-                    .expect("method declared in pass A2");
+                // The fns this body is lowered into: the hook's one fn,
+                // or for `accept` / `release` one per accepted child
+                // locus, the child typed as that locus (an interface
+                // clause's monomorphs: `c.m()` is a direct call).
+                let targets: Vec<(FunctionValue<'ctx>, Option<String>)> = match kind {
+                    "accept" => info.accept_fns.iter().map(|(c, f)| (*f, Some(c.clone()))).collect(),
+                    "release" => info.release_fns.iter().map(|(c, f)| (*f, Some(c.clone()))).collect(),
+                    _ => vec![(*info.methods.get(kind).expect("method declared in pass A2"), None)],
+                };
+                for (func, target_child) in targets {
                 let entry = self.context.append_basic_block(func, "entry");
                 self.builder.position_at_end(entry);
                 self.di_begin_function();
@@ -129,8 +136,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arg; bind it under the source-level param name as a
                 // LocusRef local so `g.X` lowers to GEP+load. (release
                 // is the death-side bookend — same 2-arg shape.)
-                if kind == "accept" || kind == "release" {
-                    let (param_name, child_locus) = if kind == "accept" {
+                if let Some(child_locus) = &target_child {
+                    let (param_name, _) = if kind == "accept" {
                         info.accept_param
                             .as_ref()
                             .expect("accept declared with accept_param")
@@ -178,6 +185,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 self.current_fn = None;
                 self.current_self = None;
+                }
             }
         }
 

@@ -21,7 +21,7 @@ use hale_types::typed_bodies::accumulator_sites;
 use crate::codegen::{
     accumulator_element_type, count_self_field_accesses_in_locus,
     param_value, AccumulatorKind,
-    AccumulatorSlot, CapacitySlotLayout, CodegenError, CodegenTy,
+    AccumulatorSlot, CapacitySlotLayout, ChildBuffer, CodegenError, CodegenTy,
     Cx, DefaultInit, LocusInfo, ParamValue, SlotForm, SyncMode,
 };
 
@@ -410,7 +410,24 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // parent accepted more than 16 children (the bench surfaced
         // it at k≈25) — fatal for the daemon-server pattern that
         // accepts one child per connection.
-        let uses_children = has_accept;
+        // An interface `accept` keeps one tracker per locus it admits, so
+        // each child is reclaimed, and removed when it completes, by its
+        // own type's code: the children are of several types, and no
+        // tracker entry says which.
+        let mut child_buffers: BTreeMap<String, ChildBuffer> = BTreeMap::new();
+        let accepts_interface = self.accept_interface_of(l).is_some();
+        if accepts_interface {
+            let i64_t = self.context.i64_type();
+            for child in self.interface_children(&l.name.name) {
+                let arr = idx;
+                llvm_field_tys.push(ptr_t.into());
+                llvm_field_tys.push(i64_t.into());
+                llvm_field_tys.push(i64_t.into());
+                idx += 3;
+                child_buffers.insert(child, ChildBuffer { arr, cnt: arr + 1, cap: arr + 2 });
+            }
+        }
+        let uses_children = has_accept && !accepts_interface;
         let (children_field_idx, child_count_field_idx, child_cap_field_idx) =
             if uses_children {
                 let i64_t = self.context.i64_type();
@@ -1285,6 +1302,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 children_field_idx,
                 child_count_field_idx,
                 child_cap_field_idx,
+                child_buffers,
+                accept_fns: BTreeMap::new(),
+                release_fns: BTreeMap::new(),
                 arena_field_idx,
                 restart_count_field_idx,
                 restart_bound_field_idx,
@@ -1349,6 +1369,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             std::collections::BTreeSet::new();
         let mut accept_param: Option<(String, String)> = None;
         let mut release_param: Option<(String, String)> = None;
+        let mut accept_fns: BTreeMap<String, FunctionValue<'ctx>> = BTreeMap::new();
+        let mut release_fns: BTreeMap<String, FunctionValue<'ctx>> = BTreeMap::new();
         let mut user_methods: BTreeMap<String, FunctionValue<'ctx>> =
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String, String, Option<KeyFilter>)> =
@@ -1453,28 +1475,46 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             }
                             let p = &lc.params[0];
                             let child_ty = self.type_expr_to_codegen_ty(&p.ty)?;
-                            let child_locus = match &child_ty {
-                                CodegenTy::LocusRef(name) => name.clone(),
+                            let fn_ty = void_t
+                                .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                            let child_written = match &child_ty {
+                                CodegenTy::LocusRef(name) => {
+                                    let func = self.module.add_function(
+                                        &format!("{}.accept", l.name.name),
+                                        fn_ty,
+                                        None,
+                                    );
+                                    methods.insert("accept", func);
+                                    accept_fns.insert(name.clone(), func);
+                                    name.clone()
+                                }
+                                // An interface `accept` is one accept per
+                                // locus it admits, each body lowered with
+                                // the child typed as that locus (spec
+                                // semantics.md § Locus instantiation).
+                                CodegenTy::Interface(iface) => {
+                                    for child in self.interface_children(&l.name.name) {
+                                        let func = self.module.add_function(
+                                            &format!("{}.accept.{}", l.name.name, child),
+                                            fn_ty,
+                                            None,
+                                        );
+                                        accept_fns.insert(child, func);
+                                    }
+                                    iface.clone()
+                                }
                                 other => {
                                     return Err(CodegenError::Unsupported(
                                         format!(
                                             "locus `{}` accept() param must \
-                                             be a locus type; got {:?}",
+                                             be a locus or an interface type; got {:?}",
                                             l.name.name, other
                                         ),
                                     ));
                                 }
                             };
-                            let fn_ty = void_t
-                                .fn_type(&[ptr_t.into(), ptr_t.into()], false);
-                            let func = self.module.add_function(
-                                &format!("{}.accept", l.name.name),
-                                fn_ty,
-                                None,
-                            );
-                            methods.insert("accept", func);
                             accept_param =
-                                Some((p.name.name.clone(), child_locus));
+                                Some((p.name.name.clone(), child_written));
                             if hale_types::lifecycle::body_is_empty(&lc.body) {
                                 empty_lifecycle.insert("accept");
                             }
@@ -1494,28 +1534,45 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             }
                             let p = &lc.params[0];
                             let child_ty = self.type_expr_to_codegen_ty(&p.ty)?;
-                            let child_locus = match &child_ty {
-                                CodegenTy::LocusRef(name) => name.clone(),
+                            let fn_ty = void_t
+                                .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                            let child_written = match &child_ty {
+                                CodegenTy::LocusRef(name) => {
+                                    let func = self.module.add_function(
+                                        &format!("{}.release", l.name.name),
+                                        fn_ty,
+                                        None,
+                                    );
+                                    methods.insert("release", func);
+                                    release_fns.insert(name.clone(), func);
+                                    name.clone()
+                                }
+                                // As `accept`: one release per admitted
+                                // locus (the check holds `release(c: I)`
+                                // to an `accept(c: I)` on the same locus).
+                                CodegenTy::Interface(iface) => {
+                                    for child in self.interface_children(&l.name.name) {
+                                        let func = self.module.add_function(
+                                            &format!("{}.release.{}", l.name.name, child),
+                                            fn_ty,
+                                            None,
+                                        );
+                                        release_fns.insert(child, func);
+                                    }
+                                    iface.clone()
+                                }
                                 other => {
                                     return Err(CodegenError::Unsupported(
                                         format!(
                                             "locus `{}` release() param must \
-                                             be a locus type; got {:?}",
+                                             be a locus or an interface type; got {:?}",
                                             l.name.name, other
                                         ),
                                     ));
                                 }
                             };
-                            let fn_ty = void_t
-                                .fn_type(&[ptr_t.into(), ptr_t.into()], false);
-                            let func = self.module.add_function(
-                                &format!("{}.release", l.name.name),
-                                fn_ty,
-                                None,
-                            );
-                            methods.insert("release", func);
                             release_param =
-                                Some((p.name.name.clone(), child_locus));
+                                Some((p.name.name.clone(), child_written));
                             if hale_types::lifecycle::body_is_empty(&lc.body) {
                                 empty_lifecycle.insert("release");
                             }
@@ -2184,8 +2241,20 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .expect("locus struct declared in pass A1");
         info.methods = methods;
         info.empty_lifecycle = empty_lifecycle;
+        // A concrete `accept`'s one child keeps the one tracker A1 laid
+        // out; an interface's trackers were laid out per admitted locus.
+        if let (Some((_, child)), Some(arr), Some(cnt), Some(cap)) = (
+            accept_param.as_ref().filter(|(_, c)| accept_fns.contains_key(c) && accept_fns.len() == 1),
+            info.children_field_idx,
+            info.child_count_field_idx,
+            info.child_cap_field_idx,
+        ) {
+            info.child_buffers.insert(child.clone(), ChildBuffer { arr, cnt, cap });
+        }
         info.accept_param = accept_param;
         info.release_param = release_param;
+        info.accept_fns = accept_fns;
+        info.release_fns = release_fns;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;
         info.publish_patterns = publish_patterns;
@@ -2202,4 +2271,27 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The interface `l`'s `accept` names, if it accepts through one.
+    pub(crate) fn accept_interface_of(&self, l: &LocusDecl) -> Option<String> {
+        l.members.iter().find_map(|m| match m {
+            LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept) => {
+                let TypeExpr::Named { path, generic_args, .. } = &lc.params.first()?.ty else { return None };
+                let name = &path.segments.last()?.name;
+                (path.segments.len() == 1 && generic_args.is_empty() && self.user_interfaces.contains(name))
+                    .then(|| name.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// The loci an interface `accept` on `owner` admits: the ownership
+    /// graph's `accepts` relation, which holds for an interface clause
+    /// each locus satisfying it (`hale_types::check::interface_admits`).
+    /// In name order, so the trackers' layout is deterministic.
+    pub(crate) fn interface_children(&self, owner: &str) -> Vec<String> {
+        self.ownership_accepts.get(owner).map(|s| s.iter().cloned().collect()).unwrap_or_default()
+    }
 }
