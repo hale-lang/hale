@@ -660,7 +660,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/io_tcp.hl#adb3647c
 
-== crates/hale-stdlib/hl/json.hl#993fa30a
+== crates/hale-stdlib/hl/json.hl#8645f085
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -6673,6 +6673,10 @@ row	~.sub	Sub	main	inherited
 
 == tests/hale/is_route_test.hl
 row	Api@main1	Api	main	default
+
+== tests/hale/json_escape_runs_test.hl
+row	Rng@main1	Rng	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == tests/hale/json_unicode_escapes_test.hl
 shared	__StdJsonBuilder@main1	__StdJsonBuilder #6efd4260

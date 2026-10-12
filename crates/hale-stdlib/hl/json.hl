@@ -282,12 +282,28 @@ locus __StdJsonBuilder {
 // rebuilt `out` with `out = out + piece` per byte, which is
 // quadratic in the input length and retains every growing
 // prefix in arena storage until the call returns.
+//
+// The bytes that need no escape go into `out` a run at a time:
+// the loop only looks at each byte, and the stretch between two
+// escapes is one `append_slice`. A string with nothing to escape
+// is its own escaped form. Appended a byte at a time, a topic
+// codec carrying a 60 KB payload spent ~4 ms escaping it.
 fn __json_escape_string(s: String) -> String {
     let n = len(s);
-    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
     let mut i = 0;
+    while i < n && __json_plain_byte(std::str::byte_at_unchecked(s, i)) {
+        i = i + 1;
+    }
+    if i == n { return s; }
+    // the input as Bytes, so a run is a slice append
+    let src = std::bytes::from_string(s);
+    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
+    // where the bytes not yet in `out` begin
+    let mut mark = 0;
     while i < n {
         let c = std::str::byte_at_unchecked(s, i);
+        if __json_plain_byte(c) { i = i + 1; continue; }
+        if i > mark { out.append_slice(src, mark, i); }
         if c == 92 { out.append_str("\\\\"); }
         else if c == 34 { out.append_str("\\\""); }
         else if c == 8 { out.append_str("\\b"); }
@@ -295,18 +311,24 @@ fn __json_escape_string(s: String) -> String {
         else if c == 10 { out.append_str("\\n"); }
         else if c == 13 { out.append_str("\\r"); }
         else if c == 9 { out.append_str("\\t"); }
-        else if c < 32 {
-            // \u00XX for remaining control bytes. Hex via
-            // a tiny nibble table — keeps the helper free of
-            // arithmetic-to-hex helpers that aren't yet stdlib.
+        else {
+            // \u00XX for the remaining control bytes: the high
+            // digit is 0 or 1, the low one a lowercase hex digit.
             out.append_str("\\u00");
-            out.append_str(__json_hex_byte(c));
-        } else {
-            out.append_u8(c);
+            out.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c / 16));
+            out.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c % 16));
         }
         i = i + 1;
+        mark = i;
     }
+    if n > mark { out.append_slice(src, mark, n); }
     return std::str::clone(out.text_view());
+}
+
+// A byte a JSON string carries as itself: not a control byte, a
+// quote or a backslash.
+fn __json_plain_byte(c: Int) -> Bool {
+    return c >= 32 && c != 34 && c != 92;
 }
 
 // Reverse of __json_escape_string. Consumes two-char escapes
@@ -328,36 +350,44 @@ fn __json_escape_string(s: String) -> String {
 //     compare equal to the whole; the refusal is visible.
 //   - An escape whose four digits are not all hex passes
 //     through verbatim, like any other unknown escape.
+//
+// A string with no escape is its own unescaped form, and the
+// bytes between escapes go into `out` a run at a time.
 fn __json_unescape_string(s: String) -> String {
     let n = len(s);
+    let first = std::str::index_of(s, "\\");
+    // a backslash in the last byte escapes nothing and stays
+    if first < 0 || first + 1 >= n { return s; }
+    let src = std::bytes::from_string(s);
     let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
-    let mut i = 0;
+    // where the bytes not yet in `out` begin
+    let mut mark = 0;
+    let mut i = first;
     while i < n {
         let c = std::str::byte_at_unchecked(s, i);
-        if c == 92 && i + 1 < n {
-            let nx = std::str::byte_at_unchecked(s, i + 1);
-            if nx == 34 { out.append_u8(34); i = i + 2; }
-            else if nx == 92 { out.append_u8(92); i = i + 2; }
-            else if nx == 47 { out.append_u8(47); i = i + 2; }
-            else if nx == 98 { out.append_u8(8); i = i + 2; }
-            else if nx == 102 { out.append_u8(12); i = i + 2; }
-            else if nx == 110 { out.append_u8(10); i = i + 2; }
-            else if nx == 114 { out.append_u8(13); i = i + 2; }
-            else if nx == 116 { out.append_u8(9); i = i + 2; }
-            else if nx == 117 && i + 5 < n {
-                i = __json_unescape_u(out, s, n, i);
-            }
-            else {
-                // Unknown escape: emit verbatim (lenient).
-                out.append_u8(c);
-                out.append_u8(nx);
-                i = i + 2;
-            }
-        } else {
-            out.append_u8(c);
-            i = i + 1;
+        if c != 92 || i + 1 >= n { i = i + 1; continue; }
+        if i > mark { out.append_slice(src, mark, i); }
+        let nx = std::str::byte_at_unchecked(s, i + 1);
+        if nx == 34 { out.append_u8(34); i = i + 2; }
+        else if nx == 92 { out.append_u8(92); i = i + 2; }
+        else if nx == 47 { out.append_u8(47); i = i + 2; }
+        else if nx == 98 { out.append_u8(8); i = i + 2; }
+        else if nx == 102 { out.append_u8(12); i = i + 2; }
+        else if nx == 110 { out.append_u8(10); i = i + 2; }
+        else if nx == 114 { out.append_u8(13); i = i + 2; }
+        else if nx == 116 { out.append_u8(9); i = i + 2; }
+        else if nx == 117 && i + 5 < n {
+            i = __json_unescape_u(out, s, n, i);
         }
+        else {
+            // Unknown escape: emit verbatim (lenient).
+            out.append_u8(c);
+            out.append_u8(nx);
+            i = i + 2;
+        }
+        mark = i;
     }
+    if n > mark { out.append_slice(src, mark, n); }
     return std::str::clone(out.text_view());
 }
 
@@ -421,25 +451,6 @@ fn __json_hex4(s: String, at: Int) -> Int {
     let h3 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 3));
     if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 { return -1; }
     return h0 * 4096 + h1 * 256 + h2 * 16 + h3;
-}
-
-// Tiny two-hex-digit renderer used by escape_string for
-// \u00XX. Top nibble is always 0 for control bytes, so we
-// emit "0" + low-nibble-hex-char.
-fn __json_hex_byte(b: Int) -> String {
-    let hi = b / 16;
-    let lo = b - hi * 16;
-    return __json_hex_char(hi) + __json_hex_char(lo);
-}
-
-fn __json_hex_char(nibble: Int) -> String {
-    if nibble < 10 { return to_string(nibble); }
-    if nibble == 10 { return "a"; }
-    if nibble == 11 { return "b"; }
-    if nibble == 12 { return "c"; }
-    if nibble == 13 { return "d"; }
-    if nibble == 14 { return "e"; }
-    return "f";
 }
 
 // One hex digit's value, or -1 when `b` is not a hex digit.

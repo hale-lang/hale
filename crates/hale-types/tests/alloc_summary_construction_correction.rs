@@ -275,11 +275,12 @@ fn own_scope_let_block_scope_test() {
             // the HTTP server and its connection helper left the bundled
             // stdlib for the TCP substrate (10 fns, 7 of them hooks, one
             // of them invoked unboundedly) and `std::io::tcp::stop`'s body
-            // joined it
+            // joined it; 434 since the JSON escaper appends runs (its
+            // two hex-string helpers went, `__json_plain_byte` came)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 435 fns, 30 entry points, 116 invoked-unboundedly",
-                "+ # 435 fns, 30 entry points, 115 invoked-unboundedly",
+                "- # 434 fns, 30 entry points, 116 invoked-unboundedly",
+                "+ # 434 fns, 30 entry points, 115 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -648,8 +649,10 @@ fn own_entries_run_to_exit_programs() {
     // 89: `tests/hale/float_widening_surfaces_test.hl`; 90:
     // `tests/hale/time_return_test.hl`; 89: `dna/api`, whose `Head::run` serves a
     // surface and is no longer a run-to-exit program (R4 B); 5: GH #1490
-    // (C2), the copy's 21 returned loop accumulators no longer leak.
-    assert_eq!(moved, 5, "the run-to-exit programs among the targets that lose a site");
+    // (C2), the copy's 21 returned loop accumulators no longer leak; 6:
+    // `tests/hale/json_escape_runs_test.hl`, the property test of the
+    // run-appending JSON escaper.
+    assert_eq!(moved, 6, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(
         more,
         [
@@ -680,6 +683,9 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
+            // the property test's copy of the per-byte escaper as it was:
+            // its `\u00XX` digits were a concatenation per control byte
+            "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7859..7894 InvokedUnboundedly",
         ]
     );
 }

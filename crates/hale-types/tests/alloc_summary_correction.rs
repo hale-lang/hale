@@ -226,7 +226,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 32 targets below are the only ones the correction changes.
+/// The 33 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -237,7 +237,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 19] = [
+const CALL_LINES_ONLY: [(&str, usize); 20] = [
     ("dna/core", 1572),
     ("dna/oidc", 34),
     ("dna/organism", 1639),
@@ -259,6 +259,10 @@ const CALL_LINES_ONLY: [(&str, usize); 19] = [
     // program's function values, one of them an imported seed's, which
     // only the renames name.
     ("tests/hale/imported_fn_value_test.hl", 5),
+    // the property test of the run-appending escaper (its Rng and
+    // generators are the program's own; the escapers' stdlib bodies
+    // only the renames name)
+    ("tests/hale/json_escape_runs_test.hl", 52),
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
