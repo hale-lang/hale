@@ -25,8 +25,6 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/ws_hub.rs"]
 mod ws_hub;
 #[path = "support/ws_client.rs"]
@@ -338,25 +336,22 @@ fn fixture(name: &str) -> serde_json::Value {
 
 #[test]
 fn the_description_from_the_hubs_listener_is_the_fixture_for_the_caller() {
-    // the witness's own address is in its fixtures; the program is built for the one a test can have
-    let port = ports::free_port();
-    let src = WITNESS.replace("std::env::var(\"BIND\")", &format!("\"127.0.0.1:{port}\""));
+    // the witness's own address is in its fixtures; the program is built for
+    // port 0 (a port drawn here could be another test's by the time the
+    // program binds it), which the description states as written
+    let bind = "127.0.0.1:0";
+    let src = WITNESS.replace("std::env::var(\"BIND\")", &format!("\"{bind}\""));
     let bin = harness::unique_bin("api_hub_streams_desc");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
-    let dir = harness::unique_dir("wshub_desc");
-    let server = Server::start_on(&bin, &[], port, dir);
-    let start = Instant::now();
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(20), "the hub never listened");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let server = Server::start(&bin, &[]);
+    let port = server.port;
     for (token, name) in [("t-dave", "fills.dave.description.json"), ("t-bob", "fills.bob.description.json")] {
         let (status, body) = get_description(port, Some(token));
         assert_eq!(status, 200, "{body}");
         let got: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{e}: {body}"));
         let mut want = fixture(name);
         // (the listener's address is the one this program was built for)
-        want["listener"]["address"] = serde_json::Value::String(format!("127.0.0.1:{port}"));
+        want["listener"]["address"] = serde_json::Value::String(bind.to_string());
         assert_eq!(got, want, "the description for {token}");
         // served as the compact document, keys in the schema's order
         assert!(body.starts_with("{\"description\":1,\"exposure\":\"hub@fnv1a64:26970854397ab154/fills\""), "{body}");

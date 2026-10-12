@@ -2,7 +2,8 @@
 // `watch`, `admin` and `mcp --app`; crates/hale-cli/tests/api_clients.rs).
 // One surface, `Books`, served over the Unix socket, over HTTP and over MCP,
 // and one stream, `Ticks`, through a hub; the test fills in the addresses
-// (`@SOCK@`, `@HTTP@`, `@MCP@`, `@HUB@`) and the Unix operator (`@TRADER@`).
+// (`@SOCK@`, and `@HTTP@`, `@MCP@`, `@HUB@` as `host:0`, each on a loopback
+// address of its own) and the Unix operator (`@TRADER@`).
 //
 // Over the socket the caller holds `trader` when it is the test's own uid;
 // over HTTP and the hub the bearer `t-alice` is `alice`, who holds `trader`
@@ -67,7 +68,7 @@ main locus Desk {
         http_roles: Grants = Grants { trader: "alice" };
         hub_roles: Grants = Grants { operator: "alice" };
         counter: Counter = Counter { };
-        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:@HUB@", principals: self.bearer, roles: self.hub_roles, as: "ticks" };
+        hub: ws::Hub = ws::Hub { bind: "@HUB@", principals: self.bearer, roles: self.hub_roles, as: "ticks" };
     }
     placement { counter: cooperative(pool = desk) where async_io; }
     bindings {
@@ -75,8 +76,8 @@ main locus Desk {
     }
     run() {
         let local = api::serve(Books, unix::Rpc { path: "@SOCK@", roles: self.unix_roles }, as: "local", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
-        let web = api::serve(Books, http::Rpc { bind: "127.0.0.1:@HTTP@", codec: json, principals: self.bearer, roles: self.http_roles }, as: "web", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
-        let agent = api::serve(Books, mcp::Rpc { bind: "127.0.0.1:@MCP@", principals: self.bearer, roles: self.http_roles }, as: "agent", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        let web = api::serve(Books, http::Rpc { bind: "@HTTP@", codec: json, principals: self.bearer, roles: self.http_roles }, as: "web", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        let agent = api::serve(Books, mcp::Rpc { bind: "@MCP@", principals: self.bearer, roles: self.http_roles }, as: "agent", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
         let feed = api::serve(Books, self.hub, as: "feed", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
         feed.stop();

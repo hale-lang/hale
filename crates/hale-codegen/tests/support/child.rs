@@ -66,14 +66,31 @@ pub fn bound_port(pid: u32, err: &Stderr) -> u16 {
 
 /// The local ports of the process's listening TCP sockets.
 pub fn listening_ports(pid: u32) -> Vec<u16> {
-    let inodes: BTreeSet<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
-        .map(|d| {
-            d.flatten()
-                .filter_map(|e| std::fs::read_link(e.path()).ok())
-                .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    listening_addrs(pid).iter().map(|a| a.port()).collect()
+}
+
+/// The local addresses of the process's listening TCP (IPv4) sockets. A
+/// program with several listeners binds each on a loopback address of its
+/// own (`127.0.0.2:0`, …), so the port the kernel gave each is told apart
+/// by the address.
+///
+/// A socket this process holds too is not the child's: a child that has
+/// not finished its exec still holds the test's descriptors (the test's
+/// own listener, say, created before the spawn), and `spawn` can return
+/// while the kernel is still closing them.
+pub fn listening_addrs(pid: u32) -> Vec<std::net::SocketAddrV4> {
+    let sockets = |pid: &str| -> BTreeSet<String> {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| std::fs::read_link(e.path()).ok())
+                    .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let ours = sockets("self");
+    let inodes: BTreeSet<String> = sockets(&pid.to_string()).difference(&ours).cloned().collect();
     let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
     table
         .lines()
@@ -81,7 +98,12 @@ pub fn listening_ports(pid: u32) -> Vec<u16> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
             if f.len() > 9 && f[3] == "0A" && inodes.contains(f[9]) {
-                u16::from_str_radix(f[1].rsplit(':').next()?, 16).ok()
+                // `0100007F:1F90`: the address's bytes in network order,
+                // printed as a host-order word, then the port
+                let (ip, port) = f[1].split_once(':')?;
+                let ip = u32::from_str_radix(ip, 16).ok()?;
+                let port = u16::from_str_radix(port, 16).ok()?;
+                Some(std::net::SocketAddrV4::new(std::net::Ipv4Addr::from(u32::from_be(ip)), port))
             } else {
                 None
             }

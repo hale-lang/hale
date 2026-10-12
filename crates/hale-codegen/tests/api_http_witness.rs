@@ -25,8 +25,6 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
 #[path = "support/unix_rpc.rs"]
@@ -223,12 +221,12 @@ fn me_operator() -> String {
     format!("uid:{}", unix_rpc::me().0)
 }
 
-fn place(port: u16, token: &str, symbol: &str) -> Response {
+fn place(port: impl Reach, token: &str, symbol: &str) -> Response {
     let body = format!("{{\"symbol\":\"{symbol}\",\"qty\":10,\"limit\":12500}}");
     request(port, "POST", "/call/Orders::place", &[bearer(token), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some(&body))
 }
 
-fn cancel(port: u16, token: &str, order: i64) -> Response {
+fn cancel(port: impl Reach, token: &str, order: i64) -> Response {
     let body = format!("{{\"order\":{order}}}");
     request(port, "POST", "/call/Orders::cancel", &[bearer(token), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some(&body))
 }
@@ -243,7 +241,7 @@ fn start(bound: u32, env: &[(&str, &str)]) -> Server {
     all.extend_from_slice(env);
     let server = Server::start(&desk(bound), &all);
     server.ready();
-    wait_listening(server.port2);
+    wait_listening(server.port2());
     wait_accepting_unix(&server.sock());
     server
 }
@@ -256,14 +254,14 @@ fn every_member_reaches_its_own_receiver_and_its_own_pool() {
     let a = place(server.port, "t-alice", "ACME");
     assert_eq!(a.status, 200, "{}", a.body);
     assert_eq!(a.body, "{\"order\":41,\"notional\":125000}");
-    let c = place(server.port2, "t-carol", "ACME");
+    let c = place(server.port2(), "t-carol", "ACME");
     assert_eq!(c.status, 200, "{}", c.body);
     assert_eq!(c.body, "{\"order\":9001,\"notional\":125000}");
     // each exposure's cancel finds only its own instance's orders
     let miss = cancel(server.port, "t-alice", 9001);
     assert_eq!(miss.status, 422, "public's Orders never placed 9001: {}", miss.body);
     assert_eq!(miss.body, "{\"code\":\"unknown_order\",\"reason\":\"no order 9001\"}");
-    let hit = cancel(server.port2, "t-carol", 9001);
+    let hit = cancel(server.port2(), "t-carol", 9001);
     assert_eq!(hit.status, 200, "partner's Orders placed 9001: {}", hit.body);
     // the admin exposure is bound to the same instance as `public`: it
     // cancels the order public placed, over the unix socket
@@ -275,7 +273,7 @@ fn every_member_reaches_its_own_receiver_and_its_own_pool() {
     // pools: partner's Orders runs on the pool `partner`. A call that holds
     // that pool's thread for 700 ms does not stop public's receiver (pool
     // `desk`) from answering.
-    let busy = send(server.port2, &request_text("POST", "/call/Orders::place", &[bearer("t-carol"), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some("{\"symbol\":\"BUSY\",\"qty\":10,\"limit\":12500}")));
+    let busy = send(server.port2(), &request_text("POST", "/call/Orders::place", &[bearer("t-carol"), h("Hale-Surface-Digest", PUBLIC_DIGEST)], Some("{\"symbol\":\"BUSY\",\"qty\":10,\"limit\":12500}")));
     std::thread::sleep(Duration::from_millis(150));
     let started = Instant::now();
     let quick = place(server.port, "t-alice", "ACME");
@@ -296,7 +294,7 @@ fn a_shared_handler_meets_each_surfaces_requires() {
     // through `Admin`, and each exposure reads its own role source
     // alice holds trader under public, not under partner, whose trader is carol
     assert_eq!(cancel(server.port, "t-alice", 41).status, 200);
-    let denied = cancel(server.port2, "t-alice", 41);
+    let denied = cancel(server.port2(), "t-alice", 41);
     assert_eq!(denied.status, 403, "{}", denied.body);
     assert_eq!(denied.body, "{\"refusal\":{\"kind\":\"unauthorized\",\"reason\":\"Orders::cancel requires trader\",\"requires\":[\"trader\"]}}");
     let bob = cancel(server.port, "t-bob", 41);
@@ -306,7 +304,7 @@ fn a_shared_handler_meets_each_surfaces_requires() {
     let line = admin(&server, &format!("{{\"call\":\"Orders::cancel\",\"payload\":{{\"order\":999}},\"id\":\"a-1\",\"digest\":\"{ADMIN_DIGEST}\"}}"));
     assert!(line.contains("\"ok\":false,\"error\":{\"code\":\"unknown_order\""), "the operator is let through to the handler: {line}");
     // the descriptions differ with the exposure's source: carol may cancel through partner, not public
-    let d = request(server.port2, "GET", "/.description", &[bearer("t-carol")], None);
+    let d = request(server.port2(), "GET", "/.description", &[bearer("t-carol")], None);
     assert!(d.body.contains("\"name\":\"Orders::cancel\""), "{}", d.body);
     let d = request(server.port, "GET", "/.description", &[bearer("t-carol")], None);
     assert!(!d.body.contains("\"name\":\"Orders::cancel\""), "carol holds nothing under public: {}", d.body);
@@ -317,7 +315,7 @@ fn a_shared_handler_meets_each_surfaces_requires() {
 #[test]
 fn a_digest_mismatch_names_the_served_digest_on_each_transport() {
     let server = start(64, &[]);
-    for (port, served) in [(server.port, PUBLIC_DIGEST), (server.port2, PUBLIC_DIGEST)] {
+    for (port, served) in [(server.port.addr(), PUBLIC_DIGEST), (server.port2(), PUBLIC_DIGEST)] {
         let got = request(port, "POST", "/call/Orders::place", &[bearer("t-alice"), h("Hale-Surface-Digest", "fnv1a64:0123456789abcdef")], Some("{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}"));
         assert_eq!(got.status, 409, "{}", got.body);
         assert_eq!(
@@ -338,19 +336,19 @@ fn every_outcome_on_each_transport() {
     let server = start(64, &[]);
     // the HTTP exposures (public is replayed byte for byte in api_http.rs; the
     // second serving of the surface answers the same five outcomes)
-    let result = place(server.port2, "t-carol", "ACME");
+    let result = place(server.port2(), "t-carol", "ACME");
     assert_eq!((result.status, result.body.as_str()), (200, "{\"order\":9001,\"notional\":125000}"));
-    let handler_error = cancel(server.port2, "t-carol", 99999);
+    let handler_error = cancel(server.port2(), "t-carol", 99999);
     assert_eq!((handler_error.status, handler_error.body.as_str()), (422, "{\"code\":\"unknown_order\",\"reason\":\"no order 99999\"}"));
-    let refused = cancel(server.port2, "t-bob", 9001);
+    let refused = cancel(server.port2(), "t-bob", 9001);
     assert_eq!(refused.status, 403, "{}", refused.body);
-    let malformed = request(server.port2, "POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"ACME\",\"limit\":12500}"));
+    let malformed = request(server.port2(), "POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"ACME\",\"limit\":12500}"));
     assert_eq!((malformed.status, malformed.body.as_str()), (400, "{\"refusal\":{\"kind\":\"malformed\",\"reason\":\"missing_field: qty\"}}"));
-    let nobody = place(server.port2, "t-mallory", "ACME");
+    let nobody = place(server.port2(), "t-mallory", "ACME");
     assert_eq!((nobody.status, nobody.body.as_str()), (401, "{\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":\"no such token\"}}"));
-    let violation = request(server.port2, "POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"ACME\",\"qty\":50000,\"limit\":12500}"));
+    let violation = request(server.port2(), "POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"ACME\",\"qty\":50000,\"limit\":12500}"));
     assert_eq!((violation.status, violation.body.as_str()), (500, "{\"refusal\":{\"kind\":\"server\"}}"));
-    let after = place(server.port2, "t-carol", "ACME");
+    let after = place(server.port2(), "t-carol", "ACME");
     assert_eq!(after.status, 503, "the receiver that violated is unavailable: {}", after.body);
     assert_eq!(after.body, "{\"refusal\":{\"kind\":\"unavailable\",\"reason\":\"the receiver of Orders::place is unavailable; the call did not run\"}}");
     // ... while public's instance is another receiver, untouched by it
@@ -383,13 +381,13 @@ fn stopping_one_exposure_leaves_the_others_serving() {
         std::thread::sleep(Duration::from_millis(10));
     }
     // partner and admin go on, with their own state
-    let c = place(server.port2, "t-carol", "ACME");
+    let c = place(server.port2(), "t-carol", "ACME");
     assert_eq!((c.status, c.body.as_str()), (200, "{\"order\":9001,\"notional\":125000}"));
     let line = admin(&server, &format!("{{\"call\":\"Orders::cancel\",\"payload\":{{\"order\":41}},\"id\":\"a-1\",\"digest\":\"{ADMIN_DIGEST}\"}}"));
     assert!(line.contains("\"ok\":true"), "admin still serves public's Orders: {line}");
     server.stop_one("partner");
     let start = Instant::now();
-    while !closed(server.port2) {
+    while !closed(server.port2()) {
         assert!(start.elapsed() < Duration::from_secs(10), "partner's listener closed after its stop()");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -413,14 +411,14 @@ fn a_connection_that_breaks_while_the_listeners_serve_others() {
     let server = start(64, &[]);
     // cut requests on both HTTP listeners, and a unix client that vanishes
     send(server.port, "POST /call/Orders::place HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"sym").close();
-    send(server.port2, "GET /.desc").close();
+    send(server.port2(), "GET /.desc").close();
     {
         use std::io::Write;
         let mut s = std::os::unix::net::UnixStream::connect(server.sock()).expect("connect");
         s.write_all(b"{\"call\":\"Orders::cancel\",\"payl").expect("write");
     }
     assert_eq!(place(server.port, "t-alice", "ACME").status, 200);
-    assert_eq!(place(server.port2, "t-carol", "ACME").status, 200);
+    assert_eq!(place(server.port2(), "t-carol", "ACME").status, 200);
     let line = admin(&server, "{\"describe\":true}");
     assert!(line.contains("\"ok\":true"), "{line}");
     let done = server.finish();
@@ -439,7 +437,7 @@ fn a_client_that_goes_away_after_its_call_started_leaves_the_work_to_finish() {
     let full = place(server.port, "t-alice", "ACME");
     assert_eq!(full.status, 429, "the lost call still holds its place: {}", full.body);
     // partner is another exposure with its own bound
-    assert_eq!(place(server.port2, "t-carol", "ACME").status, 200);
+    assert_eq!(place(server.port2(), "t-carol", "ACME").status, 200);
     // once the handler returns, the place is released, once
     let start = Instant::now();
     loop {
@@ -470,17 +468,17 @@ fn the_desk_program_runs_clean_under_asan() {
     let operator = me_operator();
     let server = Server::start(&bin, &[("OPERATOR", &operator), ("LOTUS_NO_CHUNK_POOL", "1"), ("SLOW_MS", "300")]);
     server.ready();
-    wait_listening(server.port2);
+    wait_listening(server.port2());
     assert_eq!(place(server.port, "t-alice", "ACME").status, 200);
-    assert_eq!(place(server.port2, "t-carol", "ACME").status, 200);
+    assert_eq!(place(server.port2(), "t-carol", "ACME").status, 200);
     assert_eq!(request(server.port, "GET", "/.description", &[bearer("t-alice")], None).status, 200);
     assert_eq!(place(server.port, "t-alice", "ACME").status, 200);
     assert_eq!(request(server.port, "POST", "/call/Orders::place", &[bearer("t-alice")], Some("{\"symbol\":\"ACME\",\"qty\":50000,\"limit\":1}")).status, 500);
-    send(server.port2, "POST /call/Orders::place HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"sym").close();
-    send(server.port2, &request_text("POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"SLOW\",\"qty\":10,\"limit\":12500}"))).close();
+    send(server.port2(), "POST /call/Orders::place HTTP/1.1\r\nContent-Length: 100\r\n\r\n{\"sym").close();
+    send(server.port2(), &request_text("POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"SLOW\",\"qty\":10,\"limit\":12500}"))).close();
     let line = admin(&server, "{\"describe\":true}");
     assert!(line.contains("\"ok\":true"), "{line}");
-    let pending = send(server.port2, &request_text("POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"SLOW\",\"qty\":10,\"limit\":12500}")));
+    let pending = send(server.port2(), &request_text("POST", "/call/Orders::place", &[bearer("t-carol")], Some("{\"symbol\":\"SLOW\",\"qty\":10,\"limit\":12500}")));
     std::thread::sleep(Duration::from_millis(100));
     let done = server.finish();
     drop(pending);

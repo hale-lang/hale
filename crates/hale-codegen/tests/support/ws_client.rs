@@ -4,8 +4,27 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::time::{Duration, Instant};
+
+/// Where a client reaches a hub: a port on `127.0.0.1`, or an address on
+/// another loopback address (a program that holds several listeners binds
+/// each on one of its own).
+pub trait HubAt: Copy {
+    fn at(self) -> SocketAddrV4;
+}
+
+impl HubAt for u16 {
+    fn at(self) -> SocketAddrV4 {
+        SocketAddrV4::new(Ipv4Addr::LOCALHOST, self)
+    }
+}
+
+impl HubAt for SocketAddrV4 {
+    fn at(self) -> SocketAddrV4 {
+        self
+    }
+}
 
 /// What a read of a connection found.
 #[derive(Debug, PartialEq, Clone)]
@@ -35,21 +54,21 @@ pub struct Ws {
 impl Ws {
     /// Connect with `Authorization: Bearer <token>` (or none), and expect
     /// the upgrade.
-    pub fn connect(port: u16, token: Option<&str>) -> Ws {
+    pub fn connect(port: impl HubAt, token: Option<&str>) -> Ws {
         let (ws, status) = Ws::try_connect(port, &headers(token), "/");
         assert!(status.starts_with("HTTP/1.1 101"), "the upgrade was refused: {}", ws.head);
         ws
     }
 
     /// Connect presenting the credential as `?access_token=`.
-    pub fn connect_with_query(port: u16, token: &str) -> Ws {
+    pub fn connect_with_query(port: impl HubAt, token: &str) -> Ws {
         let (ws, status) = Ws::try_connect(port, &headers(None), &format!("/?access_token={token}"));
         assert!(status.starts_with("HTTP/1.1 101"), "the upgrade was refused: {}", ws.head);
         ws
     }
 
     /// Send a handshake with `extra` header lines and read the response head.
-    pub fn try_connect(port: u16, extra: &str, path: &str) -> (Ws, String) {
+    pub fn try_connect(port: impl HubAt, extra: &str, path: &str) -> (Ws, String) {
         let mut s = connect_tcp(port);
         let req = format!(
             "GET {path} HTTP/1.1\r\nHost: hub\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {RFC_KEY}\r\nSec-WebSocket-Version: 13\r\n{extra}\r\n"
@@ -199,13 +218,13 @@ fn headers(token: Option<&str>) -> String {
     }
 }
 
-fn connect_tcp(port: u16) -> TcpStream {
+fn connect_tcp(port: impl HubAt) -> TcpStream {
     let start = Instant::now();
     loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
+        match TcpStream::connect(port.at()) {
             Ok(s) => return s,
             Err(e) => {
-                assert!(start.elapsed() < Duration::from_secs(20), "could not connect to {port}: {e}");
+                assert!(start.elapsed() < Duration::from_secs(20), "could not connect to {}: {e}", port.at());
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
@@ -255,7 +274,7 @@ fn parse(buf: &[u8]) -> Option<(Frame, usize)> {
 }
 
 /// `GET /.description` with the credential (or none): the status and body.
-pub fn get_description(port: u16, token: Option<&str>) -> (u16, String) {
+pub fn get_description(port: impl HubAt, token: Option<&str>) -> (u16, String) {
     let mut s = connect_tcp(port);
     s.set_read_timeout(Some(Duration::from_secs(20))).expect("timeout");
     let req = format!("GET /.description HTTP/1.1\r\nHost: hub\r\n{}Connection: close\r\n\r\n", headers(token));

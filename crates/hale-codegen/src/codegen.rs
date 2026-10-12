@@ -2917,6 +2917,15 @@ fn link_wasm(
     let nonce = WASM_NONCE.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir()
         .join(format!("hale-wasm-{}-{}", std::process::id(), nonce));
+    // Removed however the link ends: a clang or wasm-ld failure returns
+    // early, and used to leave the staged sources behind in the temp dir.
+    struct Staging(std::path::PathBuf);
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _staging = Staging(dir.clone());
     let wasm_sub = dir.join("wasm");
     std::fs::create_dir_all(&wasm_sub)
         .map_err(|e| mkerr(format!("wasm staging dir: {e}")))?;
@@ -3028,7 +3037,6 @@ fn link_wasm(
         .arg(output)
         .status()
         .map_err(|e| mkerr(format!("wasm-ld (is lld/wasm-ld installed?): {e}")))?;
-    let _ = std::fs::remove_dir_all(&dir);
     if !status.success() {
         return Err(mkerr(format!("wasm-ld failed: {status}")));
     }

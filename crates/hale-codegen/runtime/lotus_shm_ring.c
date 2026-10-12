@@ -1193,6 +1193,13 @@ struct shm_ring_subscriber_t {
      * the reader-thread fn and close fn branch on is_layout. */
     int is_layout;
     lotus_shm_layout_ring_t *lring;
+    /* The layout ring's cursor when the subscription was registered:
+     * where its reader starts. Read by the registering thread, before
+     * the reader thread exists, so a record published after
+     * registration returns is delivered however late the reader thread
+     * is first scheduled. Reading it on the thread's first poll instead
+     * skipped every record published in between. */
+    uint64_t start_cursor;
     void (*handler_fn)(void *self, void *slot);
     void *self_ptr;
     /* Reused Bytes-shaped scratch blob for the raw (value_size==0)
@@ -1297,9 +1304,11 @@ static void *shm_ring_batch_reader_thread(void *arg) {
  * `len == pad_sentinel` is a tail-pad that fills to the wrap.
  *
  * v1 simplifications (matching the native reader):
- *   - First poll starts `local` at the producer's current cursor, so
- *     a subscriber reads records published AFTER it attaches (no
- *     historical replay).
+ *   - `local` starts at the producer's cursor as it stood when the
+ *     subscription was registered (`start_cursor`), so a subscriber
+ *     reads the records published after it attaches (no historical
+ *     replay) — every one of them, however late this thread first
+ *     runs.
  *   - Lap handling is lossy + safe: if the producer ran more than
  *     `capacity` bytes ahead of us, the bytes we missed have been
  *     overwritten, so we resync to the producer's cursor (a commit
@@ -1341,22 +1350,18 @@ static void *shm_ring_layout_reader_thread(void *arg) {
          * data_at + (S % slot_count) * slot_size. Matches
          * lotus_shm_ring_read_slot: skip a seqno the producer has already
          * lapped (published - S >= slot_count) rather than read a torn
-         * slot. Starts live — no replay of pre-attach slots, like the
+         * slot. Starts at the seqno published when the subscription was
+         * registered — no replay of pre-attach slots, like the
          * byte_records reader. */
         uint64_t slot_size = r->slot_size;
         uint64_t slot_count = r->slot_count;
         const _Atomic uint64_t *seqno_p =
             (const _Atomic uint64_t *)(base + d->cursor_off);
-        uint64_t last_seen = 0;
-        int initialized = 0;
+        uint64_t last_seen = sub->start_cursor;
         while (!atomic_load_explicit(&sub->should_stop,
                                       memory_order_acquire)) {
             uint64_t published =
                 atomic_load_explicit(seqno_p, memory_order_acquire);
-            if (!initialized) {
-                last_seen = published;
-                initialized = 1;
-            }
             if (published <= last_seen) {
                 struct timespec ts = {0, 100 * 1000};  /* 100us */
                 nanosleep(&ts, NULL);
@@ -1380,14 +1385,13 @@ static void *shm_ring_layout_reader_thread(void *arg) {
     }
 
     uint64_t cap = r->capacity;
-    uint64_t local = 0;
+    uint64_t local = sub->start_cursor;
     /* `pos == local % cap`, maintained incrementally so the per-record
      * walk has no 64-bit modulo (capacity is runtime, not required
      * power-of-two). The `% cap` only appears on the rare resync paths
      * (init / lap / desync), never per record. See
      * experiments/foreign-ring-throughput. */
-    uint64_t pos = 0;
-    int initialized = 0;
+    uint64_t pos = local % cap;
     /* Per-record header size before the payload. 0 (the len-prefix-only
      * model) → the prefix IS the header. record_header_bytes is a
      * multiple of align (validated at typecheck), so the existing
@@ -1417,11 +1421,6 @@ static void *shm_ring_layout_reader_thread(void *arg) {
         uint64_t committed = atomic_load_explicit(
             (const _Atomic uint64_t *)(base + d->cursor_off),
             memory_order_acquire);
-        if (!initialized) {
-            local = committed;
-            pos = committed % cap;
-            initialized = 1;
-        }
         if (committed <= local) {
             struct timespec ts = {0, 100 * 1000};  /* 100us */
             nanosleep(&ts, NULL);
@@ -1667,6 +1666,11 @@ void lotus_bus_register_subscriber_shm_ring_layout(
     }
     sub->is_layout = 1;
     sub->lring = r;
+    /* where the reader starts: the cursor now, while this thread still
+     * holds the registration (see `start_cursor`) */
+    sub->start_cursor = atomic_load_explicit(
+        (const _Atomic uint64_t *)((char *)r->base + r->desc.cursor_off),
+        memory_order_acquire);
     sub->handler_fn = handler_fn;
     sub->self_ptr = self_ptr;
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);

@@ -11,12 +11,12 @@
 //! --observe x.hl | cat` never returned; nor did a run whose program
 //! simply exited.
 //!
-//! The session's port is fuse-hl's fixed 8787 — `hale run --observe`
-//! takes no port, so there is no `free_port()` to hand it. That can
-//! only make an attempt VACUOUS (a session that cannot bind exits at
-//! once, and then there is no orphan to leak), never falsely red, so
-//! each leg asserts it had a live session to kill and retries if it
-//! did not, rather than passing on a box where nothing ran.
+//! The session serves on a port the kernel picks (`--observe=0`): the
+//! default 8787 is a port anything on the box may hold (another test,
+//! an iris someone left open), and a session that cannot bind exits at
+//! once and leaves the attempt VACUOUS. Each leg still asserts it had a
+//! live session to kill, and retries if it did not, rather than passing
+//! on a box where nothing ran.
 #![cfg(target_os = "linux")]
 
 use std::io::Read;
@@ -128,7 +128,7 @@ fn observe(prog: &Path, dir: &Path, log: &str) -> Child {
     let runtime = dir.join("runtime");
     std::fs::create_dir_all(&runtime).unwrap();
     Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["run", "--observe"])
+        .args(["run", "--observe=0"])
         .arg(prog)
         .env("XDG_CACHE_HOME", cache_root())
         // a private registry: this session discovers no other test's
@@ -171,7 +171,8 @@ fn killed_hale_leaves_nothing(dir: &Path, prog: &Path) -> Result<(), String> {
     let (seen, eof) = drain(hale.stdout.take().unwrap());
 
     // Everything is up when the program has printed through the pipe
-    // and a descendant is serving on 8787. The first run on a machine
+    // and fuse-hl has said it listens (relayed to hale's stderr, on the
+    // port the kernel gave it). The first run on a machine
     // builds the observer first, which is why this waits as long as
     // `iris_cli.rs` does.
     let deadline = Instant::now() + Duration::from_secs(240);
@@ -182,10 +183,8 @@ fn killed_hale_leaves_nothing(dir: &Path, prog: &Path) -> Result<(), String> {
         }
         session = descendants(pid);
         let running = String::from_utf8_lossy(&seen.lock().unwrap()).contains("ready");
-        if running
-            && session.iter().any(|(_, c)| c.contains("fuse-hl"))
-            && std::net::TcpStream::connect(("127.0.0.1", 8787)).is_ok()
-        {
+        let listening = std::fs::read_to_string(dir.join("kill-leg.err")).unwrap_or_default().contains("fuse-hl: listening");
+        if running && listening && session.iter().any(|(_, c)| c.contains("fuse-hl")) {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -196,7 +195,7 @@ fn killed_hale_leaves_nothing(dir: &Path, prog: &Path) -> Result<(), String> {
         }
         kill(pid);
         let _ = hale.wait();
-        return Err(format!("no fuse-hl under pid {pid} within 240s (port 8787 busy?)"));
+        return Err(format!("no fuse-hl under pid {pid} within 240s"));
     };
 
     kill(pid);
@@ -287,7 +286,7 @@ fn program_exit_closes_the_pipe(dir: &Path, prog: &Path) -> Result<(), String> {
     }
     let _ = hale.wait();
     if observed.is_empty() {
-        return Err("no fuse-hl ran under this leg (port 8787 busy?)".into());
+        return Err("no fuse-hl ran under this leg".into());
     }
     let out = String::from_utf8_lossy(&seen.lock().unwrap()).to_string();
     assert!(out.contains("ready"), "the program's own output reaches the pipe: {out:?}");

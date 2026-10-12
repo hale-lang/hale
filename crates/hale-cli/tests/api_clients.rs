@@ -9,7 +9,7 @@
 //! may not call is not listed, and a stream is reached through the hub.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -21,8 +21,57 @@ fn hale() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hale"))
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port()
+/// Where the fixture's listeners bind: port 0, each on a loopback address
+/// of its own, so the port the kernel gave each is read back by address
+/// ([`listening`]). A port drawn here and written into the build would be
+/// free, not reserved, for the whole compile and run: another test could
+/// bind it first.
+const HTTP_BIND: &str = "127.0.0.2:0";
+const MCP_BIND: &str = "127.0.0.3:0";
+const HUB_BIND: &str = "127.0.0.4:0";
+
+/// The listening TCP sockets of process `pid`, by local address: its own,
+/// not one this process holds too (a child that has not finished its exec
+/// still holds ours).
+fn listening(pid: u32) -> Vec<SocketAddrV4> {
+    let sockets = |pid: &str| -> std::collections::BTreeSet<String> {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| std::fs::read_link(e.path()).ok())
+                    .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let ours = sockets("self");
+    let theirs = sockets(&pid.to_string());
+    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).unwrap_or_default();
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() > 9 && f[3] == "0A" && theirs.contains(f[9]) && !ours.contains(f[9]) {
+                let (ip, port) = f[1].split_once(':')?;
+                let ip = u32::from_str_radix(ip, 16).ok()?;
+                Some(SocketAddrV4::new(Ipv4Addr::from(u32::from_be(ip)), u16::from_str_radix(port, 16).ok()?))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The port `hale admin --port 0` was given, from its banner
+/// (`hale admin: http://127.0.0.1:<port>/?token=…`).
+fn banner_port(banner: &str) -> u16 {
+    banner
+        .split("http://127.0.0.1:")
+        .nth(1)
+        .and_then(|r| r.split('/').next())
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| panic!("the banner names its port: {banner}"))
 }
 
 fn uid() -> u32 {
@@ -38,37 +87,51 @@ fn unique_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// The fixture program's addresses.
+static BUILD_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+extern "C" fn remove_build_dir() {
+    if let Some(dir) = BUILD_DIR.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// The fixture program's addresses, as one run of it bound them.
 #[derive(Clone)]
 struct Addrs {
     sock: PathBuf,
-    http: u16,
-    mcp: u16,
-    hub: u16,
+    http: SocketAddrV4,
+    mcp: SocketAddrV4,
+    hub: SocketAddrV4,
 }
 
-/// The fixture built once per process: its binary and the addresses it was
-/// built with (they are literals of the serve sites).
-fn built() -> &'static (PathBuf, Addrs) {
-    static BUILT: OnceLock<(PathBuf, Addrs)> = OnceLock::new();
+/// The fixture built once per process: its binary and its socket's path
+/// (the listeners' binds are literals of the serve sites, port 0).
+fn built() -> &'static (PathBuf, PathBuf) {
+    static BUILT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = unique_dir("build");
+        // the binary is this process's for its whole life (the `OnceLock`
+        // never drops it): it goes when the process exits, passed or panicked
+        BUILD_DIR.set(dir.clone()).expect("built once");
+        // SAFETY: registers a plain function with no captured state.
+        unsafe {
+            libc::atexit(remove_build_dir);
+        }
         // a Unix socket path is at most ~100 bytes: keep it short
         let sock = std::env::temp_dir().join(format!("hc{}.sock", std::process::id()));
-        let addrs = Addrs { sock, http: free_port(), mcp: free_port(), hub: free_port() };
         let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api_clients/main.hl")).expect("fixture");
         let src = src
-            .replace("@SOCK@", &addrs.sock.display().to_string())
-            .replace("@HTTP@", &addrs.http.to_string())
-            .replace("@MCP@", &addrs.mcp.to_string())
-            .replace("@HUB@", &addrs.hub.to_string())
+            .replace("@SOCK@", &sock.display().to_string())
+            .replace("@HTTP@", HTTP_BIND)
+            .replace("@MCP@", MCP_BIND)
+            .replace("@HUB@", HUB_BIND)
             .replace("@TRADER@", &format!("uid:{}", uid()));
         let file = dir.join("main.hl");
         std::fs::write(&file, src).expect("write fixture");
         let bin = dir.join("clients_fixture");
         let out = hale().arg("build").arg(&file).arg("-o").arg(&bin).env("HALE_SKIP_STALE_CHECK", "1").output().expect("hale build");
         assert!(out.status.success(), "build: {}", String::from_utf8_lossy(&out.stderr));
-        (bin, addrs)
+        (bin, sock)
     })
 }
 
@@ -80,15 +143,24 @@ struct Running {
 
 impl Running {
     fn start() -> Running {
-        let (bin, a) = built().clone();
-        let _ = std::fs::remove_file(&a.sock);
+        let (bin, sock) = built().clone();
+        let _ = std::fs::remove_file(&sock);
         let child = Command::new(&bin).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().expect("run the fixture");
-        let run = Running { child, a: a.clone() };
-        // the socket exists, and every listener accepts: bounded, not a sleep
+        let pid = child.id();
+        let unbound = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+        let mut run = Running { child, a: Addrs { sock, http: unbound, mcp: unbound, hub: unbound } };
+        // the socket exists, and every listener is bound and accepts: bounded, not a sleep
         let start = Instant::now();
-        let ready = || a.sock.exists() && [a.http, a.mcp, a.hub].iter().all(|p| TcpStream::connect(("127.0.0.1", *p)).is_ok());
-        while !ready() {
-            assert!(start.elapsed() < Duration::from_secs(30), "the fixture never began listening");
+        loop {
+            let on = listening(pid);
+            let at = |bind: &str| on.iter().find(|a| a.ip().to_string() == bind.split(':').next().unwrap()).copied();
+            if let (true, Some(http), Some(mcp), Some(hub)) = (run.a.sock.exists(), at(HTTP_BIND), at(MCP_BIND), at(HUB_BIND)) {
+                if [http, mcp, hub].iter().all(|a| TcpStream::connect(a).is_ok()) {
+                    run.a = Addrs { sock: run.a.sock.clone(), http, mcp, hub };
+                    break;
+                }
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "the fixture never began listening: {on:?}");
             std::thread::sleep(Duration::from_millis(20));
         }
         run
@@ -97,13 +169,13 @@ impl Running {
         self.a.sock.display().to_string()
     }
     fn http(&self) -> String {
-        format!("http://127.0.0.1:{}", self.a.http)
+        format!("http://{}", self.a.http)
     }
     fn hub(&self) -> String {
-        format!("ws://127.0.0.1:{}", self.a.hub)
+        format!("ws://{}", self.a.hub)
     }
     fn mcp(&self) -> String {
-        format!("mcp://127.0.0.1:{}", self.a.mcp)
+        format!("mcp://{}", self.a.mcp)
     }
 }
 
@@ -306,11 +378,11 @@ fn admin_request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], 
 fn admin_serves_the_description_calls_through_and_refuses_other_sites() {
     let _g = exclusive();
     let app = Running::start();
-    let port = free_port();
     let mut cmd = hale();
-    cmd.args(["admin", &app.sock(), "--port", &port.to_string()]);
+    cmd.args(["admin", &app.sock(), "--port", "0"]);
     let admin = Lines::spawn(cmd);
     let banner = admin.next();
+    let port = banner_port(&banner);
     let token = banner.split("token=").nth(1).and_then(|t| t.split_whitespace().next()).expect("the banner carries the token").to_string();
     let host = format!("127.0.0.1:{port}");
     let ok = |extra: &[(&'static str, &str)]| -> Vec<(&'static str, String)> {
@@ -359,11 +431,11 @@ fn admin_serves_the_description_calls_through_and_refuses_other_sites() {
 fn admin_over_a_hub_tails_a_stream() {
     let _g = exclusive();
     let app = Running::start();
-    let port = free_port();
     let mut cmd = hale();
-    cmd.args(["admin", &app.hub(), "--port", &port.to_string(), "--token", "t-alice"]);
+    cmd.args(["admin", &app.hub(), "--port", "0", "--token", "t-alice"]);
     let admin = Lines::spawn(cmd);
     let banner = admin.next();
+    let port = banner_port(&banner);
     let token = banner.split("token=").nth(1).and_then(|t| t.split_whitespace().next()).unwrap().to_string();
     let host = format!("127.0.0.1:{port}");
     // the tail is server-sent events: the first data line is `subscribed`, then the event

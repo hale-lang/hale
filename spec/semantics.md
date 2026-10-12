@@ -2453,9 +2453,10 @@ omitted). A layout binding that is only *subscribed* in this bundle
 creates nothing — it attaches the foreign producer's ring.
 
 *Limitations (v1).* A subscriber reads records published *after*
-it attaches (no historical replay) — so an in-process producer must
-not publish before the consumer's reader thread has started (a
-non-issue for an external long-running producer like an external market-data feed). Lap
+it attaches (no historical replay): it starts at the producer's
+cursor as it stands when the subscription is registered, so every
+record published after that is delivered, however late the reader
+thread first runs; a record published before it is not. Lap
 handling is lossy + safe: if the producer runs more than `capacity`
 bytes ahead, the missed bytes are gone, so the reader resyncs to the
 producer's cursor (a commit boundary) and resumes rather than

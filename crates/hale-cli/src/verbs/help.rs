@@ -20,7 +20,7 @@ pub(crate) fn usage() {
     eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
     eprintln!("    hale fleet check|dump|sign    compose topology artifacts across binaries (also attest|keygen)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
-    eprintln!("        [--observe] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
+    eprintln!("        [--observe[=<port>]] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
     eprintln!("        (flags before the target; after it is the program's own argv)");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
@@ -177,6 +177,9 @@ see.
   --observe                        run the program with LOTUS_OBS=1
                                    and an iris session beside it,
                                    for its lifetime
+  --observe=<port>                 the same, the session serving on
+                                   <port> (0: one the kernel picks)
+                                   instead of 8787
 
 The build options are `hale build`'s, with the same meanings, and
 they are part of the execution identity a recording carries: a run

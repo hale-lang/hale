@@ -21,6 +21,9 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 /// The harness's build helpers (`support/build.rs`, `support/harness.rs`):
 /// every way a test builds an executable. A file that calls one of them
 /// builds, and is held to `unique_bin` for the path it builds to.
@@ -356,4 +359,47 @@ fn scan_is_not_vacuous() {
          env-var sweep did not land",
         via_options
     );
+}
+
+/// The child side of [`a_unique_path_is_removed_when_its_process_ends`]:
+/// set on the process it runs, never in this one's environment.
+const EXIT_PROBE: &str = "HALE_TEST_UNIQUE_BIN_EXIT_PROBE";
+
+/// What `unique_bin` hands out is gone once the process that drew it
+/// has exited, passed or panicked: the binary, a scratch directory, and
+/// what a build writes beside a binary (`<bin>.o`). The programs most
+/// tests build are held by a `static OnceLock`, which never drops, so
+/// the removal is the process's exit and not a guard value; before it,
+/// every test process left its 7-14 MB binary in the temp dir.
+#[test]
+fn a_unique_path_is_removed_when_its_process_ends() {
+    if let Ok(mode) = std::env::var(EXIT_PROBE) {
+        let bin = harness::unique_bin("exit_probe");
+        std::fs::write(&bin, "a binary").expect("write the probe binary");
+        let beside = PathBuf::from(format!("{}.o", bin.display()));
+        std::fs::write(&beside, "an object").expect("write beside it");
+        let dir = harness::unique_dir("exit_probe_dir");
+        std::fs::write(dir.join("f"), "a file").expect("write in the directory");
+        for p in [&bin, &beside, &dir] {
+            println!("MADE {}", p.display());
+        }
+        if mode == "panic" {
+            panic!("the probe fails on purpose");
+        }
+        return;
+    }
+    let me = std::env::current_exe().expect("this test binary");
+    for (mode, passes) in [("pass", true), ("panic", false)] {
+        let out = std::process::Command::new(&me)
+            .args(["--exact", "a_unique_path_is_removed_when_its_process_ends", "--nocapture"])
+            .env(EXIT_PROBE, mode)
+            .output()
+            .expect("run the probe");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.success(), passes, "the {mode} probe: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+        let made: Vec<PathBuf> = stdout.lines().filter_map(|l| l.strip_prefix("MADE ")).map(PathBuf::from).collect();
+        assert_eq!(made.len(), 3, "the {mode} probe named what it made: {stdout}");
+        let left: Vec<&PathBuf> = made.iter().filter(|p| p.exists()).collect();
+        assert!(left.is_empty(), "the {mode} probe exited and left {left:?}");
+    }
 }

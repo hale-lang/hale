@@ -228,7 +228,12 @@ impl Client {
     /// it never has to wait on, and read until the server's SETTINGS is in and
     /// acknowledged.
     pub fn connect(port: u16) -> Client {
-        let sock = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        Client::connect_at(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port))
+    }
+
+    /// [`Client::connect`] to a listener on another loopback address.
+    pub fn connect_at(addr: std::net::SocketAddrV4) -> Client {
+        let sock = TcpStream::connect(addr).expect("connect");
         sock.set_nodelay(true).ok();
         let mut c = Client { sock, hpack: Hpack::new(), inbox: Vec::new(), goaway: None, eof: false, streams: HashMap::new(), pongs: 0, settings: Vec::new() };
         c.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");

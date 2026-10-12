@@ -17,8 +17,6 @@ use std::sync::OnceLock;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/ws_hub.rs"]
 mod ws_hub;
 #[path = "support/ws_client.rs"]
@@ -75,27 +73,13 @@ locus Orders {
 locus Maker {
     params { made: Int = 0; }
     bus { publish Blobs; publish Ticks; }
-    fn blobs(n: Int, size: Int) {
-        let mut d = "x";
-        while len(d) < size { d = d + d; }
-        d = d[0..size];
-        let mut i = 1;
-        while i <= n {
-            self.made = self.made + 1;
-            Blobs <- Blob { n: i, data: d };
-            i = i + 1;
-        }
+    fn blob(n: Int, d: String) {
+        self.made = self.made + 1;
+        Blobs <- Blob { n: n, data: d };
     }
-    fn ticks(n: Int, size: Int) {
-        let mut d = "y";
-        while len(d) < size { d = d + d; }
-        d = d[0..size];
-        let mut i = 1;
-        while i <= n {
-            self.made = self.made + 1;
-            Ticks <- Blob { n: i, data: d };
-            i = i + 1;
-        }
+    fn tick(n: Int, d: String) {
+        self.made = self.made + 1;
+        Ticks <- Blob { n: n, data: d };
     }
 }
 
@@ -116,16 +100,27 @@ main locus Desk {
         std::io::fs::write_file(ctl + "/stats.tmp", "made=" + to_string(self.maker.made) + "\nsubs=" + to_string(self.hub.subscribers()) + "\nconns=" + to_string(self.hub.connections()) + "\nplaced=" + to_string(self.orders.placed) + "\n") or discard;
         std::io::fs::rename(ctl + "/stats.tmp", ctl + "/stats") or discard;
     }
-    // `blobs N SIZE`, `ticks N SIZE`, `stop`
-    fn step(s: String) -> Bool {
+    // `blobs N SIZE`, `ticks N SIZE`, `stop`. A burst writes the stats as
+    // it goes: its events are encoded on this thread, and a test waits on
+    // the count moving, not on a clock
+    fn step(s: String, ctl: String) -> Bool {
         let c = std::str::trim(s);
         if c == "stop" { return true; }
         if std::str::starts_with(c, "blobs ") || std::str::starts_with(c, "ticks ") {
+            let blobs = std::str::starts_with(c, "blobs ");
             let rest = c[6..len(c)];
             let sp = std::str::index_of(rest, " ");
             let n = std::str::parse_int(rest[0..sp]) or 0;
             let size = std::str::parse_int(rest[(sp + 1)..len(rest)]) or 0;
-            if std::str::starts_with(c, "blobs ") { self.maker.blobs(n, size); } else { self.maker.ticks(n, size); }
+            let mut d = if blobs { "x" } else { "y" };
+            while len(d) < size { d = d + d; }
+            d = d[0..size];
+            let mut i = 1;
+            while i <= n {
+                if blobs { self.maker.blob(i, d); } else { self.maker.tick(i, d); }
+                if i % 20 == 0 { self.stats(ctl); }
+                i = i + 1;
+            }
         }
         return false;
     }
@@ -137,7 +132,7 @@ main locus Desk {
             let cmd = std::str::trim(std::io::fs::read_file(ctl + "/cmd") or "");
             if len(cmd) > 0 {
                 std::io::fs::unlink(ctl + "/cmd") or discard;
-                if self.step(cmd) { done = true; }
+                if self.step(cmd, ctl) { done = true; }
             }
             self.stats(ctl);
             std::time::sleep(5ms);
@@ -187,7 +182,11 @@ fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     server.await_stat("subs", 1);
     // the client does not read while the program publishes
     server.command(command);
-    server.await_stat("made", 400);
+    // the burst is CPU work on the program's main thread (each event's
+    // 60,000-byte payload through the topic's JSON codec, ~1.5 s here and
+    // several times that under ASan): on a loaded machine it takes longer
+    // than any fixed deadline, so the wait is on the count moving
+    server.await_stat_progressing("made", 400);
     let mut got = Vec::new();
     // the pong is written after the frames queued before the ping: once it
     // arrives the connection's queue is empty, and what was shed is shed

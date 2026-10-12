@@ -25,14 +25,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Materialize the fixture into a private directory and return its
-/// `app/` path.
+/// `app/` path, with the guard that removes the directory.
 ///
 /// `hale build <dir>` writes the binary INTO that directory, so three
 /// tests building the shared fixture concurrently race on one output
 /// path — the same ETXTBSY class `harness::unique_bin` exists to
 /// prevent, which this file reintroduced on its first run. Each test
 /// gets its own copy instead.
-fn fixture_app() -> PathBuf {
+fn fixture_app() -> (Scratch, PathBuf) {
     static SEQ: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -44,7 +44,18 @@ fn fixture_app() -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dst);
     copy_tree(&src, &dst);
-    dst.join("app")
+    let app = dst.join("app");
+    (Scratch(dst), app)
+}
+
+/// The fixture's copy, with the binary `hale build` wrote into it:
+/// removed when the test ends, passed or panicked.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn copy_tree(src: &Path, dst: &Path) {
@@ -95,7 +106,7 @@ fn counters(seg: &[u8], subject: &str) -> Option<(u64, u64)> {
 
 #[test]
 fn imported_topic_publishes_are_counted() {
-    let app = fixture_app();
+    let (_scratch, app) = fixture_app();
     let hale = env!("CARGO_BIN_EXE_hale");
     let build = Command::new(hale)
         .arg("build")
@@ -214,7 +225,7 @@ fn a_stale_segment_from_a_dead_pid_is_swept() {
     }
     assert!(Path::new(&stale).exists(), "fixture segment not created");
 
-    let app = fixture_app();
+    let (_scratch, app) = fixture_app();
     let build = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("build")
         .arg(&app)
@@ -249,7 +260,7 @@ fn a_stale_segment_from_a_dead_pid_is_swept() {
 /// "skip anything alive".
 #[test]
 fn the_sweep_leaves_a_live_processes_segment_alone() {
-    let app = fixture_app();
+    let (_scratch, app) = fixture_app();
     let build = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("build")
         .arg(&app)

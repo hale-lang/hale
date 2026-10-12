@@ -16,13 +16,33 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::harness;
-use super::ports;
+
+#[path = "child.rs"]
+mod child;
+
+/// Where a test reaches a listener: a port on `127.0.0.1`, or an address
+/// on another loopback address (a program's second listener).
+pub trait Reach: Copy {
+    fn addr(self) -> SocketAddrV4;
+}
+
+impl Reach for u16 {
+    fn addr(self) -> SocketAddrV4 {
+        SocketAddrV4::new(BIND_HOST, self)
+    }
+}
+
+impl Reach for SocketAddrV4 {
+    fn addr(self) -> SocketAddrV4 {
+        self
+    }
+}
 
 /// What the program printed and how it ended.
 pub struct Finished {
@@ -31,29 +51,44 @@ pub struct Finished {
     pub stderr: String,
 }
 
-/// A running program: the ports it was told to listen on (`BIND`,
-/// `BIND2`), the directory with its trigger file.
+/// A running program: the port its `BIND` listener was given, the
+/// directory with its trigger file.
+///
+/// The program binds port 0 and the test reads back the port the kernel
+/// gave it (`child::listening_addrs`): a port drawn here and handed over
+/// is free, not reserved, and under a parallel run another test can bind
+/// it first. A second listener (`BIND2`) binds on `127.0.0.2`, so the two
+/// are told apart by address ([`Server::port2`]).
 pub struct Server {
     child: Option<Child>,
     pub dir: PathBuf,
     pub port: u16,
-    pub port2: u16,
+    port2: std::sync::OnceLock<SocketAddrV4>,
     trigger: PathBuf,
 }
 
+/// Where `BIND` and `BIND2` listen.
+pub const BIND_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+pub const BIND2_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+/// `BIND` and `BIND2` as the program reads them, and as a description
+/// states a listener's address (its `bind:`, as written).
+pub const BIND_ADDR: &str = "127.0.0.1:0";
+pub const BIND2_ADDR: &str = "127.0.0.2:0";
+
 impl Server {
-    /// Run `bin` with `BIND` and `BIND2` (`127.0.0.1:<free port>`), `SOCK`
+    /// Run `bin` with `BIND` (`127.0.0.1:0`), `BIND2` (`127.0.0.2:0`), `SOCK`
     /// (a socket path) and `TRIGGER` (the file whose appearance stops it)
-    /// in its environment, plus `env`.
+    /// in its environment, plus `env`, and wait until it listens on `BIND`
+    /// (or has exited: a boot that fails is the test's to read). An `env`
+    /// that names `BIND` itself is taken as written and not waited for.
     pub fn start(bin: &Path, env: &[(&str, &str)]) -> Server {
         let dir = harness::unique_dir("httprpc");
         let trigger = dir.join("stop");
         let sock = dir.join("s.sock");
         assert!(sock.as_os_str().len() < 100, "the socket path is too long for sockaddr_un: {}", sock.display());
-        let (port, port2) = (ports::free_port(), ports::free_port());
         let mut cmd = Command::new(bin);
-        cmd.env("BIND", format!("127.0.0.1:{port}"))
-            .env("BIND2", format!("127.0.0.1:{port2}"))
+        cmd.env("BIND", BIND_ADDR)
+            .env("BIND2", BIND2_ADDR)
             .env("SOCK", &sock)
             .env("TRIGGER", &trigger)
             .env("TRIGGER_PUBLIC", dir.join("stop_public"))
@@ -65,7 +100,25 @@ impl Server {
             cmd.env(k, v);
         }
         let child = cmd.spawn().expect("start the program");
-        Server { child: Some(child), dir, port, port2, trigger }
+        let mut server = Server { child: Some(child), dir, port: 0, port2: std::sync::OnceLock::new(), trigger };
+        match env.iter().find(|(k, _)| *k == "BIND") {
+            Some((_, bind)) => server.port = bind.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(0),
+            None => server.port = server.listening_on(BIND_HOST).map(|a| a.port()).unwrap_or(0),
+        }
+        server
+    }
+
+    /// The address the program's `BIND2` listener was given, once it
+    /// listens (read once: it is the same address after the listener
+    /// closes).
+    pub fn port2(&self) -> SocketAddrV4 {
+        *self.port2.get_or_init(|| listener_of(self.pid(), BIND2_HOST).unwrap_or_else(|| panic!("the program exited before it listened on {BIND2_HOST}")))
+    }
+
+    /// The program's one listening socket on `host`, once there is one;
+    /// `None` if the program exits first.
+    pub fn listening_on(&self, host: Ipv4Addr) -> Option<SocketAddrV4> {
+        listener_of(self.pid(), host)
     }
 
     pub fn pid(&self) -> u32 {
@@ -150,15 +203,36 @@ impl Drop for Server {
     }
 }
 
-/// Wait until something accepts on `port` (the connection is dropped).
-pub fn wait_listening(port: u16) {
+/// The one listening socket process `pid` has on `host`, once it has one;
+/// `None` once the process has exited (it is a zombie until reaped, with
+/// no descriptors).
+pub fn listener_of(pid: u32, host: Ipv4Addr) -> Option<SocketAddrV4> {
     let start = Instant::now();
     loop {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        let on: Vec<SocketAddrV4> = child::listening_addrs(pid).into_iter().filter(|a| *a.ip() == host).collect();
+        assert!(on.len() <= 1, "one listener on {host}: {on:?}");
+        if let Some(a) = on.first() {
+            return Some(*a);
+        }
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let state = stat.rsplit_once(") ").map(|(_, rest)| rest.chars().next().unwrap_or('?')).unwrap_or('X');
+        if state == 'Z' || state == 'X' {
+            return None;
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "nothing listens on {host} within 60 s");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait until something accepts on `to` (the connection is dropped).
+pub fn wait_listening(to: impl Reach) {
+    let start = Instant::now();
+    loop {
+        if TcpStream::connect(to.addr()).is_ok() {
             return;
         }
         if start.elapsed() > Duration::from_secs(20) {
-            panic!("nothing listens on 127.0.0.1:{port}");
+            panic!("nothing listens on {}", to.addr());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -210,9 +284,9 @@ pub fn unix_ask(sock: &Path, line: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Whether nothing accepts on `port`.
-pub fn closed(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).is_err()
+/// Whether nothing accepts on `to`.
+pub fn closed(to: impl Reach) -> bool {
+    TcpStream::connect(to.addr()).is_err()
 }
 
 /// One HTTP response.
@@ -299,16 +373,16 @@ impl Pending {
     }
 }
 
-/// Connect to `port` (retrying while the program is still binding it) and
+/// Connect to `to` (retrying while the program is still binding it) and
 /// send `text`.
-pub fn send(port: u16, text: &str) -> Pending {
+pub fn send(to: impl Reach, text: &str) -> Pending {
     let start = Instant::now();
     let mut s = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
+        match TcpStream::connect(to.addr()) {
             Ok(s) => break s,
             Err(e) => {
                 if start.elapsed() > Duration::from_secs(20) {
-                    panic!("could not connect to 127.0.0.1:{port}: {e}");
+                    panic!("could not connect to {}: {e}", to.addr());
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -319,8 +393,8 @@ pub fn send(port: u16, text: &str) -> Pending {
 }
 
 /// One request, one answer.
-pub fn request(port: u16, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>) -> Response {
-    send(port, &request_text(method, path, headers, body))
+pub fn request(to: impl Reach, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>) -> Response {
+    send(to, &request_text(method, path, headers, body))
         .response_within(15_000)
         .unwrap_or_else(|| panic!("{method} {path}: the connection closed without a response"))
 }
@@ -465,9 +539,9 @@ pub fn recording(name: &str) -> Recording {
 }
 
 impl Recording {
-    /// Send the recorded request to `port`.
-    pub fn send(&self, port: u16) -> Response {
-        request(port, &self.method, &self.path, &self.headers, Some(&self.body))
+    /// Send the recorded request to `to`.
+    pub fn send(&self, to: impl Reach) -> Response {
+        request(to, &self.method, &self.path, &self.headers, Some(&self.body))
     }
 
     /// Hold `got` to the recorded reply: the status, the content type and

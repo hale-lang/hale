@@ -12,13 +12,14 @@
 #![allow(dead_code)]
 
 use std::io::Read;
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::harness;
-use super::ports;
+
+#[path = "child.rs"]
+mod child;
 
 /// What the program printed and how it ended.
 pub struct Finished {
@@ -36,35 +37,41 @@ pub struct Server {
 }
 
 impl Server {
-    /// Run `bin` with `BIND` (the address its hub listens on) and `CTL` (the
-    /// directory of its command file) in its environment, plus `env`, on a
-    /// port nothing holds (a draw another process took before the program
-    /// bound it is drawn again).
+    /// Run `bin` with `BIND` (`127.0.0.1:0`, the address its hub listens
+    /// on) and `CTL` (the directory of its command file) in its
+    /// environment, plus `env`, and read back the port the kernel gave the
+    /// hub once it listens. (A port drawn here and handed over is free,
+    /// not reserved: another test of a parallel run could bind it first,
+    /// and a test that then connected would be talking to that one.)
     pub fn start(bin: &Path, env: &[(&str, &str)]) -> Server {
-        for _ in 0..10 {
-            let port = ports::free_port();
-            let dir = harness::unique_dir("wshub");
-            let mut s = Server::start_on(bin, env, port, dir);
-            // the hub binds in the program's birth: it is listening, or it has failed
-            let start = Instant::now();
-            loop {
-                if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                    return s;
-                }
-                if s.exited() || start.elapsed() > Duration::from_secs(30) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+        let mut s = Server::spawn(bin, env, "127.0.0.1:0", harness::unique_dir("wshub"), 0);
+        let pid = s.child.as_ref().expect("running").id();
+        // the hub binds in the program's birth: it is listening, or it has failed
+        let start = Instant::now();
+        loop {
+            let on: Vec<std::net::SocketAddrV4> = child::listening_addrs(pid).into_iter().filter(|a| a.ip().is_loopback()).collect();
+            assert!(on.len() <= 1, "one listener on the loopback: {on:?}");
+            if let Some(a) = on.first() {
+                s.port = a.port();
+                return s;
             }
-            drop(s);
+            if s.exited() {
+                let done = s.wait(Duration::from_secs(5));
+                panic!("the program never listened: {:?}\n{}{}", done.status, done.stdout, done.stderr);
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "the program never listened within 60 s");
+            std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("the program never listened");
     }
 
     /// Run `bin` on exactly `port`, in `dir`.
     pub fn start_on(bin: &Path, env: &[(&str, &str)], port: u16, dir: PathBuf) -> Server {
+        Server::spawn(bin, env, &format!("127.0.0.1:{port}"), dir, port)
+    }
+
+    fn spawn(bin: &Path, env: &[(&str, &str)], bind: &str, dir: PathBuf, port: u16) -> Server {
         let mut cmd = Command::new(bin);
-        cmd.env("BIND", format!("127.0.0.1:{port}")).env("CTL", &dir).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.env("BIND", bind).env("CTL", &dir).stdout(Stdio::piped()).stderr(Stdio::piped());
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -107,6 +114,27 @@ impl Server {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("`{key}` never read {want}; it reads {:?} in {:?}", self.stat(key), self.stats());
+    }
+
+    /// Wait until the statistic `key` reads `want`, for as long as it keeps
+    /// moving: a step that is CPU work (a burst of large events) takes
+    /// what the machine gives it, so the bound is on progress, not on the
+    /// whole step. Fails when the value has not changed for 20 seconds.
+    pub fn await_stat_progressing(&self, key: &str, want: i64) {
+        let mut last = self.stat(key);
+        let mut moved = Instant::now();
+        while moved.elapsed() < Duration::from_secs(20) {
+            let now = self.stat(key);
+            if now == Some(want) {
+                return;
+            }
+            if now != last {
+                last = now;
+                moved = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("`{key}` never read {want}: it stopped at {last:?} in {:?}", self.stats());
     }
 
     /// Whether the program has exited.

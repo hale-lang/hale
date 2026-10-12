@@ -29,8 +29,6 @@ pub(crate) mod h2_client;
 pub(crate) mod harness;
 #[path = "support/http_rpc.rs"]
 pub(crate) mod http_rpc;
-#[path = "support/ports.rs"]
-mod ports;
 
 use h2_client::*;
 use http_rpc::*;
@@ -287,11 +285,11 @@ const GRPC_OUTCOMES: &str = "{\"transport\":\"grpc\",\"result\":{\"status\":\"OK
 /// A description fixture of an HTTP exposure as the same exposure served over
 /// gRPC at `port` states it: the listener and the outcome encoding are the
 /// transport's; everything else is the fixture's.
-pub(crate) fn description_over_grpc(fixture: &str, port: u16, name: &str) -> String {
+pub(crate) fn description_over_grpc(fixture: &str, address: &str, name: &str) -> String {
     let doc = description_fixture(fixture);
     let http = "\"listener\":{\"transport\":\"http\",\"address\":\"127.0.0.1:8080\"}";
     assert!(doc.contains(http), "{fixture} states its HTTP listener");
-    let doc = doc.replace(http, &format!("\"listener\":{{\"transport\":\"grpc\",\"address\":\"127.0.0.1:{port}\"}}"));
+    let doc = doc.replace(http, &format!("\"listener\":{{\"transport\":\"grpc\",\"address\":\"{address}\"}}"));
     let doc = doc.replace("/public\",\"name\":\"public\"", &format!("/{name}\",\"name\":\"{name}\""));
     let at = doc.find("\"outcomes\":").expect("outcomes") + "\"outcomes\":".len();
     let mut depth = 0;
@@ -337,7 +335,7 @@ fn the_description_is_a_reserved_method_and_is_the_fixture_for_the_caller() {
         assert_eq!(got.status(), 200, "{caller}: {got:?}");
         assert_eq!(got.header("content-type"), Some(JSON));
         assert_eq!(got.header("grpc-status"), Some("0"), "{caller}: {got:?}");
-        assert_eq!(text_of(&got), description_over_grpc(&format!("public.{caller}.description.json"), server.port, "public"), "{caller}: the description differs from the fixture");
+        assert_eq!(text_of(&got), description_over_grpc(&format!("public.{caller}.description.json"), BIND_ADDR, "public"), "{caller}: the description differs from the fixture");
     }
     // a caller nobody names is refused, not described
     for (stream, token) in [(5u32, Some("t-mallory")), (7, None)] {

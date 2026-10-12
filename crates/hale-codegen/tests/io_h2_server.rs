@@ -24,8 +24,6 @@ mod h2_client;
 mod harness;
 #[path = "support/http_rpc.rs"]
 mod http_rpc;
-#[path = "support/ports.rs"]
-mod ports;
 
 use h2_client::*;
 use http_rpc::*;

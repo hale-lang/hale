@@ -27,8 +27,6 @@ use std::time::{Duration, Instant};
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
-#[path = "support/ports.rs"]
-mod ports;
 #[path = "support/ws_hub.rs"]
 mod ws_hub;
 #[path = "support/ws_client.rs"]
@@ -39,10 +37,11 @@ use ws_hub::*;
 
 /// A hub named `fills` on `$BIND` that binds `Fills` (`requires:
 /// [operator]`; dave is the operator). Driven by `CTL/cmd`: `publish N`,
-/// `stray` (connect to `$STRAY_PORT` and relay the descriptor on route `#1`
-/// of the hub's listener, which no consumer takes), `stopname`
-/// (`std::io::tcp::stop` of the listener's name, the bound address) and
-/// `stop` (the hub's own `stop()`).
+/// `stray NAME` (connect to `$STRAY_PORT` and relay the descriptor on route
+/// `#1` of the hub's listener `NAME`, which no consumer takes), `stopname
+/// NAME` (`std::io::tcp::stop` of the listener's name, the bound address:
+/// `$BIND` asks for port 0, so the test names it) and `stop` (the hub's own
+/// `stop()`).
 const HUB: &str = r##"
 role operator;
 
@@ -88,9 +87,9 @@ main locus Desk {
     bus {
         publish __TcpAcceptedT;
     }
-    // A connection relayed on a route of the hub's listener that no consumer takes.
-    fn stray() {
-        let listener = std::env::var("BIND");
+    // A connection relayed on a route of the hub's listener (`listener`, its
+    // name: `127.0.0.1:<the port it was given>`) that no consumer takes.
+    fn stray(listener: String) {
         let fd = std::io::tcp::__connect("127.0.0.1", std::str::parse_int(std::env::var("STRAY_PORT")) or 0);
         __TcpAcceptedT <- std::io::tcp::Accepted { listener: listener, route: listener + "#1", fd: fd, seq: 0 };
     }
@@ -106,9 +105,11 @@ main locus Desk {
             if len(cmd) > 0 {
                 std::io::fs::unlink(ctl + "/cmd") or discard;
                 if cmd == "stop" { done = true; }
-                if cmd == "stray" { self.stray(); }
-                if cmd == "stopname" {
-                    if std::io::tcp::stop(std::env::var("BIND")) { self.named = 1; } else { self.named = 2; }
+                // `stray NAME`, `stopname NAME`: the listener's name, as the
+                // test read its port back
+                if std::str::starts_with(cmd, "stray ") { self.stray(cmd[6..len(cmd)]); }
+                if std::str::starts_with(cmd, "stopname ") {
+                    if std::io::tcp::stop(cmd[9..len(cmd)]) { self.named = 1; } else { self.named = 2; }
                 }
                 if std::str::starts_with(cmd, "publish ") {
                     let n = std::str::parse_int(cmd[8..len(cmd)]) or 0;
@@ -188,7 +189,7 @@ fn slow_upgrade(port: u16, stall: Duration) -> String {
 fn a_connection_no_consumer_takes_is_closed_by_the_hubs_listener() {
     let end = TcpListener::bind("127.0.0.1:0").expect("bind");
     let server = Server::start(&build(), &[("STRAY_PORT", &end.local_addr().unwrap().port().to_string())]);
-    server.command("stray");
+    server.command(&format!("stray 127.0.0.1:{}", server.port));
     closed_promptly(&end, Duration::from_secs(3));
     // and the hub serves on
     let mut dave = admitted(server.port);
@@ -205,7 +206,7 @@ fn stop_by_name_closes_the_hubs_listener_and_its_connections_are_served_on() {
     let port = server.port;
     let mut dave = admitted(port);
     server.await_stat("subs", 1);
-    server.command("stopname");
+    server.command(&format!("stopname 127.0.0.1:{}", server.port));
     server.await_stat("named", 1);
     let start = Instant::now();
     while TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -261,7 +262,7 @@ fn the_hub_listener_runs_clean_under_asan() {
     harness::build_source_asan(HUB, &bin);
     let end = TcpListener::bind("127.0.0.1:0").expect("bind");
     let server = Server::start(&bin, &[("LOTUS_NO_CHUNK_POOL", "1"), ("STRAY_PORT", &end.local_addr().unwrap().port().to_string())]);
-    server.command("stray");
+    server.command(&format!("stray 127.0.0.1:{}", server.port));
     closed_promptly(&end, Duration::from_secs(10));
     let mut dave = admitted(server.port);
     let other = admitted(server.port);
@@ -271,7 +272,7 @@ fn the_hub_listener_runs_clean_under_asan() {
     server.command("publish 2");
     assert_eq!(dave.text(), event(1, 1));
     assert_eq!(dave.text(), event(2, 2));
-    server.command("stopname");
+    server.command(&format!("stopname 127.0.0.1:{}", server.port));
     server.await_stat("named", 1);
     server.command("publish 1");
     assert_eq!(dave.text(), event(3, 1));
