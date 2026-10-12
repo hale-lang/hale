@@ -3378,6 +3378,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else { None }
         } else { None };
         let mut gate_skip_bb = None;
+        // The restart count as the child's birth began (the run gate's
+        // `pre`, below), kept in a slot of the instantiating function so a
+        // pool-placed root's birth job can account for its own restarts.
+        let mut birth_pre_slot: Option<PointerValue<'ctx>> = None;
         for step in birth_spine.iter().copied() {
         match step {
         ObligationKind::Accept => {
@@ -3841,9 +3845,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .filter(|_| !info.empty_lifecycle.contains("birth"));
             // The thread's steps of the birth spine, in the plan's order.
             let checks = self.birth_check_decls(locus_name);
+            // The restart count as the birth began: the gate before run()
+            // decides against it (`emit_birth_pre_slot`'s reason).
+            let mut birth_pre: Option<inkwell::values::IntValue<'ctx>> = None;
             for step in birth_spine.iter().copied() {
             match step {
             ObligationKind::Birth => {
+            if restart.is_some() {
+                birth_pre = Some(self.emit_restart_count(&info, thread_self)?);
+            }
             if readiness {
                 // Registration opened the window on the instantiating
                 // thread. Birth now owns it on this pinned thread.
@@ -3868,9 +3878,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.emit_readiness(thread_self, locus_name, "PinnedMain")?;
             }
             ObligationKind::Run => {
-            // A check's failure is decided before run() starts.
-            if let (false, Some(rf)) = (checks.is_empty(), restart) {
-                let pre = self.emit_restart_count(&info, thread_self)?;
+            // A failure of the birth — a `violate` in `birth()`, a check
+            // — is decided before run() starts, and a restart it asked
+            // for re-runs birth here, on this thread.
+            if let Some(rf) = restart {
+                let pre = match birth_pre {
+                    Some(pre) => pre,
+                    None => self.emit_restart_count(&info, thread_self)?,
+                };
                 self.emit_pinned_birth_gate(&info, thread_self, rf.restart, pre, locus_name)?;
             }
             if let Some(method) = info.methods.get("run") {
@@ -3941,10 +3956,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_conditional_branch(req, restart_bb, done_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // A restart whose birth fails again is decided
+                    // before run() starts again.
                     self.builder.position_at_end(restart_bb);
+                    let next = self.emit_restart_count(&info, thread_self)?;
                     self.emit_restart_call(rf.restart, thread_self, locus_name, "PinnedMain", "pinned.restart")?;
+                    let _ = self.emit_failure_await(thread_self, None, 1, next)?;
+                    let again = self.emit_restart_requested(&info, thread_self, next)?;
                     self.builder
-                        .build_unconditional_branch(loop_bb)
+                        .build_conditional_branch(again, restart_bb, loop_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(done_bb);
                 }
@@ -4120,6 +4140,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for step in birth_spine.iter().copied() {
         match step {
         ObligationKind::Birth => {
+        // A failure raised by the birth — a `violate` in `birth()`, a
+        // `birth_check` — whose handler runs before the gate (delivered
+        // in place, or posted and run meanwhile) bumps the count before
+        // the gate could read it: the gate decides against the count as
+        // birth began.
+        birth_pre_slot = self.emit_birth_pre_slot(&info, self_ptr, locus_name)?;
         // Decision line 3: a pool-placed root's birth runs on its pool's
         // worker, posted as a job the instantiating thread waits for.
         let birth_job = match pool_init.clone() {
@@ -4151,6 +4177,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =
                 self.resolve_failure_route(&locus_name);
+            let before = match birth_pre_slot {
+                Some(_) => Some(self.emit_restart_count(&info, self_ptr)?),
+                None => None,
+            };
             self.builder
                 .build_call(
                     birth_closures_fn,
@@ -4162,6 +4192,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.__birth_closures.call", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if let (Some(slot), Some(before)) = (birth_pre_slot, before) {
+                self.emit_birth_pre_skip_own_restarts(&info, self_ptr, slot, before)?;
+            }
         }
         // F.27 v2 (2026-05-20): birth_check synthesis hook. Each
         // `birth_check { COND } -> violate NAME;` clause is
@@ -4198,10 +4231,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // restart it, start it, or leave it quarantined. The run
         // section below is skipped. Otherwise a restart the handler
         // already asked for takes effect now, before run().
+        //
+        // The gate decides against the count as the birth began (its
+        // slot), and loops: a restart whose birth fails again is decided
+        // the same way before run() starts.
         gate_skip_bb = match self.restart_fns.get(locus_name).copied() {
             Some(rf) => {
                 let func = self.current_fn.expect("current_fn set");
-                let pre = self.emit_restart_count(&info, self_ptr)?;
+                let i64_t = self.context.i64_type();
+                let pre0 = match birth_pre_slot {
+                    Some(slot) => self
+                        .builder
+                        .build_load(i64_t, slot, "gate.birth_pre")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value(),
+                    None => self.emit_restart_count(&info, self_ptr)?,
+                };
+                let entry_bb = self.builder.get_insert_block().expect("inside a block");
+                let loop_bb = self.context.append_basic_block(func, "gate.loop");
+                self.builder
+                    .build_unconditional_branch(loop_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(loop_bb);
+                let pre_phi = self
+                    .builder
+                    .build_phi(i64_t, "gate.pre")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                pre_phi.add_incoming(&[(&pre0, entry_bb)]);
+                let pre = pre_phi.as_basic_value().into_int_value();
                 let a = self.emit_failure_await(self_ptr, Some(rf.resume), 1, pre)?;
                 let resumed_later = self
                     .builder
@@ -4225,10 +4282,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(req, restart_bb, go_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(restart_bb);
+                let next = self.emit_restart_count(&info, self_ptr)?;
                 let spine = self.lc_spine;
                 self.emit_restart_call(rf.restart, self_ptr, locus_name, spine, "gate.restart.call")?;
+                let restart_end = self.builder.get_insert_block().expect("inside a block");
+                pre_phi.add_incoming(&[(&next, restart_end)]);
                 self.builder
-                    .build_unconditional_branch(go_bb)
+                    .build_unconditional_branch(loop_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(go_bb);
                 Some(skip_bb)

@@ -4423,7 +4423,14 @@ re-evaluates a default):
 
 When it takes effect depends on where the failure came from. A
 birth-epoch closure's failure re-runs birth right after the
-handler returns, before `run()` has started. A failure raised
+handler returns, before `run()` has started. So does any other
+failure of the birth — a `violate` in `birth()`, a failed
+`birth_check` — whether its handler ran in place or was held: the
+decision is read against the restart count as the birth began, so a
+handler that had already returned by the time `birth()` did is not
+missed, and a restart whose birth fails again is decided the same
+way before `run()` starts; a pinned child's restart runs on its
+own thread. A failure raised
 while `run()` executes — a `violate` in it, or for a pinned child
 the tick and duration closures its thread checks after it —
 restarts once `run()` has returned, on the thread that ran it (a

@@ -387,6 +387,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value().into_int_value())
     }
 
+    /// Before a child's birth, for a locus a failure can come from: a
+    /// slot in the instantiating function holding the restart count as
+    /// the birth begins, the `pre` its run gate decides against. A
+    /// failure the birth raises may have its handler run before the
+    /// gate — delivered in place by a `violate` in `birth()` or a failed
+    /// `birth_check`, or posted to an owner's thread and run meanwhile —
+    /// and a count read at the gate would already include its bump, so
+    /// the restart it asked for would never be performed. `None` for a
+    /// locus no failure can come from.
+    pub(crate) fn emit_birth_pre_slot(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        if !self.restart_fns.contains_key(locus_name) {
+            return Ok(None);
+        }
+        let i64_t = self.context.i64_type();
+        let slot = self.alloca_in_entry(i64_t.into(), "restart.birth_pre")?;
+        let pre = self.emit_restart_count(info, self_ptr)?;
+        self.builder
+            .build_store(slot, pre)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(Some(slot))
+    }
+
+    /// After the birth-epoch closures: the restarts they performed
+    /// themselves (a closure's failure re-runs birth right after its
+    /// handler, `__birth_closures_<L>`) are not the gate's to perform
+    /// again, so the slot's `pre` moves past them — by the count's
+    /// change across the call, `before` read just ahead of it.
+    pub(crate) fn emit_birth_pre_skip_own_restarts(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        slot: PointerValue<'ctx>,
+        before: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let after = self.emit_restart_count(info, self_ptr)?;
+        let own = self.builder.build_int_sub(after, before, "restart.closures_own").map_err(e)?;
+        let pre = self.builder.build_load(i64_t, slot, "restart.birth_pre").map_err(e)?.into_int_value();
+        let pre = self.builder.build_int_add(pre, own, "restart.birth_pre.past_closures").map_err(e)?;
+        self.builder.build_store(slot, pre).map_err(e)?;
+        Ok(())
+    }
+
     /// The params a restart-in-place restores: every param that holds a
     /// value (a scalar, text, bytes, a record, a tuple, an array). A
     /// param holding a locus, an interface or a perspective keeps its
@@ -724,9 +773,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lc_in_spine("Settle", |cx| cx.lc_event("Resume", "Completed", Some(self_arg), Some(name)))?;
         self.builder.build_conditional_branch(req, restart_bb, carry_on_bb).map_err(e)?;
 
+        // A restart whose birth fails again asks again: the handler of
+        // that failure has returned by the time the birth does (the owner
+        // is settled, so it is delivered in place or posted and waited
+        // for), so its decision is read right after, and a restart it
+        // asked for is performed before run() starts.
         self.builder.position_at_end(restart_bb);
+        let next = self.emit_restart_count(info, self_arg)?;
         self.emit_restart_call(fns.restart, self_arg, name, "Settle", "resume.restart.call")?;
-        self.builder.build_unconditional_branch(run_bb).map_err(e)?;
+        let again = self.emit_restart_requested(info, self_arg, next)?;
+        self.builder.build_conditional_branch(again, restart_bb, run_bb).map_err(e)?;
 
         // No restart. Phase 1 (run() not started yet): start it, as the
         // child would have. Phase 0 (run() had returned): end as the run

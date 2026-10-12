@@ -1,0 +1,102 @@
+// A pinned child whose birth fails is restarted on its own thread:
+// birth() runs again there, then run(), and its owner's run() keeps
+// running beside it.
+//
+// The pinned thread's gate before run() existed only for a locus with a
+// `birth_check`, and read the restart count after the birth: a `violate`
+// in birth() reached the owner's handler, `restart(c)` was asked for,
+// and birth() never ran again — run() started on the failed birth.
+//
+// - `held` fails while `slow` still keeps App's params open, so its
+//   failure is held: the pinned thread waits for the handler's decision.
+// - `late` waits in its birth until App has settled (and is running), so
+//   its failure is posted to App's thread, and its handler has returned
+//   when the violate does.
+// - `twice` fails its re-birth too, and is restarted again before run().
+// - `fresh` is restarted in place: its params back as built, so its
+//   re-births fail again until the default cap, and then it runs.
+//
+// Each child's run() is a loop that never returns on its own: the
+// owner's run() reading the ticks move is the proof it runs on the
+// child's thread, not the owner's.
+
+locus Kid {
+    params { births: Int = 0; ticks: Int = 0; fail_until: Int = 1; delay: Duration = 0ms; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if self.births == 1 { std::time::sleep(self.delay); }
+        if self.births <= self.fail_until { violate fuse; }
+    }
+    @unbounded
+    run() {
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+locus Fresh {
+    params { births: Int = 0; ticks: Int = 0; mark: Int = 0; }
+    closure fuse { captures: births; epoch inline; }
+    birth() {
+        self.births = self.births + 1;
+        if self.mark == 0 { self.mark = 7; violate fuse; }
+    }
+    @unbounded
+    run() {
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+locus Slow {
+    run() { std::time::sleep(100ms); }
+}
+
+main locus App {
+    params {
+        held: Kid = Kid { };
+        twice: Kid = Kid { fail_until: 2 };
+        late: Kid = Kid { delay: 300ms };
+        fresh: Fresh = Fresh { };
+        slow: Slow = Slow { };
+        kid_failures: Int = 0;
+        fresh_failures: Int = 0;
+    }
+    placement { held: pinned; twice: pinned; late: pinned; fresh: pinned; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        self.kid_failures = self.kid_failures + 1;
+        restart (c) for 3;
+    }
+    on_failure(c: Fresh, err: ClosureViolation) {
+        self.fresh_failures = self.fresh_failures + 1;
+        restart_in_place (c);
+    }
+    run() {
+        let mut i = 0;
+        let started_at_settle = self.late.births;
+        while (self.held.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0 || self.late.ticks == 0) && i < 400 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.held.births, 2, "a held birth failure re-ran birth() on the pinned thread");
+        std::test::assert_eq_int(self.twice.births, 3, "a re-birth that failed again was restarted again");
+        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran the birth from its built params");
+        std::test::assert_eq_int(self.fresh.births, 1, "each time from births 0");
+        let a = self.held.ticks + self.twice.ticks + self.fresh.ticks;
+        std::time::sleep(100ms);
+        let b = self.held.ticks + self.twice.ticks + self.fresh.ticks;
+        std::test::assert(b > a, "the restarted children's run() loops run on their own threads, beside this one");
+
+        std::test::assert(started_at_settle < 2, "late's first birth had not failed yet when App's run() began");
+        std::test::assert_eq_int(self.late.births, 2, "a pinned birth failure delivered with the owner settled re-ran birth()");
+        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1, "every Kid failure reached the handler");
+        std::process::exit(0);
+    }
+}
+
+fn main() { App { }; }
