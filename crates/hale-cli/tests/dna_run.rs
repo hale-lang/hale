@@ -24,12 +24,15 @@ fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
-/// The port the fuse-hl under `host` serves on, once it listens: the host
+/// The port the organism's fuse-hl serves on, once it listens: the host
 /// runs `hale iris 0`, which runs fuse-hl, and the kernel picks the port.
 /// A port drawn here and handed over is free, not reserved: another
 /// test's server could take it first, and the snapshot polled would be a
-/// stranger's.
-fn iris_port_under(host: u32) -> Option<u16> {
+/// stranger's. The host starts iris in a session of its own (GH #970), so
+/// it is not under the test's child: the walk starts at the pid the host
+/// recorded for it.
+fn iris_port(app: &Path) -> Option<u16> {
+    let root: u32 = std::fs::read_to_string(app.join(".hale/dna/iris.pid")).ok()?.trim().parse().ok()?;
     let mut parent_of = Vec::new();
     for e in std::fs::read_dir("/proc").ok()?.flatten() {
         let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
@@ -40,7 +43,7 @@ fn iris_port_under(host: u32) -> Option<u16> {
         let ppid: u32 = stat[close + 1..].split_whitespace().nth(1).and_then(|p| p.parse().ok()).unwrap_or(0);
         parent_of.push((pid, ppid, comm));
     }
-    let mut under = vec![host];
+    let mut under = vec![root];
     let mut i = 0;
     while i < under.len() {
         let p = under[i];
@@ -104,9 +107,11 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut snap = String::new();
     let mut port = None;
+    let mut last = String::new();
     while Instant::now() < deadline {
-        port = port.or_else(|| iris_port_under(host.id()));
+        port = port.or_else(|| iris_port(&app));
         let s = port.map(|port| http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n")).unwrap_or_default();
+        last = s.chars().take(600).collect();
         // the diff reports loaded, the law verified, and the organism's
         // own locus tree replayed (a process attaches before its births
         // are replayed, so wait for a type)
@@ -125,12 +130,17 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
             let _ = Command::new("kill").args(["-9", pid.trim()]).status();
         }
+        // iris runs in a session of its own, named by its pid: end that
+        // session only, never another test's fuse-hl
+        let iris = std::fs::read_to_string(app.join(".hale/dna/iris.pid")).unwrap_or_default();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "fuse-hl"]).status();
+        if !iris.trim().is_empty() {
+            let _ = Command::new("pkill").args(["-9", "-s", iris.trim()]).status();
+        }
     };
     if snap.is_empty() {
         finish(&mut host);
-        panic!("iris did not come up with law + review over the organism's process");
+        panic!("iris did not come up with law + review over the organism's process (iris port {port:?}; last snapshot: {last:?})");
     }
     assert!(app.join(".hale/dna/current.topology").is_file(), "a fresh artifact of what runs");
     // The baseline is the application as `init` found it, and init changes
