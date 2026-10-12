@@ -1369,6 +1369,24 @@ pub fn build_resolved(
             bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
         }
     }
+    // One publisher's order at a direct publish: a direct subject's
+    // handlers are quiet (they change their own locus and nothing else),
+    // so calling one ahead of a cell still queued is observable only when
+    // that cell is for the same subscriber. A locus that subscribes to a
+    // subject the plan does not lower direct can have such a cell; a
+    // direct subject with one among its subscribers checks this thread's
+    // queue first (`lotus_local_queued`), the rest bake the call alone.
+    let queued_subscribers: std::collections::BTreeSet<&str> = plan
+        .subjects
+        .iter()
+        .filter(|s| s.flavor != hale_model::dispatch_plan::DispatchFlavor::StaticDirect)
+        .flat_map(|s| s.subscribers.iter().map(|(locus, _)| locus.as_str()))
+        .collect();
+    let bus_devirt_direct_ordered: std::collections::BTreeSet<String> = bus_devirt_direct_subs
+        .iter()
+        .filter(|(_, subs)| subs.iter().any(|(locus, _)| queued_subscribers.contains(locus.as_str())))
+        .map(|(subject, _)| subject.clone())
+        .collect();
 
     // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
     // plans (`hale_types::ownership_graph::BubblePlans`), projected in
@@ -1544,6 +1562,7 @@ pub fn build_resolved(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
+        bus_devirt_direct_ordered,
         ownership_bubble_plan: bubble.singleton,
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
@@ -3681,6 +3700,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
     pub(crate) bus_devirt_direct_subs:
         std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// The `bus_devirt_direct` subjects with a subscriber locus that also
+    /// subscribes to a subject the plan does not lower direct: a cell for
+    /// it may wait on the publishing thread's queue, so their baked call
+    /// first checks `lotus_local_queued` (one publisher's order).
+    pub(crate) bus_devirt_direct_ordered: std::collections::BTreeSet<String>,
     /// Interest-based ownership, artifact #2: singleton-owner,
     /// same-tower bubbling. Keyed by `(enclosing_locus, child_ty)` —
     /// the only key the `OwnershipGraph` resolution depends on — the
@@ -16033,7 +16057,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A rewritten send can run in a helper reached during birth. Preserve
     /// its exact receiver while that receiver's readiness window is open,
-    /// including payloads held in variables; otherwise keep the direct call.
+    /// including payloads held in variables, or while a cell this thread
+    /// sent earlier still waits on its own queue (one publisher's order);
+    /// otherwise keep the direct call.
     fn lower_ready_publish_call(
         &mut self,
         id: NodeId,
@@ -16049,7 +16075,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
-        let held = self.emit_any_subscriber_unready()?;
+        // One publisher's order: while a cell this thread sent earlier
+        // waits on its own queue, the direct call would overtake it, so
+        // the send is queued to its receiver behind it.
+        let unready_any = self.emit_any_subscriber_unready()?;
+        let queued = self.emit_local_queued()?;
+        let held = self
+            .builder
+            .build_or(unready_any, queued, "publish.held.or_queued")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let parked = self.context.append_basic_block(func, "publish.unready");
         let direct = self.context.append_basic_block(func, "publish.ready");
         let join = self.context.append_basic_block(func, "publish.ready.join");
@@ -16069,6 +16103,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?.try_as_basic_value().left().expect("is_unready returns i32").into_int_value();
         let unready = self.builder.build_int_compare(inkwell::IntPredicate::NE, unready,
             self.context.i32_type().const_zero(), "publish.receiver.held").map_err(e)?;
+        let unready = self.builder.build_or(unready, queued, "publish.receiver.held.or_queued").map_err(e)?;
         self.builder.build_conditional_branch(unready, parked, direct).map_err(e)?;
         self.builder.position_at_end(parked);
         self.lower_send(&subject, value, None, scope, Some(receiver))?;

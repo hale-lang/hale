@@ -1770,6 +1770,20 @@ row	Pub@main2	Pub	main	default
 row	Counter@main1	Counter	main	default
 row	Pub@main2	Pub	main	default
 
+== crates/hale-codegen/tests/bus_publisher_order.rs#11124b22
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a1	SubA	main	default
+row	App@literal1.a2	SubA	main	default
+row	App@literal1.a3	SubA	main	default
+row	App@literal1.c	Coord	main	default
+
+== crates/hale-codegen/tests/bus_publisher_order.rs#c326e5a0
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.t1	Tally	main	default
+row	App@literal1.t2	Tally	main	default
+
 == crates/hale-codegen/tests/bus_routing_keys.rs#3d1a84d5
 root	App	the entry
 row	App@literal1	App	main	default

@@ -7250,6 +7250,26 @@ void lotus_bus_mark_pinned(void) {
     lotus_mark_multithreaded();
 }
 
+/* A publisher's program order, per destination domain (spec/runtime.md
+ * § "Bus message router", "One publisher's order"): 1 while this thread
+ * may have cells of its own still queued on its own delivery queue
+ * (main's cooperative queue on main, its pool's ring on a pool's worker,
+ * its mailbox on a pinned thread), 0 once that queue was found empty. A
+ * devirtualized publish — a direct handler call in place of a cell — is
+ * observably the queued delivery only when nothing this thread sent
+ * earlier still waits there; while this word is up it enqueues instead.
+ * Set where this thread posts to its own queue, cleared where its drain
+ * finds the queue empty. Conservative: up for a cell another publisher
+ * on this thread queued, it costs an enqueue, never an order. Exported:
+ * a baked direct publish reads it with one load. */
+__thread int64_t lotus_local_queued = 0;
+/* The cooperative queue this thread owns (main's), NULL elsewhere. */
+static __thread lotus_bus_queue_t *t_owned_queue = NULL;
+
+static inline void lotus_local_queued_clear(void) {
+    if (lotus_local_queued) lotus_local_queued = 0;
+}
+
 lotus_bus_queue_t *lotus_bus_queue_create(void) {
     lotus_bus_queue_t *q =
         (lotus_bus_queue_t *)malloc(sizeof(lotus_bus_queue_t));
@@ -7265,6 +7285,7 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     q->tail = 0;
     pthread_mutex_init(&q->lock, NULL);
     q->owner = pthread_self();
+    t_owned_queue = q;
 #ifndef __wasm__
     atomic_init(&q->idle, 0);
     q->wake_r = q->wake_w = -1;
@@ -7905,6 +7926,9 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
+    /* The owner queued on its own queue: a later devirtualized publish
+     * on this thread waits behind it (lotus_local_queued). */
+    if (t_owned_queue == q) lotus_local_queued = 1;
     if (locked) {
         pthread_mutex_unlock(&q->lock);
 #ifndef __wasm__
@@ -8415,8 +8439,12 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
      * drain body below already relies on. With one thread there
      * is no concurrent producer and no foreign drainer. */
     if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
-        && q->head >= q->tail && !g_transport_lost_pending)
+        && q->head >= q->tail && !g_transport_lost_pending) {
+        /* Empty, and this is its owner (one thread): nothing this
+         * thread queued waits. */
+        lotus_local_queued_clear();
         return;
+    }
     /* Owner-only handler execution (see the `owner` field comment).
      * A foreign thread reaching this via its scope-exit flush /
      * sleep-slice must NOT run main-pool subscribers' handlers —
@@ -8489,6 +8517,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                     if (t_rp_pending_len == 0) {
                         q->head = 0;
                         q->tail = 0;
+                        lotus_local_queued_clear();
                     }
                     g_bus_drain_active = 0;
                     pthread_mutex_unlock(&q->lock);
@@ -8540,6 +8569,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             if (q->head >= q->tail) {
                 q->head = 0;
                 q->tail = 0;
+                lotus_local_queued_clear();
                 g_bus_drain_active = 0;
                 return;
             }
@@ -8978,9 +9008,17 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
      * during its own drain — must NEVER block (nothing else drains it →
      * deadlock). Detected via the consumer thread's TLS mailbox pointer. */
     int self_publish = (lotus_mailbox_get_current() == mb);
+    /* Its own mailbox: a later devirtualized publish on this thread
+     * waits behind this cell (lotus_local_queued). */
+    if (self_publish) lotus_local_queued = 1;
 
     for (;;) {
-        int enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
+        /* A self-publish behind an overflow keeps to it: the drain takes
+         * the ring before the overflow, so a cell put in the ring after
+         * one put in the overflow would be delivered first (one
+         * publisher's order). */
+        int enq = (self_publish && mb->overflow_head)
+            ? 0 : lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
 
         if (!enq && !self_publish) {
             /* Ring full, cross-thread producer — BLOCK until the consumer
@@ -9097,6 +9135,7 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
         }
 
         /* Both empty — park under the mutex with the seq_cst handshake. */
+        lotus_local_queued_clear();
         pthread_mutex_lock(&mb->lock);
         atomic_store_explicit(&mb->parked, 1, memory_order_seq_cst);
         atomic_thread_fence(memory_order_seq_cst);
@@ -9244,6 +9283,7 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
             lotus_mailbox_dispatch_cell(&cell);
             continue;
         }
+        if (!replaying || t_rp_pending_len == 0) lotus_local_queued_clear();
         return;                                 /* no eligible cell */
     }
 }
@@ -10542,9 +10582,17 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
      * posting to this same pool — must NEVER block (the worker IS the sole
      * consumer → deadlock). Detected via the worker's TLS pool pointer. */
     int self_publish = (lotus_coop_pool_current() == p);
+    /* Its own pool's queue: a later devirtualized publish on this worker
+     * waits behind this cell (lotus_local_queued). */
+    if (self_publish && !run) lotus_local_queued = 1;
 
     for (;;) {
-        int enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
+        /* A self-publish behind an overflow keeps to it: the drain takes
+         * the ring before the overflow, so a cell put in the ring after
+         * one put in the overflow would be delivered first (one
+         * publisher's order). */
+        int enq = (self_publish && p->overflow_head)
+            ? 0 : lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
 
         if (!enq && !self_publish) {
             /* Ring full, cross-thread producer — BLOCK until the consumer
@@ -10722,6 +10770,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
          * Byte-identical to lotus_mailbox_drain_one, but that no hold
          * is carried into the park, nor out at the shutdown (bound 2). */
         lotus_handler_carry_end();
+        if (!p->deferred_head) lotus_local_queued_clear();
         pthread_mutex_lock(&p->lock);
         atomic_store_explicit(&p->parked, 1, memory_order_seq_cst);
         atomic_thread_fence(memory_order_seq_cst);
@@ -10939,6 +10988,7 @@ static void lotus_pool_run_park_drain(lotus_coop_pool_t *p) {
             cell = node->cell;
             free(node);
         } else {
+            if (!replaying || t_rp_pending_len == 0) lotus_local_queued_clear();
             break;
         }
         if (replaying && !lotus_replay_gate_cell(&cell)) continue;
@@ -12745,6 +12795,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
                        || (p->overflow_head != NULL);
     int shutdown_set = atomic_load_explicit(&p->shutdown,
                                             memory_order_seq_cst);
+    /* Nothing queued on this worker's pool: nothing a coroutine here
+     * sent waits (lotus_local_queued). */
+    if (!cell_pending) lotus_local_queued_clear();
 
     if (shutdown_set && !cell_pending) {
         /* 2026-05-30 wakeable park: shutting down with no more cells, but
@@ -24138,6 +24191,12 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             } else if (e->coop_pool) {
                 lotus_coop_pool_post_bus(e->coop_pool, e->handler, e->self_ptr,
                                      payload, (size_t)size);
+            } else if (lotus_local_queued) {
+                /* same-thread, but a cell this thread sent earlier
+                 * still waits on its queue: the call would overtake it,
+                 * so the cell queues behind it (one publisher's order). */
+                lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
+                                        e->self_ptr, payload, (size_t)size);
             } else {
                 /* same-thread: the whole point — run it now. */
                 g_bus_pending_gen = prev_gen;

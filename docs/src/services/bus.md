@@ -157,6 +157,18 @@ through yet, only a stderr line once per subject for whoever is
 watching logs. Keep a subject a remote peer needs under 64 KiB on
 the wire.
 
+## What order you can count on
+
+One publisher's sends arrive in the order it sent them, across
+topics: after `Prices <- p; Orders <- o;`, every subscriber on the
+same thread hears `p` before any hears `o`. That holds however the
+compiler lowered each publish — when it turns a send into a direct
+call to its one subscriber, it only does so while nothing that
+publisher sent earlier is still waiting to be delivered; otherwise the
+send waits its turn like any other. Two publishers on different
+threads, or subscribers on different threads, have no order between
+them.
+
 ## One ordering rule
 
 A subscriber must be *born before* a publisher sends, or the

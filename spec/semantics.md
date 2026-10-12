@@ -2754,7 +2754,13 @@ rewrite — observable behavior is identical modulo timing
 (synchronous instead of cooperative-deferred) — *provided
 publisher and subscriber share an execution context* (see the
 placement carve-out below; that condition is what keeps the
-rewrite observably transparent).
+rewrite observably transparent), and provided nothing the
+publishing thread sent earlier still waits on its own queue:
+one publisher's order holds across topics (`runtime.md` § "Bus
+message router", "One publisher's order"), so while such a cell
+waits the send is queued to its subscriber behind it, and only
+otherwise is it the direct call (2026-10-12: before, `TA <- a;
+TB <- b;` ran TB's rewritten handler ahead of TA's queued ones).
 
 Out of scope for v1 (fall through to bus dispatch unchanged):
 

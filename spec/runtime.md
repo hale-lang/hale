@@ -1426,6 +1426,47 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   atomic delivery via SOCK_SEQPACKET) and doesn't go through
   the Adapter interface.
 
+**One publisher's order (2026-10-12).** Each thread delivers in-process
+cells through one queue of its own: `main` through the program-wide
+cooperative queue, a pool's worker through its pool's queue, a pinned
+thread through its mailbox. That queue is the destination domain of
+every subscriber the thread hosts. The guarantee: for one publishing
+thread and one destination domain, the cells it sends are delivered in
+the order it sent them, **across topics** — `TA <- a; TB <- b;` delivers
+`a` to each of TA's subscribers in that domain before `b` reaches any of
+TB's there, whichever topic it was. Delivered means the handler is
+started in that order; on an `async_io` pool a handler that parks lets
+the next one start, so completion may interleave. A cell a thread
+posts to its own queue while an overflow of its own waits there joins
+that overflow, so the drain's ring-before-overflow order cannot let it
+overtake one. Nothing is promised between
+two publishing threads, nor between two destination domains (a cell to
+a pool's subscriber and one to `main`'s run on different threads, and
+either may run first). A subscriber whose `birth()` has not completed
+is the one exception the readiness contract makes: its cells wait for
+its readiness (§ "Lifecycle obligations", line 6) and are delivered
+then, in the order they were sent.
+
+The compiler's devirtualizations keep it, which is what makes them
+invisible (`spec/semantics.md` § "Closed-world topology
+optimization"): a publish lowered to a direct handler call — the
+closed-world rewrite of a send to its one subscriber, or a direct
+dispatch flavor's baked call — runs at once only while nothing the
+publishing thread sent earlier still waits on its own queue. While
+something does, the publish is queued to the same subscribers instead,
+behind it, as the bus would have queued it. The runtime keeps one word
+per thread, `lotus_local_queued`: raised where the thread posts a cell
+to its own queue, lowered where its drain finds that queue empty; a
+devirtualized publish reads it with one load. It is conservative (a
+cell another publisher on the thread queued raises it too, and costs
+that publish an enqueue, never an order). A direct dispatch flavor
+reads it only where a subscriber of its subject also subscribes to a
+subject the plan does not lower direct: its handlers are quiet (they
+change their own locus and nothing else), so overtaking a queued cell
+is observable only through that subscriber. The common case — nothing
+queued — stays the direct call (a baked direct publish measured the
+same, 2.8 ns for two handlers, before and after).
+
 **v1.x source surface.** Subjects are now declared as typed
 top-level `topic Foo { payload: T; subject: "..."; }` decls
 (with optional `: Parent` for hierarchical wire subjects);

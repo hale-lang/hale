@@ -1526,8 +1526,15 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     // subscriber's window is open (one monotonic load of
                     // `lotus_bus_unready_count`), the publish takes the
                     // helper, whose gate parks it; a subject whose
-                    // subscribers the plan owes no readiness bakes as
-                    // before.
+                    // subscribers the plan owes no readiness reads no
+                    // window. One publisher's order: where a subscriber
+                    // may also have a queued cell (`ordered`), while a
+                    // cell this thread sent earlier waits on its own
+                    // queue (one load of `lotus_local_queued`) the baked
+                    // call would overtake it, so the publish takes the
+                    // helper, which queues behind it; with nothing
+                    // waiting it stays the baked call, and a subject
+                    // whose subscribers have no other cell bakes alone.
                     let guarded = match subject {
                         Expr::Literal(Literal::String(s), _) => self
                             .bus_devirt_direct_subs
@@ -1535,13 +1542,19 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                             .is_some_and(|subs| subs.iter().any(|(locus, _)| self.owes_readiness(locus))),
                         _ => false,
                     };
-                    let ready_join = if guarded {
+                    let ordered = match subject {
+                        Expr::Literal(Literal::String(s), _) => self.bus_devirt_direct_ordered.contains(s),
+                        _ => false,
+                    };
+                    let ready_join = if guarded || ordered {
                         Some(self.emit_direct_publish_readiness_guard(
                             current_fn,
                             id_iv,
                             subj_val,
                             payload_val,
                             payload_size_iv,
+                            guarded,
+                            ordered,
                         )?)
                     } else {
                         None
