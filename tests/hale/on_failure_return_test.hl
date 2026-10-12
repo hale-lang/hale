@@ -1,0 +1,50 @@
+// `return;` in an `on_failure` body ends the handler early, the way
+// its fall-through does (downstream handoff). It checked clean and
+// the build refused it with "`return` outside a user fn", though the
+// same statement already worked in `accept()` and `drain()`.
+//
+// The handler binds a locus before each `return`, so the early exit
+// has a frame to tear down; one `return` sits under an `if`, one inside
+// a `while`. The counters must end where the guards sent each failure.
+
+locus Probe {
+    params { tag: Int = 0; }
+}
+
+locus Worker {
+    params { n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = self.n + 1; violate boom; }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        handled: Int = 0;
+        past_guard: Int = 0;
+        left_loop: Int = 0;
+    }
+    on_failure(c: Worker, err: ClosureViolation) {
+        self.handled = self.handled + 1;
+        let p = Probe { tag: c.n };
+        if c.n < 3 { return; }
+        self.past_guard = self.past_guard + p.tag;
+        let mut i = 0;
+        while i < 10 {
+            i = i + 1;
+            if i == c.n { self.left_loop = self.left_loop + i; return; }
+        }
+        self.left_loop = self.left_loop + 100;
+    }
+    run() {
+        self.w.go();
+        self.w.go();
+        self.w.go();
+        self.w.go();
+        std::test::assert_eq_int(self.handled, 4, "every failure reached the handler");
+        std::test::assert_eq_int(self.past_guard, 7, "only the third and fourth failures passed the guard (3 + 4)");
+        std::test::assert_eq_int(self.left_loop, 7, "both left the loop by its return, never past it (3 + 4)");
+    }
+}
+
+fn main() { App { }; }

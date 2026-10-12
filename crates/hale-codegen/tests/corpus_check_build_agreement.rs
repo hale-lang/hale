@@ -1803,3 +1803,302 @@ fn every_bare_builtin_name_is_classified() {
         unclassified
     );
 }
+
+/// A shape `hale check` accepted and `hale build` refused, with a
+/// message that named lowering rather than the program and, for most,
+/// no file or line (downstream handoff), now refused by the check: its
+/// one error, the source it points at, the head of its message, and
+/// the sweep's verdict. Each case is `(program, located at, message
+/// head)`; the programs are plain string literals, for the reason given
+/// above.
+fn assert_refused_by_the_check(cases: &[(&str, &str, &str)], tag: &str) {
+    for (i, (src, at, head)) in cases.iter().enumerate() {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
+        assert_eq!(errors[0].span.slice(src), *at, "located at the construct:\n{}", src);
+        assert!(errors[0].message.starts_with(head), "{}\n{}", errors[0].message, src);
+        assert_eq!(
+            sweep_verdict(src, &format!("hale_cb_{tag}_{i}")),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}
+
+/// The neighbour of a refused shape that does lower, so the rule stays
+/// exactly as wide as the build's refusal.
+fn assert_built(src: &str, tag: &str) {
+    assert_eq!(sweep_verdict(src, tag), Verdict::Built, "check-clean and buildable:\n{}", src);
+}
+
+/// A `type` holding a locus, as a field or an enum variant's payload:
+/// lowering looked the locus up as a type ("unknown type name `M` in
+/// signature"). A `type` holding an interface (a fat pointer) lowers.
+#[test]
+fn a_locus_in_a_type_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Layer { w: M; }\n\
+                 fn main() { let l = Layer { w: M { } }; println(l.w.n); }\n",
+                "M",
+                "`type Layer`: field `w` holds the locus `M`. A `type` is plain data",
+            ),
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Layer { ws: [M; 2]; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "[M; 2]",
+                "`type Layer`: field `ws` holds the locus `M`.",
+            ),
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Pick = enum { One(M), Neither };\n\
+                 fn main() { println(\"x\"); }\n",
+                "M",
+                "`type Pick`: variant `One` holds the locus `M`.",
+            ),
+        ],
+        "locus_in_type",
+    );
+    assert_built(
+        "interface Sized { fn size() -> Int; }\n\
+         locus Box { params { v: Int = 1; } fn size() -> Int { return self.v; } }\n\
+         type Holder { item: Sized; }\n\
+         fn main() { let h = Holder { item: Box { } }; println(h.item.size()); }\n",
+        "hale_cb_interface_in_type",
+    );
+}
+
+/// A topic whose payload the bus cannot carry, subscribed ("m60
+/// requires a TypeRef...") or sent ("bus send payload must be a
+/// user-type"). A topic declared `publish` and never sent lowers.
+#[test]
+fn an_uncarried_topic_payload_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "topic Chunk { payload: String; }\n\
+                 locus Sub {\n\
+                 bus { subscribe Chunk as on_chunk; }\n\
+                 fn on_chunk(s: String) { println(s); }\n\
+                 }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Chunk as on_chunk;",
+                "subscribe `Chunk`: topic `Chunk` declares `payload: String`, which the bus cannot carry.",
+            ),
+            (
+                "topic Chunk { payload: Int; }\n\
+                 locus Pub { bus { publish Chunk; } run() { Chunk <- 4; } }\n\
+                 fn main() { Pub { }; }\n",
+                "Chunk <- 4;",
+                "`Chunk <- ...`: topic `Chunk` declares `payload: Int`, which the bus cannot carry.",
+            ),
+        ],
+        "uncarried_topic",
+    );
+    assert_built(
+        "topic Chunk { payload: String; }\n\
+         locus Pub { bus { publish Chunk; } run() { } }\n\
+         fn main() { Pub { }; }\n",
+        "hale_cb_publish_only_topic",
+    );
+}
+
+/// The recovery modifiers lowering does not implement: `quarantine(c)
+/// for d` (spec/semantics.md § `quarantine(child) [for d]`) and
+/// `until`, refused by codegen with no span.
+#[test]
+fn an_unlowered_recovery_modifier_is_refused_by_the_check_not_the_build() {
+    let desk = |stmt: &str| {
+        format!(
+            "locus Book {{\n\
+             params {{ credits: Int = 0; debits: Int = 0; }}\n\
+             closure balanced {{ self.credits ~~ self.debits within 0; }}\n\
+             }}\n\
+             locus Desk {{\n\
+             params {{ n: Int = 0; }}\n\
+             on_failure(c: Book, err: ClosureViolation) {{ {stmt} }}\n\
+             run() {{ Book {{ credits: 100, debits: 93 }}; }}\n\
+             }}\n\
+             fn main() {{ let d = Desk {{ }}; }}\n"
+        )
+    };
+    let quarantine = desk("quarantine(c) for 5s;");
+    let until = desk("restart(c) until self.n < 3;");
+    let bubble = desk("bubble(err) for 2;");
+    assert_refused_by_the_check(
+        &[
+            (
+                &quarantine,
+                "quarantine(c) for 5s;",
+                "`quarantine(c) for d` (an automatic restart after a duration) is specified but not implemented",
+            ),
+            (&until, "restart(c) until self.n < 3;", "`until` (restart while a condition holds) is specified but not implemented"),
+            (&bubble, "bubble(err) for 2;", "`for` bounds how many times a child is restarted"),
+        ],
+        "recovery_modifier",
+    );
+    assert_built(&desk("restart(c) for 2;"), "hale_cb_restart_for_n");
+}
+
+/// A bare expression statement: codegen refused it with no file or
+/// line ("expression statement other than locus literal or builtin
+/// call"). A call in statement position lowers.
+#[test]
+fn an_unused_expression_statement_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            ("fn main() { let a = 1; a + 2; println(\"x\"); }\n", "a + 2", "this expression's value is unused"),
+            (
+                "type T { a: Int = 0; }\n\
+                 fn main() { let t = T { }; t.a; println(\"x\"); }\n",
+                "t.a",
+                "this expression's value is unused",
+            ),
+        ],
+        "unused_expression",
+    );
+    assert_built("fn ping() -> Int { return 1; }\nfn main() { ping(); println(\"x\"); }\n", "hale_cb_discarded_call");
+}
+
+/// `return;` in an `on_failure` body checked clean and the build
+/// refused it ("`return` outside a user fn"), though the same statement
+/// lowered in `accept()` and `drain()`. It is lowered now, as the
+/// handler's fall-through taken early; `tests/hale/on_failure_return_test.hl`
+/// runs it. A `return` carrying a value has nowhere to go, and the
+/// check says so.
+#[test]
+fn a_return_in_an_on_failure_body_is_built() {
+    let desk = |stmt: &str| {
+        format!(
+            "locus Book {{\n\
+             params {{ credits: Int = 0; debits: Int = 0; }}\n\
+             closure balanced {{ self.credits ~~ self.debits within 0; }}\n\
+             }}\n\
+             locus Desk {{\n\
+             params {{ seen: Int = 0; }}\n\
+             on_failure(c: Book, err: ClosureViolation) {{ {stmt} }}\n\
+             run() {{ Book {{ credits: 100, debits: 93 }}; }}\n\
+             }}\n\
+             fn main() {{ let d = Desk {{ }}; }}\n"
+        )
+    };
+    assert_built(&desk("if self.seen > 2 { return; } self.seen = self.seen + 1;"), "hale_cb_on_failure_return");
+    let valued = desk("return 5;");
+    assert_refused_by_the_check(
+        &[(&valued, "5", "`return` in an `on_failure` body carries no value")],
+        "on_failure_return_value",
+    );
+}
+
+/// `accept(c: T)` with `T` neither a locus nor an interface (a
+/// primitive, a `type`, a perspective): lowering refused it with no
+/// span ("accept() param must be a locus type"). Accepting a locus
+/// lowers; an interface-typed `accept` is the spec's accept bubbling and
+/// is not judged by the check.
+#[test]
+fn a_non_locus_accept_param_is_refused_by_the_check_not_the_build() {
+    let prim = "locus H { params { n: Int = 0; } accept(c: Int) { self.n = c; } }\n\
+                fn main() { let h = H { }; println(h.n); }\n";
+    let record = "type T { a: Int = 0; }\n\
+                  locus H { params { n: Int = 0; } accept(c: T) { self.n = c.a; } }\n\
+                  fn main() { let h = H { }; println(h.n); }\n";
+    let persp = "perspective P { fn x() -> Int; }\n\
+                 locus H { params { n: Int = 0; } accept(c: P) { } }\n\
+                 fn main() { let h = H { }; println(h.n); }\n";
+    assert_refused_by_the_check(
+        &[
+            (prim, "Int", "`accept(c: Int)`: `accept()` takes a locus or an interface"),
+            (record, "T", "`accept(c: T)`: `accept()` takes a locus or an interface"),
+            (persp, "P", "`accept(c: P)`: `accept()` takes a locus or an interface"),
+        ],
+        "non_locus_accept",
+    );
+    assert_built(
+        "locus Kid { params { n: Int = 1; } }\n\
+         main locus H { params { n: Int = 0; } accept(c: Kid) { self.n = c.n; } birth() { Kid { }; } run() { println(self.n); } }\n\
+         fn main() { H { }; }\n",
+        "hale_cb_locus_accept",
+    );
+}
+
+/// `return <value>;` in a body that declares no return type (a fn with
+/// no `-> T`, a lifecycle hook): lowering refused it with no span ("fn
+/// declared with no return type but `return e;` carries a value").
+/// `fn main`'s `return n;` is the exit code and builds.
+#[test]
+fn a_value_returned_from_a_body_that_returns_nothing_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus D { params { n: Int = 0; } run() { if self.n == 0 { return 5; } } }\n\
+                 fn main() { let d = D { }; }\n",
+                "5",
+                "`return` carries a value, but this body returns nothing",
+            ),
+            (
+                "locus D { params { n: Int = 0; } fn bump() { return self.n + 1; } }\n\
+                 fn main() { let d = D { }; d.bump(); }\n",
+                "self.n + 1",
+                "`return` carries a value, but this body returns nothing",
+            ),
+            (
+                "fn note(n: Int) { if n > 0 { return n; } println(n); }\n\
+                 fn main() { note(1); }\n",
+                "n",
+                "`return` carries a value, but this body returns nothing",
+            ),
+        ],
+        "unit_return_value",
+    );
+    assert_built("fn main() { println(\"x\"); return 3; }\n", "hale_cb_main_exit_code");
+}
+
+/// A topic whose payload is `BytesView`, the raw-frame path, used where
+/// no ring carries raw frames: subscribed or sent with no binding
+/// ("no serializer synthesized for bus payload type `BytesView`" / "bus
+/// send payload must be a user-type"), or bound to a native `shm_ring`
+/// with no `layout:` ("only single-segment struct payloads are
+/// supported"). Bound to a `layout:` ring, it builds.
+#[test]
+fn a_raw_frame_topic_off_a_layout_ring_is_refused_by_the_check_not_the_build() {
+    let program = |main_body: &str| {
+        format!(
+            "topic Recs {{ payload: BytesView; }}\n\
+             ring_layout ForeignRing {{\n\
+             magic 0x52494E47464D5431;\n\
+             version 1 at 8 : u32;\n\
+             buffer_size at 12 : u32;\n\
+             data_at 128;\n\
+             cursor published {{ at 64; repr atomic_u64; load acquire; unit bytes; }}\n\
+             framing byte_records {{ len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }}\n\
+             overflow lap_detect;\n\
+             }}\n\
+             locus Reader {{ params {{ n: Int = 0; }} bus {{ subscribe Recs as on_rec; }} fn on_rec(v: BytesView) {{ self.n = self.n + 1; }} }}\n\
+             main locus App {{ params {{ r: Reader = Reader {{ }}; }} {main_body} }}\n\
+             fn main() {{ App {{ }}; }}\n"
+        )
+    };
+    let unbound = program("");
+    let native = program("bindings { Recs: shm_ring(\"/hale.cb.recs.native\", on_overflow: drop); }");
+    let sent = "topic Recs { payload: BytesView; }\n\
+                locus Feed { bus { publish Recs; } run() { let b = std::bytes::BytesBuilder { initial_cap: 64 }; b.append_u8(2); Recs <- b.view(); } }\n\
+                fn main() { Feed { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (&unbound, "subscribe Recs as on_rec;", "subscribe `Recs`: topic `Recs` declares `payload: BytesView`, the raw-frame path"),
+            (&native, "Recs: shm_ring(\"/hale.cb.recs.native\", on_overflow: drop);", "`Recs: shm_ring(...)`: topic `Recs` declares `payload: BytesView`"),
+            (sent, "Recs <- b.view();", "`Recs <- ...`: topic `Recs` declares `payload: BytesView`, the raw-frame path"),
+        ],
+        "raw_frame_topic",
+    );
+    assert_built(
+        &program("bindings { Recs: shm_ring(\"/hale.cb.recs.layout\", on_overflow: drop, layout: ForeignRing); }"),
+        "hale_cb_raw_frame_layout_ring",
+    );
+}

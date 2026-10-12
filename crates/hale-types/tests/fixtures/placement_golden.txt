@@ -686,7 +686,7 @@ shared	App@literal1.one	__StdIoTcpConnections #1e22aa30
 shared	App@literal1.zero	__StdIoTcpConnections #7f78c9f3
 shared	dynamic	sites in the seed #3837ddcb
 
-== crates/hale-cli/tests/check_tcp_substrate.rs#205ef77d
+== crates/hale-cli/tests/check_tcp_substrate.rs#63188846
 root	App	the entry
 domain	pool:web	async_io
 hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
@@ -1130,7 +1130,7 @@ row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.snd	Sender	main	default
 
-== crates/hale-cli/tests/topology_graph_cli.rs#c5fbd18c
+== crates/hale-cli/tests/topology_graph_cli.rs#86e02774
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.h	H	main	default
@@ -6927,6 +6927,12 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.a	Alpha	main	default
 row	App@literal1.b	Beta	main	default
+
+== tests/hale/on_failure_return_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+dynamic	Probe	on main	in the seed
 
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default

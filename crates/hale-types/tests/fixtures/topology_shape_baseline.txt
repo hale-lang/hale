@@ -4,6 +4,7 @@ crates/hale-cli/tests/api_contract_fixtures.rs#4 12b424787237e947
 crates/hale-cli/tests/api_contract_fixtures.rs#5 af01dd6f540c9d06
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
 crates/hale-cli/tests/check_tcp_substrate.rs#0 c77866f6c52f37e4
+crates/hale-cli/tests/check_tcp_substrate.rs#1 c77866f6c52f37e4
 crates/hale-cli/tests/claims_artifact_unknowns.rs#3 0bf63ec1a65dcd45
 crates/hale-cli/tests/cross_seed_arity.rs#0 35ab8ae1973a4a20
 crates/hale-cli/tests/cross_seed_interface_fallible.rs#1 7207e939617cd337
@@ -167,7 +168,7 @@ crates/hale-cli/tests/test_ffi_pickup.rs#1 865d341109268295
 crates/hale-cli/tests/topology_artifact_contract.rs#0 ceb97d5adb719c07
 crates/hale-cli/tests/topology_graph_cli.rs#10 ec82aec13abd9d9b
 crates/hale-cli/tests/topology_graph_cli.rs#12 c363b8f518cad8e2
-crates/hale-cli/tests/topology_graph_cli.rs#13 be98556704930f2b
+crates/hale-cli/tests/topology_graph_cli.rs#13 bd8510246c8cc9bf
 crates/hale-cli/tests/topology_graph_cli.rs#16 5b19cc4370a72a2f
 crates/hale-cli/tests/topology_graph_cli.rs#17 4c081c05dbf2a0d4
 crates/hale-cli/tests/topology_graph_cli.rs#2 48c907513b2f218b

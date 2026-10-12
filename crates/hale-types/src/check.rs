@@ -769,6 +769,11 @@ pub fn check_bundle_by_declaration(
     // program with its `bindings { }` block one brace deeper did not
     // compile.
     let bound_topics = inputs.bindings.bound_names();
+    // The topics a raw `BytesView` payload can travel on: bound to an
+    // `shm_ring` (whose `layout:` is judged at the entry), or carried by
+    // a `codec(...)` clause. Lowering has no serializer for `BytesView`
+    // anywhere else.
+    let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
     // consumer of a library whose seed is not in the bundle.
@@ -859,6 +864,7 @@ pub fn check_bundle_by_declaration(
         in_on_failure: false,
         fallible_ctx: None,
         return_ctx: None,
+        in_fn_main: false,
         strict_callees,
         strict_idents,
         or_value_discarded: false,
@@ -875,6 +881,7 @@ pub fn check_bundle_by_declaration(
         generic_loci,
         handlers,
         bound_topics: &bound_topics,
+        raw_frame_topics: &raw_frame_topics,
         import_renames: &bundle.import_renames,
         unresolved_import_aliases: &unresolved_import_aliases,
         typed: &mut typed,
@@ -1149,7 +1156,7 @@ pub fn check_bundle_by_declaration(
     // CARRY. The rule above relates two sites to each other; this one
     // relates one site to the runtime, which takes a user type, a
     // has-payload enum or `BytesView` and nothing else.
-    check_bus_payload_carriable(bundle, top, known, &mut diags);
+    check_bus_payload_carriable(bundle, top, known, inputs.bindings, &raw_frame_topics, &mut diags);
     // A revealed secret is consumed in its statement (spec/semantics.md
     // § "@sealed"): `Credential.reveal()` only in a locus method, its
     // value reaching a wire write, a comparison or a `@secret` parameter
@@ -6132,19 +6139,109 @@ fn payload_carriage(
 /// all. This asks exactly that, once per `of type` clause, at the
 /// clause's own span.
 ///
-/// Scope: the `of type` clause on a `publish` / `subscribe`. A
-/// `topic T { payload: Int; }` is under the same contract and is
-/// still refused during lowering, because the checker never runs
-/// `desugar_topics` (codegen does) — so a topic-ref subscribe
-/// carries no `ty` at this layer and there is nothing here to judge.
-/// Closing that half means reading `TopicDecl.payload`, which moves
-/// its own set of ratchet rows; it is deliberately not this change.
+/// Scope: the `of type` clause on a `publish` / `subscribe`, and a
+/// subscription to a `topic T { payload: Int; }`. The checker never
+/// runs `desugar_topics` (codegen does), so a topic-ref subscribe
+/// carries no `ty` at this layer: its payload is read from the topic
+/// rows (`topic_payload_not_carried`), as a send to the topic's is in
+/// `check_send`. A topic only declared, or only listed `publish`,
+/// lowers to nothing and is not judged.
+/// A topic's `payload:` the bus cannot carry, as the tail of a refusal
+/// at a site that delivers it: a subscription to the topic or a `<-`
+/// to it. `None` when the topic is not declared in this bundle (the
+/// resolver names that) or its payload is carried or not judged here
+/// (`Carriage`).
+fn topic_payload_not_carried(
+    top: &TopScope,
+    known: &KnownNames,
+    topic: &str,
+    raw_frame_topics: &BTreeSet<String>,
+) -> Option<String> {
+    let row = top.topics.named(topic)?;
+    if matches!(resolve_type_expr(&row.payload, known), Ty::Prim(PrimType::BytesView))
+        && !raw_frame_topics.contains(topic)
+    {
+        return Some(format!(
+            "topic `{topic}` declares `payload: BytesView`, the raw-frame \
+             path, which only a ring with a declared record layout carries: \
+             there is no serializer for a `BytesView` on any other route. \
+             Bind the topic in main's `bindings {{ }}` to that ring, \
+             `{topic}: shm_ring(\"/<name>\", on_overflow: drop, layout: \
+             <ring_layout>);`, or give it a user `type` payload."
+        ));
+    }
+    let Carriage::NotCarried(repair) = payload_carriage(&row.payload, top, known) else {
+        return None;
+    };
+    Some(format!(
+        "topic `{}` declares `payload: {}`, which the bus cannot carry. A \
+         delivery is a serialized struct, so a topic's payload needs a field \
+         layout: a user `type`, an enum with a payload variant, or `BytesView` \
+         (the raw-frame path). To send one, {} and declare the topic's \
+         `payload:` as that.",
+        topic,
+        resolve_type_expr(&row.payload, known).display(),
+        repair,
+    ))
+}
+
+/// The topics a raw `BytesView` payload can travel on: a binding entry
+/// (not merged from an imported seed) to an `shm_ring`, or one with a
+/// `codec(...)` clause, whose thunks stand in for the serializer. A
+/// ring entry without the `layout:` the raw-frame path needs is judged
+/// at the entry (`check_bus_payload_carriable`), so its uses are not
+/// refused a second time. An entry this bundle cannot read back counts,
+/// so the rule never refuses what it cannot see.
+fn raw_frame_topics(
+    bundle: &Bundle<'_>,
+    bindings: &crate::binding_rows::BindingRows,
+) -> BTreeSet<String> {
+    bindings
+        .rows
+        .iter()
+        .filter(|r| !r.imported)
+        .filter(|r| {
+            r.codec.is_some()
+                || r.entry(bundle).map_or(true, |e| {
+                    matches!(e.transport, TransportSpec::ShmRing { .. })
+                })
+        })
+        .map(|r| r.topic.clone())
+        .collect()
+}
+
 fn check_bus_payload_carriable(
     bundle: &Bundle<'_>,
     top: &TopScope,
     known: &KnownNames,
+    bindings: &crate::binding_rows::BindingRows,
+    raw_frame_topics: &BTreeSet<String>,
     diags: &mut Vec<Diag>,
 ) {
+    // A `BytesView` topic bound to a native `shm_ring` (no `layout:`):
+    // the native ring carries fixed-size struct slots, and lowering
+    // refused the entry with no span.
+    for row in bindings.rows.iter().filter(|r| !r.imported && r.codec.is_none()) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
+            continue;
+        }
+        let Some(topic) = top.topics.named(&row.topic) else { continue };
+        if matches!(resolve_type_expr(&topic.payload, known), Ty::Prim(PrimType::BytesView)) {
+            diags.push(Diag::ty(
+                row.span,
+                format!(
+                    "`{t}: shm_ring(...)`: topic `{t}` declares `payload: BytesView`, \
+                     the raw-frame path, and a ring carries raw frames only with a \
+                     declared record layout: the native ring holds fixed-size \
+                     struct slots. Name the `ring_layout` its records follow, \
+                     `layout: <ring_layout>`, or give the topic a user `type` \
+                     payload.",
+                    t = row.topic
+                ),
+            ));
+        }
+    }
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -6159,6 +6256,18 @@ fn check_bus_payload_carriable(
                             ("publish", subject, ty)
                         }
                     };
+                    // A subscription to a topic takes its payload from
+                    // the declaration: judged here, at the subscribe,
+                    // which lowering cannot register without a
+                    // deserializer. A `publish` line alone lowers to
+                    // nothing (the `<-` site carries the payload, and
+                    // `topic_payload_not_carried` judges it there).
+                    if let (BusMember::Subscribe { span, .. }, BusSubject::Topic(topic)) = (bm, subject) {
+                        if let Some(msg) = topic_payload_not_carried(top, known, &topic.name, raw_frame_topics) {
+                            diags.push(Diag::ty(*span, format!("subscribe `{}`: {}", topic.name, msg)));
+                        }
+                        continue;
+                    }
                     let Some(ty) = ty else { continue };
                     // A topic ref takes its payload from the topic
                     // declaration, and an `of type` clause on one is
@@ -6269,6 +6378,10 @@ struct Checker<'a> {
     /// `fn f() -> Int { return "s"; }` had no return check at all and
     /// surfaced at codegen as "unsupported in codegen v0".
     return_ctx: Option<Ty>,
+    /// True while checking the body of the program's `fn main`, whose
+    /// `return n;` is the process exit code (spec/runtime.md) although
+    /// it declares no return type.
+    in_fn_main: bool,
     strict_callees: bool, // F.18: on for every command's program, off for a library caller's partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -6336,6 +6449,9 @@ struct Checker<'a> {
     /// `or wait` on publishes — the loss window it waits out
     /// only exists for bound topics.
     bound_topics: &'a std::collections::BTreeSet<String>,
+    /// The topics bound to carry a raw `BytesView` payload
+    /// (`raw_frame_topics`).
+    raw_frame_topics: &'a std::collections::BTreeSet<String>,
     /// Cross-seed import renames: `["alias", "name"] -> mangled`.
     /// Lets a qualified locus/struct literal (`mat::Grid { }`) resolve
     /// to the merged symbol codegen will lower, instead of typing as
@@ -6611,6 +6727,11 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
                             self.check_type_annotation(&f.ty);
+                            self.refuse_locus_in_type(
+                                &t.name.name,
+                                &format!("field `{}`", f.name.name),
+                                &f.ty,
+                            );
                         }
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
@@ -6642,6 +6763,11 @@ impl<'a> Checker<'a> {
                         for v in variants {
                             for te in &v.fields {
                                 self.check_type_annotation(te);
+                                self.refuse_locus_in_type(
+                                    &t.name.name,
+                                    &format!("variant `{}`", v.name.name),
+                                    te,
+                                );
                             }
                         }
                     }
@@ -9859,6 +9985,9 @@ impl<'a> Checker<'a> {
                     // the same position.
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
+                    if matches!(lc.kind, LifecycleKind::Accept | LifecycleKind::Release) {
+                        self.refuse_non_locus_child(lc.kind, p, &ty);
+                    }
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -9873,7 +10002,16 @@ impl<'a> Checker<'a> {
                     let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
+                // A mode that declares `-> T` returns a value; one that
+                // does not returns nothing, like a hook. The value's
+                // type is not judged here (`Unknown`), only whether
+                // there is one to return.
+                let prev_return = std::mem::replace(
+                    &mut self.return_ctx,
+                    md.ret.as_ref().map(|_| Ty::Unknown),
+                );
                 self.check_block(&md.body);
+                self.return_ctx = prev_return;
                 self.locals.pop();
                 self.in_lifecycle = false;
             }
@@ -10523,6 +10661,10 @@ impl<'a> Checker<'a> {
             .ret
             .as_ref()
             .map(|te| self.resolve_te(te));
+        let prev_main = std::mem::replace(
+            &mut self.in_fn_main,
+            locus.is_none() && prev_locus.is_none() && decl.name.name == "main",
+        );
         if let Some(payload_te) = &decl.fallible {
             let success_ret = match &decl.ret {
                 Some(te) => self.resolve_te(te),
@@ -10540,6 +10682,7 @@ impl<'a> Checker<'a> {
         self.locals.pop();
         self.fallible_ctx = prev_fallible;
         self.return_ctx = prev_return;
+        self.in_fn_main = prev_main;
         self.current_locus = prev_locus;
         self.generic_params = prev_generics;
     }
@@ -10959,6 +11102,36 @@ impl<'a> Checker<'a> {
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
                     let got = self.check_expr(e);
+                    // A handler returns nothing: `return;` ends it
+                    // early (lowered as its fall-through exit), and a
+                    // value has nowhere to go.
+                    if self.in_on_failure {
+                        self.diags.push(Diag::ty(
+                            e.span(),
+                            "`return` in an `on_failure` body carries no value: \
+                             the handler returns nothing. Write `return;` to \
+                             end it early."
+                                .to_string(),
+                        ));
+                    } else if self.return_ctx.is_none()
+                        && self.fallible_ctx.is_none()
+                        && !self.in_fn_main
+                    {
+                        // A body that declares no return type returns
+                        // nothing: a lifecycle hook, or a fn or mode
+                        // with no `-> T`. Lowering refused the value
+                        // with no span; `fn main`'s `return n;` is the
+                        // exit code and is not this.
+                        self.diags.push(Diag::ty(
+                            e.span(),
+                            "`return` carries a value, but this body returns \
+                             nothing: a fn or mode with no `-> T`, or a \
+                             lifecycle hook, which never returns a value. \
+                             Declare the return type (`fn f() -> T`), or \
+                             write `return;`."
+                                .to_string(),
+                        ));
+                    }
                     // v1.x-FORM-1: returning from a fallible fn
                     // means returning the success value; payload
                     // type is checked at `fail` sites instead.
@@ -11085,6 +11258,7 @@ impl<'a> Checker<'a> {
                 if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
                     let _ = self.check_expr(e);
                 }
+                self.refuse_unlowered_recovery(*op, modifier.as_ref(), *span);
                 // A handler's statements are its handler row's ops, on the
                 // handler's child.
                 if !self.in_on_failure {
@@ -11169,6 +11343,26 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
+                // A statement that only computes a value does nothing.
+                // Lowering takes a call (a fn, a method, a builtin), a
+                // literal (a locus instantiated in statement position),
+                // or an `or` over a fallible call; anything else used
+                // to pass the check and stop the build with no file or
+                // line (downstream handoff). Refused here, at the
+                // expression, after it is typed.
+                let used = matches!(e, Expr::Call { .. } | Expr::Struct { .. } | Expr::Or { .. });
+                if !used {
+                    let _ = self.check_expr(e);
+                    self.diags.push(Diag::ty(
+                        e.span(),
+                        "this expression's value is unused: a statement that \
+                         only computes a value does nothing. Bind it \
+                         (`let v = ...;`), assign it (`self.f = ...;`), pass it \
+                         to a call, or delete the statement."
+                            .to_string(),
+                    ));
+                    return;
+                }
                 // M3 stage 2 (2026-07-02): a statement-position
                 // `call() or fallback` discards its value, so the
                 // fallback's type needn't match the success type —
@@ -11435,6 +11629,13 @@ impl<'a> Checker<'a> {
                 _ => None,
             }
             .map(|t| (t.name.clone(), t.on_unmatched, t.on_full_fail));
+        // A send to a topic delivers the topic's payload, and lowering
+        // has no serializer for one the bus cannot carry.
+        if let Expr::Ident(id) = subject {
+            if let Some(msg) = topic_payload_not_carried(self.top, self.known, &id.name, self.raw_frame_topics) {
+                self.diags.push(Diag::ty(span, format!("`{} <- ...`: {}", id.name, msg)));
+            }
+        }
         let target_policy = target_topic.as_ref().map(|(_, p, _)| *p);
         let target_full_fail =
             target_topic.as_ref().map_or(false, |(_, _, f)| *f);
@@ -12136,6 +12337,138 @@ impl<'a> Checker<'a> {
     /// A type expression the walk resolves: through the scope's names,
     /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
+    /// The locus a type expression holds, by its written name: the
+    /// type itself, or the element of an array, `bounded[T; N]` or
+    /// tuple it is built from. A `std::` path names the bundled
+    /// stdlib's declaration through `PATH_RENAMES`. An interface is not
+    /// a locus (it lowers as a fat pointer and a `type` may hold one),
+    /// and a name this bundle cannot resolve is not judged.
+    fn locus_held_by(&self, te: &TypeExpr) -> Option<String> {
+        match te {
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.locus_held_by(elem)
+            }
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_held_by(p)),
+            TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let name = if written.len() > 1 {
+                    hale_stdlib::PATH_RENAMES
+                        .iter()
+                        .find(|(p, _)| *p == written.as_slice())
+                        .map(|(_, m)| m.to_string())?
+                } else {
+                    match self.resolve_te(te) {
+                        Ty::Named(n) => n,
+                        _ => return None,
+                    }
+                };
+                match self.top.lookup(&name) {
+                    Some(TopSymbol::Locus(_)) => Some(written.join("::")),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The recovery statements the spec names but lowering does not
+    /// implement (spec/semantics.md § Recovery primitives): the `for d`
+    /// duration on `quarantine`, the `until` modifier on any op, a `for`
+    /// on an op that restarts nothing, and the reserved `reorganize`.
+    /// Each passed the check and was refused by codegen with no span.
+    fn refuse_unlowered_recovery(
+        &mut self,
+        op: RecoveryOp,
+        modifier: Option<&RecoveryModifier>,
+        span: Span,
+    ) {
+        let message = match (op, modifier) {
+            (RecoveryOp::Reorganize, _) => {
+                "`reorganize(...)` is reserved syntax with no semantics yet \
+                 (spec/semantics.md § `reorganize`): it is not implemented. \
+                 Use `restart`, `restart_in_place`, `quarantine` or \
+                 `bubble`."
+                    .to_string()
+            }
+            (_, Some(RecoveryModifier::Until(_))) => {
+                "`until` (restart while a condition holds) is specified but \
+                 not implemented, on any recovery op. Bound restarts with \
+                 `restart(c) for N` — a retry count — or test the condition \
+                 in the handler before recovering."
+                    .to_string()
+            }
+            (RecoveryOp::Quarantine, Some(RecoveryModifier::For(_))) => {
+                "`quarantine(c) for d` (an automatic restart after a \
+                 duration) is specified but not implemented: `quarantine(c)` \
+                 itself ships, the `for d` clause does not. Note that this \
+                 `for` is a duration before an automatic restart, a \
+                 different modifier from `restart(c) for N`, which is a \
+                 retry count."
+                    .to_string()
+            }
+            (RecoveryOp::Bubble, Some(RecoveryModifier::For(_))) => {
+                "`for` bounds how many times a child is restarted \
+                 (`restart(c) for N`), so it does not apply to `bubble`, \
+                 which restarts nothing."
+                    .to_string()
+            }
+            _ => return,
+        };
+        self.diags.push(Diag::ty(span, message));
+    }
+
+    /// `accept(c: T)` adopts a child and `release(c: T)` is its
+    /// death-side bookend, so `T` names what a child can be: a locus, or
+    /// an interface the child's locus satisfies (spec/semantics.md §
+    /// "Locus instantiation", accept bubbling). Anything else (a
+    /// primitive, a `type`, a perspective) checked clean and lowering
+    /// refused it with no span (`accept() param must be a locus type`).
+    /// An interface is not judged here, and neither is a name this
+    /// bundle cannot resolve (`Unknown`: a generic parameter, a path
+    /// into a seed it does not hold).
+    fn refuse_non_locus_child(&mut self, kind: LifecycleKind, p: &Param, ty: &Ty) {
+        let hook = if kind == LifecycleKind::Accept { "accept" } else { "release" };
+        let what = match ty {
+            Ty::Unknown => return,
+            Ty::Named(n) => match self.top.lookup(n) {
+                Some(TopSymbol::Locus(_)) | Some(TopSymbol::Interface(_)) | None => return,
+                Some(_) => n.clone(),
+            },
+            other => other.display(),
+        };
+        self.diags.push(Diag::ty(
+            p.ty.span(),
+            format!(
+                "`{hook}({}: {what})`: `{hook}()` takes a locus or an interface: \
+                 it adopts a child, so its param names the child's locus type \
+                 (or an interface that locus satisfies), and `{what}` is \
+                 neither. A value is not a child: pass it to the child as a \
+                 param when the child is built.",
+                p.name.name
+            ),
+        ));
+    }
+
+    /// A `type` is plain data: copied by value, with no lifecycle, so a
+    /// field (or an enum variant's payload) cannot hold a locus. The
+    /// check used to accept one, and lowering refused it with no span
+    /// as `unknown type name in signature` (downstream handoff); the
+    /// rule names the field and the two places a locus can live.
+    fn refuse_locus_in_type(&mut self, type_name: &str, member: &str, te: &TypeExpr) {
+        let Some(locus) = self.locus_held_by(te) else { return };
+        self.diags.push(Diag::ty(
+            te.span(),
+            format!(
+                "`type {type_name}`: {member} holds the locus `{locus}`. A `type` \
+                 is plain data with no lifecycle: it is copied by value, so it can \
+                 neither own a locus nor keep one alive. Hold the locus in a locus \
+                 instead: make `{type_name}` a locus with a `params {{ ... }}` field \
+                 of type `{locus}`, or pass the `{locus}` as a parameter where it is \
+                 used."
+            ),
+        ));
+    }
+
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
             .map(|name| (name.clone(), Ty::Unknown)).collect();

@@ -1,6 +1,5 @@
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
-crates/hale-cli/tests/topology_graph_cli.rs#13
 crates/hale-codegen/tests/f22_as_parent_for_surface.rs#3
 crates/hale-codegen/tests/f22_capacity_acceptance.rs#4
 crates/hale-codegen/tests/f22_capacity_dispatch.rs#3

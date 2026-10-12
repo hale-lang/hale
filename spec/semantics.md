@@ -68,6 +68,20 @@ accepted this form and codegen rejected it as a fall-through).
 A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects.
 
+Such a body returns nothing, so a `return` in it carries no value: a
+`return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
+success type is then `()`) or in a lifecycle hook (`birth`, `run`,
+`accept`, `drain`, …) is a type error at the value. `fn main` is the
+exception: its `return n;` is the process exit code (§ "Process
+exit").
+
+```text
+main.hl:1:66: type error: `return` carries a value, but this body
+returns nothing: a fn or mode with no `-> T`, or a lifecycle hook,
+which never returns a value. Declare the return type (`fn f() -> T`),
+or write `return;`.
+```
+
 `if cond { ... } else { ... }` is dual-position:
 
 - **As statement** (`if c { foo(); }` — no `else`, or any arm
@@ -154,6 +168,28 @@ ignore.
 
 `match {` is not ambiguous with matching on a block expression:
 that shape is written `match (…) { … }`.
+
+## Expression statements
+
+An expression followed by `;` is a statement only when evaluating
+it does something: a call (a fn, a method, a builtin — its value,
+if any, is discarded), a locus literal (an instance built in
+statement position, § "Locus instantiation"), or an `or` over a
+fallible call. Any other expression — an arithmetic or comparison,
+a name, a field read, an index, a literal — only computes a value
+and discards it, and is a type error at the expression:
+
+```text
+main.hl:1:24: type error: this expression's value is unused: a
+statement that only computes a value does nothing. Bind it
+(`let v = ...;`), assign it (`self.f = ...;`), pass it to a call, or
+delete the statement.
+```
+
+A block's trailing expression with no `;` is not a statement and
+is not judged here (§ "Expressions — `if` and block tails"). Before
+this rule the checker accepted `a + 2;` and the backend refused it
+with no file or line.
 
 ## Binary data — Bytes and conversion
 
@@ -1334,6 +1370,22 @@ accept type. A parent that must own two child types gives one of
 them a different owner. (2026-09-04, GH #525: a second clause used
 to overwrite the first silently.)
 
+`accept`'s param (and `release`'s) names a child: a locus type, or
+an interface the child's locus satisfies (§ "Locus instantiation").
+A param of any other type — a primitive, a `type`, a perspective —
+is a typecheck error at the param's type:
+
+```text
+main.hl:1:44: type error: `accept(c: Int)`: `accept()` takes a locus
+or an interface: it adopts a child, so its param names the child's
+locus type (or an interface that locus satisfies), and `Int` is
+neither. A value is not a child: pass it to the child as a param when
+the child is built.
+```
+
+Before this rule the check accepted such a param and the backend
+refused it with no source location.
+
 ### `run()`
 
 Runs continuously until drain is requested or run returns
@@ -1398,7 +1450,16 @@ The handler may:
 - Return normally (absorb): treat as collapsed — the child
   stops, and a child the parent holds stays readable until the
   parent's teardown (§ `terminate`, "A failed child its owner holds
-  is kept").
+  is kept"). A `return;` anywhere in the body is this exit taken
+  early: the loci the handler bound so far are torn down, as at its
+  end, and the handler returns. The handler returns nothing, so a
+  `return` carrying a value is a type error at the value:
+
+  ```text
+  main.hl:8:35: type error: `return` in an `on_failure` body carries
+  no value: the handler returns nothing. Write `return;` to end it
+  early.
+  ```
 - Call `restart(c)`: run the child again — `birth()`, then
   `run()` — on the same instance (see § Recovery primitives).
 - Call `restart_in_place(c)`: re-init in place (preserve
@@ -3867,13 +3928,41 @@ A subject's payload type — `T` in `of type T`, or a `topic`'s
 - `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
   payload is not typed at all, and the handler receives a bounded
   view over each record. This is how a foreign writer's ring is
-  consumed.
+  consumed. Only a ring with a declared record layout carries raw
+  frames, so a topic of this payload is bound in main's
+  `bindings { }` to `shm_ring(..., layout: <ring_layout>)` (or
+  carried by a `codec(...)` clause). Subscribed or sent with no such
+  binding, it is rejected at typecheck at the subscribe or the `<-`;
+  bound to a native ring (no `layout:`), at the binding entry:
+
+  ```text
+  main.hl:3:11: type error: subscribe `Recs`: topic `Recs` declares
+  `payload: BytesView`, the raw-frame path, which only a ring with a
+  declared record layout carries: there is no serializer for a
+  `BytesView` on any other route. Bind the topic in main's
+  `bindings { }` to that ring, `Recs: shm_ring("/<name>",
+  on_overflow: drop, layout: <ring_layout>);`, or give it a user
+  `type` payload.
+  ```
 
 A delivery is a *serialized struct*, so the payload needs a field
 layout: `of type Int` has none, and neither does a tuple, an
 array, or a no-payload enum. An `of type` clause naming one is
-rejected at typecheck, at the clause (rule 18 above); a `topic`
-whose `payload:` names one is refused during lowering.
+rejected at typecheck, at the clause (rule 18 above). A `topic`
+whose `payload:` names one is rejected at typecheck where it is
+delivered: at each `subscribe` of the topic and each `<-` to it,
+naming the topic's payload and the repair (wrap it in a user
+`type`). A topic that is declared, or listed `publish`, and never
+subscribed or sent carries nothing and is not judged.
+
+```text
+main.hl:3:11: type error: subscribe `Chunk`: topic `Chunk` declares
+`payload: String`, which the bus cannot carry. A delivery is a
+serialized struct, so a topic's payload needs a field layout: a user
+`type`, an enum with a payload variant, or `BytesView` (the raw-frame
+path). To send one, wrap it in a user `type` and declare the topic's
+`payload:` as that.
+```
 
 **Within** a payload, the wire format supports primitives (`Int`,
 `Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
@@ -4535,17 +4624,31 @@ fine; just had a bad message).
 4. Otherwise wait until parent explicitly resolves.
 
 **Not lowered:** the `for d` duration clause. `quarantine(c)`
-itself ships; `quarantine(c) for d` is refused by codegen. Note
-that this `for` is a *duration* before an automatic restart — a
-different modifier from `restart(c) for N`, which is a retry
-count.
+itself ships; `quarantine(c) for d` is refused by the check, at the
+statement. Note that this `for` is a *duration* before an automatic
+restart — a different modifier from `restart(c) for N`, which is a
+retry count.
 
-Also not lowered: the `until` modifier on any recovery op.
+```text
+main.hl:6:50: type error: `quarantine(c) for d` (an automatic restart
+after a duration) is specified but not implemented: `quarantine(c)`
+itself ships, the `for d` clause does not. Note that this `for` is a
+duration before an automatic restart, a different modifier from
+`restart(c) for N`, which is a retry count.
+```
+
+Also not lowered: the `until` modifier on any recovery op, refused
+by the check at the statement (`` `until` (restart while a condition
+holds) is specified but not implemented ``), and a `for` on `bubble`,
+which restarts nothing. Each of these passed the check and stopped
+the build in codegen with no location before.
 
 ### `reorganize(child, ...)`
 
 Reserved syntax. Semantics TBD; expected: relocate child's
-sub-children to a sibling. Not in v0.
+sub-children to a sibling. Not in v0: the check refuses the
+statement (`` `reorganize(...)` is reserved syntax with no semantics
+yet ``).
 
 ### `bubble(err)`
 

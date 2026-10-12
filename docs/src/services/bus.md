@@ -46,6 +46,10 @@ bus { publish "org.metrics" of type Int; }
 //                                      the bus
 ```
 
+A `topic` is held to the same rule where it is used: subscribing
+to `topic Chunk { payload: String; }`, or sending `Chunk <- "hi"`,
+is an error at that line naming the topic's payload.
+
 Wrap it. `type Metric { n: Int = 0; }` costs one line and buys a
 name for what's on the wire — which is what every later reader of
 that subject actually wants. *(Inside* the payload, primitives are
