@@ -4043,7 +4043,7 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	Producer@main1	Producer	main	default
 
-== crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#3ab71ede
+== crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#6325574d
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.sub	Sub	main	default
