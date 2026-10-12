@@ -1343,6 +1343,22 @@ accept type. A parent that must own two child types gives one of
 them a different owner. (2026-09-04, GH #525: a second clause used
 to overwrite the first silently.)
 
+`accept`'s param (and `release`'s) names a child: a locus type, or
+an interface the child's locus satisfies (§ "Locus instantiation").
+A param of any other type — a primitive, a `type`, a perspective —
+is a typecheck error at the param's type:
+
+```text
+main.hl:1:44: type error: `accept(c: Int)`: `accept()` takes a locus
+or an interface: it adopts a child, so its param names the child's
+locus type (or an interface that locus satisfies), and `Int` is
+neither. A value is not a child: pass it to the child as a param when
+the child is built.
+```
+
+Before this rule the check accepted such a param and the backend
+refused it with no source location.
+
 ### `run()`
 
 Runs continuously until drain is requested or run returns

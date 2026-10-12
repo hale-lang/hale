@@ -1995,3 +1995,34 @@ fn a_return_in_an_on_failure_body_is_built() {
         "on_failure_return_value",
     );
 }
+
+/// `accept(c: T)` with `T` neither a locus nor an interface (a
+/// primitive, a `type`, a perspective): lowering refused it with no
+/// span ("accept() param must be a locus type"). Accepting a locus
+/// lowers; an interface-typed `accept` is the spec's accept bubbling and
+/// is not judged by the check.
+#[test]
+fn a_non_locus_accept_param_is_refused_by_the_check_not_the_build() {
+    let prim = "locus H { params { n: Int = 0; } accept(c: Int) { self.n = c; } }\n\
+                fn main() { let h = H { }; println(h.n); }\n";
+    let record = "type T { a: Int = 0; }\n\
+                  locus H { params { n: Int = 0; } accept(c: T) { self.n = c.a; } }\n\
+                  fn main() { let h = H { }; println(h.n); }\n";
+    let persp = "perspective P { fn x() -> Int; }\n\
+                 locus H { params { n: Int = 0; } accept(c: P) { } }\n\
+                 fn main() { let h = H { }; println(h.n); }\n";
+    assert_refused_by_the_check(
+        &[
+            (prim, "Int", "`accept(c: Int)`: `accept()` takes a locus or an interface"),
+            (record, "T", "`accept(c: T)`: `accept()` takes a locus or an interface"),
+            (persp, "P", "`accept(c: P)`: `accept()` takes a locus or an interface"),
+        ],
+        "non_locus_accept",
+    );
+    assert_built(
+        "locus Kid { params { n: Int = 1; } }\n\
+         main locus H { params { n: Int = 0; } accept(c: Kid) { self.n = c.n; } birth() { Kid { }; } run() { println(self.n); } }\n\
+         fn main() { H { }; }\n",
+        "hale_cb_locus_accept",
+    );
+}

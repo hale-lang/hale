@@ -100,3 +100,19 @@ fn a_return_in_an_on_failure_body_checks_and_builds() {
     let valued = src.replace("return;", "return 1;");
     refused(&valued, "on_failure_return_value", "8:35", "`return` in an `on_failure` body carries no value");
 }
+
+#[test]
+fn a_non_locus_accept_param_is_refused_at_the_param() {
+    refused(
+        "locus H { params { n: Int = 0; } accept(c: Int) { self.n = c; } }\nfn main() { let h = H { }; println(h.n); }\n",
+        "accept_int",
+        "1:44",
+        "`accept(c: Int)`: `accept()` takes a locus or an interface: it adopts a child",
+    );
+    refused(
+        "type T { a: Int = 0; }\nlocus H { params { n: Int = 0; } release(c: T) { } accept(c: T) { } }\nfn main() { let h = H { }; println(h.n); }\n",
+        "release_type",
+        "2:45",
+        "`release(c: T)`: `release()` takes a locus or an interface",
+    );
+}

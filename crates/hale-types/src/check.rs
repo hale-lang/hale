@@ -9903,6 +9903,9 @@ impl<'a> Checker<'a> {
                     // the same position.
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
+                    if matches!(lc.kind, LifecycleKind::Accept | LifecycleKind::Release) {
+                        self.refuse_non_locus_child(lc.kind, p, &ty);
+                    }
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -12298,6 +12301,38 @@ impl<'a> Checker<'a> {
             _ => return,
         };
         self.diags.push(Diag::ty(span, message));
+    }
+
+    /// `accept(c: T)` adopts a child and `release(c: T)` is its
+    /// death-side bookend, so `T` names what a child can be: a locus, or
+    /// an interface the child's locus satisfies (spec/semantics.md §
+    /// "Locus instantiation", accept bubbling). Anything else (a
+    /// primitive, a `type`, a perspective) checked clean and lowering
+    /// refused it with no span (`accept() param must be a locus type`).
+    /// An interface is not judged here, and neither is a name this
+    /// bundle cannot resolve (`Unknown`: a generic parameter, a path
+    /// into a seed it does not hold).
+    fn refuse_non_locus_child(&mut self, kind: LifecycleKind, p: &Param, ty: &Ty) {
+        let hook = if kind == LifecycleKind::Accept { "accept" } else { "release" };
+        let what = match ty {
+            Ty::Unknown => return,
+            Ty::Named(n) => match self.top.lookup(n) {
+                Some(TopSymbol::Locus(_)) | Some(TopSymbol::Interface(_)) | None => return,
+                Some(_) => n.clone(),
+            },
+            other => other.display(),
+        };
+        self.diags.push(Diag::ty(
+            p.ty.span(),
+            format!(
+                "`{hook}({}: {what})`: `{hook}()` takes a locus or an interface: \
+                 it adopts a child, so its param names the child's locus type \
+                 (or an interface that locus satisfies), and `{what}` is \
+                 neither. A value is not a child: pass it to the child as a \
+                 param when the child is built.",
+                p.name.name
+            ),
+        ));
     }
 
     /// A `type` is plain data: copied by value, with no lifecycle, so a
