@@ -103,11 +103,12 @@ function withAlpha(color, a) {
 }
 
 /* ---- scene: one large lotus, built from small ones ----
-   Nodes sit on the petal curves of a macro lotus (two layers), at its
-   core, and along its cradle. Routes trace the petal outlines, join
-   neighbouring petals at the base, tie the inner layer to the core,
-   and tie the core to the cradle. On a short, wide band the flower
-   opens flat: central petals rise, outer ones sweep to the sides. */
+   Nodes sit on the petal curves of a macro lotus (two layers) and at
+   its core. Routes trace the petal outlines, join neighbouring petals
+   at the base, and tie the inner layer and the outermost petals to the
+   core. The flower ends where its petals meet: a bowl or stem beneath
+   it read as a fleur-de-lis. On a short, wide band the flower opens
+   flat: central petals rise, outer ones sweep to the sides. */
 function build(W, H, seed) {
   var rnd = seeded(seed + Math.round(W) * 17 + Math.round(H) * 31);
   var short = H < 240, narrow = W < 560, mid = W < 900;
@@ -160,16 +161,7 @@ function build(W, H, seed) {
   var inner = layer(innerN, innerSpread, L * 0.62, 0.82, 0.9);
   inner.forEach(function (p) { add(p.l, core); });
   inner.forEach(function (p, i) { var o = outer[Math.round((i + 0.5) / inner.length * (outer.length - 1))]; if (o) add(p.r, o.l); });
-  if (!short) {
-    var Lc = L * 0.55, prev = -1, cradle = [];
-    for (var t = 0.1; t <= 0.91; t += 0.2) {
-      var u = 1 - t, cx = u*u*u*(-Lc) + 3*u*u*t*(-0.54*Lc) + 3*u*t*t*(0.54*Lc) + t*t*t*Lc, cy = u*u*u*(0.3*Lc) + 3*u*u*t*(1.0*Lc) + 3*u*t*t*(1.0*Lc) + t*t*t*(0.3*Lc);
-      var id = node(bx + cx, by + cy - L * 0.05, 7 + rnd() * 2, 0.6); cradle.push(id); if (prev >= 0) add(prev, id); prev = id;
-    }
-    add(cradle[0], outer[0].l); add(cradle[cradle.length - 1], outer[outer.length - 1].r); add(cradle[Math.floor(cradle.length / 2)], core);
-  } else {
-    add(outer[0].l, core); add(outer[outer.length - 1].r, core);
-  }
+  add(outer[0].l, core); add(outer[outer.length - 1].r, core);
   nodes.forEach(function (n) { n.x = clamp(n.x, 6, W - 6); n.y = clamp(n.y, 6, H + 30); });
   var packets = [], np = clamp(Math.round(edges.length * 0.4), 4, 26);
   for (var p = 0; p < np; p++) { var e = edges[Math.floor(rnd() * edges.length)]; if (!e) break; packets.push({ edge: e.id, dir: rnd() > 0.5 ? 1 : -1, t: rnd(), speed: 0.06 + rnd() * 0.09, size: 1.8 + rnd() * 1.6, shape: p % 3, phase: rnd() * TAU }); }
@@ -244,6 +236,7 @@ function draw(ctx, sc, t, col, cam) {
   sc.nodes.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (n) { drawLotus(ctx, n, project(n, n.depth), t, col); });
   sc.packets.forEach(function (pk) { var e = sc.edges[pk.edge], a = project(sc.nodes[e.a], e.depth), b = project(sc.nodes[e.b], e.depth), c = project(e.c, e.depth), tt = clamp(pk.t, 0, 1), pt = q(a, c, b, tt), tg = tangent(a, c, b, tt); drawPacket(ctx, pk, pt, Math.atan2(tg.y, tg.x), col, 0.35 + e.depth * 0.65, col.core); });
 }
+
 // ---- the field held still: lotuses and routes, no stars, packets or orbits ----
 (function () {
   var W = 1280, H = 480, k = 2;
@@ -254,6 +247,10 @@ function draw(ctx, sc, t, col, cam) {
   var sc = build(W, H, 7), cam = { x: 0, y: 4, zoom: 1 };
   // an orbit is a dashed ring that turns on the site; still, its dashes and points are specks too
   sc.nodes.forEach(function (n) { n.orbit = false; });
+  // the site sets the flower in a tall hero; here it is centred top to bottom
+  var top = Infinity, bottom = -Infinity;
+  sc.nodes.forEach(function (n) { top = Math.min(top, n.y - n.radius * 1.3); bottom = Math.max(bottom, n.y + n.radius * 1.3); });
+  ctx.translate(0, Math.round(H / 2 - (top + bottom) / 2));
   var project = function (p, depth) { return { x: (p.x - W / 2) * cam.zoom + W / 2 + cam.x * depth, y: (p.y - H / 2) * cam.zoom + H / 2 + cam.y * depth }; };
   // routes as the site draws them with no traffic on them, minus the dot at each midpoint
   sc.edges.slice().sort(function (a, b) { return a.depth - b.depth; }).forEach(function (e) {
