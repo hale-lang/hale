@@ -20,6 +20,8 @@
 //!   one; any other decorator there is refused.
 //! - A chain terminal with no stage on a fixed array (`xs.sum(0.0d)`)
 //!   says to write a chain (`xs.map(it).sum(…)`), and that chain runs.
+//! - `const X = 1;` takes the literal's type; a non-literal initializer
+//!   without a type says the annotation is required.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -167,4 +169,19 @@ fn a_stage_less_chain_on_an_array_says_to_write_a_stage() {
     let (checked, out, built, bout) = check_and_build(&fixed, "stageful");
     assert!(checked, "{out}");
     assert!(built, "{bout}");
+}
+
+#[test]
+fn a_literal_const_takes_its_literal_type() {
+    let src = "const LIMIT = 100;\nconst NEG = -2;\nconst RATE = 0.5;\nconst NAME = \"hale\";\nconst ON = true;\nconst PRICE = 2.50d;\n\
+               fn main() { let n: Int = LIMIT + NEG; let f: Float = RATE * 2.0; let s: String = NAME; if ON { println(f\"{n} {f} {s} {PRICE}\"); } }\n";
+    let (checked, out, built, bout) = check_and_build(src, "const_lit");
+    assert!(checked, "{out}");
+    assert!(built, "{bout}");
+    let (checked, out, _, _) = check_and_build("const TWICE = 2 * 3;\nfn main() { println(TWICE); }\n", "const_expr");
+    assert!(!checked, "{out}");
+    assert!(out.contains("`const TWICE` needs its type written: only a literal's type is inferred"), "{out}");
+    // A mistyped use is still a type error against the inferred type.
+    let (checked, out, _, _) = check_and_build("const LIMIT = 100;\nfn main() { let s: String = LIMIT; println(s); }\n", "const_mistyped");
+    assert!(!checked && out.contains("Int"), "{out}");
 }

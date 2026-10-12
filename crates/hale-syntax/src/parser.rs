@@ -6473,10 +6473,35 @@ impl Parser {
     fn parse_const_decl(&mut self) -> Result<ConstDecl, Diag> {
         let kw = self.expect(TokenKind::Const, "const")?;
         let name = self.expect_decl_name("const name")?;
-        self.expect(TokenKind::Colon, ":")?;
-        let ty = self.parse_type_expr()?;
+        // Friction sweep 2026-10-12: `const X = 1;` — a literal's type
+        // is the const's type, so the annotation may be left out there;
+        // any other initializer still states it, and the error says so
+        // (it used to read "expected :, got Eq").
+        let annotated = if self.at(&TokenKind::Eq) {
+            None
+        } else {
+            self.expect(TokenKind::Colon, ":")?;
+            Some(self.parse_type_expr()?)
+        };
         self.expect(TokenKind::Eq, "=")?;
         let value = self.parse_expr()?;
+        let ty = match annotated {
+            Some(ty) => ty,
+            None => match literal_prim(&value) {
+                Some(prim) => TypeExpr::Primitive(prim, value.span()),
+                None => {
+                    return Err(Diag::parse(
+                        value.span(),
+                        format!(
+                            "`const {n}` needs its type written: only a \
+                             literal's type is inferred (`const {n} = 3;`, \
+                             `const {n} = \"x\";`); write `const {n}: T = …;`",
+                            n = name.name
+                        ),
+                    ));
+                }
+            },
+        };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ConstDecl {
             span: kw.span.merge(semi.span),
@@ -8785,6 +8810,28 @@ fn builtin_call_form(
     name: &str,
 ) -> Option<(&'static str, Option<&'static str>)> {
     BUILTIN_CALL_FORMS.iter().copied().find(|(w, _)| *w == name)
+}
+
+/// The primitive type of a literal const initializer (`3`, `-1.5`,
+/// `2.50d`, `"x"`, `true`, `b"x"`): the type `const X = …;` takes when
+/// it states none.
+fn literal_prim(e: &Expr) -> Option<PrimType> {
+    match e {
+        Expr::Literal(lit, _) => match lit {
+            Literal::Int(_) => Some(PrimType::Int),
+            Literal::Float(_) => Some(PrimType::Float),
+            Literal::Decimal(_) => Some(PrimType::Decimal),
+            Literal::String(_) => Some(PrimType::String),
+            Literal::Bool(_) => Some(PrimType::Bool),
+            Literal::Bytes(_) => Some(PrimType::Bytes),
+            _ => None,
+        },
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => match literal_prim(operand)? {
+            p @ (PrimType::Int | PrimType::Float | PrimType::Decimal) => Some(p),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The lifecycle hook words: a locus member led by one of them is the

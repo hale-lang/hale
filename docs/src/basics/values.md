@@ -36,7 +36,9 @@ Immutable-by-default is a per-binding property, not a property
 of the type. There's no separate "constant" concept for locals —
 `let` *is* the constant, `let mut` is the variable. (Top-level
 program constants use `const NAME: T = ...;` and are written
-`SCREAMING_SNAKE_CASE`.)
+`SCREAMING_SNAKE_CASE`. A literal carries its own type, so `const
+LIMIT = 100;` is `const LIMIT: Int = 100;`; any other initializer
+states the type.)
 
 `const` is **top-level only**: it goes beside your `locus` and
 `fn` declarations, not inside a locus body. A top-level `const`

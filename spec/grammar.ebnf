@@ -1107,7 +1107,11 @@ function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
 
 (* === 13. Const and function decls ============================= *)
 
-const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
+(* The type may be left out when the initializer is a literal (`3`,
+   `-1.5`, `2.50d`, `"x"`, `true`, `b"x"`): the const takes the
+   literal's primitive type. Any other initializer states it, and the
+   parser says so at the initializer (friction sweep 2026-10-12). *)
+const_decl        = "const" , IDENTIFIER , [ ":" , type_expr ] , "=" ,
                     expression , ";" ;
 
 function_decl     = [ ffi_annotation | export_annotation

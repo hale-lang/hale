@@ -301,6 +301,13 @@ location — a program the gate accepted that could not be built.
 
 ### `const` is a top-level declaration
 
+A const states its type, `const LIMIT: Int = 100;`, except where the
+initializer is a literal: `const LIMIT = 100;` takes the literal's
+primitive type (`Int`, `Float`, `Decimal`, `String`, `Bool`, `Bytes`;
+a negated numeric literal too). Any other initializer without a type
+is a parse error at the initializer that says to write `const NAME: T
+= …;`.
+
 A locus body may not declare a `const`. `const NAME: T = value;`
 is a top-level declaration only (see `grammar.ebnf`:
 `const_decl` is a `top_decl`, not a `locus_member`), and a
