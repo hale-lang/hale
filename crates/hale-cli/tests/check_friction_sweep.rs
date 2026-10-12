@@ -18,6 +18,8 @@
 //! - `@unbounded` / `@bounded_by(<name>)` may precede a `mode`, which
 //!   is where the unbounded-allocation warning in a mode body asks for
 //!   one; any other decorator there is refused.
+//! - A chain terminal with no stage on a fixed array (`xs.sum(0.0d)`)
+//!   says to write a chain (`xs.map(it).sum(…)`), and that chain runs.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -149,4 +151,20 @@ fn a_mode_takes_the_unbounded_acknowledgement_its_warning_asks_for() {
     }
     let (checked, out, _, _) = check_and_build(&program("@hot"), "mode_hot");
     assert!(!checked && out.contains("`@hot` can't precede a mode — a mode takes `@unbounded`"), "{out}");
+}
+
+#[test]
+fn a_stage_less_chain_on_an_array_says_to_write_a_stage() {
+    let src = "locus F {\n    params { ps: [Decimal; 2] = [1.5d, 2.0d]; qs: [Int; 3] = [1, 2, 3]; }\n    run { println(self.ps.sum(0.0d)); println(self.qs.count()); }\n}\nfn main() { let f = F { }; }\n";
+    let (checked, out, _, _) = check_and_build(src, "stageless");
+    assert!(!checked, "{out}");
+    assert!(
+        out.contains("no field `sum` on `[Decimal; 2]` — an element chain needs a stage before its terminal: write `….map(it).sum(…)`"),
+        "{out}"
+    );
+    assert!(out.contains("no field `count` on `[Int; 3]` — an element chain needs a stage"), "{out}");
+    let fixed = src.replace("self.ps.sum(0.0d)", "self.ps.map(it).sum(0.0d)").replace("self.qs.count()", "self.qs.map(it).count()");
+    let (checked, out, built, bout) = check_and_build(&fixed, "stageful");
+    assert!(checked, "{out}");
+    assert!(built, "{bout}");
 }

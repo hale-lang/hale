@@ -16137,6 +16137,24 @@ impl<'a> Checker<'a> {
                                     hint = format!(" — {}", advice);
                                 }
                             }
+                            // Friction sweep 2026-10-12: a chain
+                            // terminal with no stage before it
+                            // (`xs.sum(0.0d)`) is not a chain — chains
+                            // desugar before typecheck, and a bare
+                            // `.sum(…)` may be a locus's own method — so
+                            // it reads as a member of the collection.
+                            // Say what to write.
+                            if hint.is_empty()
+                                && hale_syntax::chains::is_terminal(&name.name)
+                                && matches!(rt, Ty::Array(..) | Ty::Bounded(..))
+                            {
+                                hint = format!(
+                                    " — an element chain needs a stage before \
+                                     its terminal: write `….map(it).{}(…)` \
+                                     (`map(it)` passes each element through)",
+                                    name.name
+                                );
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

@@ -246,6 +246,11 @@ let total = users.filter(it.active).map(it.age).sum();
 elements; give it a seed and the seed's type drives the accumulator —
 `sum(0.0)` sums Floats, `sum(100)` starts an Int sum at 100.
 
+A chain needs at least one stage: `prices.sum(0.0d)` on a fixed array
+is not a chain (a bare `.sum(…)` could be a locus's own method), and
+the compiler says to write `prices.map(it).sum(0.0d)` — `map(it)`
+passes each element through.
+
 Position matters too, and there are stages for it:
 
 ```hale,fragment

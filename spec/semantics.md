@@ -3886,7 +3886,11 @@ is unbound outside a chain, so no valid ordinary call can look like
 that — or when it is `each` with a block. Bare `xs.sum()` /
 `xs.first()` therefore stay ordinary method calls (stage-less first
 is just `xs.get(0) or …`; a stage-less sum can be written
-`xs.map(it).sum()`). The whole-set terminals (`sort_into` /
+`xs.map(it).sum()`). On a fixed array or a `bounded[T; N]`, which
+has no member of a terminal's name, the check's "no field `sum` on
+`[Decimal; 2]`" says so: an element chain needs a stage before its
+terminal, `….map(it).sum(…)` (friction sweep 2026-10-12). The
+whole-set terminals (`sort_into` /
 `reverse_into` / `group_count_into`) are recognized stage-less too:
 `xs.sort_into(sorted)` is their natural spelling, and the compound
 `*_into` names belong to this vocabulary — unlike bare `into`, no
