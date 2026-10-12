@@ -1,0 +1,75 @@
+// A restart re-runs the child's `birth_check` clauses, as every birth
+// does: a re-birth that breaks its invariant is a failed birth, routed to
+// the owner's handler and decided the same way — restarted again within
+// the bound, quarantined at it.
+//
+// `__restart_<L>` re-ran birth() and the birth-epoch closures but not the
+// checks, so the first restart always passed: a re-birth that failed its
+// check (`fail_until: 2`) ran on with the invariant broken, and a child
+// that could never pass (`fail_until: 9`) ran after one restart instead
+// of being quarantined at its bound.
+//
+// Every placement restarts on the child's own thread: a held failure (the
+// owner's params open) and one delivered in place (a literal in run()),
+// a pool-placed child, a pinned one.
+
+locus Checked {
+    params { births: Int = 0; runs: Int = 0; fail_until: Int = 1; }
+    closure bad { captures: births; epoch inline; }
+    birth_check { self.births <= self.fail_until } -> violate bad;
+    birth() { self.births = self.births + 1; }
+    run() { self.runs = self.runs + 1; }
+}
+
+main locus App {
+    params {
+        held: Checked = Checked { fail_until: 2 };
+        held_never: Checked = Checked { fail_until: 9 };
+        pooled: Checked = Checked { fail_until: 2 };
+        pooled_never: Checked = Checked { fail_until: 9 };
+        pinned: Checked = Checked { fail_until: 2 };
+        pinned_never: Checked = Checked { fail_until: 9 };
+        failures: Int = 0;
+    }
+    placement {
+        pooled: cooperative(pool = a);
+        pooled_never: cooperative(pool = b);
+        pinned: pinned;
+        pinned_never: pinned;
+    }
+    on_failure(c: Checked, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        restart (c) for 3;
+    }
+    run() {
+        std::test::assert_eq_int(self.held.births, 3, "a re-birth that failed its check was restarted again");
+        std::test::assert_eq_int(self.held.runs, 1, "and run() started after the birth that passed");
+        std::test::assert_eq_int(self.held_never.births, 4, "`for 3` admits three restarts, each checked");
+        std::test::assert_eq_int(self.held_never.runs, 0, "and the failed check after them quarantines: no run()");
+
+        let late = Checked { fail_until: 2 };
+        std::test::assert_eq_int(late.births, 3, "in place: the re-birth's check failed and was restarted");
+        std::test::assert_eq_int(late.runs, 1, "then run()");
+        let late_never = Checked { fail_until: 9 };
+        std::test::assert_eq_int(late_never.births, 4, "in place: three checked restarts");
+        std::test::assert_eq_int(late_never.runs, 0, "then quarantined");
+
+        let mut i = 0;
+        while (self.pooled.runs == 0 || self.pinned.runs == 0 || self.failures < 2 + 4 + 2 + 4 + 2 + 4 + 2 + 4) && i < 400 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.pooled.births, 3, "a pool child's re-birth that failed its check was restarted again");
+        std::test::assert_eq_int(self.pooled.runs, 1, "and ran once on its pool");
+        std::test::assert_eq_int(self.pooled_never.births, 4, "a pool child: three checked restarts");
+        std::test::assert_eq_int(self.pooled_never.runs, 0, "then quarantined");
+        std::test::assert_eq_int(self.pinned.births, 3, "a pinned child's re-birth that failed its check was restarted again");
+        std::test::assert_eq_int(self.pinned.runs, 1, "and ran once on its thread");
+        std::test::assert_eq_int(self.pinned_never.births, 4, "a pinned child: three checked restarts");
+        std::test::assert_eq_int(self.pinned_never.runs, 0, "then quarantined");
+        std::test::assert_eq_int(self.failures, 2 + 4 + 2 + 4 + 2 + 4 + 2 + 4, "every failed check reached the handler");
+    }
+}
+
+fn main() { App { }; }

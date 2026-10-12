@@ -255,24 +255,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         out
     }
 
-    /// The birth checks on a pinned locus's thread function (C38, L4):
-    /// emitted inside `thread_main`, so the context that names the
-    /// enclosing function's frame (its arena override, its method
-    /// scratch) is set aside while they are, and the violation is
-    /// allocated in the locus's own arena (`current_arena_ptr` reads
-    /// `current_self`'s before any user fn's).
-    pub(crate) fn emit_pinned_birth_checks(
+    /// The birth checks in a function of the locus's own — a pinned
+    /// locus's thread function (C38, L4), the restart (`__restart_<L>`):
+    /// emitted inside `func`, so the context that names the enclosing
+    /// function's frame (its arena override, its method scratch) is set
+    /// aside while they are, and the violation is allocated in the
+    /// locus's own arena (`current_arena_ptr` reads `current_self`'s
+    /// before any user fn's).
+    pub(crate) fn emit_birth_checks_in_fn(
         &mut self,
         checks: &[BirthCheckDecl],
         info: &LocusInfo<'ctx>,
         thread_self: PointerValue<'ctx>,
-        thread_main: FunctionValue<'ctx>,
+        func: FunctionValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
         if checks.is_empty() {
             return Ok(());
         }
-        let prev_fn = self.current_fn.replace(thread_main);
+        let prev_fn = self.current_fn.replace(func);
         let prev_override = self.current_arena_override.take();
         let prev_scratch = self.current_method_scratch.take();
         let prev_method_caller = self.current_method_caller_arena.take();

@@ -366,12 +366,13 @@ fn claim_qualified_std_time_duration_alone_fails_build() {
 // ---- retirement gaps: a running program's resident set ------------
 
 /// §7 open gaps: "Nested-compound fields of a replaced struct don't
-/// retire, nor Bytes fields of a replaced `@form(hashmap)` cell",
-/// beside a String-only struct, which does. Measured on v0.22.0 over
+/// retire", beside a String-only struct, which does, and a Bytes field
+/// of a replaced `@form(hashmap)` cell, which retires since the map
+/// reclaims a replaced cell's whole value. Measured on v0.22.0 over
 /// 200 000 replaces: the control +4 KiB, nested +6.0 MiB, map Bytes
-/// +4.6 MiB.
+/// +4.6 MiB; the map's phase holds flat now.
 #[test]
-fn claim_replaced_nested_and_map_bytes_fields_do_not_retire() {
+fn claim_replaced_nested_fields_do_not_retire_but_map_cells_do() {
     if asan_build() {
         eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
         return;
@@ -441,11 +442,10 @@ fn main() { App { }; }
         out
     );
     assert!(
-        g["map_bytes"] > MIB,
-        "spec/styleguide.md §7 says a Bytes field of a replaced \
-         `@form(hashmap)` cell doesn't retire (+4.6 MiB over 200 000 \
-         replaces on v0.22.0). This run grew {} bytes — it retires now: \
-         update that open gap:\n{}",
+        g["map_bytes"] < MIB / 2,
+        "spec/styleguide.md §7 says a replaced `@form(hashmap)` cell's \
+         Bytes field retires with the rest of its value; 200 000 replaces \
+         of 16 keys grew {} bytes:\n{}",
         g["map_bytes"],
         out
     );

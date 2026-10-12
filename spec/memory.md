@@ -1365,16 +1365,42 @@ reclaim on a real-world long-running workload:
      mutated the cell silently, and anchor retirement could free
      a blob the other owner still held. With snapshot +
      owned-clone, a cell's top-level String/Bytes fields are
-     always exclusively owned. The compound-field gate (`Array`,
-     nested `TypeRef`, …) keeps its identity-skip — compounds
-     don't retire, so sharing there is a mutation-visibility
-     caveat, not a use-after-free (tracked in
-     notes/anchor-retirement.md).
+     always exclusively owned.
+
+     Nested-block single-owner (2026-10-12): a retiring map
+     (`sync = none` / `serialized`) retires a replaced cell's
+     nested records, tuples and out-of-line arrays too
+     (forms.md § Cell reclamation), so those fields can no
+     longer identity-skip on arena membership — a block another
+     cell held would be freed under it. On such a map the walk
+     copies a nested-block field unless it is the very block the
+     same key's current cell holds at that field
+     (`lotus_hashmap_peek`, `sync = none` only; a serialized map
+     always copies): the get-modify-set of a cell with a large
+     nested field still allocates nothing, and the retire sees
+     the block survive. Interface and payload-enum fields keep
+     the identity-skip; they are not retired.
+
+     The same holds for a retiring form's OWN fields (a
+     `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's
+     `self.X = ...` in the form locus's methods): they live in
+     the arena the cells' nested blocks are retired from, so a
+     compound store into one copies every nested block (and the
+     String / Bytes inside) instead of skipping a same-arena one,
+     and walks a stack snapshot of the rhs, never the rhs itself —
+     `self.saved = self.get(k)` used to leave the field sharing
+     the cell's nested record, and `for x in self.items {
+     self.saved = x; }` rewrote the element it visited so the two
+     shared one block, which the next replace freed under the
+     field.
 
      Scalar-cell fast path (2026-08-03): the snapshot and the
      owned-clone walk exist solely to keep heap-pointer leaves
-     un-aliased, so a cell whose type tree carries no String /
-     Bytes leaf (directly or through nested structs) skips both
+     un-aliased, so a cell with no String / Bytes field and no
+     field pointing at a block of its own (a nested record, a
+     tuple, an out-of-line array — 2026-10-12: a nested record
+     of scalars used to count as scalar, and its pointer into
+     the setting method's scratch was stored as-is) skips both
      at compile time and takes the pre-single-owner codegen —
      the aliasing hazard cannot arise where there is no pointer
      to alias. Unrecognized field types conservatively keep the
@@ -1385,7 +1411,8 @@ reclaim on a real-world long-running workload:
      fields carried through a get-then-set now cost one owned
      copy per set, served by the retire freelist (the replaced
      generation recycles into the next), so steady-state memory
-     stays flat while compound fields keep the zero-copy skip.
+     stays flat while a compound field carried over from the
+     same key's cell keeps the zero-copy skip.
 
   6. **In-place mutation at `self.X = Struct{...}` and
      `self.X[i] = Struct{...}` assigns.** Locus self-fields

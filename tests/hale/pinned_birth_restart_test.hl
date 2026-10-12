@@ -15,13 +15,17 @@
 // - `twice` fails its re-birth too, and is restarted again before run().
 // - `fresh` is restarted in place: its params back as built, so its
 //   re-births fail again until the default cap, and then it runs.
+// - `never` fails every birth: `for 3` admits three restarts, and the
+//   failure after them quarantines it, so its run() never starts. The
+//   pinned thread used to start run() regardless — once, after the
+//   bound had quarantined it.
 //
 // Each child's run() is a loop that never returns on its own: the
 // owner's run() reading the ticks move is the proof it runs on the
 // child's thread, not the owner's.
 
 locus Kid {
-    params { births: Int = 0; ticks: Int = 0; fail_until: Int = 1; delay: Duration = 0ms; }
+    params { births: Int = 0; runs: Int = 0; ticks: Int = 0; fail_until: Int = 1; delay: Duration = 0ms; }
     closure fuse { captures: births; epoch inline; }
     birth() {
         self.births = self.births + 1;
@@ -30,6 +34,7 @@ locus Kid {
     }
     @unbounded
     run() {
+        self.runs = self.runs + 1;
         while !self.draining {
             self.ticks = self.ticks + 1;
             std::time::sleep(5ms);
@@ -63,11 +68,12 @@ main locus App {
         twice: Kid = Kid { fail_until: 2 };
         late: Kid = Kid { delay: 300ms };
         fresh: Fresh = Fresh { };
+        never: Kid = Kid { fail_until: 9 };
         slow: Slow = Slow { };
         kid_failures: Int = 0;
         fresh_failures: Int = 0;
     }
-    placement { held: pinned; twice: pinned; late: pinned; fresh: pinned; }
+    placement { held: pinned; twice: pinned; late: pinned; fresh: pinned; never: pinned; }
     on_failure(c: Kid, err: ClosureViolation) {
         self.kid_failures = self.kid_failures + 1;
         restart (c) for 3;
@@ -79,7 +85,7 @@ main locus App {
     run() {
         let mut i = 0;
         let started_at_settle = self.late.births;
-        while (self.held.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0 || self.late.ticks == 0) && i < 400 {
+        while (self.held.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0 || self.late.ticks == 0 || self.never.births < 4) && i < 400 {
             std::time::sleep(10ms);
             i = i + 1;
         }
@@ -94,7 +100,10 @@ main locus App {
 
         std::test::assert(started_at_settle < 2, "late's first birth had not failed yet when App's run() began");
         std::test::assert_eq_int(self.late.births, 2, "a pinned birth failure delivered with the owner settled re-ran birth()");
-        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1, "every Kid failure reached the handler");
+        std::test::assert_eq_int(self.never.births, 4, "a pinned child failing every birth: three restarts");
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.never.runs, 0, "and the failure after them quarantines: its run() never starts");
+        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1 + 4, "every Kid failure reached the handler");
         std::process::exit(0);
     }
 }

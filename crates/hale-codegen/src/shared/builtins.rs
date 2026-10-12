@@ -477,12 +477,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_hashmap_get", hashmap_get_ty, None);
         // Synced-map read variants (2026-08-03, downstream handoff
-        // P1): same shape plus a destination arena. They clone the
-        // cell's String fields into the CALLER's arena, inside the
-        // critical section that read the cell, so the map's writer
-        // is free to retire its own blobs. Emitted only for a slot
-        // with `sync != none` and a String-bearing cell — the plain
-        // entry points are unchanged.
+        // P1): same shape plus a destination arena. They copy what
+        // the cell owns (String and Bytes fields, nested blocks)
+        // into the CALLER's arena, inside the critical section that
+        // read the cell, so the map's writer is free to retire its
+        // own blocks. Emitted only for a `sync = serialized` slot
+        // whose cell owns any — the plain entry points are
+        // unchanged.
         let hashmap_get_cloned_ty = i32_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,

@@ -26,8 +26,8 @@
 //!     block tails, array and tuple elements);
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, one whose elements carry a nested
-//!     record, a grandchild, an interface-typed child,
-//!     a `perspective(P)` child);
+//!     record, a `@form(hashmap)` child whose cells do, a grandchild,
+//!     an interface-typed child, a `perspective(P)` child);
 //!   * **context** — the frame the payload runs in (`fn main`, a
 //!     free fn, a locus METHOD, a `while` loop of four iterations, a
 //!     fn inside `module { }`, and an early-`return` guard both
@@ -76,7 +76,7 @@
 //!
 //! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
 //! four families; GH #921 A3 closed all four, and every one of the
-//! 1134 cells is now held to every oracle. An entry here is asserted
+//! 1323 cells is now held to every oracle. An entry here is asserted
 //! to FAIL, not skipped — so a cell that is listed and then passes
 //! fails the matrix just as a cell that is not listed and fails
 //! does. Adding one means a shape regressed, and it needs a reason
@@ -84,7 +84,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (27 × 6 × 7 = 1134 cells, ~120 s on seven threads)
+//! The full matrix (27 × 7 × 7 = 1323 cells, ~140 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -156,7 +156,7 @@ const DEADLINE: Duration = Duration::from_secs(90);
 
 /// Every shape declares a locus called `Subj` with a `params` field
 /// `n: Int` and a method `probe() -> Int` answering `n + 1`, so one
-/// set of positions is written against all six.
+/// set of positions is written against all seven.
 struct Shape {
     id: &'static str,
     decls: &'static str,
@@ -224,6 +224,46 @@ locus Subj {
 }
 ";
 
+/// A `@form(hashmap)` child whose cells carry a nested record (with a
+/// String and Bytes of its own): birth replaces a cell, stores one
+/// cell's nested record under a second key (a copy the second cell
+/// owns), carries a nested record over by get-modify-set, and removes a
+/// cell, so the map retires nested blocks while the subject's teardown
+/// and every position around it run. Built at run time, as
+/// `vec_nested` is, so no String is a static literal.
+const SHAPE_HASHMAP_NESTED: &str = "
+type HLeaf { s: String = \"\"; b: Bytes = b\"\"; }
+type HCell { k: Int = 0; tag: String = \"\"; leaf: HLeaf = HLeaf { }; }
+
+@form(hashmap)
+locus HCells {
+    capacity { pool cells of HCell indexed_by k; }
+}
+
+locus Subj {
+    params { n: Int = 0; cells: HCells = HCells { }; }
+    fn cell(k: Int, v: Int) -> HCell {
+        let t = \"t\" + to_string(v + self.n);
+        return HCell { k: k, tag: t, leaf: HLeaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+    }
+    birth() {
+        self.cells.set(self.cell(1, 1));
+        self.cells.set(self.cell(1, 2));
+        let a = self.cells.get(1) or HCell { };
+        self.cells.set(HCell { k: 2, tag: a.tag, leaf: a.leaf });
+        let e = self.cells.get(2) or HCell { };
+        self.cells.set(HCell { k: 2, tag: e.tag + \"!\", leaf: e.leaf });
+        self.cells.set(self.cell(3, 3));
+        self.cells.remove(3) or discard;
+        self.cells.set(self.cell(1, 4));
+        let b = self.cells.get(2) or HCell { };
+        self.n = self.n + len(b.leaf.b) - len(b.tag) + 1;
+    }
+    dissolve() { println(\"D:subj\"); }
+    fn probe() -> Int { return self.n + self.cells.len() - 1; }
+}
+";
+
 /// Two levels under the subject, so the cascade has to reach past
 /// the first (F.4 depth-first).
 const SHAPE_GRANDCHILD: &str = "
@@ -286,6 +326,7 @@ const SHAPES: &[Shape] = &[
     Shape { id: "plain", decls: SHAPE_PLAIN, tags: &["D:subj"] },
     Shape { id: "vec_child", decls: SHAPE_VEC_CHILD, tags: &["D:subj"] },
     Shape { id: "vec_nested", decls: SHAPE_VEC_NESTED, tags: &["D:subj"] },
+    Shape { id: "hashmap_nested", decls: SHAPE_HASHMAP_NESTED, tags: &["D:subj"] },
     Shape {
         id: "grandchild",
         decls: SHAPE_GRANDCHILD,
@@ -303,7 +344,7 @@ const SHAPES: &[Shape] = &[
     },
 ];
 
-/// Everything the positions lean on, shared by all six shapes.
+/// Everything the positions lean on, shared by all seven shapes.
 ///
 /// Only `Subj` (and its own children) and `Cfg` print at dissolve:
 /// the holders are deliberately silent so a cell's tag counts speak
@@ -1321,11 +1362,11 @@ fn matrix_behind_an_untaken_guard() {
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
     assert_eq!(POSITIONS.len(), 27, "position axis changed size");
-    assert_eq!(SHAPES.len(), 6, "type axis changed size");
+    assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 27 * 6 * 7);
+    assert_eq!(all.len(), 27 * 7 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 

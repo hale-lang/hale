@@ -15,8 +15,8 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
-/// Does this cell type tree contain any heap-pointer leaf (String /
-/// Bytes, directly or through a nested struct)? The cell single-owner
+/// Does this cell type tree contain any heap-pointer leaf (a String,
+/// Bytes, or a field pointing at a block of its own)? The cell single-owner
 /// machinery — the stack snapshot before the anchor walk and the
 /// owned-clone variants during it — exists solely to keep heap
 /// pointers un-aliased; a cell of pure scalars has nothing to
@@ -26,6 +26,13 @@ use inkwell::AddressSpace;
 /// stale v0.11.3 baselines were hiding). Conservative: any type this
 /// doesn't positively recognize as scalar counts as heap-bearing, so
 /// new variants fail SAFE (keep the snapshot).
+///
+/// A field of record type is a pointer to a block of its own, so it
+/// is a heap leaf whatever the record holds. It used to count only if
+/// the record carried a String or Bytes, so a cell with a nested
+/// record of scalars skipped the walk and stored the pointer it was
+/// handed — into the caller's method scratch, freed when the method
+/// returned (a later `get` read the dead block).
 pub(crate) fn cell_tree_has_heap_leaves(
     ty: &CodegenTy,
     user_types: &std::collections::BTreeMap<String, crate::codegen::TypeInfo<'_>>,
@@ -40,7 +47,7 @@ pub(crate) fn cell_tree_has_heap_leaves(
         | CodegenTy::Bool
         | CodegenTy::Duration
         | CodegenTy::Decimal => false,
-        CodegenTy::TypeRef(name) => match user_types.get(name) {
+        CodegenTy::TypeRef(name) if depth == 0 => match user_types.get(name) {
             Some(info) => info.fields.values().any(|(_, fty)| {
                 cell_tree_has_heap_leaves(fty, user_types, depth + 1)
             }),
@@ -136,7 +143,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// pointer to its own block (an entry with that block's size, and an
     /// empty descriptor for scalar elements). Depth-capped, as a guard: a
     /// value type cannot contain itself.
-    fn retire_desc_for(&self, ty: &CodegenTy, depth: u32) -> Option<(u64, Vec<u32>)> {
+    pub(crate) fn retire_desc_for(&self, ty: &CodegenTy, depth: u32) -> Option<(u64, Vec<u32>)> {
         const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
         const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         if depth > 16 {
@@ -203,6 +210,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         Some((size, desc))
+    }
+
+    /// Does a `@form(hashmap)` cell with these fields own anything its
+    /// retire descriptor reaches — a String or Bytes field, or a field
+    /// pointing at a block of its own (a nested record, a tuple, an
+    /// out-of-line fixed array)? Such a cell retires what it owned when
+    /// it is replaced or removed, so a synced map's reads must copy it
+    /// out (`lotus_hashmap_*_cloned`).
+    pub(crate) fn hashmap_cell_owns_blocks(
+        &self,
+        fields: &std::collections::BTreeMap<String, (u32, CodegenTy)>,
+    ) -> bool {
+        fields.values().any(|(_, t)| {
+            matches!(t, CodegenTy::String | CodegenTy::Bytes) || self.record_field_owns_block(t)
+        })
+    }
+
+    /// Does the locus `name` hold form cells whose nested blocks are
+    /// retired from its own arena — a `@form(vec)` (`set` and `pop`
+    /// free a replaced or removed element), or a `@form(hashmap)` that
+    /// installs a retire descriptor (`sync = none` / `serialized`, a
+    /// record cell)? Such a locus's own field stores must not share a
+    /// block with a cell (`emit_self_field_inplace_assign`).
+    pub(crate) fn locus_retires_cell_blocks(&self, name: &str) -> bool {
+        self.user_loci.get(name).is_some_and(|info| {
+            info.capacity_slots.iter().any(|sl| match sl.form {
+                Some(SlotForm::Vec) => true,
+                Some(SlotForm::Hashmap) => {
+                    matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
+                        && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
+                }
+                _ => false,
+            })
+        })
+    }
+
+    /// Is a record field of type `fty` a pointer to a block the retire
+    /// descriptor frees (a nested record, a tuple, a fixed array stored
+    /// out of line)? A scalar fixed array is the field's own inline
+    /// bytes, not a block (`array_inline_spec`), as `retire_desc_for`
+    /// reads a record's slots.
+    pub(crate) fn record_field_owns_block(&self, fty: &CodegenTy) -> bool {
+        matches!(fty, CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _))
+            && Self::array_inline_spec(fty).is_none()
+            && self.retire_desc_for(fty, 1).is_some()
     }
 
     /// Free a vec element the vec no longer holds — the one `set`
@@ -1373,15 +1425,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // Downstream handoff P1 (2026-08-03): a `sync = serialized`
-        // map's cell Strings are cloned into the reader's arena at
-        // every read, which is what lets the writer retire the
-        // blobs it replaces. Only cells that actually carry Strings
-        // pay for it; everything else keeps the plain read.
+        // map's cell is copied out into the reader's arena at every
+        // read (its String and Bytes fields and nested blocks), which
+        // is what lets the writer retire the blocks it replaces. Only
+        // cells that own any pay for it; everything else keeps the
+        // plain read.
         let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
-            && cell_info
-                .fields
-                .values()
-                .any(|(_, t)| matches!(t, CodegenTy::String));
+            && self.hashmap_cell_owns_blocks(&cell_info.fields);
 
         let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
 
@@ -1637,17 +1687,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
 
         // Downstream handoff P1 (2026-08-03): `entry_at` on a
-        // synced String-bearing map takes the cloning variant, for
+        // synced map whose cell owns blocks takes the cloning variant, for
         // the same reason `get` does — a raw cell pointer handed
         // off-thread would be freed under the reader once the
         // writer's retirement is enabled. `key_at` copies a key,
         // not a cell, so it is unaffected.
         let synced_clone_reads = c_fn_name == "lotus_hashmap_value_at"
             && slot_decl.sync_mode == SyncMode::Serialized
-            && cell_info
-                .fields
-                .values()
-                .any(|(_, t)| matches!(t, CodegenTy::String));
+            && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let c_ret = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;
             let c_fn = self
@@ -2520,8 +2567,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let arg_val: BasicValueEnum = snap.into();
+                    // A map that retires its cells (the descriptor
+                    // instantiation installs) frees a replaced cell's
+                    // nested blocks too, so the cell must own them:
+                    // see `cell_compound_owner`. On a `sync = none`
+                    // map the value the key's cell holds now is read
+                    // first, so a nested block carried over from it
+                    // is kept rather than copied.
+                    // Only a cell with such a field pays for the peek.
+                    let retiring =
+                        matches!(slot.sync_mode, SyncMode::None | SyncMode::Serialized)
+                            && cell_info
+                                .fields
+                                .values()
+                                .any(|(_, t)| self.record_field_owns_block(t));
+                    let owner = if !retiring {
+                        None
+                    } else if slot.sync_mode == SyncMode::None {
+                        let snap_key = self
+                            .builder
+                            .build_struct_gep(
+                                cell_info.struct_ty,
+                                snap,
+                                key_field_idx,
+                                &format!("{}.set.peek.key", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let ptr_t = self.context.ptr_type(AddressSpace::default());
+                        let peek_fn = match self.module.get_function("lotus_hashmap_peek") {
+                            Some(f) => f,
+                            None => self.module.add_function(
+                                "lotus_hashmap_peek",
+                                ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+                                None,
+                            ),
+                        };
+                        let old = self
+                            .builder
+                            .build_call(
+                                peek_fn,
+                                &[hashmap_field_ptr.into(), snap_key.into()],
+                                &format!("{}.set.peek", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_hashmap_peek returns ptr")
+                            .into_pointer_value();
+                        Some(Some(old))
+                    } else {
+                        Some(None)
+                    };
                     let prev_owned = self.cell_owned_clone;
                     self.cell_owned_clone = true;
+                    self.cell_compound_owner = owner;
                     let walk_res = self.emit_cross_arena_store_deep_copy(
                         arg_val,
                         &expected_value_ty,
@@ -2529,6 +2628,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("{}.hashmap_set", locus_name),
                     );
                     self.cell_owned_clone = prev_owned;
+                    self.cell_compound_owner = None;
                     walk_res?
                 } else {
                     let _ = dest_arena; // unused on the scalar path

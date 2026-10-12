@@ -51,6 +51,19 @@ Both a `vec` and a `hashmap` also expose **batched iteration** —
 buffer/slot walk, not per-element method calls. (Don't mutate the
 form inside the body — a grow would rehash under the cursor.)
 
+A form owns what it holds. A `vec`'s `push` / `set` and a
+`hashmap`'s `set` store the form's own copy of the value —
+its Strings and Bytes, and any nested record, tuple or array with
+what that owns — and when a `set` replaces an element or cell, or a
+`pop` / `remove` drops one, all of it is reclaimed and reused, at
+any depth, so a map or vec churned for hours keeps a flat arena (a
+`striped` or `lockfree` map does not reclaim yet). A
+value you read out stays whole: a vec's `get` hands you a copy, and
+a single-pool map's reclamation waits for the end of the current
+activation. Reading a nested record out of a map cell and setting it
+back under the same key costs nothing; storing it under another key
+copies it.
+
 By default a `@form(hashmap)` is single-pool: its densest layout
 has no synchronization, and a *cross-pool* call into one instance
 is rejected. "Cross-pool" is judged per instance, at the call

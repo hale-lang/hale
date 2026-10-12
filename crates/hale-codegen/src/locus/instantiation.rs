@@ -1939,10 +1939,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                     // Anchor retirement (2026-07-03, notes/anchor-
-                    // retirement.md): install the String-field
-                    // offset descriptor so the C set path can
-                    // retire the OLD slot's clones when an occupied
-                    // slot is overwritten with different pointers.
+                    // retirement.md): install the cell's retire
+                    // descriptor so the C set and remove paths can
+                    // retire what the OLD cell owned when an
+                    // occupied slot is overwritten or removed.
                     // The offsets come from TargetData (exact ABI
                     // layout, Decimal i128 padding included).
                     {
@@ -2020,26 +2020,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 })?;
                         }
                         if let Some(cn) = cell_name {
-                            if let Some(ci) = self.user_types.get(&cn) {
-                                let mut offs: Vec<u32> = Vec::new();
-                                for fname in &ci.field_order {
-                                    let (idx, fty) = ci
-                                        .fields
-                                        .get(fname)
-                                        .cloned()
-                                        .expect("declared field");
-                                    if matches!(fty, CodegenTy::String) {
-                                        if let Some(off) = self
-                                            .target_data
-                                            .offset_of_element(
-                                                &ci.struct_ty,
-                                                idx,
-                                            )
-                                        {
-                                            offs.push(off as u32);
-                                        }
-                                    }
-                                }
+                            if self.user_types.contains_key(&cn) {
+                                // The form retire descriptor (String
+                                // and Bytes fields, nested records /
+                                // tuples / out-of-line arrays with
+                                // their own descriptors, at any
+                                // depth). It used to list top-level
+                                // String fields only, so a replaced
+                                // cell's Bytes and nested records
+                                // stayed in the map's arena.
+                                let offs: Vec<u32> = self
+                                    .retire_desc_for(&CodegenTy::TypeRef(cn.clone()), 0)
+                                    .map(|(_, d)| d)
+                                    .unwrap_or_default();
                                 if !offs.is_empty() {
                                     let i32_t = self.context.i32_type();
                                     let vals: Vec<_> = offs
@@ -3872,7 +3865,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // C38 (L4): the birth_check runs on this thread, after
             // birth() and before run(), as on the instantiating thread
             // for every other locus.
-            self.emit_pinned_birth_checks(&checks, &info, thread_self, thread_main, locus_name)?;
+            self.emit_birth_checks_in_fn(&checks, &info, thread_self, thread_main, locus_name)?;
             }
             ObligationKind::Readiness => {
                 self.emit_readiness(thread_self, locus_name, "PinnedMain")?;
@@ -3896,6 +3889,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_unconditional_branch(loop_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(loop_bb);
+                // m41 on this thread too: a child its owner quarantined
+                // — at the first birth, or a restart bound spent by a
+                // re-birth that failed again — does not run. The run
+                // section is skipped (tick and duration with it), as on
+                // the instantiating thread; the mailbox loop below
+                // still serves it until shutdown. It used to start
+                // run() regardless, once, after the bound had
+                // quarantined it.
+                let pinned_after_run_bb = self
+                    .context
+                    .append_basic_block(thread_main, "pinned.run.after");
+                {
+                    let i64_t = self.context.i64_type();
+                    let q_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            thread_self,
+                            info.quarantined_field_idx,
+                            "pinned.run.quarantined.ptr",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let q = self
+                        .builder
+                        .build_load(i64_t, q_ptr, "pinned.run.quarantined")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let active = self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, q, i64_t.const_zero(), "pinned.run.active")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let do_bb = self
+                        .context
+                        .append_basic_block(thread_main, "pinned.run.do");
+                    self.builder
+                        .build_conditional_branch(active, do_bb, pinned_after_run_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(do_bb);
+                }
                 let pre = match restart {
                     Some(_) => Some(self.emit_restart_count(&info, thread_self)?),
                     None => None,
@@ -3968,6 +4000,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(done_bb);
                 }
+                self.builder
+                    .build_unconditional_branch(pinned_after_run_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(pinned_after_run_bb);
             }
             }
             // The instantiating thread's steps, emitted above.

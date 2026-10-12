@@ -15,8 +15,9 @@
 //! - `__restart_<L>(self)`: the restart itself — put the params back to
 //!   the values the instance was built with if `restart_in_place` asked
 //!   for it, lower the
-//!   drain latch the `violate` raised, re-run `birth()` and the
-//!   birth-epoch closures. The caller then runs `run()` again.
+//!   drain latch the `violate` raised, re-run `birth()`, the
+//!   birth-epoch closures and the `birth_check` clauses. The caller then
+//!   runs `run()` again.
 //! - `__resume_<L>(self, phase, pre)`: what the child does once a HELD
 //!   failure's handler has returned (spec/semantics.md § "on_failure(c,
 //!   err)"), run by the runtime at settle when the child failed on the
@@ -801,6 +802,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .build_call(bc, &[self_arg.into(), ps.into(), h.into()], "restart.birth_closures")
                             .map_err(e)?;
                     }
+                    // The birth's checks, as at every birth: a re-birth
+                    // that fails one is a failed birth, routed to the
+                    // owner's handler and decided by the caller's loop
+                    // the same way — restarted again within the bound,
+                    // quarantined at it. (A restart used to skip them,
+                    // so a re-birth that broke its invariant ran on.)
+                    let checks = self.birth_check_decls(name);
+                    self.emit_birth_checks_in_fn(&checks, info, self_arg, f, name)?;
                 }
                 RecoveryStep::Decision | RecoveryStep::Run => {}
             }

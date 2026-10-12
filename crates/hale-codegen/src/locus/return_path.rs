@@ -152,6 +152,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A field of a retiring `@form(hashmap)` cell that points at a
+    /// block of its own (a nested record, a tuple, an out-of-line fixed
+    /// array): the cell's own deep copy, since the retire frees the
+    /// block when the cell is replaced or removed and a block shared
+    /// with another owner would be freed under it. With `old_field`
+    /// (`sync = none`: the value the key's cell holds now, its struct
+    /// type and the field's index) a field still carrying that cell's
+    /// own block at the same field keeps it — the get-modify-set of a
+    /// cell with a large nested field stays allocation-free, and the
+    /// retire sees the block survive.
+    pub(crate) fn emit_cell_owned_block_store(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+        old_field: Option<(PointerValue<'ctx>, inkwell::types::StructType<'ctx>, u32)>,
+        site_name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let Some((old_v, struct_ty, idx)) = old_field else {
+            return self.emit_return_value_deep_copy(value, ty, dest_arena);
+        };
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let src = value.into_pointer_value();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let current_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let has_old_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.has_old", site_name));
+        let keep_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.keep", site_name));
+        let copy_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.copy", site_name));
+        let join_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("{}.own.join", site_name));
+        let no_old = self
+            .builder
+            .build_is_null(old_v, &format!("{}.own.no_old", site_name))
+            .map_err(err)?;
+        self.builder
+            .build_conditional_branch(no_old, copy_bb, has_old_bb)
+            .map_err(err)?;
+
+        self.builder.position_at_end(has_old_bb);
+        let old_slot = self
+            .builder
+            .build_struct_gep(struct_ty, old_v, idx, &format!("{}.own.old.ptr", site_name))
+            .map_err(err)?;
+        let old_block = self
+            .builder
+            .build_load(ptr_t, old_slot, &format!("{}.own.old", site_name))
+            .map_err(err)?
+            .into_pointer_value();
+        let same = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                src,
+                old_block,
+                &format!("{}.own.same", site_name),
+            )
+            .map_err(err)?;
+        self.builder
+            .build_conditional_branch(same, keep_bb, copy_bb)
+            .map_err(err)?;
+
+        self.builder.position_at_end(keep_bb);
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(copy_bb);
+        let copied = self.emit_return_value_deep_copy(value, ty, dest_arena)?;
+        let copy_end = self
+            .builder
+            .get_insert_block()
+            .expect("copy block still positioned");
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(join_bb);
+        let phi = self
+            .builder
+            .build_phi(ptr_t, &format!("{}.own.phi", site_name))
+            .map_err(err)?;
+        let src_basic: BasicValueEnum = src.into();
+        phi.add_incoming(&[(&src_basic, keep_bb), (&copied, copy_end)]);
+        Ok(phi.as_basic_value())
+    }
+
     pub(crate) fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
@@ -1123,6 +1216,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1490: the struct's top-level String fields — the ones
         // the fixups below retire — clone into field blocks.
         self.slot_field_clone = !retire_fields.is_empty();
+        // A form whose cells' nested blocks are retired (a `@form(vec)`
+        // element replaced or popped, a `@form(hashmap)` cell replaced
+        // or removed) keeps those blocks in this very arena. The walk's
+        // same-arena skip would store a block a cell still owns into
+        // this field — `self.saved = self.get(k)` in the map's own
+        // method, or a value visited in place by `for x in self.items` —
+        // and the cell's retire would then free it under the field.
+        // Here the field takes its own deep copy of every nested block
+        // (`cell_compound_owner`, always-copy), and the Strings and
+        // Bytes inside those copies are owned too (`cell_owned_clone`).
+        // The walk rewrites the struct it walks, field by field, so it
+        // walks a stack SNAPSHOT of the rhs, as `@form(hashmap).set`
+        // does: the rhs may be a cell itself (`for x in self.items {
+        // self.saved = x; }` visits the vec's elements in place), and
+        // rewriting it would hand the element and the field one fresh
+        // block, which the element's retire then frees under the field.
+        let owns_retiring_cells = self.locus_retires_cell_blocks(&cs.locus_name);
+        let prev_owned = self.cell_owned_clone;
+        let mut rhs = rhs;
+        if owns_retiring_cells {
+            self.cell_compound_owner = Some(None);
+            self.cell_owned_clone = true;
+            if let CodegenTy::TypeRef(tn) = slot_ty {
+                if let Some(tinfo) = self.user_types.get(tn).cloned() {
+                    let snap = self.alloca_in_entry(tinfo.struct_ty.into(), "self_field.snap")?;
+                    let snap_size = tinfo.struct_ty.size_of().expect("struct has known size");
+                    self.builder
+                        .build_memcpy(snap, 8, rhs.into_pointer_value(), 8, snap_size)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    rhs = snap.into();
+                }
+            }
+        }
         let anchored = self.emit_cross_arena_store_deep_copy(
             rhs,
             slot_ty,
@@ -1130,6 +1256,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "self_field_inplace",
         );
         self.slot_field_clone = false;
+        self.cell_compound_owner = None;
+        self.cell_owned_clone = prev_owned;
         let anchored = anchored?;
 
         let size = self.compound_storage_size(slot_ty)?;

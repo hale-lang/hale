@@ -1488,6 +1488,7 @@ pub fn build_resolved(
         current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
+        cell_compound_owner: None,
         slot_field_clone: false,
         program: merged,
         topics: &resolved.top.topics,
@@ -3337,6 +3338,19 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// single-owner rule (2026-07-18). False everywhere else, so
     /// returns and self-field stores keep their zero-copy skips.
     pub(crate) cell_owned_clone: bool,
+    /// Set around the anchor walk of a `@form(hashmap).set` whose map
+    /// retires its cells, and taken by the walk's outermost struct: a
+    /// field pointing at a block the retire frees (a nested record, a
+    /// tuple, an out-of-line fixed array) is stored as the cell's OWN
+    /// deep copy instead of passing through when it already lives in
+    /// the map's arena — a block another cell (or another owner) holds
+    /// would otherwise be shared, and the first retire would free it
+    /// under the other. `Some(Some(old))` (a `sync = none` map): `old`
+    /// is the value the key's cell holds now (`lotus_hashmap_peek`), and
+    /// a field carrying that cell's own block at the same field keeps
+    /// it — the get-modify-set shape allocates nothing. `Some(None)`:
+    /// always copy.
+    pub(crate) cell_compound_owner: Option<Option<PointerValue<'ctx>>>,
     /// GH #1490 (step 4): set around the anchor walk of a compound
     /// `self.<field> = Struct { ... }` store, and taken by the walk's
     /// outermost struct: its top-level String fields clone through
@@ -14536,6 +14550,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1490: the outermost struct of a compound self-field
         // store takes the flag; a nested struct's walk sees it clear.
         let slot_fields = std::mem::replace(&mut self.slot_field_clone, false);
+        // The outermost struct of a retiring hashmap cell takes this
+        // too (see `cell_compound_owner`).
+        let compound_owner = self.cell_compound_owner.take();
         for fname in &info.field_order {
             let (idx, fty) = info
                 .fields
@@ -14611,6 +14628,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_clone_slot returns ptr")
+            } else if let (Some(old), true) = (
+                compound_owner,
+                self.record_field_owns_block(&fty),
+            ) {
+                self.emit_cell_owned_block_store(
+                    field_val,
+                    &fty,
+                    dest_arena,
+                    old.map(|o| (o, info.struct_ty, idx)),
+                    &format!("{}.anchor.{}.{}", site_name, type_name, fname),
+                )?
             } else {
                 self.emit_cross_arena_store_deep_copy_ptr(
                     field_val,
@@ -21340,16 +21368,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // resume slot (or -1) lands in cursor_slot.
         self.builder.position_at_end(fill_bb);
         // Downstream handoff P1 (2026-08-03): iterating a synced
-        // String-bearing map clones each cell's Strings into this
-        // activation's arena, for the same reason `get` does.
+        // map copies what each cell owns (Strings, Bytes, nested
+        // blocks) into this activation's arena, as `get` does.
         // Without it, enabling the writer's retirement would turn
         // the old leak into a use-after-free the moment an
         // iteration overlapped a concurrent set.
         let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
-            && cell_info
-                .fields
-                .values()
-                .any(|(_, t)| matches!(t, CodegenTy::String));
+            && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let count = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;
             let batch_fn = self

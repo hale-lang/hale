@@ -2495,6 +2495,37 @@ domain	pool:io
 row	App@literal1	App	main	default
 shared	App@literal1.host	PoolHost #63b77edf
 
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#aa60fd1f
+-- H@main1	H
+row	~	H	main	default
+row	~.m	M	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#e868199e
+-- H@main1	H
+row	~	H	main	default
+row	~.m	M	main	inherited
+row	~.pm	PM	main	inherited
+row	~.sm	SM	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#1e31a593
+-- H@main1	H
+row	~	H	main	default
+row	~.mm	MM	main	inherited
+row	~.mt	MT	main	inherited
+row	~.sm	SM	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#637ddfed
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.map	Map	main	inherited
+row	~.v	Vec	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_nested_retire.rs#a498151d
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+shared	App@literal1.w	Writer #1774d7f8
+
 == crates/hale-codegen/tests/form_hashmap_serialized.rs#f066fb3a
 root	App	the entry
 row	App@literal1	App	main	default
@@ -2520,9 +2551,7 @@ row	App@literal1.t	Table	main	default
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
--- App@literal1.w	Writer
-row	~	Writer	pool:io	entry	off owner
-row	~.t	Table	pool:io	inherited
+shared	App@literal1.w	Writer #1774d7f8
 
 == crates/hale-codegen/tests/form_iteration.rs#5981160b
 row	Reg@main1	Reg	main	default
@@ -6755,10 +6784,12 @@ domain	pinned:App@literal1.held
 domain	pinned:App@literal1.twice
 domain	pinned:App@literal1.late
 domain	pinned:App@literal1.fresh
+domain	pinned:App@literal1.never
 row	App@literal1	App	main	default
 row	App@literal1.fresh	Fresh	pinned:App@literal1.fresh	entry	off owner
 row	App@literal1.held	Kid	pinned:App@literal1.held	entry	off owner
 row	App@literal1.late	Kid	pinned:App@literal1.late	entry	off owner
+row	App@literal1.never	Kid	pinned:App@literal1.never	entry	off owner
 row	App@literal1.slow	Slow	main	default
 row	App@literal1.twice	Kid	pinned:App@literal1.twice	entry	off owner
 
@@ -6790,6 +6821,21 @@ dynamic	__StdProcessChild	on main
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
+
+== tests/hale/restart_birth_check_test.hl
+root	App	the entry
+domain	pool:a
+domain	pool:b
+domain	pinned:App@literal1.pinned
+domain	pinned:App@literal1.pinned_never
+row	App@literal1	App	main	default
+row	App@literal1.held	Checked	main	default
+row	App@literal1.held_never	Checked	main	default
+row	App@literal1.pinned	Checked	pinned:App@literal1.pinned	entry	off owner
+row	App@literal1.pinned_never	Checked	pinned:App@literal1.pinned_never	entry	off owner
+row	App@literal1.pooled	Checked	pool:a	entry	off owner
+row	App@literal1.pooled_never	Checked	pool:b	entry	off owner
+dynamic	Checked	on main	in the seed
 
 == tests/hale/restart_birth_failure_test.hl
 root	App	the entry
@@ -14699,6 +14745,10 @@ row	~.inner.slot	Leaf	pinned:~	inherited
 == shared Worker #f0ba3524
 row	~	Worker	pinned:~	entry	off owner
 row	~.leaf	Leaf	pinned:~	inherited
+
+== shared Writer #1774d7f8
+row	~	Writer	pool:io	entry	off owner
+row	~.t	Table	pool:io	inherited
 
 == shared __StdApiHttpListener #6e12d80d
 row	~	__StdApiHttpListener	pool:__api_http	entry	off owner

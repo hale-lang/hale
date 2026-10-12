@@ -441,8 +441,9 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > (~110 B a set for one nested record carrying a String and Bytes,
 > ~210 B for two levels). A block the new element still reaches
 > survives, wherever in it, and a block reached twice is freed once.
-> (`@form(hashmap)` cells keep their own retire discipline, which
-> covers top-level String fields only.)
+> (`@form(hashmap)` cells retire through the same descriptor, deferred
+> to the activation boundary — see `@form(hashmap)` § Cell
+> reclamation.)
 >
 > **The vec owns its elements (GH #577).** `get` returns the
 > CALLER's copy of a heap-bearing element (a String, Bytes, a
@@ -836,10 +837,13 @@ unsynchronized whatever inference would pick; see `semantics.md`
 
   **Reads are owned snapshots; replaced clones retire
   (2026-08-03, downstream handoff P1).** Every read path on a
-  serialized map whose cell carries String fields (`get`,
-  `entry_at`, `for` iteration) clones those Strings into the
-  *caller's* arena, inside the same critical section that read
-  the cell. The value a reader holds is therefore a plain owned
+  serialized map whose cell owns anything (`get`, `entry_at`,
+  `for` iteration) copies it into the *caller's* arena — its
+  String and Bytes fields, and each nested record, tuple or
+  out-of-line array with what that owns — inside the same
+  critical section that read the cell. (Until the map retired
+  Bytes and nested blocks it copied String fields only; the rest
+  was never freed, so a raw pointer to it could not dangle.) The value a reader holds is therefore a plain owned
   value — it stays intact regardless of later writes, and a
   reader never observes a writer's in-place mutations through a
   previously-read result. That ownership is what lets the map
@@ -1203,6 +1207,41 @@ pointed-to bytes live in whatever arena they were allocated
 from. Hashmap dissolution frees the slots buffer but does not
 free the pointed-to bytes — those follow their owning arena's
 lifetime per the standard F.22 contract.
+
+### Cell reclamation
+
+`set` stores the cell's own copy of everything the value points at
+(its String and Bytes fields, and each nested record, tuple or fixed
+array with what that owns — a record's field of scalars is inline and
+part of the cell itself, while an array inside a tuple or another
+array is a block of its own, as for `@form(vec)`), in the map locus's
+arena. When a `sync = none` or `sync = serialized` map replaces a
+cell (`set` of a present key) or removes one, everything the old cell
+owned is retired, at any depth, through the retire descriptor
+`@form(vec)` uses; a block the new cell still reaches survives, and a
+block reached twice is retired once. Retirement is deferred to the
+owner's activation boundary (anchor retirement, `memory.md`), so a
+value a plain `get` handed out stays whole for the rest of the
+activation; a serialized map's reads are owned copies (above). A
+churned map's arena therefore stays flat. Before, only top-level
+String fields retired: a replaced cell's Bytes and its nested records
+(their blocks and their own String and Bytes) stayed for good — a
+cell holding a nested record carrying a String and Bytes grew the
+arena from 64 KiB to 10.7 MiB over 100,000 sets.
+
+A nested block in the cell belongs to that cell alone. A value that
+carries a nested block from the same key's current cell, at the same
+field (`let e = m.get(k); m.set(Cell { k: k, big: e.big, ... })`),
+keeps it, so a get-modify-set allocates nothing for it; any other
+nested block — one read from another key's cell, one shared with a
+field — is copied. (Before, a nested block already in the map's arena
+was stored as-is whatever held it, so two cells could share one; and a
+cell whose only heap part was a nested record of scalars stored the
+pointer it was handed, into the setting method's scratch, which a
+later `get` read after the method had returned.)
+
+`striped` and `lockfree` maps retire nothing yet (see the discipline
+table above).
 
 ## Complexity
 

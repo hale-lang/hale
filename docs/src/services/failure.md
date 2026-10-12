@@ -150,7 +150,9 @@ The recovery primitives:
   child on its own thread, a child placed on a pool on that pool's
   worker. A child whose `birth()` failed (a `violate` in it, or a
   `birth_check`) is restarted before its `run()` starts, and again
-  if the new `birth()` fails too, within the bound. A child whose
+  if the new `birth()` fails too — its `birth_check` clauses run
+  after every `birth()`, a restart's included — within the bound,
+  and at the bound it is quarantined and never runs. A child whose
   `run()` failed restarts once that `run()` has returned. It
   hears its subscriptions again, even when one of its handlers
   returned while the parent was still deciding and stopped it.
