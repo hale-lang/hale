@@ -859,6 +859,7 @@ pub fn check_bundle_by_declaration(
         in_on_failure: false,
         fallible_ctx: None,
         return_ctx: None,
+        in_fn_main: false,
         strict_callees,
         strict_idents,
         or_value_discarded: false,
@@ -6303,6 +6304,10 @@ struct Checker<'a> {
     /// `fn f() -> Int { return "s"; }` had no return check at all and
     /// surfaced at codegen as "unsupported in codegen v0".
     return_ctx: Option<Ty>,
+    /// True while checking the body of the program's `fn main`, whose
+    /// `return n;` is the process exit code (spec/runtime.md) although
+    /// it declares no return type.
+    in_fn_main: bool,
     strict_callees: bool, // F.18: on for every command's program, off for a library caller's partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -9920,7 +9925,16 @@ impl<'a> Checker<'a> {
                     let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
+                // A mode that declares `-> T` returns a value; one that
+                // does not returns nothing, like a hook. The value's
+                // type is not judged here (`Unknown`), only whether
+                // there is one to return.
+                let prev_return = std::mem::replace(
+                    &mut self.return_ctx,
+                    md.ret.as_ref().map(|_| Ty::Unknown),
+                );
                 self.check_block(&md.body);
+                self.return_ctx = prev_return;
                 self.locals.pop();
                 self.in_lifecycle = false;
             }
@@ -10570,6 +10584,10 @@ impl<'a> Checker<'a> {
             .ret
             .as_ref()
             .map(|te| self.resolve_te(te));
+        let prev_main = std::mem::replace(
+            &mut self.in_fn_main,
+            locus.is_none() && prev_locus.is_none() && decl.name.name == "main",
+        );
         if let Some(payload_te) = &decl.fallible {
             let success_ret = match &decl.ret {
                 Some(te) => self.resolve_te(te),
@@ -10587,6 +10605,7 @@ impl<'a> Checker<'a> {
         self.locals.pop();
         self.fallible_ctx = prev_fallible;
         self.return_ctx = prev_return;
+        self.in_fn_main = prev_main;
         self.current_locus = prev_locus;
         self.generic_params = prev_generics;
     }
@@ -11015,6 +11034,24 @@ impl<'a> Checker<'a> {
                             "`return` in an `on_failure` body carries no value: \
                              the handler returns nothing. Write `return;` to \
                              end it early."
+                                .to_string(),
+                        ));
+                    } else if self.return_ctx.is_none()
+                        && self.fallible_ctx.is_none()
+                        && !self.in_fn_main
+                    {
+                        // A body that declares no return type returns
+                        // nothing: a lifecycle hook, or a fn or mode
+                        // with no `-> T`. Lowering refused the value
+                        // with no span; `fn main`'s `return n;` is the
+                        // exit code and is not this.
+                        self.diags.push(Diag::ty(
+                            e.span(),
+                            "`return` carries a value, but this body returns \
+                             nothing: a fn or mode with no `-> T`, or a \
+                             lifecycle hook, which never returns a value. \
+                             Declare the return type (`fn f() -> T`), or \
+                             write `return;`."
                                 .to_string(),
                         ));
                     }

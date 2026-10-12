@@ -68,6 +68,20 @@ accepted this form and codegen rejected it as a fall-through).
 A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects.
 
+Such a body returns nothing, so a `return` in it carries no value: a
+`return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
+success type is then `()`) or in a lifecycle hook (`birth`, `run`,
+`accept`, `drain`, …) is a type error at the value. `fn main` is the
+exception: its `return n;` is the process exit code (§ "Process
+exit").
+
+```text
+main.hl:1:66: type error: `return` carries a value, but this body
+returns nothing: a fn or mode with no `-> T`, or a lifecycle hook,
+which never returns a value. Declare the return type (`fn f() -> T`),
+or write `return;`.
+```
+
 `if cond { ... } else { ... }` is dual-position:
 
 - **As statement** (`if c { foo(); }` — no `else`, or any arm

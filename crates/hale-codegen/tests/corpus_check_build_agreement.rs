@@ -2026,3 +2026,35 @@ fn a_non_locus_accept_param_is_refused_by_the_check_not_the_build() {
         "hale_cb_locus_accept",
     );
 }
+
+/// `return <value>;` in a body that declares no return type (a fn with
+/// no `-> T`, a lifecycle hook): lowering refused it with no span ("fn
+/// declared with no return type but `return e;` carries a value").
+/// `fn main`'s `return n;` is the exit code and builds.
+#[test]
+fn a_value_returned_from_a_body_that_returns_nothing_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus D { params { n: Int = 0; } run() { if self.n == 0 { return 5; } } }\n\
+                 fn main() { let d = D { }; }\n",
+                "5",
+                "`return` carries a value, but this body returns nothing",
+            ),
+            (
+                "locus D { params { n: Int = 0; } fn bump() { return self.n + 1; } }\n\
+                 fn main() { let d = D { }; d.bump(); }\n",
+                "self.n + 1",
+                "`return` carries a value, but this body returns nothing",
+            ),
+            (
+                "fn note(n: Int) { if n > 0 { return n; } println(n); }\n\
+                 fn main() { note(1); }\n",
+                "n",
+                "`return` carries a value, but this body returns nothing",
+            ),
+        ],
+        "unit_return_value",
+    );
+    assert_built("fn main() { println(\"x\"); return 3; }\n", "hale_cb_main_exit_code");
+}

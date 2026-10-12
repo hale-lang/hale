@@ -116,3 +116,21 @@ fn a_non_locus_accept_param_is_refused_at_the_param() {
         "`release(c: T)`: `release()` takes a locus or an interface",
     );
 }
+
+#[test]
+fn a_value_returned_from_a_body_that_returns_nothing_is_refused_at_the_value() {
+    refused(
+        "locus D { params { n: Int = 0; } run() { if self.n == 0 { return 5; } } }\nfn main() { let d = D { }; }\n",
+        "run_value",
+        "1:66",
+        "`return` carries a value, but this body returns nothing",
+    );
+    refused(
+        "fn note(n: Int) { if n > 0 { return n; } println(n); }\nfn main() { note(1); }\n",
+        "fn_value",
+        "1:37",
+        "`return` carries a value, but this body returns nothing",
+    );
+    let ((ok, out), (built, bout)) = check_and_build("fn main() { println(\"x\"); return 3; }\n", "main_exit");
+    assert!(ok && built, "fn main's `return n;` is the exit code: {out}{bout}");
+}
