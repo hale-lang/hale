@@ -188,7 +188,9 @@ The listener deals its connections round-robin over its `shards`; each
 any locus with `fn serve(c: std::io::tcp::Accepted)` is one too (it
 owns `c.fd`). A connection no consumer takes is closed by its listener,
 never leaked, so `require no_silent_loss(topic __TcpAcceptedT)` holds
-in a program's `claims`.
+in a program's `claims`. Neither piece grows with the connections it
+serves: each connection is served in a child that goes with it, and
+the handle the listener sends is gone once the consumer has taken it.
 
 `std::io::tcp::Acceptor { path: "/run/app.sock" }` listens on a Unix
 socket instead of a port (its name is `unix:/run/app.sock`, and it

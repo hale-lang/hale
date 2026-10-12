@@ -61,8 +61,11 @@ down — one at runtime, one at compile time.
 every top-level arena (each locus's region, the global, the bus
 payload arena) with a construction backtrace. Then call
 `std::process::dump_arena_residency()` to emit one line per live
-arena — bytes, chunks, parent, label — sorted by bytes descending,
-each with the backtrace of where it was created:
+arena — bytes, chunks, parent, label, and `used=`, the bytes its
+chunks actually hold — sorted by bytes descending, each with the
+backtrace of where it was created. `bytes=` moves a whole chunk at a
+time; `used=` moves by the byte, so two dumps a known number of
+requests apart say what each request leaves behind:
 
 ```hale
 // In a long-running daemon, sample from a heartbeat tick so locus

@@ -727,7 +727,11 @@ a coroutine of its own, and anywhere else one at a time.
 - **`std::io::tcp::Accepted { listener, route, fd, seq }`** — the
   handle: the listener's name, the route it was sent on
   (`<listener>#<shard>`), the descriptor and the listener's count from
-  1. **Whoever takes it owns `fd`** and closes it.
+  1. **Whoever takes it owns `fd`** and closes it. The handle itself
+  lives for its delivery: a long-lived consumer keeps nothing of the
+  connections it takes (spec/memory.md § "Every wire delivery takes
+  the wire cell"; it used to keep the two names, ~34 B a
+  connection).
 - **`__TcpAcceptedT`** — the substrate's topic, on the wire subject
   `__tcp.accepted`, `keyed_by route`, `on_unmatched: fallback`. A
   consumer subscribes `where key == <its route>`; every listener holds
