@@ -35,7 +35,6 @@ pub(crate) trait BusRuntime<'ctx> {
         mailbox_or_null: Option<PointerValue<'ctx>>,
         payload_type: &str,
         key_filter: Option<&KeyFilter>,
-        owned_beyond_scope: bool,
     ) -> Result<(), CodegenError>;
 }
 
@@ -362,7 +361,6 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         mailbox_or_null: Option<PointerValue<'ctx>>,
         payload_type: &str,
         key_filter: Option<&KeyFilter>,
-        owned_beyond_scope: bool,
     ) -> Result<(), CodegenError> {
         let _ = self
             .bus_state
@@ -381,19 +379,25 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             Some(crate::codegen::AnchorRoute::Pool(p)) => Some(p.clone()),
             _ => None,
         };
-        // A locus constructed at run time (in a hook or a method, owned
-        // beyond the constructing scope) on a pinned thread takes that
-        // thread's mailbox, which the thread made current before its
-        // params and its `birth()` ran: its handlers run where the locus
-        // runs, as a locus built in the anchor's params does (U-6). No
-        // pinned thread, no mailbox: a pool worker's subscription is
-        // tagged with its pool below, main's goes to the global queue.
-        // (`std::http::Server` builds its consumer in `birth()`, once its
-        // name is its own; pinned, the consumer's deliveries went to the
-        // global queue and were served by main.)
+        // A locus constructed at run time (in a hook or a method) on a
+        // pinned thread takes that thread's mailbox, which the thread made
+        // current before its params and its `birth()` ran: its handlers
+        // run where the locus runs, as a locus built in the anchor's
+        // params does (U-6). No pinned thread, no mailbox: a pool
+        // worker's subscription is tagged with its pool below, main's
+        // goes to the global queue. (`std::http::Server` builds its
+        // consumer in `birth()`, once its name is its own; pinned, the
+        // consumer's deliveries went to the global queue and were served
+        // by main.) Whatever the locus's ownership: a scope-local
+        // subscriber (a `let` or a statement-position literal in a
+        // method) lives on the constructing thread too, and its
+        // deliveries reached the global queue, where main ran its
+        // handlers beside its own thread's use of it. Its dissolve
+        // quarantines it before its storage goes, so a cell still
+        // queued for it on the mailbox is dropped (GH #703), never run
+        // on freed memory.
         let dynamic_on_pinned = mailbox_or_null.is_none()
             && anchor_mailbox.is_none()
-            && owned_beyond_scope
             && self.current_cooperative_pool.is_none()
             && anchor_pool.is_none();
         let mailbox_val = match mailbox_or_null.or(anchor_mailbox) {
@@ -492,24 +496,34 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                 .left()
                 .expect("lotus_coop_pool_lookup returns ptr")
                 .into_pointer_value()
-        } else if owned_beyond_scope {
+        } else {
             // Pool-inheritance fix (2026-05-29): no compile-time
-            // placement name (this subscribe registers from inside
-            // a method/handler body, not a main-locus params
-            // field), but the locus is owned beyond this scope
-            // (accept'd / field-owned / returned), so it outlives
-            // the handler. Tag the subscription with the pool whose
-            // worker is currently on-CPU — for a child instantiated
-            // inside a pool worker, that's the parent's pool, so
-            // dispatch routes to the right worker instead of
-            // silently falling to the global queue (which only
-            // fires if main happens to drain it). Returns null on
-            // the main thread → unchanged for genuine main-pool
-            // subscribers. Gated on ownership: a handler-local
-            // `let`-bound subscriber is deregistered at scope exit,
-            // so pool-tagging it would route to a worker that
-            // drains it only after it's gone — keep those on the
-            // global queue (prior behavior).
+            // placement name (this subscribe registers from inside a
+            // method/handler body, not a main-locus params field), so
+            // tag the subscription with the pool whose worker is
+            // currently on-CPU — for a locus instantiated inside a pool
+            // worker, that's the pool the constructing body runs on, so
+            // dispatch routes to that worker instead of the global
+            // queue, which main drains: main would run the handler
+            // beside the worker's own use of the locus. Returns null on
+            // the main thread (and on a pinned one, whose mailbox is the
+            // route above) → unchanged for genuine main-pool
+            // subscribers.
+            //
+            // Whatever the locus's ownership. A handler-local
+            // subscriber (`let`-bound or a statement-position literal)
+            // used to be left on the global queue, on the grounds that
+            // the worker drains its pool only after the scope, and the
+            // locus, are gone. That is what its dissolve already
+            // handles: the reclaim quarantines the subscriber
+            // (`lotus_bus_quarantine_self`), so a cell still queued for
+            // it is dropped at materialization (GH #703), and it waits
+            // for a handler of it that has started (R52). On an
+            // `async_io` pool its handlers run while the constructing
+            // body parks; on a classic pool, whose cells are
+            // handler-atomic, a delivery waits for the worker, which the
+            // constructing body holds for the subscriber's whole life,
+            // and is dropped with it.
             let current_fn = self
                 .module
                 .get_function("lotus_coop_pool_current")
@@ -521,8 +535,6 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                 .left()
                 .expect("lotus_coop_pool_current returns ptr")
                 .into_pointer_value()
-        } else {
-            ptr_t.const_null()
         };
 
         let i8_t = self.context.i8_type();

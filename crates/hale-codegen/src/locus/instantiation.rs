@@ -660,15 +660,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let bubbled = bubble_owner_name.is_some();
         // Pool-inheritance fix (2026-05-29): is this locus owned
-        // beyond the enclosing scope? Only owned loci may inherit
-        // the current pool at runtime (post run() / pool-tag their
-        // subscriptions). A handler-local `let`-bound long-lived
-        // locus is dissolved at the enclosing fn's scope exit, so
-        // posting its run() (which would execute AFTER that
-        // dissolve) is a use-after-free, and pool-tagging its
-        // subscription would route to a worker that drains it only
-        // after the locus is gone. For those, preserve the prior
-        // behavior: synchronous run + global-queue subscription.
+        // beyond the enclosing scope? Only owned loci may post their
+        // run() to the current pool at runtime. A handler-local
+        // `let`-bound long-lived locus is dissolved at the enclosing
+        // fn's scope exit, so posting its run() (which would execute
+        // AFTER that dissolve) is a use-after-free: its run() stays
+        // synchronous. Its subscriptions are another matter: they
+        // follow the constructing thread whatever the ownership
+        // (`emit_bus_register`), since the global queue would have
+        // main run its handlers beside this thread's use of it.
         // The canonical N-dynamic-children pattern is accept'd /
         // field-owned children, which ARE owned beyond scope.
         // A bubbled child lives in A's arena and is reclaimed by A's
@@ -3636,7 +3636,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         None,
                         payload_type,
                         key_filter.as_ref(),
-                        owned_beyond_scope,
                     )?;
                     // GH #255 phase 2: attach declared capacity.
                     self.emit_sub_bound_if_any(
@@ -3654,7 +3653,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &info,
                 self_ptr,
                 locus_name,
-                owned_beyond_scope,
             )?;
         }
         self.lc_in_spine("Instantiation", |cx| {

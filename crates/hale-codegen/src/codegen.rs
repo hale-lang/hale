@@ -30488,7 +30488,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         None,
                         payload_type,
                         key_filter.as_ref(),
-                        true,
                     )?;
                 }
                 self.current_self = prev_self;
