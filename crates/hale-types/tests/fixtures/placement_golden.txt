@@ -473,7 +473,7 @@ row	App@literal1.p	PluginHost	main	default
 row	~	Gateway	main	default
 row	~.s	Signer	main	inherited
 
-== crates/hale-cli/tests/fixtures/api_clients/main.hl#4e7309ef
+== crates/hale-cli/tests/fixtures/api_clients/main.hl#4f039638
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:__api_ws	async_io
@@ -1333,7 +1333,7 @@ row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #8b78e915
 
-== crates/hale-codegen/tests/api_hub_desk.rs#b1c8875a
+== crates/hale-codegen/tests/api_hub_desk.rs#2963f39c
 root	Desk	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
