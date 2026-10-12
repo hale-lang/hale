@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#ceab197c
+== crates/hale-stdlib/hl/api_rpc.hl#7c06c0fc
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1421,8 +1421,30 @@ dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
 
+== crates/hale-codegen/tests/async_io_park_resume.rs#60381adf
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.la	__StdIoTcpListener	pool:io	entry	off owner
+row	App@literal1.lb	__StdIoTcpListener	pool:io	entry	off owner
+dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+
+== crates/hale-codegen/tests/async_io_recv_into_park.rs#bbdbfdc9
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
+dynamic	__StdIoTcpStream	on pool:io	in the stdlib
+
 == crates/hale-codegen/tests/async_io_recv_into_park.rs#f0abc6d8
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+
+== crates/hale-codegen/tests/async_io_recv_into_park.rs#3ce41040
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.l	__StdIoTcpListener	pool:io	entry	off owner
+dynamic	__StdIoTcpStream	on pool:io	in the stdlib
 
 == crates/hale-codegen/tests/async_io_shutdown_parked.rs#9ba7c88f
 root	App	the entry
@@ -2780,7 +2802,7 @@ dynamic	Buf	on main	in the seed
 == crates/hale-codegen/tests/gate_counters.rs#ad9d2837
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/gate_counters.rs#bf2692a7
+== crates/hale-codegen/tests/gate_counters.rs#20c42d78
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#d8e77125
@@ -2872,11 +2894,37 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.b	Boom	main	default
 
+== crates/hale-codegen/tests/http_response_headers.rs#b03484a8
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/http_response_headers.rs#efeb1acc
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
 == crates/hale-codegen/tests/http_router.rs#8554b629
 row	Count@main3	Count	main	default
 row	Hello@main2	Hello	main	default
 row	Stamp@main4	Stamp	main	default
 shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
+
+== crates/hale-codegen/tests/http_router.rs#81bc0c99
+hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
+-- __StdHttpServer@main1	__StdHttpServer
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
+row	~.handler	Routes	main	inherited
+row	~.handler.hello	Hello	main	inherited
+row	~.handler.router	__StdHttpRouter	main	inherited
+row	~.handler.router.entries	__StdHttpEntryList	main	inherited
+row	~.handler.router.mws	__StdHttpMwList	main	inherited
+row	~.handler.router.not_found	__StdHttpNotFound404	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+shared	dynamic	sites in the seed #90ace0ba
 
 == crates/hale-codegen/tests/http_router.rs#f22c2ecd
 row	Classic@main2	Classic	main	default
@@ -2960,6 +3008,37 @@ row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
 row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Echo	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+shared	dynamic	sites in the seed #90ace0ba
+
+== crates/hale-codegen/tests/http_upgrade.rs#715cadda
+hole	__StdHttpServer@main2.handler	reuse `h`
+hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	TakeoverHandler@main1	TakeoverHandler	main	default
+row	__StdIoTcpStream@main3	__StdIoTcpStream	main	default
+-- __StdHttpServer@main2	__StdHttpServer
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
+row	~.handler	TakeoverHandler	main	inherited	built by TakeoverHandler@main1
+row	~.relay	__StdIoTcpRelay	main	inherited
+shared	dynamic	sites in the seed #90ace0ba
+
+== crates/hale-codegen/tests/http_upgrade.rs#b623a938
+hole	__StdHttpServer@main2.handler	reuse `h`
+hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	RawHandler@main1	RawHandler	main	default
+-- __StdHttpServer@main2	__StdHttpServer
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
+row	~.handler	RawHandler	main	inherited	built by RawHandler@main1
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #90ace0ba
 
@@ -3310,7 +3389,7 @@ row	L@main1	L	main	default
 row	~	Driver	main	default
 row	~.w	Worker	main	inherited
 
-== crates/hale-codegen/tests/mirror_ring.rs#0e1f5142
+== crates/hale-codegen/tests/mirror_ring.rs#63f64073
 row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default
 
 == crates/hale-codegen/tests/mirror_ring.rs#239f8098
@@ -3753,16 +3832,22 @@ dynamic	Leaf	on main	in the seed
 row	Parent@main1	Parent	main	default
 dynamic	Leaf	on main	in the seed
 
-== crates/hale-codegen/tests/recv_stamped.rs#22f64818
+== crates/hale-codegen/tests/recv_into.rs#e02073c4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/recv_timeout_sentinel.rs#91f132e1
+== crates/hale-codegen/tests/recv_into.rs#ee8987e4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/recv_zero_alloc.rs#f4d31486
+== crates/hale-codegen/tests/recv_stamped.rs#f8e26701
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/recv_zero_alloc.rs#48d9b7a9
+== crates/hale-codegen/tests/recv_timeout_sentinel.rs#c174aab4
+row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+
+== crates/hale-codegen/tests/recv_zero_alloc.rs#b77ac33a
+row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+
+== crates/hale-codegen/tests/recv_zero_alloc.rs#c0474b41
 row	Reader@main1	Reader	main	default
 
 == crates/hale-codegen/tests/release_generic_owner.rs#e7383174
@@ -4009,6 +4094,18 @@ row	__StdCliResolver@main1	__StdCliResolver	main	default
 == crates/hale-codegen/tests/stdlib_cli.rs#0966eae9
 row	__StdCliResolver@main1	__StdCliResolver	main	default
 
+== crates/hale-codegen/tests/stdlib_http_response.rs#04502c50
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_http_response.rs#95050f8a
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_http_response.rs#47a401c5
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
 == crates/hale-codegen/tests/stdlib_iter.rs#b15975c3
 row	__StdIterLines@main1	__StdIterLines	main	default
 
@@ -4050,6 +4147,26 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 
+== crates/hale-codegen/tests/stdlib_listener_multi.rs#a0d2c41c
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_listener_multi.rs#ef3dcd69
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_listener_multi.rs#5b12582a
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_locus.rs#0233ef73
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
+== crates/hale-codegen/tests/stdlib_locus.rs#799bd7ba
+row	__StdIoTcpListener@main1	__StdIoTcpListener	main	default
+dynamic	__StdIoTcpStream	on main	in the stdlib
+
 == crates/hale-codegen/tests/stdlib_log.rs#b043be5b
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
@@ -4077,6 +4194,28 @@ shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
 == crates/hale-codegen/tests/stdlib_metrics.rs#ff8f8519
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
+
+== crates/hale-codegen/tests/stdlib_metrics.rs#f2bcc5b8
+hole	__StdHttpServer@main1.handler.registry	unenumerable initializer
+hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+-- __StdHttpServer@main1	__StdHttpServer
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
+row	~.handler	__StdMetricsEndpoint	main	inherited
+row	~.handler.registry	__StdMetricsRegistry	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+-- dynamic	sites in the seed
+dynamic	__StdHttpResponder	on main
+dynamic	__StdIoTcpConnFlow	on main
+dynamic	__StdIoTcpConnInline	on main
+dynamic	__StdIoTcpConnections	on main
+dynamic	__StdIoTcpStream	on main
+dynamic	__StdMetricsRegistry	on main
 
 == crates/hale-codegen/tests/stdlib_name.rs#83fa822e
 row	__StdNameConvention@main1	__StdNameConvention	main	default
@@ -4189,13 +4328,13 @@ row	Fields@main1	Fields	main	default
 == crates/hale-codegen/tests/stream_fallible_io.rs#4fcb8861
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 
-== crates/hale-codegen/tests/stream_fallible_io.rs#e179faf6
+== crates/hale-codegen/tests/stream_fallible_io.rs#3e8f11eb
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 
-== crates/hale-codegen/tests/stream_fallible_io.rs#509e7370
+== crates/hale-codegen/tests/stream_fallible_io.rs#3788b7ae
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 
-== crates/hale-codegen/tests/stream_fallible_io.rs#4a92043b
+== crates/hale-codegen/tests/stream_fallible_io.rs#053549a9
 row	__StdIoTcpStream@main1	__StdIoTcpStream	main	default
 
 == crates/hale-codegen/tests/stream_fallible_io.rs#cb1e42b9
