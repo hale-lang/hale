@@ -395,8 +395,7 @@ fn sync_failed(why: String) -> SyncResult {
 fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
     let s = sync_record_rows(repo);
     if s.ok {
-        let r = apply_redactions(repo, memory);
-        let d = apply_drops(repo);
+        let w = apply_withdrawals(repo, memory);
         // a remote that had no record had no identity either, whatever this
         // clone published to the remote it had before
         if std::str::contains(s.summary, "(the remote had none)") { let u = rec(repo).unset_setting("identitypublished"); }
@@ -439,35 +438,42 @@ fn publish_identity(repo: String) -> Bool {
     return r.set_setting("identitypublished", mark);
 }
 
+// One redacted receipt's body gone from this clone and the remote: how
+// many places it went from.
+fn redact_here(r: dna::GitRecord, remote: String, digest: String) -> Int {
+    let mut n = 0;
+    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    if r.body(hexd).present {
+        let gone = r.forget(hexd);
+        n = n + 1;
+    }
+    if len(remote) > 0 && len(r.remote_has(remote, "receipts/" + hexd)) > 0 {
+        let w = r.withdraw(remote, "receipts/" + hexd);
+        n = n + 1;
+    }
+    return n;
+}
+
 // GH #606: a redacted receipt's body goes from this clone and from the
 // remote on every sync, so a clone that fetched it drops it at its next
 // sync. The blob lingers in each object store until git collects it.
 // (GH #646 stage 4: a redaction is a row of the ledger once the record is
 // adopted, and a body filed before adoption is still a blob here — so
-// the rows are read from both memories as one)
-fn apply_redactions(repo: String, memory: dna::Memory) -> Int {
+// the rows are read from both memories as one.) A dropped candidate goes
+// the same way (apply_drops, below); both are found in one read of the
+// record, which the sync makes on every tick of a body.
+fn apply_withdrawals(repo: String, memory: dna::Memory) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
     let mut n = 0;
-    // the record and the ledger read as one (nothing of the ledger is read
-    // on routing 0); each locus built in place, never handed back by a factory
     let record = dna::GitJournal { repo: repo, author: "host" };
     let j = dna::RoutedJournal { record: record, ledger: memory.ledger };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "receipt.redacted" { continue; }
-        let digest = e.entity;
-        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-        if r.body(hexd).present {
-            let gone = r.forget(hexd);
-            n = n + 1;
-        }
-        if len(remote) > 0 && len(r.remote_has(remote, "receipts/" + hexd)) > 0 {
-            let w = r.withdraw(remote, "receipts/" + hexd);
-            n = n + 1;
-        }
+        if e.kind == "receipt.redacted" { n = n + redact_here(r, remote, e.entity); }
+        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
     }
     return n;
 }
@@ -486,16 +492,22 @@ fn apply_drops(repo: String) -> Int {
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "candidate.dropped" { continue; }
-        let name = "candidates/" + e.entity;
-        if len(r.pointer(name)) > 0 {
-            let gone = r.unpoint(name);
-            n = n + 1;
-        }
-        if len(remote) > 0 && len(r.remote_has(remote, name)) > 0 {
-            let w = r.withdraw(remote, name);
-            n = n + 1;
-        }
+        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
+    }
+    return n;
+}
+
+// One dropped candidate unpointed here and withdrawn from the remote.
+fn drop_here(r: dna::GitRecord, remote: String, mutation: String) -> Int {
+    let mut n = 0;
+    let name = "candidates/" + mutation;
+    if len(r.pointer(name)) > 0 {
+        let gone = r.unpoint(name);
+        n = n + 1;
+    }
+    if len(remote) > 0 && len(r.remote_has(remote, name)) > 0 {
+        let w = r.withdraw(remote, name);
+        n = n + 1;
     }
     return n;
 }

@@ -1,0 +1,141 @@
+// An idle body costs next to nothing. A body ticks once a second, and a
+// tick used to read the record whole per Review and per request, several
+// times over: the forge's sync read it ten times a Review, the relay twice
+// a request answered long ago, status.json once a Review, Task and
+// Mutation; and each load of the record decoded its rows a byte at a
+// time. On an organization of ~1900 rows and ~40 Reviews, with nothing
+// happening, the body spent ~90% of a core (the todo journey's organism:
+// 11 h of CPU in an 11.5 h life), and the cost grew with the record.
+//
+// The record here is shaped like that one — Reviews with their verdicts
+// answered, and rows enough around them — and the body runs under a forge
+// of files with nothing to do. Its CPU over ten idle seconds must stay a
+// small fraction of one core. Linux only: the CPU is read from /proc.
+//
+// The body is `hale dna run`, which execs the host in its own process,
+// without nerves: the relay still weighs every request, which is the cost.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn log_has(path: String, needle: String) -> Bool {
+    return std::str::contains(std::io::fs::read_file(path) or "", needle);
+}
+
+// An organization that does nothing, for as long as its body lives.
+const IDLE_ORG: String = "fn main() {\n    let r = std::process::run(\"sleep\\n100000\") or std::process::ProcessOutput { code: -1, signal: 0, stdout: \"\", stderr: \"\" };\n}\n";
+
+// How many Reviews the record holds besides its own, each with a verdict
+// and a settlement; and how many rows besides.
+const REVIEWS: Int = 40;
+const FILLER: Int = 1600;
+
+// The CPU process `pid` has used, user and system, in clock ticks; -1
+// where there is no /proc to read it from.
+fn cpu_ticks(pid: String) -> Int {
+    let stat = std::io::fs::read_file("/proc/" + pid + "/stat") or "";
+    if len(stat) == 0 { return -1; }
+    // the fields after the command's `)`: state is the first, utime the
+    // twelfth and stime the thirteenth
+    let mut close = -1;
+    let mut i = 0;
+    while i < len(stat) {
+        if std::str::byte_at_unchecked(stat, i) == 41 { close = i; }
+        i = i + 1;
+    }
+    if close < 0 { return -1; }
+    let rest = stat[(close + 2)..len(stat)];
+    let utime = std::str::parse_int(dna::nth_word(rest, 11)) or - 1;
+    let stime = std::str::parse_int(dna::nth_word(rest, 12)) or - 1;
+    if utime < 0 || stime < 0 { return -1; }
+    return utime + stime;
+}
+
+fn row(kind: String, entity: String, body: String) -> dna::Row {
+    return dna::Row { kind: kind, entity: entity, body: body, author: "fixture" };
+}
+
+main locus App {
+    run() {
+        if !std::io::fs::file_exists("/proc/self/stat") {
+            eprintln("idle_body_cpu_test: no /proc on this machine; the body's CPU was not measured");
+            return;
+        }
+        let scratch = dna::scratch_root("idlecpu");
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nidle");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/idle";
+        std::io::fs::write_file(a + "/dna/org/main.hl", IDLE_ORG) or discard;
+        let g = in_dir(a, "sh\n-c\ngit -c user.name=organism-host -c user.email=host@dna add -A && git -c user.name=organism-host -c user.email=host@dna commit -q -m 'an idle organization'");
+        std::test::assert_eq_int(g.code, 0, "the idle organization is the genome: " + g.stderr);
+
+        // the record grown to an organization's day: Reviews asked,
+        // verdicts given (requests the relay weighs) and settled, and rows
+        // of work around them
+        let j = dna::GitJournal { repo: a, author: "fixture" };
+        let rows = dna::RowBatch { };
+        let mut k = 0;
+        while k < REVIEWS {
+            let id = "k:idle" + to_string(k);
+            rows.push(row("review.requested", id, "{\"question\": \"ratify idle practice " + to_string(k) + "\", \"required_authority\": \"board\", \"subject_digest\": \"sha256:" + to_string(k) + "\"}"));
+            rows.push(row("review.verdict", id, "{\"review_id\": \"" + id + "\", \"verdict\": \"approve\", \"reviewer\": \"fixture\", \"authority\": \"board\"}"));
+            rows.push(row("review.settled", id, "approve by fixture"));
+            k = k + 1;
+        }
+        k = 0;
+        while k < FILLER {
+            rows.push(row("note.filed", "note/" + to_string(k), "{\"note\": \"a row standing in for a day's work, \\\"quoted\\\" as rows are\", \"n\": " + to_string(k) + "}"));
+            k = k + 1;
+        }
+        let landed = j.append_batch(j.revision(), rows);
+        std::test::assert(landed.ok, "the record grew: " + landed.error);
+
+        // the body, under a forge of files with nothing on it
+        std::io::fs::mkdir(a + "/.hale") or discard;
+        std::io::fs::mkdir(a + "/.hale/dna") or discard;
+        std::io::fs::mkdir(a + "/.hale/dna/forge") or discard;
+        // (`dna run` execs the host: the pid is the body's)
+        let started = in_dir(a, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_FORGE=file nohup \"$1\" dna run . --no-iris >body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
+        let pid = dna::trim_nl(started.stdout);
+        std::test::assert(len(pid) > 0, "the body started: " + started.stderr);
+        let mut up = false;
+        let mut tries = 0;
+        // a host built cold takes minutes on a loaded runner
+        while !up && tries < 2400 {
+            if log_has(a + "/body.log", "organization (pid") { up = true; } else { std::time::sleep(250ms); }
+            tries = tries + 1;
+        }
+        let log = std::io::fs::read_file(a + "/body.log") or "";
+        std::test::assert(up, "the organization started: " + log);
+        // past the first ticks, which read what the body found
+        std::time::sleep(3s);
+        let hz = std::str::parse_int(dna::trim_nl(dna::run_tool("getconf\nCLK_TCK").stdout)) or 100;
+        let before = cpu_ticks(pid);
+        let t0 = std::time::monotonic_ns();
+        std::time::sleep(10s);
+        let after = cpu_ticks(pid);
+        let wall = std::time::monotonic_ns() - t0;
+        let k2 = dna::run_tool("kill\n" + pid);
+        std::test::assert(before >= 0 && after >= 0, "the body ran the whole window: " + (std::io::fs::read_file(a + "/body.log") or ""));
+        // percent of one core
+        let used = (after - before) * 1000000000 / hz;
+        let percent = used * 100 / wall;
+        eprintln("idle_body_cpu_test: the idle body used ", to_string(percent), "% of a core over ", to_string(wall / 1000000), " ms (", to_string(j.revision()), " rows)");
+        std::test::assert(percent < 25, "an idle body uses a small fraction of a core: " + to_string(percent) + "% over " + to_string(wall / 1000000) + " ms");
+
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

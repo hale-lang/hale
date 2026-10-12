@@ -48,6 +48,11 @@ fn keys_has(list: String, key: String) -> Bool {
 fn keys_add(list: String, key: String) -> String {
     return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
+
+// `list` with the keys of `more` ("\n"-ended lines) after its own.
+fn keys_merge(list: String, more: String) -> String {
+    return (if len(list) == 0 { "\n" } else { list }) + more;
+}
 // GH #689: whether the request at row `i` has ITS OWN answer.
 //
 // New verdict commands carry command_id and require their own exact
@@ -187,6 +192,10 @@ fn relay_mark(list: String, key: String, now: Int) -> String {
 // (the organism admits an intent once by id; a duplicate verdict is refused
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
+// status.json is projected again when the record moved, and at least
+// this often (seconds) for what it reads beside the record: the
+// expression's topology and binary, and its own time.
+const STATUS_REFRESH: Int = 30;
 // How many landed rows a node tells in one pass (the rest the next).
 const ANNOUNCE_AT_ONCE: Int = 256;
 // How long a pull lives on the stream: pond's NatsConn pulls with a one
@@ -512,6 +521,13 @@ locus NodeRelay {
         verb: String = "run";
         live: Bool = false; // the program's nerves are configured
         relayed: String = "\n";
+        // request rows (`kind|entity|digest`) the record holds an answer
+        // to: the record never loses a row, so an answered request stays
+        // answered and is not weighed again. Weighing one reads the rows
+        // before it and after it, so weighing every request of the record
+        // on every tick cost an idle body time in its record's size times
+        // its requests.
+        answered: String = "\n";
         error: String = ""; // the last relay's failure, "" when it had none
         relayed_count: Int = 0; // what the last relay published
         announced: Int = -1; // the rows of the view already told (-1: not yet looked)
@@ -540,9 +556,8 @@ locus NodeRelay {
     // again. The rows this view held when the node started are its past,
     // never told; at most ANNOUNCE_AT_ONCE a pass, the rest the next.
     // How many were told.
-    fn announce(memory: dna::Memory) -> Int {
+    fn announce(p: Projection) -> Int {
         if !self.live { return 0; }
-        let p = open_projection(self.root, self.seed, self.toolchain, memory);
         let rows = p.rows();
         if self.announced < 0 { self.announced = rows; return 0; }
         let mut n = 0;
@@ -713,9 +728,13 @@ locus NodeRelay {
         if !now.ok || now.absent { return 0; }
         let p = open_projection(self.root, self.seed, self.toolchain, memory);
         let trust = trust_mode(self.root);
+        // what this pass finds answered, kept once it is over
+        let mut learned = "";
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
+            let settled = if len(r.digest) > 0 { r.kind + "|" + r.entity + "|" + r.digest } else { "" };
+            if len(settled) > 0 && keys_has(self.answered, settled) { i = i + 1; continue; }
             // Another owner's node request is theirs to verify and admit. Do not
             // write a refusal using this host's keyring before checking routing.
             let node_ours = if r.kind == "knowledge.node.requested" {
@@ -734,8 +753,10 @@ locus NodeRelay {
             if requested && trust == "signed" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.
+                let answered = request_answered(p, i, answers);
+                if answered && len(settled) > 0 { learned = learned + settled + "\n"; }
                 let last = relayed_at(state.relayed, fact_key(p, i));
-                if !request_answered(p, i, answers) && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
+                if !answered && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
                     let why = "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed";
                     let command_id = dna::native_json_string(r.body, "command_id");
                     if r.kind == "review.verdict" && len(command_id) > 0 {
@@ -770,6 +791,7 @@ locus NodeRelay {
                 }
             } else if requested {
                 let answered = request_answered(p, i, answers);
+                if answered && len(settled) > 0 { learned = learned + settled + "\n"; }
                 // GH #664: an intent for a position another owner holds is
                 // theirs to admit; it stays in the record, unanswered here
                 let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
@@ -806,6 +828,7 @@ locus NodeRelay {
             }
             i = i + 1;
         }
+        if len(learned) > 0 { self.answered = keys_merge(self.answered, learned); }
         self.relayed = state.relayed;
         self.error = state.error;
         self.relayed_count = state.count;
@@ -839,6 +862,11 @@ main locus Host {
         observe_secs: Int = 15;
         dna_dir: String = "";
         status_path: String = "";
+        // what status.json was last projected from (the record's head and
+        // the rows read with it) and when, in seconds
+        status_head: String = "";
+        status_rows: Int = -1;
+        status_at: Int = 0;
         hale: String = "hale";
         org: Proc = Proc { };
         org_log: Int = 0;
@@ -1466,10 +1494,17 @@ main locus Host {
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
         let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
+        self.project_status(p, now.id);
+    }
+    // status.json from `p`, read at the record's `head`.
+    fn project_status(p: Projection, head: String) {
         p.live = true;
         let tmp = self.status_path + ".tmp";
         let w = write_text(tmp, p.json()) or false;
         if w { std::io::fs::rename(tmp, self.status_path) or discard; }
+        self.status_head = head;
+        self.status_rows = p.rows();
+        self.status_at = std::time::now();
     }
     fn launch_iris(diff_from: String) {
         let current = self.dna_dir + "/current.topology";
@@ -1911,24 +1946,33 @@ main locus Host {
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick(s.ok);
         self.poll_genome();
+        // one projection for the rest of the pass, read again (only when
+        // the record moved) after a step that may have written: when every
+        // step read the whole record for itself, an idle body read it
+        // several times a second
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         if forge_kind(self.root) != "none" {
-            let g = github_sync(self.root, self.seed, self.memory);
+            let g = github_sync_of(p, self.root, self.seed, self.memory);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
+            let synced = watch(p);
         }
         // the sync above may have blocked past the lease's life: prove it
         // again before answering anything
         if !self.body_alive() { self.stop_body(3); }
         // what the view gained — this tick's rows, the sync's and memory's
         // — onto the nerves for the heads
-        let told = self.relay.announce(self.memory);
+        let told = self.relay.announce(p);
         self.read_pulse();
         self.read_model_calls();
         std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("spine")).set(dna::senses_now());
-        self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
+        let read = watch(p);
+        // status.json when the record moved, or has not been projected for
+        // a while; the projection reads its Reviews, Tasks and Mutations a
+        // whole record each, an idle body's largest cost when it ran every tick
+        if now.id != self.status_head || p.rows() != self.status_rows || std::time::now() - self.status_at >= STATUS_REFRESH { self.project_status(p, now.id); }
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }
         if prepared_source_restart(p, req) {
