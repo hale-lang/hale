@@ -20866,12 +20866,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(cap) = capture.as_mut() {
             cap.fallthrough_bb = self.builder.get_insert_block();
         }
+        // A statement-position match whose every arm diverges
+        // (`return`s, `fail`s, …) ends its block: the checker types it
+        // so — a fn whose match returns in every arm returns — and the
+        // build refused it ("falls through without returning a value",
+        // friction sweep 2026-10-12). The no-arm-matched edge is the
+        // only one left; exhaustiveness (F.18) makes it unreachable for
+        // a checked program, and it panics rather than fall into the
+        // fn's end, so a guard codegen cannot see through still fails
+        // loudly instead of returning garbage.
+        if all_terminated && capture.is_none() && !m.arms.is_empty() {
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let ptr_t = self.context.ptr_type(inkwell::AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let msg = self.global_string(
+                "MatchFellThrough (no arm of a match whose every arm \
+                 diverges matched its scrutinee)",
+            );
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[ptr_t.const_null().into(), i64_t.const_zero().into(), msg.into()],
+                    "match.fallthrough.panic",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // `after_bb` has no predecessor; close it so the fn stays
+            // well-formed.
+            self.builder.position_at_end(after_bb);
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(BlockEnd::Terminated);
+        }
         self.builder
             .build_unconditional_branch(after_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // The fallthrough adds a path to after_bb, so the block
-        // is reachable even if every arm body terminated.
-        let _ = all_terminated;
         self.builder.position_at_end(after_bb);
         Ok(BlockEnd::Open)
     }

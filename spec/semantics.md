@@ -125,7 +125,13 @@ Phase 2b entry in `spec/stdlib.md`.
 `match` is dual-position too (Gap C, 2026-07-17):
 
 - **As statement**: arm bodies are evaluated for side effects;
-  heterogeneous arm-body types are legal (values discarded).
+  heterogeneous arm-body types are legal (values discarded). A
+  statement match whose every arm diverges (`return`, `fail`,
+  `break`, …) ends its block, so a fn whose last statement is such a
+  match returns on every path (friction sweep 2026-10-12: the check
+  said so and the build refused it as falling through). The
+  no-arm-matched edge, unreachable under F.18 exhaustiveness, panics
+  (`MatchFellThrough`) rather than run on.
 - **As expression** (`let x = match n { 0 -> 10, _ -> 20, };`):
   every arm body's value is phi-merged at the join block, so
   all value-producing arms must agree on one type (checked at

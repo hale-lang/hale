@@ -410,11 +410,23 @@ fn every_check_clean_corpus_program_also_builds() {
 
 /// GH #829 — the coverage the sweep gained, pinned cheaply.
 ///
-/// Two locus-only programs, neither with an entry point, both
-/// check-clean. One lowers; the other is refused by codegen. Before
-/// #829 the sweep skipped BOTH on "no entry point", so the refused
-/// one — a check-accepts/build-refuses divergence, the exact thing
-/// this file is the gate for — was invisible to it.
+/// Locus-only programs, none with an entry point, all check-clean.
+/// Before #829 the sweep skipped them on "no entry point", so a
+/// check-accepts/build-refuses divergence in one — the exact thing
+/// this file is the gate for — was invisible to it. Each must now be
+/// BUILT by the sweep.
+///
+/// This test also pinned the refused half with a program the check
+/// accepted and codegen refused (`std::process::run(…) or discard;`,
+/// then `accept(c: Interface)`). Each such program is a divergence the
+/// work is closing — the first builds since a statement `or discard`
+/// drops a value (friction sweep 2026-10-12), the second is being moved
+/// to the check — so a pinned example only lives until its fix lands.
+/// The sweep's own ratchet (`check_build_divergences.txt`) holds the
+/// divergences that remain; this test holds that an entry-point-less
+/// program reaches the build at all. The second program is the
+/// divergence the friction sweep closed in codegen: a method whose
+/// `match` returns in every arm was refused as falling through.
 ///
 /// The verdicts come from [`sweep_verdict`], which is the sweep's
 /// own decision procedure, so restoring the skip fails here in
@@ -432,19 +444,16 @@ fn an_entry_point_less_program_is_built() {
                   params { n: Int = 0; }\n\
                   fn bump() { self.n = self.n + 1; }\n\
                   }\n";
-    // `accept` takes a locus; an interface-typed child passes the
-    // checker and codegen refuses it ("accept() param must be a locus
-    // type"), with no span — a divergence. (This was `std::process::run
-    // (…) or discard;` until a statement-position `or discard` on a
-    // value-bearing call became legal, friction sweep 2026-10-12.)
-    let refused = "interface Tally {\n\
-                   fn x() -> Int;\n\
-                   }\n\
-                   locus Holder {\n\
-                   accept(c: Tally) { }\n\
-                   }\n";
+    let match_returns = "locus Namer {\n\
+                         fn name(n: Int) -> String {\n\
+                         match n {\n\
+                         0 -> { return \"zero\"; },\n\
+                         _ -> { return \"many\"; },\n\
+                         }\n\
+                         }\n\
+                         }\n";
 
-    for src in [lowers, refused] {
+    for (src, tag) in [(lowers, "hale_cb_ep_lowers"), (match_returns, "hale_cb_ep_match")] {
         let program = hale_syntax::parse_source(src).expect("parses");
         assert!(
             !has_entry_point(&program),
@@ -465,27 +474,13 @@ fn an_entry_point_less_program_is_built() {
             errors,
             src
         );
-    }
-
-    assert_eq!(
-        sweep_verdict(lowers, "hale_cb_ep_lowers"),
-        Verdict::Built,
-        "an entry-point-less program that lowers must be BUILT by the \
-         sweep, not skipped"
-    );
-
-    match sweep_verdict(refused, "hale_cb_ep_refused") {
-        Verdict::Refused(e) => assert!(
-            e.contains("accept"),
-            "expected the `accept` refusal, got: {}",
-            e
-        ),
-        other => panic!(
-            "an entry-point-less program the checker accepts and codegen \
-             refuses is a check/build DIVERGENCE the sweep must see; got \
-             {:?}",
-            other
-        ),
+        assert_eq!(
+            sweep_verdict(src, tag),
+            Verdict::Built,
+            "an entry-point-less program that lowers must be BUILT by the \
+             sweep, not skipped:\n{}",
+            src
+        );
     }
 }
 
