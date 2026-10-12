@@ -3915,7 +3915,22 @@ A subject's payload type — `T` in `of type T`, or a `topic`'s
 - `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
   payload is not typed at all, and the handler receives a bounded
   view over each record. This is how a foreign writer's ring is
-  consumed.
+  consumed. Only a ring with a declared record layout carries raw
+  frames, so a topic of this payload is bound in main's
+  `bindings { }` to `shm_ring(..., layout: <ring_layout>)` (or
+  carried by a `codec(...)` clause). Subscribed or sent with no such
+  binding, it is rejected at typecheck at the subscribe or the `<-`;
+  bound to a native ring (no `layout:`), at the binding entry:
+
+  ```text
+  main.hl:3:11: type error: subscribe `Recs`: topic `Recs` declares
+  `payload: BytesView`, the raw-frame path, which only a ring with a
+  declared record layout carries: there is no serializer for a
+  `BytesView` on any other route. Bind the topic in main's
+  `bindings { }` to that ring, `Recs: shm_ring("/<name>",
+  on_overflow: drop, layout: <ring_layout>);`, or give it a user
+  `type` payload.
+  ```
 
 A delivery is a *serialized struct*, so the payload needs a field
 layout: `of type Int` has none, and neither does a tuple, an

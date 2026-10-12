@@ -2058,3 +2058,47 @@ fn a_value_returned_from_a_body_that_returns_nothing_is_refused_by_the_check_not
     );
     assert_built("fn main() { println(\"x\"); return 3; }\n", "hale_cb_main_exit_code");
 }
+
+/// A topic whose payload is `BytesView`, the raw-frame path, used where
+/// no ring carries raw frames: subscribed or sent with no binding
+/// ("no serializer synthesized for bus payload type `BytesView`" / "bus
+/// send payload must be a user-type"), or bound to a native `shm_ring`
+/// with no `layout:` ("only single-segment struct payloads are
+/// supported"). Bound to a `layout:` ring, it builds.
+#[test]
+fn a_raw_frame_topic_off_a_layout_ring_is_refused_by_the_check_not_the_build() {
+    let program = |main_body: &str| {
+        format!(
+            "topic Recs {{ payload: BytesView; }}\n\
+             ring_layout ForeignRing {{\n\
+             magic 0x52494E47464D5431;\n\
+             version 1 at 8 : u32;\n\
+             buffer_size at 12 : u32;\n\
+             data_at 128;\n\
+             cursor published {{ at 64; repr atomic_u64; load acquire; unit bytes; }}\n\
+             framing byte_records {{ len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }}\n\
+             overflow lap_detect;\n\
+             }}\n\
+             locus Reader {{ params {{ n: Int = 0; }} bus {{ subscribe Recs as on_rec; }} fn on_rec(v: BytesView) {{ self.n = self.n + 1; }} }}\n\
+             main locus App {{ params {{ r: Reader = Reader {{ }}; }} {main_body} }}\n\
+             fn main() {{ App {{ }}; }}\n"
+        )
+    };
+    let unbound = program("");
+    let native = program("bindings { Recs: shm_ring(\"/hale.cb.recs.native\", on_overflow: drop); }");
+    let sent = "topic Recs { payload: BytesView; }\n\
+                locus Feed { bus { publish Recs; } run() { let b = std::bytes::BytesBuilder { initial_cap: 64 }; b.append_u8(2); Recs <- b.view(); } }\n\
+                fn main() { Feed { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (&unbound, "subscribe Recs as on_rec;", "subscribe `Recs`: topic `Recs` declares `payload: BytesView`, the raw-frame path"),
+            (&native, "Recs: shm_ring(\"/hale.cb.recs.native\", on_overflow: drop);", "`Recs: shm_ring(...)`: topic `Recs` declares `payload: BytesView`"),
+            (sent, "Recs <- b.view();", "`Recs <- ...`: topic `Recs` declares `payload: BytesView`, the raw-frame path"),
+        ],
+        "raw_frame_topic",
+    );
+    assert_built(
+        &program("bindings { Recs: shm_ring(\"/hale.cb.recs.layout\", on_overflow: drop, layout: ForeignRing); }"),
+        "hale_cb_raw_frame_layout_ring",
+    );
+}

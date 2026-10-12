@@ -769,6 +769,11 @@ pub fn check_bundle_by_declaration(
     // program with its `bindings { }` block one brace deeper did not
     // compile.
     let bound_topics = inputs.bindings.bound_names();
+    // The topics a raw `BytesView` payload can travel on: bound to an
+    // `shm_ring` (whose `layout:` is judged at the entry), or carried by
+    // a `codec(...)` clause. Lowering has no serializer for `BytesView`
+    // anywhere else.
+    let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
     // consumer of a library whose seed is not in the bundle.
@@ -876,6 +881,7 @@ pub fn check_bundle_by_declaration(
         generic_loci,
         handlers,
         bound_topics: &bound_topics,
+        raw_frame_topics: &raw_frame_topics,
         import_renames: &bundle.import_renames,
         unresolved_import_aliases: &unresolved_import_aliases,
         typed: &mut typed,
@@ -1150,7 +1156,7 @@ pub fn check_bundle_by_declaration(
     // CARRY. The rule above relates two sites to each other; this one
     // relates one site to the runtime, which takes a user type, a
     // has-payload enum or `BytesView` and nothing else.
-    check_bus_payload_carriable(bundle, top, known, &mut diags);
+    check_bus_payload_carriable(bundle, top, known, inputs.bindings, &raw_frame_topics, &mut diags);
     // A revealed secret is consumed in its statement (spec/semantics.md
     // § "@sealed"): `Credential.reveal()` only in a locus method, its
     // value reaching a wire write, a comparison or a `@secret` parameter
@@ -6145,8 +6151,25 @@ fn payload_carriage(
 /// to it. `None` when the topic is not declared in this bundle (the
 /// resolver names that) or its payload is carried or not judged here
 /// (`Carriage`).
-fn topic_payload_not_carried(top: &TopScope, known: &KnownNames, topic: &str) -> Option<String> {
+fn topic_payload_not_carried(
+    top: &TopScope,
+    known: &KnownNames,
+    topic: &str,
+    raw_frame_topics: &BTreeSet<String>,
+) -> Option<String> {
     let row = top.topics.named(topic)?;
+    if matches!(resolve_type_expr(&row.payload, known), Ty::Prim(PrimType::BytesView))
+        && !raw_frame_topics.contains(topic)
+    {
+        return Some(format!(
+            "topic `{topic}` declares `payload: BytesView`, the raw-frame \
+             path, which only a ring with a declared record layout carries: \
+             there is no serializer for a `BytesView` on any other route. \
+             Bind the topic in main's `bindings {{ }}` to that ring, \
+             `{topic}: shm_ring(\"/<name>\", on_overflow: drop, layout: \
+             <ring_layout>);`, or give it a user `type` payload."
+        ));
+    }
     let Carriage::NotCarried(repair) = payload_carriage(&row.payload, top, known) else {
         return None;
     };
@@ -6162,12 +6185,63 @@ fn topic_payload_not_carried(top: &TopScope, known: &KnownNames, topic: &str) ->
     ))
 }
 
+/// The topics a raw `BytesView` payload can travel on: a binding entry
+/// (not merged from an imported seed) to an `shm_ring`, or one with a
+/// `codec(...)` clause, whose thunks stand in for the serializer. A
+/// ring entry without the `layout:` the raw-frame path needs is judged
+/// at the entry (`check_bus_payload_carriable`), so its uses are not
+/// refused a second time. An entry this bundle cannot read back counts,
+/// so the rule never refuses what it cannot see.
+fn raw_frame_topics(
+    bundle: &Bundle<'_>,
+    bindings: &crate::binding_rows::BindingRows,
+) -> BTreeSet<String> {
+    bindings
+        .rows
+        .iter()
+        .filter(|r| !r.imported)
+        .filter(|r| {
+            r.codec.is_some()
+                || r.entry(bundle).map_or(true, |e| {
+                    matches!(e.transport, TransportSpec::ShmRing { .. })
+                })
+        })
+        .map(|r| r.topic.clone())
+        .collect()
+}
+
 fn check_bus_payload_carriable(
     bundle: &Bundle<'_>,
     top: &TopScope,
     known: &KnownNames,
+    bindings: &crate::binding_rows::BindingRows,
+    raw_frame_topics: &BTreeSet<String>,
     diags: &mut Vec<Diag>,
 ) {
+    // A `BytesView` topic bound to a native `shm_ring` (no `layout:`):
+    // the native ring carries fixed-size struct slots, and lowering
+    // refused the entry with no span.
+    for row in bindings.rows.iter().filter(|r| !r.imported && r.codec.is_none()) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
+            continue;
+        }
+        let Some(topic) = top.topics.named(&row.topic) else { continue };
+        if matches!(resolve_type_expr(&topic.payload, known), Ty::Prim(PrimType::BytesView)) {
+            diags.push(Diag::ty(
+                row.span,
+                format!(
+                    "`{t}: shm_ring(...)`: topic `{t}` declares `payload: BytesView`, \
+                     the raw-frame path, and a ring carries raw frames only with a \
+                     declared record layout: the native ring holds fixed-size \
+                     struct slots. Name the `ring_layout` its records follow, \
+                     `layout: <ring_layout>`, or give the topic a user `type` \
+                     payload.",
+                    t = row.topic
+                ),
+            ));
+        }
+    }
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -6189,7 +6263,7 @@ fn check_bus_payload_carriable(
                     // nothing (the `<-` site carries the payload, and
                     // `topic_payload_not_carried` judges it there).
                     if let (BusMember::Subscribe { span, .. }, BusSubject::Topic(topic)) = (bm, subject) {
-                        if let Some(msg) = topic_payload_not_carried(top, known, &topic.name) {
+                        if let Some(msg) = topic_payload_not_carried(top, known, &topic.name, raw_frame_topics) {
                             diags.push(Diag::ty(*span, format!("subscribe `{}`: {}", topic.name, msg)));
                         }
                         continue;
@@ -6375,6 +6449,9 @@ struct Checker<'a> {
     /// `or wait` on publishes — the loss window it waits out
     /// only exists for bound topics.
     bound_topics: &'a std::collections::BTreeSet<String>,
+    /// The topics bound to carry a raw `BytesView` payload
+    /// (`raw_frame_topics`).
+    raw_frame_topics: &'a std::collections::BTreeSet<String>,
     /// Cross-seed import renames: `["alias", "name"] -> mangled`.
     /// Lets a qualified locus/struct literal (`mat::Grid { }`) resolve
     /// to the merged symbol codegen will lower, instead of typing as
@@ -11555,7 +11632,7 @@ impl<'a> Checker<'a> {
         // A send to a topic delivers the topic's payload, and lowering
         // has no serializer for one the bus cannot carry.
         if let Expr::Ident(id) = subject {
-            if let Some(msg) = topic_payload_not_carried(self.top, self.known, &id.name) {
+            if let Some(msg) = topic_payload_not_carried(self.top, self.known, &id.name, self.raw_frame_topics) {
                 self.diags.push(Diag::ty(span, format!("`{} <- ...`: {}", id.name, msg)));
             }
         }

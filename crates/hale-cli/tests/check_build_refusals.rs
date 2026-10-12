@@ -134,3 +134,19 @@ fn a_value_returned_from_a_body_that_returns_nothing_is_refused_at_the_value() {
     let ((ok, out), (built, bout)) = check_and_build("fn main() { println(\"x\"); return 3; }\n", "main_exit");
     assert!(ok && built, "fn main's `return n;` is the exit code: {out}{bout}");
 }
+
+#[test]
+fn a_raw_frame_topic_off_a_layout_ring_is_refused_where_it_is_delivered() {
+    refused(
+        "topic Recs { payload: BytesView; }\nlocus Reader {\n    bus { subscribe Recs as on_rec; }\n    fn on_rec(v: BytesView) { println(\"rec\"); }\n}\nfn main() { let r = Reader { }; }\n",
+        "raw_frame_unbound",
+        "3:11",
+        "subscribe `Recs`: topic `Recs` declares `payload: BytesView`, the raw-frame path, which only a ring with a declared record layout carries",
+    );
+    refused(
+        "topic Recs { payload: BytesView; }\nlocus Reader {\n    bus { subscribe Recs as on_rec; }\n    fn on_rec(v: BytesView) { println(\"rec\"); }\n}\nmain locus App {\n    params { r: Reader = Reader { }; }\n    bindings { Recs: shm_ring(\"/hale.cli.recs.native\", on_overflow: drop); }\n}\nfn main() { App { }; }\n",
+        "raw_frame_native",
+        "8:16",
+        "`Recs: shm_ring(...)`: topic `Recs` declares `payload: BytesView`, the raw-frame path, and a ring carries raw frames only with a declared record layout",
+    );
+}
