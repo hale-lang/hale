@@ -1331,7 +1331,7 @@ row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #648c1683
 
-== crates/hale-codegen/tests/api_hub_desk.rs#2963f39c
+== crates/hale-codegen/tests/api_hub_desk.rs#70aa65e0
 root	Desk	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
