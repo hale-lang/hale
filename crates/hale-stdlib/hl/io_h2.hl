@@ -17,7 +17,10 @@
 // (`__api.h2.cmd`, keyed by connection, or by transport for the listener and
 // every connection) what a transport asks of them.
 //
-//   listener  -- accepts, one `Conn` per socket (like the http listener)
+//   listener  -- a listener of the TCP connection substrate (io_tcp_serve.hl):
+//                accepts and relays each socket over the bus, and its
+//                consumer starts one `Conn` per socket (as the http
+//                transport's listener does)
 //   Conn      -- owns one socket and one session; feeds every read to the
 //                session, writes what it drains, raises its stream events
 //
@@ -204,9 +207,39 @@ locus __StdIoH2Conn {
     }
 }
 
+/// The HTTP/2 server's connections: what the substrate's consumer serves
+/// each accepted connection with (a `std::io::tcp::ConnHandler`). Each is a
+/// `Conn` of its own, numbered by the listener's count (from 1, wrapping
+/// below 2^24 so a number is a correlation), a flow child of this locus as
+/// the api transports' peers are (accepted and released, a coroutine of its
+/// own on the listener's `async_io` pool, reclaimed when its run() returns,
+/// its session and its buffers with it); the `Conn` owns the descriptor and
+/// closes it. It subscribes to the bus, so it is a flow child and not a
+/// local of `serve`: a locus born in a method body and gone at its end has
+/// its deliveries queued for the main thread.
+locus __StdIoH2Conns {
+    params {
+        tid: Int = 0;
+    }
+    fn serve(c: __StdIoTcpAccepted) {
+        let n = ((c.seq - 1) % 16777215) + 1;
+        __StdIoH2Conn { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: c.fd };
+    }
+    accept(p: __StdIoH2Conn) { }
+    release (p: __StdIoH2Conn) { }
+}
+
 /// The listening socket, on its own pool (the compiler adds one to the main
 /// locus per `grpc::Rpc` serve site, carrying the transport's `bind` and its
-/// number). `host:port`; a port it cannot bind fails the boot.
+/// number). `host:port`; a port it cannot bind fails the boot. A listener of
+/// the TCP connection substrate (spec/stdlib.md § "The TCP connection
+/// substrate"), as the api transports' are: `relay` accepts and relays each
+/// connection as a `std::io::tcp::Accepted`, and `conns`, the consumer on the
+/// route of the listener's name (`host:<bound port>`), serves each with
+/// `__StdIoH2Conns`. What is the server's own is the policy around them: the
+/// bind's structural failure, nothing taken before the transport is
+/// subscribed, and `stop` (kind 5) closing the listener while each
+/// connection says GOAWAY.
 locus __StdIoH2Listener {
     params {
         bind: String = "";
@@ -215,7 +248,12 @@ locus __StdIoH2Listener {
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
-        next_conn: Int = 1;
+        // the name it goes by in the process: the route its connections are
+        // relayed on. Set at birth, with the consumer on it (an inert one on
+        // no route until then)
+        listener: String = "";
+        relay: __StdIoTcpRelay = __StdIoTcpRelay { };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdIoH2Conns { tid: self.tid }, armed: false };
     }
     bus {
         subscribe __ApiH2CmdT as on_ctl where key == self.tid;
@@ -223,29 +261,22 @@ locus __StdIoH2Listener {
     }
     birth() {
         // `host:port`; the port is what follows the last colon
-        let mut colon = -1;
-        let mut k = 0;
-        while k < len(self.bind) {
-            if self.bind[k..(k + 1)] == ":" { colon = k; }
-            k = k + 1;
+        let host = __api_bind_host(self.bind);
+        let port = __api_bind_port(self.bind);
+        if port >= 0 {
+            self.fd = __tcp_rebind(-1, host, port, "");
         }
-        let mut host = "127.0.0.1";
-        let mut port = -1;
-        if colon >= 0 {
-            if colon > 0 { host = self.bind[0..colon]; }
-            port = std::str::parse_int(self.bind[(colon + 1)..len(self.bind)]) or - 1;
-        }
-        if port >= 0 && port <= 65535 {
-            self.fd = std::io::tcp::__listen_socket(host, port);
-        }
-        if self.fd < 0 {
+        self.listener = __tcp_listener_name("", host, port, "", self.fd);
+        if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
             eprintln("api: " + self.what + " could not listen on " + self.bind);
             std::process::exit(2);
         }
+        self.relay.name = self.listener;
+        self.relay.armed = true;
+        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdIoH2Conns { tid: self.tid } };
     }
-    @unbounded
     run() {
         // nothing is accepted before the transport is subscribed, and the
         // asking repeats until it answers
@@ -253,32 +284,21 @@ locus __StdIoH2Listener {
             __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 4, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
             std::time::sleep(2ms);
         }
-        while !self.stopped && !self.draining {
-            let conn = std::io::tcp::__accept_one(self.fd);
-            if conn < 0 {
-                if self.stopped || self.draining { break; }
-                // a failed accept (out of descriptors, an aborted
-                // connection) ends one connection, never the listener
-                std::time::sleep(20ms);
-                continue;
-            }
-            let n = self.next_conn;
-            self.next_conn = (n % 16777215) + 1;
-            __StdIoH2Conn { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: conn };
+        if !self.stopped && !self.draining {
+            self.relay.accept_all(self.fd, -1);
         }
+        self.release_socket();
     }
-    accept(c: __StdIoH2Conn) { }
-    release (c: __StdIoH2Conn) { }
     fn on_ctl(c: __StdIoH2Cmd) {
         if c.kind == 3 { self.started = true; }
         if c.kind == 5 {
+            // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
-            self.release_socket();
+            if self.fd >= 0 { std::io::tcp::__shutdown_listen_socket(self.fd); }
         }
     }
     fn release_socket() {
         if self.fd < 0 { return; }
-        std::io::tcp::__shutdown_listen_socket(self.fd);
         std::io::tcp::__close_fd(self.fd);
         self.fd = -1;
     }

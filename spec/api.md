@@ -815,7 +815,13 @@ calls are in flight on a connection, and on many connections. The listener is
 bound at birth, with `http::Rpc`'s diagnostic (`api: grpc::Rpc could not
 listen on …`, exit code 2), nothing is accepted until the exposure is attached
 to the bus, and a serve over `grpc::Rpc` from a locus that is not the main
-locus is refused, written at the site or held as a param.
+locus is refused, written at the site or held as a param. The listener is one
+of the TCP connection substrate's (spec/stdlib.md § The TCP connection
+substrate), named `host:<bound port>` as the HTTP one is: it relays each
+accepted connection as a `std::io::tcp::Accepted` to the consumer on its
+route, whose handler starts the connection locus as a flow child on the same
+pool, so a connection nothing takes is closed and `std::io::tcp::stop(name)`
+closes the listener while the connections it accepted are served on.
 
 - **Framing is a call.** `POST /<Surface>/<rpc>`, the rpc the generated
   `.proto` names (§ The protobuf codec): the member written as an MCP tool is,
@@ -1494,7 +1500,15 @@ exit status 2, as for a socket transport). A hub is a main-locus param
 for the reason a socket transport's listener is: its accept and read loops
 run on a pool of their own (`__api_ws`), which only the main locus places,
 and the compiler adds the listener to the main locus, born after every
-param the program declares (so the hub's `bind:` may read one).
+param the program declares (so the hub's `bind:` may read one). A `ws::Hub`'s
+listener is one of the TCP connection substrate's (spec/stdlib.md § The TCP
+connection substrate), named `host:<bound port>`: it relays each accepted
+connection as a `std::io::tcp::Accepted` to the consumer on its route, whose
+handler starts the connection's locus as a flow child on `__api_ws`, so a
+connection nothing takes is closed and `std::io::tcp::stop(name)` closes the
+listener while the connections it accepted are served on (the hub's `stop()`
+still ends them, with `closed`). A `udp::Hub` has no connections, and its
+endpoint is one socket of its own.
 Each stream is a thread of its own for the publish fanout to write
 through (an adapter binding's), so a hub with many streams costs that many
 threads.

@@ -15,6 +15,8 @@ mod api_hub;
 mod api_hub_desk;
 #[path = "api_hub_streams.rs"]
 mod api_hub_streams;
+#[path = "api_hub_substrate.rs"]
+mod api_hub_substrate;
 #[path = "api_hub_udp.rs"]
 mod api_hub_udp;
 #[path = "api_http.rs"]
@@ -43,6 +45,8 @@ mod bus_idle_wait;
 mod io_h2_server;
 #[path = "io_h2_session.rs"]
 mod io_h2_session;
+#[path = "io_h2_substrate.rs"]
+mod io_h2_substrate;
 #[path = "mirror_ring.rs"]
 mod mirror_ring;
 #[path = "spsc_ring.rs"]

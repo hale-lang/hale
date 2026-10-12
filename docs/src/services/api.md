@@ -492,7 +492,11 @@ executing, refuses what is queued, says `GOAWAY` on every connection and
 closes the listener. The HTTP/2 itself, its windows, pings and settings,
 is the runtime's built-in nghttp2, a library with no threads of its own,
 read from a socket parked on the same `async_io` pool the other transports
-use.
+use. The listener is the same one the HTTP transport's is (see
+[HTTP](../everyday/http.md)): it accepts, hands each connection over the
+bus to a connection locus of its own, and a connection nothing takes is
+closed; `std::io::tcp::stop("127.0.0.1:8070")` closes the listener by its
+address while the connections it accepted go on being served.
 
 ### Streams: a topic bound to a hub
 
@@ -557,7 +561,12 @@ nothing published after the revision reaches a subscriber who lost the
 grant. `hub.stop()` sends `{"type": "closed", "reason": "shutting_down"}`
 after what was queued, and a connection that ends without it is a
 transport failure. The program can ask the hub `subscribers()`,
-`connections()` and `events()`.
+`connections()` and `events()`. The WebSocket hub's listener is the one
+the HTTP transport's is (see [HTTP](../everyday/http.md)), named by its
+bound address: each connection is handed over the bus to a locus of its
+own, a connection nothing takes is closed, and
+`std::io::tcp::stop("127.0.0.1:9000")` closes the listener while the
+connections it accepted keep their subscriptions until `hub.stop()`.
 
 A hub can also be the transport a surface is served over,
 `api::serve(Public, self.hub, as: "desk", …)`: a call is a frame `{"type":
