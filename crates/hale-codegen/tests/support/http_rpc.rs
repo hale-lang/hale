@@ -70,8 +70,8 @@ pub struct Server {
 /// Where `BIND` and `BIND2` listen.
 pub const BIND_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 pub const BIND2_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
-/// `BIND` and `BIND2` as the program reads them, and as a description
-/// states a listener's address (its `bind:`, as written).
+/// `BIND` and `BIND2` as the program reads them. A description states the
+/// address the listener was bound to (`127.0.0.1:<port>`), not these.
 pub const BIND_ADDR: &str = "127.0.0.1:0";
 pub const BIND2_ADDR: &str = "127.0.0.2:0";
 

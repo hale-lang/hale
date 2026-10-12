@@ -1175,9 +1175,23 @@ pub fn expand(
         let program = &mut *programs[site.program];
         let Some(l) = find_locus_mut(&mut program.items, &site.serving) else { continue };
         let span = l.name.span;
+        // A TCP listener the compiler adds below (the main locus's, over
+        // http / mcp / grpc) is born before the exposure, and the exposure
+        // states the address it was bound to: its name, `host:<bound
+        // port>`, so a `bind:` of port 0 is described by the port the
+        // kernel gave it. A Unix path is bound as written, and a listener
+        // the compiler does not add states its `bind:` as written.
+        let bound_listener = (l.is_main
+            && unix_path_of(l, site.transport.as_ref()).is_none()
+            && http_bind_of(l, site.transport.as_ref()).is_some())
+        .then(|| {
+            let kind = if is_grpc_site(l, site.transport.as_ref()) { "g" } else { "h" };
+            format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)")
+        });
         // the exposure param
         let src = format!(
-            "main locus __Tmp {{ params {{ {param}: std::api::Exposure = std::api::Exposure {{ id: {id}, name: {name}, surface: {surface}, digest: {digest}, bound: {bound}, rows: __RpcSurface_{id} {{ }} }}; }} }}\n",
+            "main locus __Tmp {{ params {{ {param}: std::api::Exposure = std::api::Exposure {{ id: {id}, name: {name}, surface: {surface}, digest: {digest}, bound: {bound}, rows: __RpcSurface_{id} {{ }}{address} }}; }} }}\n",
+            address = bound_listener.as_deref().unwrap_or(""),
             param = exposure.param,
             id = id,
             name = q(&site.name),
@@ -1192,8 +1206,10 @@ pub fn expand(
             };
             if let Some(t) = &site.transport {
                 push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files));
-                if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
-                    push("address", addr);
+                if bound_listener.is_none() {
+                    if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
+                        push("address", addr);
+                    }
                 }
             }
             if let Some(p) = &plan.principals {

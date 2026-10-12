@@ -81,7 +81,9 @@ interface __StdApiHubRows {
     fn on_full(i: Int) -> String;
     fn find(topic: String) -> Int;
     fn grants(role: String) -> String;
-    fn head() -> String;
+    // the document's head, its listener at `address` (the bound one; "" for
+    // the `bind:` as written)
+    fn head(address: String) -> String;
     fn stream_doc(i: Int) -> String;
     fn types() -> Int;
     fn type_doc(j: Int) -> String;
@@ -100,7 +102,7 @@ locus __StdApiNoHubRows {
     fn on_full(i: Int) -> String { return ""; }
     fn find(topic: String) -> Int { return -1; }
     fn grants(role: String) -> String { return role; }
-    fn head() -> String { return ""; }
+    fn head(address: String) -> String { return ""; }
     fn stream_doc(i: Int) -> String { return ""; }
     fn types() -> Int { return 0; }
     fn type_doc(j: Int) -> String { return ""; }
@@ -834,8 +836,10 @@ locus __StdApiWsListener {
         // publish to nobody: the core answers the listener's asking (kind 8)
         // with kind 7 from its pool, whose handlers run once the program
         // has finished booting.
+        // The asking carries the address it was bound to, which the hub's
+        // description states.
         while !self.started && !self.stopped && !self.draining {
-            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: self.listener };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {
@@ -884,6 +888,8 @@ locus __StdApiUdpEndpoint {
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
+        // the address it was bound to (`host:<bound port>`)
+        address: String = "";
         next_conn: Int = 1;
         known: __StdApiUdpKnowns = __StdApiUdpKnowns { };
     }
@@ -906,14 +912,16 @@ locus __StdApiUdpEndpoint {
             eprintln("api: udp::Hub could not listen on " + self.bind);
             std::process::exit(2);
         }
+        self.address = host + ":" + to_string(std::io::tcp::__local_port(self.fd));
         // a read that gives up now and then, so the loop sees a stop
         std::io::udp::set_recv_timeout(self.fd, 50ms) or discard;
     }
     @unbounded
     run() {
-        // (as the WebSocket listener: nothing is read before the core is there)
+        // (as the WebSocket listener: nothing is read before the core is
+        // there, and the asking carries the address it was bound to)
         while !self.started && !self.stopped && !self.draining {
-            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: "" };
+            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: self.address };
             std::time::sleep(2ms);
         }
         while !self.stopped && !self.draining {
@@ -1045,6 +1053,9 @@ locus __StdApiHub {
         revised: std::api::RevisedRoleSource = __StdApiNoRevision { };
         has_expiry: Bool = false;
         has_revised: Bool = false;
+        // the address its listener was bound to (`host:<bound port>`), which
+        // the listener's asking (kind 8) carries; the description states it
+        address: String = "";
         stopped: Bool = false;
         offered: Int = 0;
         admitted: Int = 0;
@@ -1073,6 +1084,7 @@ locus __StdApiHub {
     // the core, so any answer is a true one.
     fn on_ask(o: __StdApiHubOut) {
         if o.kind == 8 {
+            if len(o.text) > 0 { self.address = o.text; }
             __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 7, a: 0, b: 0, text: "" };
         }
     }
@@ -1466,7 +1478,7 @@ locus __StdApiHub {
             }
             j = j + 1;
         }
-        let doc = self.rows.head() + "{\"mode\":" + __api_hub_quote(who.mode) + ",\"name\":" + __api_hub_quote(who.name) + "},\"roles\":" + __api_hub_csv_json(held) + "},\"members\":[],\"streams\":[" + streams + "],\"outcomes\":" + self.rows.outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + self.rows.notes() + "}";
+        let doc = self.rows.head(self.address) + "{\"mode\":" + __api_hub_quote(who.mode) + ",\"name\":" + __api_hub_quote(who.name) + "},\"roles\":" + __api_hub_csv_json(held) + "},\"members\":[],\"streams\":[" + streams + "],\"outcomes\":" + self.rows.outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + self.rows.notes() + "}";
         __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 6, a: 200, b: 0, text: doc };
     }
 }

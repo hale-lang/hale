@@ -54,9 +54,8 @@ fn swap(src: &str, from: &str, to: &str) -> String {
 
 /// Where the hub, the MCP endpoint and the gRPC endpoint listen: port 0, each
 /// on a loopback address of its own, so the port the kernel gave each is
-/// read back by address (`Server::listening_on`). Written into the program
-/// (a bind read from the environment states no address in the hub's
-/// description), and stated by the descriptions as written.
+/// read back by address (`Server::listening_on`). The descriptions state
+/// the address each was bound to.
 const HUB_BIND: &str = "127.0.0.3:0";
 const MCP_BIND: &str = "127.0.0.4:0";
 const GRPC_BIND: &str = "127.0.0.5:0";
@@ -238,7 +237,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
         assert_eq!(status, 200, "{body}");
         let got: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{e}: {body}"));
         let mut want = fixture(name);
-        want["listener"]["address"] = serde_json::Value::String(HUB_BIND.to_string());
+        want["listener"]["address"] = serde_json::Value::String(w.hub.to_string());
         assert_eq!(got, want, "the description for {token}");
         assert_eq!(body.contains("\"topic\":\"Fills\""), token == "t-dave", "{token}: {body}");
     }
@@ -275,15 +274,16 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     let line = unix(&w, &format!("{{\"call\":\"Orders::cancel\",\"payload\":{{\"order\":999}},\"id\":\"a-3\",\"digest\":\"{ADMIN_DIGEST}\"}}"));
     assert!(line.contains("\"ok\":false,\"error\":{\"code\":\"unknown_order\""), "the operator is let through to the handler: {line}");
     // the descriptions differ with the exposure's source, and are the fixtures'
-    for (port, token, name, bound, stated) in [
-        (public.addr(), "t-alice", "public.alice.description.json", "127.0.0.1:8080", BIND_ADDR),
-        (public.addr(), "t-bob", "public.bob.description.json", "127.0.0.1:8080", BIND_ADDR),
-        (partner, "t-carol", "partner.carol.description.json", "127.0.0.1:8081", BIND2_ADDR),
-        (partner, "t-alice", "partner.alice.description.json", "127.0.0.1:8081", BIND2_ADDR),
+    for (port, token, name, bound) in [
+        (public.addr(), "t-alice", "public.alice.description.json", "127.0.0.1:8080"),
+        (public.addr(), "t-bob", "public.bob.description.json", "127.0.0.1:8080"),
+        (partner, "t-carol", "partner.carol.description.json", "127.0.0.1:8081"),
+        (partner, "t-alice", "partner.alice.description.json", "127.0.0.1:8081"),
     ] {
         let got = request(port, "GET", "/.description", &[bearer(token)], None);
         assert_eq!(got.status, 200, "{}", got.body);
-        let want = description_fixture(name).replace(bound, stated);
+        // the listener's address is the one it was bound to
+        let want = description_fixture(name).replace(bound, &port.to_string());
         assert_eq!(got.body, want, "{token}: the description of {port} differs from {name}");
     }
     let nobody = request(public, "GET", "/.description", &[bearer("t-mallory")], None);
@@ -449,7 +449,7 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
         use super::api_grpc::{description_over_grpc, text_of, unary};
         let described = unary(&mut g, 1, "/hale.api.Description/Describe", Some("t-alice"), "{}");
         assert_eq!(described.header("grpc-status"), Some("0"), "{described:?}");
-        assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", GRPC_BIND, "wire"), "alice's description over gRPC is the fixture's");
+        assert_eq!(text_of(&described), description_over_grpc("public.alice.description.json", &w.grpc.to_string(), "wire"), "alice's description over gRPC is the fixture's");
         // a call is a call: the same receiver, the same handler, the same stream
         let placed = unary(&mut g, 3, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}");
         assert_eq!(placed.header("grpc-status"), Some("0"), "{placed:?}");

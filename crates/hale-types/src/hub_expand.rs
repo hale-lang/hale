@@ -588,7 +588,13 @@ fn rows_src(plan: &HubPlan, confer: &BTreeMap<String, Vec<String>>) -> String {
     s.push_str("        return role;\n    }\n");
     // the description's pieces (`surface_doc::hub_pieces`)
     let pc = &plan.pieces;
-    s.push_str(&format!("    fn head() -> String {{ return {}; }}\n", q(&pc.head)));
+    // the listener states the address it was bound to once it has one
+    s.push_str(&format!(
+        "    fn head(address: String) -> String {{ if len(address) == 0 {{ return {}; }} return {} + __api_hub_quote(address) + {}; }}\n",
+        q(&pc.head),
+        q(&pc.head_pre),
+        q(&pc.head_post)
+    ));
     s.push_str("    fn stream_doc(i: Int) -> String {\n");
     for (i, d) in pc.streams.iter().enumerate() {
         s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
