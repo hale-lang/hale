@@ -1249,11 +1249,13 @@ so two coroutines dissolving their subscribers on one worker never
 pop each other's entries. A pinned anchor has a mailbox if and only
 if something may post to it, whether or not it subscribes itself: a
 locus nested in its params tree subscribes, or a subscriber may be
-built at run time on its thread — a literal of a subscribing locus
-in one of its hooks or methods, or in its nested loci's, or in any
-fn they reach through the call graph (free fns included, and the
-hooks of every locus those bodies build), as the placement table's
-dynamic sites record it; a literal whose enclosing scope's domains
+built at run time on its thread — a literal in one of its hooks or
+methods, or in its nested loci's, or in any fn they reach through
+the call graph (free fns included, and the bodies of every locus
+those bodies build, a locus a params default builds included), of a
+locus that subscribes or whose construction template builds one (its
+params defaults, transitively, which are lowered wherever it is
+built), as the placement table's dynamic sites record it; a literal whose enclosing scope's domains
 are unknown (a fn passed as a value, which may run anywhere) counts
 as one that may run on every pinned thread. Any other pinned thread
 that subscribes to nothing has none, and its lifecycle is as before:

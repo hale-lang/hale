@@ -493,6 +493,22 @@ pub struct DynamicSite {
     pub enclosing: Enclosing,
     pub domains: BTreeSet<DomainId>,
     pub bound: Bound,
+    /// The literal may put a bus subscriber on its domains: the
+    /// declaration it realizes subscribes, or a locus built with it may —
+    /// one its construction template builds (the params defaults it does
+    /// not override, transitively, which are lowered wherever the literal
+    /// is and are no dynamic site of their own), one its bodies build,
+    /// or one a fn its bodies call builds, transitively. Lowering gives a
+    /// pinned anchor a mailbox when one of these may run on its thread.
+    pub builds_subscriber: bool,
+    /// The domains are unknown because a fn on the way to the literal is
+    /// passed as a value, so it may run on any thread. An empty `domains`
+    /// without it is a scope nothing the table places reaches (a locus
+    /// no instance realizes, a fn no placed scope calls): its code runs
+    /// only where a construction template that holds it is lowered, which
+    /// the literal of the template's holder answers for
+    /// (`builds_subscriber`), or never.
+    pub unknown_by_value: bool,
 }
 
 /// Where a hole sits.
@@ -1947,6 +1963,36 @@ impl<'d, 'a> Builder<'d, 'a> {
                 placed.entry(l).or_default().insert(r.domain);
             }
         }
+        // The literals each locus's params defaults write, by field.
+        let mut defaults_of: BTreeMap<SiteRef, Vec<(&str, &Literal<'a>)>> = BTreeMap::new();
+        for e in &scopes.elsewhere {
+            if let Some(Position::Default(holder, field)) = e.position {
+                defaults_of.entry(holder).or_default().push((field, &e.literal));
+            }
+        }
+        // The declarations a literal builds through its construction
+        // template: each params default it does not override, and theirs,
+        // transitively. They are lowered where the literal is, so they run
+        // where it runs, and they are no dynamic site of their own.
+        fn template<'a, 'l>(
+            lit: &'l Literal<'a>,
+            defaults_of: &BTreeMap<SiteRef, Vec<(&'l str, &'l Literal<'a>)>>,
+            out: &mut Vec<SiteRef>,
+        ) {
+            let Some(decl) = lit.decl else { return };
+            for (field, d) in defaults_of.get(&decl).map(Vec::as_slice).unwrap_or(&[]) {
+                if lit.inits.iter().any(|i| i.name.name == *field) {
+                    continue;
+                }
+                if let Some(child) = d.decl {
+                    if out.contains(&child) {
+                        continue;
+                    }
+                    out.push(child);
+                    template(d, defaults_of, out);
+                }
+            }
+        }
         // To a fixpoint: a literal's declaration runs where the literal
         // runs; a callee runs where its caller does. A literal of the
         // static tower runs where its rows were placed, whatever scope it
@@ -1995,10 +2041,80 @@ impl<'d, 'a> Builder<'d, 'a> {
                 break;
             }
         }
+        // Whether building a locus may put a bus subscriber on the thread
+        // that builds it: it subscribes, or a locus its template or its
+        // bodies build may, or a fn its bodies call does (a closure over
+        // the declarations and fns, memoized by scope; a cycle answers
+        // no on its back edge). A body's literals are dynamic sites of
+        // their own once the body's scope is reached, but the scope of a
+        // locus only a template builds never is, so the closure follows
+        // them.
+        struct Closure<'s, 'a> {
+            scopes: &'s Scopes<'a>,
+            decls: &'s Decls<'a>,
+            defaults_of: &'s BTreeMap<SiteRef, Vec<(&'s str, &'s Literal<'a>)>>,
+            decl_memo: BTreeMap<SiteRef, bool>,
+            scope_memo: BTreeMap<usize, bool>,
+        }
+        impl Closure<'_, '_> {
+            fn subscribes(&self, decl: SiteRef) -> bool {
+                self.scopes.decl_entry(self.decls, decl).is_some_and(|e| {
+                    e.decl.members.iter().any(|m| {
+                        matches!(m, LocusMember::Bus(b)
+                            if b.members.iter().any(|bm| matches!(bm, hale_syntax::ast::BusMember::Subscribe { .. })))
+                    })
+                })
+            }
+            fn decl(&mut self, decl: SiteRef) -> bool {
+                if let Some(b) = self.decl_memo.get(&decl) {
+                    return *b;
+                }
+                self.decl_memo.insert(decl, false);
+                let defaults: Vec<SiteRef> = self
+                    .defaults_of
+                    .get(&decl)
+                    .map(|ls| ls.iter().filter_map(|(_, l)| l.decl).collect())
+                    .unwrap_or_default();
+                let b = self.subscribes(decl)
+                    || self.scopes.locus_scope(decl).is_some_and(|i| self.scope(i))
+                    || defaults.into_iter().any(|d| self.decl(d));
+                self.decl_memo.insert(decl, b);
+                b
+            }
+            fn scope(&mut self, i: usize) -> bool {
+                if let Some(b) = self.scope_memo.get(&i) {
+                    return *b;
+                }
+                self.scope_memo.insert(i, false);
+                let s = &self.scopes.scopes[i];
+                let lits: Vec<SiteRef> = s.literals.iter().filter_map(|l| l.decl).collect();
+                let callees: Vec<usize> =
+                    s.calls.iter().filter_map(|(f, _)| self.scopes.fn_named(s.universe, f)).collect();
+                let b = lits.into_iter().any(|d| self.decl(d)) || callees.into_iter().any(|c| self.scope(c));
+                self.scope_memo.insert(i, b);
+                b
+            }
+            /// A literal: its declaration's own subscription and bodies,
+            /// and the template it does not override.
+            fn literal(&mut self, l: &Literal<'_>, template_of: &[SiteRef]) -> bool {
+                let Some(d) = l.decl else { return false };
+                self.subscribes(d)
+                    || self.scopes.locus_scope(d).is_some_and(|i| self.scope(i))
+                    || template_of.iter().any(|t| self.decl(*t))
+            }
+        }
+        let mut closure = Closure {
+            scopes,
+            decls: self.decls,
+            defaults_of: &defaults_of,
+            decl_memo: BTreeMap::new(),
+            scope_memo: BTreeMap::new(),
+        };
         for (i, s) in scopes.scopes.iter().enumerate() {
             if !reached[i] {
                 continue;
             }
+            let unknown_by_value = dom[i].is_err();
             let (domains, unknown) = match &dom[i] {
                 Ok(set) if !set.is_empty() => (set.clone(), None),
                 Ok(_) => (
@@ -2036,12 +2152,17 @@ impl<'d, 'a> Builder<'d, 'a> {
                         None => continue,
                     },
                 };
+                let mut built = Vec::new();
+                template(l, &defaults_of, &mut built);
+                let builds_subscriber = closure.literal(l, &built);
                 self.table.dynamic.push(DynamicSite {
                     literal: l.site,
                     realizes,
                     enclosing,
                     domains: domains.clone(),
                     bound: scopes.bound(s, l.in_loop),
+                    builds_subscriber,
+                    unknown_by_value,
                 });
             }
         }

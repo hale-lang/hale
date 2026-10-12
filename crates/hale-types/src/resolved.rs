@@ -204,11 +204,14 @@ pub struct LoweringView {
 /// template, that realizes a locus `merged` declares a `subscribe` in,
 /// or a subscriber built at run time on the anchor's thread — a dynamic
 /// site of the table (a literal in a hook, a method, or a free fn any of
-/// them reaches through the call graph, the loci those literals build
-/// included) that realizes a subscriber and runs in the anchor's domain,
-/// or whose domains are unknown (a fn passed as a value, so it may run
-/// anywhere). A locus nested under an anchor, or built on its thread,
-/// runs there, so its subscriptions need a route there before they
+/// them reaches through the call graph) that may build a subscriber
+/// (`DynamicSite::builds_subscriber`: its locus subscribes, or one its
+/// construction template, its bodies or the fns they call build does)
+/// and runs in the anchor's domain, or whose domains are unknown because
+/// a fn on its way is passed as a value (so it may run anywhere). A site
+/// whose scope nothing placed reaches is answered for by the literal of
+/// the template that holds it, or never runs. A locus nested under an
+/// anchor, or built on its thread, runs there, so its subscriptions need a route there before they
 /// register; lowering gives these anchors a mailbox for that, whether or
 /// not they subscribe themselves. Every other pinned anchor that does
 /// not subscribe has none: nothing could post to one.
@@ -233,10 +236,10 @@ pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program)
     let mut built_in: BTreeSet<crate::placement::DomainId> = BTreeSet::new();
     let mut built_anywhere = false;
     for site in &table.dynamic {
-        if !site.realizes.as_ref().is_some_and(|d| subscribers.contains(d.lowered.as_str())) {
+        if !site.builds_subscriber {
             continue;
         }
-        if site.domains.is_empty() {
+        if site.domains.is_empty() && site.unknown_by_value {
             built_anywhere = true;
         }
         built_in.extend(site.domains.iter().copied());

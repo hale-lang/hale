@@ -110,3 +110,39 @@ fn not_when_the_subscriber_outlives_the_call() {
     let (ok, out) = check("accepted", &program("cooperative(pool = cls)", "} accept(c: Peer) {", "Peer { };", false));
     assert!(ok && !out.contains(FINDING), "an accept owns it:\n{out}");
 }
+
+/// `program`, with `Peer` built through `wrapper` (declarations naming a
+/// non-subscribing `Wrapper`) instead of directly.
+fn wrapped(placement: &str, wrapper: &str) -> String {
+    let text = program(placement, "", "let w = Wrapper { };", false);
+    text.replacen("locus Host {", &format!("{wrapper}\nlocus Host {{"), 1)
+}
+
+// Review of #1513: a scope-local locus that does not subscribe itself
+// but keeps a subscriber — built by its params default, two defaults
+// down, or in its birth and accepted — drops that subscriber's
+// deliveries the same way.
+#[test]
+fn a_wrapper_that_keeps_a_subscriber_on_a_classic_pool_is_warned() {
+    for (tag, wrapper) in [
+        ("wrap_default", "locus Wrapper { params { p: Peer = Peer { }; } }"),
+        (
+            "wrap_nested_default",
+            "locus Inner { params { p: Peer = Peer { }; } }\nlocus Wrapper { params { i: Inner = Inner { }; } }",
+        ),
+        ("wrap_accepts", "locus Wrapper { accept(c: Peer) { } birth() { Peer { }; } }"),
+    ] {
+        let (ok, out) = check(tag, &wrapped("cooperative(pool = cls)", wrapper));
+        assert!(ok, "{tag}:\n{out}");
+        assert!(
+            out.contains("`Wrapper` holds a bus subscriber for its whole life")
+                && out.contains("inside one call of `Host.work`, which runs on the classic cooperative pool `cls`"),
+            "{tag}:\n{out}"
+        );
+        let (ok, out) = check(&format!("{tag}_async"), &wrapped("cooperative(pool = aio) where async_io", wrapper));
+        assert!(ok && !out.contains(FINDING), "{tag} on async_io:\n{out}");
+    }
+    // a wrapper that keeps no subscriber
+    let (ok, out) = check("wrap_plain", &wrapped("cooperative(pool = cls)", "locus Wrapper { params { n: Int = 0; } }"));
+    assert!(ok && !out.contains(FINDING), "{out}");
+}

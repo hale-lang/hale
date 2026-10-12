@@ -471,8 +471,84 @@ fn ir_fn(ir: &str, name: &str) -> String {
 
 #[test]
 fn a_pinned_thread_that_may_build_a_subscriber_has_a_mailbox_and_serves_it() {
-    let bin = harness::unique_bin("pinned_free_fn_subscriber");
-    let ir = harness::build_source_ir_text(PINNED_FREE_FN, &bin).expect("build");
+    pinned_mailbox_case("pinned_free_fn_subscriber", PINNED_FREE_FN);
+}
+
+/// `PINNED_FREE_FN` with `serve_once` building the subscriber as `serve`
+/// says (a function and the loci it needs).
+fn pinned_with_serve(serve: &str) -> String {
+    let free_fn = "    fn serve_once() {
+        let p = Peer { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(p.got));
+    }
+";
+    assert!(PINNED_FREE_FN.contains(free_fn), "the fixture's serve_once moved");
+    PINNED_FREE_FN.replace(free_fn, serve)
+}
+
+// Review of #1513: a non-subscribing wrapper whose params default builds
+// the subscriber. The default is lowered where the wrapper is built, on
+// the pinned thread, but it is no dynamic site of its own, so the
+// mailbox decision has to follow the wrapper's construction template.
+#[test]
+fn a_subscriber_in_a_wrapper_s_params_default_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Wrapper { params { p: Peer = Peer { }; } }
+    fn serve_once() {
+        let w = Wrapper { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(w.p.got));
+    }
+",
+    );
+    pinned_mailbox_case("pinned_wrapper_default", &src);
+}
+
+#[test]
+fn a_subscriber_two_defaults_down_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Inner { params { p: Peer = Peer { }; } }
+    locus Outer { params { i: Inner = Inner { }; } }
+    fn serve_once() {
+        let o = Outer { };
+        std::time::sleep(300ms);
+        println(\"free fn got=\" + to_string(o.i.p.got));
+    }
+",
+    );
+    pinned_mailbox_case("pinned_nested_default", &src);
+}
+
+// The bodies of a locus only a default builds run there too: the child's
+// method builds the subscriber.
+#[test]
+fn a_subscriber_a_default_built_child_builds_gets_its_pinned_thread_a_mailbox() {
+    let src = pinned_with_serve(
+        "    locus Child {
+        fn serve() {
+            let p = Peer { };
+            std::time::sleep(300ms);
+            println(\"free fn got=\" + to_string(p.got));
+        }
+    }
+    locus Wrapper { params { c: Child = Child { }; } }
+    fn serve_once() {
+        let w = Wrapper { };
+        w.c.serve();
+    }
+",
+    );
+    pinned_mailbox_case("pinned_default_child_body", &src);
+}
+
+/// Build `src`, check that the pinned `Host` has the mailbox loop and the
+/// pinned `Pub` none, and run it with main blocked on stdin: the free fn
+/// sees its delivery before main unblocks, `Pub` dissolves as its run()
+/// returns, and `Host` after main.
+fn pinned_mailbox_case(tag: &str, src: &str) {
+    let bin = harness::unique_bin(tag);
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
     // Host's thread loops on its mailbox after run(); Pub's has none.
     assert!(ir_fn(&ir, "__pinned_main_Host").contains("lotus_mailbox_drain_one"), "Host has no mailbox loop");
     assert!(!ir_fn(&ir, "__pinned_main_Pub").contains("lotus_mailbox_drain_one"), "Pub has a mailbox loop");

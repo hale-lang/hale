@@ -140,8 +140,9 @@ with how the runtime dispatches:
   at sleep/yield drains, which makes the hang look like a healthy
   idle; the warning names every offender — warning.
 
-- **Dropped scope-local delivery** — a bus subscriber built and
-  dissolved inside one call (a `let`, or a bare statement, not stored
+- **Dropped scope-local delivery** — a bus subscriber (or a locus
+  that keeps one, such as a wrapper whose params default builds it)
+  built and dissolved inside one call (a `let`, or a bare statement, not stored
   or returned or `accept`ed) on a classic cooperative pool. Its
   handlers run on that pool, which runs one cell at a time, and the
   call holds the pool's thread for the subscriber's whole life, so

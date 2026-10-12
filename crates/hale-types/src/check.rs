@@ -3041,6 +3041,58 @@ struct ScopeLocalSubscriberRows<'r, 'b> {
 /// table's domains for the literal (its enclosing locus's instances, or a
 /// free fn's callers). A literal in a bus handler is rule 20's, and an
 /// enclosing scope whose domains are unknown proves nothing: silent.
+/// Whether an instance of `locus` holds a bus subscriber for as long as
+/// it lives: it subscribes, or a locus it keeps does — one its params
+/// defaults build (transitively, as the construction template is lowered
+/// with it), one its bodies build that it `accept`s, or one its bodies
+/// store in a field of its own. Memoized by name; a cycle answers no.
+fn keeps_subscriber(
+    locus: &str,
+    top: &TopScope,
+    summary: &crate::alloc_summary::AllocSummary,
+    ownership: &crate::ownership_graph::OwnershipGraph,
+    memo: &mut BTreeMap<String, bool>,
+    path: &mut Vec<String>,
+) -> bool {
+    use crate::alloc_summary::{AllocKind, Escape};
+    use crate::ownership_graph::OwnerResolution;
+    if let Some(k) = memo.get(locus) {
+        return *k;
+    }
+    if path.iter().any(|p| p == locus) {
+        return false;
+    }
+    let Some(TopSymbol::Locus(li)) = top.lookup(locus) else {
+        memo.insert(locus.to_string(), false);
+        return false;
+    };
+    if !li.bus_subscribes.is_empty() {
+        memo.insert(locus.to_string(), true);
+        return true;
+    }
+    path.push(locus.to_string());
+    let mut children: Vec<String> = ownership
+        .sites
+        .iter()
+        .filter(|o| {
+            o.enclosing_locus == locus
+                && (o.params_default || matches!(&o.resolution, OwnerResolution::SelfOwned(l) if l == locus))
+        })
+        .map(|o| o.child_ty.clone())
+        .collect();
+    for f in summary.fns.values().filter(|f| f.key.locus.as_deref() == Some(locus)) {
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            if let (AllocKind::StructLit(lit), Escape::StoredToSelf) = (&s.kind, &s.escape) {
+                children.push(lit.clone());
+            }
+        }
+    }
+    let k = children.iter().any(|c| keeps_subscriber(c, top, summary, ownership, memo, path));
+    path.pop();
+    memo.insert(locus.to_string(), k);
+    k
+}
+
 fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, EntryKind, Escape};
     use crate::ownership_graph::OwnerResolution;
@@ -3071,6 +3123,7 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
     let mut fns: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     fns.sort_by_key(|f| f.decl_index);
+    let mut kept: BTreeMap<String, bool> = BTreeMap::new();
     for f in fns {
         if f.entry == Some(EntryKind::BusHandler) {
             continue;
@@ -3081,8 +3134,7 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
                 continue;
             }
             let Some((_, pools)) = pools_at.iter().find(|(at, _)| *at == s.span) else { continue };
-            let Some(TopSymbol::Locus(li)) = top.lookup(lit) else { continue };
-            if li.bus_subscribes.is_empty() {
+            if !keeps_subscriber(lit, top, summary, ownership, &mut kept, &mut Vec::new()) {
                 continue;
             }
             let owned = ownership.sites.iter().any(|o| {
@@ -3100,11 +3152,15 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
                 None => f.key.fn_name.clone(),
             };
             let pools = pools.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ");
+            let what = match top.lookup(lit) {
+                Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty() => "subscribes on the bus",
+                _ => "holds a bus subscriber for its whole life (one its construction or its bodies build and keep)",
+            };
             out.push(Violation::warning(
                 DROPPED_DELIVERY,
                 s.span,
                 format!(
-                    "`{lit}` subscribes on the bus, and this literal builds it and dissolves it inside one call of \
+                    "`{lit}` {what}, and this literal builds it and dissolves it inside one call of \
                      `{call}`, which runs on the classic cooperative pool {pools}. Its subscription registers \
                      with that pool, which runs one cell at a time: the call holds the pool's worker for the \
                      subscriber's whole life, so every delivery to it waits and is dropped when it dissolves. \
