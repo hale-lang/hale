@@ -1130,7 +1130,7 @@ row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.snd	Sender	main	default
 
-== crates/hale-cli/tests/topology_graph_cli.rs#c5fbd18c
+== crates/hale-cli/tests/topology_graph_cli.rs#86e02774
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.h	H	main	default

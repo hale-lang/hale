@@ -6132,13 +6132,35 @@ fn payload_carriage(
 /// all. This asks exactly that, once per `of type` clause, at the
 /// clause's own span.
 ///
-/// Scope: the `of type` clause on a `publish` / `subscribe`. A
-/// `topic T { payload: Int; }` is under the same contract and is
-/// still refused during lowering, because the checker never runs
-/// `desugar_topics` (codegen does) — so a topic-ref subscribe
-/// carries no `ty` at this layer and there is nothing here to judge.
-/// Closing that half means reading `TopicDecl.payload`, which moves
-/// its own set of ratchet rows; it is deliberately not this change.
+/// Scope: the `of type` clause on a `publish` / `subscribe`, and a
+/// subscription to a `topic T { payload: Int; }`. The checker never
+/// runs `desugar_topics` (codegen does), so a topic-ref subscribe
+/// carries no `ty` at this layer: its payload is read from the topic
+/// rows (`topic_payload_not_carried`), as a send to the topic's is in
+/// `check_send`. A topic only declared, or only listed `publish`,
+/// lowers to nothing and is not judged.
+/// A topic's `payload:` the bus cannot carry, as the tail of a refusal
+/// at a site that delivers it: a subscription to the topic or a `<-`
+/// to it. `None` when the topic is not declared in this bundle (the
+/// resolver names that) or its payload is carried or not judged here
+/// (`Carriage`).
+fn topic_payload_not_carried(top: &TopScope, known: &KnownNames, topic: &str) -> Option<String> {
+    let row = top.topics.named(topic)?;
+    let Carriage::NotCarried(repair) = payload_carriage(&row.payload, top, known) else {
+        return None;
+    };
+    Some(format!(
+        "topic `{}` declares `payload: {}`, which the bus cannot carry. A \
+         delivery is a serialized struct, so a topic's payload needs a field \
+         layout: a user `type`, an enum with a payload variant, or `BytesView` \
+         (the raw-frame path). To send one, {} and declare the topic's \
+         `payload:` as that.",
+        topic,
+        resolve_type_expr(&row.payload, known).display(),
+        repair,
+    ))
+}
+
 fn check_bus_payload_carriable(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -6159,6 +6181,18 @@ fn check_bus_payload_carriable(
                             ("publish", subject, ty)
                         }
                     };
+                    // A subscription to a topic takes its payload from
+                    // the declaration: judged here, at the subscribe,
+                    // which lowering cannot register without a
+                    // deserializer. A `publish` line alone lowers to
+                    // nothing (the `<-` site carries the payload, and
+                    // `topic_payload_not_carried` judges it there).
+                    if let (BusMember::Subscribe { span, .. }, BusSubject::Topic(topic)) = (bm, subject) {
+                        if let Some(msg) = topic_payload_not_carried(top, known, &topic.name) {
+                            diags.push(Diag::ty(*span, format!("subscribe `{}`: {}", topic.name, msg)));
+                        }
+                        continue;
+                    }
                     let Some(ty) = ty else { continue };
                     // A topic ref takes its payload from the topic
                     // declaration, and an `of type` clause on one is
@@ -11445,6 +11479,13 @@ impl<'a> Checker<'a> {
                 _ => None,
             }
             .map(|t| (t.name.clone(), t.on_unmatched, t.on_full_fail));
+        // A send to a topic delivers the topic's payload, and lowering
+        // has no serializer for one the bus cannot carry.
+        if let Expr::Ident(id) = subject {
+            if let Some(msg) = topic_payload_not_carried(self.top, self.known, &id.name) {
+                self.diags.push(Diag::ty(span, format!("`{} <- ...`: {}", id.name, msg)));
+            }
+        }
         let target_policy = target_topic.as_ref().map(|(_, p, _)| *p);
         let target_full_fail =
             target_topic.as_ref().map_or(false, |(_, _, f)| *f);

@@ -1874,3 +1874,38 @@ fn a_locus_in_a_type_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// A topic whose payload the bus cannot carry, subscribed ("m60
+/// requires a TypeRef...") or sent ("bus send payload must be a
+/// user-type"). A topic declared `publish` and never sent lowers.
+#[test]
+fn an_uncarried_topic_payload_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "topic Chunk { payload: String; }\n\
+                 locus Sub {\n\
+                 bus { subscribe Chunk as on_chunk; }\n\
+                 fn on_chunk(s: String) { println(s); }\n\
+                 }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Chunk as on_chunk;",
+                "subscribe `Chunk`: topic `Chunk` declares `payload: String`, which the bus cannot carry.",
+            ),
+            (
+                "topic Chunk { payload: Int; }\n\
+                 locus Pub { bus { publish Chunk; } run() { Chunk <- 4; } }\n\
+                 fn main() { Pub { }; }\n",
+                "Chunk <- 4;",
+                "`Chunk <- ...`: topic `Chunk` declares `payload: Int`, which the bus cannot carry.",
+            ),
+        ],
+        "uncarried_topic",
+    );
+    assert_built(
+        "topic Chunk { payload: String; }\n\
+         locus Pub { bus { publish Chunk; } run() { } }\n\
+         fn main() { Pub { }; }\n",
+        "hale_cb_publish_only_topic",
+    );
+}
+

@@ -53,3 +53,17 @@ fn a_locus_held_by_a_type_is_refused_at_the_field() {
         "`type Conn`: field `s` holds the locus `std::io::tcp::Stream`.",
     );
 }
+
+#[test]
+fn an_uncarried_topic_payload_is_refused_where_it_is_delivered() {
+    let src = "topic Chunk { payload: String; }\nlocus Sub {\n    bus { subscribe Chunk as on_chunk; }\n    fn on_chunk(s: String) { println(s); }\n}\nlocus Pub {\n    bus { publish Chunk; }\n    run() { Chunk <- \"hi\"; }\n}\nfn main() { let s = Sub { }; Pub { }; }\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "topic");
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("main.hl:3:11: type error: subscribe `Chunk`: topic `Chunk` declares `payload: String`, which the bus cannot carry.")
+            && out.contains("main.hl:8:13: type error: `Chunk <- ...`: topic `Chunk` declares `payload: String`")
+            && out.contains("wrap it in a user `type` and declare the topic's `payload:` as that"),
+        "{out}"
+    );
+    assert!(!built && !bout.contains("codegen error"), "{bout}");
+}

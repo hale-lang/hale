@@ -3859,8 +3859,21 @@ A subject's payload type — `T` in `of type T`, or a `topic`'s
 A delivery is a *serialized struct*, so the payload needs a field
 layout: `of type Int` has none, and neither does a tuple, an
 array, or a no-payload enum. An `of type` clause naming one is
-rejected at typecheck, at the clause (rule 18 above); a `topic`
-whose `payload:` names one is refused during lowering.
+rejected at typecheck, at the clause (rule 18 above). A `topic`
+whose `payload:` names one is rejected at typecheck where it is
+delivered: at each `subscribe` of the topic and each `<-` to it,
+naming the topic's payload and the repair (wrap it in a user
+`type`). A topic that is declared, or listed `publish`, and never
+subscribed or sent carries nothing and is not judged.
+
+```text
+main.hl:3:11: type error: subscribe `Chunk`: topic `Chunk` declares
+`payload: String`, which the bus cannot carry. A delivery is a
+serialized struct, so a topic's payload needs a field layout: a user
+`type`, an enum with a payload variant, or `BytesView` (the raw-frame
+path). To send one, wrap it in a user `type` and declare the topic's
+`payload:` as that.
+```
 
 **Within** a payload, the wire format supports primitives (`Int`,
 `Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
