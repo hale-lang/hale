@@ -14,7 +14,12 @@
  *     cursor @64 after each record.
  *   - Consumer: lotus_bus_register_subscriber_shm_ring_layout
  *     attaches read-only, spawns the reader thread, and the handler
- *     records each delivered payload into a global array.
+ *     records each delivered payload into a global array. The reader
+ *     starts at the cursor as it stood when the registration call
+ *     ran, so the driver publishes straight after registering: no
+ *     sleep for the reader thread to come up (a 5ms one, under load,
+ *     let the whole short_record burst land before the reader's first
+ *     poll, which then started past it and delivered nothing).
  *
  * Modes (argv[1]):
  *   roundtrip : capacity holds all N records — no wrap, no lap;
@@ -194,9 +199,6 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
-    /* Give the reader a moment to attach + park at cursor 0. */
-    struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms */
-    nanosleep(&warmup, NULL);
 
     uint64_t local = 0;
     uint64_t rec = LEN_WIDTH + sizeof(Payload);
@@ -277,8 +279,6 @@ static int run_producer(const char *name, uint64_t capacity, int n, int pace_us)
     /* Consumer attaches read-only and parks at cursor 0. */
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
-    struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms */
-    nanosleep(&warmup, NULL);
 
     for (int i = 0; i < n; i++) {
         Payload p = { .seq_id = i + 1, .value = (int64_t)(i + 1) * 7 };
@@ -376,8 +376,6 @@ static int run_short_record(const char *name) {
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
-    struct timespec warmup = {0, 5 * 1000 * 1000};
-    nanosleep(&warmup, NULL);
 
     uint64_t step = align_up(LEN_WIDTH + sizeof(Payload), ALIGN);  /* 24 */
     uint64_t local = 0;
@@ -440,8 +438,6 @@ static int run_u64_lenprefix(const char *name) {
     desc[11] = LW8;   /* len_prefix_width = 8 (u64) */
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
-    struct timespec warmup = {0, 5 * 1000 * 1000};
-    nanosleep(&warmup, NULL);
 
     int n = 32;
     uint64_t step = align_up(LW8 + sizeof(Payload), ALIGN);
@@ -498,8 +494,6 @@ static int run_heterogeneous(const char *name) {
     desc[15] = 0;  /* value_size = 0 → raw BytesView path */
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, (void (*)(void *, void *))on_raw);
-    struct timespec warmup = {0, 5 * 1000 * 1000};
-    nanosleep(&warmup, NULL);
 
     int n = 8;
     uint64_t local = 0;
@@ -692,8 +686,6 @@ static int run_lotus_dogfood(const char *name) {
     lotus_bus_register_subscriber_shm_ring_layout(
         "lotus.dogfood", name, desc, NULL, on_record);
 
-    struct timespec warmup = {0, 5 * 1000 * 1000};
-    nanosleep(&warmup, NULL);
 
     int n = 8;
     for (int i = 0; i < n; i++) {
@@ -766,8 +758,6 @@ static int run_reserve_commit(const char *name) {
     lotus_bus_register_shm_ring_layout("foreign.ticks", name, desc, 4096);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, (void (*)(void *, void *))on_raw);
-    struct timespec warmup = {0, 5 * 1000 * 1000};
-    nanosleep(&warmup, NULL);
 
     int n = 6;
     for (int i = 0; i < n; i++) {
@@ -905,8 +895,6 @@ static int run_clobber(const char *name) {
 
     lotus_bus_register_subscriber_shm_ring_layout(
         "clobber.ticks", name, desc, NULL, on_clobber);
-    struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms to attach + park at 0 */
-    nanosleep(&warmup, NULL);
 
     /* Phase A — a CONSISTENT control record at low lag (1 record behind).
      * Both readers deliver it; proves the reader thread is alive. */
