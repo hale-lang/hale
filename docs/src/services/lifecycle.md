@@ -216,7 +216,11 @@ because it's how Hale frees resources without a `defer` or a
   straight into another locus's field (`Router { quick: make("q") }`,
   which the router owns and reclaims with itself, exactly as it
   would a `Quick { }` written there) and `return`ed to your caller
-  (who owns it).
+  (who owns it). Returning it *through* a function that hands back
+  its argument counts as returning it: with `fn pass(t: Ticker) ->
+  Ticker { return t; }`, `let t = make_ticker(); return pass(t);`
+  and `return pass(make_ticker());` both give your caller a live
+  ticker, and your caller's `let` releases it.
 - **A locus an `if`, a `match` or a block hands back** (`return if
   hot { fast_path() } else { make_ticker() };`): those forms have
   no value of their own — they pass along one arm's, and exactly

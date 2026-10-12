@@ -600,6 +600,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // into out_val. v1 rejects void+fallible at declare time
         // (out_val_param is always Some when fallible).
         self.builder.position_at_end(ok_bb);
+        // The locus the ok path hands back: the cleanup's flush skips
+        // an entry holding it (`frame_returned_locus`), on the ok path
+        // only.
+        let mut returned_locus = None;
         if let (Some(ret_ty), Some(out_val_param)) =
             (&sig.ret, fallible.out_val_param)
         {
@@ -611,6 +615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            returned_locus = self.returned_locus_ptr(ret_ty, raw_ret)?;
             let dest_arena = self
                 .builder
                 .build_load(ptr_t, caller_arena_alloca, "caller_arena.load")
@@ -622,6 +627,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(out_val_param, copied)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        let ok_end = self.builder.get_insert_block().expect("ok block positioned");
         self.builder
             .build_unconditional_branch(cleanup_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -649,6 +655,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(fallible.out_err_param, copied_err)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        let fail_end = self.builder.get_insert_block().expect("fail block positioned");
         self.builder
             .build_unconditional_branch(cleanup_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -660,7 +667,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // cleanup. `path_v` dominates this block (exit_bb is the
         // only predecessor of ok/fail/exit_bb chain).
         self.builder.position_at_end(cleanup_bb);
-        self.flush_dissolve_frame()?;
+        self.frame_returned_locus = match returned_locus {
+            Some(p) => {
+                let phi = self
+                    .builder
+                    .build_phi(ptr_t, "fn.ret.locus")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let null = ptr_t.const_null();
+                phi.add_incoming(&[(&p, ok_end), (&null, fail_end)]);
+                Some(phi.as_basic_value().into_pointer_value())
+            }
+            None => None,
+        };
+        let flushed = self.flush_dissolve_frame();
+        self.frame_returned_locus = None;
+        flushed?;
         let arena_destroy = self
             .module
             .get_function("lotus_arena_destroy")
