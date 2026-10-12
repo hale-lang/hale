@@ -15,6 +15,11 @@
 // The body is `hale dna run`, which execs the host in its own process,
 // without nerves: the relay still weighs every request, which is the cost.
 //
+// The body keeps one view of the record for its life and reads, each tick,
+// only the rows the record gained; it used to read the record whole three
+// times a tick (the relay's, the sync's, the tick's own), ~7% of a core
+// here and ~11% at 5,600 rows, growing with the record.
+//
 // The record is built here in one batch, whose fast-import stream carries
 // the whole journal per commit — quadratic in the batch. It was built
 // whole in memory: this fixture peaked near 3 GB building its 2,200 rows,
@@ -150,7 +155,7 @@ main locus App {
         let used = (after - before) * 1000000000 / hz;
         let percent = used * 100 / wall;
         eprintln("idle_body_cpu_test: the idle body used ", to_string(percent), "% of a core over ", to_string(wall / 1000000), " ms (", to_string(j.revision()), " rows)");
-        std::test::assert(percent < 25, "an idle body uses a small fraction of a core: " + to_string(percent) + "% over " + to_string(wall / 1000000) + " ms");
+        std::test::assert(percent < 10, "an idle body uses a small fraction of a core: " + to_string(percent) + "% over " + to_string(wall / 1000000) + " ms");
 
         dna::scratch_done(scratch);
     }

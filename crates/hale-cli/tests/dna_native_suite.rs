@@ -971,6 +971,7 @@ fn dna_fixture_set_is_complete() {
             "ingest_test.hl",
             "init_with_test.hl",
             "journal_contention_test.hl",
+            "journal_incremental_test.hl",
             "journal_test.hl",
             "knowledge_binding_recovery_test.hl",
             "knowledge_context_test.hl",

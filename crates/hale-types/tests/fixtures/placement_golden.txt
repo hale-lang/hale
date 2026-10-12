@@ -9259,7 +9259,7 @@ row	~.journal.record	__lib_dna__core___journal__MemJournal	main	inherited
 row	~.journal.record.rows	__lib_dna__core___journal__EventRows	main	inherited
 shared	dynamic	sites in dna/core #ba99a4a0
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
-shared	dynamic	sites in dna/host #61ef3cf8
+shared	dynamic	sites in dna/host #2925b732
 shared	dynamic	sites in dna/operations #07070d4b
 shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
@@ -9389,8 +9389,8 @@ dynamic	__lib_dna__core___ownership__Ownership	on unknown (`check` passed as a v
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitRecord	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__host___projection__Projection	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__host___projection__Projection	on unknown (`check` passed as a value)|unknown (no instance)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on unknown (`check` passed as a value)|unknown (no caller)
 -- dynamic	sites in dna/organization_runtime
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (no instance)
@@ -9485,7 +9485,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
-shared	dynamic	sites in dna/host #61ef3cf8
+shared	dynamic	sites in dna/host #2925b732
 shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
 dynamic	__StdJsonBuilder	on main
@@ -9922,6 +9922,16 @@ dynamic	__lib_dna__core___record__GitJournal	on main	in tests
 shared	App@literal1.j	__lib_dna__core___record__GitJournal #bfd4b798
 shared	dynamic	sites in core #b2c4d9f5
 
+== dna/tests/journal_incremental_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+shared	App@literal1.kept	__lib_dna__core___record__GitJournal #bfd4b798
+shared	dynamic	sites in core #b2c4d9f5
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___record__RowBatch	on main
+
 == dna/tests/journal_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -10132,8 +10142,8 @@ dynamic	__lib_dna__core___ownership__Ownership	on unknown (`maximum` passed as a
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitReceipts	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitRecord	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`maximum` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__host___projection__Projection	on unknown (`maximum` passed as a value)
+dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__host___projection__Projection	on unknown (`maximum` passed as a value)|unknown (no instance)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on unknown (`maximum` passed as a value)|unknown (no caller)
 -- dynamic	sites in dna/organization_runtime
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`maximum` passed as a value)|unknown (no instance)
@@ -10383,7 +10393,7 @@ row	__lib_dna__core___record__GitRecord@main2	__lib_dna__core___record__GitRecor
 shared	App@main1	App #0e5afafb
 shared	dynamic	sites in dna/core #ba99a4a0
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
-shared	dynamic	sites in dna/host #61ef3cf8
+shared	dynamic	sites in dna/host #2925b732
 shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
 dynamic	__StdJsonBuilder	on main
@@ -13342,14 +13352,16 @@ shared	Host@literal1.memory	__lib_dna__core___memory_spine__Memory #3ef638b3
 shared	Host@literal1.nerves	__lib_dna__core__pond__realtime__nats___adapter__NatsConn #bc0bc370
 shared	Host@literal1.senses	__lib_dna__core___senses__Senses #7cd25e64
 shared	Host@literal1.vault	__lib_dna__core___memory_spine__MemoryVault #e64e4dab
+shared	Host@literal1.view	Projection #e90a4ca5
 shared	Host@literal2.adoption	__lib_dna__core___memory_spine__LedgerAdoption #0b3ff6fc
 shared	Host@literal2.graph_projection	__lib_dna__operations___memory_tail__MemoryProjection #0c7925dd
 shared	Host@literal2.memory	__lib_dna__core___memory_spine__Memory #3ef638b3
 shared	Host@literal2.nerves	__lib_dna__core__pond__realtime__nats___adapter__NatsConn #bc0bc370
 shared	Host@literal2.senses	__lib_dna__core___senses__Senses #7cd25e64
 shared	Host@literal2.vault	__lib_dna__core___memory_spine__MemoryVault #e64e4dab
+shared	Host@literal2.view	Projection #e90a4ca5
 -- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdBytesBytesBuilder	on main|unknown (`synced` passed as a value)
 dynamic	__StdHttpServer	on pool:senses
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdMetricsEndpoint	on pool:senses
@@ -13359,11 +13371,11 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_embed__Words	on main
 dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`synced` passed as a value)
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitLeases	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`synced` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
@@ -13394,7 +13406,7 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___ownership__Ownership	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`synced` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main|unknown (no caller)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on main|unknown (no caller)
@@ -14618,6 +14630,23 @@ row	~.reg	Registry	pool:io	inherited
 == shared Proc #b18b3dc0
 row	~	Proc	main	default
 row	~.child	__StdProcessChild	main	inherited
+
+== shared Projection #e90a4ca5
+row	~	Projection	main	default
+row	~.j	__lib_dna__core___routing__RoutedJournal	main	inherited
+row	~.j.ledger	__lib_dna__core___memory_spine__MemoryLedger	main	inherited
+row	~.j.ledger.leases	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
+row	~.j.ledger.leases.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.j.ledger.leases.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.j.ledger.store	__lib_dna__core___memory_ledger__PqLedger	main	inherited
+row	~.j.ledger.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.j.ledger.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.j.ledger.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.j.ledger.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.j.ledger.store.writers	__lib_dna__core___journal__Authors	main	inherited
+row	~.j.order	__lib_dna__core___routing__PlacedRows	main	inherited
+row	~.j.record	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.j.record.rows	__lib_dna__core___journal__EventRows	main	inherited
 
 == shared Provider #349f5211
 row	~	Provider	main	default
@@ -16033,7 +16062,7 @@ dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdSecretCredential	on main
 
-== shared sites in dna/host #61ef3cf8
+== shared sites in dna/host #2925b732
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
@@ -16043,8 +16072,8 @@ dynamic	__lib_dna__core___ownership__Ownership	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)
-dynamic	__lib_dna__host___projection__Projection	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__host___projection__Projection	on main|unknown (no instance)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on main|unknown (no caller)
 
 == shared sites in dna/operations #07070d4b

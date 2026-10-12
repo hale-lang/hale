@@ -722,11 +722,23 @@ locus NodeRelay {
     // every RELAY_AGAIN_AFTER while the record holds no answer to it. The
     // row is the durable fact; the publish only tells the organization.
     fn relay(memory: dna::Memory) -> Int {
-        let mut state = RelayState { relayed: self.relayed };
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return 0; }
         let p = open_projection(self.root, self.seed, self.toolchain, memory);
+        return self.relay_rows(p, memory);
+    }
+    // The same over a view the caller keeps (the host's, for its life),
+    // read again here: only what the record gained since is read.
+    fn relay_over(p: Projection, memory: dna::Memory) -> Int {
+        let now = record_head(self.root);
+        if !now.ok || now.absent { return 0; }
+        let moved = p.j.refresh();
+        return self.relay_rows(p, memory);
+    }
+    // The pass itself, over the rows of `p`.
+    fn relay_rows(p: Projection, memory: dna::Memory) -> Int {
+        let mut state = RelayState { relayed: self.relayed };
         let trust = trust_mode(self.root);
         // what this pass finds answered, kept once it is over
         let mut learned = "";
@@ -933,6 +945,14 @@ main locus Host {
         nerves_on: Bool = false;
         nerves_read_said: Bool = false; // the "reads its facts" line was said once, at start or later
         relay: NodeRelay = NodeRelay { };
+        // The record and the Ledger as this body reads them, for its life:
+        // opened once the body is up (bring_up), and read again by each
+        // step of a tick that reads it — the relay, the sync's withdrawals,
+        // the forge, the status — which reads only the rows the record
+        // gained since. Every step used to open a projection of its own and
+        // read the whole record for it, several times a tick: an idle body
+        // cost time in its record's size.
+        view: Projection = Projection { };
         // when this node last stopped an organization (monotonic ns; 0
         // never): its pulls outlive it for a pull's life
         org_stopped_at: Int = 0;
@@ -1533,7 +1553,7 @@ main locus Host {
         }
         let deadline = std::time::now() + OBSERVATION_WAIT;
         while std::time::now() <= deadline {
-            let n = self.relay.relay(self.memory);
+            let n = self.relay.relay_over(self.view, self.memory);
             if self.observation_landed(mutation_id, outcome, 1) { return; }
         }
         self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; the relay goes on publishing it until it does");
@@ -1939,47 +1959,45 @@ main locus Host {
         // clone wrote arrives with the sync below and is relayed on the
         // next tick; the sync below shares what this relay answers.
         if self.nerves_on && !self.nerves_read_said && self.nerves_read_now() { self.say_nerves_read(); }
-        let n = self.relay.relay(self.memory);
+        let n = self.relay.relay_over(self.view, self.memory);
         if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
-        let s = sync_record(self.root, self.memory);
+        let s = sync_record_over(self.root, self.view.j);
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick(s.ok);
         self.poll_genome();
-        // one projection for the rest of the pass, read again (only when
-        // the record moved) after a step that may have written: when every
-        // step read the whole record for itself, an idle body read it
-        // several times a second
-        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
+        // the view for the rest of the pass, read again (only what the
+        // record gained) after a step that may have written
+        let viewed = watch(self.view);
         if forge_kind(self.root) != "none" {
-            let g = github_sync_of(p, self.root, self.seed, self.memory);
+            let g = github_sync_of(self.view, self.root, self.seed, self.memory);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
-            let synced = watch(p);
+            let synced = watch(self.view);
         }
         // the sync above may have blocked past the lease's life: prove it
         // again before answering anything
         if !self.body_alive() { self.stop_body(3); }
         // what the view gained — this tick's rows, the sync's and memory's
         // — onto the nerves for the heads
-        let told = self.relay.announce(p);
+        let told = self.relay.announce(self.view);
         self.read_pulse();
         self.read_model_calls();
         std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("spine")).set(dna::senses_now());
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let read = watch(p);
+        let read = watch(self.view);
         // status.json when the record moved, or has not been projected for
         // a while; the projection reads its Reviews, Tasks and Mutations a
         // whole record each, an idle body's largest cost when it ran every tick
-        if now.id != self.status_head || p.rows() != self.status_rows || std::time::now() - self.status_at >= STATUS_REFRESH { self.project_status(p, now.id); }
-        let req = pending_restart(p, self.handled);
+        if now.id != self.status_head || self.view.rows() != self.status_rows || std::time::now() - self.status_at >= STATUS_REFRESH { self.project_status(self.view, now.id); }
+        let req = pending_restart(self.view, self.handled);
         if req.seq < 0 { return; }
-        if prepared_source_restart(p, req) {
-            if self.answer_prepared_org(req.entity) { self.handled = keys_add(self.handled, fact_key(p, req.seq)); }
+        if prepared_source_restart(self.view, req) {
+            if self.answer_prepared_org(req.entity) { self.handled = keys_add(self.handled, fact_key(self.view, req.seq)); }
             return;
         }
-        self.handled = keys_add(self.handled, fact_key(p, req.seq));
+        self.handled = keys_add(self.handled, fact_key(self.view, req.seq));
         let rollback = std::str::starts_with(req.body, "rollback ");
         let seed_named = seed_named_in(req.body);
         if seed_named == ORG_SEED { self.answer_org(req.entity, rollback); return; }
@@ -2055,6 +2073,8 @@ main locus Host {
         self.relay.toolchain = self.toolchain;
         self.relay.verb = self.verb;
         self.relay.live = self.nerves_on;
+        self.view = Projection { root: self.root, seed: self.seed, toolchain: self.toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: self.root, author: "host" }, ledger: self.memory.ledger } };
+        let viewed = self.view.j.refresh();
         if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks"); }
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
