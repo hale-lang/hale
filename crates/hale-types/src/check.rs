@@ -6611,6 +6611,11 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
                             self.check_type_annotation(&f.ty);
+                            self.refuse_locus_in_type(
+                                &t.name.name,
+                                &format!("field `{}`", f.name.name),
+                                &f.ty,
+                            );
                         }
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
@@ -6642,6 +6647,11 @@ impl<'a> Checker<'a> {
                         for v in variants {
                             for te in &v.fields {
                                 self.check_type_annotation(te);
+                                self.refuse_locus_in_type(
+                                    &t.name.name,
+                                    &format!("variant `{}`", v.name.name),
+                                    te,
+                                );
                             }
                         }
                     }
@@ -12136,6 +12146,60 @@ impl<'a> Checker<'a> {
     /// A type expression the walk resolves: through the scope's names,
     /// and, while a generic fn or locus is walked for one of its
     /// monomorphs, with the template's parameters substituted.
+    /// The locus a type expression holds, by its written name: the
+    /// type itself, or the element of an array, `bounded[T; N]` or
+    /// tuple it is built from. A `std::` path names the bundled
+    /// stdlib's declaration through `PATH_RENAMES`. An interface is not
+    /// a locus (it lowers as a fat pointer and a `type` may hold one),
+    /// and a name this bundle cannot resolve is not judged.
+    fn locus_held_by(&self, te: &TypeExpr) -> Option<String> {
+        match te {
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.locus_held_by(elem)
+            }
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_held_by(p)),
+            TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let name = if written.len() > 1 {
+                    hale_stdlib::PATH_RENAMES
+                        .iter()
+                        .find(|(p, _)| *p == written.as_slice())
+                        .map(|(_, m)| m.to_string())?
+                } else {
+                    match self.resolve_te(te) {
+                        Ty::Named(n) => n,
+                        _ => return None,
+                    }
+                };
+                match self.top.lookup(&name) {
+                    Some(TopSymbol::Locus(_)) => Some(written.join("::")),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A `type` is plain data: copied by value, with no lifecycle, so a
+    /// field (or an enum variant's payload) cannot hold a locus. The
+    /// check used to accept one, and lowering refused it with no span
+    /// as `unknown type name in signature` (downstream handoff); the
+    /// rule names the field and the two places a locus can live.
+    fn refuse_locus_in_type(&mut self, type_name: &str, member: &str, te: &TypeExpr) {
+        let Some(locus) = self.locus_held_by(te) else { return };
+        self.diags.push(Diag::ty(
+            te.span(),
+            format!(
+                "`type {type_name}`: {member} holds the locus `{locus}`. A `type` \
+                 is plain data with no lifecycle: it is copied by value, so it can \
+                 neither own a locus nor keep one alive. Hold the locus in a locus \
+                 instead: make `{type_name}` a locus with a `params {{ ... }}` field \
+                 of type `{locus}`, or pass the `{locus}` as a parameter where it is \
+                 used."
+            ),
+        ));
+    }
+
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
             .map(|name| (name.clone(), Ty::Unknown)).collect();

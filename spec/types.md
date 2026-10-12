@@ -273,6 +273,32 @@ in the backend with `locus L member kind not yet lowered to
 codegen` — a program the gate accepted that could not be built
 (GH #756, the sibling of the member `const`).
 
+### A `type` cannot hold a locus
+
+A `type` is plain data: it is copied by value and has no
+lifecycle, so it can neither own a locus nor keep one alive. A
+struct field, or an enum variant's payload, whose type names a
+locus — the locus itself, an array, `bounded[T; N]` or tuple of
+it, or a stdlib locus (`std::io::tcp::Stream`) — is a type error
+**at the field's type**:
+
+```text
+main.hl:2:17: type error: `type Layer`: field `w` holds the locus `M`.
+A `type` is plain data with no lifecycle: it is copied by value, so it
+can neither own a locus nor keep one alive. Hold the locus in a locus
+instead: make `Layer` a locus with a `params { ... }` field of type
+`M`, or pass the `M` as a parameter where it is used.
+```
+
+A locus lives in a locus: a `params` field (the owner holds it
+for its life) or a parameter. An interface is not a locus here: a
+`type` may hold an interface-typed field, which is a handle (a
+fat pointer) rather than an owned locus.
+
+Before this rule the checker accepted the field and the backend
+refused it with `unknown type name in signature` and no source
+location — a program the gate accepted that could not be built.
+
 ### `const` is a top-level declaration
 
 A locus body may not declare a `const`. `const NAME: T = value;`

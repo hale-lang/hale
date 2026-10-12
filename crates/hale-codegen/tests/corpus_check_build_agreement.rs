@@ -1803,3 +1803,74 @@ fn every_bare_builtin_name_is_classified() {
         unclassified
     );
 }
+
+/// A shape `hale check` accepted and `hale build` refused, with a
+/// message that named lowering rather than the program and, for most,
+/// no file or line (downstream handoff), now refused by the check: its
+/// one error, the source it points at, the head of its message, and
+/// the sweep's verdict. Each case is `(program, located at, message
+/// head)`; the programs are plain string literals, for the reason given
+/// above.
+fn assert_refused_by_the_check(cases: &[(&str, &str, &str)], tag: &str) {
+    for (i, (src, at, head)) in cases.iter().enumerate() {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
+        assert_eq!(errors[0].span.slice(src), *at, "located at the construct:\n{}", src);
+        assert!(errors[0].message.starts_with(head), "{}\n{}", errors[0].message, src);
+        assert_eq!(
+            sweep_verdict(src, &format!("hale_cb_{tag}_{i}")),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}
+
+/// The neighbour of a refused shape that does lower, so the rule stays
+/// exactly as wide as the build's refusal.
+fn assert_built(src: &str, tag: &str) {
+    assert_eq!(sweep_verdict(src, tag), Verdict::Built, "check-clean and buildable:\n{}", src);
+}
+
+/// A `type` holding a locus, as a field or an enum variant's payload:
+/// lowering looked the locus up as a type ("unknown type name `M` in
+/// signature"). A `type` holding an interface (a fat pointer) lowers.
+#[test]
+fn a_locus_in_a_type_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Layer { w: M; }\n\
+                 fn main() { let l = Layer { w: M { } }; println(l.w.n); }\n",
+                "M",
+                "`type Layer`: field `w` holds the locus `M`. A `type` is plain data",
+            ),
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Layer { ws: [M; 2]; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "[M; 2]",
+                "`type Layer`: field `ws` holds the locus `M`.",
+            ),
+            (
+                "locus M { params { n: Int = 1; } }\n\
+                 type Pick = enum { One(M), Neither };\n\
+                 fn main() { println(\"x\"); }\n",
+                "M",
+                "`type Pick`: variant `One` holds the locus `M`.",
+            ),
+        ],
+        "locus_in_type",
+    );
+    assert_built(
+        "interface Sized { fn size() -> Int; }\n\
+         locus Box { params { v: Int = 1; } fn size() -> Int { return self.v; } }\n\
+         type Holder { item: Sized; }\n\
+         fn main() { let h = Holder { item: Box { } }; println(h.item.size()); }\n",
+        "hale_cb_interface_in_type",
+    );
+}
+
