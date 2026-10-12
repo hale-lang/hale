@@ -40,19 +40,21 @@ simplifies tooling.
   - `PascalCase` for type names, locus names, perspective names.
   - `snake_case` for variables, fields, function names.
   - `SCREAMING_SNAKE_CASE` for constants.
-- Reserved words (see below) are not legal identifiers.
+- Hard keywords (see below) are not legal identifiers. Contextual
+  keywords are: each is a keyword only in the position that gives it
+  meaning, and an identifier everywhere else.
 
 There is **no escaped-identifier form**: a reserved word cannot be
 spelled as a name by quoting, prefixing or backslashing it. The only
 fix for a collision is a different name.
 
-A reserved word written where a name belongs — a `params` field, a
+A hard keyword written where a name belongs — a `params` field, a
 local, a `fn` / method / parameter, a struct field, a locus or type
 name — is a parse error reported **once, at the word**, naming the
 word and the declaration it was written in:
 
 ```text
-work.hl:8:9: parse error: `epoch` is a reserved word and cannot name
+work.hl:8:9: parse error: `await` is a reserved word and cannot name
 a params field; rename it (Hale has no escaped-identifier form —
 spec/tokens.md lists every reserved word)
 ```
@@ -67,7 +69,38 @@ again. This section is the canonical list the diagnostic points at.
 
 ## Reserved words (keywords)
 
-### Declaration keywords
+Hale has two kinds of keyword (decision F.43):
+
+- **Hard keywords** lex as their own tokens and are never names: the
+  declaration keywords, the statement / expression keywords, and the
+  words reserved for future use.
+- **Contextual keywords** lex as identifiers and are recognized only
+  in the position that gives them meaning. Everywhere else they are
+  ordinary names: a field, a `params` field, a parameter, a local, an
+  enum variant, a struct-literal field, a member read, a `fn`. Every
+  family below other than the declaration, statement / expression and
+  future-use words is contextual, and each section says where its
+  words are keywords.
+
+Two declarations of a contextual word stay refused, because the name
+would collide with the syntax the word introduces at the use site:
+
+- a **locus method** named like a lifecycle hook, the failure handler
+  or a mode (`fn run()`, `fn on_failure()`, `fn bulk()` inside a
+  locus) — that name IS the hook, and `self.bulk()` runs the mode:
+
+  ```text
+  work.hl:2:8: parse error: a locus method cannot be named `run`: that
+  name is the `run` lifecycle hook — declare the hook as `run() { … }`
+  (no `fn`), or rename the method. …
+  ```
+
+- a **free fn** named like a recovery statement (`fn restart(…)`) —
+  `restart(x);` at statement head is the recovery statement, so a call
+  to the fn could not be written as one. A locus method of the name is
+  reached through a receiver and stays legal.
+
+### Declaration keywords (hard)
 
 ```
 locus           perspective     type            const
@@ -85,16 +118,19 @@ fn params, fn returns, locus param/field values, and
 arrays remain gated on the broader composite-construction
 coercion design (same gap as tuple-of-`LocusRef` escape).
 
-### Locus member keywords
+### Locus member keywords (contextual)
 
 ```
 params          contract        bus             capacity
 as_parent_for   indexed_by
 ```
 
-`capacity` introduces an F.22 `capacity { ... }` block carrying
+`params`, `contract`, `bus` and `capacity` are keywords at
+locus-member position, where each introduces its block (`params` and
+`bus` also at perspective-member position). `capacity` introduces an
+F.22 `capacity { ... }` block carrying
 zero or more `pool X of T;` / `heap Y of T;` slot declarations.
-`as_parent_for` and `indexed_by` are **hard keywords** used only
+`as_parent_for` and `indexed_by` are keywords only
 in slot-clause position inside a capacity block: `pool P of T
 as_parent_for ChildL;` (v1.x-4 — share the slot's allocator with
 a child locus's same-named slot at accept time) and `pool P of T
@@ -107,14 +143,21 @@ in slot-decl head position inside a capacity block. So
 all stay admissible outside capacity blocks. Same F.10-style
 narrowing the closure-keyword family uses for `approx` / `within`.
 
-### Lifecycle keywords
+### Lifecycle keywords (contextual)
 
 ```
 birth           accept          release         run
 drain           dissolve        on_failure
 ```
 
-### Mode keywords
+Keywords at locus-member position, where each introduces its hook
+(`run() { … }`, `accept(c: Child) { … }`, `on_failure(c: Child)
+{ … }`); `birth` and `dissolve` also name an `epoch` spec inside a
+closure body, and a `@phase_effects( … )` key or a claim's `during`
+phase names any of them. A field, parameter, local or free fn may be
+named `run`; a locus METHOD may not (above).
+
+### Mode keywords (contextual)
 
 ```
 bulk            harmonic        resolution
@@ -127,14 +170,20 @@ lexes as an ordinary Ident, so `cam.mode: Int` and similar
 param/field uses are admissible — relevant for raylib-style
 bindings where `mode` is a natural API name. Same F.10-style
 narrowing as `bindings`, `birth_check`, `pool`, `heap`.
-`bulk` / `harmonic` / `resolution` remain reserved (they sit in
-member-name position via `try_keyword_as_name`).
+`bulk` / `harmonic` / `resolution` are keywords right after `mode`;
+`self.bulk()` calls the mode, which is why a locus method may not
+take one of the three names.
 
-### Projection-class keywords
+### Projection-class keywords (contextual)
 
 ```
 projection      rich            chunked         recognition
+tier
 ```
+
+Keywords in a locus header's post-`:` list (`locus Cache : tier 1,
+projection rich`); `rich`, `chunked` and `recognition` also in type
+position when a `<` follows (`rich<Sample>`).
 
 ### Placement keywords (F.31)
 
@@ -158,7 +207,7 @@ A..B, replicas = K)`). All are contextual idents — outside their
 positions they lex as ordinary Idents
 and can name fns / vars / fields (same F.10-style narrowing the
 closure / mode keyword families use). Note L3-domain names go
-through the identifier rule, so a **hard** keyword (e.g. `bulk`)
+through the identifier rule, so a **hard** keyword (e.g. `match`)
 can't name a domain — use a plain identifier. `cores` range
 bounds and set elements are integer literals; the range reuses
 the expression tokens `..` (exclusive) / `..=` (inclusive).
@@ -168,12 +217,16 @@ cooperative | pinned` per-locus annotation no longer exists.
 Placement is a `main`-only deployment seam (`bindings`'s
 sibling), not a per-locus annotation.
 
-### Closure keywords
+### Closure keywords (contextual)
 
 ```
 closure         epoch           persists_through    resets_on
 resets_per_epoch
 ```
+
+`closure` is a keyword at locus-member position (`closure NAME
+{ … }`); the other four lead a clause inside a closure body — `epoch`
+when an epoch spec follows it, the three lists when their `(` does.
 
 `approx` and `within` are **contextual keywords**, recognized
 only inside a `closure { ... }` block body (and only in the
@@ -194,12 +247,18 @@ a closure clause). Both lex as ordinary Idents elsewhere — so
 `let captures = ...` and `fn inline(...)` stay admissible
 outside closure bodies. Same F.10-style narrowing.
 
-### Recovery primitives
+### Recovery primitives (contextual)
 
 ```
 restart         restart_in_place    quarantine      reorganize
 bubble
 ```
+
+Keywords at statement head when a `(` follows (`restart(c) for 3;`,
+`bubble(err);`), and as event names in `persists_through( … )` /
+`resets_on( … )`. Elsewhere they are names (`self.restart`, `let
+restart = …`, `fn restart()` in a locus); a free fn may not take one
+(above).
 
 `violate` (v1.x-VIOLATE, F.27) is a **contextual keyword**:
 recognized only as the leading token of a statement inside a
@@ -211,23 +270,38 @@ stay admissible. The optional trailing `with` in
 `with` (no longer reserved-for-future-use); recognized only as
 the separator before the payload expression in this production.
 
-### Contract keywords
+### Contract keywords (contextual)
 
 ```
 expose          consume         inferred
 ```
 
-### Bus keywords
+Keywords inside a `contract { }` block (`expose` / `consume` at a
+member's head) and after a `params` / `contract` head's `:`
+(`inferred`).
+
+### Bus keywords (contextual)
 
 ```
 subscribe       publish         on              of
+where
 ```
 
-### Perspective keywords
+Keywords inside a `bus { }` block (`subscribe` / `publish` at a
+member's head, `of type T` after the subject, `where key == …` on a
+keyed subscription), in a capacity slot (`heap items of T`), in a
+claim (`publish T;` / `subscribe T;` grants, `bound C <= N on paths
+from G`) and after a binding entry (`where same_process`). `publish`
+is also an effect-class name and an `@effects(publish: { … })` key.
+
+### Perspective keywords (contextual)
 
 ```
 stable_when     serialize_as    serves          reperspective
 ```
+
+`stable_when` and `serialize_as` lead a member of a `perspective`
+block.
 
 `serves` (Phase 2a) is a **contextual keyword** —
 recognized only in a locus header's post-`:` list, as the
@@ -244,14 +318,19 @@ constructor: `perspective(P)` in type position is a handle to the
 contract `P`. The parser recognizes it by the `perspective`
 token followed by `(`.
 
-### Statement / expression keywords
+### Statement / expression keywords (hard)
 
 ```
 let             mut             if              else
 match           for             in              while
 return          break           continue        true
-false           nil             tier            self
+false           nil             self
 ```
+
+These are hard keywords. `tier` moved to the projection-class words
+(contextual); `in` after `.` is a member name (`d.in(s)`), and
+`locus`, `type` and `perspective` are member names after `.` too
+(`err.locus`).
 
 Bindings are immutable by default. `let mut x = ...` declares a
 mutable binding; reassignment via `x = ...` is permitted. Without
@@ -293,7 +372,7 @@ compiler warning. A scalar declaration (a quantity, a point, an
 identity, a range) or a `unit` of such a name is an error
 (spec/units.md § The laws, law 12).
 
-### Reserved for future use (not yet legal)
+### Reserved for future use (hard; not yet legal)
 
 ```
 trait           impl            async           await
@@ -306,7 +385,7 @@ as a contextual keyword inside the `violate_stmt` production.
 recognizes it as the suffix keyword on `binding_entry` carrying
 operational constraints.)
 
-`yield` is a real statement keyword (m26b) — explicit
+`yield` is a statement keyword (m26b) — explicit
 cooperative yield point; lowers to a bus-queue drain in
 codegen. Listed under cooperative-scheduler keywords.
 
@@ -315,12 +394,16 @@ current locus's lifecycle from inside one of its own methods
 (the locus analogue of `return`). Only valid inside a locus
 method body. See spec/semantics.md § "terminate".
 
-### Cooperative-scheduler keywords
+### Cooperative-scheduler keywords (contextual)
 
 ```
 yield
 terminate
 ```
+
+Keywords at statement head when `;` follows (`yield;`,
+`terminate;`); names everywhere else (`fn yield_now()`, `let
+terminate = …`, `self.terminate`).
 
 ### Fallible / error-addressing keywords (v1.x-FORM-1)
 
@@ -867,8 +950,10 @@ its named alias `span_max`.
 ## Tokenization rules
 
 - Longest match: `==` is one token, not `=` followed by `=`.
-- Keywords win over identifiers: `run` is the lifecycle keyword,
-  not an identifier.
+- Hard keywords win over identifiers: `match` is the keyword, never
+  an identifier. A contextual keyword (`run`, `epoch`, `restart`)
+  lexes as an identifier, and the parser reads it as the keyword
+  only in its position.
 - Numeric literals are recognized greedily up to the first
   non-numeric character (after handling `0x`, `0o`, `0b`
   prefixes, decimal point, exponent, and type suffix).

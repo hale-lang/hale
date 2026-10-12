@@ -79,7 +79,7 @@ main locus ChatServer {
     }
     on_failure(g: SpamGuard, err: ClosureViolation) {
         println("! ", err.closure, " failed on ", err.locus, " — restarting");
-        restart (g);
+        restart(g);
     }
     claims {
         guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;

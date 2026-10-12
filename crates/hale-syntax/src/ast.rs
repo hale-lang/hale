@@ -3200,6 +3200,23 @@ pub enum RecoveryOp {
     Bubble,
 }
 
+impl RecoveryOp {
+    /// The op a statement-head word spells (`restart`, `bubble`, ...).
+    /// The words are contextual keywords: a recovery statement is the
+    /// word followed by `(` at statement head, and the same spelling is
+    /// an ordinary name everywhere else.
+    pub fn from_word(word: &str) -> Option<RecoveryOp> {
+        Some(match word {
+            "restart" => RecoveryOp::Restart,
+            "restart_in_place" => RecoveryOp::RestartInPlace,
+            "quarantine" => RecoveryOp::Quarantine,
+            "reorganize" => RecoveryOp::Reorganize,
+            "bubble" => RecoveryOp::Bubble,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecoveryModifier {
     For(Expr),

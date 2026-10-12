@@ -66,11 +66,11 @@ main locus App {
     }
     on_failure(c: Kid, err: ClosureViolation) {
         self.kid_failures = self.kid_failures + 1;
-        restart (c) for 3;
+        restart(c) for 3;
     }
     on_failure(c: Fresh, err: ClosureViolation) {
         self.fresh_failures = self.fresh_failures + 1;
-        restart_in_place (c);
+        restart_in_place(c);
     }
     run() {
         std::test::assert_eq_int(std::io::tcp::__on_pool(), 0, "App's run() is on the main thread");

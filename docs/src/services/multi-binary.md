@@ -181,7 +181,7 @@ main locus App {
     bindings { Evt: unix("/tmp/evt.sock", role: connect); }
     bus { publish Evt; }
     on_failure(t: std::bus::UnixTransport, err: ClosureViolation) {
-        restart (t);     // re-run the connect-with-retry
+        restart(t);      // re-run the connect-with-retry
     }
     run() { Evt <- Reading { v: 1 }; }
 }

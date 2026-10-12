@@ -109,44 +109,64 @@ The same holds for a locus's or a perspective's `params`, a
 `contract`'s members and an interface's methods — a name is one
 slot.
 
-## Some ordinary words are reserved
+## Framework words are names too
 
-Hale's keywords are ordinary English: `epoch`, `where`, `rich`,
-`tier`, `capacity`, `release`, `restart`, `run`, `drain`, `on`,
-`of`, `publish`. They are good words, which is exactly why they
-are easy to reach for as a name — and they are not available as
-one:
+Hale's vocabulary is ordinary English: `run`, `epoch`, `restart`,
+`capacity`, `tier`, `where`, `of`, `publish`. Each word means
+something in one place — `run() { … }` at the head of a locus member,
+`epoch tick;` inside a closure, `restart(c) for 3;` at the head of a
+statement — and anywhere else it is a plain name:
+
+```hale
+type Job { run: Int; epoch: Int; restart: Bool; }
+
+fn run(capacity: Int) -> Int {
+    let where = capacity + 1;
+    return where;
+}
+```
+
+Two declarations stay refused, because the name would collide with
+the syntax at its use. A locus method cannot be named like a
+lifecycle hook or a mode — `fn run()` inside a locus is the `run`
+hook spelled wrong, and the compiler says so:
+
+```text
+work.hl:2:8: parse error: a locus method cannot be named `run`: that
+name is the `run` lifecycle hook — declare the hook as `run() { … }`
+(no `fn`), or rename the method. …
+```
+
+And a free fn cannot be named like a recovery statement: `restart(x);`
+at the head of a statement IS the recovery, so `fn restart(…)` could
+never be called there.
+
+A handful of words are reserved outright — the ones that start a
+declaration or a statement anywhere (`fn`, `type`, `let`, `if`,
+`match`, `return`, `self`, …) and the ones held for future syntax
+(`async`, `await`, `trait`, `impl`, `macro`):
 
 ```hale,fragment
-params { epoch: Int = 0; }        // no
-let where = 3;                    // no
-fn restart() { }                  // no
+let match = 3;                    // no
 ```
 
 The compiler says so at the word, once, naming what you were
 declaring:
 
 ```text
-work.hl:8:9: parse error: `epoch` is a reserved word and cannot
-name a params field; rename it (Hale has no escaped-identifier
-form — spec/tokens.md lists every reserved word)
-        epoch: Int = 0;
-        ^^^^^
+work.hl:8:9: parse error: `match` is a reserved word and cannot
+name a variable; rename it (Hale has no escaped-identifier form —
+spec/tokens.md lists every reserved word)
+        let match = 3;
+            ^^^^^
 ```
 
 There is no way to escape or quote a reserved word into a name.
-Rename it — `epoch_id`, `where_clause`, `restart_now` — and
-nothing else about the program changes. Every use of the same
-word further down is part of that one mistake, so you get one
-error, not one per line, and the rest of the file still parses
-normally.
-
-The full list lives in `spec/tokens.md`. A word being a keyword
-somewhere does not always make it unavailable everywhere: a few
-are recognized only in position (`mode`, `pool`, `with`, `seed`
-are free as names), and a few of the hard ones are deliberately
-admitted as *field* names, so `type Cmd { run: Int; tier: Int; }`
-is fine even though `let run = 1;` is not.
+Rename it and nothing else about the program changes. Every use of
+the same word further down is part of that one mistake, so you get
+one error, not one per line, and the rest of the file still parses
+normally. The full list, with the one position each framework word
+is a keyword in, lives in `spec/tokens.md`.
 
 ## The primitive types
 

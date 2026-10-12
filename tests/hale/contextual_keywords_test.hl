@@ -1,0 +1,72 @@
+// Friction sweep 2026-10-12 (F.43): the framework vocabulary is
+// contextual. `run`, `epoch`, `restart`, `capacity`, `bulk`, `tier`,
+// `where`, `of`, `publish` and the rest are keywords only in the one
+// position that gives them meaning, and names everywhere else: type
+// fields, params fields, parameters, locals, enum variants, free fns
+// and locus methods. The hooks, the closure clauses and the recovery
+// statements below still mean what they meant.
+type Job {
+    run: Int;
+    epoch: Int;
+    restart: Bool = false;
+    capacity: Int = 4;
+    tier: Int = 1;
+}
+
+type Phase = enum { birth, run, drain, dissolve };
+
+fn run(job: Job) -> Int { return job.run + job.epoch; }
+fn epoch(of: Int, where: Int) -> Int { return of * where; }
+fn capacity(bulk: Int) -> Int {
+    let publish = bulk + 1;
+    let subscribe = publish * 2;
+    return subscribe;
+}
+
+fn phase_name(p: Phase) -> String {
+    let mut name = "";
+    match p {
+        Phase::birth -> { name = "birth"; },
+        Phase::run -> { name = "run"; },
+        Phase::drain -> { name = "drain"; },
+        Phase::dissolve -> { name = "dissolve"; },
+    }
+    return name;
+}
+
+locus Worker {
+    params { epoch: Int = 0; restart: Int = 0; harmonic: Int = 3; }
+    // A locus method may take any contextual word but a hook's or a
+    // mode's name; `restart` is reached through a receiver.
+    fn restart() -> Int { return self.restart + 10; }
+    fn advance(tier: Int) { self.epoch = self.epoch + tier; }
+}
+
+locus Board {
+    params { w: Worker = Worker { epoch: 5 }; yield: Int = 0; terminate: Int = 0; }
+    on_failure(c: Worker, err: ClosureViolation) { restart(c) for 3; }
+    run() {
+        self.w.advance(2);
+        self.yield = self.w.epoch;
+        self.terminate = self.w.restart();
+        yield;
+    }
+}
+
+main locus App {
+    params { b: Board = Board { }; }
+    run() {
+        let job = Job { run: 2, epoch: 3 };
+        let where = run(job);
+        std::test::assert_eq_int(where, 5, "a free fn named `run` over fields `run` and `epoch`");
+        std::test::assert_eq_int(epoch(2, 7), 14, "a free fn `epoch` with params `of` and `where`");
+        std::test::assert_eq_int(capacity(4), 10, "locals `publish` and `subscribe`");
+        std::test::assert_eq_int(job.capacity + job.tier, 5, "field defaults named `capacity` and `tier`");
+        std::test::assert(!job.restart, "a Bool field named `restart`");
+        std::test::assert_eq_str(phase_name(Phase::run), "run", "an enum variant named `run`");
+        std::test::assert_eq_int(self.b.yield, 7, "a params field named `yield`, a method param named `tier`");
+        std::test::assert_eq_int(self.b.terminate, 10, "a locus method named `restart`");
+    }
+}
+
+fn main() { App { }; }

@@ -2049,7 +2049,7 @@ acted on. Consequences, all normative:
   main locus declares
   `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`
   — the handler receives a synthetic `link_lost` violation, and
-  `restart (t);` re-runs the connect-with-retry; on success the
+  `restart(t);` re-runs the connect-with-retry; on success the
   binding resumes, on failure (or a handler that declines) the
   structural exit fires. Reconnection is a supervision decision,
   not a transport feature. `LOTUS_BUS_CONFIG` connect routes sit

@@ -51,7 +51,7 @@ locus Auditor {
     on_failure(c: Counter, err: ClosureViolation) {
         println("Auditor: tick violation in ", err.closure,
             " (diff=", err.diff, ") — quarantining");
-        quarantine (c);
+        quarantine(c);
     }
 
     bus {
