@@ -316,6 +316,23 @@ fn classify_generic_angles(tokens: &[Token]) -> Vec<bool> {
                         break;
                     }
                 }
+                // `Box<Decimal<18>>`: the lexer reads the two closers
+                // as one `>>`, which closes this level (and the one
+                // around it, whose own scan finds the same token).
+                // Only where a type ends: `a < b >> c` is a comparison
+                // of a shift.
+                Shr if tokens.get(j + 1).map_or(true, |t| {
+                    matches!(&t.kind, Semi | Comma | Eq | RParen | RBracket | LBrace | RBrace | Gt | Shr)
+                        || matches!(&t.kind, Ident(w) if w == "fallible")
+                }) =>
+                {
+                    closers.push(j);
+                    if depth <= 2 {
+                        ok = true;
+                        break;
+                    }
+                    depth -= 2;
+                }
                 Ident(_) | Comma | ColonColon | LBracket | RBracket
                 | IntLit(_) | Semi => {}
                 _ => break,
@@ -371,10 +388,10 @@ impl<'a> SpaceCx<'a> {
         if matches!(p, Lt) && self.generic_angle[pi] {
             return false;
         }
-        if matches!(n, Gt) && self.generic_angle[ni] {
+        if matches!(n, Gt | Shr) && self.generic_angle[ni] {
             return false;
         }
-        if matches!(p, Gt) && self.generic_angle[pi] {
+        if matches!(p, Gt | Shr) && self.generic_angle[pi] {
             // `Box<Int> ` — space after a closing generic angle
             // unless the next token attaches (call paren, comma…).
             return !matches!(
@@ -734,6 +751,17 @@ mod tests {
         // a keyword NOT after `.` still starts an operand: `return -1`
         let out = fmt("fn h() -> Int {\n    return -1;\n}\n");
         assert!(out.contains("return -1;"), "{}", out);
+    }
+
+    /// `Box<Decimal<18>>`: the lexer reads the two closers as one `>>`,
+    /// which still closes two generic levels tight; a shift stays one.
+    #[test]
+    fn nested_generic_closers_stay_tight() {
+        let out = fmt("type P {\n    b: Box<Decimal<18>>;\n    c: Box<Box<Int>>;\n}\nfn f(a: Int, b: Int) -> Bool {\n    return a < b >> 1;\n}\n");
+        assert_eq!(
+            out,
+            "type P {\n    b: Box<Decimal<18>>;\n    c: Box<Box<Int>>;\n}\nfn f(a: Int, b: Int) -> Bool {\n    return a < b >> 1;\n}\n"
+        );
     }
 
     #[test]
