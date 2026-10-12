@@ -248,20 +248,38 @@ type __StdApiRpcEntry {
     correlation: Int = 0;
     lost: Bool = false;
     body: String = "";
-    caller: std::api::Principal = std::api::Principal { };
+    // the caller, field by field: a record held in a vec form gives its
+    // String fields back when `set` replaces it, but not a nested
+    // record's, so a nested Principal stayed in the table's arena at
+    // every replace (~260 B a call)
+    caller_mode: String = "local";
+    caller_name: String = "local";
+    caller_uid: Int = -1;
+    caller_gid: Int = -1;
+    caller_pid: Int = -1;
+    caller_groups: String = "";
+    caller_via: String = "";
     role: String = "";
 }
 
+fn __api_rpc_entry(rid: Int, state: Int, slot: Int, member: Int, gen: Int, correlation: Int, lost: Bool, body: String, caller: std::api::Principal, role: String) -> __StdApiRpcEntry {
+    return __StdApiRpcEntry { rid: rid, state: state, slot: slot, member: member, gen: gen, correlation: correlation, lost: lost, body: body, caller_mode: caller.mode, caller_name: caller.name, caller_uid: caller.uid, caller_gid: caller.gid, caller_pid: caller.pid, caller_groups: caller.groups, caller_via: caller.via, role: role };
+}
+
+fn __api_rpc_entry_caller(e: __StdApiRpcEntry) -> std::api::Principal {
+    return std::api::Principal { mode: e.caller_mode, name: e.caller_name, uid: e.caller_uid, gid: e.caller_gid, pid: e.caller_pid, groups: e.caller_groups, via: e.caller_via };
+}
+
 fn __api_rpc_entry_state(e: __StdApiRpcEntry, st: Int) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: st, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: e.lost, body: e.body, caller: e.caller, role: e.role };
+    return __StdApiRpcEntry { rid: e.rid, state: st, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: e.lost, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
 }
 
 fn __api_rpc_entry_gen(e: __StdApiRpcEntry, g: Int) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: g, correlation: e.correlation, lost: e.lost, body: e.body, caller: e.caller, role: e.role };
+    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: g, correlation: e.correlation, lost: e.lost, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
 }
 
 fn __api_rpc_entry_lost(e: __StdApiRpcEntry) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: true, body: e.body, caller: e.caller, role: e.role };
+    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: true, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
 }
 
 /// The first role of a comma-joined list.
@@ -706,7 +724,7 @@ locus __StdApiExposure {
             self.hello_sent[slot] = 1;
         }
         self.inflight = self.inflight + 1;
-        self.admit(__StdApiRpcEntry { rid: rid, state: 1, slot: slot, member: m, gen: self.slot_gen[slot], correlation: i.correlation, lost: false, body: body, caller: who, role: __api_rpc_first(req) });
+        self.admit(__api_rpc_entry(rid, 1, slot, m, self.slot_gen[slot], i.correlation, false, body, who, __api_rpc_first(req)));
         self.pump(slot);
     }
     // The pending table holds the requests accepted and not yet answered
@@ -771,7 +789,7 @@ locus __StdApiExposure {
         if e.lost {
             self.transport.close_connection(e.correlation);
         } else {
-            self.transport.reply(e.correlation, e.rid, e.caller, outcome);
+            self.transport.reply(e.correlation, e.rid, __api_rpc_entry_caller(e), outcome);
         }
     }
     fn unavailable(k: Int) {
@@ -828,7 +846,7 @@ locus __StdApiExposure {
         }
         self.entries.set(best, __api_rpc_entry_state(e, 2)) or discard;
         self.slot_busy[slot] = e.rid;
-        __ApiRpcCallT <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: e.caller, role: e.role } or self.gone_dispatch(slot);
+        __ApiRpcCallT <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: __api_rpc_entry_caller(e), role: e.role } or self.gone_dispatch(slot);
     }
     // The bus found no subscriber to hand the call to: the receiver is
     // draining or gone. The call, and every call queued behind it, did not run.

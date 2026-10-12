@@ -122,3 +122,88 @@ fn cross_thread_flood_to_pinned_mailbox_is_bounded() {
         rss
     );
 }
+
+/// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
+/// handler inside the `Source`'s post, and that handler publishes a
+/// `Reply`. The nested publish used to clear the wire deserializer the
+/// outer post had set before the outer cell read it (the cell then ran as
+/// a materialized struct, its serialized bytes read as pointers), and to
+/// re-encode into the thread's wire buffer that the outer post's small
+/// payload, and the publisher's next subscriber, still read. Two sinks,
+/// so a publisher fans one encode out past a post that drained inline.
+/// `@PAD@` sets the body: a short one stays in the cell, a 700-byte one
+/// spills to the heap.
+const REENTRANT_FLOOD: &str = r#"
+    type Tick { n: Int; body: String; }
+    type Reply { body: String; }
+    locus Sink {
+        params { count: Int = 0; n: Int = 0; bad: Int = 0; pad: String = ""; tag: String = ""; }
+        bus { subscribe "tick" as on_tick of type Tick; publish "reply" of type Reply; }
+        fn on_tick(t: Tick) {
+            "reply" <- Reply { body: "nested" };
+            if t.body != self.pad + to_string(t.n) { self.bad = self.bad + 1; }
+            self.count = self.count + 1;
+            if self.count == self.n { println(self.tag + " ticks=" + to_string(self.count) + " bad=" + to_string(self.bad)); }
+        }
+    }
+    locus Echo {
+        params { count: Int = 0; bad: Int = 0; }
+        bus { subscribe "reply" as on_reply of type Reply; }
+        fn on_reply(r: Reply) {
+            if r.body != "nested" { self.bad = self.bad + 1; }
+            self.count = self.count + 1;
+            if self.count == 20000 { println("replies=" + to_string(self.count) + " bad=" + to_string(self.bad)); }
+        }
+    }
+    locus Source {
+        params { n: Int = 0; pad: String = ""; }
+        bus { publish "tick" of type Tick; }
+        birth() { let mut i = 0; while i < self.n { "tick" <- Tick { n: i, body: self.pad + to_string(i) }; i = i + 1; } }
+    }
+    fn main() {
+        let pad = @PAD@;
+        Echo { };
+        Sink { n: 10000, pad: pad, tag: "a" };
+        Sink { n: 10000, pad: pad, tag: "b" };
+        Source { n: 10000, pad: pad };
+    }
+"#;
+
+/// Every body arrives intact, in both dispatch modes, plain and under ASan
+/// with chunk pooling off (GH #816).
+fn reentrant_flood_delivers_every_body(name: &str, pad: &str) {
+    let src = REENTRANT_FLOOD.replace("@PAD@", pad);
+    for asan in [false, true] {
+        for no_bus_devirt in [false, true] {
+            let what = format!("{name}: asan={asan}, no_bus_devirt={no_bus_devirt}");
+            let bin = harness::unique_bin(&format!("hale_bus_bp_{name}_{asan}_{no_bus_devirt}"));
+            let options = hale_codegen::BuildOptions { asan, no_bus_devirt, ..build_opts::options() };
+            build_opts::build_source(&src, &bin, &options).unwrap_or_else(|e| panic!("{what}: build: {e:?}"));
+            let out = Command::new("timeout")
+                .arg("120")
+                .arg(&bin)
+                .env("ASAN_OPTIONS", "detect_leaks=0")
+                .env("LOTUS_NO_CHUNK_POOL", "1")
+                .output()
+                .expect("run");
+            let _ = std::fs::remove_file(&bin);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(!stderr.contains("ERROR: AddressSanitizer"), "{what}: the sanitizer reported\n{stderr}");
+            assert_eq!(out.status.code(), Some(0), "{what}: exit\n{stdout}\n{stderr}");
+            let mut lines: Vec<&str> = stdout.lines().collect();
+            lines.sort();
+            assert_eq!(lines, ["a ticks=10000 bad=0", "b ticks=10000 bad=0", "replies=20000 bad=0"], "{what}\n{stderr}");
+        }
+    }
+}
+
+#[test]
+fn a_flood_whose_handler_publishes_keeps_small_payloads_intact() {
+    reentrant_flood_delivers_every_body("reentrant_small", "\"b\"");
+}
+
+#[test]
+fn a_flood_whose_handler_publishes_keeps_spilled_payloads_intact() {
+    reentrant_flood_delivers_every_body("reentrant_spilled", "std::str::repeat(\"x\", 700)");
+}

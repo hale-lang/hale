@@ -1049,19 +1049,29 @@ server loop — an accept / recv that never returns), the locus
 arena never dissolves, so every delivery's payload fields
 (String / Bytes) piled up unboundedly (~one payload's heap per
 message; measured ~320 MiB over 20k 16-KiB deliveries). The fix
-deserializes each wire cell into a fresh **per-delivery
-subregion** of the subscriber's arena, destroyed the instant the
-handler returns (alongside the existing per-cell payload free).
-This gives the deserialized payload exactly the lifetime the
-same-thread (inline) delivery path already gives it — alive for
-the handler, reclaimed after — and is safe for the
-`self.current_kernel = msg` retention pattern because a
-locus-field store deep-copies nested String / Bytes fields into
-the *locus* arena (the only way user code can retain payload
-data: address-taking is disallowed, so the payload pointer itself
-never escapes the handler). A subscriber on the same thread as
-its publisher, or a payload with no owned fields, is unaffected
-(no wire cell, no subregion).
+deserializes each wire cell into a fresh **per-delivery region**,
+destroyed the instant the handler returns (alongside the existing
+per-cell payload free): alive for the handler, reclaimed after.
+That is safe for the `self.current_kernel = msg` retention pattern
+because a locus-field store deep-copies nested String / Bytes
+fields into the *locus* arena (the only way user code can retain
+payload data: address-taking is disallowed, so the payload pointer
+itself never escapes the handler). The region is its own arena
+(on the subscriber's NUMA node), not a subregion of the
+subscriber's: a handler may end its own locus (`terminate;`),
+freeing that arena before the drain destroys the region.
+
+**Every wire delivery takes the wire cell (2026-10-11).** A
+subscriber on its publisher's thread kept the deserialize-at-
+dispatch path, and that path deserialized straight into the
+subscriber's locus arena — the same per-delivery leak, on the
+thread it was thought absent from. A served exposure, whose
+transport publishes each request's ingress to it on the same
+thread, kept every request's raw bytes for good (~240 B a call).
+Now every subscriber of a wire-format publish (`dispatch_wire`,
+its keyed variant, the static devirt path) gets a wire cell and a
+per-delivery region, on any thread. A payload with no owned
+fields (the flat paths) is unaffected (no wire cell, no region).
 
 **"The instant the handler returns" includes parks (GH #781,
 2026-09-19).** On a `where async_io` pool the handler runs on a
@@ -1072,7 +1082,7 @@ drain's stack cell (which the handler's pointer aimed into) was
 overwritten by the next dequeue, while the spilled heap payload and
 the subregion were never reclaimed at all on that path. All of a
 delivery's payload storage — the cell's inline bytes, a spilled heap
-payload, and the per-delivery subregion above — therefore belongs to
+payload, and the per-delivery region above — therefore belongs to
 the coro, is released exactly once when the handler returns, and is
 never shared with another delivery. The single-owner rule (§ cell
 stores) is what makes that sufficient: a handler that keeps payload

@@ -595,9 +595,19 @@ fn a_long_lived_connection_does_not_grow_with_the_calls_it_carries() {
     // One connection, call after call. Its read once allocated a blob out
     // of an arena that outlives the read (about 4 KiB of resident memory a
     // call, and the process's capped payload arena in the end); the
-    // connection now reads into one buffer, and what a call costs the
-    // process is what an HTTP call costs it (a few hundred bytes a call, the
-    // runtime's own bookkeeping), not a page.
+    // connection now reads into one buffer. Two more costs a call paid for
+    // the life of the process are gone too: the ingress the exposure
+    // received was deserialized into the exposure's own arena (~240 B a
+    // call), and the pending table's record carried its caller as a nested
+    // record, which replacing the record did not reclaim (~260 B a call).
+    // A call now costs the process nothing that stays.
+    //
+    // Resident memory is read after each of three equal windows of calls.
+    // A cost per call shows in every window; a one-time step of the process
+    // (seen once on CI: +4 MB inside one window of 400 calls, which dozens
+    // of loaded local runs never repeated) lands in one. So the cost of a
+    // call is the smallest window's.
+    const WINDOW: u32 = 150;
     let server = start(64, &[]);
     let mut c = Client::connect(server.port);
     let mut stream = 1u32;
@@ -610,11 +620,15 @@ fn a_long_lived_connection_does_not_grow_with_the_calls_it_carries() {
         }
     };
     run(&mut c, 100);
-    let before = rss_kb(server.pid());
-    run(&mut c, 400);
-    let after = rss_kb(server.pid());
-    let per_call = after.saturating_sub(before) * 1024 / 400;
-    assert!(per_call < 2048, "a call costs the process {per_call} bytes ({before} kB -> {after} kB over 400 calls)");
+    let mut rss = vec![rss_kb(server.pid())];
+    for _ in 0..3 {
+        run(&mut c, WINDOW);
+        rss.push(rss_kb(server.pid()));
+    }
+    let per_call: Vec<u64> = rss.windows(2).map(|w| w[1].saturating_sub(w[0]) * 1024 / WINDOW as u64).collect();
+    let least = *per_call.iter().min().unwrap();
+    eprintln!("bytes a call by window of {WINDOW}: {per_call:?}; resident kB: {rss:?}");
+    assert!(least < 256, "a call costs the process {least} bytes in every window of {WINDOW} calls (bytes a call by window: {per_call:?}; resident kB: {rss:?})");
     assert!(server.finish().status.success());
 }
 
