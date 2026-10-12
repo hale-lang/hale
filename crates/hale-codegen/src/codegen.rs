@@ -19593,6 +19593,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             BasicValueEnum<'ctx>,
         )> = Vec::new();
         for (idx, vinfo) in info.variants.iter().enumerate() {
@@ -19625,12 +19626,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .str_concat(acc.into(), close.into())?
                     .into_pointer_value();
             }
+            // A nested payload's rendering (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let final_bb = self.builder.get_insert_block().unwrap();
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let final_bb = self.builder.get_insert_block().unwrap();
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
+                case_bb,
                 final_bb,
                 acc.into(),
             ));
@@ -19651,7 +19656,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, bb, _)| (*c, *bb))
+            .map(|(c, bb, _, _)| (*c, *bb))
             .collect();
         self.builder
             .build_switch(tag, default_bb, &cases)
@@ -19667,8 +19672,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &dyn inkwell::values::BasicValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = Vec::new();
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         phi.add_incoming(&incoming);
@@ -32085,6 +32090,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             inkwell::values::IntValue<'ctx>,
         )> = Vec::new();
         let default_bb =
@@ -32118,12 +32124,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // A nested payload's comparison (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let end_bb = self
+                .builder
+                .get_insert_block()
+                .expect("builder positioned in enum.eq variant");
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
                 case_bb,
+                end_bb,
                 acc,
             ));
         }
@@ -32149,7 +32163,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, b, _)| (*c, *b))
+            .map(|(c, b, _, _)| (*c, *b))
             .collect();
         self.builder
             .build_switch(lt, default_bb, &cases)
@@ -32168,8 +32182,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // SAFETY: each `acc` has bool_t type; PHI accepts any
         // BasicValue, so we coerce via &inkwell::values::IntValue
         // which implements BasicValue.
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         incoming.push((&mismatch_acc, mismatch_bb));

@@ -1240,7 +1240,12 @@ frees its String and a replaced `Num(Int)` only its block; a
 hashmap `set` of a cell with a unit-only enum field was an internal
 compiler error, a replaced payload enum's block was never retired —
 at least 16 bytes a replace, in a map or a vec — and a vec `get` of
-an element holding one always failed.)
+an element holding one always failed.) An enum in another enum's
+payload (`Outer::X(Inner::A(s))`) is a block the outer enum's block
+points at, copied and retired the same way at any depth. (Before, a
+cell holding one failed to build: the copy's variant switch joined
+its result from each variant's first block, and the nested enum's own
+switch had added blocks after it.)
 
 A nested block in the cell belongs to that cell alone. A value that
 carries a nested block from the same key's current cell, at the same
