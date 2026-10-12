@@ -139,7 +139,11 @@ the scale is the topic's type, so a field round-trips every digit its
 scale holds; a payload's contract shape tags a `Decimal<S>` field
 `d<S>` for `S` other than 9 (`d18`; plain `Decimal` keeps `d`,
 spec/model.md § The shape of a type), so a publisher and a subscriber
-that disagree on a scale disagree on the contract. An api surface's codecs (JSON,
+that disagree on a scale disagree on the contract. The JSON codec
+(`T::to_json` / `T::from_json`, the `json:` tag in spec/semantics.md) writes a
+`Decimal<S>` field as a JSON number with its exact digits and reads it
+back at the field's scale; a number with a nonzero digit past the
+scale is the field's `wrong_type`. An api surface's codecs (JSON,
 protobuf) do not carry a Decimal at any scale (spec/api.md § Codecs):
 a row that names one is refused.
 

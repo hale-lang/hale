@@ -176,8 +176,9 @@ compile error. Arithmetic at every scale truncates toward zero past
 its last place, as plain `Decimal` does; where a digit matters, widen
 first, or round explicitly with `rescale` or `std::decimal::format`.
 
-A `Decimal<S>` prints at its scale (trailing zeros trimmed) and
-crosses the bus as the same 16 bytes at every scale.
+A `Decimal<S>` prints at its scale (trailing zeros trimmed), crosses
+the bus as the same 16 bytes at every scale, and a JSON field of one
+writes and reads its exact digits.
 
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,
