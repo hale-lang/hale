@@ -1506,6 +1506,7 @@ pub fn build_resolved(
         intra_locus: &resolved.intra_locus,
         current_fn: None,
         current_user_fn_ret: None,
+        in_failure_handler: false,
         current_self: None,
         loops: Vec::new(),
         bce_loops: Vec::new(),
@@ -3445,6 +3446,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// any user fn — `return` is rejected there. Inner `None` means
     /// the user fn has no return type (void return).
     pub(crate) current_user_fn_ret: Option<Option<CodegenTy>>,
+    /// Set while lowering an `on_failure` handler body. The handler
+    /// is a void fn with no user-fn frame of its own
+    /// (`current_user_fn_ret` stays `None`, so `violate` is still
+    /// refused there), and a `return;` in it ends the handler the way
+    /// its fall-through does: the frame torn down without a drain,
+    /// then `ret void` (`lower_return_inner`). Read only where
+    /// `current_user_fn_ret` is `None`, so a fn synthesized while the
+    /// handler lowers never sees it.
+    pub(crate) in_failure_handler: bool,
     /// Set while lowering a locus lifecycle method body so that
     /// `self.X` reads/writes lower to GEP+load/store on the struct
     /// pointer passed as the method's first arg.
@@ -22221,6 +22231,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         return self.lower_return_inner(expr, scope);
     }
 
+    /// `return;` in an `on_failure` body: the handler's fall-through
+    /// exit, taken early. The handler runs synchronously inside the
+    /// cell that detected the failure, so its frame is torn down
+    /// WITHOUT a drain (`flush_dissolve_frame_kind(false)`, as the
+    /// fall-through in `locus/method.rs` does), and from a clone: the
+    /// frame stays on the stack for the handler's other exits, which
+    /// are disjoint control flow (GH #789's argument for main). The
+    /// check refuses a `return` carrying a value here, since the
+    /// handler returns nothing.
+    fn lower_failure_handler_return(
+        &mut self,
+        expr: Option<&Expr>,
+    ) -> Result<BlockEnd, CodegenError> {
+        if expr.is_some() {
+            return Err(CodegenError::Unsupported(
+                "`return` in an `on_failure` body carries no value".to_string(),
+            ));
+        }
+        let frame = self.deferred_dissolves.last().cloned().unwrap_or_default();
+        self.emit_frame_teardown(frame, false)?;
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(BlockEnd::Terminated)
+    }
+
     fn lower_return_inner(
         &mut self,
         expr: Option<&Expr>,
@@ -22304,6 +22340,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.deferred_dissolves.last().cloned().unwrap_or_default();
             self.emit_main_exit(Spine::MainReturn, frame, code)?;
             return Ok(BlockEnd::Terminated);
+        }
+        if self.current_user_fn_ret.is_none() && self.in_failure_handler {
+            return self.lower_failure_handler_return(expr);
         }
         let ret_ty = self.current_user_fn_ret.clone().ok_or_else(|| {
             CodegenError::Unsupported(

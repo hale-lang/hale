@@ -1909,3 +1909,32 @@ fn an_uncarried_topic_payload_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// `return;` in an `on_failure` body checked clean and the build
+/// refused it ("`return` outside a user fn"), though the same statement
+/// lowered in `accept()` and `drain()`. It is lowered now, as the
+/// handler's fall-through taken early; `tests/hale/on_failure_return_test.hl`
+/// runs it. A `return` carrying a value has nowhere to go, and the
+/// check says so.
+#[test]
+fn a_return_in_an_on_failure_body_is_built() {
+    let desk = |stmt: &str| {
+        format!(
+            "locus Book {{\n\
+             params {{ credits: Int = 0; debits: Int = 0; }}\n\
+             closure balanced {{ self.credits ~~ self.debits within 0; }}\n\
+             }}\n\
+             locus Desk {{\n\
+             params {{ seen: Int = 0; }}\n\
+             on_failure(c: Book, err: ClosureViolation) {{ {stmt} }}\n\
+             run() {{ Book {{ credits: 100, debits: 93 }}; }}\n\
+             }}\n\
+             fn main() {{ let d = Desk {{ }}; }}\n"
+        )
+    };
+    assert_built(&desk("if self.seen > 2 { return; } self.seen = self.seen + 1;"), "hale_cb_on_failure_return");
+    let valued = desk("return 5;");
+    assert_refused_by_the_check(
+        &[(&valued, "5", "`return` in an `on_failure` body carries no value")],
+        "on_failure_return_value",
+    );
+}

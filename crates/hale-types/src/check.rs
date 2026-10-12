@@ -11003,6 +11003,18 @@ impl<'a> Checker<'a> {
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
                     let got = self.check_expr(e);
+                    // A handler returns nothing: `return;` ends it
+                    // early (lowered as its fall-through exit), and a
+                    // value has nowhere to go.
+                    if self.in_on_failure {
+                        self.diags.push(Diag::ty(
+                            e.span(),
+                            "`return` in an `on_failure` body carries no value: \
+                             the handler returns nothing. Write `return;` to \
+                             end it early."
+                                .to_string(),
+                        ));
+                    }
                     // v1.x-FORM-1: returning from a fallible fn
                     // means returning the success value; payload
                     // type is checked at `fail` sites instead.

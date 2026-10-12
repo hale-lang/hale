@@ -1385,7 +1385,16 @@ The handler may:
 - Return normally (absorb): treat as collapsed — the child
   stops, and a child the parent holds stays readable until the
   parent's teardown (§ `terminate`, "A failed child its owner holds
-  is kept").
+  is kept"). A `return;` anywhere in the body is this exit taken
+  early: the loci the handler bound so far are torn down, as at its
+  end, and the handler returns. The handler returns nothing, so a
+  `return` carrying a value is a type error at the value:
+
+  ```text
+  main.hl:8:35: type error: `return` in an `on_failure` body carries
+  no value: the handler returns nothing. Write `return;` to end it
+  early.
+  ```
 - Call `restart(c)`: run the child again — `birth()`, then
   `run()` — on the same instance (see § Recovery primitives).
 - Call `restart_in_place(c)`: re-init in place (preserve

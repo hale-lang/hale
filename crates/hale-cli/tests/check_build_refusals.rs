@@ -67,3 +67,13 @@ fn an_uncarried_topic_payload_is_refused_where_it_is_delivered() {
     );
     assert!(!built && !bout.contains("codegen error"), "{bout}");
 }
+
+#[test]
+fn a_return_in_an_on_failure_body_checks_and_builds() {
+    let src = "locus Book {\n    params { credits: Int = 0; debits: Int = 0; }\n    closure balanced { self.credits ~~ self.debits within 0; }\n}\nlocus Desk {\n    params { seen: Int = 0; }\n    on_failure(c: Book, err: ClosureViolation) {\n        if self.seen > 2 { return; }\n        self.seen = self.seen + 1;\n    }\n    run() { Book { credits: 100, debits: 93 }; }\n}\nfn main() { let d = Desk { }; }\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "on_failure_return");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    let valued = src.replace("return;", "return 1;");
+    refused(&valued, "on_failure_return_value", "8:35", "`return` in an `on_failure` body carries no value");
+}

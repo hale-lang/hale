@@ -6922,6 +6922,12 @@ row	App@literal1	App	main	default
 row	App@literal1.a	Alpha	main	default
 row	App@literal1.b	Beta	main	default
 
+== tests/hale/on_failure_return_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+dynamic	Probe	on main	in the seed
+
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default
 row	NoopTool@main4	NoopTool	main	default

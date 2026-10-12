@@ -145,6 +145,8 @@ The recovery primitives:
 - **absorb** — just return; the failure is noted and contained.
   The child stops, but a child the parent holds in a field (or a
   binding holds) stays readable until the parent tears it down.
+  `return;` anywhere in the handler absorbs early (an
+  `if give_up { return; }` guard); the handler returns no value.
 - **`restart(child)`** — run it again: `birth()`, then `run()`,
   on the same instance, and where it ran the first time: a pinned
   child on its own thread, a child placed on a pool on that pool's
