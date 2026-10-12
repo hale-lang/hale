@@ -2350,6 +2350,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // A failed assertion outside main's frame tears the tree down
+        // through the main thread's unwind registry (`locus/unwind.rs`).
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            self.module.add_function("lotus_test_fail_unwind", void_t.fn_type(&[], false), None);
+            self.module.add_function("lotus_unwind_set_head", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function(
+                "lotus_unwind_push",
+                void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+                None,
+            );
+            self.module.add_function("lotus_unwind_pop_slot", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function("lotus_unwind_poll", void_t.fn_type(&[], false), None);
+        }
 
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)

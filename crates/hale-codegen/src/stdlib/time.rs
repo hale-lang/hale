@@ -781,6 +781,8 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         self.builder.position_at_end(drain_bb);
         self.emit_bus_drain()?;
         self.emit_pinned_mailbox_drain_pending()?;
+        // A failed assertion another thread raised: main tears down here.
+        self.emit_unwind_poll()?;
         let chunk_done = self
             .builder
             .build_load(i64_t, chunk_slot, "sleep.chunk.done")

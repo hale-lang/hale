@@ -2517,7 +2517,10 @@ its `KNOWN_OPEN` table, which is empty today.
   The tree drain is the flag's second bit, so a signal's drain is
   neither masked nor ended by it; it ends with the main locus's
   teardown (`lotus_tree_drain_end`), so a main locus built afterwards
-  starts undrained. The runs of the tree are the only ones off main
+  starts undrained. A `std::test` assertion that fails outside `fn
+  main`'s frame raises a third, never lowered, before it tears the
+  tree down (`spec/testing.md` § "What runs after a failed
+  assertion"). The runs of the tree are the only ones off main
   while it is torn down: main loci are built one after another.
   Shipped 2026-10-12 (`crates/hale-codegen/tests/tree_drain.rs`, plain
   and under AddressSanitizer; the lifecycle plan's `TreeDrain` row).

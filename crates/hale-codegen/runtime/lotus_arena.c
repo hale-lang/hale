@@ -1964,6 +1964,9 @@ typedef struct lotus_held_failure {
 typedef struct lotus_domain lotus_domain_t;
 static void lotus_failure_owner_note_locked(void *owner);
 static void lotus_failure_service_here(void);
+/* Defined with the test latch: a failed assertion another thread raised
+ * is torn down at main's drain point. */
+static void lotus_unwind_service(void);
 static void lotus_failure_service_at_yield(void);
 static int lotus_failure_posted_any(void);
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *node);
@@ -8452,6 +8455,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
      * the type system rejects statically. Its cells stay queued for
      * the owner's next drain point. */
     if (!pthread_equal(pthread_self(), q->owner)) return;
+    lotus_unwind_service();
     if (g_bus_drain_active) return;
     /* Decision L0-1: failures posted to main's domain run here, on the
      * owner thread, before the queue's cells. One load when none is. */
@@ -28814,8 +28818,158 @@ int64_t lotus_test_passes(void) { return g_test_passes; }
  * hold once assertions no longer terminate the process: every
  * later assert sees it set and is a no-op. */
 static int g_test_failed = 0;
-void lotus_test_note_fail(void) { g_test_failed = 1; }
-int64_t lotus_test_failed(void) { return (int64_t)g_test_failed; }
+void lotus_test_note_fail(void) { __atomic_store_n(&g_test_failed, 1, __ATOMIC_RELEASE); }
+int64_t lotus_test_failed(void) { return (int64_t)__atomic_load_n(&g_test_failed, __ATOMIC_ACQUIRE); }
+
+/* ---- A failed assertion tears the tree down (spec/testing.md, "What
+ * runs after a failed assertion") ------------------------------------
+ *
+ * An assertion that fails in `fn main`'s own frame leaves main through
+ * main's ordinary teardown (the call site's branch, GH #717). One that
+ * fails anywhere else — a free fn, a locus method, a `run()`, a handler —
+ * has no such branch to take, so the main thread keeps a registry of
+ * what its teardown would reach: every frame entry a body on it holds (a
+ * `let`-bound locus, a subscriber kept to its frame's exit, a pinned
+ * child awaiting its join) and every statement-position literal whose
+ * `run()` is in progress, each with the compiled teardown of its
+ * declaration (`lotus.unwind_fn.<L>`, the deferred entry's spine: its
+ * drain, closures, `dissolve()`, its fields' cascade, its arena; for a
+ * pinned one its join). Registered once the instance is built, removed
+ * where its own teardown begins. Codegen emits the registry's upkeep
+ * only in a program that has such an assertion (a private flag the end
+ * of lowering writes), so no other program pays for it.
+ *
+ * On the failure the main thread raises the drain (a bit never lowered:
+ * every `run()` that watches `self.draining` ends, a wait in progress
+ * returns early), runs the head of main's test-failure teardown (the
+ * plan's process rows: the ingress quiesce, the wait-abort, the pool
+ * join, the reader stop), joins the pinned threads its entries hold,
+ * tears every other entry down innermost first, and exits 1. Nothing
+ * after the failing assertion runs: the frames under it are never
+ * resumed. A failure on another thread raises the drain and asks main to
+ * do the same at its next drain point; that thread's body goes on to its
+ * end (its later assertions are no-ops), so the joins complete. */
+typedef void (*lotus_unwind_fn)(void *slot, void *tid);
+typedef struct {
+    lotus_unwind_fn fn;
+    void *slot;
+    void *tid;
+} lotus_unwind_rec_t;
+static lotus_unwind_rec_t *g_unwind = NULL;
+static size_t g_unwind_len = 0, g_unwind_cap = 0;
+static void (*g_unwind_head)(void) = NULL;
+static int g_unwinding = 0;
+static int g_unwind_requested = 0;
+#ifndef __wasm__
+static pthread_t g_unwind_main;
+static int g_unwind_main_set = 0;
+#endif
+#define LOTUS_DRAIN_TEST ((int64_t)4)
+
+static int lotus_unwind_on_main(void) {
+#ifdef __wasm__
+    return 1;
+#else
+    return g_unwind_main_set && pthread_equal(pthread_self(), g_unwind_main);
+#endif
+}
+
+/* fn main's prelude: the head of the test-failure teardown, and which
+ * thread main is. */
+void lotus_unwind_set_head(void *head) {
+    g_unwind_head = (void (*)(void))head;
+#ifndef __wasm__
+    g_unwind_main = pthread_self();
+    g_unwind_main_set = 1;
+#endif
+}
+
+/* An instance built on main whose teardown a failure would owe. One
+ * record per slot: a slot reused by a loop's next instance keeps its
+ * record. Only main's: an entry another thread holds is torn down by
+ * that thread's own lifecycle, which the drain ends. */
+void lotus_unwind_push(void *fn, void *slot, void *tid) {
+    if (!fn || !slot || !lotus_unwind_on_main() || g_unwinding) return;
+    for (size_t i = g_unwind_len; i-- > 0;) {
+        if (g_unwind[i].slot == slot) {
+            g_unwind[i].fn = (lotus_unwind_fn)fn;
+            g_unwind[i].tid = tid;
+            return;
+        }
+    }
+    if (g_unwind_len == g_unwind_cap) {
+        size_t cap = g_unwind_cap ? g_unwind_cap * 2 : 16;
+        lotus_unwind_rec_t *grown = realloc(g_unwind, cap * sizeof *grown);
+        if (!grown) return;   /* the failure path loses this entry's cleanup, nothing else */
+        g_unwind = grown;
+        g_unwind_cap = cap;
+    }
+    g_unwind[g_unwind_len++] = (lotus_unwind_rec_t){ (lotus_unwind_fn)fn, slot, tid };
+}
+
+/* The instance's own teardown begins: a failure no longer owes it. */
+void lotus_unwind_pop_slot(void *slot) {
+    if (!g_unwind_len || g_unwinding) return;
+    for (size_t i = g_unwind_len; i-- > 0;) {
+        if (g_unwind[i].slot == slot) {
+            memmove(&g_unwind[i], &g_unwind[i + 1],
+                    (g_unwind_len - i - 1) * sizeof *g_unwind);
+            g_unwind_len--;
+            return;
+        }
+    }
+}
+
+static void lotus_unwind_run(void) {
+    g_unwinding = 1;
+    fflush(stdout);
+    if (g_unwind_head) g_unwind_head();
+    /* The pinned threads first, as a teardown joins them before the
+     * cascade of what holds them (GH #253): they have seen the drain. */
+    for (size_t i = g_unwind_len; i-- > 0;) {
+        if (!g_unwind[i].tid) continue;
+        lotus_unwind_rec_t r = g_unwind[i];
+        g_unwind[i].fn = NULL;
+        r.fn(r.slot, r.tid);
+    }
+    for (size_t i = g_unwind_len; i-- > 0;) {
+        if (!g_unwind[i].fn) continue;
+        lotus_unwind_rec_t r = g_unwind[i];
+        g_unwind[i].fn = NULL;
+        r.fn(r.slot, r.tid);
+    }
+    g_unwind_len = 0;
+    fflush(stdout);
+    exit(1);
+}
+
+/* A failed assertion outside `fn main`'s own frame (the call site's
+ * branch, once the latch is up). Returns only off main, or while the
+ * teardown is already running (an assertion in a `dissolve()` it runs is
+ * a no-op). */
+void lotus_test_fail_unwind(void) {
+    __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TEST, __ATOMIC_RELEASE);
+    if (g_unwinding) return;
+    if (!lotus_unwind_on_main()) {
+        __atomic_store_n(&g_unwind_requested, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    lotus_unwind_run();
+}
+
+/* Main's drain point: a failure another thread raised is torn down here. */
+static void lotus_unwind_service(void) {
+    if (!__atomic_load_n(&g_unwind_requested, __ATOMIC_ACQUIRE) || g_unwinding) return;
+    if (!lotus_unwind_on_main()) return;
+    lotus_unwind_run();
+}
+
+/* A park point on any thread (a sleep slice, `yield;`): on main, the
+ * failure another thread raised is torn down here, whether or not the
+ * program has a bus to drain. */
+void lotus_unwind_poll(void) {
+    lotus_unwind_service();
+}
 
 double lotus_math_nan(void) {
     return (double)NAN;

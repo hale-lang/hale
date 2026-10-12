@@ -844,6 +844,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(slot, ptr)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.emit_unwind_push(slot, &lname, None)?;
                 self.deferred_dissolves
                     .last_mut()
                     .expect("checked non-empty")

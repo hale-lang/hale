@@ -3329,6 +3329,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let is_long_lived = !info.subscriptions.is_empty();
         let is_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
         let pinned_subscriptions = is_pinned && !info.subscriptions.is_empty();
+        // The instance is built: if this frame tears it down (eagerly,
+        // or at its exit) a failed assertion outside main's frame owes
+        // its teardown from here — its birth and run included — until
+        // that teardown begins (`locus/unwind.rs`). A pinned one is
+        // registered where its frame entry is pushed, with its thread.
+        // One slot serves the registry and the frame entry.
+        let unwind_slot = if !is_pinned
+            && !program_lifetime
+            && !self.instantiating_persistent_singleton
+            && !returns_this_locus
+            && !parent_accepts_us
+            && !parent_owns_via_field
+            && !bubbled
+            && !self.deferred_dissolves.is_empty()
+        {
+            let slot = match reused_deferred_slot {
+                Some(slot) => {
+                    self.builder
+                        .build_store(slot, self_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    slot
+                }
+                None => self.defer_dissolve_slot(self_ptr, locus_name)?,
+            };
+            self.emit_unwind_push(slot, locus_name, None)?;
+            Some(slot)
+        } else {
+            None
+        };
         let accepted_by_owner = match (owner_self_ptr, owner_locus_name.as_ref()) {
             (Some(_), Some(owner_name)) => self
                 .user_loci
@@ -4158,6 +4187,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // mailbox loop and proceeds to drain/dissolve.
             if !self.deferred_dissolves.is_empty() {
                 let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+                // A failed assertion outside main's frame joins it
+                // (`locus/unwind.rs`).
+                self.emit_unwind_push(slot, locus_name, Some(tid_alloca))?;
                 self.deferred_dissolves
                     .last_mut()
                     .expect("checked non-empty")
@@ -4673,6 +4705,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // dissolve here (see the matching no-op teardown branch).
             || bubbled;
         if !defer {
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            if let Some(slot) = unwind_slot {
+                self.emit_unwind_pop(slot)?;
+            }
             // The lifecycle trace names this spine for its steps.
             let lc_outer = std::mem::replace(&mut self.lc_spine, "EagerTeardown");
             // 2026-06-01: the MAIN locus dissolves eagerly here, right
@@ -4821,14 +4858,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // could be reclaimed against it. Store into that same
             // slot — a second one would leave the per-iteration
             // teardown reading a slot nothing ever writes.
-            let slot = match reused_deferred_slot {
-                Some(slot) => {
+            let slot = match (unwind_slot, reused_deferred_slot) {
+                (Some(slot), _) => slot,
+                (None, Some(slot)) => {
                     self.builder
                         .build_store(slot, self_ptr)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     slot
                 }
-                None => self.defer_dissolve_slot(self_ptr, locus_name)?,
+                (None, None) => self.defer_dissolve_slot(self_ptr, locus_name)?,
             };
             // GH #253 completion (Crumb batch-4 item 1): a DEFERRED
             // parent's own pinned children (pushed during its param

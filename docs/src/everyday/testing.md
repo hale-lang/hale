@@ -91,11 +91,14 @@ Three edges are worth knowing:
 - **Only what you own.** `dissolve()` is your code; it cleans your
   child, your directory, your lock file. Nothing cleans up on your
   behalf.
-- **Assertions belong in `main`.** An assertion that fails inside a
-  helper `fn` or a locus method has no `main` frame to return
-  through, and ends the process on the spot without the dissolve
-  cascade. Keep the assertions that guard owned resources at the top
-  level.
+- **Anywhere is fine.** An assertion that fails inside a helper
+  `fn`, a locus method or a `run()` tears the program down the same
+  way: nothing after it runs, and every locus `main`'s teardown would
+  reach — what `main` and the bodies under it `let`-bound, the main
+  locus and its fields, the pinned children — dissolves before the
+  process returns `1`. One that fails on a pinned thread or a pool
+  stops the test at `main`'s next `sleep` or `yield`; the body that
+  failed runs on to its end, with its later assertions doing nothing.
 - **`kill -9` is different.** If something SIGKILLs the test process,
   nothing runs — not `dissolve()`, not an atexit hook. That's the
   platform, not Hale; an external reaper is the only answer.

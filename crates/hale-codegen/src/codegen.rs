@@ -1585,6 +1585,8 @@ pub fn build_resolved(
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
+        test_unwind_used: false,
+        unwind_fns: BTreeMap::new(),
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
@@ -3877,6 +3879,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `main`, filled with main's teardown + `ret i32 1` once the
     /// body has been lowered.
     main_test_fail_bb: Option<BasicBlock<'ctx>>,
+    /// A `std::test` assertion outside `fn main`'s own frame was lowered:
+    /// its failure tears the tree down through the main thread's unwind
+    /// registry (`locus/unwind.rs`), whose upkeep is emitted behind the
+    /// private `lotus.test_unwind` flag this decides at the end of
+    /// lowering.
+    pub(crate) test_unwind_used: bool,
+    /// The teardown each registered instance's record names, by its
+    /// declaration and whether it is pinned: a private function-pointer
+    /// global (`lotus.unwind_fn.<L>`) the end of lowering fills with a
+    /// synthesized `__unwind_<L>` when the registry is in use.
+    pub(crate) unwind_fns: BTreeMap<(String, bool), inkwell::values::GlobalValue<'ctx>>,
     /// When set, `arena_alloc` routes through this arena pointer
     /// instead of `current_self`'s arena field or the program
     /// global. Used during locus-instantiation field init so
@@ -5885,13 +5898,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   teardown (pools joined, loci dissolved — so a child the
     ///   fixture spawned is reaped and scratch the fixture owns is
     ///   removed by its owner's `dissolve()`) and returns exit code 1.
-    /// - anywhere else — a helper fn, a locus method, a nested
-    ///   `on_failure` frame — `exit(1)` on the spot, exactly the
-    ///   pre-#717 behaviour. Those contexts have no main-teardown
-    ///   spine to branch to, and this is not general unwinding.
+    /// - anywhere else — a helper fn, a locus method, a `run()`, a
+    ///   handler, a nested `on_failure` frame — `lotus_test_fail_unwind`:
+    ///   on the main thread it tears down everything main's teardown
+    ///   would reach, from the main thread's unwind registry
+    ///   (`locus/unwind.rs`), and exits 1 without returning; on another
+    ///   thread it raises the drain and asks main to do the same at its
+    ///   next drain point, and returns (the body goes on, its later
+    ///   assertions no-ops), as it does while that teardown runs.
     ///
     /// Either way the first failure stops the run: nothing after it
-    /// executes, and the failure's first line is unchanged.
+    /// executes on main, and the failure's first line is unchanged.
     fn emit_test_assert_failure_check(
         &mut self,
     ) -> Result<(), CodegenError> {
@@ -5934,28 +5951,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         } else {
-            let bb =
-                self.context.append_basic_block(func, "test.fail.exit");
+            self.test_unwind_used = true;
+            self.context.append_basic_block(func, "test.fail.unwind")
+        };
+        let unwinds = !(self.in_main && self.deferred_dissolves.len() == self.main_frame_depth);
+        let ok_bb =
+            self.context.append_basic_block(func, "test.assert.ok");
+        if unwinds {
             let resume = self.builder.get_insert_block();
-            self.builder.position_at_end(bb);
-            let exit_fn = self
+            self.builder.position_at_end(bail_bb);
+            let unwind = self
                 .module
-                .get_function("exit")
-                .expect("exit declared in declare_builtins");
-            let one = self.context.i32_type().const_int(1, false);
+                .get_function("lotus_test_fail_unwind")
+                .expect("lotus_test_fail_unwind declared");
             self.builder
-                .build_call(exit_fn, &[one.into()], "test.fail.exit.call")
+                .build_call(unwind, &[], "test.fail.unwind.call")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder
-                .build_unreachable()
+                .build_unconditional_branch(ok_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             if let Some(r) = resume {
                 self.builder.position_at_end(r);
             }
-            bb
-        };
-        let ok_bb =
-            self.context.append_basic_block(func, "test.assert.ok");
+        }
         self.builder
             .build_conditional_branch(is_fail, bail_bb, ok_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -6156,6 +6174,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lc_spine = lc_outer;
         self.emit_arena_destroy()?;
         self.emit_bus_queue_destroy()?;
+        // An assertion that failed on another thread, whose teardown
+        // main reached an exit before running: the run still fails.
+        let code = self.emit_unwind_exit_code(code)?;
         self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
@@ -6773,6 +6794,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(process_bb);
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            self.emit_unwind_pop(self_slot)?;
             // GH #1148: the MAIN locus's deferred teardown joins the
             // cooperative pools first, as its eager dissolve does
             // (`lower_locus_instantiation`, 2026-06-01) and as fn main's
@@ -9270,6 +9294,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.main_frame_depth = self.deferred_dissolves.len();
         self.main_dissolve_frame = None;
         self.main_test_fail_bb = None;
+        // A failed assertion outside this frame tears down from the
+        // unwind registry: name its head and main's thread (behind the
+        // registry's flag, `locus/unwind.rs`).
+        self.emit_unwind_set_head()?;
 
         // m77: pull argc/argv off main's params and hand them to
         // the C-runtime stash so std::env::args_count / arg /
@@ -9860,6 +9888,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        // The unwind registry's teardowns, once every body has lowered
+        // and whether an assertion outside main's frame was lowered is
+        // known (`locus/unwind.rs`); before the contract teardowns, whose
+        // table they may add to.
+        self.finish_unwind_registry()?;
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
@@ -10590,6 +10623,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prelude transport, so the post-destroy struct recycling
         // in `emit_locus_arena_destroy` is a no-op for it.
         let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+        self.emit_unwind_push(slot, locus_name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((slot, locus_name.to_string(), None))
@@ -11098,6 +11132,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let codec_self_ptr = self_val.into_pointer_value();
         let codec_slot =
             self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        self.emit_unwind_push(codec_slot, &locus.name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((codec_slot, locus.name.clone(), None))
@@ -17551,6 +17586,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // dissolved the loop bindings' uninitialized
                         // allocas.
                         self.null_init_entry_ptr_slot(alloca)?;
+                        self.emit_unwind_push(alloca, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -18193,6 +18229,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // publishers mid-program. No-op on cooperative
                 // threads (TLS is null).
                 self.emit_pinned_mailbox_drain_pending()?;
+                // A failed assertion another thread raised: main tears
+                // down here (`locus/unwind.rs`).
+                self.emit_unwind_poll()?;
                 Ok(BlockEnd::Open)
             }
             Stmt::Terminate(_) => {
@@ -23342,6 +23381,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
+                        self.emit_unwind_push(slot, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
