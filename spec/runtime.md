@@ -636,23 +636,52 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
-**Which path delivers to whom.** The queue drained *here* is the
-program-wide *in-process cooperative* queue, drained on the `main`
-thread — so this sleep-loop drain delivers in-process cells to a
-cooperative subscriber on the `main` pool. It is **not** the only
-delivery path: cross-process topics (`udp://` / `unix://` bound via
-`LOTUS_BUS_CONFIG`) are delivered by the transport reader thread,
-which dispatches directly into the subscribed handler set and
-reaches a cooperative locus on *any* pool — **provided that pool's
-thread is free to run the dispatch.** So a non-`main` cooperative
-subscriber receives reliably as long as it doesn't monopolize its
-pool thread with a blocking call. (Pinned loci are a third path: a
-per-locus mailbox drained at each `sleep`/`yield`.) The failure mode
-is a cooperative subscriber whose `run()` *blocks* — the dispatch
-can't run and its handlers never fire; that blocking-and-subscribing
-combination is what the dead-bus-receiver rule rejects (see
-"Type-check rules" in `spec/semantics.md`), **not** non-`main`
-placement on its own.
+**Every park point delivers, on every pool.** A sleep slice and an
+explicit `yield;` are park points, and a park point inside a
+cooperative locus's `run()` delivers the cells already queued for
+the thread it runs on, whatever pool that is:
+
+- on `main`, the program-wide *in-process cooperative* queue
+  (`lotus_bus_queue_drain`);
+- on a classic pool's worker, that pool's own queue
+  (`lotus_pool_run_park_drain`, 2026-10-12): the bus cells queued
+  for the pool's subscribers, the sleeping locus's own included,
+  are delivered on the worker in the order they were posted, before
+  the sleep returns. The pool's other work is not started there: a
+  run start, a resume or a pool-placed root's init that the drain
+  dequeues is set aside in order and runs after the current `run()`
+  returns, ahead of everything still queued, so a park point moves
+  deliveries earlier and reorders nothing else, and one `run()` never
+  starts inside another. A failure posted and not yet delivered stops
+  the drain before the cells behind it (the worker delivers it
+  between cells, as before, and a delivery does not overtake it);
+- on a pinned thread, its mailbox (below);
+- on a `where async_io` pool, a sleep parks the coroutine and the
+  worker delivers meanwhile, so it needs no drain.
+
+A handler a park point runs is not itself a `run()`: a park point
+inside it delivers nothing, as a handler run by main's drain does not
+re-enter it. A `run()` that never reaches a park point delivers
+nothing while it runs — the blocking advisories below are about that
+shape.
+
+**Which path delivers to whom.** The queue drained on `main` is the
+program-wide *in-process cooperative* queue, so the sleep-loop drain
+there delivers in-process cells to a cooperative subscriber on the
+`main` pool; the one a pool's worker drains delivers to that pool's.
+Neither is the only delivery path: cross-process topics (`udp://` /
+`unix://` bound via `LOTUS_BUS_CONFIG`) are delivered by the
+transport reader thread, which dispatches directly into the
+subscribed handler set and reaches a cooperative locus on *any* pool
+— **provided that pool's thread is free to run the dispatch.** So a
+non-`main` cooperative subscriber receives reliably as long as it
+doesn't monopolize its pool thread with a blocking call. (Pinned
+loci are a third path: a per-locus mailbox drained at each
+`sleep`/`yield`.) The failure mode is a cooperative subscriber whose
+`run()` *blocks* — the dispatch can't run and its handlers never
+fire; that blocking-and-subscribing combination is what the
+dead-bus-receiver rule rejects (see "Type-check rules" in
+`spec/semantics.md`), **not** non-`main` placement on its own.
 
 **Long sleeps no longer starve main-pool handlers.**
 Before the slicing, the drain happened only *after the whole sleep
@@ -1236,11 +1265,16 @@ subscriber's handlers run where that thread runs cells while the
 scope is open: on an `async_io` pool, while the constructing body
 parks; on a pinned thread, at the body's sleeps and yields, which
 drain its mailbox; on main, at the drains of its statement
-boundaries and its scope exit. A classic pool's cells are
-handler-atomic, and the constructing body holds the worker for the
-subscriber's whole life, so a delivery to a scope-local subscriber
-there waits and is dropped with it; `hale check` warns at such a
-literal (spec/verification.md, "Dropped scope-local delivery"). Its dissolve is a reclaim like
+boundaries and its scope exit; on a classic pool, at the body's
+sleeps and yields while it runs inside a `run()`, which deliver the
+pool's queued cells (§ "`time::sleep` drain semantics"). Anywhere
+else on a classic pool — in a handler, whose park points deliver
+nothing, or past the body's last park point — the constructing body
+holds the worker for the subscriber's whole life, so a delivery to a
+scope-local subscriber there waits and is dropped with it; `hale
+check` warns at every such literal on a classic pool, whether or not
+the body parks after its publishes (spec/verification.md, "Dropped
+scope-local delivery"). Its dissolve is a reclaim like
 any other: the subscriber is quarantined before its storage goes, so
 a cell still queued for it on the pool or the mailbox is dropped at
 materialization (GH #703), and the release waits for a handler of it

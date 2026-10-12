@@ -51,6 +51,13 @@ opt into. (A `pinned` locus owns its thread, so its sleeps stall
 no one else; its slices drain its own mailbox. On a `where
 async_io` pool a sleep parks instead of slicing.)
 
+This holds on every pool, not only `main`: a `sleep` or a `yield`
+inside a `run()` placed `cooperative(pool = a)` delivers the bus
+cells queued on pool `a` — the sleeping locus's own handlers
+included — before it returns. What it does not do is start another
+locus's `run()` in the middle of this one: a `run()` queued on the
+same pool still waits for this one to return.
+
 ## Placement lives on `main`
 
 You declare placement once, against the top-level loci, in

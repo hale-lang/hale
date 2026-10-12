@@ -4120,6 +4120,15 @@ row	App@literal1	App	main	default
 row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
 row	App@literal1.sub	Sub	main	default
 
+== crates/hale-codegen/tests/sleep_drains_bus.rs#35248313
+root	App	the entry
+domain	pinned:App@literal1.pub_
+domain	pool:a
+row	App@literal1	App	main	default
+row	App@literal1.other	Other	pool:a	entry	off owner
+row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
+row	App@literal1.sub	Sub	pool:a	entry	off owner
+
 == crates/hale-codegen/tests/stdlib_cli.rs#d87e629e
 row	__StdCliResolver@main1	__StdCliResolver	main	default
 

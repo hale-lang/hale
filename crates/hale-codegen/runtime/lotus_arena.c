@@ -1959,6 +1959,7 @@ typedef struct lotus_domain lotus_domain_t;
 static void lotus_failure_owner_note_locked(void *owner);
 static void lotus_failure_service_here(void);
 static void lotus_failure_service_at_yield(void);
+static int lotus_failure_posted_any(void);
 static int lotus_failure_reclaim_wait_locked(lotus_held_failure_t *node);
 static void lotus_failure_await_service_locked(void);
 static int lotus_failure_servicing_enter(void);
@@ -10102,6 +10103,13 @@ typedef struct lotus_coop_pool {
     /* Consumer-thread-local self-publish overflow list (see above). */
     lotus_coop_overflow_t *overflow_head;
     lotus_coop_overflow_t *overflow_tail;
+    /* Consumer-thread-local: the cells a run()'s park point dequeued and
+     * did not deliver (run starts, a root's init, a failure's wake), in
+     * the order they were posted. They run ahead of the ring, so a park
+     * point moves bus deliveries earlier and reorders nothing else
+     * (`lotus_pool_run_park_drain`). */
+    lotus_coop_overflow_t *deferred_head;
+    lotus_coop_overflow_t *deferred_tail;
     /* Worker pthread; set once start_all has run. */
     pthread_t         worker;
     int               worker_started;
@@ -10289,6 +10297,8 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     atomic_store_explicit(&p->shutdown, 0, memory_order_relaxed);
     p->overflow_head = NULL;
     p->overflow_tail = NULL;
+    p->deferred_head = NULL;
+    p->deferred_tail = NULL;
     p->worker_started = 0;
     atomic_store_explicit(&p->start_pending, NULL, memory_order_relaxed);
     p->domain = NULL;
@@ -10353,6 +10363,15 @@ static const char *lotus_locus_label(void *self_ptr) {
 /* Defined with the pool start below. */
 static void lotus_pool_start_job(void *self_ptr, void *payload);
 
+/* A classic worker running a run() cell (a child's posted run() or a
+ * resume, the cells that carry a run ticket): its park points deliver
+ * the pool's queued bus cells (`lotus_pool_run_park_drain`). Zero in a
+ * handler, in a root's init, and inside the park drain itself, whose
+ * handlers' park points drain nothing, as a handler of main's queue
+ * does not re-enter main's drain. */
+static __thread int t_pool_in_run = 0;
+static __thread int t_pool_park_draining = 0;
+
 static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
                                           lotus_bus_cell_t *cell) {
     /* Decision line 19: a run whose child was reclaimed while it sat
@@ -10390,8 +10409,11 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     p->running_label = lotus_locus_label(cell->self_ptr);
     lotus_run_ticket_t *outer = t_run_running;
     t_run_running = hold;
+    int outer_in_run = t_pool_in_run;
+    t_pool_in_run = cell->run_ticket != NULL;
     lotus_handler_hold_started(hold);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    t_pool_in_run = outer_in_run;
     /* The run's or the handler's hold, or the one a failure posted from
      * the cell took (`lotus_failure_hold_cell`). */
     hold = t_run_running;
@@ -10403,6 +10425,12 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
     if (bus) lotus_handler_hold_settle(hold);
     else lotus_run_hold_release(hold);
+    /* A handler its park points ran retired a release that waits for a
+     * started run (`lotus_reclaim_defer`): the run that was suspended
+     * under it has returned and let go of its hold, so the release
+     * can complete now, on this worker. */
+    if (cell->run_ticket && !t_pool_in_run && !t_pool_park_draining)
+        lotus_reclaim_after_handler();
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -10637,6 +10665,18 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
     lotus_bus_cell_t cell;
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     for (;;) {
+        /* What a run()'s park point set aside comes first: it was
+         * posted before everything still in the ring, and it already
+         * passed the replay gate when it was dequeued. */
+        if (p->deferred_head) {
+            lotus_coop_overflow_t *node = p->deferred_head;
+            p->deferred_head = node->next;
+            if (!p->deferred_head) p->deferred_tail = NULL;
+            cell = node->cell;
+            free(node);
+            lotus_coop_pool_dispatch_cell(p, &cell);
+            return 1;
+        }
         /* Ring first (lock-free), then the consumer-local overflow list. */
         if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
             lotus_coop_pool_wake_producers(p);  /* freed a slot */
@@ -10751,8 +10791,10 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
  * nested body that waits during the init for a delivery to the
  * subtree, or for a reply through another thread, receives it there.
  * Those cells run on the worker's stack too, one at a time; a yield
- * inside one of them drains nothing. Outside an init, a yield on a
- * pool worker still drains nothing.
+ * inside one of them drains nothing. Outside an init, a yield inside
+ * a run() on a classic worker delivers the pool's bus cells and sets
+ * the rest aside (`lotus_pool_run_park_drain`); elsewhere on a worker
+ * it drains nothing.
  *
  * No wait on itself (spec/runtime.md § "Lifecycle obligations", line
  * 1). The worker can be blocked on the instantiating thread when the
@@ -10837,11 +10879,96 @@ static int lotus_pool_start_pending_here(void) {
     return p && atomic_load(&p->start_pending) != NULL;
 }
 
+/* Whether a dequeued cell is a bus delivery: a subscriber's handler,
+ * not a run (which carries a ticket), a root's init or a failure's
+ * wake (which names no locus). */
+static int lotus_pool_cell_is_bus(const lotus_bus_cell_t *cell) {
+    return !cell->run_ticket && cell->self_ptr
+        && cell->handler != (void *)lotus_pool_start_job;
+}
+
+static void lotus_pool_defer_cell(lotus_coop_pool_t *p,
+                                  const lotus_bus_cell_t *cell) {
+    lotus_coop_overflow_t *node = (lotus_coop_overflow_t *)
+        malloc(sizeof(lotus_coop_overflow_t));
+    if (!node) {
+        fprintf(stderr, "lotus: out of memory deferring a pool cell\n");
+        abort();
+    }
+    node->cell = *cell;
+    node->next = NULL;
+    if (p->deferred_tail) p->deferred_tail->next = node;
+    else p->deferred_head = node;
+    p->deferred_tail = node;
+}
+
+/* A park point (a sleep slice, `yield;`) inside a run() on a classic
+ * pool's worker: the subscribers' cells already in the pool's queue are
+ * delivered here, on this worker, in the order they were posted, as a
+ * park point on main delivers main's queue and one on a pinned thread
+ * its mailbox (spec/runtime.md § "`time::sleep` drain semantics"). A
+ * cell that is not a delivery is set aside, in order, for the worker's
+ * next cell: another run() does not start inside this one. A failure
+ * posted to this domain is not run here, so the drain stops before
+ * anything queued behind it and leaves the worker to deliver it first,
+ * between cells, as before. An async_io pool's sleep parks its
+ * coroutine and the worker delivers meanwhile, so it needs none of
+ * this. */
+static void lotus_pool_run_park_drain(lotus_coop_pool_t *p) {
+    if (!p || __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE))
+        return;
+    if (lotus_failure_posted_any()) return;
+    t_pool_park_draining = 1;
+    t_pool_in_run = 0;
+    const char *label = p->running_label;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
+    lotus_bus_cell_t cell;
+    for (;;) {
+        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+            lotus_coop_pool_wake_producers(p);   /* freed a slot */
+        } else if (p->overflow_head) {
+            lotus_coop_overflow_t *node = p->overflow_head;
+            p->overflow_head = node->next;
+            if (!p->overflow_head) p->overflow_tail = NULL;
+            cell = node->cell;
+            free(node);
+        } else {
+            break;
+        }
+        if (replaying && !lotus_replay_gate_cell(&cell)) continue;
+        if (!lotus_pool_cell_is_bus(&cell)) {
+            lotus_pool_defer_cell(p, &cell);
+            if (!cell.self_ptr && !cell.run_ticket) break;   /* a wake */
+            continue;
+        }
+        /* As in main's drain: a release the handler asks for that must
+         * wait for a started run (the one suspended under this park
+         * point, it may be) is retired instead of waited for here, and
+         * completes when that run's cell has returned. */
+        int was_active = g_bus_drain_active;
+        g_bus_drain_active = 1;
+        lotus_coop_pool_dispatch_cell(p, &cell);
+        g_bus_drain_active = was_active;
+        if (lotus_failure_posted_any()) break;
+    }
+    /* The run resumes: no hold carried into it (bound 2). */
+    lotus_handler_carry_end();
+    p->running_label = label;
+    t_pool_in_run = 1;
+    t_pool_park_draining = 0;
+}
+
 /* A yield inside the init: every cell already in the pool's queue, on
- * this worker, in order. */
+ * this worker, in order. Inside a run() on the worker, its bus cells
+ * (`lotus_pool_run_park_drain`). */
 static void lotus_pool_init_yield(void) {
     lotus_coop_pool_t *p = g_pool_init_on;
-    if (!p || g_pool_init_draining) return;
+    if (!p) {
+        if (t_pool_in_run && !t_pool_park_draining)
+            lotus_pool_run_park_drain(g_current_pool_tls);
+        return;
+    }
+    if (g_pool_init_draining) return;
     g_pool_init_draining = 1;
     const char *label = p->running_label;
     int replaying = lotus_replay_note_consume && lotus_replay_active;
@@ -11162,6 +11289,13 @@ static lotus_domain_t *g_domains = NULL;
 static __thread lotus_domain_t *t_domain = NULL;
 static __thread int t_failure_servicing = 0;
 static int64_t g_failure_posted_count = 0;      /* every domain's pending */
+
+/* Whether any failure is posted and not yet claimed, on any domain: a
+ * run()'s park drain on a pool stops for one (it may be this worker's,
+ * and a delivery does not overtake it). One load when none is. */
+static int lotus_failure_posted_any(void) {
+    return __atomic_load_n(&g_failure_posted_count, __ATOMIC_ACQUIRE) != 0;
+}
 static pthread_t g_main_thread;
 static pthread_key_t g_domain_key;
 static pthread_once_t g_domain_key_once = PTHREAD_ONCE_INIT;
@@ -11388,8 +11522,9 @@ static void lotus_failure_service_here(void) {
 }
 
 /* A yield: where it runs its queue's cells. Not on a pool's worker
- * outside a root's init (its cells are atomic, and a yield there drains
- * nothing), nor inside a handler of main's queue (whose drain is not
+ * outside a root's init (a run()'s park point there delivers bus cells
+ * only, and stops for a posted failure, which the worker runs between
+ * cells), nor inside a handler of main's queue (whose drain is not
  * re-entered). */
 static void lotus_failure_service_at_yield(void) {
     if (g_current_pool_tls && !g_pool_init_on) return;
@@ -11664,6 +11799,7 @@ static void lotus_failure_owner_note_locked(void *owner) { (void)owner; }
 int64_t lotus_owner_domain_count = 0;
 static void lotus_failure_owner_forget(void *owner) { (void)owner; }
 static void lotus_failure_service_here(void) {}
+static __attribute__((unused)) int lotus_failure_posted_any(void) { return 0; }
 static void lotus_failure_service_at_yield(void) {}
 static void lotus_failure_await_service_locked(void) {}
 static void lotus_failure_domain_enter(void) {}
@@ -13281,6 +13417,14 @@ void lotus_coop_pool_destroy_all(void) {
             if (cell.payload_heap) free(cell.payload_heap);
             lotus_run_ticket_end_unrun(cell.run_ticket, "PoolTeardown", 1);
         }
+        while (p->deferred_head) {
+            lotus_coop_overflow_t *node = p->deferred_head;
+            p->deferred_head = node->next;
+            if (node->cell.payload_heap) free(node->cell.payload_heap);
+            lotus_run_ticket_end_unrun(node->cell.run_ticket, "PoolTeardown", 1);
+            free(node);
+        }
+        p->deferred_tail = NULL;
         while (p->overflow_head) {
             lotus_coop_overflow_t *node = p->overflow_head;
             p->overflow_head = node->next;

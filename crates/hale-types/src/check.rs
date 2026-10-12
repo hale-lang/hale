@@ -3040,9 +3040,11 @@ struct ScopeLocalSubscriberRows<'r, 'b> {
 /// A subscriber built and dissolved inside one call that runs on a
 /// classic cooperative pool (not `where async_io`). Its subscription
 /// registers with that pool (spec/runtime.md § "Subscriptions follow the
-/// tower"), whose cells are handler-atomic: the call holds the pool's
-/// worker for the subscriber's whole life, so every delivery to it waits
-/// and is dropped when it dissolves. Scope-local is the allocation rows'
+/// tower"), and the call holds the pool's worker for the subscriber's
+/// whole life, so a delivery to it waits for a park point of a `run()`
+/// on that worker and is dropped when it dissolves before one comes.
+/// The rows do not say where the body parks, so the advisory fires at
+/// every such literal. Scope-local is the allocation rows'
 /// `Local` (a `let` or a bare statement, neither stored in a field nor
 /// returned) with no `accept` owning it; the pools are the placement
 /// table's domains for the literal (its enclosing locus's instances, or a
