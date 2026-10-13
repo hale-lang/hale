@@ -1339,6 +1339,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("assert", PURE, [Bool, Str] -> Unit, HaleBody("__test_assert")),
             row!("assert_eq_int", PURE, [Int, Int, Str] -> Unit, HaleBody("__test_assert_eq_int")),
             row!("assert_eq_str", PURE, [Str, Str, Str] -> Unit, HaleBody("__test_assert_eq_str")),
+            // A Float compare within a tolerance; its failure prints both
+            // values and the difference.
+            row!("assert_near", PURE, [Float, Float, Float, Str] -> Unit, HaleBody("__test_assert_near")),
             // GH #230 / #717: the pass counter and the recorded-failure
             // latch, called by the `__test_assert*` bodies and
             // `__test_fail_trailer`.

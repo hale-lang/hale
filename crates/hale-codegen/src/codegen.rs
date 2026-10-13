@@ -26242,6 +26242,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // The bodies that return no value (m85's response writer, m87's
         // assertions): a value position has no arm for them.
@@ -26250,6 +26251,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // m87: each `std::test` assertion prints a diagnostic and records
         // the failure (GH #717 — it used to exit(1) from inside), no-op
@@ -26257,8 +26259,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // exit 0 on pass; the `emit_test_assert_failure_check` call
         // after each one is what turns a recorded failure into a
         // non-zero exit, through main's teardown where there is one.
-        const ASSERTION_BODIES: &[&str] =
-            &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"];
+        const ASSERTION_BODIES: &[&str] = &[
+            "__test_assert",
+            "__test_assert_eq_int",
+            "__test_assert_eq_str",
+            "__test_assert_near",
+        ];
         match pos {
             StdCallPos::Statement if STATEMENT_BODIES.contains(&body) => {
                 let _ = self.lower_user_fn_call(body, args, scope)?;

@@ -17,13 +17,14 @@ fn main() {
 }
 ```
 
-`std::test` ships three primitives, all written in Hale itself:
+`std::test` ships four primitives, all written in Hale itself:
 
 | Assertion | Passes when… |
 |---|---|
 | `assert(cond, msg)` | `cond` is `true` |
 | `assert_eq_int(actual, expected, msg)` | `actual == expected` (with an `expected / actual` diff on failure) |
 | `assert_eq_str(actual, expected, msg)` | `actual == expected` (the same diff, quoted) |
+| `assert_near(actual, expected, tolerance, msg)` | the two `Float`s are equal or `\|actual - expected\| <= tolerance` (the failure shows both values, the difference and the tolerance; a NaN never passes) |
 
 The contract is exit-code based, and it's the whole model:
 

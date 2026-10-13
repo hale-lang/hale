@@ -465,6 +465,7 @@ ns std::test open_prefixes=[]
   assert pure
   assert_eq_int pure
   assert_eq_str pure
+  assert_near pure
 ns std::text open_prefixes=[]
   is_alnum pure
   is_alpha pure
@@ -1063,6 +1064,7 @@ std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=- | parks=fa
 std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=(Bool, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert
 std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=(Int, Int, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
 std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
+std::test::assert_near | lookup=test@2 | locus=false | effects=pure | sig=(Float, Float, Float, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_near
 std::text::FileSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::Sink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::StdoutSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-

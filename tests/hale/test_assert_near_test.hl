@@ -1,0 +1,16 @@
+// tests/hale/test_assert_near_test.hl — `std::test::assert_near`: a
+// Float compare within a tolerance. Numeric tests hand-rolled
+// `assert(abs(a - b) < eps, ...)` and lost both values on failure
+// (downstream handoff). The failing side — the message carries the
+// values and the difference — is pinned in
+// crates/hale-codegen/tests/stdlib_test_assert.rs, since a failed
+// assertion fails the program that makes it.
+
+fn main() {
+    std::test::assert_near(0.1 + 0.2, 0.3, 0.000000001, "0.1 + 0.2 is 0.3 within rounding");
+    std::test::assert_near(1.0, 1.0, 0.0, "equal values pass at tolerance 0");
+    std::test::assert_near(2.5, 2.0, 0.5, "a difference equal to the tolerance passes");
+    std::test::assert_near(-3.0, -3.25, 0.25, "either side of expected");
+    std::test::assert_near(std::math::inf(), std::math::inf(), 0.0, "equal infinities pass");
+    std::test::assert_near(std::math::sqrt(2.0) * std::math::sqrt(2.0), 2, 0.000001, "an Int expected widens");
+}

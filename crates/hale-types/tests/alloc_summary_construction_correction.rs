@@ -284,11 +284,11 @@ fn own_scope_let_block_scope_test() {
             // loop, went (`__http_retries_exhausted` came); 430 since
             // `std::process::close_stdin` came; 431 since `std::hex` came
             // (its three fns) and the secret and JSON digit helpers it
-            // replaced went
+            // replaced went; 432 since `std::test::assert_near` came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 431 fns, 27 entry points, 113 invoked-unboundedly",
-                "+ # 431 fns, 27 entry points, 112 invoked-unboundedly",
+                "- # 432 fns, 27 entry points, 113 invoked-unboundedly",
+                "+ # 432 fns, 27 entry points, 112 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
