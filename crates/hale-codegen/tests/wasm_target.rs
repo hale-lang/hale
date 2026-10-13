@@ -1040,3 +1040,48 @@ fn wasm_vec_truncate_past_u32_keeps_the_vec() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// GH #731 (review of #1543): a `perspective(P)` field with no initializer
+/// holds the slot the program designates. The portable capability check
+/// used to see no receiver type behind it ("cannot establish what `route`
+/// requires on wasm32: its receiver's type is not known here") although
+/// `App` designates a pure impl; the call now fans to the loci that serve
+/// the perspective, and the program builds for wasm32 and routes to the
+/// designated impl in node.
+#[test]
+fn wasm_held_perspective_slot_routes_to_the_designated_impl() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_held_perspective_slot_routes_to_the_designated_impl: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        perspective Router { fn route(x: Int) -> Int; }
+        locus Plus : serves Router { fn route(x: Int) -> Int { return x + 100; } }
+        locus Holder {
+            params { p: perspective(Router); }
+            fn go(x: Int) -> Int { return self.p.route(x); }
+        }
+        main locus App {
+            params { r: perspective(Router) = Plus { }; h: Holder = Holder { }; }
+            run() { console_log("routed=" + self.h.go(1)); }
+        }
+        fn main() { App { }; }
+    "#;
+    let wasm = tmp("held_perspective.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        stdout.contains("routed=101"),
+        "the held slot routes to the designated impl:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

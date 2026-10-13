@@ -500,6 +500,23 @@ locus Head {
         return http.error(status, code, message, retryable);
     }
 
+    // Ruling 11b: the attached project's `ui/` — a directory with no
+    // manifest that the repository references — as the application's
+    // static assets, under `/app/` (`ops::application_asset`).
+    fn app_assets(req: std::http::Request, path: String) -> std::http::Response {
+        let ctx = context_of(self.cfg);
+        if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
+        let a = ops::application_asset(ctx.active_root, path);
+        if a.status != 200 { return self.error(404, "not_found", a.why, false); }
+        // the bytes as they are, on the connection: a `Response` body is a
+        // String, which ends at an image's first NUL byte
+        if req.conn_fd < 0 { return self.error(500, "internal", "an asset is written to its connection, and this request has none", false); }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: " + a.content_type + "\r\nContent-Length: " + to_string(len(a.bytes)) + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
+        std::io::tcp::send_fd(req.conn_fd, std::bytes::concat(std::bytes::from_string(head), a.bytes)) or discard;
+        std::io::tcp::close_fd(req.conn_fd);
+        return std::http::Response { status: 200, body: "", takeover_raw: true };
+    }
+
     // The head envelope (§2.4) around `data`.
     fn envelope(status: Int, active_id: String, data: String) -> std::http::Response {
         let http = api::Http { };
@@ -922,6 +939,7 @@ locus Head {
             }
         }
         if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
+        if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_assets(req, path); }
         settle_all(self.cfg);
         if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {
             if req.method != "GET" { return self.error(405, "method_not_allowed", "this head route is a read", false); }

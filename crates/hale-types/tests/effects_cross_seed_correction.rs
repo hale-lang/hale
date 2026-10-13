@@ -317,8 +317,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        504,
-        524,
+        510,
+        530,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -328,6 +328,7 @@ fn operations() {
         DefinitionDrafts::validate  does={syscall,block,env,alloc}
         Definitions::load  does={syscall,block,env,alloc}
         GraphIngest::ingest  does={syscall,block,alloc}
+        GraphIngest::list_files  does={syscall,block,alloc}
         MemoryProjection::ready  does={env}
         OrganizationImpact::relevant  does={alloc}
         OrganizationImpact::restriction  does={alloc}
@@ -335,6 +336,8 @@ fn operations() {
         ProjectWorkflowCatalog::snapshot  does={syscall,block,env,alloc}
         TaskProjection::relevant  does={alloc}
         TaskProjection::terminal  does={alloc}
+        application_asset  does={syscall,block,alloc}
+        application_assets  does={syscall,block,alloc}
         attempt_words_within  does={alloc}
         graph_holder_ok  does={alloc}
         graph_ref_ok  does={alloc}

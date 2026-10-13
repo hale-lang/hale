@@ -4783,6 +4783,10 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #7eef2531
 
+== crates/hale-codegen/tests/violate_build.rs#df440a92
+row	Feed@main2	Feed	main	default
+row	Guard@main1	Guard	main	default
+
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
@@ -4805,6 +4809,12 @@ dynamic	Small	on main	in the seed
 
 == crates/hale-codegen/tests/wasm_target.rs#9f9ee9e7
 row	V@main1	V	main	default
+
+== crates/hale-codegen/tests/wasm_target.rs#0e7a1b36
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.h	Holder	main	default
+row	App@literal1.r	Plus	main	default
 
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
@@ -7155,6 +7165,17 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 
+== tests/hale/perspective_hold_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.s	Steps	main	default
+row	App@literal1.scaling	__lib_tests__hale__perspective_hold_lib___lib__Thrice	main	default
+row	App@literal1.w	Work	main	default
+-- dynamic	sites in the seed
+dynamic	Attempt	on main
+dynamic	__lib_tests__hale__perspective_hold_lib___lib__Step	on main
+
 == tests/hale/pinned_birth_restart_test.hl
 root	App	the entry
 domain	pinned:App@literal1.held
@@ -7423,6 +7444,11 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 shared	dynamic	sites in the stdlib #919aadb4
+
+== dna/api/project_service/tests/head_assets_test.hl
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #23f55ba1
+shared	dynamic	sites in api/project_service/tests/fixture #c6dc7898
+shared	dynamic	sites in core #b2c4d9f5
 
 == dna/api/project_service/tests/head_push_test.hl
 row	EventStream@main2	EventStream	main	default
@@ -10271,10 +10297,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/heart_reading_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`concerns` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`concerns` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`concerns` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #ec318237
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
 -- dynamic	sites in tests
 dynamic	__StdSecretCredential	on main
@@ -11636,6 +11659,16 @@ dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`answers` passed a
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/repository_sense_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdIoTcpStream	on main	in tests/onboarding/todo/api
+shared	dynamic	sites in core #ec318237
+-- dynamic	sites in tests
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`concerns` passed as a value)
+dynamic	__lib_dna__tests__onboarding__todo__api__nerves__nerves__Nerves	on main
+
 == dna/tests/retired_admission_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -11914,6 +11947,10 @@ dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/ui_assets_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
 
 == dna/tests/usage_test.hl
 root	App	the entry
@@ -13741,6 +13778,13 @@ row	App@literal1.m	Manager	main	default
 -- dynamic	sites in the seed
 dynamic	Part	on main
 dynamic	Run	on main
+
+== dna/friction/f4-perspective-must-designate
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.w	Work	main	default
+dynamic	Attempt	on main	in the seed
 
 == dna/friction/f5-bus-reply-at-drain
 root	App	the entry
@@ -16485,6 +16529,11 @@ dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
+
+== shared sites in core #ec318237
+dynamic	__StdBytesBytesBuilder	on unknown (`concerns` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`concerns` passed as a value)
+dynamic	__lib_dna__core___record__RowBatch	on unknown (`concerns` passed as a value)|unknown (no instance)
 
 == shared sites in core #fd739ca5
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)

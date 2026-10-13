@@ -371,6 +371,15 @@ again over an event stream (`GET /api/hale/v1/head/events`), when a
 receipt is journaled, a run or child starts or ends, or the organism
 lands a row.
 
+**The application's page.** A repository whose browser page is buildless —
+a `ui/` holding no `package.json` or other manifest — has no seed for it.
+When the repository references that directory (a README link to it, or
+the compose file mounting `./ui`), `hale dna init` says once that the head
+serves it, and the head answers it under `/app/` for the attached project:
+`/app/` is `ui/index.html`, `/app/seq.js` is `ui/seq.js`, and nothing
+outside `ui/` is reachable. A `ui/` nothing references is said once and
+ignored; one with a manifest is a seed like any other.
+
 **`hale dna ui [project] [--port N]`** serves a page from the record
 alone (port 8790 by default). Every request runs one offline verb in
 the project root and returns what it printed: the status, the Board's
