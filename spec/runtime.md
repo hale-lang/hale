@@ -3498,8 +3498,15 @@ for replay-under-a-different-plan) is the next milestone.
   `time::monotonic` stays the basis for scheduling. Richer
   `Time`-typed wall-clock (with calendar arithmetic) is
   deferred until a consumer surfaces a concrete date-shape
-  need. Mocking is available for tests via
-  `time::mock_clock(...)` (stdlib).
+  need. There is no mock clock: a test controls time by passing
+  it — `Time` and `Duration` are values, so logic that depends on
+  the clock takes `now: Time` (or an elapsed `Duration`) as an
+  argument and a test hands it a literal — and a recorded run's
+  `now` / `current` / `monotonic` reads are served back by
+  `hale replay` (§ Input journal). A process-global clock a
+  program could set would be a second time source the journal,
+  `sleep` and the scheduler's deadline queue would each have to
+  consult.
 - **Monotonic-only scheduling.** Every scheduling primitive in
   Hale — `time::sleep`, `time::tick`, the cooperative
   scheduler's deadline queue — is grounded on the monotonic
