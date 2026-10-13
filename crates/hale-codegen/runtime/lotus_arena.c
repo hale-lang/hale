@@ -9391,6 +9391,31 @@ static void lotus_mpsc_ring_destroy(lotus_mpsc_ring_t *r) {
     r->slots = NULL;
 }
 
+#ifndef __wasm__
+/* Test only: `LOTUS_BUS_TEST_RING_CLAIM_STALL_US=<us>` stalls the producer
+ * holding the 100th slot claim of the process's rings for that long,
+ * between claiming its slot and publishing it, so a test can hold a ring's
+ * head unpublished while later slots fill (`lotus_mpsc_ring_take_settled`).
+ * Read once; unset costs one load per enqueue. Never set it in
+ * production. */
+static int g_ring_test_stall_us = -1;
+static _Atomic uint64_t g_ring_test_reservations = 0;
+
+static void lotus_ring_test_stall(void) {
+    int us = __atomic_load_n(&g_ring_test_stall_us, __ATOMIC_RELAXED);
+    if (us < 0) {
+        const char *e = getenv("LOTUS_BUS_TEST_RING_CLAIM_STALL_US");
+        us = (e && *e) ? atoi(e) : 0;
+        if (us < 0) us = 0;
+        __atomic_store_n(&g_ring_test_stall_us, us, __ATOMIC_RELAXED);
+    }
+    if (us == 0) return;
+    if (atomic_fetch_add_explicit(&g_ring_test_reservations, 1, memory_order_relaxed) != 99) return;
+    struct timespec ts = { us / 1000000, (long)(us % 1000000) * 1000L };
+    nanosleep(&ts, NULL);
+}
+#endif
+
 /* Producer. Copies *cell into the ring on success; returns 1, or 0 if
  * the ring is full. Safe for concurrent producers (CAS on the enqueue
  * cursor). Canonical Vyukov producer. */
@@ -9419,6 +9444,10 @@ static int lotus_mpsc_ring_try_enqueue(lotus_mpsc_ring_t *r,
                                        memory_order_relaxed);
         }
     }
+#ifndef __wasm__
+    if (__builtin_expect(__atomic_load_n(&g_ring_test_stall_us, __ATOMIC_RELAXED) != 0, 0))
+        lotus_ring_test_stall();
+#endif
     slot->cell = *cell;                     /* plain store — published below */
     atomic_store_explicit(&slot->seq, pos + 1, memory_order_release);
     return 1;
@@ -9459,6 +9488,26 @@ static int lotus_mpsc_ring_peek_nonempty(lotus_mpsc_ring_t *r) {
     return (int64_t)(seq - (pos + 1)) == 0;
 }
 
+#ifndef __wasm__
+/* Consumer only: the ring's head, waiting for it to be published when a
+ * producer has claimed it and not yet written it. A failed dequeue alone
+ * does not say the ring is empty: a producer claims its slot before it
+ * publishes the slot, so a claimed, unpublished head can stand in front of
+ * cells already published behind it. 0 only when no claim is outstanding
+ * (the two cursors meet). Taking the spill after a bare failed dequeue
+ * would deliver a spilled cell before a publisher's earlier ring cells;
+ * the claim is published within the producer's next few instructions. */
+static int lotus_mpsc_ring_take_settled(lotus_mpsc_ring_t *r, lotus_bus_cell_t *out) {
+    for (unsigned spins = 0;; spins++) {
+        if (lotus_mpsc_ring_try_dequeue(r, out)) return 1;
+        if (atomic_load_explicit(&r->enqueue_pos, memory_order_acquire)
+            == atomic_load_explicit(&r->dequeue_pos, memory_order_relaxed))
+            return 0;
+        if (spins >= 64) sched_yield();
+    }
+}
+#endif
+
 /* Approximate occupancy (enqueue_pos - dequeue_pos). Diagnostic only — a
  * relaxed snapshot that may count a reserved-but-not-yet-published slot.
  * Used by the residency dump. */
@@ -9467,6 +9516,190 @@ static size_t lotus_mpsc_ring_size_approx(lotus_mpsc_ring_t *r) {
     uint64_t deq = atomic_load_explicit(&r->dequeue_pos, memory_order_relaxed);
     return (enq >= deq) ? (size_t)(enq - deq) : 0;
 }
+
+/* ---- A ring's spill: the queue behind a full ring ---------------------
+ *
+ * A pool's ring and a pinned mailbox are fixed-size rings with one consumer.
+ * A producer on another thread at a full ring used to wait until the
+ * consumer freed a slot, with no way out: a consumer blocked on that very
+ * producer — reading a socket the producer answers only after its flood, in
+ * an `@ffi` call, in a runtime wait — never freed one, and both stood still.
+ * The bound now follows main's queue (#1552, `bus_queue_bound_wait`):
+ * back-pressure holds a producer only while the consumer drains. The
+ * consumer bumps `drains` at every cell it takes; a producer at the full
+ * ring that sees no bump for `LOTUS_BUS_OWNER_STALL_NS` takes the consumer
+ * for blocked and puts its cell in the spill, raising the spill's bound by
+ * a ring's worth. The stall window is the spill's, not each producer's
+ * (`grant_at`): a raise starts it again for every producer waiting, so the
+ * spill grows by at most a ring's worth per window while the consumer
+ * takes nothing. Once the consumer has drained the spill back to half a
+ * ring, its bound is a ring again.
+ *
+ * Order: the consumer takes the ring, then the spill, then its own overflow
+ * list. While the spill holds anything, every producer on another thread
+ * posts to the spill, not the ring, so no cell of one publisher passes an
+ * earlier one; a readiness step posting its parked cells into its own full
+ * ring (`t_bus_post_in_order`) spills them the same way. The spill is
+ * guarded by the ring's lock; `len` is read without it. */
+typedef struct lotus_spill_node {
+    lotus_bus_cell_t         cell;
+    struct lotus_spill_node *next;
+} lotus_spill_node_t;
+
+typedef struct lotus_spill {
+    lotus_spill_node_t *head, *tail;   /* under the ring's lock */
+    _Atomic size_t      len;
+    size_t              limit;         /* under the lock; 0 = a ring's worth */
+    uint64_t            grant_at;      /* under the lock: the last raise */
+    _Atomic uint64_t    drains;        /* the consumer's heartbeat */
+} lotus_spill_t;
+
+/* Set by readiness while it posts a parked list into its own thread's ring
+ * or mailbox (`lotus_bus_ready`): a cell that finds the ring full, or a
+ * spill ahead of it, goes to the spill, behind the cells already there,
+ * never to the consumer's own overflow list, which the consumer takes after
+ * the spill. */
+static __thread int t_bus_post_in_order = 0;
+
+static void lotus_spill_init(lotus_spill_t *sp) {
+    sp->head = sp->tail = NULL;
+    atomic_init(&sp->len, 0);
+    sp->limit = 0;
+    sp->grant_at = 0;
+    atomic_init(&sp->drains, 0);
+}
+
+/* The consumer took a cell. */
+static inline void lotus_spill_beat(lotus_spill_t *sp) {
+    atomic_fetch_add_explicit(&sp->drains, 1, memory_order_release);
+}
+
+#ifndef __wasm__
+/* Append `cell`, the ring's lock held. 0 when out of memory. */
+static int lotus_spill_append_locked(lotus_spill_t *sp, const lotus_bus_cell_t *cell) {
+    lotus_spill_node_t *n = malloc(sizeof *n);
+    if (!n) return 0;
+    n->cell = *cell;
+    n->next = NULL;
+    if (sp->tail) sp->tail->next = n; else sp->head = n;
+    sp->tail = n;
+    atomic_fetch_add_explicit(&sp->len, 1, memory_order_release);
+    return 1;
+}
+
+/* Take the spill's oldest cell, the ring's lock held. A producer waiting
+ * goes on once the spill is back to half a ring, where its bound is a
+ * ring's worth again. */
+static int lotus_spill_pop_locked(lotus_spill_t *sp, pthread_cond_t *not_full,
+                                  _Atomic int *producers_waiting,
+                                  lotus_bus_cell_t *out) {
+    lotus_spill_node_t *n = sp->head;
+    if (!n) return 0;
+    sp->head = n->next;
+    if (!sp->head) sp->tail = NULL;
+    size_t len = atomic_fetch_sub_explicit(&sp->len, 1, memory_order_acq_rel) - 1;
+    if (len <= bus_queue_max_cap() / 2) sp->limit = 0;
+    if (atomic_load_explicit(producers_waiting, memory_order_seq_cst) > 0)
+        pthread_cond_broadcast(not_full);
+    *out = n->cell;
+    free(n);
+    return 1;
+}
+
+static int lotus_spill_pop(lotus_spill_t *sp, pthread_mutex_t *lock,
+                           pthread_cond_t *not_full,
+                           _Atomic int *producers_waiting,
+                           lotus_bus_cell_t *out) {
+    if (atomic_load_explicit(&sp->len, memory_order_acquire) == 0) return 0;
+    pthread_mutex_lock(lock);
+    int got = lotus_spill_pop_locked(sp, not_full, producers_waiting, out);
+    pthread_mutex_unlock(lock);
+    return got;
+}
+#endif
+
+/* Defined with the readiness windows below: a producer about to wait at a
+ * full ring wakes the threads waiting at a readiness cap. */
+static void lotus_bus_ready_kick(void);
+
+#ifndef __wasm__
+/* A producer on another thread whose cell found the ring full, or the
+ * spill holding cells: post it to the ring if the spill is empty and the
+ * ring has room, to the spill if the spill is under its bound, else wait
+ * while the consumer drains (see the spill's comment). 1 = posted (the
+ * caller wakes the consumer); 0 = the ring is shutting down, and -1 out of
+ * memory: dropped either way (the caller frees what the cell owns). The ring's lock is
+ * not held around the readiness kick: readiness takes a ring's lock under
+ * its own (`t_bus_post_in_order`). */
+static int lotus_ring_post_slow(lotus_mpsc_ring_t *ring, pthread_mutex_t *lock,
+                                pthread_cond_t *not_full, _Atomic int *shutdown,
+                                _Atomic int *producers_waiting,
+                                lotus_spill_t *sp, const lotus_bus_cell_t *cell) {
+    size_t cap = bus_queue_max_cap();
+    uint64_t seen = atomic_load_explicit(&sp->drains, memory_order_acquire);
+    uint64_t since = lotus_bus_mono_ns();
+    int counted = 0, posted = 0;
+    pthread_mutex_lock(lock);
+    for (;;) {
+        if (atomic_load_explicit(shutdown, memory_order_relaxed)) break;
+        size_t len = atomic_load_explicit(&sp->len, memory_order_acquire);
+        size_t limit = sp->limit ? sp->limit : cap;
+        if (len == 0) {
+            if (lotus_mpsc_ring_try_enqueue(ring, cell)) { posted = 1; break; }
+        } else if (len < limit) {
+            posted = lotus_spill_append_locked(sp, cell) ? 1 : -1;
+            break;
+        }
+        if (!counted) {
+            /* Announce the wait, then look once more (the consumer's
+             * fence + load of `producers_waiting` pairs with this). */
+            atomic_fetch_add_explicit(producers_waiting, 1, memory_order_seq_cst);
+            atomic_thread_fence(memory_order_seq_cst);
+            counted = 1;
+            pthread_mutex_unlock(lock);
+            lotus_bus_ready_kick();
+            pthread_mutex_lock(lock);
+            continue;
+        }
+        uint64_t drains = atomic_load_explicit(&sp->drains, memory_order_acquire);
+        uint64_t now = lotus_bus_mono_ns();
+        if (drains != seen) {
+            seen = drains;
+            since = now;
+        } else if (now - (since > sp->grant_at ? since : sp->grant_at)
+                   >= (uint64_t)LOTUS_BUS_OWNER_STALL_NS) {
+            sp->limit = len + cap;
+            sp->grant_at = now;
+            posted = lotus_spill_append_locked(sp, cell) ? 1 : -1;
+            break;
+        }
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 1000000;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_sec++;
+            until.tv_nsec -= 1000000000L;
+        }
+        lotus_cond_timedwait(not_full, lock, &until);
+    }
+    if (counted) atomic_fetch_sub_explicit(producers_waiting, 1, memory_order_seq_cst);
+    pthread_mutex_unlock(lock);
+    return posted;
+}
+
+/* Readiness posting a parked cell into its own thread's full ring, or
+ * behind a spill (`t_bus_post_in_order`): into the spill, under no bound
+ * (the list was bounded when it was parked), never waiting. */
+static int lotus_ring_post_in_order(lotus_mpsc_ring_t *ring, pthread_mutex_t *lock,
+                                    lotus_spill_t *sp, const lotus_bus_cell_t *cell) {
+    pthread_mutex_lock(lock);
+    int posted = (atomic_load_explicit(&sp->len, memory_order_acquire) == 0
+                  && lotus_mpsc_ring_try_enqueue(ring, cell))
+        || lotus_spill_append_locked(sp, cell);
+    pthread_mutex_unlock(lock);
+    return posted;
+}
+#endif
 
 /* Consumer-thread-local overflow node. A self-publish — the consumer's
  * own handler posting to its own mailbox — that finds the fixed-size ring
@@ -9497,16 +9730,15 @@ typedef struct lotus_mailbox {
     /* Consumer-thread-local self-publish overflow list (see above). */
     lotus_mailbox_overflow_t *overflow_head;
     lotus_mailbox_overflow_t *overflow_tail;
+    /* Behind the full ring, while the consumer is not draining (see
+     * `lotus_spill_t`). */
+    lotus_spill_t spill;
 } lotus_mailbox_t;
 
 /* Defined below; `post` uses it to detect a self-publish from the
  * mailbox's own (pinned consumer) thread, which must not block. */
 lotus_mailbox_t *lotus_mailbox_get_current(void);
 
-/* Defined with the readiness windows below: a producer about to block
- * on a full ring wakes the threads waiting at a readiness cap, so a
- * consumer among them stops waiting and drains (decision line 6). */
-static void lotus_bus_ready_kick(void);
 
 lotus_mailbox_t *lotus_mailbox_create(void) {
     lotus_mailbox_t *mb = NULL;
@@ -9543,6 +9775,7 @@ lotus_mailbox_t *lotus_mailbox_create(void) {
     pthread_cond_init(&mb->not_full, NULL);
     mb->overflow_head = NULL;
     mb->overflow_tail = NULL;
+    lotus_spill_init(&mb->spill);
     return mb;
 }
 
@@ -9638,46 +9871,38 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     if (self_publish) lotus_local_queued = 1;
 
     for (;;) {
+        /* Readiness posting its parked cells into its own mailbox keeps
+         * them ahead of what their publishers post next (`lotus_spill_t`). */
+        if (self_publish && t_bus_post_in_order) {
+            if (!lotus_ring_post_in_order(&mb->ring, &mb->lock, &mb->spill, &cell)
+                && heap_buf)
+                free(heap_buf);
+            return;
+        }
         /* A self-publish behind an overflow keeps to it: the drain takes
          * the ring before the overflow, so a cell put in the ring after
          * one put in the overflow would be delivered first (one
-         * publisher's order). */
-        int enq = (self_publish && mb->overflow_head)
-            ? 0 : lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
+         * publisher's order). Another thread's post goes behind a spill
+         * the same way. */
+        int enq;
+        if (self_publish)
+            enq = mb->overflow_head ? 0 : lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
+        else
+            enq = atomic_load_explicit(&mb->spill.len, memory_order_acquire) == 0
+                && lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
 
         if (!enq && !self_publish) {
-            /* Ring full, cross-thread producer — BLOCK until the consumer
-             * frees a slot or shutdown (GH #125 backpressure). */
-            pthread_mutex_lock(&mb->lock);
-            if (atomic_load_explicit(&mb->shutdown,
-                                     memory_order_relaxed)) {
-                pthread_mutex_unlock(&mb->lock);
+            /* Ring full, or a spill ahead: wait while the consumer drains,
+             * or spill (GH #125 backpressure, `lotus_ring_post_slow`). */
+            if (lotus_ring_post_slow(&mb->ring, &mb->lock, &mb->not_full,
+                                     &mb->shutdown, &mb->producers_waiting,
+                                     &mb->spill, &cell) != 1) {
                 if (heap_buf) free(heap_buf);
-                return;                          /* drop — shutting down */
+                return;                    /* shutting down, or no memory */
             }
-            /* Announce intent to wait, (seq_cst fence) then re-try the
-             * lock-free enqueue BEFORE sleeping. This is the producer half
-             * of the backpressure Dekker handshake with the consumer's
-             * drain + fence + load(producers_waiting): if the consumer just
-             * freed a slot, either this re-try sees it (we don't sleep) or
-             * the consumer sees producers_waiting>0 and signals not_full.
-             * No lost wakeup. */
-            atomic_fetch_add_explicit(&mb->producers_waiting, 1,
-                                      memory_order_seq_cst);
-            atomic_thread_fence(memory_order_seq_cst);
-            enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
-            if (!enq) {
-                lotus_bus_ready_kick();
-                lotus_cond_wait(&mb->not_full, &mb->lock);
-                atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
-                                          memory_order_seq_cst);
-                pthread_mutex_unlock(&mb->lock);
-                continue;                        /* retry from the top */
-            }
-            atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
-                                      memory_order_seq_cst);
-            pthread_mutex_unlock(&mb->lock);
-            /* fall through to the parked-consumer wake below */
+            enq = 1;
+            /* The consumer may be parked: the spill wakes it as the ring
+             * does (its recheck reads the spill under the lock). */
         }
 
         if (enq) {
@@ -9721,6 +9946,43 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
 #endif /* __wasm__ */
 }
 
+/* The mailbox's next cell, in post order: the ring, then the spill, then
+ * the consumer's own overflow list. Each take is the consumer's heartbeat
+ * (`lotus_spill_t`). */
+static int lotus_mailbox_take(lotus_mailbox_t *mb, lotus_bus_cell_t *cell) {
+    if (lotus_mpsc_ring_try_dequeue(&mb->ring, cell)) {
+        lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+        lotus_spill_beat(&mb->spill);
+        return 1;
+    }
+#ifndef __wasm__
+    /* A spill is behind the ring: take it only once the ring is truly
+     * empty, not merely its head unpublished. */
+    if (atomic_load_explicit(&mb->spill.len, memory_order_acquire) > 0) {
+        if (lotus_mpsc_ring_take_settled(&mb->ring, cell)) {
+            lotus_mailbox_wake_producers(mb);
+            lotus_spill_beat(&mb->spill);
+            return 1;
+        }
+        if (lotus_spill_pop(&mb->spill, &mb->lock, &mb->not_full,
+                            &mb->producers_waiting, cell)) {
+            lotus_spill_beat(&mb->spill);
+            return 1;
+        }
+    }
+#endif
+    if (mb->overflow_head) {
+        lotus_mailbox_overflow_t *node = mb->overflow_head;
+        mb->overflow_head = node->next;
+        if (!mb->overflow_head) mb->overflow_tail = NULL;
+        *cell = node->cell;
+        free(node);
+        lotus_spill_beat(&mb->spill);
+        return 1;
+    }
+    return 0;
+}
+
 LOTUS_HOT_ALIGN
 int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     if (!mb) return 0;
@@ -9730,19 +9992,9 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
         /* Decision L0-1: failures posted to this thread's domain, between
          * cells (a wake cell reaches a parked consumer). */
         lotus_failure_service_here();
-        /* Ring first (lock-free), then the consumer-local overflow list. */
-        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
-            lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
-            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_mailbox_dispatch_cell(&cell);
-            return 1;
-        }
-        if (mb->overflow_head) {
-            lotus_mailbox_overflow_t *node = mb->overflow_head;
-            mb->overflow_head = node->next;
-            if (!mb->overflow_head) mb->overflow_tail = NULL;
-            cell = node->cell;
-            free(node);
+        /* Ring first (lock-free), then the spill, then the
+         * consumer-local overflow list. */
+        if (lotus_mailbox_take(mb, &cell)) {
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             return 1;
@@ -9769,11 +10021,20 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
          * fence here, paired with the producer's publish + fence +
          * load(parked) (post), make a lost wake impossible — if a producer
          * published, either this recheck sees the cell or the producer sees
-         * parked==1 and signals. */
-        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
+         * parked==1 and signals. A spilled cell is appended under the
+         * lock this recheck holds. */
+        int got = lotus_mpsc_ring_try_dequeue(&mb->ring, &cell);
+#ifndef __wasm__
+        if (!got && atomic_load_explicit(&mb->spill.len, memory_order_acquire) > 0)
+            got = lotus_mpsc_ring_take_settled(&mb->ring, &cell)
+                || lotus_spill_pop_locked(&mb->spill, &mb->not_full,
+                                          &mb->producers_waiting, &cell);
+#endif
+        if (got) {
             atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
             pthread_mutex_unlock(&mb->lock);
             lotus_mailbox_wake_producers(mb);
+            lotus_spill_beat(&mb->spill);
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             return 1;
@@ -9811,6 +10072,12 @@ void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
     while (mb->overflow_head) {
         lotus_mailbox_overflow_t *node = mb->overflow_head;
         mb->overflow_head = node->next;
+        if (node->cell.payload_heap) free(node->cell.payload_heap);
+        free(node);
+    }
+    while (mb->spill.head) {
+        lotus_spill_node_t *node = mb->spill.head;
+        mb->spill.head = node->next;
         if (node->cell.payload_heap) free(node->cell.payload_heap);
         free(node);
     }
@@ -9883,18 +10150,7 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
      * until both are empty. Cells posted DURING a handler land in the ring
      * (or overflow, on self-publish) and are seen by a later iteration. */
     for (;;) {
-        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
-            lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
-            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_mailbox_dispatch_cell(&cell);
-            continue;
-        }
-        if (mb->overflow_head) {
-            lotus_mailbox_overflow_t *node = mb->overflow_head;
-            mb->overflow_head = node->next;
-            if (!mb->overflow_head) mb->overflow_tail = NULL;
-            cell = node->cell;
-            free(node);
+        if (lotus_mailbox_take(mb, &cell)) {
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             continue;
@@ -10776,6 +11032,9 @@ typedef struct lotus_coop_pool {
     /* Consumer-thread-local self-publish overflow list (see above). */
     lotus_coop_overflow_t *overflow_head;
     lotus_coop_overflow_t *overflow_tail;
+    /* Behind the full ring, while the worker is not draining (see
+     * `lotus_spill_t`). */
+    lotus_spill_t spill;
     /* Consumer-thread-local: the cells a run()'s park point dequeued and
      * did not deliver (run starts, a root's init, a failure's wake), in
      * the order they were posted. They run ahead of the ring, so a park
@@ -10970,6 +11229,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     atomic_store_explicit(&p->shutdown, 0, memory_order_relaxed);
     p->overflow_head = NULL;
     p->overflow_tail = NULL;
+    lotus_spill_init(&p->spill);
     p->deferred_head = NULL;
     p->deferred_tail = NULL;
     p->worker_started = 0;
@@ -11214,45 +11474,45 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
     if (self_publish && !run) lotus_local_queued = 1;
 
     for (;;) {
+        /* Readiness posting its parked cells into its own pool's ring
+         * keeps them ahead of what their publishers post next
+         * (`lotus_spill_t`). */
+        if (self_publish && !run && t_bus_post_in_order) {
+            if (!lotus_ring_post_in_order(&p->ring, &p->lock, &p->spill, &cell)
+                && heap_buf)
+                free(heap_buf);
+            return;
+        }
         /* A self-publish behind an overflow keeps to it: the drain takes
          * the ring before the overflow, so a cell put in the ring after
          * one put in the overflow would be delivered first (one
-         * publisher's order). */
-        int enq = (self_publish && p->overflow_head)
-            ? 0 : lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
+         * publisher's order). Another thread's post goes behind a spill
+         * the same way. */
+        int enq;
+        if (self_publish)
+            enq = p->overflow_head ? 0 : lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
+        else
+            enq = atomic_load_explicit(&p->spill.len, memory_order_acquire) == 0
+                && lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
 
         if (!enq && !self_publish) {
-            /* Ring full, cross-thread producer — BLOCK until the consumer
-             * frees a slot or shutdown (backpressure). Same Dekker
-             * handshake as the mailbox: announce intent, fence, RE-TRY the
-             * lock-free enqueue before sleeping, so a slot the consumer
-             * just freed is never missed. Applies to both classic and
-             * async pools — both can be flooded by cross-pool producers,
-             * and both drains call wake_producers after a dequeue. */
-            pthread_mutex_lock(&p->lock);
-            if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
-                pthread_mutex_unlock(&p->lock);
+            /* Ring full, or a spill ahead: wait while the worker drains, or
+             * spill (backpressure, `lotus_ring_post_slow`). Both classic
+             * and async pools: both drains take the spill and beat. */
+            int posted = lotus_ring_post_slow(&p->ring, &p->lock, &p->not_full,
+                                              &p->shutdown, &p->producers_waiting,
+                                              &p->spill, &cell);
+            if (posted != 1) {
                 if (heap_buf) free(heap_buf);
-                /* refused: a run is named not started at shutdown */
-                lotus_run_ticket_end_unrun(ticket, "PoolShutdown", 0);
-                return;                          /* drop — shutting down */
+                if (posted < 0) {
+                    if (ticket) lotus_run_post_oom();
+                } else {
+                    /* refused: a run is named not started at shutdown */
+                    lotus_run_ticket_end_unrun(ticket, "PoolShutdown", 0);
+                }
+                return;
             }
-            atomic_fetch_add_explicit(&p->producers_waiting, 1,
-                                      memory_order_seq_cst);
-            atomic_thread_fence(memory_order_seq_cst);
-            enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
-            if (!enq) {
-                lotus_bus_ready_kick();
-                lotus_cond_wait(&p->not_full, &p->lock);
-                atomic_fetch_sub_explicit(&p->producers_waiting, 1,
-                                          memory_order_seq_cst);
-                pthread_mutex_unlock(&p->lock);
-                continue;                        /* retry from the top */
-            }
-            atomic_fetch_sub_explicit(&p->producers_waiting, 1,
-                                      memory_order_seq_cst);
-            pthread_mutex_unlock(&p->lock);
-            /* fall through to the wake below */
+            enq = 1;
         }
 
         if (enq) {
@@ -11338,6 +11598,51 @@ static void lotus_coop_pool_post_bus(lotus_coop_pool_t *p,
                               payload_size, 0);
 }
 
+/* The worker's next queued cell, in post order: the ring, then the spill,
+ * then the worker's own overflow list. Each take is the worker's
+ * heartbeat (`lotus_spill_t`). Worker thread only. */
+static int lotus_coop_pool_take(lotus_coop_pool_t *p, lotus_bus_cell_t *cell) {
+    if (lotus_mpsc_ring_try_dequeue(&p->ring, cell)) {
+        lotus_coop_pool_wake_producers(p);   /* freed a slot */
+        lotus_spill_beat(&p->spill);
+        return 1;
+    }
+#ifndef __wasm__
+    /* A spill is behind the ring: take it only once the ring is truly
+     * empty, not merely its head unpublished. */
+    if (atomic_load_explicit(&p->spill.len, memory_order_acquire) > 0) {
+        if (lotus_mpsc_ring_take_settled(&p->ring, cell)) {
+            lotus_coop_pool_wake_producers(p);
+            lotus_spill_beat(&p->spill);
+            return 1;
+        }
+        if (lotus_spill_pop(&p->spill, &p->lock, &p->not_full,
+                            &p->producers_waiting, cell)) {
+            lotus_spill_beat(&p->spill);
+            return 1;
+        }
+    }
+#endif
+    if (p->overflow_head) {
+        lotus_coop_overflow_t *node = p->overflow_head;
+        p->overflow_head = node->next;
+        if (!p->overflow_head) p->overflow_tail = NULL;
+        *cell = node->cell;
+        free(node);
+        lotus_spill_beat(&p->spill);
+        return 1;
+    }
+    return 0;
+}
+
+/* Whether a cell waits for the worker (ring, spill or overflow). Worker
+ * thread only. */
+static int lotus_coop_pool_has_cell(lotus_coop_pool_t *p) {
+    return lotus_mpsc_ring_peek_nonempty(&p->ring)
+        || atomic_load_explicit(&p->spill.len, memory_order_acquire) > 0
+        || p->overflow_head != NULL;
+}
+
 /* Drain a single cell on the pool's worker thread. Blocks on
  * the condvar until a cell is available or shutdown is
  * signaled with empty queue. Returns 1 after a cell ran, 0
@@ -11358,19 +11663,9 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
             lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
         }
-        /* Ring first (lock-free), then the consumer-local overflow list. */
-        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
-            lotus_coop_pool_wake_producers(p);  /* freed a slot */
-            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_coop_pool_dispatch_cell(p, &cell);
-            return 1;
-        }
-        if (p->overflow_head) {
-            lotus_coop_overflow_t *node = p->overflow_head;
-            p->overflow_head = node->next;
-            if (!p->overflow_head) p->overflow_tail = NULL;
-            cell = node->cell;
-            free(node);
+        /* Ring first (lock-free), then the spill, then the
+         * consumer-local overflow list. */
+        if (lotus_coop_pool_take(p, &cell)) {
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
@@ -11404,11 +11699,20 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
         /* Re-check AFTER announcing parked: a cell may have arrived between
          * the failed dequeue and the parked store. The seq_cst store +
          * fence here, paired with the producer's publish + fence +
-         * load(parked) (post), make a lost wake impossible. */
-        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+         * load(parked) (post), make a lost wake impossible. A spilled
+         * cell is appended under the lock this recheck holds. */
+        int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell);
+#ifndef __wasm__
+        if (!got && atomic_load_explicit(&p->spill.len, memory_order_acquire) > 0)
+            got = lotus_mpsc_ring_take_settled(&p->ring, &cell)
+                || lotus_spill_pop_locked(&p->spill, &p->not_full,
+                                          &p->producers_waiting, &cell);
+#endif
+        if (got) {
             atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);
             pthread_mutex_unlock(&p->lock);
             lotus_coop_pool_wake_producers(p);
+            lotus_spill_beat(&p->spill);
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
@@ -11606,15 +11910,7 @@ static void lotus_pool_run_park_drain(lotus_coop_pool_t *p) {
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     lotus_bus_cell_t cell;
     for (;;) {
-        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
-            lotus_coop_pool_wake_producers(p);   /* freed a slot */
-        } else if (p->overflow_head) {
-            lotus_coop_overflow_t *node = p->overflow_head;
-            p->overflow_head = node->next;
-            if (!p->overflow_head) p->overflow_tail = NULL;
-            cell = node->cell;
-            free(node);
-        } else {
+        if (!lotus_coop_pool_take(p, &cell)) {
             if (!replaying || t_rp_pending_len == 0) lotus_local_queued_clear();
             break;
         }
@@ -11657,15 +11953,7 @@ static void lotus_pool_init_yield(void) {
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     lotus_bus_cell_t cell;
     for (;;) {
-        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
-            lotus_coop_pool_wake_producers(p);   /* freed a slot */
-        } else if (p->overflow_head) {
-            lotus_coop_overflow_t *node = p->overflow_head;
-            p->overflow_head = node->next;
-            if (!p->overflow_head) p->overflow_tail = NULL;
-            cell = node->cell;
-            free(node);
-        } else {
+        if (!lotus_coop_pool_take(p, &cell)) {
             break;
         }
         if (replaying && !lotus_replay_gate_cell(&cell)) continue;
@@ -13253,8 +13541,7 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
     }
     int64_t hold_start = lotus_rp_now_ns();
     for (;;) {
-        int cell_pending = lotus_mpsc_ring_peek_nonempty(&p->ring)
-                           || (p->overflow_head != NULL);
+        int cell_pending = lotus_coop_pool_has_cell(p);
         int shutdown_set = atomic_load_explicit(&p->shutdown,
                                                 memory_order_seq_cst);
         if (shutdown_set && !cell_pending && t_rp_pending_len == 0) {
@@ -13288,18 +13575,7 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
              * later RESUME/EXPIRE steps with the wrong coroutine. */
             lotus_bus_cell_t cell;
             for (;;) {
-                int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell);
-                if (got) {
-                    lotus_coop_pool_wake_producers(p);
-                } else if (p->overflow_head) {
-                    lotus_coop_overflow_t *node = p->overflow_head;
-                    p->overflow_head = node->next;
-                    if (!p->overflow_head) p->overflow_tail = NULL;
-                    cell = node->cell;
-                    free(node);
-                    got = 1;
-                }
-                if (!got) break;
+                if (!lotus_coop_pool_take(p, &cell)) break;
                 if (!lotus_replay_gate_cell(&cell)) continue;
                 lotus_replay_async_step_advance();
                 return lotus_async_start_cell(p, &cell,
@@ -13425,8 +13701,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
      * triggered, so already missed-wakeup-safe). Cell readiness is a non-
      * destructive ring peek (consumer-only) + the overflow head — neither
      * needs the pool mutex. */
-    int cell_pending = lotus_mpsc_ring_peek_nonempty(&p->ring)
-                       || (p->overflow_head != NULL);
+    int cell_pending = lotus_coop_pool_has_cell(p);
     int shutdown_set = atomic_load_explicit(&p->shutdown,
                                             memory_order_seq_cst);
     /* Nothing queued on this worker's pool: nothing a coroutine here
@@ -13630,17 +13905,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     /* (2) Drain one cell — ring first (lock-free), then the consumer-local
      * overflow list — and run it on a fresh coro stack. */
     lotus_bus_cell_t cell_copy;
-    int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell_copy);
-    if (got) {
-        lotus_coop_pool_wake_producers(p);   /* freed a slot */
-    } else if (p->overflow_head) {
-        lotus_coop_overflow_t *node = p->overflow_head;
-        p->overflow_head = node->next;
-        if (!p->overflow_head) p->overflow_tail = NULL;
-        cell_copy = node->cell;
-        free(node);
-        got = 1;
-    }
+    int got = lotus_coop_pool_take(p, &cell_copy);
     if (!got) {
         /* GH #296 phase 6: cells can be HELD out of order here (the
          * post-tape live fallback and old-recording replays gate
@@ -13814,7 +14079,8 @@ static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p || !p->worker_started) continue;
         const char *mid = p->running_label;
-        size_t queued = lotus_mpsc_ring_size_approx(&p->ring);
+        size_t queued = lotus_mpsc_ring_size_approx(&p->ring)
+            + atomic_load_explicit(&p->spill.len, memory_order_relaxed);
         LOTUS_APPEND("%spool `%s` (%s): %s, %zu queued", any_pool ? "; " : "",
                      p->name, p->async_io_enabled ? "async_io" : "blocking",
                      mid ? "a worker is mid-iteration" : "its worker is idle",
@@ -14060,7 +14326,8 @@ void lotus_coop_pool_dump_parked_counts(int fd) {
          * diagnostic only, no lock needed; the overflow list is touched
          * only by the worker, so a possibly-stale read is the right
          * residency-dump semantic. */
-        size_t pending = lotus_mpsc_ring_size_approx(&p->ring);
+        size_t pending = lotus_mpsc_ring_size_approx(&p->ring)
+            + atomic_load_explicit(&p->spill.len, memory_order_relaxed);
         for (lotus_coop_overflow_t *o = p->overflow_head; o; o = o->next) {
             pending++;
         }
@@ -14148,6 +14415,14 @@ void lotus_coop_pool_destroy_all(void) {
             free(node);
         }
         p->deferred_tail = NULL;
+        while (p->spill.head) {
+            lotus_spill_node_t *node = p->spill.head;
+            p->spill.head = node->next;
+            if (node->cell.payload_heap) free(node->cell.payload_heap);
+            lotus_run_ticket_end_unrun(node->cell.run_ticket, "PoolTeardown", 1);
+            free(node);
+        }
+        p->spill.tail = NULL;
         while (p->overflow_head) {
             lotus_coop_overflow_t *node = p->overflow_head;
             p->overflow_head = node->next;
@@ -15410,25 +15685,55 @@ static void lotus_bus_ready_close_locked(lotus_bus_unready_t *u) {
 #endif
 }
 
+/* Whether every cell of a parked list goes to the calling thread's own
+ * queue — main's cooperative queue on main, the worker's ring on its pool's
+ * worker, the mailbox on its pinned thread — while other threads run, so
+ * readiness posts it and closes the window in one hold (`lotus_bus_ready`).
+ * Every such post is the consumer's own: it never waits and runs no
+ * handler. */
+#ifndef __wasm__
+static int lotus_bus_ready_posts_to_own(const lotus_bus_parked_t *p) {
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)) return 0;
+    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
+    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
+    for (const lotus_bus_parked_t *c = p; c; c = c->next) {
+        if (c->mailbox) {
+            if (c->mailbox != own_mb) return 0;
+        } else if (c->coop_pool) {
+            if (c->coop_pool != own_pool) return 0;
+        } else if (!c->queue || !pthread_equal(pthread_self(), c->queue->owner)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+#endif
+
 /* Delivery to `self` is eligible from here: post what it parked, in
  * order. The list is taken out under the lock and posted outside it
  * (a post can drain inline, and a handler then publish); what is
  * parked meanwhile is posted in the next round, behind it, so order
  * holds, and the window closes once a round finds nothing.
  *
- * A subscriber on main's own queue, readied on main while other threads
- * run, is the exception: its rounds could never end. Main's post to its
- * own queue never waits (nothing else drains it), so a producer on
- * another thread parks a new list as fast as main posts the last, every
- * round finds one, and main's queue grew by a list a round without a
- * bound (16 GB in seconds under a loaded box, a pool flooding a
- * subscriber main had just replaced). There the list is posted under the
- * lock and the window closes in the same hold: a producer that arrives
- * meanwhile waits on the lock, finds the window closed, and posts to the
- * queue behind the list, where the queue's bound holds it. Such a post
- * runs no handler (main's post at the cap grows the queue, never drains
- * it inline, and multithreaded the queue is never drained inline), so
- * nothing re-enters the lock. */
+ * A subscriber readied on its own consumer's thread while other threads
+ * run is the exception: its rounds could never end. That thread's post to
+ * its own queue never waits (nothing else drains it), so a producer on
+ * another thread parks a new list as fast as the thread posts the last,
+ * every round finds one, and the queue grew by a list a round without a
+ * bound: main's queue (16 GB in seconds under a loaded box, a pool
+ * flooding a subscriber main had just replaced), a pool worker's overflow
+ * list behind its full ring (3.5 GB/s, a subscriber built in a pool-placed
+ * run()), and a pinned thread's mailbox, whose readiness drained the
+ * mailbox between rounds and so stayed bounded but never returned while
+ * the flood lasted. There the list is posted under the lock and the window
+ * closes in the same hold (`lotus_bus_ready_posts_to_own`): a producer
+ * that arrives meanwhile waits on the lock, finds the window closed, and
+ * posts behind the list, where the queue's own bound holds it (main's
+ * drain-liveness bound, a ring's blocking post). Such a post runs no
+ * handler and takes no lock of this one's (main's post at the cap grows
+ * the queue and never drains it inline; a worker's or a pinned thread's
+ * post to its own full ring goes to its overflow list), so nothing
+ * re-enters the lock. */
 void lotus_bus_ready(void *self) {
     if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
         return;
@@ -15446,12 +15751,17 @@ void lotus_bus_ready(void *self) {
             return;
         }
 #ifndef __wasm__
-        if (!p->mailbox && !p->coop_pool && p->queue
-            && __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
-            && pthread_equal(pthread_self(), p->queue->owner)) {
+        if (lotus_bus_ready_posts_to_own(p)) {
             u->head = u->tail = NULL;
             u->parked = 0;
+            /* Into a full ring, or behind a spill, the parked cells go to
+             * the spill, ahead of what their publishers post next, never
+             * to the consumer's own overflow list, which it takes after
+             * the spill (`lotus_ring_post_in_order`). */
+            int was = t_bus_post_in_order;
+            t_bus_post_in_order = 1;
             for (lotus_bus_parked_t *c = p; c; c = c->next) lotus_bus_parked_post(c);
+            t_bus_post_in_order = was;
             lotus_bus_ready_close_locked(u);
             pthread_mutex_unlock(&g_bus_ready_lock);
             lotus_bus_parked_free(p);
