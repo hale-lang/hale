@@ -636,6 +636,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_lru_get", lru_get_ty, None);
+        // declare i32  @lotus_lru_put_ev(ptr c, ptr key, ptr value,
+        //     ptr evicted_out, ptr arena, ptr desc, i64 n_desc)
+        // declare i32  @lotus_lru_remove(ptr c, ptr key, ptr out_value)
+        // declare void @lotus_lru_retire_value(ptr arena, ptr old_v,
+        //     ptr new_v, ptr desc, i64 n_desc)
+        // put with replace/evict reclamation and the on_evict hand-off,
+        // remove(k), and the deferred retire of a cell value.
+        self.module.add_function(
+            "lotus_lru_put_ev",
+            i32_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function("lotus_lru_remove", lru_get_ty, None);
+        self.module.add_function(
+            "lotus_lru_retire_value",
+            void_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()],
+                false,
+            ),
+            None,
+        );
         let lru_contains_ty =
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
@@ -1095,6 +1127,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_process_spawn", process_spawn_ty, None);
+        // `run_with` / `spawn_with` (2026-10-12): argv, then the
+        // SpawnOptions as ptr cwd, ptr env, ptr unset_env, i64
+        // clear_env, i64 timeout_ns, i64 ×4 rlimits; then the out-params
+        // of `run` / `spawn` and one more — run's i32 timed_out,
+        // spawn's i64 deadline_ns.
+        // declare i32 @lotus_process_run_with(ptr, ptr, ptr, ptr, i64 ×6,
+        //                                     ptr ×5)
+        // declare i32 @lotus_process_spawn_with(ptr, ptr, ptr, ptr, i64 ×6,
+        //                                       ptr ×5)
+        let i64_opt = self.context.i64_type();
+        let mut with_params: Vec<inkwell::types::BasicMetadataTypeEnum> =
+            vec![ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()];
+        let i64_meta: inkwell::types::BasicMetadataTypeEnum = i64_opt.into();
+        let ptr_meta: inkwell::types::BasicMetadataTypeEnum = ptr_t.into();
+        with_params.extend(std::iter::repeat(i64_meta).take(6));
+        with_params.extend(std::iter::repeat(ptr_meta).take(5));
+        let process_with_ty = i32_t.fn_type(&with_params, false);
+        self.module
+            .add_function("lotus_process_run_with", process_with_ty, None);
+        self.module
+            .add_function("lotus_process_spawn_with", process_with_ty, None);
+        // declare i32 @lotus_process_wait_deadline(i32 pid, i64 deadline_ns,
+        //     i64 nonblocking, ptr out_code, ptr out_signal)
+        self.module.add_function(
+            "lotus_process_wait_deadline",
+            i32_t.fn_type(
+                &[
+                    i32_t.into(),
+                    i64_opt.into(),
+                    i64_opt.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // declare ptr @lotus_process_enoent_hint_label(
         //     ptr argv_blob, ptr plain_label, ptr hint_label)
         // — picks the IoError surface label on run/spawn failure:
@@ -1272,6 +1341,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // declare void @lotus_vec_truncate(ptr vec, i64 new_len, ptr arena,
+        //     i64 size, ptr desc, i64 n_desc) — @form(vec) truncate/clear,
+        // each removed element retired as `pop` retires it.
+        self.module.add_function(
+            "lotus_vec_truncate",
+            self.context.void_type().fn_type(
+                &[
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        // declare void @lotus_heap_sift_up(ptr vec, i64 key_off, i64 kind, i64 max)
+        // declare void @lotus_heap_pop_prep(ptr vec, i64 key_off, i64 kind, i64 max)
+        // @form(heap): the binary-heap order over the vec storage.
+        for name in ["lotus_heap_sift_up", "lotus_heap_pop_prep"] {
+            self.module.add_function(
+                name,
+                self.context.void_type().fn_type(
+                    &[ptr_t.into(), i64_t2.into(), i64_t2.into(), i64_t2.into()],
+                    false,
+                ),
+                None,
+            );
+        }
         self.module.add_function(
             "lotus_arena_alloc_reusable",
             ptr_t.fn_type(
@@ -1523,35 +1623,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
-        // m48: render a Decimal (i128 mantissa, implicit scale 9)
-        // into a NUL-terminated string buffer.
-        // declare void @lotus_decimal_to_string(i64 hi, i64 lo, ptr buf)
+        // m48 / `Decimal<S>`: render a Decimal (i128 mantissa at
+        // the scale S) into a NUL-terminated string buffer.
+        // declare void @lotus_decimal_to_string(i64 hi, i64 lo, i64 scale, ptr buf)
         let dec_to_str_ty = self.context.void_type().fn_type(
-            &[i64_t.into(), i64_t.into(), ptr_t.into()],
+            &[i64_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
             false,
         );
         self.module
             .add_function("lotus_decimal_to_string", dec_to_str_ty, None);
-        // declare ptr @lotus_str_from_decimal(ptr arena, i64 hi, i64 lo)
+        // declare ptr @lotus_str_from_decimal(ptr arena, i64 hi, i64 lo, i64 scale)
         let dec_str_arena_ty =
-            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_str_from_decimal", dec_str_arena_ty, None);
-        // declare double @lotus_decimal_to_float(i64 hi, i64 lo)
-        // 2026-05-21: direct i128 → f64 conversion at scale 9.
+        // declare double @lotus_decimal_to_float(i64 hi, i64 lo, i64 scale)
+        // 2026-05-21: direct i128 → f64 conversion at the scale.
         // Backs std::decimal::to_float(d), killing the ASCII
         // round-trip in downstream hot paths (DecimalFloat.to_float
         // used to format and re-parse).
         let f64_t = self.context.f64_type();
         let dec_to_float_ty =
-            f64_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+            f64_t.fn_type(&[i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
 
         // GH #230 item 2: fixed-places decimal formatting.
-        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 places)
+        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
         let dec_format_ty = ptr_t.fn_type(
-            &[i64_t.into(), i64_t.into(), i64_t.into()],
+            &[i64_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
             false,
         );
         self.module
@@ -3959,12 +4059,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             can_parse_float_ty,
             None,
         );
-        // declare void @lotus_str_parse_decimal(ptr s, ptr out_hi, ptr out_lo)
-        // The i128 mantissa is returned as two i64 halves via out
-        // pointers — matches the lotus_decimal_to_string convention
-        // (the LLVM/C ABI for __int128 is awkward to wire uniformly).
+        // declare void @lotus_str_parse_decimal(ptr s, i64 scale, ptr out_hi, ptr out_lo)
+        // The i128 mantissa at the scale (`Decimal<S>`) is returned as
+        // two i64 halves via out pointers — matches the
+        // lotus_decimal_to_string convention (the LLVM/C ABI for
+        // __int128 is awkward to wire uniformly).
         let parse_decimal_ty = self.context.void_type().fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            &[ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into()],
             false,
         );
         self.module.add_function(
@@ -3972,8 +4073,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             parse_decimal_ty,
             None,
         );
-        // declare i32 @lotus_str_can_parse_decimal(ptr s)
-        let can_parse_decimal_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        // declare i32 @lotus_str_can_parse_decimal(ptr s, i64 scale)
+        let can_parse_decimal_ty = i32_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module.add_function(
             "lotus_str_can_parse_decimal",
             can_parse_decimal_ty,
@@ -4031,10 +4132,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             can_parse_int_range_ty,
             None,
         );
-        // declare void @lotus_str_parse_decimal_range(ptr s, i64 start, i64 end, ptr out_hi, ptr out_lo)
+        // declare void @lotus_str_parse_decimal_range(ptr s, i64 start, i64 end, i64 scale, ptr out_hi, ptr out_lo)
         let parse_decimal_range_ty = self.context.void_type().fn_type(
             &[
                 ptr_t.into(),
+                i64_t.into(),
                 i64_t.into(),
                 i64_t.into(),
                 ptr_t.into(),
@@ -4047,9 +4149,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             parse_decimal_range_ty,
             None,
         );
-        // declare i32 @lotus_str_can_parse_decimal_range(ptr s, i64 start, i64 end)
+        // declare i32 @lotus_str_can_parse_decimal_range(ptr s, i64 start, i64 end, i64 scale)
         let can_parse_decimal_range_ty = i32_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into()],
+            &[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
             false,
         );
         self.module.add_function(

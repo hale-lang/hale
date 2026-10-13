@@ -72,7 +72,7 @@ impl SigTy {
             SigTy::Str => Ty::Prim(PrimType::String),
             SigTy::Bytes => Ty::Prim(PrimType::Bytes),
             SigTy::BytesMut => Ty::Prim(PrimType::BytesMut),
-            SigTy::Decimal => Ty::Prim(PrimType::Decimal),
+            SigTy::Decimal => Ty::Prim(PrimType::DECIMAL),
             SigTy::Duration => Ty::Prim(PrimType::Duration),
             SigTy::Time => Ty::Prim(PrimType::Time),
             SigTy::Unit => Ty::Unit,
@@ -112,6 +112,10 @@ impl SigTy {
                     PrimType::Float | PrimType::Int | PrimType::Uint,
                 ),
             ) => true,
+            // A `Decimal` parameter reads every scale: the lowering
+            // takes the scale from the argument's type
+            // (`std::decimal::format`, `to_float`).
+            (SigTy::Decimal, Ty::Prim(PrimType::Decimal(_))) => true,
             _ => self.to_ty().assignable_from(got),
         }
     }
@@ -359,6 +363,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "secret", "Signer"],
     &["std", "process", "Child"],
     &["std", "process", "ProcessOutput"],
+    &["std", "process", "SpawnOptions"],
     &["std", "source", "Walk"],
     &["std", "str", "ByteView"],
     &["std", "str", "ParseError"],
@@ -1171,9 +1176,12 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__kill_escalate", SYSCALL, [Int] -> Unit ! "IoError", Intrinsic(ProcessKillEscalateRaw)),
             row!("__pipe_read", SYSCALL | BLOCK, [Int] -> Str ! "IoError", Intrinsic(ProcessPipeReadRaw)),
             row!("__pipe_write", SYSCALL, [Int, Str] -> Int ! "IoError", Intrinsic(ProcessPipeWriteRaw)),
+            row!("__run_with", SYSCALL | BLOCK, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessRunWithRaw)),
             row!("__signal_pid", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(ProcessSignalPidRaw)),
             row!("__spawn", SYSCALL, [Str] -> Any ! "IoError", Intrinsic(ProcessSpawnRaw)),
+            row!("__spawn_with", SYSCALL, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessSpawnWithRaw)),
             row!("__try_wait_pid", SYSCALL, [Int] -> Any ! "IoError", Intrinsic(ProcessTryWaitPidRaw)),
+            row!("__wait_deadline", SYSCALL | BLOCK, [Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessWaitDeadlineRaw)),
             row!("__wait_pid", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Intrinsic(ProcessWaitPidRaw)),
             // GH #716: adopt closes the outgoing handle's fds and
             // TERM/KILL-reaps its process, so it carries the same
@@ -1199,8 +1207,13 @@ pub const SURFACES: &[NsSurface] = &[
             // handles (__StdProcessSpawnHandle etc.); Any keeps arity +
             // arg + fallible checking without naming them.
             row!("run", SYSCALL | BLOCK, [Str] -> Any ! "IoError", Intrinsic(ProcessRun)),
+            // `run` / `spawn` under a `SpawnOptions` (cwd, environment,
+            // timeout, rlimits): `process.hl` bodies over `__run_with` /
+            // `__spawn_with`, typed against those bodies' signatures.
+            row!("run_with", SYSCALL | BLOCK, _, Renamed),
             row!("signal", SYSCALL, _, Renamed),
             row!("spawn", SYSCALL, [Str] -> Any ! "IoError", Renamed),
+            row!("spawn_with", SYSCALL, _, Renamed),
             row!("try_wait", SYSCALL, _, Renamed),
             row!("wait", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Renamed),
             row!("write_stdin", SYSCALL, _, Renamed),
@@ -1709,6 +1722,9 @@ pub enum IntrinsicId {
     ProcessPipeWriteRaw,
     ProcessSignalPidRaw,
     ProcessSpawnRaw,
+    ProcessSpawnWithRaw,
+    ProcessRunWithRaw,
+    ProcessWaitDeadlineRaw,
     ProcessTryWaitPidRaw,
     ProcessWaitPidRaw,
     ProcessDumpArenaResidency,

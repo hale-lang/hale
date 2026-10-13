@@ -99,6 +99,13 @@ yourself and it may not be listening yet, say how long to wait:
 `std::io::tcp::connect_wait(host, port, 2s)` retries a refused
 connect until then.
 
+Hosts may be IPv4 or IPv6. An IPv6 address is written bare (`"::1"`)
+or bracketed (`"[::1]"`, as in a URL), for `connect`, `listen_socket`
+and the udp `bind` / `send` alike; `connect` to a name tries every
+address the name resolves to, so `localhost` reaches a server on
+either loopback. A listener on an IPv6 host is named with brackets,
+`[::1]:8080`, which is the name `std::io::tcp::stop` takes.
+
 A host that never answers at all — a blackholed address, a firewall
 that drops the SYN — is different: nothing refuses, so a plain
 `connect` waits until the kernel gives up, about two minutes. Give the

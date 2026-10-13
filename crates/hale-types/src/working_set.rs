@@ -810,7 +810,7 @@ fn primitive_size_info(p: PrimType) -> TypeSizeInfo {
         | PrimType::Float
         | PrimType::Time
         | PrimType::Duration => (8, 8),
-        PrimType::Decimal => (16, 16),
+        PrimType::Decimal(_) => (16, 16),
         PrimType::Bool => (1, 1),
         // Heap-managed sequences. Approximated as pointer + len
         // = 16 bytes resident on the struct; the heap buffer

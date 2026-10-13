@@ -1642,22 +1642,7 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
             return None;
         }
         let arg = |tok: &str| -> Ty {
-            let prim = [
-                PrimType::Int,
-                PrimType::Float,
-                PrimType::Bool,
-                PrimType::String,
-                PrimType::Duration,
-                PrimType::Decimal,
-                PrimType::Time,
-                PrimType::Bytes,
-                PrimType::BytesView,
-                PrimType::BytesMut,
-                PrimType::StringView,
-            ]
-            .into_iter()
-            .find(|p| crate::ty::generic_arg_mangle_token(*p) == Some(tok));
-            prim.map(Ty::Prim).unwrap_or_else(|| Ty::Named(tok.to_string()))
+            crate::ty::prim_of_mangle_token(tok).map(Ty::Prim).unwrap_or_else(|| Ty::Named(tok.to_string()))
         };
         let TypeDeclBody::Struct(fields) = &decl.body else { return None };
         Some(
@@ -1679,7 +1664,7 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
     }
     fn field_is_flat_scalar(top: &TopScope, ty: &Ty, depth: usize) -> bool {
         match ty {
-            Ty::Prim(p) => matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal | PrimType::Duration),
+            Ty::Prim(p) => matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration),
             Ty::Named(n) if depth < 16 => match top.lookup(n) {
                 Some(TopSymbol::Type(t)) => match &t.kind {
                     TypeKind::Enum(variants) => variants.iter().all(|v| v.fields.is_empty()),

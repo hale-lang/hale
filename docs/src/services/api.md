@@ -356,6 +356,28 @@ connection alone, and the listener and the other connections go on.
 `public.stop()` refuses what is queued, answers what is executing and
 closes the listener after the replies.
 
+#### Calls from a web page: `cors`
+
+A page served from another origin can call the exposure only if the
+exposure answers CORS for that origin. `cors:` lists the origins,
+comma-separated (`"*"` for any); without it nothing changes:
+
+```hale,fragment
+let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles, cors: "https://app.example.com, http://localhost:5173" }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+The browser's preflight (`OPTIONS /call/<member>` or `OPTIONS
+/.description`, sent with no credential) from a listed origin is answered
+`204` with that origin in `Access-Control-Allow-Origin`, the methods
+(`POST, GET, OPTIONS`), the headers a call sends (`Authorization,
+Content-Type, Hale-Surface-Digest`) and a ten-minute `Max-Age`; it never
+reaches a receiver. Every response to a listed origin, refusals included,
+carries `Access-Control-Allow-Origin`, so the page can read why a call was
+refused. Any other origin's preflight is `403` with no CORS header, and its
+calls carry none, so the browser stops the page. CORS is the browser's
+guard and not authentication: a call is still admitted by its bearer and
+its roles, whatever origin it came from.
+
 ### Serving to an MCP host
 
 `mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the

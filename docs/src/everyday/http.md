@@ -482,6 +482,9 @@ let posted = std::http::post("http://api.local/things",
     std::bytes::from_string("{\"n\": 1}"), "application/json") or raise;
 ```
 
+An IPv6 host is bracketed in the URL, as everywhere:
+`std::http::get("http://[::1]:8080/health")`.
+
 Both are `fallible(std::http::HttpError)` — address the error with
 `or raise` / a substitute / an error-check fn, and branch on
 `err.kind` (`connect_failed`, `bad_url`, …) when it matters.

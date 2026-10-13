@@ -984,7 +984,7 @@ They attach to the declaration that follows.
 |---|---|---|
 | `@ffi("c")` | free fn | external C-ABI binding |
 | `@export` | fn / locus | WASM module export; persistent singleton |
-| `@form(kind)` | locus | storage form (vec / hashmap / ring_buffer / lru_cache) |
+| `@form(kind)` | locus | storage form (vec / hashmap / set / ring_buffer / lru_cache / heap) |
 | `@locality(tier)` | locus | placement locality tier |
 | `@bounded` | locus | opt into the memory-bound proof |
 | `@unbounded` | fn | acknowledge intentional unbounded allocation |

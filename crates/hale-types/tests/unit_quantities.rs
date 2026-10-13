@@ -1003,9 +1003,11 @@ fn a_quantity_field_is_its_int_tagged_by_its_denomination() {
 }
 
 /// `InexactError`, which a conversion that divides fails with under its
-/// `or`, is a builtin type in a program with a quantity, and in no other.
+/// `or`, is a builtin type in every program: a quantity's conversion
+/// needs a quantity declared, but a Decimal's narrowing `.rescale(T)`
+/// (`Decimal<S>`, spec/types.md) needs no declaration at all.
 #[test]
-fn inexact_error_is_a_builtin_where_a_quantity_is_declared() {
+fn inexact_error_is_a_builtin_in_every_program() {
     let row = hale_types::builtin_types::builtin_type("InexactError").expect("a builtin type");
     let fields: Vec<&str> = row.fields.iter().map(|(n, _)| *n).collect();
     assert_eq!(fields, ["kind", "value", "divisor"]);
@@ -1016,5 +1018,6 @@ fn inexact_error_is_a_builtin_where_a_quantity_is_declared() {
         hale_types::resolve::build_top_scope(&bundle).0.lookup("InexactError").is_some()
     };
     assert!(injected("unit cent;\ntype Money = quantity Int in cent;\nfn main() { println(1); }\n"));
-    assert!(!injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
+    assert!(injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
+    assert!(injected("fn main() { let a: Decimal<18> = 1d; let b = a.rescale(2) or raise; }\n"));
 }

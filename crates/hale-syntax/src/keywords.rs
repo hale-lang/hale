@@ -59,6 +59,8 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "sum", "prod", "or", "fallible",
     "unix", "shm_ring", "role", "listen", "connect", "slot_count",
     "on_overflow", "block", "drop",
+    // `@form(heap)`'s slot clause (`heap jobs of Job ordered_by min priority;`).
+    "ordered_by",
     // GH #1106, #1417: the surface path's knobs (`api::serve(…, bound:,
     // on_full:)`).
     "api", "bound", "on_full", "refuse",

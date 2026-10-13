@@ -85,7 +85,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::String
             | CodegenTy::Duration
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Bytes
             | CodegenTy::BytesView
@@ -5746,7 +5746,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::String
                 | CodegenTy::Duration
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Time
                 | CodegenTy::Bytes
                 | CodegenTy::TypeRef(_) => true,

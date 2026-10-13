@@ -652,11 +652,11 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#b982fdcc
+== crates/hale-stdlib/hl/api_rpc.hl#a4932d72
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#e6b631b2
+== crates/hale-stdlib/hl/http_client.hl#92ac6ec9
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -664,7 +664,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
-== crates/hale-stdlib/hl/process.hl#ea613e30
+== crates/hale-stdlib/hl/process.hl#229cd237
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
@@ -1386,7 +1386,7 @@ dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
-== crates/hale-codegen/tests/api_runtime.rs#c9cabfaf
+== crates/hale-codegen/tests/api_runtime.rs#9876407f
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
@@ -1754,12 +1754,6 @@ row	App@literal1	App	main	default
 row	Adapter@binding1	Adapter	pinned:Adapter@binding1	binding
 dynamic	Sink	on main	in the seed
 
-== crates/hale-codegen/tests/bus_early_registration.rs#f8586544
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.b	Born	main	default
-row	App@literal1.r	Ran	main	default
-
 == crates/hale-codegen/tests/bus_handler_freefn.rs#c3019ba5
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default
@@ -1789,20 +1783,6 @@ row	Pub@main2	Pub	main	default
 == crates/hale-codegen/tests/bus_publish_stack_alloca.rs#2d27a62d
 row	Counter@main1	Counter	main	default
 row	Pub@main2	Pub	main	default
-
-== crates/hale-codegen/tests/bus_publisher_order.rs#11124b22
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.a1	SubA	main	default
-row	App@literal1.a2	SubA	main	default
-row	App@literal1.a3	SubA	main	default
-row	App@literal1.c	Coord	main	default
-
-== crates/hale-codegen/tests/bus_publisher_order.rs#c326e5a0
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.t1	Tally	main	default
-row	App@literal1.t2	Tally	main	default
 
 == crates/hale-codegen/tests/bus_routing_keys.rs#3d1a84d5
 root	App	the entry
@@ -2565,9 +2545,7 @@ row	App@literal1	App	main	default
 shared	App@literal1.host	PoolHost #63b77edf
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#aa60fd1f
--- H@main1	H
-row	~	H	main	default
-row	~.m	M	main	inherited
+shared	H@main1	H #95920e24
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#e868199e
 -- H@main1	H
@@ -2622,6 +2600,14 @@ domain	pool:io
 row	App@literal1	App	main	default
 shared	App@literal1.w	Writer #1774d7f8
 
+== crates/hale-codegen/tests/form_heap.rs#b8f01559
+row	Evs@main2	Evs	main	default
+row	Jobs@main1	Jobs	main	default
+row	Words@main3	Words	main	default
+
+== crates/hale-codegen/tests/form_heap.rs#f0c8e194
+shared	H@main1	H #540d0d6c
+
 == crates/hale-codegen/tests/form_iteration.rs#5981160b
 row	Reg@main1	Reg	main	default
 
@@ -2648,6 +2634,15 @@ row	C@main1	C	main	default
 
 == crates/hale-codegen/tests/form_lru_cache_codegen.rs#df6debfc
 row	C@main1	C	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#5e1a0a14
+row	Pool@main1	Pool	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#2caf9c7d
+row	C@main1	C	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#2c79ba82
+shared	H@main1	H #95920e24
 
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
@@ -2695,6 +2690,17 @@ row	IntVec@main1	IntVec	main	default
 
 == crates/hale-codegen/tests/form_vec_bce.rs#b8a669c5
 row	IntVec@main1	IntVec	main	default
+
+== crates/hale-codegen/tests/form_vec_clear.rs#b94557f1
+row	I@main2	I	main	default
+row	S@main3	S	main	default
+row	V@main1	V	main	default
+
+== crates/hale-codegen/tests/form_vec_clear.rs#98f16b70
+-- H@main1	H
+row	~	H	main	default
+row	~.q	Q	main	inherited
+row	~.qs	QS	main	inherited
 
 == crates/hale-codegen/tests/form_vec_codegen.rs#5c89ab56
 row	IntListL@main1	IntListL	main	default
@@ -2804,9 +2810,7 @@ row	~.qb	QB	main	inherited
 row	~.qs	QS	main	inherited
 
 == crates/hale-codegen/tests/form_vec_pop_retire.rs#f5a683be
--- H@main1	H
-row	~	H	main	default
-row	~.q	Q	main	inherited
+shared	H@main1	H #540d0d6c
 
 == crates/hale-codegen/tests/form_vec_pop_retire.rs#a81d4f8d
 -- H@main1	H
@@ -4131,20 +4135,6 @@ row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
 row	App@literal1.sink	Sink	main	default
 row	App@literal1.slow	Slow	main	default
 
-== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#8b8864b8
-root	App	the entry
-domain	pinned:App@literal1.burst
-row	App@literal1	App	main	default
-row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
-row	App@literal1.sink	Sink	main	default
-
-== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#55f2f164
-root	App	the entry
-domain	pinned:App@literal1.burst
-row	App@literal1	App	main	default
-row	App@literal1.born	Born	main	default
-row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
-
 == crates/hale-codegen/tests/sibling_field_forward_ref.rs#2c26373a
 root	Workbench	the entry
 hole	Workbench@literal1.dispatcher.gate	reuse `self.gate`
@@ -4174,15 +4164,6 @@ domain	pinned:App@literal1.pub_
 row	App@literal1	App	main	default
 row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
 row	App@literal1.sub	Sub	main	default
-
-== crates/hale-codegen/tests/sleep_drains_bus.rs#35248313
-root	App	the entry
-domain	pinned:App@literal1.pub_
-domain	pool:a
-row	App@literal1	App	main	default
-row	App@literal1.other	Other	pool:a	entry	off owner
-row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
-row	App@literal1.sub	Sub	pool:a	entry	off owner
 
 == crates/hale-codegen/tests/stdlib_cli.rs#d87e629e
 row	__StdCliResolver@main1	__StdCliResolver	main	default
@@ -4727,13 +4708,6 @@ row	Holder@main1	Holder	main	default
 row	Provider@main1	Provider	main	default
 row	Provider@main2	Provider	main	default
 
-== crates/hale-codegen/tests/unwind_registry_threads.rs#7c3188a5
-root	App	the entry
-domain	pinned:App@literal1.w
-row	App@literal1	App	main	default
-row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
-dynamic	Child	on main|pinned:App@literal1.w	in the seed
-
 == crates/hale-codegen/tests/view_coerce_e1.rs#b21794f6
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
@@ -4819,6 +4793,9 @@ row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 row	Left@main1	Left	main	default
 row	Right@main2	Right	main	default
 dynamic	Small	on main	in the seed
+
+== crates/hale-codegen/tests/wasm_target.rs#9f9ee9e7
+row	V@main1	V	main	default
 
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
@@ -7003,6 +6980,10 @@ row	App@literal1	App	main	default
 row	~	Board	main	default
 row	~.w	Worker	main	inherited
 
+== tests/hale/decimal_scale_wire_test.hl
+row	Sink@main1	Sink	main	default
+row	Source@main2	Source	main	default
+
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -7061,6 +7042,11 @@ row	App@literal1	App	main	default
 -- App@literal1.pub	Pub
 row	~	Pub	main	default
 row	~.sub	Sub	main	inherited
+
+== tests/hale/ipv6_test.hl
+-- __StdIoTcpAcceptor@main1	__StdIoTcpAcceptor
+row	~	__StdIoTcpAcceptor	main	default
+row	~.relay	__StdIoTcpRelay	main	inherited
 
 == tests/hale/is_route_test.hl
 row	Api@main1	Api	main	default
@@ -7203,6 +7189,11 @@ row	__StdProcessChild@main1	__StdProcessChild	main	default
 == tests/hale/process_spawn_in_birth_test.hl
 row	Spawner@main1	Spawner	main	default
 dynamic	__StdProcessChild	on main|unknown (no caller)	in the seed
+
+== tests/hale/process_spawn_options_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
+row	__StdProcessChild@main2	__StdProcessChild	main	default
+row	__StdProcessChild@main3	__StdProcessChild	main	default
 
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
@@ -14997,6 +14988,14 @@ row	~.router	RouterV1	main	inherited
 == shared Gateway #85305e8b
 row	~	Gateway	main	default
 row	~.router	RouterV2	main	inherited
+
+== shared H #540d0d6c
+row	~	H	main	default
+row	~.q	Q	main	inherited
+
+== shared H #95920e24
+row	~	H	main	default
+row	~.m	M	main	inherited
 
 == shared Holder #532e241f
 row	~	Holder	pool:side	entry	off owner

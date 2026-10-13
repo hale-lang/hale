@@ -1857,7 +1857,30 @@ pub struct CapacitySlot {
     /// `@form(hashmap)` loci; typecheck flags misuse on other
     /// shapes. `None` for ordinary slots.
     pub indexed_by: Option<Ident>,
+    /// `@form(heap)` slot order: `ordered_by min <field>` /
+    /// `ordered_by max <field>` names the cell record's field the heap
+    /// orders by and which end is its root. Only meaningful on a
+    /// `@form(heap)` locus; typecheck flags it anywhere else. `None` for
+    /// ordinary slots.
+    pub ordered_by: Option<SlotOrder>,
     pub span: Span,
+}
+
+/// `ordered_by min <field>` / `ordered_by max <field>` on a capacity
+/// slot (`@form(heap)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotOrder {
+    pub dir: OrderDir,
+    pub field: Ident,
+    pub span: Span,
+}
+
+/// Which end of a `@form(heap)` is its root: the smallest key (`min`)
+/// or the largest (`max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderDir {
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2874,7 +2897,11 @@ pub enum PrimType {
     Int,
     Uint,
     Float,
-    Decimal,
+    /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
+    /// 10⁻ˢ`), `S` from 0 to `decimal_literal::MAX_SCALE`. The scale is
+    /// part of the type: two scales never unify. Plain `Decimal` is
+    /// `Decimal<9>` (`decimal_literal::DEFAULT_SCALE`), the same type.
+    Decimal(u8),
     String,
     Bool,
     Time,
@@ -2905,6 +2932,19 @@ pub enum PrimType {
     /// directly via their `_raw` siblings. Length is carried in the
     /// struct, not a prefix.
     BytesMut,
+}
+
+impl PrimType {
+    /// Plain `Decimal`: `Decimal<9>`.
+    pub const DECIMAL: PrimType = PrimType::Decimal(crate::decimal_literal::DEFAULT_SCALE);
+
+    /// The scale of a `Decimal<S>`, `None` for every other primitive.
+    pub fn decimal_scale(self) -> Option<u8> {
+        match self {
+            PrimType::Decimal(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

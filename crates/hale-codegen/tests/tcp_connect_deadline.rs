@@ -77,6 +77,43 @@ impl Blackhole {
     }
 }
 
+impl Blackhole {
+    /// The same blackhole on the IPv6 loopback; None when this host has
+    /// no `::1` to listen on.
+    fn new_v6() -> Option<Blackhole> {
+        // SAFETY: as `new`, with an AF_INET6 socket and sockaddr_in6.
+        unsafe {
+            let fd = libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0);
+            if fd < 0 {
+                return None;
+            }
+            let mut addr: libc::sockaddr_in6 = std::mem::zeroed();
+            addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            addr.sin6_port = 0;
+            addr.sin6_addr.s6_addr[15] = 1;
+            let len = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+            if libc::bind(fd, &addr as *const _ as *const libc::sockaddr, len) != 0 {
+                libc::close(fd);
+                return None;
+            }
+            assert_eq!(libc::listen(fd, 0), 0, "listen: {}", std::io::Error::last_os_error());
+            let mut got: libc::sockaddr_in6 = std::mem::zeroed();
+            let mut glen = len;
+            assert_eq!(
+                libc::getsockname(fd, &mut got as *mut _ as *mut libc::sockaddr, &mut glen),
+                0
+            );
+            let port = u16::from_be(got.sin6_port);
+            let held = TcpStream::connect_timeout(
+                &format!("[::1]:{port}").parse().unwrap(),
+                Duration::from_secs(2),
+            )
+            .expect("the first connect fills the accept queue");
+            Some(Blackhole { fd, port, _held: held })
+        }
+    }
+}
+
 impl Drop for Blackhole {
     fn drop(&mut self) {
         // SAFETY: closes the descriptor `new` opened, once.
@@ -147,6 +184,43 @@ fn a_connect_nobody_answers_ends_at_its_deadline_with_kind_timeout() {
             took + 20 >= deadline && took < deadline + 1000,
             "{tag}: the dial must end at its {deadline} ms deadline, not \
              before it and not at the kernel's give-up; took {took} ms: {out}"
+        );
+    }
+}
+
+/// The deadline holds over IPv6: a `connect_within` to a `::1` listener
+/// that never answers, written bracketed as a URL writes it, and a
+/// `connect_wait` to it written bare, each end at their deadline with
+/// kind `timeout` — the non-blocking connect takes the IPv6 sockaddr the
+/// resolver answers (GH #1541 composed with the connect deadlines).
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the full-accept-queue blackhole is Linux's SYN-drop contract")]
+fn an_ipv6_connect_nobody_answers_ends_at_its_deadline() {
+    let Some(hole) = Blackhole::new_v6() else {
+        eprintln!("skip: this host has no IPv6 loopback");
+        return;
+    };
+    let src = r#"
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let mut t = std::time::monotonic_ns();
+            let mut kind = "";
+            let fd = std::io::tcp::connect_within("[::1]", port, 300ms) or { kind = err.kind; - 1 };
+            println("within6 fd=", fd, " kind=", kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+            t = std::time::monotonic_ns();
+            kind = "";
+            let fw = std::io::tcp::connect_wait("::1", port, 250ms) or { kind = err.kind; - 1 };
+            println("wait6 fd=", fw, " kind=", kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+        }
+    "#;
+    let port = hole.port.to_string();
+    let out = run("hale_tcp_connect_deadline_v6", src, &[&port]);
+    for (tag, deadline) in [("within6", 300), ("wait6", 250)] {
+        assert_eq!(field(&out, tag, "kind"), "timeout", "{tag}: {out}");
+        let took = ms(&out, tag);
+        assert!(
+            took + 20 >= deadline && took < deadline + 1000,
+            "{tag}: the dial must end at its {deadline} ms deadline; took {took} ms: {out}"
         );
     }
 }
