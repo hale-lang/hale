@@ -12,7 +12,8 @@
 //! shapes to every cell, delivered once and in order: siblings in one
 //! seed and across seeds, a nested subscriber, a devirtualized (quiet)
 //! subscriber, keyed subscribers (scalar and String keys), a pinned
-//! anchor, the topic's bound, and a publisher on another thread
+//! anchor, the subtrees a pinned and a pool-placed field build on their
+//! own threads, the topic's bound, and a publisher on another thread
 //! hammering while the tree is built — with and without a stall that
 //! makes a park land after the claim it raced (the forward path), and
 //! under ASan. The IR tests pin the cost: a tree that needs no
@@ -201,6 +202,47 @@ fn a_pinned_anchor_hears_an_earlier_sibling() {
         fn main() { Root { }; }
     "#;
     assert_eq!(run("pinned", src), ["far 7"]);
+}
+
+#[test]
+fn subtrees_built_on_an_anchors_thread_take_part() {
+    // A pinned field's params and a pool-placed field's are built on
+    // that field's own thread, in an init the root's thread waits for:
+    // their subscribers claim from there, and what they publish there
+    // reaches a later sibling — past the queue's cap, since the root's
+    // thread waits for that init and the init must not wait for it.
+    let src = r#"
+        type Note { n: Int; }
+        topic Fact { payload: Note; subject: "rsv.anchor.fact"; }
+        topic Echo { payload: Note; subject: "rsv.anchor.echo"; }
+        locus Teller { params { x: Int = 0; } bus { publish Fact; } birth() { Fact <- Note { n: 7 }; } }
+        locus Ear {
+            params { tag: String = "?"; }
+            bus { subscribe Fact as on_fact; }
+            fn on_fact(f: Note) { println(self.tag + " " + to_string(f.n)); }
+        }
+        locus Flood {
+            params { x: Int = 0; }
+            bus { publish Echo; }
+            birth() { let mut i = 0; while i < 10000 { Echo <- Note { n: i }; i = i + 1; } }
+        }
+        locus Hold { params { e: Ear = Ear { tag: "pinned.inner" }; f: Flood = Flood { }; } }
+        locus PoolHold { params { e: Ear = Ear { tag: "pool.inner" }; } }
+        locus Count {
+            params { n: Int = 0; }
+            bus { subscribe Echo as on_echo; }
+            fn on_echo(f: Note) { self.n = self.n + 1; if f.n == 9999 { println("echo " + to_string(self.n)); } }
+        }
+        main locus Root {
+            params { t: Teller = Teller { }; h: Hold = Hold { }; p: PoolHold = PoolHold { }; c: Count = Count { }; }
+            placement { h: pinned(core = 0); p: cooperative(pool = io); }
+            run() { std::time::sleep(100ms); }
+        }
+        fn main() { Root { }; }
+    "#;
+    let (out, stderr) = run_env("anchors", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["echo 10000", "pinned.inner 7", "pool.inner 7"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.anchor.echo` closed: parked 10000 copied 10000"), "{stderr}");
 }
 
 #[test]

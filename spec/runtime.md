@@ -2319,15 +2319,17 @@ its `KNOWN_OPEN` table, which is empty today.
   the root reserves each subject a node of its tree subscribes to and
   another node may publish before that subscriber registers: a
   cooperative node publishes from its `birth()`, after its own params;
-  a subtree off the constructing thread (a pinned or pool-placed
-  field's params) from that field's instantiation; a subscriber
-  registers before its params where it does so early (above), else just
-  before its `birth()`. The reservation is a placeholder registration
+  an anchor (a pinned or pool-placed field) from its instantiation; a
+  subscriber registers before its params where it does so early
+  (above), else just before its `birth()`. The reservation is a placeholder registration
   every dispatch flavor posts to as to any subscriber; the cell waits
   there in publish order. Each of the tree's registrations of the
-  subject on the constructing thread — the root's, a cooperative
-  node's, a pinned anchor's (it registers on the instantiating thread),
-  a keyed subscription's, its key applied — then claims its copy
+  subject — the root's, a cooperative node's, an anchor's (it registers
+  on the instantiating thread), a node's an anchor's params build in
+  the init its own thread or its pool's worker runs while the
+  instantiating thread waits (the init reads the scope through its
+  argument block), a keyed subscription's, its key applied — then
+  claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
   readiness delivers it after its `birth()`. The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
@@ -2342,15 +2344,16 @@ its `KNOWN_OPEN` table, which is empty today.
   newcomer, counted, and says so once on stderr, since no publisher is
   left to raise into once the subscriber exists; with no bound a
   publisher on another thread waits at the queue's cap until the
-  reservation closes, and the constructing thread never waits on its
-  own. A tree that needs no reservation emits none, and the publish
+  reservation closes; the constructing thread never waits on its own,
+  nor does any thread while a thread waits for a start's init (it may
+  be that init, which the constructing thread waits for). A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: a subscriber that a pinned or pool-placed
-  field's params build on that field's own thread registers there and
+  reads. Not yet true: an anchor nested in another anchor's params
+  builds its own params in an init of that init, and a subscriber there
   claims nothing, so what an earlier part of the tree published before
-  then reaches no subscription of it; nor a replicated field's
-  (`replicas = K`) instances. Not yet true
+  it registered reaches no subscription of it; nor does a replicated
+  field's (`replicas = K`) instance. Not yet true
   in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens

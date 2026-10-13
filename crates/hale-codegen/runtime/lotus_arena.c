@@ -9835,8 +9835,14 @@ static int lotus_pinned_start_no_drain(void) {
 /* The instantiating thread: wait for the params, draining its own
  * mailbox as a yield would. `queue` is the program-wide queue (NULL in
  * a bundle that can enqueue nothing). */
-void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
-                                    lotus_bus_queue_t *queue) {
+/* Threads waiting in a start's await (#1534): the init they wait for
+ * may publish into a reservation of the tree they are building, and must
+ * not wait for it to close (`lotus_bus_resv_may_wait`). Seq_cst, a Dekker
+ * pair with the reservation's waiter count, as `lotus_bus_ready_kick`. */
+static int g_lotus_start_awaiting = 0;
+
+static void lotus_pinned_start_await_ready_in(lotus_pinned_start_t *s,
+                                              lotus_bus_queue_t *queue) {
     if (lotus_pinned_start_no_drain()) {
         lotus_pinned_start_wait(s, 1);
         return;
@@ -9852,6 +9858,14 @@ void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
         pthread_mutex_lock(&s->lock);
     }
     pthread_mutex_unlock(&s->lock);
+}
+
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
+    __atomic_add_fetch(&g_lotus_start_awaiting, 1, __ATOMIC_SEQ_CST);
+    lotus_bus_ready_kick();
+    lotus_pinned_start_await_ready_in(s, queue);
+    __atomic_sub_fetch(&g_lotus_start_awaiting, 1, __ATOMIC_SEQ_CST);
 }
 
 /* The instantiating thread: the instantiation is complete; its last
@@ -15377,10 +15391,16 @@ static void lotus_bus_resv_post_list(lotus_bus_parked_t *p) {
 }
 
 /* Whether this thread may wait for `r` to close. Not the constructing
- * thread (its own claims close it), and not a consumer a producer is
- * blocked on (that producer may be the constructing thread). */
+ * thread (its own claims close it), not while any thread waits for a
+ * start's init (this one may be running the init the constructing thread
+ * waits for), and not a consumer a producer is blocked on (that producer
+ * may be the constructing thread). */
 static int lotus_bus_resv_may_wait(const lotus_bus_resv_t *r) {
     if (pthread_equal(r->ctor, pthread_self())) return 0;
+#ifndef __wasm__
+    /* A thread waits for a start's init: this one may be running it. */
+    if (__atomic_load_n(&g_lotus_start_awaiting, __ATOMIC_SEQ_CST) > 0) return 0;
+#endif
     lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
     lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
     if (own_mb && atomic_load_explicit(&own_mb->producers_waiting, memory_order_seq_cst) > 0)

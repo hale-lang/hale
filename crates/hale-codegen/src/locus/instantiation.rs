@@ -1439,13 +1439,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // #1534: a literal no static tree around it holds is the root of
         // its own: what its tree's nodes publish to one another before the
         // subscriber is built is reserved here, before any of them is
-        // (`locus/reservation.rs`). A pinned literal builds its params on
-        // its own thread, so its tree is the init's to reserve.
-        let reserve_root = reserve_node.is_none() && !matches!(info.schedule_class, ScheduleClass::Pinned(_));
+        // (`locus/reservation.rs`). A pinned or pool-placed root builds
+        // its params in an init on its own thread, which claims through
+        // the init's argument block.
+        let reserve_root = reserve_node.is_none();
         let reserve_ctx = match reserve_node {
             Some(ctx) => Some(ctx),
-            None if reserve_root => self.emit_reservations(locus_name, inits)?,
-            None => None,
+            None => {
+                let how = if matches!(info.schedule_class, ScheduleClass::Pinned(_)) || pool_anchor.is_some() {
+                    crate::locus::reservation::TreeChild::Anchor
+                } else {
+                    crate::locus::reservation::TreeChild::Cooperative
+                };
+                self.emit_reservations(locus_name, inits, how)?
+            }
         };
         let reserve_root = reserve_root && reserve_ctx.is_some();
         let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
@@ -2807,10 +2814,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if hands_back_replicas {
                 self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
-            // #1534: a literal this field builds on the constructing thread
-            // is a node of this instance's static tree. Not under a pinned
-            // instance, whose params its own thread builds.
-            if let (Some(ctx), None) = (&reserve_ctx, &pinned_init) {
+            // #1534: a literal this field builds is a node of this
+            // instance's static tree. Under an anchor whose params its own
+            // thread builds, in an init the root's function starts, the
+            // node claims from that init; deeper inits do not take part.
+            let child_ctx = match (&reserve_ctx, &pinned_init) {
+                (Some(c), None) => Some(c.clone()),
+                (Some(c), Some(p)) if c.depth == 0 && p.saved_block.get_parent() == Some(c.func) => {
+                    Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, depth: 1, ..c.clone() })
+                }
+                _ => None,
+            };
+            if let Some(ctx) = &child_ctx {
                 let value = match (overrides.get(fname.as_str()), default) {
                     (Some(e), _) => Some(*e),
                     (None, DefaultInit::Expr(e)) => Some(e),
@@ -2818,7 +2833,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
                 if let Some((child, how)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
-                    if how != crate::locus::reservation::TreeChild::OffThread {
+                    if how != crate::locus::reservation::TreeChild::Replicated {
                         self.reserve_child_next = Some((child, ctx.clone()));
                     }
                 }
@@ -3709,6 +3724,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         }
         }
+        // #1534: the root's tree is built and every node of it registered
+        // (a pinned or pool-placed root's init included, which the
+        // instantiating thread waited for); its reservations close before
+        // its own birth.
+        if reserve_root {
+            if let Some(ctx) = &reserve_ctx {
+                self.emit_reserve_end(ctx)?;
+            }
+        }
 
         // Fire birth → run in order. drain → dissolve are deferred
         // if this locus is long-lived (has any bus subscribe), so
@@ -4220,13 +4244,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for step in birth_spine.iter().copied() {
         match step {
         ObligationKind::Birth => {
-        // #1534: the root's tree is built and every node of it registered;
-        // its reservations close before its own birth.
-        if reserve_root {
-            if let Some(ctx) = &reserve_ctx {
-                self.emit_reserve_end(ctx)?;
-            }
-        }
         // A failure raised by the birth — a `violate` in `birth()`, a
         // `birth_check` — whose handler runs before the gate (delivered
         // in place, or posted and run meanwhile) bumps the count before

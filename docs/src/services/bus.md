@@ -190,16 +190,17 @@ builds any of them the literal reserves the subscriptions its tree
 will make for the topics its tree publishes. So when an earlier
 params sibling publishes from its `birth()` or `run()`, a later
 sibling subscribing to that topic — or a locus nested under it, a
-keyed subscriber taking its key, a pinned field — still hears it:
+keyed subscriber taking its key, a pinned or pool-placed field and
+the loci its params build on its thread — still hears it:
 the messages wait, in order, and arrive once the subscriber's own
 `birth()` has returned. The wait is bounded like a queue: past the
 topic's `bounded(N, drop_new | drop_old)` the reservation sheds and
 counts as the subscriber would; an `on_full: fail` topic sheds the
 newcomer and says so once on stderr, since by then there is no
 publisher to raise into; and with no bound, a publisher on another
-thread waits once a queue's worth is held. A locus a pinned or
-pool-placed field builds on its own thread is not part of the
-reservation — build such subscribers before their publishers.
+thread waits once a queue's worth is held. A field placed inside
+another placed field's params, and a replicated field, are not part
+of the reservation — build such subscribers before their publishers.
 `LOTUS_BUS_LOG_RESERVE=1` prints each reservation's counts as it
 closes.
 
