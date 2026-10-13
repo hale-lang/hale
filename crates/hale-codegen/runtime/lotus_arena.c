@@ -15410,25 +15410,55 @@ static void lotus_bus_ready_close_locked(lotus_bus_unready_t *u) {
 #endif
 }
 
+/* Whether every cell of a parked list goes to the calling thread's own
+ * queue — main's cooperative queue on main, the worker's ring on its pool's
+ * worker, the mailbox on its pinned thread — while other threads run, so
+ * readiness posts it and closes the window in one hold (`lotus_bus_ready`).
+ * Every such post is the consumer's own: it never waits and runs no
+ * handler. */
+#ifndef __wasm__
+static int lotus_bus_ready_posts_to_own(const lotus_bus_parked_t *p) {
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)) return 0;
+    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
+    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
+    for (const lotus_bus_parked_t *c = p; c; c = c->next) {
+        if (c->mailbox) {
+            if (c->mailbox != own_mb) return 0;
+        } else if (c->coop_pool) {
+            if (c->coop_pool != own_pool) return 0;
+        } else if (!c->queue || !pthread_equal(pthread_self(), c->queue->owner)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+#endif
+
 /* Delivery to `self` is eligible from here: post what it parked, in
  * order. The list is taken out under the lock and posted outside it
  * (a post can drain inline, and a handler then publish); what is
  * parked meanwhile is posted in the next round, behind it, so order
  * holds, and the window closes once a round finds nothing.
  *
- * A subscriber on main's own queue, readied on main while other threads
- * run, is the exception: its rounds could never end. Main's post to its
- * own queue never waits (nothing else drains it), so a producer on
- * another thread parks a new list as fast as main posts the last, every
- * round finds one, and main's queue grew by a list a round without a
- * bound (16 GB in seconds under a loaded box, a pool flooding a
- * subscriber main had just replaced). There the list is posted under the
- * lock and the window closes in the same hold: a producer that arrives
- * meanwhile waits on the lock, finds the window closed, and posts to the
- * queue behind the list, where the queue's bound holds it. Such a post
- * runs no handler (main's post at the cap grows the queue, never drains
- * it inline, and multithreaded the queue is never drained inline), so
- * nothing re-enters the lock. */
+ * A subscriber readied on its own consumer's thread while other threads
+ * run is the exception: its rounds could never end. That thread's post to
+ * its own queue never waits (nothing else drains it), so a producer on
+ * another thread parks a new list as fast as the thread posts the last,
+ * every round finds one, and the queue grew by a list a round without a
+ * bound: main's queue (16 GB in seconds under a loaded box, a pool
+ * flooding a subscriber main had just replaced), a pool worker's overflow
+ * list behind its full ring (3.5 GB/s, a subscriber built in a pool-placed
+ * run()), and a pinned thread's mailbox, whose readiness drained the
+ * mailbox between rounds and so stayed bounded but never returned while
+ * the flood lasted. There the list is posted under the lock and the window
+ * closes in the same hold (`lotus_bus_ready_posts_to_own`): a producer
+ * that arrives meanwhile waits on the lock, finds the window closed, and
+ * posts behind the list, where the queue's own bound holds it (main's
+ * drain-liveness bound, a ring's blocking post). Such a post runs no
+ * handler and takes no lock of this one's (main's post at the cap grows
+ * the queue and never drains it inline; a worker's or a pinned thread's
+ * post to its own full ring goes to its overflow list), so nothing
+ * re-enters the lock. */
 void lotus_bus_ready(void *self) {
     if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
         return;
@@ -15446,9 +15476,7 @@ void lotus_bus_ready(void *self) {
             return;
         }
 #ifndef __wasm__
-        if (!p->mailbox && !p->coop_pool && p->queue
-            && __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
-            && pthread_equal(pthread_self(), p->queue->owner)) {
+        if (lotus_bus_ready_posts_to_own(p)) {
             u->head = u->tail = NULL;
             u->parked = 0;
             for (lotus_bus_parked_t *c = p; c; c = c->next) lotus_bus_parked_post(c);

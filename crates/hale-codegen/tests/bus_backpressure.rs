@@ -416,6 +416,98 @@ fn a_subscriber_readied_on_main_mid_flood_closes_its_window() {
     assert!(missing <= 0, "{missing} ticks sent after the subscriber's birth never reached it");
 }
 
+/// A subscriber readied on its own pool's worker, or its own pinned thread,
+/// while another pool floods it: `Owner`'s run() builds a `Counter`, whose
+/// birth opens the gate the source waits for and then spins 50 ms, so the
+/// source parks a queue's worth for it and waits at the readiness cap.
+/// `@PLACE@` places `Owner`. Readiness posted in rounds, each the list
+/// parked during the last, and the thread's posts to its own full ring or
+/// mailbox never wait (they go to its overflow list), so it returned only
+/// when the 1M-cell flood ended: on a pool, with the flood in the worker's
+/// overflow list (608 MB); pinned, bounded only because its readiness
+/// drained the mailbox between rounds. Every cell reaches the subscriber.
+const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
+    type Tick { n: Int; }
+    fn gate() -> String { return "/tmp/hale-bp-own-gate-" + to_string(std::process::pid()); }
+    fn stop() -> String { return "/tmp/hale-bp-own-stop-" + to_string(std::process::pid()); }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "ow" as on_tick of type Tick; }
+        birth() {
+            std::io::fs::write_file(gate(), "go") or discard;
+            let until = std::time::monotonic_ns() + 50000000;
+            while (std::time::monotonic_ns() < until) { }
+        }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Source {
+        params { sent: Int = 0; done: Int = 0; }
+        bus { publish "ow" of type Tick; }
+        run() {
+            let path = gate();
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while self.sent < 1000000 { "ow" <- Tick { n: self.sent }; self.sent = self.sent + 1; }
+            self.done = 1;
+        }
+    }
+    locus Owner {
+        params { ready: Int = 0; heard: Int = 0; finished: Int = 0; }
+        run() {
+            let path = stop();
+            let c = Counter { };
+            self.ready = 1;
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            self.heard = c.count;
+            self.finished = 1;
+        }
+    }
+    main locus App {
+        params { own: Owner = Owner { }; src: Source = Source { }; }
+        placement { own: @PLACE@; src: cooperative(pool = side); }
+        run() {
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (self.own.ready == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            let at_ready = self.src.sent;
+            let statm = std::io::fs::read_file("/proc/self/statm") or "";
+            while (self.src.done == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            std::time::sleep(300ms);
+            std::io::fs::write_file(stop(), "stop") or discard;
+            while (self.own.finished == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("sent_at_ready=" + to_string(at_ready));
+            print("rss_statm=");
+            println(statm);
+            println("sent=" + to_string(self.src.sent));
+            println("heard=" + to_string(self.own.heard));
+            std::io::fs::unlink(gate()) or discard;
+            std::io::fs::unlink(stop()) or discard;
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn ready_on_own_thread_mid_flood(name: &str, place: &str) {
+    let src = READY_ON_OWN_THREAD_MID_FLOOD.replace("@PLACE@", place);
+    let field = run_fields(name, &src);
+    let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
+    let at_ready: i64 = field("sent_at_ready").parse().expect("a count");
+    assert!(at_ready < 4 * 8192, "{name}: readying the subscriber went on with the flood: {at_ready} sent before it returned");
+    assert!(rss < 200, "{name}: RSS {rss} MB with {at_ready} sent before readiness returned (expected < 200)");
+    assert_eq!(field("sent"), "1000000", "{name}");
+    assert_eq!(field("heard"), "1000000", "{name}: every cell reaches the subscriber");
+}
+
+#[test]
+fn a_subscriber_readied_on_its_pools_worker_mid_flood_closes_its_window() {
+    ready_on_own_thread_mid_flood("ready_on_pool", "cooperative(pool = p)");
+}
+
+#[test]
+fn a_subscriber_readied_on_its_pinned_thread_mid_flood_closes_its_window() {
+    ready_on_own_thread_mid_flood("ready_on_pinned", "pinned");
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the
