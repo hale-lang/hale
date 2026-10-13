@@ -993,6 +993,8 @@ crates/hale-codegen/tests/library_shape_http_json.rs#6 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#7 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#8 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#9 91ec65224524cec1
+crates/hale-codegen/tests/local_place_value.rs#2 8a390da66ff0b4df
+crates/hale-codegen/tests/local_place_value.rs#3 e8cf1e52c4524571
 crates/hale-codegen/tests/locus_fallible_return_multichild.rs#0 ccd3b7e0a8962c42
 crates/hale-codegen/tests/locus_fallible_return_multichild.rs#1 59e6dec03fafb880
 crates/hale-codegen/tests/locus_field_cascade.rs#0 a804d3c14b6b5bce

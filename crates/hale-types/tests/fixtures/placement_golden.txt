@@ -3440,6 +3440,12 @@ row	Stateless@main1	Stateless	main	default
 == crates/hale-codegen/tests/library_shape_http_json.rs#4312175b
 row	FdSet@main1	FdSet	main	default
 
+== crates/hale-codegen/tests/local_place_value.rs#2b732bd2
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#83052a1c
+row	Pts@main1	Pts	main	default
+
 == crates/hale-codegen/tests/locus_fallible_return_multichild.rs#46fdeeac
 -- dynamic	sites in the seed
 dynamic	M1	on main
@@ -7358,6 +7364,9 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== tests/hale/local_place_value_test.hl
+row	App@main1	App	main	default
 
 == tests/hale/log_fields_test.hl
 root	App	the entry
