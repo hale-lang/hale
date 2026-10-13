@@ -193,9 +193,10 @@ sibling subscribing to that topic — or a locus nested under it, a
 keyed subscriber taking its key, a pinned or pool-placed field and
 the loci its params build on its thread — still hears it:
 the messages wait, in order, and arrive once the subscriber's own
-`birth()` has returned. The wait is bounded like a queue: past the
-topic's `bounded(N, drop_new | drop_old)` the reservation sheds and
-counts as the subscriber would; an `on_full: fail` topic sheds the
+`birth()` has returned. The wait is bounded like a queue, by each
+subscriber's own bound: a `bounded(N, drop_new)` subscriber gets the
+oldest N, a `bounded(N, drop_old)` one the newest N, whichever is built
+first, each counting what it lost; an `on_full: fail` topic sheds the
 newcomer and says so once on stderr, since by then there is no
 publisher to raise into; and with no bound, the reservation holds a
 queue's worth and sheds what comes after, counted, saying so once on

@@ -2340,9 +2340,13 @@ its `KNOWN_OPEN` table, which is empty today.
   a claim carries the count of the registrations it walked, and a cell
   is copied at the claim, or forwarded by a park after it, only to a
   claimant that publish did not reach itself: no cell is delivered
-  twice or lost. The bound is the topic's: past `bounded(N, drop_new |
-  drop_old)` the reservation sheds and counts on each claimant
-  (`ctr_dropped_full`); past `bounded(N); on_full: fail` it sheds the
+  twice or lost. The bound is each claimant's own: the reservation
+  retains the first cells any `bounded(N, drop_new)` or unbounded
+  claimant keeps and the last any `bounded(N, drop_old)` one keeps, and
+  each claim takes its own bound's share of what is retained (the
+  oldest N, or the newest N), counting what it lost on its own
+  `ctr_dropped_full`, whichever field is built first; past `bounded(N);
+  on_full: fail` (the topic's, every claimant's) it sheds the
   newcomer, counted, and says so once on stderr, since no publisher is
   left to raise into once the subscriber exists; with no bound it holds a
   queue's worth (`LOTUS_BUS_QUEUE_CAP`) and sheds the newcomer past it,

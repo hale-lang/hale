@@ -15278,13 +15278,14 @@ static void lotus_bus_ready_forget(void *self) {
  * parked after is forwarded by the park, each only where the publish
  * did not reach the claimant itself.
  *
- * The bound is the topic's: a reservation holds at most `cap` cells (the
- * subject's declared bound, else the queue's cap). Past it, `drop_new`
- * sheds the newcomer and `drop_old` the oldest, counted on every
- * claimant's `ctr_dropped_full`; `fail` (`on_full: fail`) has no
- * publisher left to raise into by the time the subscriber exists, so it
- * sheds the newcomer, counted, and says so once on stderr; so does an
- * unbounded subject past a queue's worth. No publisher ever waits on a
+ * The bound is each claimant's own (its `bounded(N, policy)`, the
+ * topic's `on_full: fail`, else a queue's worth): the reservation retains
+ * the first `keep_first` cells (what a drop_new or unbounded claimant
+ * keeps) and the last `keep_last` after them (what a drop_old one keeps),
+ * and each claim takes its own share of what is retained — the oldest N,
+ * or the newest N — counting what it lost on its `ctr_dropped_full`.
+ * Shedding past what an unbounded claimant or an `on_full: fail` topic
+ * keeps is said once on stderr. No publisher ever waits on a
  * reservation: one may stay open while what closes it waits on something
  * else (an init, a birth that runs until the drain), and a publisher
  * waiting there could not see the drain.
@@ -15308,14 +15309,19 @@ typedef struct lotus_bus_resv {
     uint32_t static_id;
     lotus_bus_entry_t *entry;     /* the placeholder */
     int64_t remaining;            /* claims still expected */
-    size_t cap;
-    uint8_t policy;               /* 0 none (sheds new), 1 drop_new, 2 drop_old, 3 fail */
+    /* What it retains, in publish order: the first `keep_first` cells
+     * (what a drop_new or unbounded claimant keeps) and the last
+     * `keep_last` after them (what a drop_old claimant keeps); each claim
+     * then applies its own bound to what is retained. */
+    size_t keep_first, keep_last;
+    uint8_t note;                 /* 0 none, 1 an unbounded claimant sheds, 3 on_full: fail */
     uint8_t key_is_str;
     uint8_t shed_noted;
     int open;
     pthread_t ctor;
     lotus_bus_parked_t *head, *tail;
-    size_t parked;
+    lotus_bus_parked_t *first_tail;   /* the first part's last cell */
+    size_t nfirst, nlast;
     uint64_t ever_parked, dropped;
     uint64_t copied, forwarded;   /* for LOTUS_BUS_LOG_RESERVE */
     lotus_bus_claimant_t *claimants;
@@ -15432,13 +15438,8 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
     }
     if (r->entry) r->entry->subject = NULL;
     *freeme = r->head;
-    r->head = r->tail = NULL;
-    r->parked = 0;
-    if (r->dropped) {
-        for (size_t i = 0; i < r->nclaim; i++)
-            __atomic_fetch_add(&r->claimants[i].e->ctr_dropped_full,
-                               r->dropped, __ATOMIC_RELAXED);
-    }
+    r->head = r->tail = r->first_tail = NULL;
+    r->nfirst = r->nlast = 0;
     __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
 #ifndef __wasm__
     pthread_cond_broadcast(&g_bus_ready_cond);
@@ -15489,31 +15490,22 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                                                     rec_pub, wire_deser),
                             &later, &later_tail);
     }
-    /* And the ones still to come. */
+    /* And the ones still to come: the first part while it has room,
+     * else the last part, whose oldest goes past its room. */
     if (r->open) {
-        int keep = 1;
-        if (r->parked >= r->cap) {
-            switch (r->policy) {
-            case 2:
-                shed = r->head;
-                r->head = shed->next;
-                if (!r->head) r->tail = NULL;
-                shed->next = NULL;
-                r->parked--;
-                r->dropped++;
-                break;
-            default:
-                /* drop_new; `on_full: fail` and an unbounded subject say
-                 * so, once: no publisher is left to raise into, and none
-                 * ever waits on a reservation. */
-                keep = 0;
-                r->dropped++;
-                if (r->policy != 1 && !r->shed_noted) {
-                    r->shed_noted = 1;
-                    note_shed = 1;
-                }
-                break;
-            }
+        r->ever_parked++;
+        int keep = 1, last = 0;
+        if (r->nfirst < r->keep_first && r->nlast == 0) {
+            last = 0;
+        } else if (r->keep_last > 0) {
+            last = 1;
+        } else {
+            keep = 0;
+            r->dropped++;
+        }
+        if (r->ever_parked > r->keep_first && r->note && !r->shed_noted) {
+            r->shed_noted = 1;
+            note_shed = 1;
         }
         if (keep) {
             lotus_bus_parked_t *p = calloc(1, sizeof *p);
@@ -15536,13 +15528,23 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
             p->key_str = key_copy;
             if (r->tail) r->tail->next = p; else r->head = p;
             r->tail = p;
-            r->parked++;
-            r->ever_parked++;
+            if (!last) {
+                r->nfirst++;
+                r->first_tail = p;
+            } else if (++r->nlast > r->keep_last) {
+                /* the last part's oldest: right after the first part */
+                lotus_bus_parked_t **at = r->first_tail ? &r->first_tail->next : &r->head;
+                shed = *at;
+                *at = shed->next;
+                shed->next = NULL;
+                r->nlast--;
+                r->dropped++;
+            }
         }
     }
     pthread_mutex_unlock(&g_bus_ready_lock);
     lotus_bus_parked_free(shed);
-    if (note_shed && r->policy == 3) {
+    if (note_shed && r->note == 3) {
         fprintf(stderr,
                 "hale: bus: `%s` is bounded with `on_full: fail`, and a "
                 "publish made before its subscriber was built found the "
@@ -15555,7 +15557,7 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                 "was built are held for it, a queue's worth; further ones are "
                 "shed and counted as full drops until it registers (bound the "
                 "topic to choose which)\n",
-                r->subject, r->cap);
+                r->subject, r->keep_first);
     }
     lotus_bus_resv_post_list(later);
     return 1;
@@ -15573,12 +15575,15 @@ void *lotus_bus_reserve_begin(void) {
 
 /* Reserve `subject` for the `count` registrations of it the tree will
  * make. `deserialize` is its subscribers', `static_id` its bucket
- * (UINT32_MAX when it has none), `cap`/`policy` the bound the topic
- * declares (`cap` <= 0: none), and `key_is_str` whether its routing key
- * is a String. */
+ * (UINT32_MAX when it has none), `keep_first` the most cells a drop_new
+ * or unbounded claimant keeps (< 0: a queue's worth), `keep_last` the
+ * most a drop_old claimant keeps, `note` whether shedding past
+ * `keep_first` is said (1: a claimant is unbounded; 3: `on_full: fail`),
+ * and `key_is_str` whether its routing key is a String. */
 void lotus_bus_reserve(void *scope_v, const char *subject, int64_t count,
                        lotus_deserialize_fn deserialize, uint32_t static_id,
-                       int64_t cap, int64_t policy, int32_t key_is_str) {
+                       int64_t keep_first, int64_t keep_last, int32_t note,
+                       int32_t key_is_str) {
     lotus_bus_resv_scope_t *scope = (lotus_bus_resv_scope_t *)scope_v;
     if (!scope || !subject || count <= 0) return;
     lotus_bus_resv_t *r = calloc(1, sizeof *r);
@@ -15589,8 +15594,9 @@ void lotus_bus_reserve(void *scope_v, const char *subject, int64_t count,
     r->subject = subject;
     r->static_id = static_id;
     r->remaining = count;
-    r->cap = cap > 0 ? (size_t)cap : bus_queue_max_cap();
-    r->policy = (uint8_t)policy;
+    r->keep_first = keep_first < 0 ? bus_queue_max_cap() : (size_t)keep_first;
+    r->keep_last = keep_last > 0 ? (size_t)keep_last : 0;
+    r->note = (uint8_t)note;
     r->key_is_str = key_is_str != 0;
     r->open = 1;
     r->ctor = pthread_self();
@@ -15683,11 +15689,26 @@ void lotus_bus_reserve_claim(void *scope_v, const char *subject,
         /* Its copies, in publish order, ahead of what its window holds:
          * every cell there came from a publish that saw it, so after
          * these in any one publisher's order. */
-        lotus_bus_parked_t *mine = NULL, *mine_tail = NULL;
-        size_t n = 0;
+        /* Its own bound over what is retained: a drop_old claimant keeps
+         * the newest of its cells, any other the oldest (`on_full: fail`
+         * and an unbounded one included, the latter a queue's worth). */
+        size_t bound = e->shed_bound > 0 ? (size_t)e->shed_bound
+                     : e->refuse_bound > 0 ? (size_t)e->refuse_bound
+                     : bus_queue_max_cap();
+        int newest = e->shed_bound > 0 && e->shed_policy == 2;
+        size_t ncand = 0;
         for (lotus_bus_parked_t *t = r->head; t; t = t->next) {
             if (lotus_bus_pub_saw(&t->pc, c)) continue;
             if (!lotus_bus_resv_key_ok(e, &t->pc, t->key_str)) continue;
+            ncand++;
+        }
+        size_t skip = newest && ncand > bound ? ncand - bound : 0;
+        lotus_bus_parked_t *mine = NULL, *mine_tail = NULL;
+        size_t n = 0, k = 0;
+        for (lotus_bus_parked_t *t = r->head; t && n < bound; t = t->next) {
+            if (lotus_bus_pub_saw(&t->pc, c)) continue;
+            if (!lotus_bus_resv_key_ok(e, &t->pc, t->key_str)) continue;
+            if (k++ < skip) continue;
             lotus_bus_parked_t *p = lotus_bus_resv_cell_for(
                 e, t->queue, t->payload, t->size, t->rec_pub, t->wire_deser);
             if (mine_tail) mine_tail->next = p; else mine = p;
@@ -15695,6 +15716,11 @@ void lotus_bus_reserve_claim(void *scope_v, const char *subject,
             n++;
             r->copied++;
         }
+        /* what it lost: its cells past its bound, and what the
+         * reservation shed before it came */
+        uint64_t lost = (uint64_t)(ncand - n) + r->dropped;
+        if (lost)
+            __atomic_fetch_add(&e->ctr_dropped_full, lost, __ATOMIC_RELAXED);
         lotus_bus_unready_t *u = lotus_bus_unready_find(self_ptr);
         if (mine && u) {
             mine_tail->next = u->head;

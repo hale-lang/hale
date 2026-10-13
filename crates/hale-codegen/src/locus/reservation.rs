@@ -285,20 +285,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if !needed {
                 continue;
             }
-            // The topic's bound: `bounded(N); on_full: fail;`, else the
-            // most generous of the claimants' own, when every one bounds
-            // it (each still sheds by its own once the cells reach it).
-            let (cap, policy) = match self.full_fail_subjects.get(subject) {
-                Some(&cap) => (cap, 3),
+            // What the reservation retains: each claimant's own bound
+            // applies at its claim, so it keeps the first cells any
+            // drop_new or unbounded claimant (or the topic's `on_full:
+            // fail`) keeps, and the last any drop_old claimant keeps.
+            let (keep_first, keep_last, note) = match self.full_fail_subjects.get(subject) {
+                Some(&cap) => (cap, 0, 3),
                 None => {
-                    let bounds: Vec<(i64, u8)> = claims
-                        .iter()
-                        .filter_map(|c| self.sub_bounds.get(&(c.locus.clone(), subject.clone())).copied())
-                        .collect();
-                    if bounds.len() == claims.len() {
-                        bounds.into_iter().max_by_key(|(cap, _)| *cap).map(|(c, p)| (c, i64::from(p))).unwrap_or((0, 0))
+                    let mut first: Option<i64> = None;
+                    let mut last = 0i64;
+                    let mut unbounded = false;
+                    for c in claims {
+                        match self.sub_bounds.get(&(c.locus.clone(), subject.clone())).copied() {
+                            Some((cap, 2)) => last = last.max(cap),
+                            Some((cap, _)) => first = Some(first.map_or(cap, |f| f.max(cap))),
+                            None => unbounded = true,
+                        }
+                    }
+                    if unbounded {
+                        (-1, last, 1)
                     } else {
-                        (0, 0)
+                        (first.unwrap_or(0), last, 0)
                     }
                 }
             };
@@ -312,8 +319,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 subject: subject.clone(),
                 count: claims.len() as i64,
                 payload: claims[0].payload.clone(),
-                cap,
-                policy,
+                keep_first,
+                keep_last,
+                note,
                 key_is_str,
             });
         }
@@ -331,7 +339,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ty = match name {
             "lotus_bus_reserve_begin" => ptr_t.fn_type(&[], false),
             "lotus_bus_reserve" => void_t.fn_type(
-                &[ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), i32_t.into(), i64_t.into(), i64_t.into(), i32_t.into()],
+                &[ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), i32_t.into(), i64_t.into(), i64_t.into(), i32_t.into(), i32_t.into()],
                 false,
             ),
             "lotus_bus_reserve_claim" => void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
@@ -390,8 +398,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         i64_t.const_int(plan.count as u64, false).into(),
                         deserialize.into(),
                         i32_t.const_int(u64::from(static_id), false).into(),
-                        i64_t.const_int(plan.cap as u64, true).into(),
-                        i64_t.const_int(plan.policy as u64, false).into(),
+                        i64_t.const_int(plan.keep_first as u64, true).into(),
+                        i64_t.const_int(plan.keep_last as u64, true).into(),
+                        i32_t.const_int(u64::from(plan.note), false).into(),
                         i32_t.const_int(u64::from(plan.key_is_str), false).into(),
                     ],
                     "bus.reserve",
@@ -488,8 +497,14 @@ pub(crate) struct ReservePlan {
     pub(crate) subject: String,
     pub(crate) count: i64,
     pub(crate) payload: String,
-    pub(crate) cap: i64,
-    pub(crate) policy: i64,
+    /// The first cells it retains (a drop_new, unbounded or `on_full:
+    /// fail` claimant's); -1 for a queue's worth.
+    pub(crate) keep_first: i64,
+    /// The last cells it retains after them (a drop_old claimant's).
+    pub(crate) keep_last: i64,
+    /// Whether shedding past `keep_first` is said: 1 a claimant is
+    /// unbounded, 3 the topic is `on_full: fail`.
+    pub(crate) note: u8,
     pub(crate) key_is_str: bool,
 }
 

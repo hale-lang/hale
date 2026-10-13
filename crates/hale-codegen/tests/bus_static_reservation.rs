@@ -345,7 +345,7 @@ fn the_topics_bound_applies_to_the_reservation() {
         "{stderr}"
     );
     assert_eq!(stderr.matches("bounded with `on_full: fail`").count(), 1, "{stderr}");
-    assert!(stderr.contains("reservation `rsv.strict` closed: parked 3 copied 3 forwarded 0 shed 7"), "{stderr}");
+    assert!(stderr.contains("reservation `rsv.strict` closed: parked 10 copied 3 forwarded 0 shed 7"), "{stderr}");
     assert!(stderr.contains("reservation `rsv.loose` closed: parked 10 copied 4 forwarded 0 shed 6"), "{stderr}");
 }
 
@@ -453,7 +453,43 @@ fn a_publisher_never_waits_on_a_reservation_and_the_drain_completes() {
         .unwrap_or_else(|| panic!("the pump never stopped:\n{rest}\n{stderr}"));
     assert!(sent > 4 * 8192, "the pump stood still at the reservation's cap: sent {sent}\n{stderr}");
     assert_eq!(stderr.matches("are held for it, a queue's worth; further ones are shed").count(), 1, "{stderr}");
-    assert!(stderr.contains("reservation `rsv.drain` closed: parked 8192 copied 8192"), "{stderr}");
+    assert!(stderr.contains("copied 8192 forwarded 0"), "{stderr}");
+}
+
+/// Two later subscribers bound the subject their own way: `First` keeps
+/// the oldest two (`drop_new`), `Last` the newest two (`drop_old`). The
+/// reservation retains what both need, and each claim applies its own
+/// bound, whichever field comes first.
+fn private_bounds(fields: &str) -> String {
+    r#"
+    type Ev { n: Int; }
+    topic Evs { payload: Ev; subject: "rsv.private"; }
+    locus Burst { params { x: Int = 0; } bus { publish Evs; } birth() { let mut i = 0; while i < 4 { Evs <- Ev { n: i }; i = i + 1; } } }
+    locus First {
+        params { x: Int = 0; }
+        bus { subscribe Evs as on_ev bounded(2, drop_new); }
+        fn on_ev(e: Ev) { println("first " + to_string(e.n)); }
+    }
+    locus Last {
+        params { x: Int = 0; }
+        bus { subscribe Evs as on_ev bounded(2, drop_old); }
+        fn on_ev(e: Ev) { println("last " + to_string(e.n)); }
+    }
+    main locus Root { params { FIELDS } run() { yield; std::time::sleep(20ms); } }
+    fn main() { Root { }; }
+    "#
+    .replace("FIELDS", fields)
+}
+
+#[test]
+fn each_claimant_keeps_its_own_bound() {
+    for fields in [
+        "b: Burst = Burst { }; f: First = First { }; l: Last = Last { };",
+        "b: Burst = Burst { }; l: Last = Last { }; f: First = First { };",
+    ] {
+        let (out, stderr) = run_env("private_bounds", &private_bounds(fields), false, &[]);
+        assert_eq!(out, ["first 0", "first 1", "last 2", "last 3"], "{fields}\n{stderr}");
+    }
 }
 
 /// A publisher on its own thread, started early in the tree, sends
