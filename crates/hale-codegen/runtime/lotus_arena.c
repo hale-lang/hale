@@ -15685,7 +15685,14 @@ void lotus_bus_ready(void *self) {
         if (lotus_bus_ready_posts_to_own(p)) {
             u->head = u->tail = NULL;
             u->parked = 0;
+            /* Into a full ring, or behind a spill, the parked cells go to
+             * the spill, ahead of what their publishers post next, never
+             * to the consumer's own overflow list, which it takes after
+             * the spill (`lotus_ring_post_in_order`). */
+            int was = t_bus_post_in_order;
+            t_bus_post_in_order = 1;
             for (lotus_bus_parked_t *c = p; c; c = c->next) lotus_bus_parked_post(c);
+            t_bus_post_in_order = was;
             lotus_bus_ready_close_locked(u);
             pthread_mutex_unlock(&g_bus_ready_lock);
             lotus_bus_parked_free(p);

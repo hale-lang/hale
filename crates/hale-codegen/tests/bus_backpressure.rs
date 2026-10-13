@@ -676,6 +676,101 @@ fn a_pinned_mailboxs_spill_grows_a_ring_per_window_in_order() {
     ring_spill_shared_window("spill_pinned", true);
 }
 
+/// Readiness flushing its parked cells into its own FULL ring keeps them
+/// ahead of what their publisher posts next (PR #1557's review). Main fills
+/// `Owner`'s 64-cell ring with deliveries to `Filler`; `Owner` (on pool
+/// `p`, or pinned) then builds a `Counter`, whose birth lets the source
+/// start and spins, so the source's first 64 numbers park. Readiness posts
+/// them; `Owner` sits 200 ms in a foreign call, so the source's next
+/// numbers spill behind the full ring. The parked numbers went to the
+/// worker's own overflow list, which it takes after the spill, so later
+/// numbers arrived before earlier ones; they go to the spill now, ahead.
+const READY_INTO_FULL_RING_KEEPS_ORDER: &str = r#"
+    @ffi("c") fn usleep(us: Int) -> Int;
+
+    type Fill { k: Int; }
+    type Num { n: Int; }
+    fn filled() -> String { return "/tmp/hale-bp-ord-filled-" + to_string(std::process::pid()); }
+    fn born() -> String { return "/tmp/hale-bp-ord-born-" + to_string(std::process::pid()); }
+    locus Filler {
+        params { got: Int = 0; }
+        bus { subscribe "of" as on_fill of type Fill; }
+        fn on_fill(f: Fill) { self.got = self.got + 1; }
+    }
+    locus Counter {
+        params { count: Int = 0; last: Int = -1; bad: Int = 0; }
+        bus { subscribe "on" as on_num of type Num; }
+        birth() {
+            std::io::fs::write_file(born(), "go") or discard;
+            let until = std::time::monotonic_ns() + 50000000;
+            while (std::time::monotonic_ns() < until) { }
+        }
+        fn on_num(m: Num) {
+            if m.n != self.last + 1 { self.bad = self.bad + 1; }
+            self.last = m.n;
+            self.count = self.count + 1;
+        }
+    }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "on" of type Num; }
+        run() {
+            let path = born();
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while self.sent < 1000 { "on" <- Num { n: self.sent }; self.sent = self.sent + 1; }
+        }
+    }
+    locus Owner {
+        params { fill: Filler = Filler { }; count: Int = 0; bad: Int = 0; finished: Int = 0; }
+        run() {
+            let path = filled();
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { }
+            let c = Counter { };
+            usleep(200000);
+            while (c.count < 1000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            self.count = c.count;
+            self.bad = c.bad;
+            self.finished = 1;
+        }
+    }
+    main locus App {
+        params { own: Owner = Owner { }; src: Source = Source { }; }
+        placement { own: cooperative(pool = p); src: cooperative(pool = side); }
+        bus { publish "of" of type Fill; }
+        run() {
+            let mut i = 0;
+            while i < 64 { "of" <- Fill { k: i }; i = i + 1; }
+            std::io::fs::write_file(filled(), "go") or discard;
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (self.own.finished == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.own.count));
+            println("out_of_order=" + to_string(self.own.bad));
+            std::io::fs::unlink(filled()) or discard;
+            std::io::fs::unlink(born()) or discard;
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn ready_into_full_ring_keeps_order(name: &str, pinned: bool) {
+    let src = placed(READY_INTO_FULL_RING_KEEPS_ORDER, "own", pinned);
+    let field = run_fields_env(name, &src, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+    assert_eq!(field("delivered"), "1000", "{name}: every number is delivered");
+    assert_eq!(field("out_of_order"), "0", "{name}: the numbers arrive in the order sent");
+}
+
+#[test]
+fn readiness_into_its_pools_full_ring_keeps_order() {
+    ready_into_full_ring_keeps_order("ready_full_pool", false);
+}
+
+#[test]
+fn readiness_into_its_pinned_full_mailbox_keeps_order() {
+    ready_into_full_ring_keeps_order("ready_full_pinned", true);
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the
