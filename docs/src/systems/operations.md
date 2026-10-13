@@ -207,6 +207,43 @@ let code = std::process::wait(c) or raise;
 let sorted = std::process::read_stdout(c) or "";
 ```
 
+### Where and how the child runs: `SpawnOptions`
+
+`run_with(argv, opts)` and `spawn_with(argv, opts)` are `run` and
+`spawn` under a `std::process::SpawnOptions` record. Every field
+defaults to "change nothing", so a literal names only what it sets:
+
+```hale,fragment
+let opts = std::process::SpawnOptions {
+    cwd: "/srv/build",                 // "" inherits ours
+    env: "CI=1\nLANG=C",               // NAME=value lines, set in the child
+    unset_env: "HOME",                 // names removed from what it inherits
+    timeout: 30s,                      // 0ns = none
+    cpu_seconds: 60,                   // RLIMIT_CPU
+    address_space: 512 * 1024 * 1024,  // RLIMIT_AS, bytes
+    open_files: 64,                    // RLIMIT_NOFILE
+    file_size: 16 * 1024 * 1024,       // RLIMIT_FSIZE, bytes
+};
+let out = std::process::run_with("make\ntest", opts) or raise;
+if out.timed_out { println("make test ran past 30s and was stopped"); }
+```
+
+`clear_env: true` starts the child from an empty environment (then
+`env`), for a tool that must see nothing of yours; give it a full
+path, since there is no `PATH` to search. All of it is applied in
+the forked child before its exec, so your own process's directory,
+environment and limits never change. A setup step that cannot be
+done — a `cwd` that does not exist, a limit above the hard one —
+fails the call with its `IoError`; the child never runs.
+
+The timeout is a result, not an error. `run_with` stops the child's
+process group at it (TERM, then KILL 100 ms later), reaps it, and
+returns what it wrote so far with `timed_out: true` and `code: -1`.
+A `spawn_with` handle carries its deadline: `wait` returns at it at
+the latest and `try_wait` past it, either one stopping and reaping
+the child, returning `-1` and setting the handle's `timed_out`.
+`close_stdin`, the reads and `adopt` work on it as on `spawn`'s.
+
 ### Keeping the child: `adopt`
 
 A supervisor has to hold its subprocess past the method that started
