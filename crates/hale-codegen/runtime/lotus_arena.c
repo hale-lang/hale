@@ -25069,22 +25069,40 @@ static void lotus_process_reap(pid_t pid) {
     }
 }
 
+/* Whether any process of the group `pgid` is still there (EPERM: one
+ * is, and is not ours to signal). */
+static int lotus_process_group_alive(pid_t pgid) {
+    return kill(-pgid, 0) == 0 || errno == EPERM;
+}
+
 /* The deadline's stop: TERM to the child's process group (it called
- * `setpgid(0, 0)`, so a shell's own children go with it), 100 ms of
- * grace polled at 5 ms, then KILL to the group, then reap. A group
- * that is already gone falls back to the pid. *status is the reaped
- * status (0 if something else reaped it). */
+ * `setpgid(0, 0)`, so a shell's own children go with it), up to 100 ms
+ * of grace polled at 5 ms, then KILL to whatever of the group is left,
+ * then reap the child. The child's own exit is not the group's: a
+ * leader that ends on TERM while a member of its group ignores it
+ * (`trap '' TERM`) leaves that member running, so the grace ends early
+ * only once the leader is reaped AND no member is left, and the KILL
+ * goes to the group whenever one is. A group that is already gone
+ * falls back to the pid. *status is the leader's reaped status (0 if
+ * something else reaped it). */
 static void lotus_process_stop_group(pid_t pid, int *status) {
     *status = 0;
+    int reaped = 0;
     if (kill(-pid, SIGTERM) < 0) kill(pid, SIGTERM);
     for (int waited = 0; waited < 100000; waited += 5000) {
-        pid_t w = waitpid(pid, status, WNOHANG);
-        if (w == pid) return;
-        if (w < 0 && errno != EINTR) return;
+        if (!reaped) {
+            pid_t w = waitpid(pid, status, WNOHANG);
+            if (w == pid || (w < 0 && errno != EINTR)) reaped = 1;
+        }
+        if (reaped && !lotus_process_group_alive(pid)) return;
         struct timespec ts = { 0, 5000L * 1000L };
         nanosleep(&ts, NULL);
     }
-    if (kill(-pid, SIGKILL) < 0) kill(pid, SIGKILL);
+    /* The group's id is the leader's pid, which stays reserved while
+     * any member of the group lives, so a KILL to it reaches only them. */
+    if (lotus_process_group_alive(pid)) kill(-pid, SIGKILL);
+    if (reaped) return;
+    kill(pid, SIGKILL);
     for (;;) {
         pid_t w = waitpid(pid, status, 0);
         if (w == pid) return;

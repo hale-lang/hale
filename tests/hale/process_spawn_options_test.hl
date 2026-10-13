@@ -62,6 +62,17 @@ fn main() {
     std::test::assert_eq_int(std::process::try_wait(p) or 99, -1, "try_wait past the deadline stops it");
     std::test::assert(p.timed_out, "and records it");
 
+    // The whole process group goes at the deadline, not only the child:
+    // here the child (the group's leader) ends on TERM, and a member it
+    // started ignores TERM (`trap '' TERM`). The member used to outlive the
+    // timeout, because the stop ended as soon as the leader was reaped.
+    let group = sh("sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $$; wait", std::process::SpawnOptions { timeout: 300ms });
+    std::test::assert(group.timed_out, "the group's run timed out");
+    let pgid = std::str::trim(group.stdout);
+    std::test::assert(len(pgid) > 0, "the leader said its group");
+    let left = sh("sleep 0.5; if kill -0 -" + pgid + " 2>/dev/null; then echo alive; else echo gone; fi", std::process::SpawnOptions { });
+    std::test::assert_eq_str(left.stdout, "gone\n", "no process of the group is left");
+
     // close_stdin still works on a spawn_with handle.
     let cat = std::process::spawn_with("/bin/cat", std::process::SpawnOptions { cwd: "/", timeout: 10s }) or std::process::Child { };
     std::process::write_stdin(cat, "piped\n") or 0;
