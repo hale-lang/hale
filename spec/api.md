@@ -1786,7 +1786,10 @@ array's length `too_short`, both `malformed`, and the handler does not
 run. What is not carried, each refused by law 5 naming the field: an
 unbounded `[T]` (an unbounded collection is locus-owned, `@form(vec)`,
 and a type holds bounded data only, `spec/types.md` § bounded[T; N]), a
-list of lists, and a list of a shape the codec does not carry. A
+list of lists, and a list of a shape the codec does not carry (a
+`Decimal<S>` among them: an api surface has no schema for one yet, as a
+field or as an element, though the generated codecs read and write it as
+JSON's tier 2 does, a number at its scale, and protobuf as its digits). A
 request or response is never itself a list: a page of records is a
 record, `type Page { items: bounded[Item; 50]; }`, which leaves room
 for what a page says beside its items.

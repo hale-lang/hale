@@ -467,3 +467,74 @@ fn main() {{ Desk {{ }}; }}
     let (compiled, reflected) = compiled_and_reflected(&file, "repeated");
     assert_eq!(reflected, compiled, "the reflected descriptor of a repeated field is the compiled text");
 }
+
+/// A list of `Decimal<S>` is carried by both codecs as a `Decimal<S>` field
+/// is (#1532): in JSON each element a number at the element's scale, every
+/// digit kept (written as `to_string` writes it, trailing zeros dropped), a nonzero digit past the scale `wrong_type`; in protobuf each
+/// element its digits in a string occurrence (length-delimited, so there is
+/// no packed form). An api surface still refuses a Decimal row (its schema has
+/// none), so the codecs are reached here through the harness's build, which
+/// lowers what the check refuses, and called as the transport's thunks would.
+#[test]
+fn a_list_of_decimals_crosses_both_codecs_at_its_scale() {
+    let program = r#"
+type Prices { amounts: bounded[Decimal<2>; 3]; exact: [Decimal<2>; 2]; }
+api Pb { rpc Probe::prices; }
+locus Probe {
+    fn prices(p: Prices) -> Prices { return p; }
+}
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "" }; }
+    fn refused() -> String { return "no"; }
+}
+main locus Desk {
+    params { probe: Probe = Probe { }; bearer: Tokens = Tokens { }; }
+    fn serving() {
+        let h = api::serve(Pb, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h.stop();
+    }
+    fn json(text: String) {
+        let p = __api_decode_Prices(text) or { println("json refused " + err.kind + " " + err.field); return; };
+        println("json " + __api_encode_Prices(p));
+        let back = __api_pb_decode_Prices(__api_pb_encode_Prices(p)) or { println("pb refused " + err.kind + " " + err.field); return; };
+        println("pb " + __api_encode_Prices(back));
+    }
+    fn pb(b: Bytes) {
+        let p = __api_pb_decode_Prices(b) or { println("pb refused " + err.kind + " " + err.field); return; };
+        println("pb " + __api_encode_Prices(p));
+    }
+    run() {
+        self.json("{\"amounts\":[19.99,0.5,-3],\"exact\":[0.01,100]}");
+        self.json("{\"exact\":[1,2]}");
+        self.json("{\"amounts\":[1.234],\"exact\":[1,2]}");
+        self.json("{\"amounts\":[1,2,3,4],\"exact\":[1,2]}");
+        self.json("{\"amounts\":[\"1.5\"],\"exact\":[1,2]}");
+        self.json("{\"exact\":[1]}");
+        let exact = std::bytes::concat(__api_pb_put_str(2, "1"), __api_pb_put_str(2, "2"));
+        self.pb(std::bytes::concat(std::bytes::concat(__api_pb_put_str(1, "7.25"), __api_pb_put_str(1, "-0.01")), exact));
+        self.pb(std::bytes::concat(__api_pb_put_str(1, "1.234"), exact));
+        self.pb(std::bytes::concat(__api_pb_put_int(1, 5), exact));
+    }
+}
+fn main() { Desk { }; }
+"#;
+    let bin = harness::unique_bin("api_pb_codec_decimal_list");
+    build_opts::build_source(program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    assert_eq!(
+        got.lines().collect::<Vec<_>>(),
+        [
+            r#"json {"amounts":[19.99,0.5,-3],"exact":[0.01,100]}"#,
+            r#"pb {"amounts":[19.99,0.5,-3],"exact":[0.01,100]}"#,
+            r#"json {"amounts":[],"exact":[1,2]}"#,
+            r#"pb {"amounts":[],"exact":[1,2]}"#,
+            "json refused wrong_type amounts",
+            "json refused too_long amounts",
+            "json refused wrong_type amounts",
+            "json refused too_short exact",
+            r#"pb {"amounts":[7.25,-0.01],"exact":[1,2]}"#,
+            "pb refused wrong_type amounts",
+            "pb refused wrong_type amounts",
+        ]
+    );
+}

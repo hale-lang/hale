@@ -674,7 +674,9 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
     let mut b = format!("{ind}let __e0 = std::str::byte_at_unchecked({src}, __es);\n");
     let want = match elem {
         Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
-        Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
+        Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) | Elem::Scalar(ScalarTy::Decimal(_), _) => {
+            "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)"
+        }
         Elem::Scalar(ScalarTy::Bool, _) => "__e0 == 116 || __e0 == 102",
         Elem::Time => "__e0 == 34",
         Elem::Nested(_) => "__e0 == 123",
@@ -693,6 +695,16 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         }
         Elem::Scalar(ScalarTy::Float, _) => {
             b.push_str(&format!("{ind}let __ev = std::str::parse_float({src}[__es..__ee]) or {wrong};\n"));
+        }
+        // a Decimal<S> element is a JSON number read at the element's scale,
+        // every digit kept: the binding is declared `Decimal<S>`, so
+        // `range_parse_decimal` takes that scale, and a nonzero digit past it
+        // is `wrong_type`, as for a field
+        Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
+            b.push_str(&format!(
+                "{ind}let __ev: {} = std::str::range_parse_decimal({src}, __es, __ee) or {wrong};\n",
+                d.type_name()
+            ));
         }
         Elem::Scalar(ScalarTy::Bool, _) => {
             b.push_str(&format!("{ind}let __ev = std::str::range_eq({src}, __es, __ee, \"true\");\n"));
@@ -805,7 +817,9 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
 /// annotated binding does.
 fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
     match elem {
-        Elem::Scalar(_, Some(_)) | Elem::Time => format!("{ind}let __xe: {elem_ty} = __x;\n"),
+        Elem::Scalar(_, Some(_)) | Elem::Scalar(ScalarTy::Decimal(_), _) | Elem::Time => {
+            format!("{ind}let __xe: {elem_ty} = __x;\n")
+        }
         _ => format!("{ind}let __xe = __x;\n"),
     }
 }
@@ -970,7 +984,8 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
 fn pb_elem_wire(elem: &Elem) -> u32 {
     match elem {
         Elem::Scalar(ScalarTy::Float, _) => 1,
-        Elem::Scalar(ScalarTy::Str, _) | Elem::Nested(_) => 2,
+        // a Decimal is its digits in a string, as a field's is
+        Elem::Scalar(ScalarTy::Str, _) | Elem::Scalar(ScalarTy::Decimal(_), _) | Elem::Nested(_) => 2,
         Elem::Scalar(_, _) | Elem::Time => 0,
     }
 }
@@ -986,7 +1001,7 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
             b.push_str(&format!("{ind}let __ev = std::bytes::read_f64_le(__b, __p) or 0.0;\n"));
             b.push_str(&format!("{ind}__p = __p + 8;\n"));
         }
-        Elem::Scalar(ScalarTy::Str, _) | Elem::Nested(_) => {
+        Elem::Scalar(ScalarTy::Str, _) | Elem::Scalar(ScalarTy::Decimal(_), _) | Elem::Nested(_) => {
             b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
             b.push_str(&format!("{ind}if __ee < 0 {{ {bad} }}\n"));
             b.push_str(&format!("{ind}let __el = __api_pb_vval(__b, __p, __ee);\n"));
@@ -996,6 +1011,13 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
                     b.push_str(&format!(
                         "{ind}let __ev = __api_pb_decode_{tn}(std::bytes::slice(__b, __ee, __ee + __el)) or raise;\n"
                     ));
+                }
+                Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
+                    b.push_str(&format!(
+                        "{ind}let __ed = std::str::from_bytes(std::bytes::slice(__b, __ee, __ee + __el));\n"
+                    ));
+                    b.push_str(&format!("{ind}if len(__ed) != __el {{ {wrong}; }}\n"));
+                    b.push_str(&format!("{ind}let __ev: {} = std::str::parse_decimal(__ed) or {wrong};\n", d.type_name()));
                 }
                 _ => {
                     b.push_str(&format!(
@@ -1108,6 +1130,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Bool, _) => format!("__api_pb_put_bool({no}, {v})"),
         Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
+        Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
         Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
     }
