@@ -38,6 +38,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
                         | CodegenTy::Duration
+                        | CodegenTy::Time
                         | CodegenTy::String
                         | CodegenTy::Bytes
                         | CodegenTy::TypeRef(_)
@@ -45,8 +46,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(format!(
                         "bounded[T; N]: element type {:?} not supported \
                          — scalars (Int / Float / Bool / Decimal / \
-                         Duration), String, Bytes, and user structs \
-                         are covered",
+                         Duration / Time), String, Bytes, and user \
+                         structs are covered",
                         e
                     )));
                 }
