@@ -1332,14 +1332,16 @@ fn application_assets(root: String) -> String {
 }
 
 // One of the application's static assets, as the head answers a GET of
-// `path` (under `APP_ASSETS_PREFIX`): status 200 with the file, or 404
-// with why.
-type AppAsset { status: Int = 404; content_type: String = ""; body: String = ""; why: String = ""; }
+// `path` (under `APP_ASSETS_PREFIX`): status 200 with the file's bytes,
+// whole — an image or a font holds NUL bytes, which no `String` carries —
+// or 404 with why.
+type AppAsset { status: Int = 404; content_type: String = ""; bytes: Bytes = b""; why: String = ""; }
 
 // `/app/` is the assets' `index.html` and `/app/<path>` the file at
 // `ui/<path>`, a path ending in `/` its directory's `index.html`. A
 // project with no assets, a path that climbs out or names a hidden file,
-// and a file that is not there are 404s.
+// and a file that is not there are 404s. The content type is the
+// extension's.
 fn application_asset(root: String, path: String) -> AppAsset {
     let dir = application_assets(root);
     if len(dir) == 0 { return AppAsset { why: "the attached project has no static assets (a `" + INGEST_ASSETS + "/` with no manifest that the repository references)" }; }
@@ -1347,8 +1349,28 @@ fn application_asset(root: String, path: String) -> AppAsset {
     let rest = if len(path) > from { path[from..len(path)] } else { "" };
     let rel = if len(rest) == 0 || std::str::ends_with(rest, "/") { rest + "index.html" } else { rest };
     if std::str::contains("/" + rel, "/.") || std::str::contains(rel, "\\") || std::str::contains(rel, "//") { return AppAsset { why: "no such asset" }; }
-    let body = std::io::fs::read_file(root + "/" + dir + "/" + rel) or "";
-    if len(body) == 0 { return AppAsset { why: "no such asset: " + dir + "/" + rel }; }
-    let ct = if std::str::ends_with(rel, ".html") { "text/html; charset=utf-8" } else if std::str::ends_with(rel, ".js") || std::str::ends_with(rel, ".mjs") { "text/javascript; charset=utf-8" } else if std::str::ends_with(rel, ".css") { "text/css; charset=utf-8" } else if std::str::ends_with(rel, ".json") { "application/json" } else if std::str::ends_with(rel, ".svg") { "image/svg+xml" } else { "text/plain; charset=utf-8" };
-    return AppAsset { status: 200, content_type: ct, body: body };
+    let file = root + "/" + dir + "/" + rel;
+    if !std::io::fs::file_exists(file) { return AppAsset { why: "no such asset: " + dir + "/" + rel }; }
+    let bytes = std::io::fs::read_bytes(file) or b"";
+    return AppAsset { status: 200, content_type: asset_type(rel), bytes: bytes };
+}
+
+// The content type of an asset, by its extension.
+fn asset_type(rel: String) -> String {
+    if std::str::ends_with(rel, ".html") { return "text/html; charset=utf-8"; }
+    if std::str::ends_with(rel, ".js") || std::str::ends_with(rel, ".mjs") { return "text/javascript; charset=utf-8"; }
+    if std::str::ends_with(rel, ".css") { return "text/css; charset=utf-8"; }
+    if std::str::ends_with(rel, ".json") { return "application/json"; }
+    if std::str::ends_with(rel, ".svg") { return "image/svg+xml"; }
+    if std::str::ends_with(rel, ".png") { return "image/png"; }
+    if std::str::ends_with(rel, ".jpg") || std::str::ends_with(rel, ".jpeg") { return "image/jpeg"; }
+    if std::str::ends_with(rel, ".gif") { return "image/gif"; }
+    if std::str::ends_with(rel, ".webp") { return "image/webp"; }
+    if std::str::ends_with(rel, ".ico") { return "image/x-icon"; }
+    if std::str::ends_with(rel, ".woff2") { return "font/woff2"; }
+    if std::str::ends_with(rel, ".woff") { return "font/woff"; }
+    if std::str::ends_with(rel, ".ttf") { return "font/ttf"; }
+    if std::str::ends_with(rel, ".wasm") { return "application/wasm"; }
+    if std::str::ends_with(rel, ".txt") || std::str::ends_with(rel, ".md") || std::str::ends_with(rel, ".ts") { return "text/plain; charset=utf-8"; }
+    return "application/octet-stream";
 }

@@ -7336,6 +7336,11 @@ dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/api/project_service/tests/head_assets_test.hl
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #23f55ba1
+shared	dynamic	sites in api/project_service/tests/fixture #c6dc7898
+shared	dynamic	sites in core #b2c4d9f5
+
 == dna/api/project_service/tests/head_push_test.hl
 row	EventStream@main2	EventStream	main	default
 row	Held@main4	Held	main	default
