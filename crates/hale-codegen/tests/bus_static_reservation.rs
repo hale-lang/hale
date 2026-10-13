@@ -317,6 +317,29 @@ fn the_topics_bound_applies_to_the_reservation() {
     assert!(stderr.contains("reservation `rsv.loose` closed: parked 10 copied 4 forwarded 0 shed 6"), "{stderr}");
 }
 
+#[test]
+fn a_construction_a_failure_leaves_closes_its_reservation() {
+    // The failure propagates out of the tree's params part-way: the
+    // reservation it opened closes on that exit, saying what it held for
+    // a subscriber that was never built, and holds nothing after — a
+    // later tree built elsewhere is untouched by it.
+    let src = r#"
+        type Note { n: Int; }
+        type Oops { why: String; }
+        topic Fact { payload: Note; subject: "rsv.left"; }
+        fn pick(ok: Bool) -> Int fallible(Oops) { if ok { return 1; } fail Oops { why: "no" }; }
+        locus Teller { params { x: Int = 0; } bus { publish Fact; } birth() { Fact <- Note { n: 7 }; } }
+        locus Ear { params { v: Int = 0; } bus { subscribe Fact as on_fact; } fn on_fact(f: Note) { println("ear " + to_string(f.n)); } }
+        locus Tree { params { t: Teller = Teller { }; v: Int = pick(false) or raise; e: Ear = Ear { }; } }
+        fn build() -> Int fallible(Oops) { let t = Tree { }; return 1; }
+        fn main() { let r = build() or 0; println("built " + to_string(r)); let e = Ear { }; Teller { }; }
+    "#;
+    let (out, stderr) = run_env("abandoned", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["built 0", "ear 7"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.left` closed: parked 1 copied 0 forwarded 0 shed 0 claimants 0 missing 1"), "{stderr}");
+    assert!(stderr.contains("1 subscription(s) of `rsv.left` reserved for a statically built tree never registered"), "{stderr}");
+}
+
 /// A publisher on its own thread, started early in the tree, sends
 /// `count` numbered cells (a short pause every ten) while the rest of the
 /// tree is built, slowly; every subscriber, built before it or after,

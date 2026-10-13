@@ -64,6 +64,9 @@ pub(crate) struct ReserveCtx<'ctx> {
     /// which reads `scope` through the init's argument block. Deeper
     /// inits take part as publishers only.
     pub(crate) depth: u8,
+    /// The root site's entry-block slot holding `scope` while it is open
+    /// (`Cx::reserve_exit_slots`).
+    pub(crate) slot: PointerValue<'ctx>,
 }
 
 /// How a param's literal takes part in its parent's tree.
@@ -396,7 +399,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(e)?;
             subjects.insert(plan.subject.clone());
         }
-        Ok(Some(ReserveCtx { scope, func, subjects: Rc::new(subjects), depth: 0 }))
+        // The site's slot, NULL on every path until here: an exit out of
+        // the construction finds the scope in it and closes it.
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let entry = func.get_first_basic_block().expect("a function has an entry block");
+        let here = self.builder.get_insert_block();
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let slot = self.builder.build_alloca(ptr_t, "bus.reserve.slot").map_err(e)?;
+        self.builder.build_store(slot, ptr_t.const_null()).map_err(e)?;
+        if let Some(bb) = here {
+            self.builder.position_at_end(bb);
+        }
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
+        }
+        self.builder.build_store(slot, scope).map_err(e)?;
+        self.reserve_exit_slots.push((func, slot));
+        Ok(Some(ReserveCtx { scope, func, subjects: Rc::new(subjects), depth: 0, slot }))
     }
 
     /// A node's registration of `subject` claims what the tree's
@@ -428,6 +450,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_call(end, &[ctx.scope.into()], "bus.reserve.end")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let null = self.context.ptr_type(AddressSpace::default()).const_null();
+        self.builder.build_store(ctx.slot, null).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// An exit of this function: a root site whose slot still holds its
+    /// scope was left part-way (an initializer's propagated failure), and
+    /// its scope closes here. A completed construction's slot is NULL,
+    /// which the close ignores.
+    pub(crate) fn emit_reserve_scopes_abandoned(&mut self) -> Result<(), CodegenError> {
+        let here = self.builder.get_insert_block().and_then(|b| b.get_parent());
+        let slots: Vec<PointerValue<'ctx>> = self
+            .reserve_exit_slots
+            .iter()
+            .filter(|(f, _)| Some(*f) == here)
+            .map(|(_, s)| *s)
+            .collect();
+        if slots.is_empty() {
+            return Ok(());
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let end = self.reserve_fn("lotus_bus_reserve_end");
+        for slot in slots.iter().rev() {
+            let scope = self.builder.build_load(ptr_t, *slot, "bus.reserve.left").map_err(e)?;
+            self.builder.build_call(end, &[scope.into()], "bus.reserve.abandoned").map_err(e)?;
+            self.builder.build_store(*slot, ptr_t.const_null()).map_err(e)?;
+        }
         Ok(())
     }
 }
