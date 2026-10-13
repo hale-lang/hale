@@ -504,7 +504,10 @@ The `Client`'s `timeout_ms` (30 s unless you say otherwise) bounds
 each attempt's connect — and, for https, the TLS handshake — so a host
 that never answers costs that long, not the kernel's two minutes; the
 error's `detail` names the timeout. `timeout_ms: 0` turns the bound
-off.
+off. The one-shot `get` / `post` / `request` dial under the same 30 s
+bound, failing `connect_failed` when it ends; for another deadline,
+make the call through a `Client { timeout_ms: 2000, max_retries: 0 }`,
+which without `keep_alive` is the same one-shot exchange.
 
 The `Client` retries a 5xx too. A one-shot `get` hands a 5xx back as
 the response; the `Client`, once its retries are spent, fails with

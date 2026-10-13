@@ -186,6 +186,11 @@ or `-1` if killed by a signal), `signal: Int` (the killing signal,
 `String`s. `run` is `fallible(IoError)` — a missing binary or a
 fork failure raises rather than returning a bogus output.
 
+The argument vector is capped at **64 KiB** (65536 bytes, newlines
+included). A longer one fails `run` or `spawn` before anything is
+forked, with `IoError { kind: "invalid", errno: 7 }` (`E2BIG`). Bulk
+input belongs on the child's stdin or in a file, not in its arguments.
+
 For a long-running child you drive incrementally, the lower-level
 `spawn` / `wait` / `kill` / `write_stdin` / `close_stdin` /
 `read_stdout` / `read_stderr` surface over a `Child` handle is in
