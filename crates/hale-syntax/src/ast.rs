@@ -278,6 +278,12 @@ pub struct ApiDecl {
     pub name: Ident,
     pub rows: Vec<RpcRow>,
     pub span: Span,
+    /// The surface's identity in the import table when an imported seed
+    /// declares it: the mangled name the loader gives it (as it would a
+    /// declaration of that seed's) and registers under the importer's
+    /// alias, so `alias::Name` names this block and no other seed's.
+    /// `None` for a block of the entry seed, which no alias reaches.
+    pub origin: Option<String>,
 }
 
 /// One `rpc` line of an `api` block.

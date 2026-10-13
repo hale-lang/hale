@@ -864,37 +864,28 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
     }
 }
 
-/// The surface `alias::name` names, when `alias` is an import alias and the
-/// seed it names declares `api name`. A surface is seed-global and keeps
-/// its name through the mangler (`mangle::top_decl_name`), so the import
-/// table has no row for it; the seed is told by the block's own rows: a
-/// row naming a locus of the block's own seed (`written` unqualified) was
-/// mangled into that seed's name, which the import table holds under the
-/// alias as `alias::written`. A block whose rows are all qualified names no
-/// locus of its own seed and is the alias's when the name matches.
+/// The surface `alias::name` names: the block the import table's row for
+/// `alias::name` identifies. A surface keeps its name through the mangler
+/// (it is the description's), so the loader registers it under the alias
+/// as it would a declaration of that seed, by the mangled name the block
+/// carries as its `origin` (`ApiDecl::origin`). The row is the provenance:
+/// a block of another seed, the importer's own among them, has another
+/// origin or none, so the alias never reaches it.
 fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
-    if !renames.iter().any(|(path, _)| path.len() > 1 && path[0] == alias) {
-        return None;
-    }
-    programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| {
-        let TopDecl::Api(a) = d else { return None };
-        let of_alias = a.name.name == name
-            && a.rows.iter().filter(|r| !r.written.contains("::")).all(|r| {
-                renames.iter().any(|(path, mangled)| {
-                    path.len() == 2 && path[0] == alias && path[1] == r.written && *mangled == r.locus.name
-                })
-            });
-        of_alias.then(|| a.name.name.clone())
+    let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == name)?;
+    programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {
+        TopDecl::Api(a) if a.name.name == name && a.origin.as_ref() == Some(origin) => Some(a.name.name.clone()),
+        _ => None,
     })
 }
 
 /// A serve site whose surface is written `alias::Name`, for a surface the
 /// imported seed `alias` declares, names the surface as declared (`Name`),
 /// so every reader of the site (the serve-site laws, this pass, the
-/// description) reads one spelling. The import renames never reach it: the
-/// surface argument is a value-position path and a surface has no mangled
-/// name. A path that names no imported surface is left as written, for the
-/// laws to refuse in the author's spelling.
+/// description) reads one spelling. No rename pass reaches it: the surface
+/// argument is a value-position path. A path that names no surface of the
+/// aliased seed is left as written, for the laws to refuse in the author's
+/// spelling.
 fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
     let mut resolved: BTreeMap<(String, String), String> = BTreeMap::new();
     {

@@ -1549,7 +1549,7 @@ impl Parser {
             rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span) });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span) })
+        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None })
     }
 
     /// GH #1417: `requires: [ROLE, …]`, the roles a caller of a row (or a

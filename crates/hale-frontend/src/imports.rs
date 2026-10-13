@@ -798,6 +798,24 @@ pub fn resolve_imports(
             .name_library(&lib_key, matches!(target, ImportTarget::Directory(_)));
         let seed_renames =
             hale_types::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
+        // A surface keeps its name (it is the description's), so the
+        // seed's mangling map has no row for one and the mangler leaves
+        // it alone. The import table does need one, for an importer's
+        // `alias::Name` serve site to name THIS seed's surface: the row
+        // maps it to the name the loader would give a declaration of the
+        // seed (`mangle::mangled`), which the block carries as its
+        // `origin` (set below, as the files merge). A name the seed also
+        // gives a declaration keeps the declaration's row.
+        let mut table_rows = seed_renames.clone();
+        for (stem, prog) in &stem_prog_refs {
+            for d in hale_syntax::ast::flat_decls(&prog.items) {
+                if let hale_syntax::ast::TopDecl::Api(a) = d {
+                    table_rows
+                        .entry(a.name.name.clone())
+                        .or_insert_with(|| hale_types::mangle::mangled(&lib_id, stem, &a.name.name));
+                }
+            }
+        }
         // GH #714: the names that may head a qualified path in this
         // seed (its type decls). Everything else a path head can be
         // is a module alias of the seed's own imports, which the
@@ -814,7 +832,7 @@ pub fn resolve_imports(
                 &stem_prog_refs,
             ),
         };
-        seed_cache.insert(lib_key.clone(), seed_renames.clone());
+        seed_cache.insert(lib_key.clone(), table_rows.clone());
         // GH #746: the lib's own files, for the alias-scoping pass.
         alias_scopes.record_files(
             &lib_key,
@@ -825,7 +843,7 @@ pub fn resolve_imports(
             eprintln!("[import]     library {} is named {}", lib_key.display(), lib_id);
         }
         // Populate the per-build path-rename table.
-        push_seed_rows(renames, &alias, &seed_renames);
+        push_seed_rows(renames, &alias, &table_rows);
         if trace {
             eprintln!(
                 "[import]   resolved '{}' as {}: +{} files, seed_renames={}, \
@@ -923,6 +941,11 @@ pub fn resolve_imports(
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());
             }
+            hale_syntax::ast::for_each_decl_mut(&mut pf.program.items, &mut |d| {
+                if let hale_syntax::ast::TopDecl::Api(a) = d {
+                    a.origin = Some(hale_types::mangle::mangled(&lib_id, &pf.stem, &a.name.name));
+                }
+            });
             merged_items.extend(pf.program.items);
             sources.insert(pf.canon, pf.source);
             let _ = pf.path; // path was only needed for diagnostics above
