@@ -711,6 +711,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             str_field_fixup_ty,
             None,
         );
+        // ... and its nested half: retire every block the replaced
+        // value reached that the new one does not (see lotus_arena.c).
+        // declare void @lotus_self_field_retire_replaced(ptr arena,
+        //     ptr old_snap, ptr new_block, ptr scrap, i64 scrap_size,
+        //     ptr desc, i64 n)
+        let retire_i64 = self.context.i64_type();
+        self.module.add_function(
+            "lotus_self_field_retire_replaced",
+            void_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // An on_failure handler never runs before its locus's params
         // are settled: open/settle bracket a handler-bearing locus's
         // params loop, and every routed failure asks hold first.

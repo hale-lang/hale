@@ -34016,20 +34016,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // (lotus_bytes_assign_in_place), and a locus whose only
             // retiring field was Bytes never flushed — its retired
             // blocks were never reusable.
-            let has_retiring_self_fields =
-                info.fields.values().any(|(_, fty)| match fty {
-                    CodegenTy::String | CodegenTy::Bytes => true,
-                    CodegenTy::TypeRef(tn) => self
-                        .user_types
-                        .get(tn)
-                        .map(|t| {
-                            t.fields.values().any(|(_, f)| {
-                                matches!(f, CodegenTy::String | CodegenTy::Bytes)
-                            })
-                        })
-                        .unwrap_or(false),
-                    _ => false,
-                });
+            // A record's nested blocks, a tuple's and an out-of-line
+            // array's retire too (lotus_self_field_retire_replaced),
+            // and so does a String a nested field-of-field store
+            // replaces (`self.outer.inner.s = v`).
+            let has_retiring_self_fields = info
+                .fields
+                .values()
+                .any(|(_, fty)| self.self_field_type_retires(fty));
             if !has_retiring_child && !has_retiring_self_fields {
                 return Ok(());
             }

@@ -1453,11 +1453,40 @@ reclaim on a real-world long-running workload:
      old clones for the locus lifetime. String and Bytes fields
      (Bytes since GH #1033, `lotus_bytes_field_replace_fixup`:
      before it, a replaced Bytes blob — 8 bytes even for an
-     empty payload — was orphaned on every whole-struct write);
-     pointer-shaped compound fields of the replaced struct keep
-     the pre-fix behavior, and fields of @form vec / bounded
-     cells and stores from boundary-less contexts (a `run()`
-     loop) do not retire.
+     empty payload — was orphaned on every whole-struct write).
+     Fields of @form vec / bounded cells and stores from
+     boundary-less contexts (a `run()` loop) do not retire.
+
+     Nested blocks (2026-10-12): a field pointing at a block of
+     its own — a nested record, a tuple, an out-of-line array, a
+     payload enum — retires too, with everything under it. The
+     store snapshots the field's block before the memcpy, and
+     after it `lotus_self_field_retire_replaced` walks the old
+     snapshot and the new block with the form retire descriptor
+     (forms.md § Cell reclamation; for a record, its nested-block
+     fields only, the fixups above owning its top-level String /
+     Bytes) and retires, pending until the same flush, every block
+     the old value reached that the new one does not. A tuple or
+     array field is replaced the same way, every slot walked, and
+     the fresh copy its value was built in — garbage once its
+     bytes are copied over the field's block — retires as well.
+     Before, each replace left the old nested blocks (and, for a
+     tuple or array field, that copy) in `self.__arena` for the
+     locus's lifetime: ~6 MiB over 200 000 replaces of a record
+     holding a record of one String.
+
+     Retiring a nested block is sound only if nothing else holds
+     it, so such a store follows the retiring form's rule below
+     for its own fields: the walk runs over a stack snapshot of
+     the rhs, every nested block is copied in (its Strings and
+     Bytes owned clones), and the only block passed through is
+     the one the field already holds at that same place — `self.f
+     = F { n: i, inner: self.f.inner }` keeps `inner`, copies
+     nothing, and retires nothing. A `let` of a compound read
+     from a field is already a deep copy in the method's scratch,
+     so it never points into a block the store retires. A locus
+     with such a field flushes its arena at each method's
+     activation boundary, as one with a String field does.
 
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
