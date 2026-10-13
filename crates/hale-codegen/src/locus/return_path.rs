@@ -245,6 +245,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value())
     }
 
+    /// A deep copy of `value` into `dest_arena` that OWNS every leaf:
+    /// a String or Bytes already in `dest_arena` is copied too
+    /// (`cell_owned_clone`), where the plain copy passes it through.
+    /// For a value stored into a locus's own fields outside a compound
+    /// self-field store — a param's value at construction, the built
+    /// params a restart-in-place snapshots and restores. Those values
+    /// are evaluated in the locus's arena, so a plain copy kept a
+    /// String one field or param shared with another (`o: Outer = Outer
+    /// { s: self.text, inner: Inner { s: self.text } }`), and the
+    /// retire of a replaced value — its String fixups, its nested-block
+    /// walk (`lotus_self_field_retire_replaced`) — then freed it under
+    /// the others. Records, tuples, arrays and payload-enum blocks are
+    /// always fresh in this copy.
+    pub(crate) fn emit_owned_deep_copy(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+        let out = self.emit_return_value_deep_copy(value, ty, dest_arena);
+        self.cell_owned_clone = prev;
+        out
+    }
+
     pub(crate) fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,

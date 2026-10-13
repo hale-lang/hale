@@ -638,7 +638,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return self.emit_memcpy_call(dst, src, size, &format!("{site}.inline_arr"));
         }
         let v = self.builder.build_load(llvm_ty, src, &format!("{site}.v")).map_err(e)?;
-        let v = if llvm_ty.is_pointer_type() { self.emit_owned_store_copy_ptr(v, ty, arena)? } else { v };
+        // Owned to the leaves: the snapshot and the fields share one
+        // arena, so a String the copy passed through would be held by
+        // both, and a replace that retires the field's would free the
+        // snapshot's (and every restored field's) too.
+        let owned = matches!(
+            ty,
+            crate::codegen::CodegenTy::String
+                | crate::codegen::CodegenTy::Bytes
+                | crate::codegen::CodegenTy::TypeRef(_)
+                | crate::codegen::CodegenTy::Tuple(_)
+                | crate::codegen::CodegenTy::Array(_, _)
+        );
+        let v = if llvm_ty.is_pointer_type() && owned {
+            self.emit_owned_deep_copy(v, ty, arena)?
+        } else {
+            v
+        };
         let dst = self
             .builder
             .build_struct_gep(struct_ty, to, idx, &format!("{site}.dst"))

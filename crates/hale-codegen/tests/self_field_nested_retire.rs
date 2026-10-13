@@ -271,3 +271,134 @@ fn every_copy_of_a_replaced_nested_block_survives() {
         assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
     }
 }
+
+/// Build `src` under ASan, run it with chunk recycling off, and return
+/// its stdout, failing on a non-zero exit.
+fn run_asan(name: &str, src: &str) -> String {
+    let bin = harness::unique_bin(&format!("hale_self_field_nested_{name}"));
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{name}: non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    stdout
+}
+
+/// What a locus's params are built with owns its Strings, Bytes and
+/// nested records. Param values are evaluated in the locus's own arena,
+/// and the copy that stored them passed a same-arena String through, so
+/// `o: Outer = Outer { s: self.text, inner: Inner { s: self.text } }`
+/// left `text`, `o.s` and `o.inner.s` one blob (a review finding on
+/// this change). Replacing `o.inner` retired it, and the flush wrote
+/// its freelist node over the text `text` and `o.s` still held: the
+/// probe printed `/`. Each case churns its field 200 times, each replace
+/// in its own activation, and reads what the others were built with:
+/// a String shared three ways, a Bytes the same way, a nested record
+/// taken whole from another param, and a value a function built with
+/// one String in two places.
+#[test]
+fn params_as_built_own_what_a_replace_retires() {
+    let src = r#"
+        type Inner { s: String = ""; }
+        type Outer { s: String = ""; inner: Inner = Inner { }; }
+        type BInner { b: Bytes = b""; }
+        type BOuter { b: Bytes = b""; inner: BInner = BInner { }; }
+        fn mk(t: String) -> Outer { return Outer { s: t, inner: Inner { s: t } }; }
+        locus H {
+            params {
+                text: String = std::str::upper("old-initialized-text");
+                o: Outer = Outer { s: self.text, inner: Inner { s: self.text } };
+                blob: Bytes = std::bytes::from_string(std::str::upper("old-initialized-bytes"));
+                bo: BOuter = BOuter { b: self.blob, inner: BInner { b: self.blob } };
+                base: Inner = Inner { s: std::str::upper("old-base-record") };
+                holder: Outer = Outer { inner: self.base };
+                made: Outer = mk(std::str::upper("old-made-text"));
+            }
+            fn put(i: Int) {
+                let t = std::str::upper("new-" + to_string(i));
+                self.o = Outer { s: self.o.s, inner: Inner { s: t } };
+                self.bo = BOuter { b: self.bo.b, inner: BInner { b: std::bytes::from_string(t) } };
+                self.holder = Outer { s: t, inner: Inner { s: t } };
+                self.made = Outer { s: self.made.s, inner: Inner { s: t } };
+            }
+            fn read() -> String {
+                return self.text + "/" + self.o.s + " " + std::str::from_bytes(self.blob) + "/"
+                    + std::str::from_bytes(self.bo.b) + " " + self.base.s + " " + self.made.s;
+            }
+        }
+        fn main() {
+            let h = H { };
+            let mut i = 0;
+            while i < 200 { h.put(i); i = i + 1; }
+            println("read=" + h.read());
+        }
+    "#;
+    let stdout = run_asan("built_params", src);
+    assert!(
+        stdout.contains(
+            "read=OLD-INITIALIZED-TEXT/OLD-INITIALIZED-TEXT \
+             OLD-INITIALIZED-BYTES/OLD-INITIALIZED-BYTES OLD-BASE-RECORD OLD-MADE-TEXT"
+        ),
+        "stdout: {stdout}"
+    );
+}
+
+/// The same for a restart in place: the params as built are snapshotted
+/// into the locus's arena and restored from it on each restart, and both
+/// copies passed a same-arena String through, so the restored fields
+/// and the snapshot shared their blobs — a replace after the restart
+/// retired the snapshot's, and the next restart restored the freed text.
+/// Each run logs what it starts from (the log is a child, kept across
+/// restarts), churns `o` 50 times, and fails until it has run three
+/// times: every run must start from the params as built.
+#[test]
+fn a_restart_restores_params_a_replace_cannot_retire() {
+    let src = r#"
+        type Inner { s: String = ""; }
+        type Outer { s: String = ""; inner: Inner = Inner { }; }
+        @form(vec)
+        locus Log { capacity { heap items of String; } }
+        locus Worker {
+            params {
+                text: String = std::str::upper("old-initialized-text");
+                o: Outer = Outer { s: self.text, inner: Inner { s: self.text } };
+                hits: Int = 0;
+                log: Log = Log { };
+            }
+            closure fuse { captures: hits; epoch inline; }
+            fn churn(i: Int) { self.o = Outer { s: self.o.s, inner: Inner { s: std::str::upper("new" + to_string(i)) } }; }
+            run() {
+                self.log.push(self.text + "/" + self.o.s + "/" + self.o.inner.s);
+                let mut i = 0;
+                while i < 50 { self.churn(i); i = i + 1; }
+                self.hits = self.hits + 1;
+                if self.log.len() < 3 { violate fuse; }
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            on_failure(c: Worker, err: ClosureViolation) { restart_in_place(c) for 5; }
+            run() {
+                let mut i = 0;
+                while i < self.w.log.len() { println("start=" + (self.w.log.get(i) or "")); i = i + 1; }
+                println("end=" + self.w.text + "/" + self.w.o.s + "/" + self.w.o.inner.s);
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let stdout = run_asan("restart", src);
+    let starts: Vec<&str> = stdout.lines().filter(|l| l.starts_with("start=")).collect();
+    assert_eq!(
+        starts,
+        ["start=OLD-INITIALIZED-TEXT/OLD-INITIALIZED-TEXT/OLD-INITIALIZED-TEXT"; 3],
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("end=OLD-INITIALIZED-TEXT/OLD-INITIALIZED-TEXT/NEW49"),
+        "stdout: {stdout}"
+    );
+}

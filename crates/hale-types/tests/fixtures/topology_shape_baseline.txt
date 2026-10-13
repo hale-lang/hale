@@ -1205,6 +1205,8 @@ crates/hale-codegen/tests/self_field_alias.rs#1 cc87392098879459
 crates/hale-codegen/tests/self_field_alias.rs#2 00a0c7a19f9e4446
 crates/hale-codegen/tests/self_field_index_assign.rs#0 12db83ea9c2af2bd
 crates/hale-codegen/tests/self_field_index_assign.rs#1 53202b3d6b3e6d46
+crates/hale-codegen/tests/self_field_nested_retire.rs#12 73c2cf6a80f1f086
+crates/hale-codegen/tests/self_field_nested_retire.rs#13 1409f480bf198fec
 crates/hale-codegen/tests/serializer_shape.rs#0 17b3339626ecd662
 crates/hale-codegen/tests/sha1_base64.rs#0 865d341109268295
 crates/hale-codegen/tests/sha1_base64.rs#1 865d341109268295

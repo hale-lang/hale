@@ -1488,6 +1488,23 @@ reclaim on a real-world long-running workload:
      with such a field flushes its arena at each method's
      activation boundary, as one with a String field does.
 
+     The fields a store replaces must have owned their leaves from
+     the start, so the same rule holds where a locus's fields are
+     first written: a param's value at construction (default or
+     literal override) and the params a restart in place
+     snapshots and restores are stored by a deep copy that owns
+     every String and Bytes in it (`emit_owned_deep_copy`), its
+     records, tuples and arrays fresh. Those values are evaluated
+     in the locus's own arena, and the plain copy passed a
+     same-arena String through: `o: Outer = Outer { s: self.text,
+     inner: Inner { s: self.text } }` made `text`, `o.s` and
+     `o.inner.s` one blob, which replacing `o.inner` retired under
+     the other two (and the restart snapshot shared every restored
+     field's). The cost is one copy of each String / Bytes leaf a
+     construction builds in the locus's arena, freshly built or
+     not (~20 ns per construction for three such leaves, measured
+     on a 1M-construction loop).
+
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
      reuses the existing slot's buffer when `strlen(new) ==
