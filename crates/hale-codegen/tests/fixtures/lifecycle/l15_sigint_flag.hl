@@ -6,6 +6,15 @@
 // sends SIGINT once it reads `ev ready`. The run() returns, and the
 // ordinary teardown follows: drain(), then dissolve(), once each.
 //
+// The main locus's own run() waits on the same flag, so the signal is
+// the only thing that ends the program. With an empty main run() the
+// main locus's teardown began the tree drain by itself, racing the
+// signal: when that teardown finished first, the SIGINT landed on a
+// process with no live locus that reads `draining`, and the runtime
+// (correctly) took the signal's default action, so the harness
+// intermittently read `signal` instead of `cooperative-drain`. Run
+// without the signal, this program never ends.
+//
 // Expected terminal outcome: exit 0 with the loop's return, one drain
 // and one dissolve, judged by the harness: `cooperative-drain`.
 
@@ -23,6 +32,10 @@ locus Loop {
 main locus App {
     params { l: Loop = Loop { }; }
     placement { l: pinned; }
+    @unbounded
+    run() {
+        while !self.draining { std::time::sleep(10ms); }
+    }
 }
 
 fn main() { App { }; }
