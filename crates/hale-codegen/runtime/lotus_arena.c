@@ -19268,6 +19268,20 @@ int64_t lotus_sock_get_recv_timeout_ns(int fd) {
     return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
 }
 
+/* SO_SNDTIMEO in ns, the send side of the above (0 = unset). On a
+ * non-blocking socket the kernel never applies it, so the waits a send
+ * makes there (an async_io pool's park, a classic context's poll) read
+ * it back and bound themselves with it: a peer that stops reading fails
+ * the send after the same quiet window a blocking send would wait.
+ * Non-static: lotus_tls.c bounds its writes and handshake with it. */
+int64_t lotus_sock_get_send_timeout_ns(int fd) {
+    if (fd < 0) return 0;
+    struct timeval tv;
+    socklen_t len = sizeof(tv);
+    if (getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, &len) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
+}
+
 /* The absolute park deadline for one recv call: computed ONCE at
  * call entry (before the first park) so spurious wakeups re-park
  * with the REMAINING time, not a fresh full window. 0 = no
@@ -19455,7 +19469,15 @@ const char *lotus_tcp_io_status_kind(int64_t errno_val) {
  * listener's flag) the classic contract is to block, so this waits
  * in poll(2). A BLOCKING fd's EAGAIN is a SO_SNDTIMEO expiry and
  * stays the timeout error it was. 0 = retry the write; -1 = give up
- * with errno as the syscall left it. */
+ * with errno as the syscall left it.
+ *
+ * `deadline_ns` (absolute CLOCK_MONOTONIC, 0 = none) is the socket's
+ * SO_SNDTIMEO counted from the send's last progress (the caller's
+ * lotus_send_stall_deadline): the kernel applies that timeout only to
+ * a blocking socket, so on a non-blocking one the park and the poll
+ * apply it here, and a send to a peer that stopped reading fails with
+ * EAGAIN — the error the blocking send's expiry gives — instead of
+ * waiting forever (PR #1538 review). */
 #if LOTUS_HAVE_ASYNC_IO
 static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
     for (lotus_coro_t *c = p->parked_head; c; c = c->next) {
@@ -19464,34 +19486,66 @@ static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
     return 0;
 }
 #endif
-static int lotus_io_wait_writable(int fd) {
+static int lotus_io_wait_writable(int fd, int64_t deadline_ns) {
     int saved = errno;
-#if LOTUS_HAVE_ASYNC_IO
-    lotus_coop_pool_t *p = g_current_pool_tls;
-    lotus_coro_t      *c = g_current_coro_tls;
-    if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
-        if (!lotus_fd_parked_by_another(p, fd)
-            && lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) {
-            return 0;
-        }
-        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
-    }
-#endif
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || !(flags & O_NONBLOCK)) {
         errno = saved;
         return -1;
     }
+    if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) {
+        errno = EAGAIN;
+        return -1;
+    }
+#if LOTUS_HAVE_ASYNC_IO
+    lotus_coop_pool_t *p = g_current_pool_tls;
+    lotus_coro_t      *c = g_current_coro_tls;
+    if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
+        if (!lotus_fd_parked_by_another(p, fd)) {
+            int r = lotus_coop_park_on_fd_deadline(fd, EPOLLOUT, deadline_ns);
+            if (r == 0) return 0;
+            if (r == 1) {
+                errno = EAGAIN;
+                return -1;
+            }
+        }
+        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
+    }
+#endif
     struct pollfd pfd;
     pfd.fd = fd;
     pfd.events = POLLOUT;
     pfd.revents = 0;
     for (;;) {
-        int r = poll(&pfd, 1, -1);
+        int ms = -1;
+        if (deadline_ns > 0) {
+            int64_t left = deadline_ns - lotus_now_mono_ns();
+            if (left <= 0) {
+                errno = EAGAIN;
+                return -1;
+            }
+            int64_t lm = (left + 999999) / 1000000;
+            ms = lm > INT_MAX ? INT_MAX : (int)lm;
+        }
+        int r = poll(&pfd, 1, ms);
         if (r > 0) return 0;
-        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) continue;            /* re-check the deadline */
+        if (errno == EINTR) continue;
         return -1;
     }
+}
+
+/* The stall deadline of a send that would block: SO_SNDTIMEO from now,
+ * read back only once a write would block (no getsockopt on a send that
+ * never waits) and kept until the send makes progress again, so a wait
+ * that wakes without room does not restart the window. `*deadline` < 0 =
+ * not yet read; 0 = no timeout. */
+static int64_t lotus_send_stall_deadline(int fd, int64_t *deadline) {
+    if (*deadline < 0) {
+        int64_t t = lotus_sock_get_send_timeout_ns(fd);
+        *deadline = t > 0 ? lotus_now_mono_ns() + t : 0;
+    }
+    return *deadline;
 }
 
 int lotus_tcp_send_str(int fd, const char *msg) {
@@ -19515,16 +19569,18 @@ int lotus_tcp_send_str(int fd, const char *msg) {
     size_t len = strlen(msg);
     const char *p = msg;
     size_t      left = len;
+    int64_t stall = -1;
     while (left > 0) {
         ssize_t w = write(fd, p, left);
         if (w > 0) {
             p    += (size_t)w;
             left -= (size_t)w;
+            stall = -1;
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_io_wait_writable(fd) == 0) continue;
+            if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
         lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_str: write");
@@ -19566,16 +19622,18 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
     }
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
+    int64_t stall = -1;
     while (left > 0) {
         ssize_t w = write(fd, p, left);
         if (w > 0) {
             p    += (size_t)w;
             left -= (size_t)w;
+            stall = -1;
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_io_wait_writable(fd) == 0) continue;
+            if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
         lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_bytes: write");

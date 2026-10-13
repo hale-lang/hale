@@ -4509,6 +4509,13 @@ shared	dynamic	sites in the seed #6247a882
 == crates/hale-codegen/tests/term_primitives.rs#3ddf52f2
 row	__StdTermRawMode@main1	__StdTermRawMode	main	default
 
+== crates/hale-codegen/tests/tls_async_io_park.rs#76b5de49
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.host	Host	pool:io	entry	off owner
+dynamic	Job	on pool:io	in the seed
+
 == crates/hale-codegen/tests/tls_fast_io.rs#24eccffd
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 

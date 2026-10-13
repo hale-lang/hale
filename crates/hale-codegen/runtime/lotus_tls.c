@@ -95,6 +95,7 @@ void          *lotus_bytes_create(lotus_arena_t *a, int64_t len);
 int     lotus_io_on_async_io_pool(void);
 void    lotus_io_set_nonblock(int fd);
 int64_t lotus_sock_get_recv_timeout_ns(int fd);
+int64_t lotus_sock_get_send_timeout_ns(int fd);
 /* Wait for readiness until an absolute CLOCK_MONOTONIC deadline (0 =
  * none): a park on an async_io pool's coroutine, poll(2) elsewhere.
  * 0 = ready, 1 = deadline passed, -1 = the wait failed. Every blocking
@@ -354,15 +355,30 @@ static const BIO_METHOD *lotus_tls__recvmsg_bio(void) {
  * WANT_WRITE waits for the socket (lotus_io_wait_fd): on an async_io pool
  * the coroutine parks and the worker keeps serving the pool, elsewhere the
  * thread polls. The socket's own mode is restored afterwards. 1 = done;
- * 0 = the handshake failed (`*err_out` = the SSL error); -1 = the deadline
- * passed first (errno ETIMEDOUT). */
+ * 0 = the handshake failed (`*err_out` = the SSL error); -1 = a deadline
+ * passed first (errno ETIMEDOUT).
+ *
+ * The socket's own timeouts bound each wait as the kernel bounds each
+ * blocking recv / send: a WANT_READ waits at most SO_RCVTIMEO, a
+ * WANT_WRITE at most SO_SNDTIMEO (when set), whichever comes before the
+ * call's deadline — so an `upgrade` of a fd with `set_recv_timeout` armed
+ * ends on a silent peer on an async_io pool as it does on a blocking
+ * socket, where the kernel's expiry surfaces as a WANT_* and is the same
+ * timeout (PR #1538 review). */
 static int lotus_tls__handshake(SSL *ssl, int raw_fd, int64_t deadline_ns,
                                 int *err_out) {
     *err_out = 0;
     if (deadline_ns <= 0 && !lotus_io_on_async_io_pool()) {
         int r = SSL_connect(ssl);
         if (r == 1) return 1;
-        *err_out = SSL_get_error(ssl, r);
+        int err = SSL_get_error(ssl, r);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            /* A blocking socket answers WANT_* only when its SO_RCVTIMEO
+             * / SO_SNDTIMEO expired under the handshake. */
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        *err_out = err;
         return 0;
     }
     int flags = fcntl(raw_fd, F_GETFL, 0);
@@ -378,7 +394,14 @@ static int lotus_tls__handshake(SSL *ssl, int raw_fd, int64_t deadline_ns,
         int err = SSL_get_error(ssl, r);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
             uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT : EPOLLIN;
-            int w = lotus_io_wait_fd(raw_fd, ev, deadline_ns);
+            int64_t t = (ev == EPOLLOUT) ? lotus_sock_get_send_timeout_ns(raw_fd)
+                                         : lotus_sock_get_recv_timeout_ns(raw_fd);
+            int64_t d = deadline_ns;
+            if (t > 0) {
+                int64_t own = lotus_tls__now_ns() + t;
+                if (d <= 0 || own < d) d = own;
+            }
+            int w = lotus_io_wait_fd(raw_fd, ev, d);
             if (w == 0) continue;
             if (w == 1) {
                 out = -1;
@@ -450,6 +473,10 @@ static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
     } else {
         SSL_set_fd(ssl, raw_fd);
     }
+    /* Partial writes: SSL_write returns once a record is out, so a send
+     * that has to wait sees its progress (lotus_tls_send_bytes resets its
+     * SO_SNDTIMEO window on it; its loop already takes a short write). */
+    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
     int err = 0;
     int hs = lotus_tls__handshake(ssl, raw_fd, deadline_ns, &err);
@@ -576,25 +603,48 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
      * the coroutine until the socket is ready — the plain-tcp
      * send_bytes's EPOLLOUT park. The retry passes the same buffer and
      * length, as OpenSSL requires of a retried SSL_write. Off-pool the fd
-     * is blocking and SSL_write blocks, as before. */
+     * is blocking and SSL_write blocks, as before.
+     *
+     * The park is bounded by the socket's SO_SNDTIMEO, counted from the
+     * write's last progress, as the kernel bounds a blocking send (which
+     * it no longer is): a peer that stops reading fails the send once the
+     * window passes with no record written, instead of parking forever
+     * (PR #1538 review). Partial writes are on for the connection
+     * (lotus_tls__upgrade_until), so each record written returns and
+     * counts as progress. */
     int async = lotus_io_on_async_io_pool();
     int raw_fd = async ? lotus_tls__handle_fd(handle) : -1;
     if (raw_fd >= 0) lotus_io_set_nonblock(raw_fd);
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
+    int64_t stall = -1;   /* < 0: not read; 0: no SO_SNDTIMEO */
     while (left > 0) {
         int chunk = left > INT_MAX ? INT_MAX : (int)left;
         int n = SSL_write(ssl, p, chunk);
         if (n > 0) {
             p    += (size_t)n;
             left -= (size_t)n;
+            stall = -1;
             continue;
         }
         int err = SSL_get_error(ssl, n);
         if (raw_fd >= 0
             && (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)) {
             uint32_t ev = (err == SSL_ERROR_WANT_READ) ? EPOLLIN : EPOLLOUT;
-            if (lotus_io_wait_fd(raw_fd, ev, 0) == 0) continue;
+            if (stall < 0) {
+                int64_t t = lotus_sock_get_send_timeout_ns(raw_fd);
+                stall = t > 0 ? lotus_tls__now_ns() + t : 0;
+            }
+            int w = lotus_io_wait_fd(raw_fd, ev, stall);
+            if (w == 0) continue;
+            if (w == 1) {
+                /* The send timeout: the blocking write's expiry, a status
+                 * like any failed write. */
+                fprintf(stderr,
+                        "lotus_tls_send_bytes: send timed out (SO_SNDTIMEO)\n");
+                errno = EAGAIN;
+                return -1;
+            }
         }
         fprintf(stderr,
                 "lotus_tls_send_bytes: SSL_write failed (err=%d)\n",

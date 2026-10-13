@@ -65,12 +65,14 @@ fn self_signed() -> (PKey<Private>, X509) {
 /// How the server answers: it waits `handshake_delay` before it takes
 /// the handshake and `response_delay` between the request and the
 /// response. `speak: false` accepts the TCP connection and never says a
-/// word (a handshake that never completes).
+/// word (a handshake that never completes); `read: false` completes the
+/// handshake and then never reads (a peer whose receive window fills).
 #[derive(Clone, Copy)]
 struct Behaviour {
     handshake_delay: Duration,
     response_delay: Duration,
     speak: bool,
+    read: bool,
 }
 
 /// A TLS (or, unspoken, a silent TCP) server on 127.0.0.1, a thread per
@@ -110,6 +112,10 @@ impl Peer {
                 thread::spawn(move || {
                     thread::sleep(how.handshake_delay);
                     let Ok(mut s) = acceptor.accept(tcp) else { return };
+                    if !how.read {
+                        thread::sleep(Duration::from_secs(20));
+                        return;
+                    }
                     let mut req = Vec::new();
                     let mut chunk = [0u8; 1024];
                     while !req.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -253,8 +259,8 @@ fn pool_program(ticks: u32, jobs: &str, wait: &str) -> String {
 /// at `connect_within`'s deadline with kind `timeout`.
 #[test]
 fn off_pool_the_handshake_verifies_and_a_silent_peer_ends_at_the_deadline() {
-    let peer = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: true });
-    let silent = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: false });
+    let peer = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: true, read: true });
+    let silent = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: false, read: true });
     let src = format!(
         r#"
         fn main() {{
@@ -297,6 +303,7 @@ fn an_https_request_parks_through_its_handshake_and_its_read() {
         handshake_delay: Duration::from_millis(400),
         response_delay: Duration::from_millis(400),
         speak: true,
+        read: true,
     });
     let src = pool_program(
         12,
@@ -323,7 +330,7 @@ fn an_https_request_parks_through_its_handshake_and_its_read() {
 /// `timeout`, and the ticker beside it keeps running meanwhile.
 #[test]
 fn a_tls_dial_deadline_is_a_timed_park_on_async_io() {
-    let silent = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: false });
+    let silent = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: false, read: true });
     let src = pool_program(
         6,
         r#""go" <- Go { kind: 2, port: port, n: 0 };
@@ -346,6 +353,7 @@ fn concurrent(name: &str, options: &hale_codegen::BuildOptions) -> String {
         handshake_delay: Duration::ZERO,
         response_delay: Duration::from_millis(300),
         speak: true,
+        read: true,
     });
     let jobs: String = (0..8)
         .map(|n| format!("\"go\" <- Go {{ kind: 1, port: port, n: {n} }};\n                "))
@@ -385,4 +393,183 @@ fn eight_https_requests_on_one_async_io_pool_wait_together() {
 fn eight_parked_https_requests_are_clean_under_asan() {
     let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
     concurrent("hale_tls_park_asan", &options);
+}
+
+// ---- the socket's own timeouts bound the parked waits (PR #1538 review) ----
+//
+// A non-blocking socket ignores SO_SNDTIMEO / SO_RCVTIMEO: the kernel
+// applies them only to a call that blocks. The parks read them back and
+// bound themselves, so `set_send_timeout` still ends a send to a peer that
+// stopped reading, and a recv timeout armed before `upgrade` still ends a
+// handshake the peer never answers — as each did on a blocking socket.
+
+/// A TCP listener on 127.0.0.1 that accepts and never reads: a send to it
+/// fills the receive window and then the send buffer.
+struct Deaf {
+    port: u16,
+}
+
+impl Deaf {
+    fn start() -> Deaf {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in listener.incoming().flatten() {
+                held.push(conn);
+            }
+        });
+        Deaf { port }
+    }
+}
+
+const BIG: &str = r#"
+        let mut s = "xxxxxxxxxxxxxxxx";
+        let mut i = 0;
+        while i < 20 {
+            s = s + s;
+            i = i + 1;
+        }
+        let big = std::bytes::from_string(s);
+"#;
+
+#[test]
+fn a_send_to_a_peer_that_stopped_reading_ends_at_its_send_timeout_on_async_io() {
+    let stalled = Peer::start(Behaviour {
+        handshake_delay: Duration::ZERO,
+        response_delay: Duration::ZERO,
+        speak: true,
+        read: false,
+    });
+    let deaf = Deaf::start();
+    let src = format!(
+        r#"
+        type Go {{ kind: Int; port: Int; }}
+
+        locus Job {{
+            params {{ kind: Int = 0; port: Int = 0; }}
+            run() {{
+                {BIG}
+                if self.kind == 0 {{
+                    let h = std::io::tls::connect("localhost", self.port) or raise;
+                    std::io::tls::set_send_timeout(h, 20ms) or raise;
+                    let t = std::time::monotonic_ns();
+                    let sent = std::io::tls::send_bytes(h, big);
+                    println("tls sent=", sent, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+                    std::io::tls::close(h);
+                }} else {{
+                    let fd = std::io::tcp::connect("127.0.0.1", self.port) or raise;
+                    std::io::tcp::set_send_timeout(fd, 20ms) or raise;
+                    let t = std::time::monotonic_ns();
+                    let mut kind = "sent";
+                    std::io::tcp::send_fd(fd, big) or {{ kind = err.kind; }};
+                    println("tcp kind=", kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+                    std::io::tcp::close_fd(fd);
+                }}
+            }}
+        }}
+
+        locus Host {{
+            bus {{ subscribe "go" as on_go of type Go; }}
+            accept(c: Job) {{ }}
+            fn on_go(g: Go) {{
+                Job {{ kind: g.kind, port: g.port }};
+            }}
+        }}
+
+        main locus App {{
+            params {{ host: Host = Host {{ }}; }}
+            placement {{
+                host: cooperative(pool = io) where async_io;
+            }}
+            bus {{ publish "go" of type Go; }}
+            run() {{
+                let port = std::str::parse_int(std::env::arg(1)) or 0;
+                "go" <- Go {{ kind: 0, port: port }};
+                "go" <- Go {{ kind: 1, port: {deaf} }};
+                std::time::sleep(5s);
+            }}
+        }}
+
+        fn main() {{
+            App {{ }};
+            return 0;
+        }}
+    "#,
+        deaf = deaf.port
+    );
+    let (out, stderr) = run("hale_tls_park_send_timeout", &src, &stalled, &build_opts::options());
+    assert_eq!(
+        field(&out, "tls", "sent"),
+        "-1",
+        "a TLS send to a peer that stopped reading must fail once SO_SNDTIMEO passes \
+         with no progress, not park forever: {out}\n{stderr}"
+    );
+    assert!(ms(&out, "tls") < 3000, "{out}");
+    assert_eq!(
+        field(&out, "tcp", "kind"),
+        "would_block",
+        "a TCP send's SO_SNDTIMEO expiry on an async_io pool is the blocking send's \
+         error (EAGAIN): {out}\n{stderr}"
+    );
+    assert!(ms(&out, "tcp") < 3000, "{out}");
+}
+
+#[test]
+fn a_recv_timeout_armed_before_upgrade_ends_a_silent_handshake_on_and_off_a_pool() {
+    let silent = Peer::start(Behaviour {
+        handshake_delay: Duration::ZERO,
+        response_delay: Duration::ZERO,
+        speak: false,
+        read: true,
+    });
+    let src = r#"
+        fn up(port: Int, tag: String) {
+            let fd = std::io::tcp::connect("127.0.0.1", port) or raise;
+            std::io::tcp::set_recv_timeout(fd, 200ms) or raise;
+            let t = std::time::monotonic_ns();
+            let mut kind = "";
+            let h = std::io::tls::upgrade(fd, "localhost", true) or { kind = err.kind; - 1 };
+            println(tag, " h=", h, " kind=", kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+            std::io::tcp::close_fd(fd);
+        }
+
+        type Go { port: Int; }
+
+        locus Job {
+            params { port: Int = 0; }
+            run() { up(self.port, "pool"); }
+        }
+
+        locus Host {
+            bus { subscribe "go" as on_go of type Go; }
+            accept(c: Job) { }
+            fn on_go(g: Go) { Job { port: g.port }; }
+        }
+
+        main locus App {
+            params { host: Host = Host { }; }
+            placement {
+                host: cooperative(pool = io) where async_io;
+            }
+            bus { publish "go" of type Go; }
+            run() {
+                let port = std::str::parse_int(std::env::arg(1)) or 0;
+                up(port, "main");
+                "go" <- Go { port: port };
+                std::time::sleep(1500ms);
+            }
+        }
+
+        fn main() {
+            App { };
+            return 0;
+        }
+    "#;
+    let (out, stderr) = run("hale_tls_upgrade_recv_timeout", src, &silent, &build_opts::options());
+    for tag in ["main", "pool"] {
+        assert_eq!(field(&out, tag, "kind"), "timeout", "{tag}: {out}\n{stderr}");
+        let took = ms(&out, tag);
+        assert!((180..1300).contains(&took), "{tag}: the handshake ends at the 200 ms recv timeout; took {took}: {out}");
+    }
 }
